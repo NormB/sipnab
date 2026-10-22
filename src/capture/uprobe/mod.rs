@@ -293,6 +293,10 @@ impl InstalledProbes {
         library: &str,
         offset: u64,
     ) -> std::io::Result<Self> {
+        // Checked here as well as when planning, because this is the write to
+        // the host-wide file: no caller can reach it with a path that would
+        // inject a second command.
+        discover::check_uprobe_path(library).map_err(std::io::Error::other)?;
         let mut held = Self {
             names: Vec::new(),
             root: root.to_path_buf(),
@@ -943,6 +947,26 @@ mod tests {
         assert!(is_interesting(b"INVITE sip:b@example.net SIP/2.0\r\n\r\n"));
         assert!(!is_interesting(b"GET /index.html HTTP/1.1\r\n\r\n"));
         assert!(!is_interesting(&[0u8; 32]));
+        Ok(())
+    }
+
+    /// The last line of defense for MCP-UPROBE-LIBRARY-INJECTION: whatever
+    /// planned the probe, a library path that would inject a second command
+    /// never reaches `uprobe_events`.
+    #[test]
+    fn install_refuses_a_library_path_that_injects_a_second_command() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let root = dir.path();
+        std::fs::write(root.join("uprobe_events"), "")?;
+        for band in BANDS {
+            let d = root.join(format!("events/uprobes/{}", probe_name(8, 0, band)));
+            std::fs::create_dir_all(&d)?;
+            std::fs::write(d.join("filter"), "")?;
+        }
+        let refused = InstalledProbes::install(root, 8, 0, "/lib/libssl.so.3\n-:victim", 0x1000);
+        assert!(refused.is_err(), "the install must be refused");
+        let events = std::fs::read_to_string(root.join("uprobe_events"))?;
+        assert!(events.is_empty(), "nothing may be written: {events:?}");
         Ok(())
     }
 }

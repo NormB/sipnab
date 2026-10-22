@@ -2179,9 +2179,10 @@ pub struct StartTlsCaptureParams {
     /// `the_tree_spells_in_us_english`, so the word stays forbidden in prose.
     #[serde(default, alias = "flavours")]
     pub flavors: Vec<String>,
-    /// Probe these libraries instead of discovering them. Each must be a path
-    /// this server can open — for a containerized process, the
-    /// `/proc/PID/root/...` form. Empty means discover.
+    /// Probe only these libraries. Each must be a `path` or `probe_path` that
+    /// `list_tls_libraries` reports; for a containerized process, the
+    /// `/proc/PID/root/...` form. sipnab refuses any other path. Empty means
+    /// every library discovered.
     #[serde(default)]
     pub libraries: Vec<String>,
 }
@@ -6975,9 +6976,8 @@ impl SipnabMcp {
             ));
         }
 
-        let planned =
-            discover::plan_targets(&params.libraries, None, &flavors, discover::discover())
-                .map_err(|e| errors::refuse(Reason::InvalidValue, e))?;
+        let planned = discover::plan_mcp_targets(&params.libraries, &flavors, discover::discover())
+            .map_err(|e| errors::refuse(Reason::InvalidValue, e))?;
 
         Ok(planned
             .into_iter()

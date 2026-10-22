@@ -288,6 +288,7 @@ pub fn plan_targets(
         return explicit
             .iter()
             .map(|path| {
+                check_uprobe_path(path).map_err(|e| format!("--uprobe-library: {e}"))?;
                 let library = PathBuf::from(path);
                 let symbol = match symbol {
                     Some(s) => s.to_string(),
@@ -353,6 +354,86 @@ pub fn plan_targets(
         );
     }
     Ok(targets)
+}
+
+/// Whether `path` can be written into a `uprobe_events` line.
+///
+/// The kernel splits that line on whitespace and ends a command at a newline,
+/// and the file is shared by every tracer on the host. A path carrying either
+/// writes a command other than the one sipnab built: `\n-:<name>` after a
+/// path removes another tracer's probe. So whitespace and control characters
+/// are refused, and so is an empty path. This is the one rule; planning and
+/// [`super::InstalledProbes::install`] both apply it.
+///
+/// # Errors
+///
+/// What is wrong with the path, with the path quoted so an invisible character
+/// shows.
+pub fn check_uprobe_path(path: &str) -> Result<(), String> {
+    if path.is_empty() {
+        return Err(format!(
+            "the library path {path:?} is empty, and a uprobe needs a file to attach to"
+        ));
+    }
+    if path.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(format!(
+            "the library path {path:?} contains whitespace or a control character, \
+             which the kernel's uprobe_events parser would read as the end of the \
+             path or of the command"
+        ));
+    }
+    Ok(())
+}
+
+/// Turn `start_tls_capture`'s arguments into a probe list.
+///
+/// An agent may only choose among the libraries discovery found. The
+/// command line's `--uprobe-library` reaches any path because the operator
+/// typed it; over MCP the names come from a client, and a server running as
+/// root would otherwise read and probe whatever file a client pointed it at.
+/// A name is accepted when it equals a `path` or `probe_path` that
+/// `list_tls_libraries` reports, and the probe goes on the path discovery
+/// found, not on the client's string. Matching is on the string alone: the
+/// client's path is never opened, so a refusal says nothing about whether it
+/// exists. Naming libraries replaces flavor narrowing, as it does on the
+/// command line.
+///
+/// # Errors
+///
+/// A message for the agent when a name is not one discovery found, or when
+/// nothing would be probed.
+pub fn plan_mcp_targets(
+    named: &[String],
+    flavors: &[Flavor],
+    discovered: Vec<TlsLibrary>,
+) -> Result<Vec<PlannedTarget>, String> {
+    if named.is_empty() {
+        return plan_targets(&[], None, flavors, discovered);
+    }
+    let mut chosen: Vec<TlsLibrary> = Vec::new();
+    for name in named {
+        check_uprobe_path(name)?;
+        let found = discovered.iter().find(|lib| {
+            lib.path.as_os_str() == name.as_str()
+                || lib
+                    .probe_path()
+                    .is_some_and(|p| p.as_os_str() == name.as_str())
+        });
+        let Some(lib) = found else {
+            return Err(format!(
+                "'{name}' is not a TLS library any process on this host has mapped. \
+                 Name a path or probe_path that list_tls_libraries reports, or omit \
+                 libraries to probe every library found"
+            ));
+        };
+        if !chosen
+            .iter()
+            .any(|c| c.inode == lib.inode && c.path == lib.path)
+        {
+            chosen.push(lib.clone());
+        }
+    }
+    plan_targets(&[], None, &[], chosen)
 }
 
 /// Parse an operator's `--uprobe-flavor` value.
@@ -769,6 +850,154 @@ aaaab1200000-aaaab1290000 r-xp 00000000 fd:01 6311876 /usr/lib/aarch64-linux-gnu
                 lib.path.display()
             );
         }
+        Ok(())
+    }
+
+    // MCP-UPROBE-LIBRARY-INJECTION. The kernel splits a `uprobe_events` line on
+    // whitespace and ends a command at a newline, so a library path that
+    // carries either writes a command other than the one sipnab built: a
+    // newline followed by `-:<name>` removes another tracer's probe.
+
+    #[test]
+    fn a_plain_library_path_can_be_written_into_a_probe_line() {
+        for ok in [
+            "/usr/lib/libssl.so.3",
+            "/proc/954/root/usr/lib/libssl.so.3",
+            "/opt/a:b/libwolfssl.so.42",
+        ] {
+            assert_eq!(check_uprobe_path(ok), Ok(()), "{ok:?} is a valid path");
+        }
+    }
+
+    #[test]
+    fn a_path_with_whitespace_or_a_control_character_is_refused() {
+        for bad in [
+            "",
+            "/opt/my lib/libssl.so.3",
+            "/lib/libssl.so.3:0x0\n-:sipnab_1_l0_b64",
+            "/lib/a\tb.so",
+            "/lib/a\rb.so",
+            "/lib/a\0b.so",
+            "/lib/a\u{7f}b.so",
+            "/lib/a\u{85}b.so",
+            "/lib/a\u{2028}b.so",
+        ] {
+            let err = check_uprobe_path(bad).err();
+            assert!(
+                err.as_deref()
+                    .is_some_and(|e| e.contains(&format!("{bad:?}"))),
+                "{bad:?} must be refused with the path named: {err:?}"
+            );
+        }
+    }
+
+    /// The CLI route too: an operator's `--uprobe-library` reaches the same
+    /// line, and a typo with a space in it should fail at startup, not as a
+    /// kernel error after part of the probe set is installed.
+    #[test]
+    fn an_explicit_library_that_cannot_be_written_is_refused_when_planning() -> Result<(), TestError>
+    {
+        let err = plan_targets(
+            &["/lib/libssl.so.3:0x0\n-:other".to_string()],
+            None,
+            &[],
+            Vec::new(),
+        )
+        .err()
+        .ok_or("a newline in --uprobe-library must be refused")?;
+        assert!(err.contains("--uprobe-library"), "names the flag: {err}");
+        Ok(())
+    }
+
+    /// No names: the discovery route, unchanged.
+    #[test]
+    fn an_agent_naming_nothing_gets_every_library_found() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let libs = vec![
+            reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl)?,
+            reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavor::WolfSsl)?,
+        ];
+        let planned = plan_mcp_targets(&[], &[], libs).map_err(|e| format!("{e:?}"))?;
+        assert_eq!(planned.len(), 2);
+        Ok(())
+    }
+
+    /// A name `list_tls_libraries` reported selects that library, and the
+    /// probe goes on the path discovery found, not on the agent's string.
+    #[test]
+    fn an_agent_may_name_a_library_discovery_found() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let ssl = reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl)?;
+        let wolf = reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavor::WolfSsl)?;
+        let name = wolf.path.display().to_string();
+        let planned = plan_mcp_targets(&[name.clone(), name], &[], vec![ssl, wolf.clone()])
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            planned,
+            vec![PlannedTarget {
+                library: wolf.path.clone(),
+                symbol: "wolfSSL_write".to_string(),
+            }],
+            "one target, for the library named once or twice"
+        );
+        Ok(())
+    }
+
+    /// Anything else is refused, whether or not the path exists, and the two
+    /// refusals read the same: the answer must not tell an agent which paths
+    /// exist on the host.
+    #[test]
+    fn an_agent_may_not_name_a_path_discovery_did_not_find() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let ssl = reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl)?;
+        let present = tmp.path().join("not-a-library.so");
+        std::fs::write(&present, b"so")?;
+        let present = present.display().to_string();
+        let absent = tmp.path().join("absent.so").display().to_string();
+
+        let refuse = |name: &str| {
+            plan_mcp_targets(&[name.to_string()], &[], vec![ssl.clone()])
+                .err()
+                .map(|e| e.replace(name, "<NAME>"))
+        };
+        let on_present = refuse(&present).ok_or("an existing non-library is refused")?;
+        let on_absent = refuse(&absent).ok_or("a missing path is refused")?;
+        assert!(
+            on_present.contains("list_tls_libraries"),
+            "says where valid names come from: {on_present}"
+        );
+        assert_eq!(
+            on_present, on_absent,
+            "existence must not change the answer"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_agent_naming_a_path_with_a_newline_is_refused() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let ssl = reachable(&tmp, 11, "/usr/lib/libssl.so.3", Flavor::OpenSsl)?;
+        let injected = format!("{}:0x0\n-:other", ssl.path.display());
+        let err = plan_mcp_targets(&[injected], &[], vec![ssl])
+            .err()
+            .ok_or("refused")?;
+        assert!(err.contains("whitespace or a control character"), "{err}");
+        Ok(())
+    }
+
+    /// Naming libraries replaces flavor narrowing, as `--uprobe-library` does
+    /// on the command line: the agent chose the library itself.
+    #[test]
+    fn named_libraries_are_not_narrowed_by_flavor() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let wolf = reachable(&tmp, 12, "/usr/lib/libwolfssl.so.42", Flavor::WolfSsl)?;
+        let planned = plan_mcp_targets(
+            &[wolf.path.display().to_string()],
+            &[Flavor::OpenSsl],
+            vec![wolf],
+        )
+        .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(planned.len(), 1);
         Ok(())
     }
 }
