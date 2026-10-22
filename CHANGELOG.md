@@ -12,6 +12,7 @@ entry that carries them.
 
 ### Security
 
+- **MCP `start_tls_capture` accepts only libraries that `list_tls_libraries` reports.** Before, the `libraries` argument took any path, and a server running as root with `--mcp-allow-tls-capture` read that file and wrote a probe for it into the host-wide `uprobe_events` file. A path with a newline in it wrote a second command there, such as one that removes another tracer's probe. Now each name must equal a `path` or `probe_path` from `list_tls_libraries`, the probe goes on the path discovery found, and the server never opens a path a client names, so a refusal reads the same whether the path exists or not. A library path with whitespace or a control character is refused everywhere it can reach that file: in `libraries`, in `--uprobe-library`, and at the write itself. See [`start_tls_capture`](docs/mcp-tools-tls.md#start_tls_capture).
 - **Two dependencies advanced past advisories published on 2026-10-22.**
   - [GHSA-xcq7-p3pf-p88h](https://osv.dev/vulnerability/GHSA-xcq7-p3pf-p88h) (CVE-2026-114603): `opentelemetry-api` 1.44.0 parsed a `tracestate` header without a bound. `clients/python/requirements-mcp.txt` now pins 1.45.1, which has the same dependencies, by hash.
   - [GHSA-rxp7-6hxx-x8q5](https://osv.dev/vulnerability/GHSA-rxp7-6hxx-x8q5) (CVE-2026-111997): `ip-address` 10.7.2 matched an IPv6 zone identifier in quadratic time before checking its length. `clients/typescript/package-lock.json` and `e2e/package-lock.json` now resolve 10.7.4.

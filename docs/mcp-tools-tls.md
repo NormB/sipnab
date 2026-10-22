@@ -38,7 +38,7 @@ probe.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `flavors?` | array of string | `openssl`, `wolfssl` | every flavor found |
-| `libraries?` | array of string | paths this server can open; for a containerized process, the form that `list_tls_libraries` returns as `probe_path`: `/proc/<pid>/root/` followed by the library's path inside the container, such as `/proc/954/root/usr/lib/libssl.so.3` | the libraries discovered on this host |
+| `libraries?` | array of string | a `path` or `probe_path` that `list_tls_libraries` reports for this host; for a containerized process, the `probe_path` form: `/proc/<pid>/root/` followed by the library's path inside the container, such as `/proc/954/root/usr/lib/libssl.so.3`. sipnab refuses any other path | the libraries discovered on this host |
 
 ```jsonc
 // start_tls_capture { }                                  // every library found
@@ -71,8 +71,12 @@ message names the cause and the fix:
 - **An unknown flavor** (`reason: invalid_choice`, `param: flavors`,
   `valid_values: ["openssl", "wolfssl"]`). sipnab checks the flavor names
   before it checks for root.
-- **An unusable library path** (`reason: invalid_value`). Use a `probe_path`
-  from `list_tls_libraries`.
+- **A library that `list_tls_libraries` does not report** (`reason: invalid_value`).
+  Name a `path` or `probe_path` from `list_tls_libraries`, or omit `libraries`.
+  sipnab compares the name only; it never opens a path that `list_tls_libraries`
+  does not report, so the refusal is the same whether the path exists or not.
+- **A library path with whitespace or a control character** (`reason: invalid_value`).
+  The kernel's probe file would split the path there.
 - **A TLS capture is already running** (`reason: not_ready`). Call
   `stop_tls_capture` first.
 - **The server is reading a live interface** (`reason: not_ready`). A uprobe

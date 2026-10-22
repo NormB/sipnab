@@ -164,6 +164,10 @@ sipnab_<pid>_l<slot>_b<band>
 - The slot keeps one sipnab's own libraries apart.
   - Without it the second install reuses the first's names.
   - Then a mixed-flavor host captures exactly one of them.
+- The library path goes into the line as written, and the kernel splits the line on whitespace and ends a command at a newline.
+  - So `check_uprobe_path` refuses an empty path and any path with whitespace or a control character.
+  - Planning applies it, for `--uprobe-library` and MCP's `libraries`, and so does the install itself.
+  - Over MCP a library must also be one `list_tls_libraries` reports: `plan_mcp_targets` matches the name and never opens it.
 
 ## Two orders that are load-bearing
 
