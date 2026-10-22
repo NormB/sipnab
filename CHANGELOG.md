@@ -12,6 +12,9 @@ entry that carries them.
 
 ### Security
 
+- **Two dependencies advanced past advisories published on 2026-10-22.**
+  - [GHSA-xcq7-p3pf-p88h](https://osv.dev/vulnerability/GHSA-xcq7-p3pf-p88h) (CVE-2026-114603): `opentelemetry-api` 1.44.0 parsed a `tracestate` header without a bound. `clients/python/requirements-mcp.txt` now pins 1.45.1, which has the same dependencies, by hash.
+  - [GHSA-rxp7-6hxx-x8q5](https://osv.dev/vulnerability/GHSA-rxp7-6hxx-x8q5) (CVE-2026-111997): `ip-address` 10.7.2 matched an IPv6 zone identifier in quadratic time before checking its length. `clients/typescript/package-lock.json` and `e2e/package-lock.json` now resolve 10.7.4.
 - **Four dependencies advanced to releases that clear the advisories osv-scanner reported.**
   - [RUSTSEC-2026-0382](https://rustsec.org/advisories/RUSTSEC-2026-0382) (CVE-2026-111943): `rustls-webpki` 0.103.15 could accept a certificate path through distrusted emSign intermediates, whose private keys are now public. 0.103.16 rejects such paths, in `Cargo.lock` and `fuzz/Cargo.lock`.
   - [RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383): `webpki-root-certs` 1.0.7 bundled the emSign roots of those intermediates. 1.0.10 closes it, in `Cargo.lock`.
