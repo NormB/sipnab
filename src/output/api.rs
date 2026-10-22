@@ -525,38 +525,31 @@ fn resolve_in_file_root(
              with --api-file-root <DIR> to enable it",
         )
     })?;
-    if name.is_empty() {
-        return Err(Problem::detailed(
+    // The same rule the MCP file tools apply, including the symlink check.
+    use crate::capture::output_guard::{BareNameRefusal, confine_bare_name};
+    confine_bare_name(root, name).map_err(|refusal| match refusal {
+        BareNameRefusal::Empty => {
+            Problem::detailed(StatusCode::BAD_REQUEST, "filename must not be empty")
+        }
+        BareNameRefusal::ControlCharacter => Problem::detailed(
             StatusCode::BAD_REQUEST,
-            "filename must not be empty",
-        ));
-    }
-    // One path component, and it must be a plain name.
-    let mut parts = std::path::Path::new(name).components();
-    let only = parts.next();
-    let extra = parts.next();
-    let bare = matches!(only, Some(std::path::Component::Normal(_))) && extra.is_none();
-    if !bare || name.contains('/') || name.contains('\\') || name.contains("..") {
-        return Err(Problem::detailed(
+            format!(
+                "{name:?} contains a control character. This route takes a plain \
+                 file name inside --api-file-root."
+            ),
+        ),
+        BareNameRefusal::NotBare => Problem::detailed(
             StatusCode::BAD_REQUEST,
             format!(
                 "'{name}' is not a bare filename. This route takes a name, not a \
                  path, and reads only inside --api-file-root."
             ),
-        ));
-    }
-    // A bare name can still leave the root through a symlink already placed
-    // there. `canonical_target` resolves it — the same resolver `-O` and the MCP
-    // file tools use — and the resolved path must stay under the root.
-    let resolved = crate::capture::output_guard::canonical_target(&root.join(name));
-    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    if !resolved.starts_with(&canonical_root) {
-        return Err(Problem::detailed(
+        ),
+        BareNameRefusal::Outside(_) => Problem::detailed(
             StatusCode::BAD_REQUEST,
             format!("'{name}' resolves outside --api-file-root."),
-        ));
-    }
-    Ok(resolved)
+        ),
+    })
 }
 
 // ── Rate limiter ────────────────────────────────────────────────────
@@ -16104,6 +16097,24 @@ mod tests {
              not be answered with one"
         );
         Ok(())
+    }
+    /// MCP-ROOT-CONTROL-CHARS on the REST surface: `--api-file-root` refuses a
+    /// name with a control character with a 400 that says why.
+    #[test]
+    fn a_file_root_name_with_a_control_character_is_refused() {
+        let root = std::env::temp_dir();
+        for bad in ["a\nb.pcap", "a\0b.pcap"] {
+            let problem = resolve_in_file_root(Some(&root), bad).err();
+            assert!(
+                problem
+                    .as_ref()
+                    .is_some_and(|p| p.status == StatusCode::BAD_REQUEST
+                        && p.detail
+                            .as_deref()
+                            .is_some_and(|d| d.contains("control character"))),
+                "{bad:?}: {problem:?}"
+            );
+        }
     }
 }
 

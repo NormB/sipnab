@@ -893,7 +893,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // build-ci-release.md now names `bpf/src/main.rs` and
     // docs/internals/rtpengine-control-plane.md names
     // `tests/fixtures/rtpengine-ng-hep.pcap`, each linked.
-    const EXPECTED_CODE_LINKS: usize = 726;
+    // 726 -> 727: docs/internals/mcp.md links src/capture/output_guard.rs
+    // for `confine_bare_name`, the file-root rule MCP and REST share.
+    const EXPECTED_CODE_LINKS: usize = 727;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
