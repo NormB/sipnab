@@ -34,7 +34,13 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     // `crash::contain` exists to catch (a contained panic, then one that
     // escapes after it). A panic is the input under test there, not error
     // handling, so it cannot become `?`.
-    ("src", 5, 3, 10),
+    // src panic 10 -> 15: one probe in each containment test of the offline
+    // readers (PANIC-ABORT-HOSTILE-INPUT): the frame decoder and the record
+    // reader (src/capture/mod.rs, src/capture/frames.rs), an archive member
+    // (src/capture/archive/mod.rs), a vCon container
+    // (src/capture/vcon_input.rs), and `contain` counting without sipnab's
+    // hook (src/crash.rs). Each is the panic the reader must contain.
+    ("src", 5, 3, 15),
     ("tests", 0, 0, 2),
 ];
 

@@ -663,9 +663,51 @@ mod reader {
                 None,
             )
         })?;
-        let form = form_of_bytes(&bytes);
-        let (value, opened) = open_bytes(&bytes).map_err(|e| refuse(e, form, None, None))?;
-        match rebuild_counted(&value, &source) {
+        rebuild_bytes_with(&bytes, &source, open_bytes)
+    }
+
+    /// Open and rebuild the container in `bytes`, the half of
+    /// [`read_file_reporting`] after the file is read. `open` is passed in so
+    /// a test can hand it one that panics: no real container is known to make
+    /// the opener panic.
+    ///
+    /// A panic while opening or rebuilding the container refuses this file
+    /// instead of ending the process (PANIC-ABORT-HOSTILE-INPUT).
+    pub(super) fn rebuild_bytes_with(
+        bytes: &[u8],
+        source: &str,
+        open: impl FnOnce(&[u8]) -> Result<(Value, Vec<String>), ContainerError>,
+    ) -> Result<Rebuilt, Box<Refused>> {
+        let form = form_of_bytes(bytes);
+        let refuse =
+            |error: ContainerError, uuid: Option<String>, validation_findings: Option<usize>| {
+                Box::new(Refused {
+                    skip: super::VconSkip {
+                        source: source.to_string(),
+                        uuid,
+                        form,
+                        reason: error.kind().to_string(),
+                        detail: error.to_string(),
+                        validation_findings,
+                    },
+                    error,
+                })
+            };
+        let parsed = crate::capture::contained("vCon container", || {
+            open(bytes).map(|(value, opened)| {
+                let rebuilt = rebuild_counted(&value, source);
+                (value, opened, rebuilt)
+            })
+        })
+        .map_err(|message| {
+            refuse(
+                ContainerError::Unreadable(format!("the parser panicked: {message}")),
+                None,
+                None,
+            )
+        })?;
+        let (value, opened, rebuilt) = parsed.map_err(|e| refuse(e, None, None))?;
+        match rebuilt {
             Ok(mut rebuilt) => {
                 rebuilt.provenance.opened = opened;
                 rebuilt.provenance.form = form;
@@ -673,7 +715,7 @@ mod reader {
             }
             Err((error, findings)) => {
                 let uuid = value["uuid"].as_str().map(str::to_string);
-                Err(refuse(error, form, uuid, findings))
+                Err(refuse(error, uuid, findings))
             }
         }
     }
@@ -1485,6 +1527,34 @@ mod tests {
     use super::*;
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// PANIC-ABORT-HOSTILE-INPUT: a container whose opener panics is refused
+    /// as unreadable, with a skipped row naming the file, and the process
+    /// goes on. The panic comes from the opener handed in, because no real
+    /// container is known to make it panic.
+    #[cfg(all(feature = "vcon", feature = "native"))]
+    #[test]
+    fn a_container_whose_opener_panics_is_refused() -> Result<(), TestError> {
+        let before = crate::crash::contained_panics();
+        let got =
+            reader::rebuild_bytes_with(b"{}", "probe.vcon", |_| panic!("hostile container probe"));
+        let refused = got.err().ok_or("a panicking opener must refuse the file")?;
+        assert!(
+            matches!(
+                &refused.error,
+                ContainerError::Unreadable(m)
+                    if m.contains("the parser panicked: hostile container probe")
+            ),
+            "{}",
+            refused.error
+        );
+        assert_eq!(refused.skip.source, "probe.vcon");
+        assert!(
+            crate::crash::contained_panics() > before,
+            "the panic is counted"
+        );
+        Ok(())
+    }
 
     /// A missing key is `no_key`, apart from every other layer that did not
     /// open, because its remedy is the `--vcon-key` flag.

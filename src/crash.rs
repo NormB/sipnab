@@ -406,18 +406,21 @@ pub struct Contained {
 
 /// Run `f`, the parse of one unit of untrusted input, so that a panic inside
 /// it (sipnab's or a dependency's) comes back as `Err(Contained)` instead of
-/// ending the process. The panic hook sees the scope, counts the panic and
-/// returns, which lets the unwind reach this function. A panic outside any
-/// scope is still reported and ends the process.
+/// ending the process. The panic hook sees the scope and returns, which lets
+/// the unwind reach this function, and this function counts the panic. A
+/// panic outside any scope is still reported and ends the process.
 pub fn contain<T>(what: &'static str, f: impl FnOnce() -> T) -> Result<T, Contained> {
     // The depth is raised outside `catch_unwind`, so the hook, which runs
     // when the panic starts and before any unwinding, still sees the scope.
     let scope = ContainScope::enter();
     let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
     drop(scope);
-    out.map_err(|payload| Contained {
-        what,
-        message: panic_message(payload.as_ref()),
+    out.map_err(|payload| {
+        CONTAINED_PANICS.fetch_add(1, Ordering::Relaxed);
+        Contained {
+            what,
+            message: panic_message(payload.as_ref()),
+        }
     })
 }
 
@@ -543,11 +546,11 @@ fn hook_body(
     // Nothing in here may panic: a panic while processing a panic aborts
     // the process before any report can be written.
 
-    // A panic inside a `contain` scope is the scope's to handle: count it,
-    // say it once through the log (not stderr, which the TUI draws on) and
-    // return, so the unwind reaches the scope's `catch_unwind`.
+    // A panic inside a `contain` scope is the scope's to handle: say it once
+    // through the log (not stderr, which the TUI draws on) and return, so the
+    // unwind reaches the scope's `catch_unwind`. `contain` counts it, so the
+    // count does not depend on this hook being installed.
     if in_contained_scope() {
-        CONTAINED_PANICS.fetch_add(1, Ordering::Relaxed);
         let location = info
             .location()
             .map(|l| l.to_string())
@@ -1046,8 +1049,8 @@ mod tests {
     }
 
     /// A panic inside `contain` comes back to the caller as an error: the
-    /// hook counts it and returns, so no report is written and the process is
-    /// not ended.
+    /// hook logs it and returns, so no report is written and the process is
+    /// not ended, and `contain` counts it.
     #[test]
     fn a_contained_panic_is_an_error_and_ends_nothing() -> Result<(), TestError> {
         use std::sync::{Arc, Mutex};
@@ -1100,6 +1103,30 @@ mod tests {
             .filter(|c| c.contains("hostile input probe"))
             .count();
         assert_eq!(reports, 0, "a contained panic writes no crash report");
+        Ok(())
+    }
+
+    /// `contain` counts a panic it catches whether or not sipnab's hook is
+    /// installed. The count used to be taken in the hook, so a process that
+    /// caught panics without it, such as a test or a library caller,
+    /// reported none.
+    #[test]
+    fn contain_counts_a_panic_without_sipnabs_hook() -> Result<(), TestError> {
+        let _guard = HOOK_LOCK.lock()?;
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let before = contained_panics();
+        let joined = std::thread::Builder::new()
+            .name("contain-count-probe".into())
+            .spawn(|| contain("probe", || -> u32 { panic!("uncounted probe") }))?
+            .join();
+        std::panic::set_hook(prev);
+        let result = joined.map_err(|_| "the panic escaped the contain scope")?;
+        assert!(result.is_err(), "a panic inside contain must be an error");
+        assert!(
+            contained_panics() > before,
+            "contain counts the panic without sipnab's hook"
+        );
         Ok(())
     }
 

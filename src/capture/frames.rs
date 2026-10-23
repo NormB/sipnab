@@ -52,6 +52,17 @@ pub(crate) enum Frames<'a> {
     Mapped(Box<crate::capture::mapped::MappedPcap>),
 }
 
+/// Read one record so a panic in the reader becomes an error for this file
+/// instead of ending the process (PANIC-ABORT-HOSTILE-INPUT). `read` is passed
+/// in so a test can hand it one that panics: no real record is known to make
+/// either reader panic.
+fn contained_record(
+    read: impl FnOnce() -> Result<Option<crate::capture::mapped::MappedFrame>, anyhow::Error>,
+) -> Result<Option<crate::capture::mapped::MappedFrame>, anyhow::Error> {
+    crate::capture::contained("capture record", read)
+        .unwrap_or_else(|message| Err(anyhow::anyhow!("the record reader panicked: {message}")))
+}
+
 impl<'a> Frames<'a> {
     /// Block size frames are copied into on the libpcap arm, matching the
     /// mapped reader's own so both arms amortize allocation the same way.
@@ -143,7 +154,18 @@ impl<'a> Frames<'a> {
     }
 
     /// The next frame, `Ok(None)` at end of file.
+    ///
+    /// A panic while reading the record stops this file with an error, as a
+    /// broken record does, instead of ending the process
+    /// (PANIC-ABORT-HOSTILE-INPUT).
     pub(crate) fn next(
+        &mut self,
+    ) -> Result<Option<crate::capture::mapped::MappedFrame>, anyhow::Error> {
+        contained_record(|| self.next_record())
+    }
+
+    /// [`Self::next`] without the containment.
+    fn next_record(
         &mut self,
     ) -> Result<Option<crate::capture::mapped::MappedFrame>, anyhow::Error> {
         match self {
@@ -189,5 +211,36 @@ impl<'a> Frames<'a> {
                 Err(e) => Err(anyhow::Error::new(e)),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// PANIC-ABORT-HOSTILE-INPUT: a record reader that panics is an error for
+    /// this file, as a broken record is, and the process goes on. The panic
+    /// comes from the reader handed in, because no real record is known to
+    /// make either reader panic.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_record_reader_that_panics_is_an_error_for_the_file() -> Result<(), TestError> {
+        let before = crate::crash::contained_panics();
+        let err = contained_record(|| panic!("hostile record probe"))
+            .err()
+            .ok_or("a panicking reader must be an error")?;
+        assert!(
+            err.to_string()
+                .contains("the record reader panicked: hostile record probe"),
+            "{err}"
+        );
+        assert!(
+            crate::crash::contained_panics() > before,
+            "the panic is counted"
+        );
+        Ok(())
     }
 }

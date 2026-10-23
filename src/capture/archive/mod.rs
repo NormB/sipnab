@@ -1270,7 +1270,33 @@ impl<'l> Walker<'l> {
     }
 
     /// Identify one stream and unwrap it, recursing through every layer.
+    ///
+    /// A panic in a decoder, sipnab's or a dependency's, marks this stream
+    /// broken and stops the walk of the stream holding it, instead of ending
+    /// the process (PANIC-ABORT-HOSTILE-INPUT). Each member is its own scope,
+    /// because the walk recurses; a panic inside a 7z decoder itself, outside
+    /// any member, breaks that whole archive.
     fn walk(&mut self, src: &mut dyn Read, label: &str, layers: &[Layer], depth: usize) -> Flow {
+        match crate::capture::contained("archive member", || {
+            self.walk_inner(src, label, layers, depth)
+        }) {
+            Ok(flow) => flow,
+            Err(message) => {
+                let e = io::Error::other(format!("the decoder panicked: {message}"));
+                self.broken(label, &e);
+                Flow::Abort
+            }
+        }
+    }
+
+    /// [`Self::walk`] without the containment.
+    fn walk_inner(
+        &mut self,
+        src: &mut dyn Read,
+        label: &str,
+        layers: &[Layer],
+        depth: usize,
+    ) -> Flow {
         if !self.leads_to_wanted(label) {
             return Flow::Continue;
         }
@@ -2219,6 +2245,40 @@ mod tests {
         assert_eq!(flow, Flow::Continue);
         assert!(w.rejected);
         assert!(w.out.members.is_empty() && w.out.stops.is_empty());
+        Ok(())
+    }
+
+    /// PANIC-ABORT-HOSTILE-INPUT: a decoder that panics while a member is
+    /// read marks that stream broken and stops its walk, and the process goes
+    /// on. The panic comes from the reader, because no real archive is known
+    /// to make a decoder panic.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_member_whose_reader_panics_is_broken_not_fatal() -> Result<(), TestError> {
+        struct Panicking;
+        impl Read for Panicking {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                panic!("hostile member probe")
+            }
+        }
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let root = tmp.path().join("r");
+        let lim = limits();
+        let before = crate::crash::contained_panics();
+        let mut w = Walker::new(&lim, None, &root, "r");
+        assert_eq!(w.walk(&mut Panicking, "r/m", &[], 0), Flow::Abort);
+        let detail = match w.out.stops.as_slice() {
+            [Stop::Broken { container, detail }] if container == "r/m" => detail.clone(),
+            other => return Err(format!("expected one Broken stop for r/m: {other:?}").into()),
+        };
+        assert!(
+            detail.contains("the decoder panicked: hostile member probe"),
+            "{detail}"
+        );
+        assert!(
+            crate::crash::contained_panics() > before,
+            "the panic is counted"
+        );
         Ok(())
     }
 
