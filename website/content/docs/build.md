@@ -352,7 +352,7 @@ panic = "unwind"
 debug = "line-tables-only"
 ```
 
-Target binary size (musl, stripped): <= 20 MB. The release workflow measures
+Target binary size (musl, stripped): <= 23 MB. The release workflow measures
 each published musl binary and refuses to publish one larger than the
 `binary_size_ceiling_mb` value in
 [`website/config.toml`](https://github.com/NormB/sipnab/blob/main/website/config.toml).

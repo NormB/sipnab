@@ -25,10 +25,13 @@ entry that carries them.
   - [RUSTSEC-2026-0383](https://rustsec.org/advisories/RUSTSEC-2026-0383): `webpki-root-certs` 1.0.7 bundled the emSign roots of those intermediates. 1.0.10 closes it, in `Cargo.lock`.
   - [PYSEC-2026-4320](https://osv.dev/vulnerability/PYSEC-2026-4320) (GHSA-6q48-6c7w-9gw2): `certifi` 2026.7.22 bundled the same roots. `clients/python/requirements-examples.txt` is regenerated with the command its header names and now pins `certifi` 2026.10.19 and `charset-normalizer` 3.5.2; every pin is free of known advisories on osv.dev.
   - [GHSA-5r4p-p66f-jhc7](https://osv.dev/vulnerability/GHSA-5r4p-p66f-jhc7) (CVE-2026-109955): `hono` 4.13.9's `serveStatic` decoded the request path twice, which let a request bypass middleware on static paths. `clients/typescript/package-lock.json` now resolves `hono` 4.13.13.
+- **One dependency advanced past an advisory published on 2026-10-23.**
+  - [RUSTSEC-2026-0385](https://rustsec.org/advisories/RUSTSEC-2026-0385): `ctutils` 0.4.2 generated masks and compared `u128` values in time that depends on the values. It reaches sipnab through `digest`, under `hmac`, `pbkdf2` and `sha1`. 0.4.5 closes it, in `Cargo.lock` and `fuzz/Cargo.lock`.
 
 ### Changed
 
-- **Release builds unwind on a panic instead of aborting.** `[profile.release]` now sets `panic = "unwind"`, so `crash::contain` can catch a panic inside a parser of untrusted input and let the run go on. A panic outside such a scope still ends the process with a crash report, exit code 101 or a core dump per `[crash]`, as before. Measured on the musl release feature set, the binary grows by 16.97%, which stays under the published 20 MB ceiling; on a 516 MB capture the median run went from 2.05 s to 2.11 s. Plain `cargo bench` now builds without `--profile profiling`.
+- **Release builds unwind on a panic instead of aborting.** `[profile.release]` now sets `panic = "unwind"`, so `crash::contain` can catch a panic inside a parser of untrusted input and let the run go on. A panic outside such a scope still ends the process with a crash report, exit code 101 or a core dump per `[crash]`, as before. The published x86_64-musl binary grows by 2,969,664 bytes (15.1%), to 22,685,568; on a 516 MB capture the median run went from 2.05 s to 2.11 s. Plain `cargo bench` now builds without `--profile profiling`.
+- **The published binary size ceiling is 23 MB, up from 20 MB.** The unwind tables above put the x86_64-musl binary over 20 MB. The homepage, [Install](docs/install.md) and the build page now state 23 MB, and the record behind it is in `website/config.toml`.
 
 ## [0.5.227] - 2026-10-19
 
