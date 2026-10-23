@@ -284,7 +284,16 @@ macos_floor_intel = "10.12"
 # from 0.5.210 to 0.5.226 the binary grew 1,065,856 bytes over sixteen releases.
 # 20 MB leaves 1,263,808 bytes over 0.5.226.
 #
-binary_size_ceiling_mb = "20"
+# 20 -> 23 before 0.5.228. [profile.release] moved from panic = "abort" to
+# panic = "unwind" so `crash::contain` can catch a parser's panic (#534), and
+# unwinding carries landing pads and unwind tables in every function. The
+# first v0.5.228 Release run measured its x86_64-musl binary at 22,685,568
+# bytes, 2,969,664 (15.1%) over 0.5.227 and 1,714,688 over the 20 MB ceiling,
+# so that run published no release. 23 MB leaves 1,431,808 bytes over that
+# measurement.
+#   pending  +2,969,664 bytes  against 0.5.227: panic = "unwind", measured by the first v0.5.228 Release run (x86_64-musl)
+#
+binary_size_ceiling_mb = "23"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were

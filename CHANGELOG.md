@@ -28,7 +28,8 @@ entry that carries them.
 
 ### Changed
 
-- **Release builds unwind on a panic instead of aborting.** `[profile.release]` now sets `panic = "unwind"`, so `crash::contain` can catch a panic inside a parser of untrusted input and let the run go on. A panic outside such a scope still ends the process with a crash report, exit code 101 or a core dump per `[crash]`, as before. Measured on the musl release feature set, the binary grows by 16.97%, which stays under the published 20 MB ceiling; on a 516 MB capture the median run went from 2.05 s to 2.11 s. Plain `cargo bench` now builds without `--profile profiling`.
+- **Release builds unwind on a panic instead of aborting.** `[profile.release]` now sets `panic = "unwind"`, so `crash::contain` can catch a panic inside a parser of untrusted input and let the run go on. A panic outside such a scope still ends the process with a crash report, exit code 101 or a core dump per `[crash]`, as before. The published x86_64-musl binary grows by 2,969,664 bytes (15.1%), to 22,685,568; on a 516 MB capture the median run went from 2.05 s to 2.11 s. Plain `cargo bench` now builds without `--profile profiling`.
+- **The published binary size ceiling is 23 MB, up from 20 MB.** The unwind tables above put the x86_64-musl binary over 20 MB. The homepage, [Install](docs/install.md) and the build page now state 23 MB, and the record behind it is in `website/config.toml`.
 
 ## [0.5.227] - 2026-10-19
 

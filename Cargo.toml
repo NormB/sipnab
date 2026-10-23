@@ -472,8 +472,10 @@ debug = "line-tables-only"
 # `panic = "unwind"`: `crash::contain` catches a panic in a parser of
 # untrusted input only when it unwinds back to it. Outside a contained scope
 # the panic hook still ends the process (src/crash.rs). Measured 2026-10-23 on
-# the musl release feature set: +16.97% binary size; on a 516 MB capture,
-# median 2.05 s -> 2.11 s. tests/config_wiring_test.rs holds the setting.
+# the musl release feature set for aarch64: +16.97% binary size; on a 516 MB
+# capture, median 2.05 s -> 2.11 s. The published x86_64-musl binary grew
+# 2,969,664 bytes (15.1%), the record above `binary_size_ceiling_mb` in
+# website/config.toml. tests/config_wiring_test.rs holds the setting.
 [profile.release]
 lto = true
 codegen-units = 1

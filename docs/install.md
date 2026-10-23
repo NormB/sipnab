@@ -835,7 +835,7 @@ panic = "unwind"
 debug = "line-tables-only"
 ```
 
-Target binary size (musl, stripped): <= 20 MB. The release workflow checks the 20 MB ceiling
+Target binary size (musl, stripped): <= 23 MB. The release workflow checks the 23 MB ceiling
 against each published musl binary and refuses to publish a larger one.
 
 A local `cargo build --release` strips the line tables at link time, so your
