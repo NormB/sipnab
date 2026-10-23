@@ -129,16 +129,11 @@ const REPORT_CREATE_ATTEMPTS: u32 = 8;
 /// is refused rather than followed onto a victim file a hostile
 /// co-tenant chose (CWE-59, CWE-377). On non-Unix the exclusive create
 /// alone is used.
+///
+/// The same new-only open every MCP writer uses
+/// ([`crate::new_file::open_for_write`]), here with owner-only permissions.
 fn open_new_report_file(path: &Path) -> std::io::Result<std::fs::File> {
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-        opts.custom_flags(libc::O_NOFOLLOW);
-    }
-    opts.open(path)
+    crate::new_file::open_for_write(path, crate::new_file::CreateMode::NewOnly, 0o600)
 }
 
 /// Create `dir` (and parents) if missing, restricting a freshly created

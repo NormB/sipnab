@@ -121,6 +121,16 @@ The overwrite refusal covers any name already taken in the root
 staged in the root for `open_capture`, or an earlier export, could disappear
 under a name collision on a call that reported success.
 
+That check answers with a clear refusal, but it is not what holds the line:
+a file or link can appear at the name between the check and the open. Every
+MCP writer therefore opens with `crate::new_file::open_for_write` and
+`CreateMode::NewOnly`, one `O_CREAT | O_EXCL` open that never truncates and
+never follows a link at the name. `PcapWriter` carries the mode in its
+options and keeps it for rotation. The command line and the TUI pass
+`Replace`, because their path is one the operator chose. A unit test in that
+module fails when production code under `src/mcp` creates or truncates a
+file any other way.
+
 ### `security_findings.kinds` refusal
 
 `security_findings.kinds` used to accept any string and match nothing, so a

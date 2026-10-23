@@ -662,6 +662,7 @@ fn an_exported_pcapng_carries_its_own_synthesis_caveat() -> Result<(), TestError
             export_mode: PcapExportMode::Raw,
             interface: None,
             provenance: Some(note.to_string()),
+            create: sipnab::new_file::CreateMode::Replace,
         },
     )?;
     w.finish()?;
@@ -688,6 +689,7 @@ fn an_exported_pcapng_carries_its_own_synthesis_caveat() -> Result<(), TestError
             export_mode: PcapExportMode::Raw,
             interface: None,
             provenance: None,
+            create: sipnab::new_file::CreateMode::Replace,
         },
     )?;
     w2.finish()?;

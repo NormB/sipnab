@@ -351,6 +351,7 @@ pub mod llmnr;
 pub mod lru;
 pub mod names;
 pub mod net;
+pub mod new_file;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pipeline;
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]

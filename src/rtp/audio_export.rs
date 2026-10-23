@@ -188,8 +188,25 @@ fn retention_clauses(loss: &RetentionLoss) -> String {
 ///
 /// Returns an error if no exportable streams are found.
 pub fn export_dialog_to_wav(streams: &[&RtpStream], path: &Path) -> Result<String> {
+    export_dialog_to_wav_with(streams, path, crate::new_file::CreateMode::Replace)
+}
+
+/// [`export_dialog_to_wav`], opening the file as `mode` says. MCP passes
+/// `NewOnly`: its path is one a remote caller named.
+///
+/// # Errors
+///
+/// As [`export_dialog_to_wav`], and the open's error when `mode` refuses the
+/// path.
+pub fn export_dialog_to_wav_with(
+    streams: &[&RtpStream],
+    path: &Path,
+    mode: crate::new_file::CreateMode,
+) -> Result<String> {
+    use std::io::Write;
     let audio = decode_dialog_audio(streams)?;
-    std::fs::write(path, &audio.wav)
+    crate::new_file::open_for_write(path, mode, 0o666)
+        .and_then(|mut file| file.write_all(&audio.wav))
         .with_context(|| format!("Failed to create WAV file: {}", path.display()))?;
 
     // `audio.partial` again, not the clauses re-listed. Building the summary
@@ -2433,6 +2450,38 @@ mod tests {
         let result = export_dialog_to_wav(&[&stream], &path)?;
 
         assert!(result.contains("mu-law"));
+        Ok(())
+    }
+
+    /// MCP-WRITE-TOCTOU: MCP's `export_audio` opens its file new-only, so a
+    /// file or link that appeared at the name after the caller's check is
+    /// refused rather than truncated or written through.
+    #[test]
+    fn a_new_only_wav_export_refuses_an_existing_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("dialog.wav");
+        std::fs::write(&path, b"the only copy")?;
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        let refused =
+            export_dialog_to_wav_with(&[&stream], &path, crate::new_file::CreateMode::NewOnly);
+        assert!(refused.is_err(), "an existing file is refused");
+        assert_eq!(std::fs::read(&path)?, b"the only copy");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_only_wav_export_refuses_a_link() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"keep")?;
+        let link = dir.path().join("dialog.wav");
+        std::os::unix::fs::symlink(&victim, &link)?;
+        let stream = make_stream(Some("PCMU"), vec![(0, vec![0xFF; 160])])?;
+        let refused =
+            export_dialog_to_wav_with(&[&stream], &link, crate::new_file::CreateMode::NewOnly);
+        assert!(refused.is_err(), "a link is refused");
+        assert_eq!(std::fs::read(&victim)?, b"keep");
         Ok(())
     }
 

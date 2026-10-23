@@ -100,9 +100,9 @@ struct RawPcapWriter {
 impl RawPcapWriter {
     /// Create the file and write the canonical little-endian global header
     /// (magic `d4c3b2a1`, version 2.4, microsecond timestamps).
-    fn create(path: &Path, link_type: i32) -> Result<Self> {
+    fn create(path: &Path, link_type: i32, mode: crate::new_file::CreateMode) -> Result<Self> {
         use std::io::Write;
-        let file = std::fs::File::create(path)
+        let file = crate::new_file::open_for_write(path, mode, 0o666)
             .with_context(|| format!("Failed to create output file '{}'", path.display()))?;
         let mut out = BufWriter::with_capacity(RAW_PCAP_BUF_BYTES, file);
         let mut header = [0u8; 24];
@@ -168,6 +168,10 @@ pub struct PcapWriterOptions<'a> {
     pub interface: Option<&'a str>,
     /// A note for the pcapng section comment saying how the file was made.
     pub provenance: Option<String>,
+    /// How the file is opened: replacing what is there (a path the operator
+    /// chose) or creating only a new file (a path a remote caller named).
+    /// Rotation opens each split file the same way.
+    pub create: crate::new_file::CreateMode,
 }
 
 /// Pcap output writer with optional file rotation.
@@ -215,6 +219,9 @@ pub struct PcapWriter {
     /// a split file that lost the note would be the artifact most likely to
     /// travel alone. See [`PcapWriter::with_provenance`].
     provenance: Option<String>,
+    /// How each file is opened, the first and every rotated one. See
+    /// [`PcapWriterOptions::create`].
+    create: crate::new_file::CreateMode,
     /// pcapng interface table: index = the `interface_id` stamped on EPBs.
     /// An entry is appended (with an IDB written just before the packet's
     /// own block) the first time a packet arrives from a not-yet-seen
@@ -338,6 +345,7 @@ impl PcapWriter {
                 export_mode,
                 interface,
                 provenance: None,
+                create: crate::new_file::CreateMode::Replace,
             },
         )
     }
@@ -376,6 +384,7 @@ impl PcapWriter {
             export_mode,
             interface,
             provenance,
+            create,
         } = options;
         // M5: Warn on path traversal components
         if path
@@ -399,10 +408,10 @@ impl PcapWriter {
         // counts the SHB + IDB header bytes so rotation fires at the real
         // file size.
         let (backend, header_bytes) = if pcapng {
-            create_pcapng_backend(path, &interfaces, provenance.as_deref())?
+            create_pcapng_backend(path, &interfaces, provenance.as_deref(), create)?
         } else {
             (
-                WriterBackend::Pcap(RawPcapWriter::create(path, link_type)?),
+                WriterBackend::Pcap(RawPcapWriter::create(path, link_type, create)?),
                 0,
             )
         };
@@ -431,6 +440,7 @@ impl PcapWriter {
             export_mode,
             dsb_written: false,
             provenance,
+            create,
             truncated_written: 0,
             next_truncation_warn: 1,
             interfaces,
@@ -984,10 +994,19 @@ impl PcapWriter {
 
         // Drop the old backend (flushes and closes) by replacing it
         let (backend, header_bytes) = if self.use_pcapng {
-            create_pcapng_backend(&new_path, &self.interfaces, self.provenance.as_deref())?
+            create_pcapng_backend(
+                &new_path,
+                &self.interfaces,
+                self.provenance.as_deref(),
+                self.create,
+            )?
         } else {
             (
-                WriterBackend::Pcap(RawPcapWriter::create(&new_path, self.link_type_raw)?),
+                WriterBackend::Pcap(RawPcapWriter::create(
+                    &new_path,
+                    self.link_type_raw,
+                    self.create,
+                )?),
                 0,
             )
         };
@@ -1108,8 +1127,9 @@ fn create_pcapng_backend(
     path: &Path,
     interfaces: &[InterfaceEntry],
     provenance: Option<&str>,
+    mode: crate::new_file::CreateMode,
 ) -> Result<(WriterBackend, u64)> {
-    let file = std::fs::File::create(path)
+    let file = crate::new_file::open_for_write(path, mode, 0o666)
         .with_context(|| format!("Failed to create output file '{}'", path.display()))?;
     let buf_writer = BufWriter::new(file);
 
@@ -3492,7 +3512,7 @@ mod raw_pcap_writer_tests {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("hdr.pcap");
         {
-            let mut w = RawPcapWriter::create(&path, 1)?;
+            let mut w = RawPcapWriter::create(&path, 1, crate::new_file::CreateMode::Replace)?;
             w.flush()?;
         }
         let bytes = std::fs::read(&path)?;
@@ -3559,7 +3579,11 @@ mod raw_pcap_writer_tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn raw_writer_write_errors_are_not_silent() -> Result<(), TestError> {
-        let mut w = RawPcapWriter::create(Path::new("/dev/full"), 1)?;
+        let mut w = RawPcapWriter::create(
+            Path::new("/dev/full"),
+            1,
+            crate::new_file::CreateMode::Replace,
+        )?;
         let mut result = Ok(());
         for _ in 0..10_000 {
             if let Err(e) = w.write_record(1, 0, 0xFFFF_usize, &[0u8; 4096][..]) {
@@ -3571,6 +3595,102 @@ mod raw_pcap_writer_tests {
             result = w.flush();
         }
         assert!(result.is_err(), "write/flush to a full device must error");
+        Ok(())
+    }
+
+    fn options(pcapng: bool, create: crate::new_file::CreateMode) -> PcapWriterOptions<'static> {
+        PcapWriterOptions {
+            max_file_bytes: None,
+            max_file_duration: None,
+            pcapng,
+            export_mode: PcapExportMode::Raw,
+            interface: None,
+            provenance: None,
+            create,
+        }
+    }
+
+    // MCP-WRITE-TOCTOU: a writer opened for a path a remote caller named
+    // must not follow a link or truncate a file that appeared at that name
+    // after the caller's name check.
+
+    #[cfg(unix)]
+    #[test]
+    fn a_new_only_writer_refuses_a_link_in_both_formats() -> Result<(), TestError> {
+        for pcapng in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let victim = dir.path().join("victim");
+            std::fs::write(&victim, b"keep")?;
+            let link = dir.path().join("out.pcap");
+            std::os::unix::fs::symlink(&victim, &link)?;
+            let opened = PcapWriter::with_provenance(
+                &link,
+                1,
+                options(pcapng, crate::new_file::CreateMode::NewOnly),
+            );
+            assert!(opened.is_err(), "pcapng={pcapng}: a link is refused");
+            assert_eq!(std::fs::read(&victim)?, b"keep", "pcapng={pcapng}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_new_only_writer_refuses_an_existing_file_in_both_formats() -> Result<(), TestError> {
+        for pcapng in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcap");
+            std::fs::write(&path, b"the only copy")?;
+            let opened = PcapWriter::with_provenance(
+                &path,
+                1,
+                options(pcapng, crate::new_file::CreateMode::NewOnly),
+            );
+            assert!(
+                opened.is_err(),
+                "pcapng={pcapng}: an existing file is refused"
+            );
+            assert_eq!(std::fs::read(&path)?, b"the only copy", "pcapng={pcapng}");
+        }
+        Ok(())
+    }
+
+    /// Rotation opens each split file the way the first one was opened.
+    #[test]
+    fn a_new_only_writer_rotates_onto_new_files_only() -> Result<(), TestError> {
+        for pcapng in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let base = dir.path().join("out.pcap");
+            let mut writer = PcapWriter::with_provenance(
+                &base,
+                1,
+                options(pcapng, crate::new_file::CreateMode::NewOnly),
+            )?;
+            let next = rotated_path(&base, 1);
+            std::fs::write(&next, b"the only copy")?;
+            assert!(
+                writer.rotate().is_err(),
+                "pcapng={pcapng}: the split name is taken"
+            );
+            assert_eq!(std::fs::read(&next)?, b"the only copy", "pcapng={pcapng}");
+        }
+        Ok(())
+    }
+
+    /// The command line's `-O` keeps replacing the file the operator named.
+    #[test]
+    fn a_replace_writer_still_replaces_an_existing_file() -> Result<(), TestError> {
+        for pcapng in [false, true] {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("out.pcap");
+            std::fs::write(&path, b"old contents")?;
+            let writer = PcapWriter::with_provenance(
+                &path,
+                1,
+                options(pcapng, crate::new_file::CreateMode::Replace),
+            )?;
+            drop(writer);
+            assert_ne!(std::fs::read(&path)?, b"old contents", "pcapng={pcapng}");
+        }
         Ok(())
     }
 }

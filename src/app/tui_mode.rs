@@ -1414,6 +1414,7 @@ impl TuiOutput {
                     export_mode: self.mode,
                     interface: self.capture_source.as_deref(),
                     provenance: section_note,
+                    create: crate::new_file::CreateMode::Replace,
                 },
             )
             .map(|w| w.keep_last_splits(self.split.2))

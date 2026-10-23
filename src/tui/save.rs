@@ -149,6 +149,7 @@ pub(super) fn save_to_pcap_path(app: &App, path_str: &str, pcapng: bool) -> Stri
             export_mode: crate::capture::PcapExportMode::Raw,
             interface: None,
             provenance: Some(provenance),
+            create: crate::new_file::CreateMode::Replace,
         },
     ) {
         Ok(w) => w,

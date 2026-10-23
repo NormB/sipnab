@@ -328,6 +328,7 @@ pub fn write_annotated_copy(
                 notes.len(),
                 crate::capture::archive::is_decrypted_member(input),
             )),
+            create: crate::new_file::CreateMode::Replace,
         },
     )
     .map_err(|e| CopyError::Write(format!("{e:#}")))?;
