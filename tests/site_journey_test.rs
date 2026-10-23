@@ -6341,7 +6341,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // self-hosted runners. Attributed by measurement: with origin/main's
     // ci.yml swapped back in, the scan reads 204; with origin/main's
     // quality.yml it still reads 205.
-    const EXPECTED_REFERENCES: usize = 205;
+    // 205 -> 206: the advertisement step's comment in
+    // `.github/workflows/cert-expiry.yml` names
+    // `scripts/verify-site-advertises.sh`, the script the release flow runs
+    // after the deploy. Measurement: with HEAD's cert-expiry.yml swapped back
+    // in, the scan reads 205.
+    const EXPECTED_REFERENCES: usize = 206;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

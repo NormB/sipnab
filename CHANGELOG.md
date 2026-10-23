@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The daily site watcher no longer checks the live page on a push.** `cert-expiry.yml` also runs on a push that changes `website/config.toml`, and its last step asked sipnab.com to name `published_version`. On the push that moves `published_version` the page cannot name it yet, because the deploy follows the merge, so that step was red on every such push; earlier ones passed only because the CDN refused the check, which the step reports as a warning. The step now runs on the schedule and a manual run. The certificate and CNAME checks still run on every push.
+
 ## [0.5.228] - 2026-10-23
 
 ### Security
