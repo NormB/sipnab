@@ -13,6 +13,7 @@ entry that carries them.
 ### Fixed
 
 - **The daily site watcher no longer checks the live page on a push.** `cert-expiry.yml` also runs on a push that changes `website/config.toml`, and its last step asked sipnab.com to name `published_version`. On the push that moves `published_version` the page cannot name it yet, because the deploy follows the merge, so that step was red on every such push; earlier ones passed only because the CDN refused the check, which the step reports as a warning. The step now runs on the schedule and a manual run. The certificate and CNAME checks still run on every push.
+- **The Docker workflow compiles sipnab once per run, not twice.** It builds the image for the smoke test and the scan, then builds again to push. Between the two, the scan wrote the Trivy database cache and `trivy.sarif` into the checkout, and neither was in `.dockerignore`, so the push build's `COPY . .` saw a new build context and compiled sipnab again, about 13 minutes each time. Runs took 19 to 27 minutes against a 30-minute timeout, and on 2026-10-23 three of them were canceled. `.dockerignore` now leaves both out, and `tests/docker_build_context_test.rs` reads the paths from the workflow.
 
 ## [0.5.228] - 2026-10-23
 

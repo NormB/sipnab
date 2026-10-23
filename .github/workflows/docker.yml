@@ -26,7 +26,10 @@ env:
 jobs:
   docker:
     # Bounds a wedged job: an unbounded one holds its
-    # concurrency group indefinitely. Observed: 7.7 min.
+    # concurrency group indefinitely. Measured 2026-10-23, while the push
+    # build still recompiled sipnab: the smoke build took 793 s, the push build
+    # 805 s, and whole runs 19 to 27 min, three of them over this bound. The
+    # push build now reuses the smoke build's layers (see .dockerignore).
     timeout-minutes: 30
     runs-on: ubuntu-latest
     # A job-level block REPLACES the workflow-level one, so `contents: read`

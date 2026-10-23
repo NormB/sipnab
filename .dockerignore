@@ -5,6 +5,14 @@ target/
 fuzz/corpus/
 fuzz/artifacts/
 
+# What docker.yml's scan writes into the checkout between its smoke build and
+# its push build: the Trivy DB cache and the SARIF report. In the context they
+# changed what the builder's `COPY . .` copied, so the push build compiled
+# sipnab a second time and the job ran into its timeout.
+# tests/docker_build_context_test.rs reads these paths from the workflow.
+.cache/
+trivy.sarif
+
 # Except the fuzz seeds. `.clusterfuzzlite/Dockerfile` copies this checkout
 # into the OSS-Fuzz builder image, and the build script packs
 # `fuzz/corpus/<target>/` into the seed archives libFuzzer starts from. The
