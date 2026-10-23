@@ -3000,8 +3000,8 @@ The background thread that polls the relay for statistics stopped with an intern
 
 When the TUI closed, sipnab found that the rtpengine reconciler thread had ended with a panic (an internal failure). That thread matches the media relay's view of calls with the sipnab view.
 
-- Release builds use `panic = "abort"`. That ends the whole process at the panic.
-- So this line appears only in builds that unwind on panic.
+- sipnab's panic hook ends the whole process at the panic, with exit code 101 or a core dump.
+- So this line appears only in a build or test that runs without that hook.
 
 **What to do:** This is an internal failure in sipnab, not a setting. Report it with the command line you used and the log output.
 
@@ -4700,8 +4700,8 @@ sipnab lacks the permission to open the capture device. `{}` names the interface
 When the TUI closed, sipnab found that the packet-processing thread had ended with a panic (an internal failure).
 
 - `{}` is the panic message. Or it is `<non-string panic payload>` when the panic carried no text.
-- Release builds use `panic = "abort"`. That ends the whole process at the panic.
-- So this line appears only in builds that unwind on panic.
+- sipnab's panic hook ends the whole process at the panic, with exit code 101 or a core dump.
+- So this line appears only in a build or test that runs without that hook.
 
 **What to do:** This is an internal failure in sipnab, not a setting. Report it with the command line you used and the log output.
 

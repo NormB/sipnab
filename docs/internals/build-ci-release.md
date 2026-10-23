@@ -1212,11 +1212,10 @@ Three decisions come out of those numbers.
 - An optimized profile rather than dev.
   - 8.8 GB of packets makes the parsers the entire workload.
   - The dev profile pays 460 s of run time on *every* push without ever amortizing anything.
-- An unwinding profile rather than `release`.
-  - `[profile.release]` sets `panic = "abort"`.
-  - An aborting test process dies before the test harness prints its `failures:` list.
+- An unwinding profile, as `release` is too.
+  - An aborting test process would die before the test harness prints its `failures:` list.
   - So the gate would block a push and then fail to name what broke.
-  - `[profile.corpus]` inherits release and restores `panic = "unwind"`.
+  - `[profile.corpus]` inherits release and states `panic = "unwind"` itself.
 
 That also settles the question of a subset.
 

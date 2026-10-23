@@ -250,8 +250,8 @@ Short version:
     still run as tasks on a shared runtime thread ([`src/app/servers.rs`](../../src/app/servers.rs)).
     - They share one address space with the parsers, the stores, TLS key material and bearer tokens.
     - Treat the API bind address and key accordingly.
-    - Note that `panic = "abort"`
-      (`Cargo.toml:480`) means a panic on any thread ends the whole process.
+    - Outside a `crash::contain` scope, the panic hook ends the whole process
+      on a panic on any thread ([`src/crash.rs`](../../src/crash.rs)).
       So threads buy no fault containment either.
   - [`docs/design/process-isolation-and-hot-path-cost.md`](../design/process-isolation-and-hot-path-cost.md)
     analyzes whether to close the rest of this gap, and why most of it should stay open.

@@ -12689,7 +12689,8 @@ Claude Code or Claude Desktop, start with [MCP server](mcp.md).
 ## Release profile
 
 The release build uses LTO, a single codegen unit, and symbol stripping for a
-small binary. It also aborts on panic rather than unwinding. It compiles
+small binary. It unwinds on panic, so sipnab can contain a panic in a
+parser of untrusted input instead of ending the process. It compiles
 line-table debug info:
 
 ```toml
@@ -12697,7 +12698,7 @@ line-table debug info:
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+panic = "unwind"
 debug = "line-tables-only"
 ```
 
@@ -22818,8 +22819,8 @@ The background thread that polls the relay for statistics stopped with an intern
 
 When the TUI closed, sipnab found that the rtpengine reconciler thread had ended with a panic (an internal failure). That thread matches the media relay's view of calls with the sipnab view.
 
-- Release builds use `panic = "abort"`. That ends the whole process at the panic.
-- So this line appears only in builds that unwind on panic.
+- sipnab's panic hook ends the whole process at the panic, with exit code 101 or a core dump.
+- So this line appears only in a build or test that runs without that hook.
 
 **What to do:** This is an internal failure in sipnab, not a setting. Report it with the command line you used and the log output.
 
@@ -24518,8 +24519,8 @@ sipnab lacks the permission to open the capture device. `{}` names the interface
 When the TUI closed, sipnab found that the packet-processing thread had ended with a panic (an internal failure).
 
 - `{}` is the panic message. Or it is `<non-string panic payload>` when the panic carried no text.
-- Release builds use `panic = "abort"`. That ends the whole process at the panic.
-- So this line appears only in builds that unwind on panic.
+- sipnab's panic hook ends the whole process at the panic, with exit code 101 or a core dump.
+- So this line appears only in a build or test that runs without that hook.
 
 **What to do:** This is an internal failure in sipnab, not a setting. Report it with the command line you used and the log output.
 
@@ -63473,14 +63474,9 @@ cargo +nightly fuzz run fuzz_sip_parser fuzz/corpus/sip_parser
 cargo bench --profile profiling
 ```
 
-Pass `--profile profiling` every time, not as an option. Plain `cargo bench`
-cannot build:
-
-- The wasm `cdylib` crate-type forces the lib dependency unit onto
-  `profile.release`'s `panic = "abort"`.
-- But bench harness units must unwind.
-- So cargo compiles shared deps twice with incompatible type identities.
-- See the `[lib]` notes in `Cargo.toml`.
+Plain `cargo bench` builds: the release profile and the bench units both
+unwind. `--profile profiling` adds full symbols, for running a benchmark
+under a profiler.
 
 The profiling profile is release codegen with `panic = "unwind"`.
 
@@ -66358,14 +66354,11 @@ What the script does that a reader of the user page does not need to:
 - `-q` lowers the default in CLI mode.
 - Configured by [`init_logging()`](../../src/app/bootstrap.rs).
 
-**Benches.** `cargo bench --profile profiling`.
+**Benches.** `cargo bench`.
 
-- Plain `cargo bench` *cannot build*.
-  - The `cdylib` crate type needed for the WASM build forces
-    `panic = "abort"` into the lib unit.
-  - Bench units build with unwind.
-  - So shared dependencies get built twice with incompatible panic strategies.
-  - They fail to unify.
+- The release profile unwinds, as bench units do, so the `cdylib` crate type
+  needed for the WASM build and the benches share one panic strategy.
+- `--profile profiling` adds full symbols, for a profiler.
 - The `profiling` profile is release codegen with `panic = "unwind"` and
   debug symbols kept.
   - That is also what callgrind wants.
@@ -68186,11 +68179,10 @@ Three decisions come out of those numbers.
 - An optimized profile rather than dev.
   - 8.8 GB of packets makes the parsers the entire workload.
   - The dev profile pays 460 s of run time on *every* push without ever amortizing anything.
-- An unwinding profile rather than `release`.
-  - `[profile.release]` sets `panic = "abort"`.
-  - An aborting test process dies before the test harness prints its `failures:` list.
+- An unwinding profile, as `release` is too.
+  - An aborting test process would die before the test harness prints its `failures:` list.
   - So the gate would block a push and then fail to name what broke.
-  - `[profile.corpus]` inherits release and restores `panic = "unwind"`.
+  - `[profile.corpus]` inherits release and states `panic = "unwind"` itself.
 
 That also settles the question of a subset.
 
@@ -74391,8 +74383,8 @@ Short version:
     still run as tasks on a shared runtime thread ([`src/app/servers.rs`](../../src/app/servers.rs)).
     - They share one address space with the parsers, the stores, TLS key material and bearer tokens.
     - Treat the API bind address and key accordingly.
-    - Note that `panic = "abort"`
-      (`Cargo.toml:480`) means a panic on any thread ends the whole process.
+    - Outside a `crash::contain` scope, the panic hook ends the whole process
+      on a panic on any thread ([`src/crash.rs`](../../src/crash.rs)).
       So threads buy no fault containment either.
   - [`docs/design/process-isolation-and-hot-path-cost.md`](../design/process-isolation-and-hot-path-cost.md)
     analyzes whether to close the rest of this gap, and why most of it should stay open.

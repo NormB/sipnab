@@ -254,8 +254,9 @@ macos_floor_intel = "10.12"
 #
 # Shrinking was considered and rejected again, for the reason it was rejected
 # at 0.5.139: `[profile.release]` already runs `lto`, `codegen-units = 1`,
-# `strip` and `panic = "abort"`, and the only lever left is `opt-level = "z"`,
-# which trades the throughput the benchmarks page publishes. Raising a claim
+# and `strip`. `panic = "abort"` would save about 17% but stops
+# `crash::contain` catching a parser's panic, and the only other lever is
+# `opt-level = "z"`, which trades the throughput the benchmarks page publishes. Raising a claim
 # that is no longer true beats keeping a claim that is.
 #
 # 17 -> 18 after 0.5.188, the first move made for growth measured before any

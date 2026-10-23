@@ -822,7 +822,8 @@ Claude Code or Claude Desktop, start with [MCP server](mcp.md).
 ## Release profile
 
 The release build uses LTO, a single codegen unit, and symbol stripping for a
-small binary. It also aborts on panic rather than unwinding. It compiles
+small binary. It unwinds on panic, so sipnab can contain a panic in a
+parser of untrusted input instead of ending the process. It compiles
 line-table debug info:
 
 ```toml
@@ -830,7 +831,7 @@ line-table debug info:
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+panic = "unwind"
 debug = "line-tables-only"
 ```
 

@@ -101,11 +101,11 @@ four things. Three of them do not hold here.
 
 ### 2a. Fault isolation — the argument is real, but bigger than it looks
 
-`[profile.release]` sets `panic = "abort"`
-([`Cargo.toml:262`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L262)), confirmed by
-[`src/crash.rs:6`](https://github.com/NormB/sipnab/blob/main/src/crash.rs#L6). **A panic on any thread aborts the whole
+Outside a `crash::contain` scope, the panic hook ends the whole process
+([`src/crash.rs`](https://github.com/NormB/sipnab/blob/main/src/crash.rs)). **A panic on any thread outside such a scope ends the whole
 process.** Threads therefore provide *zero* panic containment in a release
-build. A parser bug reached from a crafted packet does not kill a worker; it
+build; `crash::contain`, which needs the release profile's `panic = "unwind"`,
+is the one containment. A parser bug reached from a crafted packet does not kill a worker; it
 kills the capture, the servers, and the evidence.
 
 That is a genuine point in favor of processes. It is also a threat the project

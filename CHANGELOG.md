@@ -26,6 +26,10 @@ entry that carries them.
   - [PYSEC-2026-4320](https://osv.dev/vulnerability/PYSEC-2026-4320) (GHSA-6q48-6c7w-9gw2): `certifi` 2026.7.22 bundled the same roots. `clients/python/requirements-examples.txt` is regenerated with the command its header names and now pins `certifi` 2026.10.19 and `charset-normalizer` 3.5.2; every pin is free of known advisories on osv.dev.
   - [GHSA-5r4p-p66f-jhc7](https://osv.dev/vulnerability/GHSA-5r4p-p66f-jhc7) (CVE-2026-109955): `hono` 4.13.9's `serveStatic` decoded the request path twice, which let a request bypass middleware on static paths. `clients/typescript/package-lock.json` now resolves `hono` 4.13.13.
 
+### Changed
+
+- **Release builds unwind on a panic instead of aborting.** `[profile.release]` now sets `panic = "unwind"`, so `crash::contain` can catch a panic inside a parser of untrusted input and let the run go on. A panic outside such a scope still ends the process with a crash report, exit code 101 or a core dump per `[crash]`, as before. Measured on the musl release feature set, the binary grows by 16.97%, which stays under the published 20 MB ceiling; on a 516 MB capture the median run went from 2.05 s to 2.11 s. Plain `cargo bench` now builds without `--profile profiling`.
+
 ## [0.5.227] - 2026-10-19
 
 ### Added
