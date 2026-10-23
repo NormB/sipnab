@@ -895,7 +895,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // `tests/fixtures/rtpengine-ng-hep.pcap`, each linked.
     // 726 -> 727: docs/internals/mcp.md links src/capture/output_guard.rs
     // for `confine_bare_name`, the file-root rule MCP and REST share.
-    const EXPECTED_CODE_LINKS: usize = 727;
+    // 727 -> 728: docs/internals/code-map.md links src/crash.rs where it says
+    // the panic hook ends the process outside a `crash::contain` scope.
+    const EXPECTED_CODE_LINKS: usize = 728;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

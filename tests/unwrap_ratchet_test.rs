@@ -30,7 +30,11 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     ("fuzz", 0, 0, 0),
     // ops/memcheck/leak_probe.rs, the memcheck workflow's leak probe: none.
     ("ops", 0, 0, 0),
-    ("src", 5, 3, 7),
+    // src panic 7 -> 10: the three `panic!` probes in src/crash.rs tests that
+    // `crash::contain` exists to catch (a contained panic, then one that
+    // escapes after it). A panic is the input under test there, not error
+    // handling, so it cannot become `?`.
+    ("src", 5, 3, 10),
     ("tests", 0, 0, 2),
 ];
 

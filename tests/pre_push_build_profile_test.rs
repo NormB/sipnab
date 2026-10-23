@@ -97,6 +97,6 @@ fn the_corpus_gate_profile_skips_full_lto() -> Result<(), TestError> {
 fn the_profile_reader_finds_the_release_profile() -> Result<(), TestError> {
     let release = profile_table("release")?;
     assert_eq!(setting(&release, "lto").as_deref(), Some("true"));
-    assert_eq!(setting(&release, "panic").as_deref(), Some("\"abort\""));
+    assert_eq!(setting(&release, "panic").as_deref(), Some("\"unwind\""));
     Ok(())
 }

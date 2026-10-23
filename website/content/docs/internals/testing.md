@@ -329,14 +329,11 @@ What the script does that a reader of the user page does not need to:
 - `-q` lowers the default in CLI mode.
 - Configured by [`init_logging()`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs).
 
-**Benches.** `cargo bench --profile profiling`.
+**Benches.** `cargo bench`.
 
-- Plain `cargo bench` *cannot build*.
-  - The `cdylib` crate type needed for the WASM build forces
-    `panic = "abort"` into the lib unit.
-  - Bench units build with unwind.
-  - So shared dependencies get built twice with incompatible panic strategies.
-  - They fail to unify.
+- The release profile unwinds, as bench units do, so the `cdylib` crate type
+  needed for the WASM build and the benches share one panic strategy.
+- `--profile profiling` adds full symbols, for a profiler.
 - The `profiling` profile is release codegen with `panic = "unwind"` and
   debug symbols kept.
   - That is also what callgrind wants.

@@ -449,13 +449,25 @@ fn pcap_export_mode_all_variants_round_trip() -> Result<(), TestError> {
     Ok(())
 }
 
-/// Verify release profile has panic=abort and strip=true
+/// Verify the release profile unwinds on panic, and is optimized and stripped.
+///
+/// `unwind`, not `abort`: `crash::contain` catches a panic in a parser of
+/// untrusted input only when the panic unwinds back to it
+/// (PANIC-ABORT-HOSTILE-INPUT). Under `abort` the shipped binary would end on
+/// the first hostile capture, archive, HEP packet or SIP message that makes a
+/// dependency panic. Read from the `[profile.release]` section itself, since
+/// other profiles set `panic` too.
 #[test]
 fn cargo_toml_release_profile_optimized() -> Result<(), TestError> {
     let cargo = std::fs::read_to_string("Cargo.toml")?;
+    let release = cargo
+        .split("\n[profile.release]\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n[").next())
+        .ok_or("Cargo.toml has a [profile.release] section")?;
     assert!(
-        cargo.contains("panic = \"abort\""),
-        "Release profile should have panic = abort"
+        release.lines().any(|l| l.trim() == "panic = \"unwind\""),
+        "the release profile must unwind so crash::contain can catch a parser's panic: {release}"
     );
     assert!(
         cargo.contains("lto = true"),

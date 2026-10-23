@@ -4,13 +4,15 @@
 //! Crash handling: a process-wide panic hook driven by the `[crash]`
 //! config section.
 //!
-//! Release builds use `panic = "abort"`, so the TUI's unwind-based
-//! terminal guard never runs on a panic there: the message prints into
-//! the raw-mode alternate screen (unreadable), the process aborts with
-//! no backtrace, and the shell is left with mouse reporting enabled.
-//! The hook installed here runs BEFORE the abort: it restores the
-//! terminal, writes a crash report (optionally with a full backtrace),
-//! and then either exits cleanly or lets the OS produce a core dump.
+//! Outside a [`contain`] scope, the hook installed here ends the process
+//! itself, so a panic never unwinds into the TUI's terminal guard: left to
+//! the default, the message would print into the raw-mode alternate screen
+//! (unreadable) and leave the shell with mouse reporting enabled. The hook
+//! restores the terminal, writes a crash report (optionally with a full
+//! backtrace), and then either exits cleanly or lets the OS produce a core
+//! dump. Inside a [`contain`] scope it records the panic and returns, and
+//! the unwind reaches the scope, which is why release builds use
+//! `panic = "unwind"`.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -392,6 +394,71 @@ pub fn restore_terminal_if_raw() {}
 
 // ── Hook installation ───────────────────────────────────────────────
 
+/// A panic caught by [`contain`]: which parser it was in and what it said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Contained {
+    /// The unit of untrusted input the scope parsed (a pcap file, a HEP
+    /// datagram, a SIP message, an archive member).
+    pub what: &'static str,
+    /// The panic's message.
+    pub message: String,
+}
+
+/// Run `f`, the parse of one unit of untrusted input, so that a panic inside
+/// it (sipnab's or a dependency's) comes back as `Err(Contained)` instead of
+/// ending the process. The panic hook sees the scope, counts the panic and
+/// returns, which lets the unwind reach this function. A panic outside any
+/// scope is still reported and ends the process.
+pub fn contain<T>(what: &'static str, f: impl FnOnce() -> T) -> Result<T, Contained> {
+    // The depth is raised outside `catch_unwind`, so the hook, which runs
+    // when the panic starts and before any unwinding, still sees the scope.
+    let scope = ContainScope::enter();
+    let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    drop(scope);
+    out.map_err(|payload| Contained {
+        what,
+        message: panic_message(payload.as_ref()),
+    })
+}
+
+/// How many panics [`contain`] has turned into errors in this process.
+#[must_use]
+pub fn contained_panics() -> u64 {
+    CONTAINED_PANICS.load(Ordering::Relaxed)
+}
+
+/// True while the current thread runs inside a [`contain`] scope.
+#[must_use]
+pub(crate) fn in_contained_scope() -> bool {
+    CONTAIN_DEPTH.with(|depth| depth.get() > 0)
+}
+
+thread_local! {
+    /// How many [`contain`] scopes the current thread is inside.
+    static CONTAIN_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Panics [`contain`] has caught since the process started, across threads.
+static CONTAINED_PANICS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One level of [`contain`] depth, given back when dropped, so a scope the
+/// panic unwinds through still closes.
+struct ContainScope;
+
+impl ContainScope {
+    /// Open one level of depth on the current thread.
+    fn enter() -> Self {
+        CONTAIN_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        ContainScope
+    }
+}
+
+impl Drop for ContainScope {
+    fn drop(&mut self) {
+        CONTAIN_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
 /// Install the process-wide panic hook for the given policy.
 ///
 /// # Side effects
@@ -475,6 +542,23 @@ fn hook_body(
 ) {
     // Nothing in here may panic: a panic while processing a panic aborts
     // the process before any report can be written.
+
+    // A panic inside a `contain` scope is the scope's to handle: count it,
+    // say it once through the log (not stderr, which the TUI draws on) and
+    // return, so the unwind reaches the scope's `catch_unwind`.
+    if in_contained_scope() {
+        CONTAINED_PANICS.fetch_add(1, Ordering::Relaxed);
+        let location = info
+            .location()
+            .map(|l| l.to_string())
+            .unwrap_or_else(|| "unknown location".to_string());
+        tracing::warn!(
+            "contained a panic at {location}: {}",
+            panic_message(info.payload())
+        );
+        return;
+    }
+
     restore_terminal_if_raw();
 
     let message = panic_message(info.payload());
@@ -958,6 +1042,132 @@ mod tests {
         let mut out = Vec::new();
         hook_write_line(&mut out, format_args!("crash report written to {}", "p"));
         assert_eq!(out, b"crash report written to p\n");
+        Ok(())
+    }
+
+    /// A panic inside `contain` comes back to the caller as an error: the
+    /// hook counts it and returns, so no report is written and the process is
+    /// not ended.
+    #[test]
+    fn a_contained_panic_is_an_error_and_ends_nothing() -> Result<(), TestError> {
+        use std::sync::{Arc, Mutex};
+        let _guard = HOOK_LOCK.lock()?;
+        let dir = tempfile::tempdir()?;
+        let policy = CrashPolicy {
+            reports: true,
+            backtrace: false,
+            report_dir: dir.path().to_path_buf(),
+            core: false,
+        };
+        let decided: Arc<Mutex<Vec<PostAction>>> = Arc::new(Mutex::new(Vec::new()));
+        let decided2 = decided.clone();
+        let prev = std::panic::take_hook();
+        install_panic_hook_with(policy, move |a| {
+            if let Ok(mut slot) = decided2.lock() {
+                slot.push(a);
+            }
+        });
+        let before = contained_panics();
+        let joined = std::thread::Builder::new()
+            .name("contain-probe".into())
+            .spawn(|| contain("pcap file", || -> u32 { panic!("hostile input probe") }))?
+            .join();
+        std::panic::set_hook(prev);
+        let result = joined.map_err(|_| "the panic escaped the contain scope")?;
+        let err = result
+            .err()
+            .ok_or("a panic inside contain must be an error")?;
+        assert_eq!(err.what, "pcap file");
+        assert!(
+            err.message.contains("hostile input probe"),
+            "{}",
+            err.message
+        );
+        assert!(
+            contained_panics() > before,
+            "the contained panic is counted"
+        );
+        assert!(
+            decided
+                .lock()
+                .map_err(|e| format!("decided lock: {e}"))?
+                .is_empty(),
+            "the hook ended nothing"
+        );
+        let reports = std::fs::read_dir(dir.path())?
+            .filter_map(Result::ok)
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .filter(|c| c.contains("hostile input probe"))
+            .count();
+        assert_eq!(reports, 0, "a contained panic writes no crash report");
+        Ok(())
+    }
+
+    /// `contain` passes a value through, nests, and leaves the thread outside
+    /// any scope afterwards, so a later panic is handled as before.
+    #[test]
+    fn contain_passes_a_value_through_and_restores_its_depth() -> Result<(), TestError> {
+        assert!(!in_contained_scope());
+        assert_eq!(contain("sip message", || 7).ok(), Some(7));
+        assert!(!in_contained_scope());
+        let nested = contain("archive member", || {
+            assert!(in_contained_scope());
+            contain("pcap file", in_contained_scope)
+        });
+        assert_eq!(nested.ok().and_then(Result::ok), Some(true));
+        assert!(
+            !in_contained_scope(),
+            "the depth is back to zero after nesting"
+        );
+        Ok(())
+    }
+
+    /// After a contained panic, a panic outside any scope on the same thread
+    /// is still reported and still decides the process's end.
+    #[test]
+    fn a_panic_after_a_contained_one_is_still_reported() -> Result<(), TestError> {
+        use std::sync::{Arc, Mutex};
+        let _guard = HOOK_LOCK.lock()?;
+        let dir = tempfile::tempdir()?;
+        let policy = CrashPolicy {
+            reports: true,
+            backtrace: false,
+            report_dir: dir.path().to_path_buf(),
+            core: false,
+        };
+        let decided: Arc<Mutex<Vec<PostAction>>> = Arc::new(Mutex::new(Vec::new()));
+        let decided2 = decided.clone();
+        let prev = std::panic::take_hook();
+        install_panic_hook_with(policy, move |a| {
+            if let Ok(mut slot) = decided2.lock() {
+                slot.push(a);
+            }
+        });
+        let _ = std::thread::Builder::new()
+            .name("contain-then-escape".into())
+            .spawn(|| {
+                let _ = contain("hep datagram", || -> u32 { panic!("contained first") });
+                panic!("escaped second")
+            })?
+            .join();
+        std::panic::set_hook(prev);
+        assert_eq!(
+            *decided.lock().map_err(|e| format!("decided lock: {e}"))?,
+            [PostAction::Exit(101)],
+            "only the panic outside a scope decides the end"
+        );
+        let reports: Vec<String> = std::fs::read_dir(dir.path())?
+            .filter_map(Result::ok)
+            .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+            .collect();
+        assert!(
+            reports.iter().any(|c| c.contains("escaped second")),
+            "{reports:?}"
+        );
+        assert!(
+            !reports.iter().any(|c| c.contains("contained first")),
+            "{reports:?}"
+        );
         Ok(())
     }
 

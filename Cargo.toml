@@ -441,14 +441,10 @@ name = "sipnab"
 path = "src/lib.rs"
 crate-type = ["cdylib", "rlib"]
 # The lib has no harness benchmarks; all benchmarks are the criterion
-# [[bench]] targets. NOTE: run benches as `cargo bench --profile profiling`.
-# Plain `cargo bench` cannot build: the cdylib crate-type (required for the
-# wasm build) must embed a panic runtime, so the lib dependency unit inherits
-# profile.release's panic="abort" while bench units are forced to unwind —
-# cargo then compiles shared deps (bytes, chrono) twice with different panic
-# strategies and the two type instances fail to unify (E0308 "multiple
-# different versions of crate"). The profiling profile is release codegen
-# with panic="unwind", which keeps the whole graph on one strategy.
+# [[bench]] targets. The release profile unwinds, as bench units must, so the
+# cdylib crate-type (required for the wasm build) and the benches share one
+# panic strategy and plain `cargo bench` builds. `--profile profiling` adds
+# full symbols for a profiler.
 bench = false
 
 [package.metadata.wasm-pack.profile.release]
@@ -473,11 +469,16 @@ debug = "line-tables-only"
 # the link, then the script moves them into the published `.debug` file and
 # strips the binary itself. Do not change this profile to get the same effect:
 # cargo hashes the profile into `-C metadata`, and that changes the code.
+# `panic = "unwind"`: `crash::contain` catches a panic in a parser of
+# untrusted input only when it unwinds back to it. Outside a contained scope
+# the panic hook still ends the process (src/crash.rs). Measured 2026-10-23 on
+# the musl release feature set: +16.97% binary size; on a 516 MB capture,
+# median 2.05 s -> 2.11 s. tests/config_wiring_test.rs holds the setting.
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+panic = "unwind"
 debug = "line-tables-only"
 
 # Release codegen + full symbols, unstripped — for profilers (perf, valgrind
@@ -507,9 +508,7 @@ panic = "unwind"
 name = "sipnab"
 path = "src/main.rs"
 required-features = ["native"]
-# Keep bins out of `cargo bench`'s unit graph: they have no benchmarks, and
-# under the bench profile they drag profile.release's panic="abort" into the
-# build (see the [lib] note — benches must run with --profile profiling).
+# Keep bins out of `cargo bench`'s unit graph: they have no benchmarks.
 bench = false
 
 [[bin]]

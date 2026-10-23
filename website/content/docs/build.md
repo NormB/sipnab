@@ -341,14 +341,14 @@ See [Release profile](#release-profile).
 
 ## Release profile
 
-The release build uses LTO, a single codegen unit and symbol stripping for a small binary, aborts on panic, and keeps line tables for crash reports:
+The release build uses LTO, a single codegen unit and symbol stripping for a small binary, unwinds on panic so sipnab can contain a panic in a parser of untrusted input, and keeps line tables for crash reports:
 
 ```toml
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
-panic = "abort"
+panic = "unwind"
 debug = "line-tables-only"
 ```
 

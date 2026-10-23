@@ -147,14 +147,9 @@ cargo +nightly fuzz run fuzz_sip_parser fuzz/corpus/sip_parser
 cargo bench --profile profiling
 ```
 
-Pass `--profile profiling` every time, not as an option. Plain `cargo bench`
-cannot build:
-
-- The wasm `cdylib` crate-type forces the lib dependency unit onto
-  `profile.release`'s `panic = "abort"`.
-- But bench harness units must unwind.
-- So cargo compiles shared deps twice with incompatible type identities.
-- See the `[lib]` notes in `Cargo.toml`.
+Plain `cargo bench` builds: the release profile and the bench units both
+unwind. `--profile profiling` adds full symbols, for running a benchmark
+under a profiler.
 
 The profiling profile is release codegen with `panic = "unwind"`.
 
