@@ -462,6 +462,7 @@ Each successful run gets a row here.
 | 0.5.225 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.111+deb13-amd64 | 2026-10-17 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.226 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.111+deb13-amd64 | 2026-10-18 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.227 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.111+deb13-amd64 | 2026-10-19 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.228 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.111+deb13-amd64 | 2026-10-23 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every phase-two release commit.
 
