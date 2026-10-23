@@ -186,6 +186,19 @@ exclude = [
   # prose tells the reader to set, and dropping the URL to satisfy a link
   # checker would take that away from the reader to buy a green run.
   'kamailio\.org',
+  # cwe.mitre.org, cited 27 times in docs/assurance-case.md (each CWE row and
+  # the Top 25 list). From 2026-10-22 it answered nothing: Quality on main and
+  # on every pull request failed with 27 timeouts and ZERO dead links, and from
+  # here both of its addresses (198.49.146.205, 192.52.194.205) timed out on
+  # ports 80 and 443 on every probe from 2026-10-22 into 2026-10-23, while
+  # www.mitre.org and cve.mitre.org answered at once. A timeout that lasts
+  # across days is an outage of that host,
+  # not a slow page, so no `timeout` or retry value fixes it.
+  #
+  # Excluded rather than delinked, as kamailio.org above: each link is the
+  # definition of the weakness its row is about. Remove this entry once
+  # `curl -sI https://cwe.mitre.org/data/definitions/639.html` answers again.
+  'cwe\.mitre\.org',
   # The OpenSSF Best Practices badge, cited in README.md and in
   # docs/design/openssf-badge-answers.md. It answered a Quality job with 503
   # Service Unavailable on four links at once and failed the run with ZERO dead
