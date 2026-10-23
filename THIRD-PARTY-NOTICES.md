@@ -132,7 +132,7 @@ Files copied into the repository unmodified from another project's release. None
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
 | csscolorparser | 0.6.2 | MIT OR Apache-2.0 |
-| ctutils | 0.4.2 | Apache-2.0 OR MIT |
+| ctutils | 0.4.5 | Apache-2.0 OR MIT |
 | darling | 0.23.0 | MIT |
 | darling | 0.24.0 | MIT |
 | darling_core | 0.23.0 | MIT |
