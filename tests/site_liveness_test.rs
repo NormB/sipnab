@@ -638,6 +638,43 @@ fn the_watcher_also_confirms_the_site_advertises_the_release() -> Result<(), Tes
     Ok(())
 }
 
+/// The advertisement step never runs on a push.
+///
+/// A push that moves `published_version` is the phase-two commit, and the live
+/// page cannot name that release until the commit is merged and Pages has
+/// deployed it, which waits for CI. Asked on the push, the step is red by
+/// construction: the 0.5.228 phase-two branch went red this way on
+/// 2026-10-23, and earlier phase-two pushes passed only because the CDN
+/// refused the checker, which the step reports as a warning. The schedule and
+/// a manual run ask once the deploy can have happened.
+#[test]
+fn the_advertisement_step_does_not_run_on_a_push() -> Result<(), TestError> {
+    let wf = watcher()?;
+    let start = wf
+        .find("- name: The site advertises the release it claims to")
+        .ok_or("the workflow has no advertisement step")?;
+    let step: String = wf[start..]
+        .lines()
+        .enumerate()
+        .take_while(|(i, l)| *i == 0 || !l.trim_start().starts_with("- "))
+        .map(|(_, l)| format!("{l}\n"))
+        .collect();
+    let guard = step
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("if:"))
+        .map(str::trim)
+        .ok_or(
+            "the advertisement step has no `if:`, so a push that moves \
+             published_version asks the live site about a release it cannot \
+             have deployed yet",
+        )?;
+    assert_eq!(
+        guard, "github.event_name != 'push'",
+        "the advertisement step's guard must exclude push events"
+    );
+    Ok(())
+}
+
 /// The watcher runs when the thing it depends on changes.
 ///
 /// The CNAME and `base_url` are the pair whose disagreement broke renewal.

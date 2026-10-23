@@ -123,6 +123,14 @@ jobs:
         # Separate from the certificates on purpose: a healthy certificate and a
         # stale page are different problems with different fixes, and the check
         # this replaced scored both as `0`.
+        #
+        # Not on a push. The push that moves published_version is the
+        # phase-two commit, and the live page cannot name that release until
+        # the commit is merged and Pages has deployed it, so asking on the
+        # push is red by construction. The schedule and a manual run ask once
+        # the deploy can have happened; the release flow runs
+        # scripts/verify-site-advertises.sh after the deploy.
+        if: github.event_name != 'push'
         run: |
           set -uo pipefail
           published=$(sed -n 's/^published_version = "\(.*\)"/\1/p' website/config.toml)
