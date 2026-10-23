@@ -395,7 +395,9 @@ impl SipnabMcp {
         });
 
         if let Some(path) = out_path {
-            std::fs::write(&path, built.xml_bytes).map_err(|e| {
+            // New-only, so a file or link that appeared at the name after
+            // `resolve_in_root_for_write` checked it is refused at the open.
+            crate::new_file::write_new(&path, built.xml_bytes.as_ref()).map_err(|e| {
                 rmcp::ErrorData::internal_error(format!("writing {}: {e}", path.display()), None)
             })?;
             tracing::info!(

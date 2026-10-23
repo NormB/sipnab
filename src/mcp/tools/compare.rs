@@ -539,7 +539,9 @@ impl SipnabMcp {
         })?;
 
         let write = |name: &str, body: &str| -> Result<(), rmcp::ErrorData> {
-            std::fs::write(dir.join(name), body).map_err(|e| {
+            // New-only: the directory is fresh, but a file or link placed in it
+            // before this write must be refused, not written through.
+            crate::new_file::write_new(&dir.join(name), body.as_bytes()).map_err(|e| {
                 // A part-built package must not survive: it would hold the
                 // name against a retry and read as complete evidence.
                 let _ = std::fs::remove_dir_all(&dir);

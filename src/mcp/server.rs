@@ -8653,13 +8653,14 @@ impl SipnabMcp {
             }
             let absence =
                 (!dialog_seen).then(|| super::tools::relay::dialog_absence(&ss, &streams));
-            let summary =
-                crate::rtp::audio_export::export_dialog_to_wav(&streams, &path).map_err(|e| {
-                    rmcp::ErrorData::internal_error(
-                        format!("writing {}: {e}", path.display()),
-                        None,
-                    )
-                })?;
+            let summary = crate::rtp::audio_export::export_dialog_to_wav_with(
+                &streams,
+                &path,
+                crate::new_file::CreateMode::NewOnly,
+            )
+            .map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("writing {}: {e}", path.display()), None)
+            })?;
             (summary, absence)
         };
         let mut payload = serde_json::json!({
@@ -10717,6 +10718,7 @@ pub(crate) fn write_messages_to_pcap(
             export_mode: PcapExportMode::Raw,
             interface: None,
             provenance: Some(note),
+            create: crate::new_file::CreateMode::NewOnly,
         },
     )?;
     let mut written = 0;
@@ -10914,6 +10916,44 @@ mod tests {
             let msg = format!("{err:?}");
             assert!(msg.contains("control character"), "{bad:?}: {msg}");
         }
+        Ok(())
+    }
+
+    /// MCP-WRITE-TOCTOU: `export_capture`, `shutdown_server`'s `save_to` and
+    /// `build_evidence_package` write through `write_messages_to_pcap` after
+    /// `resolve_in_root_for_write` found the name free. A file or link that
+    /// appears between that check and the open must be refused at the open.
+    /// The window itself cannot be driven from a test, so these call the
+    /// writer below the check, with the file already in place.
+    #[test]
+    fn the_mcp_pcap_writer_never_truncates_an_existing_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        for name in ["out.pcap", "out.pcapng"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"the only copy").map_err(|e| format!("{e:?}"))?;
+            assert!(write_messages_to_pcap(&[], &path).is_err(), "{name}");
+            assert_eq!(
+                std::fs::read(&path).map_err(|e| format!("{e:?}"))?,
+                b"the only copy",
+                "{name}"
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mcp_pcap_writer_never_writes_through_a_link() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"keep").map_err(|e| format!("{e:?}"))?;
+        let link = dir.path().join("out.pcapng");
+        std::os::unix::fs::symlink(&victim, &link).map_err(|e| format!("{e:?}"))?;
+        assert!(write_messages_to_pcap(&[], &link).is_err());
+        assert_eq!(
+            std::fs::read(&victim).map_err(|e| format!("{e:?}"))?,
+            b"keep"
+        );
         Ok(())
     }
 

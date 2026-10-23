@@ -598,6 +598,10 @@ Each tool returns the resolved path of the file it wrote. Without
 > [`list_captures`](@/docs/mcp-tools-captures.md#list-captures) to see which names a
 > directory already uses.
 >
+> The write itself creates the file only if the name is still free and never
+> follows a link at that name, so a file or link that appears after the check
+> fails the call instead of being overwritten.
+>
 > The guard covers every file in the root, not only the capture the run is
 > reading: the captures staged there for
 > [`open_capture`](@/docs/mcp-tools-captures.md#open-capture) and every earlier

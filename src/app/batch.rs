@@ -4212,6 +4212,7 @@ impl BatchRunner {
                 export_mode: self.export_mode,
                 interface: capture_source,
                 provenance: section_note,
+                create: crate::new_file::CreateMode::Replace,
             },
         )
         .map(|w| w.keep_last_splits(self.policy.split_keep))
