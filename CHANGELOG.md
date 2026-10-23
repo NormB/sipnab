@@ -10,6 +10,10 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Security
+
+- **`zod` advanced past [GHSA-mrhx-c7xc-m3w5](https://osv.dev/vulnerability/GHSA-mrhx-c7xc-m3w5) (CVE-2023-54404), which osv-scanner first reported on 2026-10-23.** zod could exhaust memory while validating an oversized constrained collection. `clients/typescript/package-lock.json` now resolves zod 4.6.7. The e2e tooling for the site's Lighthouse step keeps zod 3.25.76, through `@lhci/cli` -> `lighthouse` 12.6.1 -> `puppeteer-core` 24.43.1 -> `chromium-bidi` 14.0.0, because no zod 3 release is fixed; that path is never loaded, since Lighthouse attaches to Chrome over CDP. `osv-scanner.toml` and `vex/sipnab.openvex.json` record the exception.
+
 ### Fixed
 
 - **The daily site watcher no longer checks the live page on a push.** `cert-expiry.yml` also runs on a push that changes `website/config.toml`, and its last step asked sipnab.com to name `published_version`. On the push that moves `published_version` the page cannot name it yet, because the deploy follows the merge, so that step was red on every such push; earlier ones passed only because the CDN refused the check, which the step reports as a warning. The step now runs on the schedule and a manual run. The certificate and CNAME checks still run on every push.
