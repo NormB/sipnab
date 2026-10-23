@@ -4882,6 +4882,10 @@ pub struct TokenArgs {
     /// the server has enabled them with `--allow-action`. A `full` token never
     /// reaches an action. REST and MCP tokens.
     ///
+    /// An `admin` token reaches everything an `actions` token does, and also
+    /// lifts a ban another caller placed. A ban belongs to the caller that
+    /// placed it, so an `actions` token lifts only its own. REST and MCP tokens.
+    ///
     /// An `audio` token reaches the live call audio routes, `GET
     /// /v1/calls/live`, `GET /v1/calls/live/events` and `GET
     /// /v1/calls/{call_id}/audio`, and nothing else; no other scope reaches
@@ -4891,7 +4895,7 @@ pub struct TokenArgs {
         long = "token-scope",
         value_name = "SCOPE",
         default_value = "full",
-        value_parser = ["full", "metrics", "read", "actions", "audio"]
+        value_parser = ["full", "metrics", "read", "actions", "admin", "audio"]
     )]
     pub token_scope: String,
 }

@@ -149,8 +149,11 @@ Both dialog policies keep memory bounded.
 - A transient receive error on a live capture ends the capture. sipnab does
   not retry.
 - An interface going down during a live capture ends the capture the same way.
-- Opus decoding uses the system `libopus`. sipnab checks the length of what it
-  passes in, and does not fuzz the codec itself.
+- Opus decoding, for WAV export, uses `opus-decoder`, a pure-Rust crate.
+  Opus encoding, used only for vCon recordings in builds with the `opus`
+  feature, uses libopus through the `opus` crate. The build compiles libopus
+  from source rather than taking it from the system. sipnab checks the length
+  of what it passes to either, and does not fuzz the codec itself.
 - A full disk while writing a pcap or WAV file produces an error. No test
   covers that path.
 

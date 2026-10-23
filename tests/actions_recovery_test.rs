@@ -25,8 +25,8 @@ use std::time::{Duration, Instant};
 
 use sipnab::journal::JournalLimits;
 use sipnab::security::actions::{
-    ActionError, ActionLimits, ActionPolicy, ActionService, ActionSurface, PreviousRun,
-    RevertTarget, Reverter,
+    ActionCaller, ActionError, ActionLimits, ActionPolicy, ActionService, ActionSurface,
+    PreviousRun, RevertTarget, Reverter,
 };
 
 #[path = "support/fake_tfps.rs"]
@@ -181,7 +181,10 @@ fn a_remote_revert_needs_actions_enabled_and_counts_against_the_limits() -> Resu
         .revert(
             Reverter::Surface {
                 surface: ActionSurface::Rest,
-                caller: "token:ops",
+                caller: ActionCaller {
+                    name: "token:ops",
+                    admin: false,
+                },
             },
             RevertTarget::All,
             T0,
@@ -199,7 +202,10 @@ fn a_remote_revert_needs_actions_enabled_and_counts_against_the_limits() -> Resu
         .revert(
             Reverter::Surface {
                 surface: ActionSurface::Mcp,
-                caller: "stdio",
+                caller: ActionCaller {
+                    name: "stdio",
+                    admin: false,
+                },
             },
             RevertTarget::One(id),
             T0,
@@ -737,7 +743,10 @@ fn an_unban_tfps_answers_not_blocked_ends_ownership_as_lapsed() -> Result<(), Te
     r.tfps.banned.lock().map_err(|e| e.to_string())?.clear();
     let done = svc.unban(
         ActionSurface::Rest,
-        "token:ops",
+        ActionCaller {
+            name: "token:ops",
+            admin: false,
+        },
         addr(20),
         T0 + 5,
         r.t0 + Duration::from_secs(5),

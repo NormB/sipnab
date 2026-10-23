@@ -9710,6 +9710,13 @@ fn scope_of(_extensions: &rmcp::model::Extensions) -> String {
     crate::auth::SCOPE_ACTIONS.to_string()
 }
 
+/// Whether the caller holds the `admin` scope, which lifts a ban another
+/// caller placed. Over stdio the scope is `actions`, so a stdio session lifts
+/// only the bans it placed.
+pub(crate) fn action_caller_is_admin(extensions: &rmcp::model::Extensions) -> bool {
+    scope_of(extensions) == crate::auth::SCOPE_ADMIN
+}
+
 /// Arguments for `runtime_stats`.
 #[derive(Debug, serde::Deserialize, rmcp::schemars::JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -9909,7 +9916,8 @@ fn scope_refusal(
     tool_name: &str,
     tool: Option<&rmcp::model::Tool>,
 ) -> Option<rmcp::ErrorData> {
-    if scope == crate::auth::SCOPE_ACTIONS {
+    // `actions` and `admin` reach every tool, by the one scope rule.
+    if crate::auth::scope_satisfies(scope, crate::auth::SCOPE_ACTIONS) {
         return None;
     }
     let tool = tool?;
@@ -18436,6 +18444,21 @@ mod tests {
             ["actions_revert", "tfps_ban", "tfps_unban"],
             "the action tools are exactly the open-world, non-read-only ones"
         );
+        Ok(())
+    }
+
+    /// An `admin` token reaches every tool an `actions` token does, the action
+    /// tools included: it lifts any ban, so it must be able to call them.
+    #[test]
+    fn an_admin_scope_reaches_every_tool() -> Result<(), TestError> {
+        let router = empty_server().tool_router;
+        for tool in router.list_all() {
+            let name = tool.name.to_string();
+            assert!(
+                scope_refusal(crate::auth::SCOPE_ADMIN, &name, router.get(&name)).is_none(),
+                "{name}: an admin token must reach every tool"
+            );
+        }
         Ok(())
     }
 

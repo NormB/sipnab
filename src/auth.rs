@@ -114,6 +114,13 @@ pub const SCOPE_READ: &str = "read";
 /// `--api-key` (which is `full`), read everything and act on nothing.
 pub const SCOPE_ACTIONS: &str = "actions";
 
+/// [`SCOPE_ACTIONS`], plus lifting a ban another caller placed.
+///
+/// A ban belongs to the caller that placed it, so one `actions` token cannot
+/// undo another's (CWE-639 in `docs/assurance-case.md`). An operator who must
+/// lift any ban, for instance one placed by a token since lost, holds this.
+pub const SCOPE_ADMIN: &str = "admin";
+
 /// Call audio as it is captured: the REST API's `/v1/calls` routes, and
 /// nothing else.
 ///
@@ -125,18 +132,20 @@ pub const SCOPE_AUDIO: &str = "audio";
 
 /// Whether a token holding `held` may reach something that requires `required`.
 ///
-/// One rule for every surface. `actions` satisfies everything; `full`
-/// satisfies everything except `actions`; a narrower scope satisfies only
-/// itself. `full` stopping short of `actions` is the point: reading must not
-/// imply changing another system.
+/// One rule for every surface. `admin` satisfies everything; `actions`
+/// satisfies everything except `admin`; `full` satisfies everything except
+/// `actions` and `admin`; a narrower scope satisfies only itself; and only
+/// `audio` reaches `audio`. `full` stopping short of `actions` is the point:
+/// reading must not imply changing another system.
 #[must_use]
 pub fn scope_satisfies(held: &str, required: &str) -> bool {
     if required == SCOPE_AUDIO {
         return held == SCOPE_AUDIO;
     }
     match held {
-        SCOPE_ACTIONS => true,
-        SCOPE_FULL => required != SCOPE_ACTIONS,
+        SCOPE_ADMIN => true,
+        SCOPE_ACTIONS => required != SCOPE_ADMIN,
+        SCOPE_FULL => required != SCOPE_ACTIONS && required != SCOPE_ADMIN,
         _ => held == required,
     }
 }
@@ -612,6 +621,38 @@ mod tests {
         assert!(scope_satisfies(SCOPE_ACTIONS, SCOPE_FULL));
         assert!(scope_satisfies(SCOPE_FULL, SCOPE_METRICS));
         assert!(!scope_satisfies(SCOPE_FULL, SCOPE_ACTIONS));
+    }
+
+    /// `admin` reaches what `actions` reaches, so an admin token bans and
+    /// unbans like an actions token and also lifts another caller's ban. It
+    /// does not reach call audio, and no other scope reaches `admin`.
+    #[test]
+    fn admin_reaches_what_actions_reaches_and_nothing_else_reaches_admin() {
+        for required in [
+            SCOPE_FULL,
+            SCOPE_ACTIONS,
+            SCOPE_READ,
+            SCOPE_METRICS,
+            SCOPE_ADMIN,
+        ] {
+            assert!(
+                scope_satisfies(SCOPE_ADMIN, required),
+                "admin reaches {required}"
+            );
+        }
+        assert!(
+            !scope_satisfies(SCOPE_ADMIN, SCOPE_AUDIO),
+            "admin reaches audio"
+        );
+        for held in [
+            SCOPE_FULL,
+            SCOPE_ACTIONS,
+            SCOPE_READ,
+            SCOPE_METRICS,
+            SCOPE_AUDIO,
+        ] {
+            assert!(!scope_satisfies(held, SCOPE_ADMIN), "{held} reaches admin");
+        }
     }
 
     type TestError = Box<dyn std::error::Error>;

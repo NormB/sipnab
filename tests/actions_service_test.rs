@@ -25,7 +25,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sipnab::security::actions::{
-    ActionError, ActionLimits, ActionPolicy, ActionService, ActionSurface, BanRule,
+    ActionCaller, ActionError, ActionLimits, ActionPolicy, ActionService, ActionSurface, BanRule,
+    RevertTarget, Reverter,
 };
 
 #[path = "support/fake_tfps.rs"]
@@ -179,7 +180,16 @@ fn an_address_sipnab_did_not_ban_cannot_be_unbanned_through_it() -> Result<(), T
         .push((Ipv4Addr::new(198, 51, 100, 99), None));
     let svc = start(&r, enabled("tfps:rest")?)?;
     let err = svc
-        .unban(ActionSurface::Rest, "token:stolen", addr(99), T0, r.t0)
+        .unban(
+            ActionSurface::Rest,
+            ActionCaller {
+                name: "token:stolen",
+                admin: false,
+            },
+            addr(99),
+            T0,
+            r.t0,
+        )
         .err()
         .ok_or("expected an error: not ours")?;
     assert_eq!(err, ActionError::NotOwned);
@@ -194,7 +204,10 @@ fn an_owned_ban_can_be_unbanned_and_ownership_ends() -> Result<(), TestError> {
     svc.ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, r.t0)?;
     svc.unban(
         ActionSurface::Rest,
-        "token:ops",
+        ActionCaller {
+            name: "token:ops",
+            admin: false,
+        },
         addr(20),
         T0 + 61,
         r.t0 + Duration::from_secs(61),
@@ -204,6 +217,152 @@ fn an_owned_ban_can_be_unbanned_and_ownership_ends() -> Result<(), TestError> {
         r.tfps.calls()?,
         ["ban 198.51.100.20 3600", "unban 198.51.100.20"]
     );
+    Ok(())
+}
+
+// ── per-caller ownership (CWE-639) ───────────────────────────────────────
+//
+// A ban belongs to the caller that placed it. Another caller may lift it only
+// with the `admin` scope; the operator at the command line always may.
+
+fn caller(name: &str, admin: bool) -> ActionCaller<'_> {
+    ActionCaller { name, admin }
+}
+
+#[test]
+fn another_callers_ban_cannot_be_unbanned_without_admin() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    svc.ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, r.t0)?;
+    let err = svc
+        .unban(
+            ActionSurface::Rest,
+            caller("token:intern", false),
+            addr(20),
+            T0 + 61,
+            r.t0 + Duration::from_secs(61),
+        )
+        .err()
+        .ok_or("another caller's ban is refused")?;
+    assert_eq!(
+        err,
+        ActionError::NotYours {
+            owner: "token:ops".to_string()
+        }
+    );
+    assert!(svc.owned(addr(20)).is_some(), "the ban stays owned");
+    assert_eq!(
+        r.tfps.calls()?,
+        ["ban 198.51.100.20 3600"],
+        "TFPS was not asked to unban"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_admin_caller_may_unban_another_callers_ban() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    svc.ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, r.t0)?;
+    svc.unban(
+        ActionSurface::Rest,
+        caller("token:lead", true),
+        addr(20),
+        T0 + 61,
+        r.t0 + Duration::from_secs(61),
+    )?;
+    assert!(svc.owned(addr(20)).is_none());
+    Ok(())
+}
+
+#[test]
+fn reverting_another_callers_ban_needs_admin() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    svc.ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, r.t0)?;
+    let id = svc.owned(addr(20)).ok_or("owned")?.id;
+    let later = r.t0 + Duration::from_secs(61);
+    let err = svc
+        .revert(
+            Reverter::Surface {
+                surface: ActionSurface::Rest,
+                caller: caller("token:intern", false),
+            },
+            RevertTarget::One(id.clone()),
+            T0 + 61,
+            later,
+        )
+        .err()
+        .ok_or("another caller's ban is refused")?;
+    assert_eq!(
+        err,
+        ActionError::NotYours {
+            owner: "token:ops".to_string()
+        }
+    );
+    assert!(svc.owned(addr(20)).is_some());
+    let report = svc.revert(
+        Reverter::Surface {
+            surface: ActionSurface::Rest,
+            caller: caller("token:lead", true),
+        },
+        RevertTarget::One(id.clone()),
+        T0 + 62,
+        later + Duration::from_secs(1),
+    )?;
+    assert_eq!(report.reverted, vec![id]);
+    Ok(())
+}
+
+#[test]
+fn reverting_all_without_admin_lifts_only_the_callers_own_bans() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    svc.ban(ActionSurface::Rest, "token:a", addr(20), None, T0, r.t0)?;
+    svc.ban(
+        ActionSurface::Rest,
+        "token:b",
+        addr(21),
+        None,
+        T0 + 1,
+        r.t0 + Duration::from_secs(1),
+    )?;
+    let mine = svc.owned(addr(20)).ok_or("owned")?.id;
+    let report = svc.revert(
+        Reverter::Surface {
+            surface: ActionSurface::Rest,
+            caller: caller("token:a", false),
+        },
+        RevertTarget::All,
+        T0 + 61,
+        r.t0 + Duration::from_secs(61),
+    )?;
+    assert_eq!(report.reverted, vec![mine]);
+    assert!(svc.owned(addr(21)).is_some(), "token:b's ban stays");
+    Ok(())
+}
+
+#[test]
+fn the_operator_at_the_command_line_reverts_every_ban() -> Result<(), TestError> {
+    let r = rig()?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    svc.ban(ActionSurface::Rest, "token:a", addr(20), None, T0, r.t0)?;
+    svc.ban(
+        ActionSurface::Rest,
+        "token:b",
+        addr(21),
+        None,
+        T0 + 1,
+        r.t0 + Duration::from_secs(1),
+    )?;
+    let report = svc.revert(
+        Reverter::Local,
+        RevertTarget::All,
+        T0 + 61,
+        r.t0 + Duration::from_secs(61),
+    )?;
+    assert_eq!(report.reverted.len(), 2);
+    assert!(svc.owned(addr(20)).is_none() && svc.owned(addr(21)).is_none());
     Ok(())
 }
 

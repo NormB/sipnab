@@ -144,6 +144,12 @@ pub enum ActionError {
     Throttled(ActionThrottle),
     /// sipnab holds no ban on this address, so it will not lift one.
     NotOwned,
+    /// sipnab placed this ban for another caller, and the one asking holds no
+    /// `admin` scope. Carries the caller the journal names as its owner.
+    NotYours {
+        /// Who placed the ban.
+        owner: String,
+    },
     /// Actions from before a crash are still unresolved; nothing new runs
     /// until TFPS can be asked about them.
     InDoubt(usize),
@@ -164,6 +170,11 @@ impl std::fmt::Display for ActionError {
                 "sipnab holds no ban on this address: it did not place one, or the one it placed \
                  has ended or was dropped by TFPS. sipnab lifts only its own bans; to lift \
                  another, unban it on the TFPS host"
+            ),
+            Self::NotYours { owner } => write!(
+                f,
+                "this ban was placed by {owner}; only that caller, or a token with the admin \
+                 scope, may lift it"
             ),
             Self::InDoubt(n) => write!(
                 f,
@@ -254,16 +265,37 @@ pub enum RevertTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reverter<'a> {
     /// The operator at this machine's command line: no policy and no rate
-    /// limit applies, so recovery works with actions switched off.
+    /// limit applies, so recovery works with actions switched off, and every
+    /// ban sipnab placed may be lifted.
     Local,
     /// A caller on a surface: a revert is then an action like any other,
     /// behind the same policy and limits.
     Surface {
         /// Where it was asked.
         surface: ActionSurface,
-        /// Who asked, as the journal names them.
-        caller: &'a str,
+        /// Who asked.
+        caller: ActionCaller<'a>,
     },
+}
+
+/// Whether `caller` may lift a ban `owner` placed: its own, or any with the
+/// `admin` scope.
+fn may_lift(caller: ActionCaller<'_>, owner: &str) -> bool {
+    caller.admin || caller.name == owner
+}
+
+/// Who asks to lift a ban, and whether they may lift any ban.
+///
+/// A ban belongs to the caller that placed it (CWE-639 in
+/// `docs/assurance-case.md`): another caller may lift it only with the
+/// `admin` scope.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ActionCaller<'a> {
+    /// Who asked, as the journal names them: `token:<id>`, `token`,
+    /// `peer:<address>` or `stdio`.
+    pub name: &'a str,
+    /// The caller holds the `admin` scope.
+    pub admin: bool,
 }
 
 /// What a revert did.
@@ -546,7 +578,7 @@ impl ActionService {
     pub fn unban(
         &self,
         surface: ActionSurface,
-        caller: &str,
+        caller: ActionCaller<'_>,
         ip: IpAddr,
         now_unix: u64,
         now: Instant,
@@ -555,7 +587,7 @@ impl ActionService {
         self.admitting()?;
         inner.ready()?;
         let refuse = |inner: &mut Inner, reason: &str, err: ActionError| {
-            inner.refused(surface, caller, ip, reason, now_unix);
+            inner.refused(surface, caller.name, ip, reason, now_unix);
             err
         };
         if let Err(r) = self.policy.permit(ActionTarget::Tfps, surface) {
@@ -566,10 +598,21 @@ impl ActionService {
             return Err(refuse(&mut inner, "in_doubt", ActionError::InDoubt(doubt)));
         }
         inner.ledger.set_now(now_unix);
-        let Some(owned_id) = inner.ledger.owned(&ip.to_string()).map(|o| o.id.clone()) else {
+        let Some((owned_id, owner)) = inner
+            .ledger
+            .owned(&ip.to_string())
+            .map(|o| (o.id.clone(), o.caller.clone()))
+        else {
             return Err(refuse(&mut inner, "ownership", ActionError::NotOwned));
         };
-        if let Err(t) = inner.governor.admit(caller, ip, now) {
+        if !may_lift(caller, &owner) {
+            return Err(refuse(
+                &mut inner,
+                "ownership",
+                ActionError::NotYours { owner },
+            ));
+        }
+        if let Err(t) = inner.governor.admit(caller.name, ip, now) {
             return Err(refuse(&mut inner, "rate", ActionError::Throttled(t)));
         }
         let IpAddr::V4(v4) = ip else {
@@ -580,7 +623,7 @@ impl ActionService {
             "action_intent",
             serde_json::json!({
                 "id": id, "target": "tfps", "verb": "unban", "address": ip.to_string(),
-                "at": now_unix, "surface": surface.name(), "caller": caller,
+                "at": now_unix, "surface": surface.name(), "caller": caller.name,
             }),
         )?;
         let reply = self.tfps.unban(v4);
@@ -682,25 +725,30 @@ impl ActionService {
         inner.ledger.set_now(now_unix);
         let (surface, caller) = match reverter {
             Reverter::Local => ("cli", "local"),
-            Reverter::Surface { surface, caller } => (surface.name(), caller),
+            Reverter::Surface { surface, caller } => (surface.name(), caller.name),
         };
         if let Reverter::Surface { surface, caller } = reverter {
             let ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
             if let Err(r) = self.policy.permit(ActionTarget::Tfps, surface) {
-                inner.refused(surface, caller, ip, "policy", now_unix);
+                inner.refused(surface, caller.name, ip, "policy", now_unix);
                 return Err(ActionError::NotEnabled(r));
             }
             let doubt = inner.ledger.in_doubt().len();
             if doubt > 0 {
-                inner.refused(surface, caller, ip, "in_doubt", now_unix);
+                inner.refused(surface, caller.name, ip, "in_doubt", now_unix);
                 return Err(ActionError::InDoubt(doubt));
             }
         }
         let wanted: Vec<Owned> = match &target {
+            // Without `admin`, "all" is all of the caller's own bans.
             RevertTarget::All => inner
                 .ledger
                 .owned_newest_first()
                 .into_iter()
+                .filter(|o| match reverter {
+                    Reverter::Local => true,
+                    Reverter::Surface { caller, .. } => may_lift(caller, &o.caller),
+                })
                 .cloned()
                 .collect(),
             RevertTarget::One(id) => {
@@ -714,9 +762,17 @@ impl ActionService {
                 if found.is_empty() {
                     if let Reverter::Surface { surface, caller } = reverter {
                         let ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
-                        inner.refused(surface, caller, ip, "ownership", now_unix);
+                        inner.refused(surface, caller.name, ip, "ownership", now_unix);
                     }
                     return Err(ActionError::NotOwned);
+                }
+                if let Reverter::Surface { surface, caller } = reverter
+                    && let Some(theirs) = found.iter().find(|o| !may_lift(caller, &o.caller))
+                {
+                    let owner = theirs.caller.clone();
+                    let ip = IpAddr::V4(Ipv4Addr::UNSPECIFIED);
+                    inner.refused(surface, caller.name, ip, "ownership", now_unix);
+                    return Err(ActionError::NotYours { owner });
                 }
                 found
             }
@@ -745,10 +801,10 @@ impl ActionService {
                 surface: asked_on,
                 caller,
             } = reverter
-                && let Err(t) = inner.governor.admit(caller, IpAddr::V4(v4), now)
+                && let Err(t) = inner.governor.admit(caller.name, IpAddr::V4(v4), now)
             {
                 if report.reverted.is_empty() && report.lapsed.is_empty() {
-                    inner.refused(asked_on, caller, IpAddr::V4(v4), "rate", now_unix);
+                    inner.refused(asked_on, caller.name, IpAddr::V4(v4), "rate", now_unix);
                     return Err(ActionError::Throttled(t));
                 }
                 report.left = wanted[n..].iter().map(|o| o.id.clone()).collect();

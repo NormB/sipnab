@@ -161,7 +161,8 @@ where
 /// An argument that breaks a rule is `invalid_params`, as a bad address is.
 /// A well-formed call sipnab or TFPS would not carry out is an error result
 /// the agent can read: `{"error", "refusal", "retry_after_secs"?}`, with
-/// `refusal` one of `rate`, `not_owned`, `in_doubt`, `journal`, `tfps`.
+/// `refusal` one of `rate`, `not_owned`, `not_yours`, `in_doubt`, `journal`,
+/// `tfps`.
 fn action_refusal(e: ActionError) -> Result<CallToolResult, rmcp::ErrorData> {
     let message = e.to_string();
     let (refusal, retry_after) = match e {
@@ -173,6 +174,7 @@ fn action_refusal(e: ActionError) -> Result<CallToolResult, rmcp::ErrorData> {
         }
         ActionError::Throttled(t) => ("rate", Some(t.retry_after().as_secs().max(1))),
         ActionError::NotOwned => ("not_owned", None),
+        ActionError::NotYours { .. } => ("not_yours", None),
         ActionError::InDoubt(_) => ("in_doubt", None),
         ActionError::JournalUnusable(_) => ("journal", None),
         ActionError::Tfps(_) => ("tfps", None),
@@ -404,7 +406,8 @@ impl SipnabMcp {
                        tfps:mcp); over HTTP it also needs an actions-scope \
                        token. sipnab lifts only a ban it placed and still \
                        holds; anything else is an error result with refusal \
-                       not_owned, and TFPS is not asked. The same rate \
+                       not_owned, and TFPS is not asked. Another caller's ban \
+                       is refusal not_yours unless the token is admin-scope. The same rate \
                        limits as tfps_ban apply, so an address acted on a \
                        moment ago rests first. Journaled before TFPS is \
                        asked; the answer carries the action's id.",
@@ -424,10 +427,14 @@ impl SipnabMcp {
         mcp_permit(self.actions.policy())?;
         let ip = parse_ip(&params.ip)?;
         let caller = crate::mcp::server::action_caller(&extensions);
+        let admin = crate::mcp::server::action_caller_is_admin(&extensions);
         act(&self.actions, move |service, now_unix, now| {
             service.unban(
                 crate::security::actions::ActionSurface::Mcp,
-                &caller,
+                crate::security::actions::ActionCaller {
+                    name: &caller,
+                    admin,
+                },
                 ip,
                 now_unix,
                 now,
@@ -448,9 +455,10 @@ impl SipnabMcp {
                        still holds, newest first ({all: true}). Off unless \
                        the operator enabled TFPS actions for MCP \
                        (--allow-action tfps:mcp); over HTTP it also needs an \
-                       actions-scope token. Each unban is journaled as a \
-                       revert and counts against the same rate limits as \
-                       tfps_ban. A ban TFPS already dropped is listed under \
+                       actions-scope token. Without the admin scope, only \
+                       the caller's own bans (another's id: not_yours). Each \
+                       unban is journaled as a revert and counts against the \
+                       same rate limits as tfps_ban. A ban TFPS already dropped is listed under \
                        lapsed, not unbanned; a ban sipnab cannot prove it \
                        placed is left alone under skipped_unknown. A refusal \
                        is an error result naming it, as for tfps_ban.",
@@ -488,11 +496,15 @@ impl SipnabMcp {
             }
         };
         let caller = crate::mcp::server::action_caller(&extensions);
+        let admin = crate::mcp::server::action_caller_is_admin(&extensions);
         act(&self.actions, move |service, now_unix, now| {
             service.revert(
                 crate::security::actions::Reverter::Surface {
                     surface: crate::security::actions::ActionSurface::Mcp,
-                    caller: &caller,
+                    caller: crate::security::actions::ActionCaller {
+                        name: &caller,
+                        admin,
+                    },
                 },
                 target,
                 now_unix,

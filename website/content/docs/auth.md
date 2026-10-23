@@ -92,14 +92,15 @@ Distribute the printed token to clients.
 ### Scope: what a token may reach
 
 `--token-scope` sets what a token may reach. It takes `full` (the default),
-`metrics`, `read`, `actions` or `audio`:
+`metrics`, `read`, `actions`, `admin` or `audio`:
 
 | Scope | Surface | What it reaches |
 |---|---|---|
 | `full` | either | Every read route or tool on the token's audience. Not the actions, and not the live-audio routes. |
 | `metrics` | REST API | `GET /metrics`, and nothing else. Every `/v1/` route answers `401`. |
 | `read` | MCP | Only the tools `tools/list` marks read-only. Calling any other tool gets a JSON-RPC error refusal, not a `401`. |
-| `actions` | either | Everything `full` reaches, plus the actions that change another system, such as a TFPS ban, where the server enables them with `--allow-action`. |
+| `actions` | either | Everything `full` reaches, plus the actions that change another system, such as a TFPS ban, where the server enables them with `--allow-action`. It lifts only the bans it placed. |
+| `admin` | either | Everything `actions` reaches, and it also lifts a ban another caller placed, for example one placed by a token since lost. |
 | `audio` | REST API | The live-audio routes under `/v1/calls/`, and nothing else. No other scope reaches them. |
 
 Give each client the narrowest scope that does its job:

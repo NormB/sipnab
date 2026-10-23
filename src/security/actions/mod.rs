@@ -20,8 +20,9 @@ use std::fmt;
 mod service;
 #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
 pub use service::{
-    ActionDone, ActionError, ActionService, PreviousRun, ReconcileReport, RevertFailure,
-    RevertReport, RevertTarget, Reverter, StartReport, TfpsActions, TfpsCtl, TfpsReply,
+    ActionCaller, ActionDone, ActionError, ActionService, PreviousRun, ReconcileReport,
+    RevertFailure, RevertReport, RevertTarget, Reverter, StartReport, TfpsActions, TfpsCtl,
+    TfpsReply,
 };
 
 /// A system sipnab can act on, when enabled.
