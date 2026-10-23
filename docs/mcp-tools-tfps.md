@@ -301,7 +301,9 @@ same enabling, rules and limits as `tfps_ban`.
 
 sipnab lifts only a ban it placed and still holds, as its journal records. A
 ban TFPS placed itself, or anyone else did, is an error result with `refusal`
-`not_owned`, and sipnab does not ask TFPS. Because an address rests for a
+`not_owned`, and sipnab does not ask TFPS. A ban belongs to the caller that
+placed it: another caller gets `refusal` `not_yours`, and the message names
+the owner, unless its token holds the `admin` scope. Because an address rests for a
 minute after an action on it, sipnab refuses an unban straight after the ban
 with `refusal` `rate`.
 
@@ -351,7 +353,9 @@ out, and `lapsed` the addresses whose ban TFPS had already dropped.
 which sipnab never lifts. `failed` lists reverts TFPS refused or sipnab could
 not ask it for, and `left` the ones a rate limit stopped before sipnab reached
 them. An `id` sipnab holds no ban for
-is an error result with `refusal` `not_owned`.
+is an error result with `refusal` `not_owned`. Without the `admin` scope, a
+caller backs out only the bans it placed: `all` covers those, and another
+caller's `id` is an error result with `refusal` `not_yours`.
 
 `readOnlyHint: false`, `destructiveHint: false`, `idempotentHint: true`:
 reverting what is already reverted changes nothing.

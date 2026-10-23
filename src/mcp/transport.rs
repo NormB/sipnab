@@ -268,7 +268,8 @@ mod http {
                 "scopes_supported": [
                     crate::auth::SCOPE_FULL,
                     crate::auth::SCOPE_READ,
-                    crate::auth::SCOPE_ACTIONS
+                    crate::auth::SCOPE_ACTIONS,
+                    crate::auth::SCOPE_ADMIN
                 ],
                 "bearer_methods_supported": ["header"],
                 "resource_documentation": "https://sipnab.com/docs/mcp-deploy/",
@@ -1167,7 +1168,8 @@ mod http {
                 serde_json::json!([
                     crate::auth::SCOPE_FULL,
                     crate::auth::SCOPE_READ,
-                    crate::auth::SCOPE_ACTIONS
+                    crate::auth::SCOPE_ACTIONS,
+                    crate::auth::SCOPE_ADMIN
                 ])
             );
             assert_eq!(

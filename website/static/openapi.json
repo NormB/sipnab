@@ -6815,7 +6815,7 @@
     },
     "/v1/actions/revert": {
       "post": {
-        "description": "**Off by default**, behind the same two locks as `POST /v1/tfps/ban`: TFPS actions enabled for REST (`--allow-action tfps:rest`) and a token with scope `actions`.\n\nLifts the ban one action placed (`{\"id\": \"a-...\"}`), or every ban sipnab placed that is still in force, newest first (`{\"all\": true}`). Each unban is journaled as a revert naming the action it backs out, and counts against the same rate limits as any action, so a stolen token cannot use revert-all to exceed them. TFPS is asked first what it holds: a ban it already dropped is reported under `lapsed`, not unbanned, and a ban sipnab cannot prove it placed is left alone and listed under `skipped_unknown`.\n\nOn the TFPS host, `sipnab --revert-actions all` does the same without a server, and works with actions switched off.",
+        "description": "**Off by default**, behind the same two locks as `POST /v1/tfps/ban`: TFPS actions enabled for REST (`--allow-action tfps:rest`) and a token with scope `actions`.\n\nLifts the ban one action placed (`{\"id\": \"a-...\"}`), or every ban sipnab placed that is still in force, newest first (`{\"all\": true}`). Without scope `admin`, a caller lifts only the bans it placed: `all` backs out those, and another caller's `id` is refused with `403` naming the owner. Each unban is journaled as a revert naming the action it backs out, and counts against the same rate limits as any action, so a stolen token cannot use revert-all to exceed them. TFPS is asked first what it holds: a ban it already dropped is reported under `lapsed`, not unbanned, and a ban sipnab cannot prove it placed is left alone and listed under `skipped_unknown`.\n\nOn the TFPS host, `sipnab --revert-actions all` does the same without a server, and works with actions switched off.",
         "operationId": "post_actions_revert",
         "requestBody": {
           "content": {
@@ -6857,7 +6857,7 @@
                 }
               }
             },
-            "description": "No bearer credential, one this server does not accept, or one without scope `actions`."
+            "description": "No bearer credential, one this server does not accept, or one without scope `actions` or `admin`."
           },
           "403": {
             "content": {
@@ -6867,7 +6867,7 @@
                 }
               }
             },
-            "description": "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them."
+            "description": "TFPS actions are not enabled for REST on this server, and `detail` names the flag and the config setting that enable them; or `id` names a ban another caller placed and this token does not hold scope `admin`."
           },
           "409": {
             "content": {
@@ -9468,7 +9468,7 @@
                 }
               }
             },
-            "description": "No bearer credential, one this server does not accept, or one without scope `actions`."
+            "description": "No bearer credential, one this server does not accept, or one without scope `actions` or `admin`."
           },
           "403": {
             "content": {
@@ -9785,7 +9785,7 @@
     },
     "/v1/tfps/unban": {
       "post": {
-        "description": "**Off by default.** Unbanning changes another system, which sipnab does only when the server was started with `--allow-action tfps:rest` (or `[actions] tfps = [\"rest\"]`) and the caller holds a token minted with scope `actions`. A `full` token and a static `--api-key` read every route and act on none.\n\nsipnab lifts only a ban it placed and still holds, as its actions journal records; a ban TFPS placed itself, or anyone else did, is refused with `409`. The same rate limits as `ban` apply, so an address banned a moment ago rests for its cooldown first. The request is journaled before TFPS is asked and its outcome after.",
+        "description": "**Off by default.** Unbanning changes another system, which sipnab does only when the server was started with `--allow-action tfps:rest` (or `[actions] tfps = [\"rest\"]`) and the caller holds a token minted with scope `actions`. A `full` token and a static `--api-key` read every route and act on none.\n\nsipnab lifts only a ban it placed and still holds, as its actions journal records; a ban TFPS placed itself, or anyone else did, is refused with `409`. A ban belongs to the caller that placed it: another caller is refused with `403` naming the owner, unless its token holds scope `admin`. The same rate limits as `ban` apply, so an address banned a moment ago rests for its cooldown first. The request is journaled before TFPS is asked and its outcome after.",
         "operationId": "post_tfps_unban",
         "requestBody": {
           "content": {
@@ -9827,7 +9827,7 @@
                 }
               }
             },
-            "description": "No bearer credential, one this server does not accept, or one without scope `actions`."
+            "description": "No bearer credential, one this server does not accept, or one without scope `actions` or `admin`."
           },
           "403": {
             "content": {
@@ -9837,7 +9837,7 @@
                 }
               }
             },
-            "description": "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them. `tfps_ctl` was not run."
+            "description": "TFPS actions are not enabled for REST on this server, and `detail` names the flag and the config setting that enable them; or another caller placed this ban and this token does not hold scope `admin`, and `detail` names the owner. `tfps_ctl` was not run."
           },
           "409": {
             "content": {

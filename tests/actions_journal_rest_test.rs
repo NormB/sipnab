@@ -278,6 +278,51 @@ fn sipnab_will_not_lift_a_ban_it_did_not_place() -> Result<(), TestError> {
     Ok(())
 }
 
+/// CWE-639: a ban belongs to the token that placed it. Another `actions`
+/// token gets 403 naming the owner, and TFPS is not asked; a token with the
+/// `admin` scope lifts it.
+#[test]
+fn another_tokens_ban_needs_the_admin_scope_to_lift() -> Result<(), TestError> {
+    let fake = Fake::new()?;
+    let journal = tempfile::tempdir()?;
+    let (_cfg, config) = quick_cooldown()?;
+    let srv = server(&fake, journal.path(), &["--config", &config])?;
+    let resp = srv.post_json_bearer(
+        "/v1/tfps/ban",
+        &ban_body("198.51.100.30"),
+        &token_for("ops-console"),
+    )?;
+    assert_eq!(resp.status, 200, "{}", resp.body);
+
+    // Past the one-second address cooldown, so the only refusal left is
+    // ownership.
+    std::thread::sleep(Duration::from_millis(1100));
+    let resp = srv.post_json_bearer(
+        "/v1/tfps/unban",
+        &ban_body("198.51.100.30"),
+        &token_for("intern"),
+    )?;
+    assert_eq!(resp.status, 403, "{}", resp.body);
+    assert!(
+        resp.body.contains("token:ops-console"),
+        "names the owner: {}",
+        resp.body
+    );
+    assert_eq!(fake.count("unban"), 0, "{}", fake.calls());
+
+    let admin = sipnab::auth::mint(
+        SIGNING_KEY.as_bytes(),
+        "lead",
+        chrono::Utc::now().timestamp() + 3600,
+        sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_ADMIN,
+    );
+    let resp = srv.post_json_bearer("/v1/tfps/unban", &ban_body("198.51.100.30"), &admin)?;
+    assert_eq!(resp.status, 200, "{}", resp.body);
+    assert_eq!(fake.count("unban"), 1, "{}", fake.calls());
+    Ok(())
+}
+
 #[test]
 fn the_sixth_action_a_minute_from_one_caller_is_refused_with_retry_after() -> Result<(), TestError>
 {

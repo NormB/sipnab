@@ -196,7 +196,7 @@ only.
 | `--api-token-ttl <SECS>` | Lifetime of a minted token. Default `3600`. |
 | `--mint-token` | Sign a token with the first configured key, print it, and exit. Starts no capture and no server. |
 | `--token-id <ID>` | The token's `id` (`jti`), used later for revocation. Defaults to a generated id. |
-| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions` or `audio` for the REST API. See **Scope** below. |
+| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions`, `admin` or `audio` for the REST API. See **Scope** below. |
 | `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
 
 **Scope.** Mint each client a token for the routes it needs:
@@ -205,7 +205,8 @@ only.
 |---|---|---|
 | `full` (default) | Every read route and `/metrics`. Not the action routes (`/v1/tfps/ban`, `/v1/tfps/unban`, `/v1/actions/revert`) and not the live-audio routes (`/v1/calls/live`). | A dashboard or script that reads calls and streams. |
 | `metrics` | `GET /metrics` only. Every other route returns `401`. | A Prometheus scrape job. |
-| `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. | The system that decides to block a source. |
+| `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. It lifts only the bans it placed. | The system that decides to block a source. |
+| `admin` | Everything `actions` reaches, and it also lifts a ban another caller placed. | An operator who must be able to lift any ban. |
 | `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
 
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
@@ -2247,6 +2248,8 @@ sipnab lifts only a ban it placed and still holds, as its journal records.
 - A ban TFPS placed itself, or anyone else did, answers `409`. TFPS is not
   asked.
 - So a stolen token cannot use sipnab to lift TFPS's own bans.
+- A ban belongs to the token that placed it. Another token answers `403`,
+  and `detail` names the owner, unless the token holds scope `admin`.
 - An address rests for a minute after an action on it.
   So an unban straight after the ban answers `429` with `Retry-After`.
 
@@ -2287,6 +2290,9 @@ Back out what sipnab did. That is either:
 It is off by default, behind the same
 two locks as the ban. Each unban counts against the same rate limits. So
 a stolen token cannot use it to act more often.
+
+Without scope `admin`, a token backs out only the bans it placed: `all`
+covers those, and another token's `id` answers `403` naming the owner.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $SIPNAB_ACTIONS_TOKEN" \
@@ -4778,7 +4784,7 @@ comments back from a capture, so no route shows them.
 | `200` | Success |
 | `400` | Malformed request (e.g. invalid SSRC on `/v1/streams/{id}`) |
 | `401` | Missing/invalid/expired/revoked bearer token |
-| `403` | A refused request. The causes: a `Host` header the server does not accept (see [Which `Host` names the API answers](#which-host-names-the-api-answers)); `/v1/dialogs/{call_id}/vcon` for a dialog that carries the run's `--content-deny-header`; a [`/v1/tfps/` action](#post-v1-tfps-ban) or [`/v1/actions/revert`](#post-v1-actions-revert) when the operator has not enabled actions for REST; an archive password sent from another host to [`/v1/captures/compare`](#get-v1-captures-compare) |
+| `403` | A refused request. The causes: a `Host` header the server does not accept (see [Which `Host` names the API answers](#which-host-names-the-api-answers)); `/v1/dialogs/{call_id}/vcon` for a dialog that carries the run's `--content-deny-header`; a [`/v1/tfps/` action](#post-v1-tfps-ban) or [`/v1/actions/revert`](#post-v1-actions-revert) when the operator has not enabled actions for REST, or when another token placed the ban and this one does not hold scope `admin`; an archive password sent from another host to [`/v1/captures/compare`](#get-v1-captures-compare) |
 | `404` | Unknown `call_id` or stream id — and every `call_id` on `/v1/dialogs/{call_id}/vcon` in a build without the `vcon` feature, which registers no route at that path |
 | `408` | The handler ran past the 30-second per-request cap. Every route sits behind it, so no slow client holds a connection slot open |
 | `409` | [`POST /v1/tfps/unban`](#post-v1-tfps-unban) or [`/v1/actions/revert`](#post-v1-actions-revert) for a ban sipnab did not place |

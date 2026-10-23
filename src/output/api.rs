@@ -1634,7 +1634,7 @@ fn action_guard(
     state: &ApiState,
     headers: &HeaderMap,
     client_ip: IpAddr,
-) -> Result<String, Problem> {
+) -> Result<GuardedCaller, Problem> {
     check_rate_limit(state, client_ip)?;
     let accepted = authenticate(state, headers, crate::auth::SCOPE_ACTIONS)?;
     state
@@ -1645,9 +1645,36 @@ fn action_guard(
         )
         .map_err(|refusal| Problem::detailed(StatusCode::FORBIDDEN, refusal.to_string()))?;
     Ok(match accepted {
-        Some(token) => crate::security::actions::token_caller(token.id.as_deref()),
-        None => format!("peer:{client_ip}"),
+        Some(token) => GuardedCaller {
+            name: crate::security::actions::token_caller(token.id.as_deref()),
+            admin: token.scope == crate::auth::SCOPE_ADMIN,
+        },
+        None => GuardedCaller {
+            name: format!("peer:{client_ip}"),
+            admin: false,
+        },
     })
+}
+
+/// The caller [`action_guard`] admitted: how the journal names it, and
+/// whether its token holds the `admin` scope, which lifts a ban another
+/// caller placed.
+struct GuardedCaller {
+    /// How the journal names the caller: `token:<id>`, `token` or
+    /// `peer:<address>`.
+    name: String,
+    /// The caller's token holds the `admin` scope.
+    admin: bool,
+}
+
+impl GuardedCaller {
+    /// The caller as the actions service takes it.
+    fn as_caller(&self) -> crate::security::actions::ActionCaller<'_> {
+        crate::security::actions::ActionCaller {
+            name: &self.name,
+            admin: self.admin,
+        }
+    }
 }
 
 /// Run one action through the service, off the async runtime: the service
@@ -1682,7 +1709,8 @@ where
 ///
 /// `403` the action is not enabled here; `422` the address or lifetime is
 /// not allowed; `429` a rate limit, with `Retry-After`; `409` sipnab did not
-/// place the ban it was asked to lift; `503` the journal cannot be used or
+/// place the ban it was asked to lift; `403` too when another caller placed it
+/// and the caller holds no `admin` scope; `503` the journal cannot be used or
 /// earlier actions are unresolved; `502` TFPS could not be asked.
 fn action_problem(e: crate::security::actions::ActionError) -> Problem {
     use crate::security::actions::ActionError as E;
@@ -1693,6 +1721,7 @@ fn action_problem(e: crate::security::actions::ActionError) -> Problem {
         E::Throttled(t) => Problem::detailed(StatusCode::TOO_MANY_REQUESTS, detail)
             .retry_after(t.retry_after().as_secs().max(1)),
         E::NotOwned => Problem::detailed(StatusCode::CONFLICT, detail),
+        E::NotYours { .. } => Problem::detailed(StatusCode::FORBIDDEN, detail),
         E::InDoubt(_) | E::JournalUnusable(_) => {
             Problem::detailed(StatusCode::SERVICE_UNAVAILABLE, detail)
         }
@@ -5155,7 +5184,7 @@ async fn get_tfps_labels(
     responses(
         (status = 200, description = "What TFPS did, with the action's journal `id`.", body = crate::security::actions::ActionDone),
         (status = 400, description = "The body was not a JSON object with an `ip` that is an IPv4 address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 401, description = "No bearer credential, one this server does not accept, or one without scope `actions`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, one this server does not accept, or one without scope `actions` or `admin`.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 403, description = "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 422, description = "The address is one sipnab never bans, or the lifetime is `0` (forever) or over the maximum. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
@@ -5170,7 +5199,7 @@ async fn post_tfps_ban(
     headers: HeaderMap,
     body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
 ) -> Result<impl IntoResponse, Problem> {
-    let caller = action_guard(&state, &headers, addr.ip())?;
+    let caller = action_guard(&state, &headers, addr.ip())?.name;
     let req: TfpsBanRequest = object_body(body)?;
     let ip = tfps_ip(&req.ip)?;
     let ttl = req.ttl_secs;
@@ -5193,14 +5222,14 @@ async fn post_tfps_ban(
     path = "/v1/tfps/unban",
     tag = "tfps",
     summary = "Ask TFPS to release a source sipnab banned",
-    description = "**Off by default.** Unbanning changes another system, which sipnab does only when the server was started with `--allow-action tfps:rest` (or `[actions] tfps = [\"rest\"]`) and the caller holds a token minted with scope `actions`. A `full` token and a static `--api-key` read every route and act on none.\n\nsipnab lifts only a ban it placed and still holds, as its actions journal records; a ban TFPS placed itself, or anyone else did, is refused with `409`. The same rate limits as `ban` apply, so an address banned a moment ago rests for its cooldown first. The request is journaled before TFPS is asked and its outcome after.",
+    description = "**Off by default.** Unbanning changes another system, which sipnab does only when the server was started with `--allow-action tfps:rest` (or `[actions] tfps = [\"rest\"]`) and the caller holds a token minted with scope `actions`. A `full` token and a static `--api-key` read every route and act on none.\n\nsipnab lifts only a ban it placed and still holds, as its actions journal records; a ban TFPS placed itself, or anyone else did, is refused with `409`. A ban belongs to the caller that placed it: another caller is refused with `403` naming the owner, unless its token holds scope `admin`. The same rate limits as `ban` apply, so an address banned a moment ago rests for its cooldown first. The request is journaled before TFPS is asked and its outcome after.",
     request_body(content = TfpsUnbanRequest, description = "The source to release. Unknown keys are refused, and so is a JSON array."),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "What TFPS did, with the action's journal `id`.", body = crate::security::actions::ActionDone),
         (status = 400, description = "The body was not a JSON object with an `ip` that is an IPv4 address, or it carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 401, description = "No bearer credential, one this server does not accept, or one without scope `actions`.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 403, description = "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, one this server does not accept, or one without scope `actions` or `admin`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 403, description = "TFPS actions are not enabled for REST on this server, and `detail` names the flag and the config setting that enable them; or another caller placed this ban and this token does not hold scope `admin`, and `detail` names the owner. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 409, description = "sipnab did not place this ban, or it has already ended, so sipnab will not lift it. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 429, description = "An action rate limit: the server's, the caller's, or the address's. `Retry-After` says when to try again. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
@@ -5220,7 +5249,7 @@ async fn post_tfps_unban(
     run_action(&state, move |service, now_unix, now| {
         service.unban(
             crate::security::actions::ActionSurface::Rest,
-            &caller,
+            caller.as_caller(),
             ip,
             now_unix,
             now,
@@ -5235,14 +5264,14 @@ async fn post_tfps_unban(
     path = "/v1/actions/revert",
     tag = "tfps",
     summary = "Back out a ban sipnab placed, or every one",
-    description = "**Off by default**, behind the same two locks as `POST /v1/tfps/ban`: TFPS actions enabled for REST (`--allow-action tfps:rest`) and a token with scope `actions`.\n\nLifts the ban one action placed (`{\"id\": \"a-...\"}`), or every ban sipnab placed that is still in force, newest first (`{\"all\": true}`). Each unban is journaled as a revert naming the action it backs out, and counts against the same rate limits as any action, so a stolen token cannot use revert-all to exceed them. TFPS is asked first what it holds: a ban it already dropped is reported under `lapsed`, not unbanned, and a ban sipnab cannot prove it placed is left alone and listed under `skipped_unknown`.\n\nOn the TFPS host, `sipnab --revert-actions all` does the same without a server, and works with actions switched off.",
+    description = "**Off by default**, behind the same two locks as `POST /v1/tfps/ban`: TFPS actions enabled for REST (`--allow-action tfps:rest`) and a token with scope `actions`.\n\nLifts the ban one action placed (`{\"id\": \"a-...\"}`), or every ban sipnab placed that is still in force, newest first (`{\"all\": true}`). Without scope `admin`, a caller lifts only the bans it placed: `all` backs out those, and another caller's `id` is refused with `403` naming the owner. Each unban is journaled as a revert naming the action it backs out, and counts against the same rate limits as any action, so a stolen token cannot use revert-all to exceed them. TFPS is asked first what it holds: a ban it already dropped is reported under `lapsed`, not unbanned, and a ban sipnab cannot prove it placed is left alone and listed under `skipped_unknown`.\n\nOn the TFPS host, `sipnab --revert-actions all` does the same without a server, and works with actions switched off.",
     request_body(content = ActionsRevertRequest, description = "Exactly one of `id` or `all: true`. Unknown keys are refused, and so is a JSON array."),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "What was backed out, what had already ended, what was left alone, and what TFPS refused.", body = crate::security::actions::RevertReport),
         (status = 400, description = "The body did not name exactly one of a non-empty `id` or `all: true`, or carried an unknown key.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 401, description = "No bearer credential, one this server does not accept, or one without scope `actions`.", body = schema::ProblemJson, content_type = "application/problem+json"),
-        (status = 403, description = "TFPS actions are not enabled for REST on this server; `detail` names the flag and the config setting that enable them.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, one this server does not accept, or one without scope `actions` or `admin`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 403, description = "TFPS actions are not enabled for REST on this server, and `detail` names the flag and the config setting that enable them; or `id` names a ban another caller placed and this token does not hold scope `admin`.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 409, description = "`id` names no ban sipnab holds. `tfps_ctl` was not run.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 413, description = "The body is over the 1 MiB request limit.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 429, description = "An action rate limit refused the first unban. `Retry-After` says when to try again. A limit reached part way through `all` is a `200` listing what was `left`.", body = schema::ProblemJson, content_type = "application/problem+json"),
@@ -5263,7 +5292,7 @@ async fn post_actions_revert(
         service.revert(
             crate::security::actions::Reverter::Surface {
                 surface: crate::security::actions::ActionSurface::Rest,
-                caller: &caller,
+                caller: caller.as_caller(),
             },
             target,
             now_unix,
@@ -12731,6 +12760,83 @@ mod tests {
             .await
             .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        Ok(())
+    }
+
+    /// Routes that answer without credentials, each by design.
+    ///
+    /// `/health` is a liveness probe a load balancer calls with no key.
+    const UNAUTHENTICATED_ROUTES: &[&str] = &["/health"];
+
+    /// CWE-862 (docs/assurance-case.md): every documented REST operation
+    /// refuses a request that carries no credentials, except the routes in
+    /// [`UNAUTHENTICATED_ROUTES`]. The operations come from the OpenAPI
+    /// document, which `openapi_contract_test` proves lists exactly the routes
+    /// `build_router` serves, so a route added later is swept with the rest.
+    #[tokio::test]
+    async fn every_rest_route_refuses_a_request_without_credentials() -> Result<(), TestError> {
+        let doc: serde_json::Value =
+            serde_json::from_str(&openapi_json()).map_err(|e| format!("openapi: {e:?}"))?;
+        let paths = doc["paths"]
+            .as_object()
+            .ok_or("the document declares paths")?;
+        let mut swept = 0usize;
+        let mut open = Vec::new();
+        for (path, item) in paths {
+            let item = item.as_object().ok_or("a path item is an object")?;
+            for method in ["get", "put", "post", "delete", "patch"] {
+                if !item.contains_key(method) {
+                    continue;
+                }
+                // A placeholder for every `{param}`: authentication must be
+                // decided before the parameter is looked at.
+                let mut uri = String::new();
+                for segment in path.split('/') {
+                    if !uri.is_empty() || path.starts_with('/') {
+                        uri.push('/');
+                    }
+                    if segment.starts_with('{') && segment.ends_with('}') {
+                        uri.push_str("x1");
+                    } else {
+                        uri.push_str(segment);
+                    }
+                }
+                let uri = uri.replacen("//", "/", 1);
+                let mut req = Request::builder()
+                    .method(method.to_ascii_uppercase().as_str())
+                    .uri(&uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .map_err(|e| format!("build {method} {uri}: {e:?}"))?;
+                req.extensions_mut().insert(ConnectInfo(SocketAddr::new(
+                    IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                    12345,
+                )));
+                let app = build_router(make_state_with_key("secret-key"));
+                let status = app
+                    .oneshot(req)
+                    .await
+                    .map_err(|e| format!("oneshot {method} {uri}: {e:?}"))?
+                    .status();
+                swept += 1;
+                let exempt = UNAUTHENTICATED_ROUTES.contains(&path.as_str());
+                if exempt == (status == StatusCode::UNAUTHORIZED) {
+                    open.push(format!(
+                        "{} {path} -> {status}",
+                        method.to_ascii_uppercase()
+                    ));
+                }
+            }
+        }
+        assert!(
+            swept > 30,
+            "the sweep reached the documented routes: {swept}"
+        );
+        assert!(
+            open.is_empty(),
+            "routes that did not answer 401 without credentials (or an exempt route that did):\n{}",
+            open.join("\n")
+        );
         Ok(())
     }
 
