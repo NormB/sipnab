@@ -2,7 +2,7 @@
 $ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --group-by call-id --delta-time
 
 ── call-id 1-1966@10.0.2.20 ──
-+0.000s 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
++0.000s 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
 INVITE sip:test@10.0.2.15:5060 SIP/2.0
 Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0
 From: "PCMU/8000" <sip:sipp@10.0.2.20:5060>;tag=1
@@ -23,7 +23,7 @@ m=audio 6000 RTP/AVP 0
 a=rtpmap:0 PCMU/8000
 a=recvonly
 +0.000s 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
-+0.004s 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
++0.004s 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK (SDP) UDP
 SIP/2.0 200 OK
 Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0
 From: "PCMU/8000" <sip:sipp@10.0.2.20:5060>;tag=1
@@ -57,7 +57,7 @@ a=ptime:20
 +0.000s 10.0.2.20:5060 -> 10.0.2.15:5060 200 OK UDP
 
 ── call-id 1-1968@10.0.2.20 ──
-+0.115s 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
++0.115s 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
 INVITE sip:test@10.0.2.15:5060 SIP/2.0
 Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1968-1-0
 From: "PCMA/8000" <sip:sipp@10.0.2.20:5060>;tag=1
@@ -78,7 +78,7 @@ m=audio 6000 RTP/AVP 8
 a=rtpmap:8 PCMA/8000
 a=recvonly
 +0.000s 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
-+0.004s 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
++0.004s 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK (SDP) UDP
 SIP/2.0 200 OK
 Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1968-1-0
 From: "PCMA/8000" <sip:sipp@10.0.2.20:5060>;tag=1

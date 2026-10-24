@@ -193,6 +193,8 @@ impl SipnabSession {
                         "method": m.method.as_ref().map(|m| m.as_str()),
                         "status_code": m.status_code,
                         "reason": m.reason,
+                        // The label every other surface draws, `(SDP)` included.
+                        "label": m.label(),
                         "src_addr": m.src_addr.to_string(),
                         "src_port": m.src_port,
                         "dst_addr": m.dst_addr.to_string(),

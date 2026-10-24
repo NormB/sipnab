@@ -222,6 +222,17 @@ capture unmarked:
 12:57:47.360 0.0.0.0:0 -> 0.0.0.0:0 REGISTER TCP origin=uprobe
 ```
 
+A message that carries SDP has ` (SDP)` after its method or status, as in
+`INVITE (SDP)` or `200 OK (SDP)`. The `-N` lines, the TUI ladder and detail
+title, `--call-report`, the Mermaid ladder, `analyze_vcon` and the browser
+analyzer all use the same label. A body counts as SDP when its `Content-Type`
+is `application/sdp` in any case, or when it is `multipart/*` with an
+`application/sdp` part:
+
+```text
+14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
+```
+
 `schema_version` increments on breaking field changes. Pin your consumers to
 it.
 

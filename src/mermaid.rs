@@ -377,15 +377,7 @@ pub fn dialog_rows(
     messages
         .iter()
         .map(|m| {
-            let label = if m.is_request {
-                m.method.as_ref().map_or("?", |x| x.as_str()).to_string()
-            } else {
-                format!(
-                    "{} {}",
-                    m.status_code.unwrap_or(0),
-                    m.reason.as_deref().unwrap_or("")
-                )
-            };
+            let label = m.label();
             let mut parts: Vec<String> = Vec::new();
             if let Some(first) = first {
                 let ms = m.timestamp.signed_duration_since(first).num_milliseconds();
@@ -816,6 +808,24 @@ mod dialog_rows_tests {
             MAX_MESSAGES,
         );
         assert!(out.contains("PDD 847ms"), "{out}");
+        Ok(())
+    }
+}
+
+/// SDP-LABEL2: a message that carries SDP is labeled `(SDP)` here, by
+/// `SipMessage::label`.
+#[cfg(test)]
+mod sdp_label_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    #[test]
+    fn a_ladder_arrow_marks_a_message_that_carries_sdp() -> Result<(), TestError> {
+        let (offer, answer) = crate::test_utils::sdp_offer_and_answer("mermaid-sdp")?;
+        let rows = dialog_rows(&[offer, answer], None);
+        let labels: Vec<&str> = rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, ["INVITE (SDP)", "200 OK (SDP)"]);
         Ok(())
     }
 }

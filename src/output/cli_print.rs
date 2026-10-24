@@ -152,10 +152,9 @@ pub fn format_sip_message(
             "CANCEL" => RED,
             _ => YELLOW,
         };
-        (method.to_string(), color)
+        (msg.label(), color)
     } else {
         let code = msg.status_code.unwrap_or(0);
-        let reason = msg.reason.as_deref().unwrap_or("");
         let color = match code {
             100..=199 => CYAN,
             200..=299 => GREEN,
@@ -163,7 +162,7 @@ pub fn format_sip_message(
             400..=699 => BOLD_RED,
             _ => RESET,
         };
-        (format!("{code} {reason}"), color)
+        (msg.label(), color)
     };
 
     // Build the header line
@@ -715,6 +714,29 @@ mod tests {
             output.contains("+0.000s"),
             "should show zero delta when no previous"
         );
+        Ok(())
+    }
+}
+
+/// SDP-LABEL2: a message that carries SDP is labeled `(SDP)` here, by
+/// `SipMessage::label`.
+#[cfg(test)]
+mod sdp_label_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    #[test]
+    fn a_printed_message_marks_sdp() -> Result<(), TestError> {
+        let (offer, answer) = crate::test_utils::sdp_offer_and_answer("print-sdp")?;
+        let opts = OutputOptions {
+            color: ColorMode::Never,
+            ..OutputOptions::default()
+        };
+        let line = format_sip_message(&offer, &opts, None);
+        assert!(line.contains("INVITE (SDP)"), "{line}");
+        let line = format_sip_message(&answer, &opts, None);
+        assert!(line.contains("200 OK (SDP)"), "{line}");
         Ok(())
     }
 }

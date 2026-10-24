@@ -263,13 +263,13 @@ The answer is a Mermaid `sequenceDiagram` of the caller's leg.
     participant p0 as 192.0.2.10:5090
     participant p1 as 192.0.2.10:5080
 
-    p0->>p1: INVITE
+    p0->>p1: INVITE (SDP)
     Note right of p1: +0.000s
     p1-->>p0: 100 Trying
     Note right of p0: +0.001s
     p1-->>p0: 180 Ringing
     Note right of p0: +0.003s · PDD 3ms
-    p1-->>p0: 200 OK
+    p1-->>p0: 200 OK (SDP)
     Note right of p0: +0.041s
     p0->>p1: ACK
     Note right of p1: +0.041s

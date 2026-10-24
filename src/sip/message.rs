@@ -233,6 +233,32 @@ impl SipMessage {
         }
     }
 
+    /// The message's label on every surface that shows one: the method of a
+    /// request, the status code and reason of a response, then ` (SDP)` when
+    /// [`Self::carries_sdp`].
+    ///
+    /// A response with no reason phrase is its code alone; a message whose
+    /// method or status code was not parsed is `request` or `response`.
+    #[must_use]
+    pub fn label(&self) -> String {
+        let head = if self.is_request {
+            self.method
+                .as_ref()
+                .map_or_else(|| "request".to_string(), ToString::to_string)
+        } else {
+            match (self.status_code, self.reason.as_deref()) {
+                (Some(code), Some(reason)) if !reason.is_empty() => format!("{code} {reason}"),
+                (Some(code), _) => code.to_string(),
+                (None, _) => "response".to_string(),
+            }
+        };
+        if self.carries_sdp() {
+            format!("{head} (SDP)")
+        } else {
+            head
+        }
+    }
+
     /// Parse the SDP body, if the `Content-Type` is `application/sdp`.
     ///
     /// Returns `None` if the content type is not SDP or if parsing fails.
@@ -1467,6 +1493,71 @@ mod tests {
             !invite_with(ct, &multipart("application/isup"))?.carries_sdp(),
             "no SDP part, no SDP"
         );
+        Ok(())
+    }
+
+    // ── SDP-LABEL2: one label for every surface ────────────────────────
+
+    fn response_with(
+        first: &str,
+        content_type: Option<&str>,
+        body: &[u8],
+    ) -> Result<SipMessage, TestError> {
+        let ct = content_type.map(|ct| format!("Content-Type: {ct}"));
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-sdp",
+            "From: <sip:a@example.com>;tag=1",
+            "To: <sip:b@example.com>;tag=2",
+            "Call-ID: sdp-label@example.com",
+            "CSeq: 1 INVITE",
+        ];
+        if let Some(ct) = ct.as_deref() {
+            headers.push(ct);
+        }
+        parse_msg(first, &headers, body)
+    }
+
+    #[test]
+    fn a_label_names_the_method_or_the_status_and_marks_sdp() -> Result<(), TestError> {
+        assert_eq!(
+            invite_with(Some("application/sdp"), SDP_BODY)?.label(),
+            "INVITE (SDP)"
+        );
+        assert_eq!(invite_with(None, b"")?.label(), "INVITE");
+        assert_eq!(
+            response_with("SIP/2.0 200 OK", Some("application/sdp"), SDP_BODY)?.label(),
+            "200 OK (SDP)"
+        );
+        assert_eq!(
+            response_with("SIP/2.0 180 Ringing", None, b"")?.label(),
+            "180 Ringing"
+        );
+        Ok(())
+    }
+
+    /// A response with no reason phrase is its code alone, with no trailing
+    /// space before an `(SDP)` mark or the end of the label.
+    #[test]
+    fn a_response_without_a_reason_is_labeled_by_its_code() -> Result<(), TestError> {
+        let mut m = response_with("SIP/2.0 200 OK", Some("application/sdp"), SDP_BODY)?;
+        m.reason = None;
+        assert_eq!(m.label(), "200 (SDP)");
+        let mut m = response_with("SIP/2.0 180 Ringing", None, b"")?;
+        m.reason = None;
+        assert_eq!(m.label(), "180");
+        Ok(())
+    }
+
+    /// A message whose method or status code was not parsed says which kind
+    /// of message it is, rather than `?` or a status of 0.
+    #[test]
+    fn a_message_missing_its_method_or_code_says_what_it_is() -> Result<(), TestError> {
+        let mut m = invite_with(None, b"")?;
+        m.method = None;
+        assert_eq!(m.label(), "request");
+        let mut m = response_with("SIP/2.0 180 Ringing", None, b"")?;
+        m.status_code = None;
+        assert_eq!(m.label(), "response");
         Ok(())
     }
 }

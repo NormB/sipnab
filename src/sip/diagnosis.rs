@@ -806,18 +806,7 @@ fn message_identity(m: &SipMessage) -> MessageIdentity<'_> {
 
 /// What a message is, in the words the report surfaces already use.
 fn message_summary(m: &SipMessage) -> String {
-    if m.is_request {
-        match &m.method {
-            Some(method) => method.to_string(),
-            None => "request".to_string(),
-        }
-    } else {
-        match (m.status_code, &m.reason) {
-            (Some(code), Some(reason)) => format!("{code} {reason}"),
-            (Some(code), None) => code.to_string(),
-            _ => "response".to_string(),
-        }
-    }
+    m.label()
 }
 
 /// The media endpoints one copy of a message advertises, in `m=` order.
@@ -3638,6 +3627,23 @@ mod tests {
             warn < SignalingThresholds::BUILT_IN.post_dial_delay_sec,
             "a warning at or above the page threshold never fires first"
         );
+        Ok(())
+    }
+}
+
+/// SDP-LABEL2: a message that carries SDP is labeled `(SDP)` here, by
+/// `SipMessage::label`.
+#[cfg(test)]
+mod sdp_label_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    #[test]
+    fn the_summary_marks_a_message_that_carries_sdp() -> Result<(), TestError> {
+        let (offer, answer) = crate::test_utils::sdp_offer_and_answer("diagnosis-sdp")?;
+        assert_eq!(message_summary(&offer), "INVITE (SDP)");
+        assert_eq!(message_summary(&answer), "200 OK (SDP)");
         Ok(())
     }
 }
