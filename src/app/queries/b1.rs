@@ -6,7 +6,7 @@
 //! function and hands the answer to [`QueryContext::answer`].
 
 use super::QueryContext;
-use crate::output::query::{DEFAULT_ROWS, aggregate, timeline};
+use crate::output::query::{DEFAULT_ROWS, aggregate, rates, timeline};
 
 /// Render batch B1's queries that this command line asked for.
 ///
@@ -15,7 +15,7 @@ use crate::output::query::{DEFAULT_ROWS, aggregate, timeline};
 /// `false` when one was asked for and could not be answered or written;
 /// `true` otherwise, including when none was asked for.
 pub(super) fn render(ctx: &QueryContext<'_>) -> bool {
-    render_timeline(ctx) && render_count_by(ctx)
+    render_timeline(ctx) && render_count_by(ctx) && render_rates_by(ctx)
 }
 
 /// `--count-by`: the dialogs the run's filter admits, counted by one
@@ -24,15 +24,46 @@ fn render_count_by(ctx: &QueryContext<'_>) -> bool {
     let Some(key) = ctx.cli.aggregate_args.count_by.as_deref() else {
         return true;
     };
-    let top = ctx
-        .cli
-        .aggregate_args
-        .top
-        .map_or(DEFAULT_ROWS, |n| usize::try_from(n).unwrap_or(usize::MAX));
-    let answer = aggregate::aggregate(&ctx.selection(), key, top, ctx.capture_identity());
+    let answer = aggregate::aggregate(&ctx.selection(), key, top(ctx), ctx.capture_identity());
     ctx.answer("--count-by", &answer, |format| {
         aggregate::render(&answer, format)
     })
+}
+
+/// `--rates-by`: carrier metrics for each value of one dimension over the
+/// dialogs the run's filter admits, cut at `--top`, the answer
+/// `GET /v1/dialogs/rates` returns with every metric.
+fn render_rates_by(ctx: &QueryContext<'_>) -> bool {
+    let Some(key) = ctx.cli.aggregate_args.rates_by.as_deref() else {
+        return true;
+    };
+    let wanted = rates::all_metrics();
+    let delay = crate::rtp::quality::MosDelay::from_capture(ctx.streams);
+    let answer = match rates::rates(
+        &ctx.selection(),
+        delay,
+        key,
+        &wanted,
+        top(ctx),
+        ctx.capture_identity(),
+    ) {
+        Ok(answer) => answer,
+        Err(why) => {
+            tracing::error!("--rates-by: {why}");
+            return false;
+        }
+    };
+    ctx.answer("--rates-by", &answer, |format| {
+        rates::render(&answer, format)
+    })
+}
+
+/// How many rows a ranked query keeps: `--top`, or REST's default page.
+fn top(ctx: &QueryContext<'_>) -> usize {
+    ctx.cli
+        .aggregate_args
+        .top
+        .map_or(DEFAULT_ROWS, |n| usize::try_from(n).unwrap_or(usize::MAX))
 }
 
 /// `--timeline`: the call-volume histogram over the dialogs the run's filter

@@ -539,6 +539,16 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--rates-by`: a groupable dimension or one of the three only carrier
+    // metrics group by; any other refused with the list.
+    (
+        "rates-by",
+        Kind::Text {
+            accept: &["state", "hour", "to_domain", "next_hop"],
+            reject: &[("bogus", 2), ("", 2)],
+        },
+        &[],
+    ),
     // `--top`: how many rows a ranked query keeps, from one up; it needs a
     // ranked query to cut.
     (

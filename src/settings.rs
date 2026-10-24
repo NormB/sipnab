@@ -616,6 +616,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("quality-threshold", Link::Pending),
     ("quiet", Link::PerRun),
     ("quiet-bad-parse", Link::Pending),
+    ("rates-by", Link::PerRun),
     (
         "reassembly-ttl",
         Link::Key("limits", "reassembly_ttl_secs", Merge::Override),

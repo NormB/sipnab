@@ -186,7 +186,7 @@ Per group, the carrier metrics — ASR, NER, ACD, PDD percentiles, MOS, retransm
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: rates per dimension are one-shot facts, but no flag computes them (PAR5) |
+| CLI | `--rates-by` |
 | TUI | `CarrierMetrics` |
 | REST | `/v1/dialogs/rates` |
 | MCP | `group_dialogs` |

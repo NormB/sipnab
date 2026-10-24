@@ -1250,8 +1250,11 @@ Print the call volume over time: how many dialogs opened in each fixed\-width in
 \fB\-\-count\-by\fR \fIDIMENSION\fR
 Count the dialogs by one dimension: how many fall in each value, largest first, ties broken by value.
 .TP
+\fB\-\-rates\-by\fR \fIDIMENSION\fR
+Print the carrier metrics of each value of one dimension: ASR, NER, ACD, post\-dial delay (p50, p95), the 10th\-percentile MOS and the retransmit rate.
+.TP
 \fB\-\-top\fR \fIN\fR
-How many rows a ranked query keeps (\fB\-\-count\-by\fR); the rest are summed. 50 when not given, the default page REST returns.
+How many rows a ranked query keeps (\fB\-\-count\-by\fR, \fB\-\-rates\-by\fR); the rest are summed. 50 when not given, the default page REST returns.
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR

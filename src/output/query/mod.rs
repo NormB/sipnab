@@ -19,7 +19,27 @@ use std::fmt::Write as _;
 use crate::output::ReportFormat;
 
 pub mod aggregate;
+pub mod rates;
 pub mod timeline;
+
+/// Whether `key` is one of `dims`, the dimensions a group-by answer accepts.
+///
+/// # Errors
+///
+/// The refusal every group-by surface gives for any other key, listing the
+/// real ones. `narrow_with` names how the surface narrows a count instead of
+/// adding a second dimension: `` `filter` `` on REST, `--filter` on the CLI.
+pub fn check_dimension_in(key: &str, dims: &[&str], narrow_with: &str) -> Result<(), String> {
+    if dims.contains(&key) {
+        Ok(())
+    } else {
+        Err(format!(
+            "cannot group by '{key}'; one of: {}. One dimension only — narrow \
+             with {narrow_with} rather than adding a second.",
+            dims.join(", ")
+        ))
+    }
+}
 
 /// How many rows a ranked answer keeps when the caller names no limit:
 /// REST's default page (`top_n`, `limit`) and the CLI's `--top`.

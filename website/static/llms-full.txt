@@ -18629,7 +18629,8 @@ out the end-of-run summary on stderr.
 |------|-------|---------|-------|-------------|
 | `--timeline` | `[=<SECONDS>]` | `60` | Unreleased | Print how many dialogs opened in each interval of this many seconds, oldest first. Intervals align to the epoch, and an empty interval shows a count of zero. `--json` prints the shape of `GET /v1/timeline`. `0` exits 2. A span of more than 100,000 intervals exits 1 |
 | `--count-by` | `<DIMENSION>` | | Unreleased | Count the dialogs by one dimension, largest first: `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip` or `rtp.codec`. `--json` prints the shape of `GET /v1/aggregate`. Any other dimension exits 2 |
-| `--top` | `<N>` | `50` | Unreleased | How many values `--count-by` keeps. One line sums the rest, as `other_count` does under `--json`. Needs `--count-by`; `0` exits 2 |
+| `--rates-by` | `<DIMENSION>` | | Unreleased | Print the carrier metrics of each value of one dimension: ASR, NER, ACD, post-dial delay, the tenth-percentile MOS and the retransmit rate. Takes every `--count-by` dimension, plus `to_domain`, `hour` and `next_hop`. `--json` prints the shape of `GET /v1/dialogs/rates`. Any other dimension exits 2 |
+| `--top` | `<N>` | `50` | Unreleased | How many values `--count-by` or `--rates-by` keeps. One line sums the rest, as `other_count` does under `--json`. Needs `--count-by` or `--rates-by`; `0` exits 2 |
 
 ### Call volume over time
 
@@ -18751,6 +18752,67 @@ sipnab -I tests/pcap-samples/sip-problem-call.pcap --count-by state --json --no-
 
 The REST route `GET /v1/aggregate?by=state` and the MCP tool
 `aggregate_dialogs` answer the same question about a loaded capture.
+
+### Carrier metrics by one dimension
+
+Print the answer-seizure ratio (ASR), network effectiveness ratio (NER),
+average call duration (ACD), post-dial delay (PDD), the tenth-percentile MOS and
+the retransmit rate for each call state:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --rates-by state --no-cli-print --quiet
+```
+
+```text
+Carrier metrics by state: 2 values, 5 dialogs
+Value      Dialogs  asr  ner  acd   pdd_p50  pdd_p95  mos_p10  retransmit_rate
+------------------------------------------------------------------------------
+Failed     4        0    50   -     -        -        -        0
+Completed  1        100  100  17.9  850      850      -        0
+Units: asr percent, ner percent, acd seconds, pdd_p50 milliseconds, pdd_p95 milliseconds, mos_p10 mos, retransmit_rate retransmissions per dialog
+-: the group's population could not support the figure; --json names why in not_grounded
+```
+
+- `asr` and `ner` are percentages of the INVITEs that reached a final
+  response. NER also credits the outcomes the far end decided, such as busy
+  and decline, so it can be higher than ASR.
+- `acd` is the mean conversation time of the calls answered and torn down
+  inside the capture.
+- `-` means the group holds no call to compute the figure from. Here the far
+  end answered none of the failed calls, so that group has no ACD.
+
+`--rates-by` takes every `--count-by` dimension, plus `to_domain`, `hour` and
+`next_hop`. `--top` keeps the largest groups and sums the rest:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --rates-by response_code --top 2 --no-cli-print --quiet
+```
+
+```text
+Carrier metrics by response_code: 5 values, 5 dialogs
+Value  Dialogs  asr  ner  acd   pdd_p50  pdd_p95  mos_p10  retransmit_rate
+--------------------------------------------------------------------------
+200    1        100  100  17.9  850      850      -        0
+404    1        0    0    -     -        -        -        0
+Other: 3 dialogs in 3 values past --top 2
+Units: asr percent, ner percent, acd seconds, pdd_p50 milliseconds, pdd_p95 milliseconds, mos_p10 mos, retransmit_rate retransmissions per dialog
+-: the group's population could not support the figure; --json names why in not_grounded
+```
+
+Under `--json`, each group carries its population, and `not_grounded` says why
+each `null` figure is missing:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --rates-by state --json --no-cli-print --quiet | jq -c '.groups[] | {value, asr: .metrics.asr, ner: .metrics.ner, acd_why: .not_grounded.acd}'
+```
+
+```json
+{"value":"Failed","asr":0.0,"ner":50.0,"acd_why":"no call in this group was both answered and torn down inside the capture, so no conversation was timed"}
+{"value":"Completed","asr":100.0,"ner":100.0,"acd_why":null}
+```
+
+The REST route `GET /v1/dialogs/rates?by=state` and the MCP tool
+`group_dialogs` answer the same question about a loaded capture.
 
 ## Dialog
 
@@ -20309,6 +20371,14 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (`-L`) in one ru
 **What to do:** Report the message with the command line. Running without `-c` avoids this step.
 
 **Exit code:** 2.
+
+### `--rates-by: {why}`
+
+`--rates-by` asked the metric table for a metric it has no way to compute. Every metric `--rates-by` computes comes from that same table, so this message means a defect in sipnab, not in the capture or the command line. sipnab prints no metrics.
+
+**What to do:** Report it with the command line and the sipnab version. `--count-by` with the same dimension still counts the dialogs.
+
+**Exit code:** 1.
 
 ### `--timeline: {e}`
 

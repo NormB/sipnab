@@ -2395,52 +2395,16 @@ async fn get_rates(
     // The dimension set is the shared groupable list plus the three this route
     // and the MCP `group_dialogs` tool add on top.
     let key = params.by.as_deref().map(str::trim).unwrap_or("");
-    let dims: Vec<&str> = crate::sip::dialog::GROUPABLE
-        .iter()
-        .chain(crate::sip::group_metrics::EXTRA_DIMENSIONS)
-        .copied()
-        .collect();
-    if !dims.contains(&key) {
-        return Err(Problem::detailed(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "cannot group by '{key}'; one of: {}. One dimension only — narrow \
-                 with `filter` rather than adding a second.",
-                dims.join(", ")
-            ),
-        ));
-    }
+    crate::output::query::rates::check_dimension(key, "`filter`")
+        .map_err(|why| Problem::detailed(StatusCode::BAD_REQUEST, why))?;
 
-    // Metrics: the requested set (sorted, de-duplicated), or all of them. An
-    // unknown name is a 400, the same rule `group_dialogs` applies, so a
-    // misspelled metric is named rather than silently dropped.
-    let all_metrics: Vec<String> = crate::sip::group_metrics::METRICS
-        .iter()
-        .map(|(name, _)| (*name).to_string())
-        .collect();
-    let wanted: Vec<String> = match params.metrics.as_deref() {
-        Some(csv) => {
-            let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-            for m in csv.split(',').map(str::trim).filter(|s| !s.is_empty()) {
-                if !crate::sip::group_metrics::METRICS
-                    .iter()
-                    .any(|(n, _)| *n == m)
-                {
-                    return Err(Problem::detailed(
-                        StatusCode::BAD_REQUEST,
-                        format!("unknown metric '{m}'; one of: {}", all_metrics.join(", ")),
-                    ));
-                }
-                set.insert(m.to_string());
-            }
-            if set.is_empty() {
-                all_metrics.clone()
-            } else {
-                set.into_iter().collect()
-            }
-        }
-        None => all_metrics.clone(),
-    };
+    // Metrics: every one in the table's order, or the named ones sorted and
+    // de-duplicated. An unknown name is a 400, the rule `group_dialogs`
+    // applies, so a misspelled metric is named rather than silently dropped.
+    let wanted = crate::output::query::rates::wanted_metrics(
+        params.metrics.as_deref().map(|csv| csv.split(',')),
+    )
+    .map_err(|why| Problem::detailed(StatusCode::BAD_REQUEST, why))?;
 
     let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
     let top_n = resolve_page_limit(params.top_n, state.max_rows);
@@ -2452,103 +2416,27 @@ async fn get_rates(
     let ss = state.stream_store.read();
     let delay = crate::rtp::quality::MosDelay::from_capture(&ss);
     // Same filter + stream-pairing path `/v1/aggregate` takes, so the two
-    // surfaces group the same store. The per-group metric rule is shared with
-    // the MCP tool in `crate::sip::group_metrics`.
+    // surfaces group the same store. The answer is the one `--rates-by`
+    // prints; the per-group metric rule is shared with the MCP tool in
+    // `crate::sip::group_metrics`.
     let selection = crate::sip::dsl::select_dialogs(dsl.as_ref(), &ds, &ss);
-    let total_matched = selection.dialogs.len();
-
-    let mut tally: std::collections::HashMap<String, crate::sip::group_metrics::GroupAccumulator> =
-        std::collections::HashMap::new();
-    for item in &selection.dialogs {
-        if let Some(value) = crate::sip::group_metrics::group_value_raw(key, item.0, &item.1) {
-            tally.entry(value).or_default().add(item.0, &item.1, delay);
-        }
-    }
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer = crate::output::query::rates::rates(
+        &selection,
+        delay,
+        key,
+        &wanted,
+        top_n,
+        capture_identity,
+    );
+    drop(selection);
     drop(ss);
     drop(ds);
     drop(capture);
 
-    // Largest first, ties broken by value, the cut summed: the ordering every
-    // group-by answer shares.
-    let ranked = crate::output::query::aggregate::rank_by_count(tally, &|a| a.dialogs(), top_n);
-    let (distinct_values, other_count) = (ranked.distinct, ranked.other_count);
-
-    // Not `Vec::with_capacity`: the size would flow from the `top_n` query
-    // parameter, and though `resolve_page_limit` clamps it to the row cap,
-    // CodeQL's uncontrolled-allocation-size taint does not see the clamp — and
-    // the loop pushes at most `top_n` items regardless, so the capacity hint
-    // bought nothing worth the alert.
-    let mut groups: Vec<schema::RateGroup> = Vec::new();
-    for (value, acc) in ranked.kept {
-        let mut metrics = std::collections::BTreeMap::new();
-        let mut not_grounded = std::collections::BTreeMap::new();
-        for m in &wanted {
-            match acc.value_of(m) {
-                Some(Ok(v)) => match crate::sip::group_metrics::rounded(v) {
-                    Some(v) => {
-                        metrics.insert(m.clone(), Some(v));
-                    }
-                    None => {
-                        metrics.insert(m.clone(), None);
-                        not_grounded.insert(
-                            m.clone(),
-                            "the computed value is not a finite number".to_string(),
-                        );
-                    }
-                },
-                Some(Err(why)) => {
-                    metrics.insert(m.clone(), None);
-                    not_grounded.insert(m.clone(), why);
-                }
-                None => {
-                    return Err(Problem::detailed(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        format!("metric '{m}' has no extractor"),
-                    ));
-                }
-            }
-        }
-        let pop = acc.population();
-        groups.push(schema::RateGroup {
-            value,
-            count: pop.dialogs,
-            metrics,
-            not_grounded,
-            population: schema::RatePopulation {
-                dialogs: pop.dialogs,
-                seizures: pop.seizures,
-                answered: pop.answered,
-                delivered: pop.delivered,
-                completed_calls: pop.completed_calls,
-                pdd_measured: pop.pdd_measured,
-                mos_grounded_dialogs: pop.mos_grounded_dialogs,
-                retransmits: pop.retransmits,
-            },
-        });
-    }
-
-    let units = wanted
-        .iter()
-        .filter_map(|m| {
-            crate::sip::group_metrics::METRICS
-                .iter()
-                .find(|(name, _)| name == m)
-                .map(|(_, unit)| (m.clone(), (*unit).to_string()))
-        })
-        .collect();
-
-    Ok(Json(schema::Rates {
-        schema_version: 1,
-        group_by: key.to_string(),
-        metrics: wanted,
-        units,
-        groups,
-        other_count,
-        distinct_values,
-        total_matched,
-        capture_identity,
-    }))
+    Ok(Json(answer.map_err(|why| {
+        Problem::detailed(StatusCode::INTERNAL_SERVER_ERROR, why)
+    })?))
 }
 
 /// `GET /v1/talkers` — rank the busiest participants (PAR3: top_talkers on
@@ -7069,76 +6957,10 @@ pub mod schema {
         pub capture_identity: Option<CaptureIdentity>,
     }
 
-    /// The populations one rate group's figures were computed over, published so
-    /// a reader checks every ratio against its denominator.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct RatePopulation {
-        /// Every dialog in the group.
-        pub dialogs: usize,
-        /// INVITE dialogs that reached a final response.
-        pub seizures: usize,
-        /// Seizures answered with a 2xx.
-        pub answered: usize,
-        /// Seizures the far end decided (answered or an E.411 destination code).
-        pub delivered: usize,
-        /// Calls both answered and torn down inside the capture (the ACD base).
-        pub completed_calls: usize,
-        /// Dialogs a post-dial delay was measured for.
-        pub pdd_measured: usize,
-        /// Dialogs a grounded MOS was scored for.
-        pub mos_grounded_dialogs: usize,
-        /// Retransmitted messages summed across the group.
-        pub retransmits: u64,
-    }
-
-    /// One group's carrier metrics, with the population behind them and the
-    /// reason for any metric its population could not support.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct RateGroup {
-        /// The dimension value this group is keyed on.
-        pub value: String,
-        /// Dialogs in the group (the same as `population.dialogs`, surfaced for
-        /// a reader who reads only the top line).
-        pub count: usize,
-        /// Each requested metric to its value, or null when the population could
-        /// not support it — the reason is then in `not_grounded`.
-        pub metrics: std::collections::BTreeMap<String, Option<f64>>,
-        /// For each null metric, the population that was missing. A null with no
-        /// entry here would be a silent gap.
-        pub not_grounded: std::collections::BTreeMap<String, String>,
-        /// The populations every figure was computed over.
-        pub population: RatePopulation,
-    }
-
-    /// Carrier metrics per group over the dialog store, one dimension.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct Rates {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// The dimension the metrics were grouped by, echoed verbatim.
-        pub group_by: String,
-        /// The metric names computed, sorted.
-        pub metrics: Vec<String>,
-        /// Each metric name to the unit it is expressed in.
-        pub units: std::collections::BTreeMap<String, String>,
-        /// The groups, largest first, ties broken by value for a stable answer.
-        pub groups: Vec<RateGroup>,
-        /// Dialogs in every group past the `top_n` cut, so the groups plus this
-        /// account for `total_matched`.
-        pub other_count: usize,
-        /// How many distinct values the dimension took, before the cut.
-        pub distinct_values: usize,
-        /// How many dialogs the filter admitted, across all groups.
-        pub total_matched: usize,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
+    /// The carrier-metrics answer, built by
+    /// [`crate::output::query::rates::rates`] for this route and `--rates-by`
+    /// alike.
+    pub use crate::output::query::rates::{RateGroup, RatePopulation, Rates};
 
     /// One ranked talker: a participant and what it did across the dialogs it
     /// took part in. The same fields the MCP `top_talkers` tool reports.
