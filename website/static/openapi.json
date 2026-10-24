@@ -9949,6 +9949,16 @@
             },
             "description": "No bearer credential, or one this server does not accept."
           },
+          "422": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The dialogs span more intervals of this width than one answer holds (100,000); the detail names a width that fits."
+          },
           "503": {
             "content": {
               "application/problem+json": {

@@ -10108,6 +10108,8 @@ dashboard polls.
 **Query parameters:**
 
 - `bucket_seconds` (optional) — the interval width, default 60. Zero is a `400`.
+  The dialogs may span at most `MAX_TIMELINE_BUCKETS` (100,000) intervals of
+  the width. A span of more is a `422` whose `detail` names a width that fits.
 
 **curl:**
 
@@ -35733,7 +35735,10 @@ by sipnab, so the agent does not fetch and bucket every dialog itself.
 | `schema_version` | u32 | `1` for this shape. |
 
 There is no `truncated` and no cursor: this tool takes no `limit` and returns
-every bucket in the capture.
+every bucket in the capture, up to 100,000. When the dialogs span more intervals
+of the width than that, the call fails with reason `limit_exceeded` on
+`bucket_seconds`, and the message names a width that fits. Ask again with that
+width or a wider one.
 
 The example runs against
 [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap),
@@ -75843,6 +75848,12 @@ dialog, so two captures of the same window produce identical boundaries.
 Aligning to the earliest call would shift every boundary whenever that call
 changed. The series keeps empty buckets because a gap is a finding, and a series that
 drops it renders as continuous traffic on a shorter axis.
+
+Keeping every empty bucket needs a ceiling, because the instants come from the
+capture: two forged timestamps decades apart would be tens of millions of rows.
+Every surface refuses a span of more than `MAX_TIMELINE_BUCKETS` (100,000)
+intervals and names a width that fits. None truncates it, because a truncated
+series ends early and reads as traffic that stopped.
 
 ### `group_dialogs` design decisions
 

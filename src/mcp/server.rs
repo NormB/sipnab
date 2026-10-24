@@ -1484,18 +1484,24 @@ pub struct TimelineBucket {
 /// `/v1/timeline` route cannot disagree; this surface names the interval
 /// width on each row. Takes the store rather than locking it, so the tool can
 /// build the rows under the same guards it stamps the capture identity under.
+///
+/// # Errors
+///
+/// The store's refusal of a span wider than
+/// [`crate::sip::dialog_store::MAX_TIMELINE_BUCKETS`] intervals.
 pub(crate) fn timeline_rows(
     ds: &crate::sip::dialog_store::DialogStore,
     width_seconds: u64,
-) -> Vec<TimelineBucket> {
-    ds.timeline_buckets(width_seconds)
+) -> Result<Vec<TimelineBucket>, crate::sip::dialog_store::TimelineTooWide> {
+    Ok(ds
+        .timeline_buckets(width_seconds)?
         .into_iter()
         .map(|(start, dialogs)| TimelineBucket {
             start,
             bucket_seconds: width_seconds,
             dialogs,
         })
-        .collect()
+        .collect())
 }
 
 /// Filter and pagination parameters for `list_dialogs`.
