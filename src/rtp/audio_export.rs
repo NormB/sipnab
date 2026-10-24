@@ -1530,6 +1530,17 @@ fn g729_decoder(variant: G729Variant) -> Result<FrameDecoder> {
     }
 }
 
+/// [`FrameDecoder::decode`] with the decode passed in, so a test can hand it
+/// one that panics: no real frame is known to make a decoder panic.
+///
+/// The decode runs in a containment scope (PANIC-ABORT-HOSTILE-INPUT): a
+/// panic in it is an error for that one frame, which every caller counts and
+/// skips, instead of ending the process.
+fn contained_frame(decode: impl FnOnce() -> Result<Vec<i16>>) -> Result<Vec<i16>> {
+    crate::capture::contained("RTP frame", decode)
+        .unwrap_or_else(|message| Err(anyhow::anyhow!("the decoder panicked: {message}")))
+}
+
 impl FrameDecoder {
     /// The decoder for a stream whose codec is `codec`.
     ///
@@ -1610,6 +1621,11 @@ impl FrameDecoder {
     /// A frame the Opus decoder refused, or a G.729 payload that is neither
     /// 10n nor 10n + 2 octets; G.711 and G.722 decode any bytes.
     pub fn decode(&mut self, payload: &[u8]) -> Result<Vec<i16>> {
+        contained_frame(|| self.decode_uncontained(payload))
+    }
+
+    /// [`decode`](Self::decode) without the containment.
+    fn decode_uncontained(&mut self, payload: &[u8]) -> Result<Vec<i16>> {
         match self {
             Self::Ulaw => Ok(decode_frame(G711Codec::Ulaw, payload)),
             Self::Alaw => Ok(decode_frame(G711Codec::Alaw, payload)),
@@ -1747,6 +1763,30 @@ pub(crate) fn resample_linear<T: LinearResampleSample>(
 #[cfg(test)]
 mod tests {
     type TestError = Box<dyn std::error::Error>;
+    /// PANIC-ABORT-HOSTILE-INPUT: a frame whose decoder panics is a decode
+    /// error for that frame, which every caller counts and skips, and the
+    /// stream goes on. The panic comes from the decode handed in, because no
+    /// real frame is known to make a decoder panic.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_frame_whose_decoder_panics_is_a_decode_error() -> Result<(), TestError> {
+        let before = crate::crash::contained_panics();
+        let got = contained_frame(|| -> Result<Vec<i16>> { panic!("hostile rtp probe") });
+        let Err(e) = got else {
+            return Err("a panicking decoder must be an error for the frame".into());
+        };
+        assert!(
+            e.to_string()
+                .contains("the decoder panicked: hostile rtp probe"),
+            "{e}"
+        );
+        assert!(
+            crate::crash::contained_panics() > before,
+            "the panic is counted"
+        );
+        Ok(())
+    }
+
     /// A frame the decoder rejects must be counted, not only logged.
     ///
     /// The skip was recorded with `debug!`, which is off by default, while the

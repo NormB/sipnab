@@ -2395,6 +2395,27 @@ fn parse_sip_action(
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
 ) -> PacketAction {
+    contained_sip_action(|| sip_action(pp, signaling, opts, decrypt))
+}
+
+/// [`parse_sip_action`]'s work with the parse passed in, so a test can hand
+/// it one that panics: no real message is known to make the parser panic.
+///
+/// The parse, the SIP message and the SDP it carries, runs in a containment
+/// scope (PANIC-ABORT-HOSTILE-INPUT): a panic in it is the `None` action for
+/// that one packet, as a parse failure is, instead of ending the process. The
+/// panic hook logs it.
+fn contained_sip_action(parse: impl FnOnce() -> PacketAction) -> PacketAction {
+    crate::capture::contained("SIP message", parse).unwrap_or(PacketAction::None)
+}
+
+/// [`parse_sip_action`] without the containment.
+fn sip_action(
+    pp: &ParsedPacket,
+    signaling: &Signaling<'_>,
+    opts: &PipelineOptions,
+    decrypt: &mut MediaDecrypt<'_>,
+) -> PacketAction {
     match sip::parser::parse_sip_bytes(
         signaling.payload,
         pp.timestamp,
@@ -3041,6 +3062,34 @@ pub fn process_packet(
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
+
+#[cfg(all(test, feature = "native"))]
+mod contained_sip_tests {
+    //! PANIC-ABORT-HOSTILE-INPUT: a SIP message whose parse panics is dropped
+    //! like one that does not parse, and the run goes on.
+
+    use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The panic comes from the parse handed in, because no real message is
+    /// known to make the parser panic.
+    #[test]
+    fn a_sip_message_whose_parse_panics_is_dropped() -> Result<(), TestError> {
+        let before = crate::crash::contained_panics();
+        let got = contained_sip_action(|| -> PacketAction { panic!("hostile sip probe") });
+        assert!(
+            matches!(got, PacketAction::None),
+            "a panicking parse is the None action"
+        );
+        assert!(
+            crate::crash::contained_panics() > before,
+            "the panic is counted"
+        );
+        Ok(())
+    }
+}
 
 // The `--quiet-bad-parse` diagnostic gate is verified by capturing tracing
 // output, which needs `tracing-subscriber` (only compiled under `native`).

@@ -445,12 +445,17 @@ parser that does:
   ([`src/capture/vcon_input.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/vcon_input.rs)),
 - `a_packet_whose_parser_panics_is_refused_as_malformed`
   ([`src/capture/hep.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs)),
+- `a_sip_message_whose_parse_panics_is_dropped`
+  ([`src/pipeline.rs`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs)),
+- `a_frame_whose_decoder_panics_is_a_decode_error`
+  ([`src/rtp/audio_export.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/audio_export.rs)),
 - `contain_counts_a_panic_without_sipnabs_hook`
   ([`src/crash.rs`](https://github.com/NormB/sipnab/blob/main/src/crash.rs)).
 
 [`tests/contained_entry_points_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/contained_entry_points_test.rs)
 holds the wiring: each reader's entry point reaches its contained half, and only
-one place under `src/capture` calls `crash::contain`.
+one place under `src/capture` calls `crash::contain`. The SIP and RTP readers
+outside it reach that place through `crate::capture::contained`.
 
 **Property tests**: [`tests/property_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/property_test.rs) (proptest) asserts the
 *semantic* invariants the fuzzers cannot:
