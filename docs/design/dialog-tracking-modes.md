@@ -115,7 +115,8 @@ The proposed resolution:
   a sentence in the CLI reference.
 - `--cores N` — the parallel path shards by host pair and merges stores; the
   merge already keys on the map key, so it follows automatically. **Must be
-  tested**, not assumed: `run_offline_parallel` has its own store-merge path.
+  tested**, not assumed: `run_offline_parallel_file` has its own store-merge
+  path.
 
 ## Testing
 

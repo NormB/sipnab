@@ -2605,32 +2605,6 @@ pub fn run(
         rx,
         kill_worker,
     } = feed;
-    let portrange = policy.portrange;
-    let no_rtp = cli.no_rtp(config);
-    // 17p. Offline multi-core reconstruction (`--cores N`, N>1). Shard parsed
-    // packets by host pair across N workers with thread-local stores, merge, and
-    // report — covers dialog + RTP-stream reconstruction and `--report`/`--json`.
-    // Advanced features (live, per-message output ordering, security detectors,
-    // SRTP) use the single-threaded path below; this branch only triggers for an
-    // offline input file.
-    if cli.limits_args.cores > 1 && cli.has_input() {
-        let pcfg = parallel_config(&cli, config, portrange, no_rtp);
-        let result = crate::parallel::run_offline_parallel(rx, pcfg);
-        let _ = handle.thread.join();
-        // As above: no companion server on this path, so no gate to consult.
-        let reports_ok = report_parallel_run(
-            &cli,
-            config,
-            &result,
-            batch.filter_expr.as_ref(),
-            &batch.vcon_rules,
-        );
-        if !reports_ok {
-            crate::capture::archive::release_run_and_exit(1);
-        }
-        return;
-    }
-
     // Derived from the source the capture thread actually opened, not from the
     // flags — `-I` beating `-d`, device auto-detection and `--hep-listen` are
     // all already resolved into `handle.source`, so re-deriving it from `cli`

@@ -565,11 +565,19 @@ You cannot combine `--multi-device` with a HEP listener (`-L`). That flag takes 
 
 **Exit code:** 2.
 
+### `--multi-device and -I/--input cannot run together: --multi-device captures live interfaces (-d), and -I reads a saved capture. Drop --multi-device to read the file, or drop -I to capture the devices.`
+
+`--multi-device` opens one capture per network interface named with `-d`, and `-I` reads a saved capture. sipnab refuses the two together before it opens anything.
+
+**What to do:** To read the file, remove `--multi-device`. `--cores` then reads it in parallel. To capture the interfaces, remove `-I`.
+
+**Exit code:** 2.
+
 ### `--multi-device requires a live capture device (-d)`
 
-`--multi-device` opens one capture per network interface in the device list, so it needs a live interface source. This run's source is not a live interface: it reads a file with `-I`, or it is a uprobe source (`--uprobe-tls`/`--uprobe-library`).
+`--multi-device` opens one capture per network interface in the device list, so it needs a live interface source. This run's source is a uprobe source (`--uprobe-tls`/`--uprobe-library`), not a live interface. sipnab refuses a file given with `-I` earlier, with the message above.
 
-**What to do:** Name the interfaces with `-d`, for example `-d eth0,docker0 --multi-device`, and remove `-I` and the uprobe flags. Or remove `--multi-device`.
+**What to do:** Name the interfaces with `-d`, for example `-d eth0,docker0 --multi-device`, and remove the uprobe flags. Or remove `--multi-device`.
 
 **Exit code:** 2.
 

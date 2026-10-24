@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **`--multi-device` with `-I` is refused before the run starts.** The capture thread refused it, exit 2, after `launch` had already taken the relay snapshot and printed `--relay-stats` when a relay was configured. It is now refused while the run is planned, still with exit 2, with a message that names both flags and what to drop. The batch runner's `--cores` branch for that combination, which no run could reach, is removed, with the channel-fed parallel reader only it called; its tests now run against the file reader that `--cores` uses.
+
 ## [0.5.229] - 2026-10-24
 
 ### Security

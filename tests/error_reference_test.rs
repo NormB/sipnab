@@ -808,7 +808,9 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // `--kill-scanner-detect-only` (or `[security] kill_scanner_detect_only`) is
 // refused (kill_target_detect_only_refusal). The `--kill-ua` refusal was
 // reworded to name detect-only; still one template. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 507;
+// 507 -> 508: src/app/bootstrap.rs refuses --multi-device with -I/--input when
+// the run is planned, instead of the capture thread refusing it later.
+const EXPECTED_TEMPLATES: usize = 508;
 
 // ---------------------------------------------------------------------------
 // The page gates

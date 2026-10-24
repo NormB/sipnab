@@ -247,6 +247,28 @@ fn multi_device_with_a_hep_listener_is_refused() -> Result<(), TestError> {
     Ok(())
 }
 
+/// `--multi-device` with `-I` is refused while the run is planned. The refusal
+/// used to come from the capture thread, after `launch` had already asked the
+/// relay for its snapshot, and it left batch mode a `--cores` branch for
+/// `-I` with `--multi-device` that no run could reach.
+#[test]
+fn multi_device_with_an_input_file_is_refused_when_planned() -> Result<(), TestError> {
+    for extra in [&[][..], &["--cores", "2"][..], &["-d", "lo"][..]] {
+        let mut args = vec!["-N", "--multi-device", "-I", "tests/fixtures/sip_call.pcap"];
+        args.extend_from_slice(extra);
+        let err = bootstrap::plan(&cli(&args), &Config::default())
+            .err()
+            .ok_or_else(|| format!("{args:?} must be refused"))?;
+        assert_eq!(err.exit_code, 2, "{args:?}: {err:?}");
+        assert!(
+            err.message.contains("--multi-device") && err.message.contains("-I"),
+            "name both: {}",
+            err.message
+        );
+    }
+    Ok(())
+}
+
 // ── The correlation seam ────────────────────────────────────────────────
 
 /// The Call-ID every correlation test keys on.

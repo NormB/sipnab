@@ -85,7 +85,6 @@ use std::thread;
 
 use crate::app::batch::SweepClock;
 use crate::capture::PacketProcessor;
-use crate::capture::channel::PacketRx;
 use crate::capture::frames::Frames;
 use crate::capture::parse::ParsedPacket;
 use crate::rtp::stream_store::StreamStore;
@@ -549,25 +548,10 @@ impl ReconResult {
     ///
     /// The one place that binds the run's counters to
     /// [`shard_fallback_summary`], so the sentence an operator reads and the
-    /// numbers a caller can assert on cannot drift apart. `run_offline_parallel`
-    /// and `run_offline_parallel_file` both log exactly this.
+    /// numbers a caller can assert on cannot drift apart. The `--cores` run logs
+    /// exactly this.
     pub fn shard_fallback_notice(&self) -> Option<String> {
         shard_fallback_summary(self.unshardable_count, self.packets_read, self.workers)
-    }
-}
-
-/// Send one shard item to worker `s`'s channel, returning the number of raw
-/// packets LOST if the worker's receiver is gone (its thread died) — `0` on a
-/// live worker, else `weight` (1 for a single packet, the batch length for a
-/// batch). The bounded channel only errors on disconnect (it blocks, never
-/// errors, when merely full), so a nonzero return is unambiguously a dead
-/// worker. Callers fold the result into a run-total that is logged and
-/// surfaced on [`ReconResult::dropped_count`], instead of the old `let _ =`
-/// that swallowed the loss silently.
-fn shard_send<T>(tx: &crossbeam_channel::Sender<T>, item: T, weight: u64) -> u64 {
-    match tx.send(item) {
-        Ok(()) => 0,
-        Err(_) => weight,
     }
 }
 
@@ -681,8 +665,8 @@ fn learn_links_from(
 /// One `--cores` worker: thread-local stores, and the reassembly for the
 /// packets it owns and, separately, for the copies it reads (see [`Fanout`]).
 ///
-/// Written once for both entry points, so the channel-fed and the file-fed
-/// pools cannot treat a packet differently.
+/// Every reader of a `--cores` run feeds the same worker, so a single file and
+/// a set of files cannot treat a packet differently.
 struct Worker {
     /// The run's configuration.
     cfg: ParallelConfig,
@@ -819,10 +803,16 @@ impl Worker {
     }
 }
 
-/// [`shard_send`] for a batch that may hold copies: a lost batch weighs only
-/// the packets `shard` owns, as the dispatcher marked them, because a copy
-/// lost with it is not a packet the capture lost. Weighed only when the send
-/// fails, so the dispatcher's healthy path touches no packet.
+/// Send one batch to worker `shard`, returning the number of raw packets LOST
+/// when that worker's receiver is gone (its thread died): `0` on a live
+/// worker. The bounded channel errors only on disconnect (it blocks, never
+/// errors, when merely full), so a nonzero return is a dead worker. Callers
+/// fold it into the run total surfaced on [`ReconResult::dropped_count`].
+///
+/// A lost batch weighs only the packets `shard` owns, as the dispatcher marked
+/// them, because a copy lost with it is not a packet the capture lost. Weighed
+/// only when the send fails, so the dispatcher's healthy path touches no
+/// packet.
 fn shard_send_batch(
     txs: &[crossbeam_channel::Sender<Vec<Delivery>>],
     shard: usize,
@@ -835,131 +825,6 @@ fn shard_send_batch(
             .filter(|d| matches!(d, Delivery::Owned(_)))
             .count() as u64,
     }
-}
-
-/// Offline multi-core reconstruction. A single dispatcher reads `rx` and, using a
-/// cheap host-pair peek (`crate::capture::parse::peek_host_pair` — link+IP
-/// headers only, no full parse), shards each RAW packet to one of `cfg.cores`
-/// worker threads. Each worker owns its own `PacketProcessor` (so reassembly
-/// stays per-flow correct — a flow's packets share a host pair and route to one
-/// worker) plus thread-local stores, and does the heavy work: the L2/L3/L4 parse,
-/// the SIP parse, RTP/RTCP classify, and all store updates — all in parallel. The
-/// dispatcher's per-packet cost is just the peek + a channel send, so the serial
-/// fraction is tiny and throughput scales with cores. At EOF the stores merge and
-/// stream↔dialog association is resolved globally.
-///
-/// Returns the merged stores for report generation. Reconstruction only — see
-/// `reconstruct`; advanced features stay on the single-threaded path.
-pub fn run_offline_parallel(rx: PacketRx, cfg: ParallelConfig) -> ReconResult {
-    use crossbeam_channel::bounded;
-    let n = cfg.cores.max(2);
-
-    let (txs, rxs): (Vec<_>, Vec<_>) = (0..n).map(|_| bounded::<Delivery>(8192)).unzip();
-    let workers: Vec<_> = rxs
-        .into_iter()
-        .map(|wrx| {
-            let cfg = cfg.clone();
-            // The packet counter lands once per worker: see
-            // `capture::deferred` for what four workers adding to it per
-            // packet cost.
-            thread::spawn(move || {
-                crate::capture::captured_packets_deferred(|| {
-                    let mut worker = Worker::new(cfg);
-                    for delivery in wrx.iter() {
-                        worker.feed(&delivery);
-                    }
-                    worker.finish()
-                })
-            })
-        })
-        .collect();
-
-    // Dispatcher: cheap host-pair peek, shard the RAW packet to a worker. A packet
-    // the peek can't read routes to worker 0 (still correct via its own reassembly).
-    // The dispatcher is also the only place that sees EVERY packet's timestamp, so
-    // it is where the capture clock for the post-merge sweep is kept.
-    let fanout = Fanout::of(&cfg);
-    let mut dropped: u64 = 0;
-    let mut packets_read: u64 = 0;
-    let mut unshardable: u64 = 0;
-    let mut clock = SweepClock::new(true);
-    loop {
-        match rx.recv_timeout(std::time::Duration::from_millis(200)) {
-            Ok(packet) => {
-                clock.observe(packet.timestamp);
-                packets_read += 1;
-                // One walk to the outer IP header for both questions.
-                let peek = crate::capture::parse::peek_frame(&packet);
-                let s = match peek.hosts {
-                    Some((a, b)) => shard_for(a, b, n),
-                    // Counted, not merely tolerated. Two plain `u64` increments
-                    // on the dispatcher's serial path: no atomic, no lock, no
-                    // allocation, and the branch was already here.
-                    None => {
-                        unshardable += 1;
-                        0
-                    }
-                };
-                let copy = fanout.copy_read(&packet, peek.transport);
-                deliver(packet, s, n, copy, |w, delivery| {
-                    // A copy lost to a dead worker is not a packet the
-                    // capture lost: weight 0.
-                    let weight = u64::from(matches!(delivery, Delivery::Owned(_)));
-                    dropped += shard_send(&txs[w], delivery, weight);
-                    true
-                });
-            }
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-        }
-    }
-    drop(txs); // signal workers to finish
-    if dropped > 0 {
-        tracing::warn!(
-            "parallel reconstruction lost {dropped} packet(s): a worker thread \
-             died mid-run (its shard channel closed); results are incomplete"
-        );
-    }
-
-    // Merge thread-local stores into one, then resolve cross-worker associations.
-    let mut ds = {
-        let mut ds = DialogStore::new(cfg.max_dialogs, cfg.rotate);
-        ds.set_tracking(cfg.dialog_tracking);
-        ds
-    }
-    .with_xcid_headers(cfg.xcid_headers.clone())
-    .with_leg_correlation_window_ms(cfg.leg_correlation_window_ms);
-    // The merged store carries the run's whole budget and the workers'
-    // retained totals (see `StreamStore::merge`).
-    let mut ss = StreamStore::new(cfg.max_streams);
-    ss.set_audio_capture(cfg.retain_audio);
-    ss.set_audio_limits(cfg.audio_limits);
-    let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
-    for w in workers {
-        if let Ok((wds, wss, wsip, wrtp, wtot)) = w.join() {
-            ds.merge(wds);
-            ss.merge(wss);
-            sip_count += wsip;
-            rtp_count += wrtp;
-            total += wtot;
-        }
-    }
-    ss.reassociate_all();
-    final_sweep(&clock, &mut ds);
-
-    let result = ReconResult {
-        dialog_store: ds,
-        stream_store: ss,
-        sip_count,
-        rtp_count,
-        total_count: total,
-        dropped_count: dropped,
-        workers: n,
-        packets_read,
-        unshardable_count: unshardable,
-    };
-    report_shard_fallback(&result);
-    result
 }
 
 /// Log this run's shard-fallback notice, when there is one.
@@ -1216,8 +1081,8 @@ fn shard_opened<S: ShardSink>(
                 let peek = crate::capture::parse::peek_frame(&packet);
                 let s = match peek.hosts {
                     Some((a, b)) => shard_for(a, b, n),
-                    // Counted, not merely tolerated — see the same branch in
-                    // `run_offline_parallel`. One `u64` increment on the
+                    // Counted, not merely tolerated: the count feeds
+                    // `shard_fallback_notice`. One `u64` increment on the
                     // reader's serial path: no atomic, no lock, no allocation.
                     None => {
                         read.unshardable += 1;
@@ -2398,12 +2263,11 @@ fn dispatch_in_file_order(
     Ok(())
 }
 
-/// Like `run_offline_parallel`, but reads the capture FILES itself instead of
-/// consuming a `PacketRx` fed by a separate capture reader thread. That
-/// eliminated the semaphore-capped capture channel which capped `--cores`
-/// scaling at ~2 workers, by fusing pcap-read + host-pair peek + shard into
-/// one stage instead of two. Sharding/reassembly/merge are identical to
-/// `run_offline_parallel`, so `--cores N` parity with `--cores 1` is preserved.
+/// Offline multi-core reconstruction of capture FILES. It reads the files
+/// itself rather than consuming a channel fed by a separate capture reader,
+/// fusing pcap-read + host-pair peek + shard into one stage: a per-packet
+/// channel hop capped `--cores` scaling at ~2 workers. Each worker runs the
+/// same classification as `--cores 1`, so `--cores N` keeps parity with it.
 ///
 /// That fused stage is SERIAL for one file and is what `--cores` then
 /// plateaued on. A set of several files no longer runs it in one thread: see
@@ -2660,28 +2524,6 @@ mod tests {
         IpAddr::V4(Ipv4Addr::new(a, b, c, d))
     }
 
-    /// A shard send to a DEAD worker (its receiver dropped) must be COUNTED
-    /// as a packet loss, not silently swallowed. A live worker counts zero;
-    /// after the receiver is gone every send returns its weight (1 for a
-    /// packet, the batch length for a batch).
-    #[test]
-    fn dead_worker_shard_send_is_counted() -> Result<(), TestError> {
-        use crossbeam_channel::bounded;
-        let (tx, rx) = bounded::<u32>(4);
-        // Live worker: send succeeds, nothing lost.
-        assert_eq!(shard_send(&tx, 1u32, 1), 0, "live worker loses nothing");
-        // Simulate the worker thread dying: its receiver is dropped.
-        drop(rx);
-        // Now the loss must be reported, not hidden behind `let _ =`.
-        assert_eq!(shard_send(&tx, 2u32, 1), 1, "one lost packet is counted");
-        assert_eq!(
-            shard_send(&tx, 3u32, 128),
-            128,
-            "a lost batch counts every packet in it"
-        );
-        Ok(())
-    }
-
     // ── Shard-fallback observability ──────────────────────────────────
     //
     // `peek_host_pair` returning `None` sends a packet to worker 0. That is
@@ -2915,29 +2757,25 @@ mod tests {
         p
     }
 
-    /// The streamed `--cores` path releases, at the end of its input, a
-    /// message held behind a hole the capture never filled -- the same as the
-    /// single-threaded reader and the file-set path.
+    /// The `--cores` path releases, at the end of its input, a message held
+    /// behind a hole the capture never filled -- the same as the
+    /// single-threaded reader.
+    #[cfg(feature = "native")]
     #[test]
-    fn the_streamed_parallel_path_releases_a_message_held_behind_a_hole() -> Result<(), TestError> {
-        use crate::capture::packet::Packet;
-        let (tx, rx) = crate::capture::channel::packet_channel(1024);
+    fn the_parallel_path_releases_a_message_held_behind_a_hole() -> Result<(), TestError> {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let head = b"OPTIONS sip:b@x SIP/2.0\r\nCall-ID: never-whole\r\n";
         let reply = b"SIP/2.0 200 OK\r\nCall-ID: held-reply\r\nCSeq: 1 OPTIONS\r\n\
                       Content-Length: 0\r\n\r\n";
-        let frames = [
+        let frames = vec![
             eth_ipv4_tcp(40_001, 5060, 5_000, 0x02, b""),
             eth_ipv4_tcp(5060, 40_001, 9_000, 0x12, b""),
             eth_ipv4_tcp(5060, 40_001, 9_001, 0x18, head),
             eth_ipv4_tcp(5060, 40_001, 9_001 + head.len() as u32 + 300, 0x18, reply),
         ];
-        for frame in frames {
-            let n = frame.len();
-            tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
-                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
-        }
-        drop(tx);
-        let r = run_offline_parallel(rx, pcfg(2));
+        let path = write_eth_pcap(dir.path(), "hole.pcap", &frames)?;
+        let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(2))?;
         let ids: Vec<String> = r.dialog_store.iter().map(|d| d.call_id.clone()).collect();
         assert_eq!(ids, vec!["held-reply".to_string()], "released at the end");
         Ok(())
@@ -2996,6 +2834,18 @@ mod tests {
         frames: &[Vec<u8>],
         first_ts: u32,
     ) -> Result<std::path::PathBuf, TestError> {
+        write_eth_pcap_spaced(dir, name, frames, first_ts, 1)
+    }
+
+    /// The same, with `step` seconds between consecutive records.
+    #[cfg(feature = "native")]
+    fn write_eth_pcap_spaced(
+        dir: &std::path::Path,
+        name: &str,
+        frames: &[Vec<u8>],
+        first_ts: u32,
+        step: u32,
+    ) -> Result<std::path::PathBuf, TestError> {
         use std::io::Write;
         let path = dir.join(name);
         let mut f =
@@ -3014,7 +2864,7 @@ mod tests {
             let len =
                 u32::try_from(frame.len()).map_err(|e| format!("test frame fits a u32: {e:?}"))?;
             let mut rec = Vec::new();
-            rec.extend_from_slice(&(first_ts + i as u32).to_le_bytes()); // ts_sec
+            rec.extend_from_slice(&(first_ts + i as u32 * step).to_le_bytes()); // ts_sec
             rec.extend_from_slice(&0u32.to_le_bytes()); // ts_usec
             rec.extend_from_slice(&len.to_le_bytes()); // incl_len
             rec.extend_from_slice(&len.to_le_bytes()); // orig_len
@@ -3024,64 +2874,6 @@ mod tests {
                 .map_err(|e| format!("write the frame: {e:?}"))?;
         }
         Ok(path)
-    }
-
-    /// The channel-fed `--cores` path must COUNT every packet that fell back to
-    /// worker 0, and say so in the run's own notice.
-    ///
-    /// Seven ARP frames and six IP frames: the peek reads a host pair from the
-    /// six and nothing from the seven, so the fallback is the majority and the
-    /// run is mostly single-threaded. Before this counter both numbers were
-    /// invisible — a capture that sharded nothing reported the same summary as
-    /// one that sharded perfectly.
-    ///
-    /// Serialized on `undecodable_tally` because the ARP frames also reach the
-    /// workers' parser, whose reason tally is process-global and asserted on
-    /// exactly elsewhere.
-    #[cfg(feature = "native")]
-    #[test]
-    #[serial_test::serial(undecodable_tally)]
-    fn channel_fed_cores_path_counts_every_unshardable_packet() -> Result<(), TestError> {
-        use crate::capture::packet::Packet;
-        let (tx, rx) = crate::capture::channel::packet_channel(1024);
-        for i in 0..7u8 {
-            let frame = eth_arp([10, 0, 0, i], [10, 0, 0, 200]);
-            let n = frame.len();
-            tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
-                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
-        }
-        for seq in 1u16..=6 {
-            let mut payload = vec![0x80, 0x00];
-            payload.extend_from_slice(&seq.to_be_bytes());
-            payload.extend_from_slice(&[0, 0, 0, 1]);
-            payload.extend_from_slice(&0xFEEDu32.to_be_bytes());
-            payload.extend_from_slice(&[0xaa; 60]);
-            let frame = eth_ipv4_udp(41000, 42000, &payload);
-            let n = frame.len();
-            tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
-                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
-        }
-        drop(tx);
-
-        let r = run_offline_parallel(rx, pcfg(2));
-        assert_eq!(r.packets_read, 13, "thirteen raw packets were sharded");
-        assert_eq!(
-            r.unshardable_count, 7,
-            "the seven ARP frames carry no host pair the peek can read"
-        );
-        assert_eq!(r.workers, 2, "pcfg(2) runs two workers");
-        assert_eq!(
-            r.shard_fallback_notice().as_deref(),
-            Some(
-                "NOT SHARDED: 7 of 13 packet(s) (53.8%) carried no host pair the shard \
-                 peek could read, so they were dispatched to worker 0 instead of being \
-                 spread across the 2 workers. MOST OF THIS RUN WAS SINGLE-THREADED — the \
-                 majority of the capture ran on worker 0, so --cores bought far less than \
-                 the 2 workers suggest. The peek cannot follow part of this capture's \
-                 encapsulation; report its link type."
-            )
-        );
-        Ok(())
     }
 
     /// The file-fed `--cores` path — the one `-I` reaches, and the one an
@@ -3168,21 +2960,19 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn cores_path_discovers_heuristic_rtp() -> Result<(), TestError> {
-        use crate::capture::packet::Packet;
-        let (tx, rx) = crate::capture::channel::packet_channel(1024);
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let mut frames = Vec::new();
         for seq in 1u16..=6 {
             let mut payload = vec![0x80, 72];
             payload.extend_from_slice(&seq.to_be_bytes());
             payload.extend_from_slice(&[0, 0, 0, 1]);
             payload.extend_from_slice(&0xFEEDu32.to_be_bytes());
             payload.extend_from_slice(&[0xaa; 60]);
-            let frame = eth_ipv4_udp(41000, 42000, &payload);
-            let n = frame.len();
-            tx.send(Packet::new(chrono::Utc::now(), frame, n, n, None, 1))
-                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
+            frames.push(eth_ipv4_udp(41000, 42000, &payload));
         }
-        drop(tx);
-        let r = run_offline_parallel(rx, pcfg(2));
+        let path = write_eth_pcap(dir.path(), "pt72.pcap", &frames)?;
+        let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(2))?;
         assert_eq!(
             r.stream_store.len(),
             1,
@@ -3195,36 +2985,29 @@ mod tests {
         Ok(())
     }
 
-    /// The channel-fed entry point reports orphans from its merged stores too.
+    /// The `--cores` path reports orphans from its merged stores.
     ///
-    /// `run_offline_parallel_file` is what `-I` reaches; this one is reached by
-    /// `--multi-device`, and it merged and returned without sweeping just the
-    /// same, so its orphan count disagreed with the single-threaded path's.
     /// The stream here is announced by no SDP, so the only correct answer is
-    /// "orphaned" — and it is now correct without any sweep having run, which
-    /// is the point: the count is derived from `associated_dialog` at read
-    /// time, and merging cannot lose a flag that does not exist.
+    /// "orphaned" — and it is correct without any sweep having run, which is
+    /// the point: the count is derived from `associated_dialog` at read time,
+    /// and merging cannot lose a flag that does not exist.
     #[cfg(feature = "native")]
     #[test]
-    fn channel_fed_cores_path_sweeps_after_the_merge() -> Result<(), TestError> {
-        use crate::capture::packet::Packet;
-        let base = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid timestamp")?;
-        let (tx, rx) = crate::capture::channel::packet_channel(1024);
+    fn cores_path_reports_orphans_after_the_merge() -> Result<(), TestError> {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let mut frames = Vec::new();
         for n in 0..20u16 {
             let mut payload = vec![0x80, 0x00];
             payload.extend_from_slice(&(n + 1).to_be_bytes());
             payload.extend_from_slice(&(160 * (u32::from(n) + 1)).to_be_bytes());
             payload.extend_from_slice(&0x1122_3344u32.to_be_bytes());
             payload.extend_from_slice(&[0xaa; 160]);
-            let frame = eth_ipv4_udp(40000, 40002, &payload);
-            let len = frame.len();
-            // Six seconds apart, so the capture spans just under two minutes.
-            let ts = base + chrono::TimeDelta::seconds(i64::from(n) * 6);
-            tx.send(Packet::new(ts, frame, len, len, None, 1))
-                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
+            frames.push(eth_ipv4_udp(40000, 40002, &payload));
         }
-        drop(tx);
-        let r = run_offline_parallel(rx, pcfg(2));
+        // Six seconds apart, so the capture spans just under two minutes.
+        let path = write_eth_pcap_spaced(dir.path(), "orphan.pcap", &frames, 1_700_000_000, 6)?;
+        let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(2))?;
         assert_eq!(r.stream_store.len(), 1, "the fixture holds one RTP stream");
         assert_eq!(
             r.stream_store.orphaned_count(),
@@ -4388,22 +4171,6 @@ mod tests {
         frames
     }
 
-    /// `frames` on the channel the streamed `--cores` path reads, 20 ms apart.
-    #[cfg(feature = "native")]
-    fn channel_of(frames: Vec<Vec<u8>>) -> Result<crate::capture::channel::PacketRx, TestError> {
-        use crate::capture::packet::Packet;
-        let (tx, rx) = crate::capture::channel::packet_channel(1024);
-        let base = chrono::DateTime::from_timestamp(1_700_000_000, 0).ok_or("valid timestamp")?;
-        for (i, frame) in frames.into_iter().enumerate() {
-            let len = frame.len();
-            let ts = base + chrono::TimeDelta::milliseconds(20 * i as i64);
-            tx.send(Packet::new(ts, frame, len, len, None, 1))
-                .map_err(|e| format!("worker pool must accept packets: {e:?}"))?;
-        }
-        drop(tx);
-        Ok(rx)
-    }
-
     /// A host pair that shards to a different worker of two than `other`.
     #[cfg(feature = "native")]
     fn hosts_on_the_other_worker(
@@ -4485,30 +4252,14 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn two_calls_on_one_host_pair_stay_two_streams_under_cores() -> Result<(), TestError> {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         for signaling in [Signaling::Udp, Signaling::Tcp] {
             let frames = two_calls_on_one_flow(SIP_HOSTS, SIP_HOSTS, signaling);
-            let r = run_offline_parallel(channel_of(frames)?, pcfg(2));
+            let path = write_eth_pcap(dir.path(), "one-pair.pcap", &frames)?;
+            let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(2))?;
             assert_one_stream_per_call(&r, "same host pair");
         }
-        Ok(())
-    }
-
-    /// DEF28: under `--cores`, two calls whose SIP and RTP run on different
-    /// host pairs stay two streams, as they do on `--cores 1`.
-    ///
-    /// The SIP shards to one worker and the RTP to another, so the worker
-    /// that measures the RTP must still learn that a second call took the
-    /// sockets over, at the point in the capture where it did.
-    #[cfg(feature = "native")]
-    #[test]
-    fn two_calls_whose_sip_and_rtp_use_different_hosts_stay_two_streams_under_cores()
-    -> Result<(), TestError> {
-        let rtp_hosts = hosts_on_the_other_worker(SIP_HOSTS)?;
-        let frames = two_calls_on_one_flow(SIP_HOSTS, rtp_hosts, Signaling::Udp);
-        let count = frames.len();
-        let r = run_offline_parallel(channel_of(frames)?, pcfg(2));
-        assert_one_stream_per_call(&r, "SIP and RTP on different workers");
-        assert_counted_once(&r, count, "SIP and RTP on different workers");
         Ok(())
     }
 
@@ -4518,10 +4269,13 @@ mod tests {
     #[cfg(feature = "native")]
     #[test]
     fn two_calls_signaled_over_tcp_stay_two_streams_under_cores() -> Result<(), TestError> {
+        use crate::capture::CaptureConfig;
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
         let rtp_hosts = hosts_on_the_other_worker(SIP_HOSTS)?;
         let frames = two_calls_on_one_flow(SIP_HOSTS, rtp_hosts, Signaling::Tcp);
         let count = frames.len();
-        let r = run_offline_parallel(channel_of(frames)?, pcfg(2));
+        let path = write_eth_pcap(dir.path(), "tcp-split.pcap", &frames)?;
+        let r = run_offline_parallel_file(&[path], &CaptureConfig::default(), pcfg(2))?;
         assert_one_stream_per_call(&r, "SIP over TCP on another worker");
         assert_counted_once(&r, count, "SIP over TCP on another worker");
         Ok(())
@@ -4645,8 +4399,14 @@ mod tests {
     #[test]
     fn a_lost_batch_weighs_only_the_packets_its_worker_owned() -> Result<(), TestError> {
         let (txs, rxs): (Vec<_>, Vec<_>) = (0..2).map(|_| crossbeam_channel::unbounded()).unzip();
-        drop(rxs);
         let (a, b) = SIP_HOSTS;
+        let live = eth_packet(eth_udp_between(a, b, 5060, 5060, b"live"));
+        assert_eq!(
+            shard_send_batch(&txs, 0, vec![Delivery::Owned(live)]),
+            0,
+            "a live worker loses nothing"
+        );
+        drop(rxs);
         let owned = eth_packet(eth_udp_between(a, b, 5060, 5060, b"x"));
         let shard = shard_for(IpAddr::from(a), IpAddr::from(b), 2);
         let other = hosts_on_the_other_worker(SIP_HOSTS)?;
@@ -4801,8 +4561,14 @@ mod tests {
             crate::capture::parse::parse_packet(&packet).is_err(),
             "the fixture is a frame the decoder refuses"
         );
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let path = write_eth_pcap(dir.path(), "copied.pcap", &[frame])?;
         let before = crate::capture::undecodable_frames();
-        let r = run_offline_parallel(channel_of(vec![frame])?, pcfg_default_range());
+        let r = run_offline_parallel_file(
+            &[path],
+            &crate::capture::CaptureConfig::default(),
+            pcfg_default_range(),
+        )?;
         assert_eq!(r.packets_read, 1);
         assert_eq!(
             crate::capture::undecodable_frames(),

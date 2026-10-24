@@ -983,6 +983,17 @@ fn refuse_conflicting_sources(cli: &Cli) -> Result<(), PlanError> {
                 .to_string(),
         ));
     }
+    // `--multi-device` opens one live capture per interface; `-I` reads a
+    // saved capture. Refused here, before `launch` asks the relay for anything,
+    // rather than when the capture thread finds a file where it needs devices.
+    if cli.capture_args.multi_device && cli.has_input() {
+        return Err(PlanError::arg(
+            "--multi-device and -I/--input cannot run together: --multi-device \
+             captures live interfaces (-d), and -I reads a saved capture. Drop \
+             --multi-device to read the file, or drop -I to capture the devices."
+                .to_string(),
+        ));
+    }
     Ok(())
 }
 

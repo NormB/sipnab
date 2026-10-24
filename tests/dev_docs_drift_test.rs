@@ -904,7 +904,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // contained-panic test of a received HEP packet.
     // 735 -> 737: docs/internals/testing.md +2, src/pipeline.rs and
     // src/rtp/audio_export.rs for the SIP and RTP contained-panic tests.
-    const EXPECTED_CODE_LINKS: usize = 737;
+    // 737 -> 735: the channel-fed `run_offline_parallel` is removed, and with it
+    // its link in docs/internals/subsystem-guide.md and its row in
+    // docs/internals/threading.md. Fewer by design, not an extractor miss.
+    const EXPECTED_CODE_LINKS: usize = 735;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -977,7 +980,9 @@ fn linked_symbols_resolve_to_a_definition() -> Result<(), TestError> {
     // which no longer exists because a `json` body is now the JSON value
     // itself, and cited `answer_body()` in `src/app/vcon_enrich.rs` in the
     // same paragraph instead. One symbol claim out, one in, same page.
-    const EXPECTED_SYMBOL_CLAIMS: usize = 88;
+    // 88 -> 86: the same two citations of `run_offline_parallel()`, removed
+    // with the function (docs/internals/subsystem-guide.md, threading.md).
+    const EXPECTED_SYMBOL_CLAIMS: usize = 86;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function
     // that has never existed and resolve against a real one whose name merely

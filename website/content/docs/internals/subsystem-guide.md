@@ -327,12 +327,10 @@ sequenceDiagram
     Note over Merge: repairs SDP-to-RTP links split across workers
 </pre>
 
-Two dispatch shapes exist.
+[`run_offline_parallel_file()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) reads the file itself and sends packets in batches of 128.
 
-- [`run_offline_parallel()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) consumes a `PacketRx` one packet at a time.
-- [`run_offline_parallel_file()`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs) reads the file itself and sends packets in batches of 128.
-  - The reason: the per-packet channel hop capped throughput past two cores.
-  - The reconstruction work did not.
+- The reason: a per-packet channel hop capped throughput past two cores.
+- The reconstruction work did not.
 
 The merge is a union, since a host pair belongs to exactly one worker.
 
