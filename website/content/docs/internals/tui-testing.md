@@ -57,6 +57,10 @@ These tests drive the real binary inside a detached `tmux` session. They do not 
   - It answers the query.
   - It provides a real window size.
   - It lets the test send keys and snapshot the screen with `capture-pane`.
+- Each test session runs on its own tmux server (`tmux -L <session>`), and
+  removes that server's socket when it ends.
+  - A tmux server exits when its last session ends. On one shared server, a
+    test starting a session at that moment failed with `tmux new-session failed`.
 - These tests are `#[ignore]` by default.
 - They need `tmux` on `PATH`.
 
