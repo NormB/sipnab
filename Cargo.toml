@@ -196,7 +196,7 @@ sha1_oaep = { package = "sha1", version = "0.10", optional = true }
 # P-256 key agreement with a STATIC private key, for decrypting a JWE
 # `ECDH-ES+A256KW` recipient (RFC 7518 section 4.6). ring agrees only with
 # an ephemeral key, which covers encrypting, and signs ES256 itself.
-p256 = { version = "0.13", default-features = false, features = ["ecdh", "pkcs8", "std"], optional = true }
+p256 = { version = "0.14", default-features = false, features = ["ecdh", "pkcs8", "std"], optional = true }
 # X.509 path validation of a fetched vCon's signer (`--vcon-fetch-signer-ca`).
 # rustls already builds this crate for its certificate checks, so it adds
 # none to the build.

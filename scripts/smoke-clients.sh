@@ -101,6 +101,7 @@ export SIPNAB_API_KEY="smoke-$$-token"
 serve() {
 	local name="$1" port="$2"
 	shift 2
+	: >"$WORK/$name.log"
 	"$BIN" -N --quiet --no-cli-print "$@" \
 		--api "127.0.0.1:$port" >/dev/null 2>"$WORK/$name.log" &
 	SERVED_PID=$!
@@ -605,6 +606,10 @@ grep -q "does not exist" "$WORK/err" || fail "agent_triage.py did not pass on wh
 MCP_KEY="$WORK/mcp.key"
 "$PYTHON" -c 'import base64, secrets; print(base64.b64encode(secrets.token_bytes(32)).decode())' >"$MCP_KEY"
 chmod 600 "$MCP_KEY"
+# The background job opens its redirect after the fork, so the loop below can
+# read the log before it exists; sed then fails and set -e ends the script.
+# Created here first, it exists from the first read.
+: >"$WORK/mcp-http.log"
 NO_COLOR=1 "$BIN" --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:0 --mcp-tools core \
 	--mcp-signing-key-file "$MCP_KEY" --node-name agent-box \
 	-I tests/pcap-samples/sip-problem-call.pcap >/dev/null 2>"$WORK/mcp-http.log" &
