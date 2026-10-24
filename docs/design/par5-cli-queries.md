@@ -166,6 +166,12 @@ list and computes every metric, which a reader narrows with `jq`.
 `top_talkers` tool also reads; `--prefix-digits` is held to the zero rule
 `TalkerDimension::parse` applies to REST's `prefix_digits`.
 
+A query about one named call (`--call-tree`) reads that call whatever the
+run's filter admits, as `--call-report` does, and an unknown Call-ID fails the
+run with `--call-report`'s message (`queries::call_not_found`). Where REST
+caps a list by its row cap, the CLI applies the cap a server started by the
+same run would (`QueryContext::row_cap`).
+
 Beyond those files, each flag edits only lines that belong to it:
 
 - its own `gap:` cell in [`docs/design/surface-capability-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/surface-capability-matrix.md), flipped to

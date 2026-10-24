@@ -5,7 +5,8 @@
 //! flags this file owns. Each flag adds one `if` here that calls its core
 //! function and hands the answer to [`QueryContext::answer`].
 
-use super::QueryContext;
+use super::{QueryContext, call_not_found};
+use crate::output::query::tree;
 
 /// Render batch B2's queries that this command line asked for.
 ///
@@ -14,6 +15,23 @@ use super::QueryContext;
 /// `false` when one was asked for and could not be answered or written;
 /// `true` otherwise, including when none was asked for.
 pub(super) fn render(ctx: &QueryContext<'_>) -> bool {
-    let _ = ctx;
-    true
+    render_call_tree(ctx)
+}
+
+/// `--call-tree`: the legs reachable from one named call, the answer
+/// `GET /v1/dialogs/{call_id}/tree` returns. The named call is read whatever
+/// the run's filter admits, as `--call-report` reads it; an unknown Call-ID
+/// fails the run.
+fn render_call_tree(ctx: &QueryContext<'_>) -> bool {
+    let Some(call_id) = ctx.cli.call_query_args.call_tree.as_deref() else {
+        return true;
+    };
+    let Some(answer) = tree::call_tree(ctx.dialogs, call_id, ctx.row_cap, ctx.capture_identity())
+    else {
+        call_not_found(call_id);
+        return false;
+    };
+    ctx.answer("--call-tree", &answer, |format| {
+        tree::render(&answer, format)
+    })
 }

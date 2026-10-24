@@ -52,6 +52,10 @@ pub struct QueryContext<'a> {
     /// The thresholds a diagnostic alias expands with, resolved from the
     /// command line and the config the way `--filter <alias>` resolves them.
     pub alias: AliasThresholds,
+    /// The most rows one answer lists where REST caps a list by its row cap
+    /// (a call tree's legs): `--api-max-rows`, `[limits] api_max_rows`, or
+    /// the default, the cap a REST server started by this run applies.
+    pub row_cap: usize,
 }
 
 impl<'a> QueryContext<'a> {
@@ -71,6 +75,7 @@ impl<'a> QueryContext<'a> {
             streams,
             filter,
             alias: cli.alias_thresholds(config),
+            row_cap: cli.api_row_cap(config),
         }
     }
 
@@ -142,6 +147,13 @@ impl<'a> QueryContext<'a> {
 #[must_use]
 pub fn table_format(cli: &Cli) -> ReportFormat {
     super::batch::table_report_format(cli)
+}
+
+/// Report that this run tracked no dialog with `call_id`, the message
+/// `--call-report` gives, on stderr so it survives `SIPNAB_LOG=off`. A query
+/// about one named call that cannot find it fails the run.
+pub fn call_not_found(call_id: &str) {
+    stderr_line!("Call-ID '{call_id}' not found in tracked dialogs");
 }
 
 /// The form one query's answer is written in.

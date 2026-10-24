@@ -1261,6 +1261,9 @@ How many leading digits \fB\-\-talkers prefix\fR ranks the dialed number by (4 w
 .TP
 \fB\-\-top\fR \fIN\fR
 How many rows a ranked query keeps (\fB\-\-count\-by\fR, \fB\-\-rates\-by\fR, \fB\-\-talkers\fR); the rest are summed or counted. 50 when not given, the default page REST returns.
+.TP
+\fB\-\-call\-tree\fR \fICALL\-ID\fR
+Print every leg of one call as a tree across B2BUA, SBC and PBX hops: the legs sipnab matched to it by an identifier (\fBX\-Call\-ID\fR, \fBSession\-ID\fR, SDP origin, P\-Charging\-Vector, a Via branch), each leg's own matches, and the legs a timing guess suggests, which the walk does not follow.
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR

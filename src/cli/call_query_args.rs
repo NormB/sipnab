@@ -17,7 +17,20 @@ use super::one_shot::OneShot;
 /// Split out of [`super::Cli`] so clap's generated parser builds this group
 /// in its own stack frame, like every other group.
 #[derive(clap::Args, Debug, Clone, Default)]
-pub struct CallQueryArgs {}
+pub struct CallQueryArgs {
+    /// Print every leg of one call as a tree across B2BUA, SBC and PBX hops:
+    /// the legs sipnab matched to it by an identifier (`X-Call-ID`,
+    /// `Session-ID`, SDP origin, P-Charging-Vector, a Via branch), each leg's
+    /// own matches, and the legs a timing guess suggests, which the walk does
+    /// not follow.
+    ///
+    /// The Call-ID must match exactly, and one the run did not track exits
+    /// with status 1. With `--json`, one JSON object on the last line of
+    /// stdout, the shape `GET /v1/dialogs/{call_id}/tree` returns. Makes the
+    /// run headless, as `--call-report` does.
+    #[arg(help_heading = "Queries", long, value_name = "CALL-ID")]
+    pub call_tree: Option<String>,
+}
 
 impl CallQueryArgs {
     /// The one-shot declarations of this group's flags, active or not.
@@ -26,6 +39,11 @@ impl CallQueryArgs {
     /// itself here, once. See [`OneShot`] for what each field decides.
     #[must_use]
     pub fn one_shots(&self) -> Vec<OneShot> {
-        Vec::new()
+        vec![OneShot {
+            name: "--call-tree",
+            active: self.call_tree.is_some(),
+            implies_no_tui: true,
+            owns_stdout: true,
+        }]
     }
 }

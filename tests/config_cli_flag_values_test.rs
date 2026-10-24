@@ -639,6 +639,16 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--call-tree`: any Call-ID parses; one the run did not track exits 1
+    // after the run, as `--call-report`'s does.
+    (
+        "call-tree",
+        Kind::Text {
+            accept: &["x", "", " ", "0"],
+            reject: &[],
+        },
+        &[],
+    ),
     (
         "export-vcon",
         Kind::Text {

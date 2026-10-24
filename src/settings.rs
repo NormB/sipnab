@@ -180,6 +180,7 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("security", "business_hours", Merge::Override),
     ),
     ("call-report", Link::PerRun),
+    ("call-tree", Link::PerRun),
     ("calls-only", Link::Pending),
     (
         "capture-profile",

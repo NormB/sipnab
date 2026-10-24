@@ -1985,42 +1985,18 @@ async fn get_tree(
     let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
-    // The one walk, shared with the MCP `get_call_tree` tool. 404 an unknown
-    // Call-ID, the same answer the sibling routes give.
-    let tree = ds
-        .correlation_tree(&call_id, state.max_rows)
-        .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND))?;
-    let legs: Vec<schema::CallTreeLeg> = tree
-        .legs
-        .iter()
-        .map(|leg| schema::CallTreeLeg {
-            call_id: leg.call_id.clone(),
-            depth: leg.depth,
-            parent_call_id: leg.parent_call_id.clone(),
-            score: leg.score,
-            strategy: leg.strategy.map(str::to_string),
-            identifier_match: leg.identifier_match,
-            followed: leg.followed,
-        })
-        .collect();
+    // The one walk, shared with the MCP `get_call_tree` tool; the answer is
+    // the one `--call-tree` prints. 404 an unknown Call-ID, the same answer
+    // the sibling routes give.
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let tree =
+        crate::output::query::tree::call_tree(&ds, &call_id, state.max_rows, capture_identity);
     drop(ss);
     drop(ds);
     drop(capture);
 
-    Ok(Json(schema::CallTree {
-        schema_version: 1,
-        root_call_id: call_id,
-        total_legs: legs.len(),
-        legs,
-        max_depth: tree.max_depth,
-        truncated: tree.truncated,
-        heuristic_edges: tree.heuristic_edges,
-        total_messages: tree.total_messages,
-        first_activity: tree.first_activity.map(|t| t.to_rfc3339()),
-        last_activity: tree.last_activity.map(|t| t.to_rfc3339()),
-        capture_identity,
-    }))
+    tree.map(Json)
+        .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND))
 }
 
 /// `GET /v1/aggregate` — count dialogs grouped by one dimension (PAR3:
@@ -6707,61 +6683,10 @@ pub mod schema {
         pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
-    /// One leg of a call tree: a dialog, and how the walk reached it. Follow
-    /// `call_id` to `/v1/dialogs/{call_id}` for the leg's detail.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CallTreeLeg {
-        /// Call-ID of this leg.
-        pub call_id: String,
-        /// Hops from the root. Zero for the root itself.
-        pub depth: u32,
-        /// The leg this one was correlated FROM. Null for the root.
-        pub parent_call_id: Option<String>,
-        /// Confidence of the edge from the parent, 0-100. Null for the root.
-        #[schema(minimum = 0, maximum = 100)]
-        pub score: Option<u8>,
-        /// Which strategy matched this edge. Null for the root.
-        pub strategy: Option<String>,
-        /// Whether the edge compared identifiers rather than guessing. Null for
-        /// the root, which the caller named rather than the walk matching.
-        pub identifier_match: Option<bool>,
-        /// Whether the walk continued THROUGH this leg. False on a leg reached
-        /// by a timing guess, and on any leg the cap cut the walk short of.
-        pub followed: bool,
-    }
-
-    /// The tree of legs reachable from one call across a B2BUA, SBC or PBX.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CallTree {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// Call-ID the walk started from, echoed verbatim.
-        pub root_call_id: String,
-        /// Every leg found, ordered by depth then creation time.
-        pub legs: Vec<CallTreeLeg>,
-        /// Number of legs returned, root included.
-        pub total_legs: usize,
-        /// Deepest hop count reached.
-        pub max_depth: u32,
-        /// True when the row cap stopped the walk before it ran out of legs.
-        pub truncated: bool,
-        /// How many edges are timing guesses rather than identifier matches.
-        pub heuristic_edges: usize,
-        /// Total SIP messages across every leg.
-        pub total_messages: usize,
-        /// Earliest leg creation time in the tree, RFC 3339.
-        pub first_activity: Option<String>,
-        /// Latest leg update time in the tree, RFC 3339.
-        pub last_activity: Option<String>,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
+    /// The call tree's answer, built by
+    /// [`crate::output::query::tree::call_tree`] for this route and
+    /// `--call-tree` alike.
+    pub use crate::output::query::tree::{CallTree, CallTreeLeg};
 
     /// The group-by count's answer, built by
     /// [`crate::output::query::aggregate::aggregate`] for this route and
