@@ -5,7 +5,8 @@
 //!
 //! Every flag row names the first release whose command line accepted the
 //! flag, or `Unreleased`. `scripts/flag-since.py` derives the value from
-//! `src/cli.rs` at each `vX.Y.Z` tag; these gates hold the page to it:
+//! `src/cli.rs` and the clap groups in `src/cli/*.rs` at each `vX.Y.Z` tag;
+//! these gates hold the page to it:
 //!
 //! - every flag table carries the column, and every row a well-formed cell;
 //! - every flag clap builds (and every feature-gated one) has such a row;
