@@ -7,7 +7,7 @@
 //! # The surface, release by release
 //!
 //! Three lists make up what a user can name: the command-line flags
-//! (`src/cli.rs`), the MCP tools (`#[tool(...)]` under `src/mcp/`) and the REST
+//! (`src/cli.rs` and the clap groups directly in `src/cli/`), the MCP tools (`#[tool(...)]` under `src/mcp/`) and the REST
 //! routes (`.route("...")` in `src/output/api.rs`). Each is read from the
 //! source at every `vX.Y.Z` tag reachable from `HEAD`, through one `git
 //! cat-file --batch`, and from the working tree for what is not released yet.
@@ -63,6 +63,20 @@ fn repo() -> &'static Path {
 
 /// The file the flags are read from.
 const CLI_SOURCE: &str = "src/cli.rs";
+/// The directory of clap groups flattened into `Cli`, whose `.rs` files
+/// directly inside it declare flags too (the one-shot query groups).
+const CLI_GROUPS: &str = "src/cli";
+
+/// Whether `path` may declare command-line flags: [`CLI_SOURCE`], or a `.rs`
+/// file directly in [`CLI_GROUPS`]. A file nested deeper is not read. A group
+/// file's flags are read by [`group_flags`].
+fn is_cli_source(path: &str) -> bool {
+    path == CLI_SOURCE
+        || path
+            .strip_prefix(CLI_GROUPS)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .is_some_and(|name| name.ends_with(".rs") && !name.contains('/'))
+}
 /// The file the REST routes are read from.
 const API_SOURCE: &str = "src/output/api.rs";
 /// The tree the MCP tools are read from.
@@ -116,6 +130,35 @@ fn cli_longs(src: &str) -> Result<BTreeSet<String>, TestError> {
             && let Some(c) = field.captures(&src[end..])
         {
             out.insert(format!("--{}", c[1].replace('_', "-")));
+        }
+    }
+    Ok(out)
+}
+
+/// The long flags one file in [`CLI_GROUPS`] adds to `Cli`: none when it
+/// derives `clap::Parser`, because then it is a command line of its own
+/// (`sipnab g729`), not a group flattened into `Cli`.
+fn group_flags(src: &str) -> Result<BTreeSet<String>, TestError> {
+    let own_parser = regex::Regex::new(r"derive\([^)]*\bclap::Parser\b")?;
+    if own_parser.is_match(src) {
+        return Ok(BTreeSet::new());
+    }
+    cli_longs(src)
+}
+
+/// The long flags of a command line spread over `files`, each a
+/// `(path, text)` pair: [`CLI_SOURCE`]'s, plus each group file's by
+/// [`group_flags`]. Any other path adds nothing. The one rule for the tags and
+/// the working tree alike.
+fn flags_of<'a>(
+    files: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<BTreeSet<String>, TestError> {
+    let mut out = BTreeSet::new();
+    for (path, text) in files {
+        if path == CLI_SOURCE {
+            out.extend(cli_longs(text)?);
+        } else if is_cli_source(path) {
+            out.extend(group_flags(text)?);
         }
     }
     Ok(out)
@@ -261,7 +304,7 @@ fn release_surfaces() -> Result<&'static Vec<(Version, String, Surface)>, TestEr
     for (version, tag) in release_tags()? {
         let mut files = Vec::new();
         for line in git(&[
-            "ls-tree", "-r", &tag, "--", CLI_SOURCE, API_SOURCE, MCP_TREE,
+            "ls-tree", "-r", &tag, "--", CLI_SOURCE, CLI_GROUPS, API_SOURCE, MCP_TREE,
         ])?
         .lines()
         {
@@ -279,11 +322,13 @@ fn release_surfaces() -> Result<&'static Vec<(Version, String, Surface)>, TestEr
     let mut out = Vec::new();
     for (version, tag, files) in listings {
         let text = |id: &String| blobs.get(id).map(String::as_str).unwrap_or("");
-        let mut surface = Surface::default();
+        let mut surface = Surface {
+            flags: flags_of(files.iter().map(|(id, path)| (path.as_str(), text(id))))?,
+            ..Surface::default()
+        };
         let mut mcp = Vec::new();
         for (id, path) in &files {
             match path.as_str() {
-                CLI_SOURCE => surface.flags = cli_longs(text(id))?,
                 API_SOURCE => surface.routes = rest_routes(text(id))?,
                 p if p.starts_with(MCP_TREE) => mcp.push(text(id)),
                 _ => {}
@@ -309,8 +354,19 @@ fn working_tree_surface() -> Result<Surface, TestError> {
             }
         }
     }
+    let mut cli_files = vec![(
+        CLI_SOURCE.to_string(),
+        std::fs::read_to_string(repo().join(CLI_SOURCE))?,
+    )];
+    for entry in std::fs::read_dir(repo().join(CLI_GROUPS))?.flatten() {
+        let p = entry.path();
+        if p.is_file() {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            cli_files.push((format!("{CLI_GROUPS}/{name}"), std::fs::read_to_string(&p)?));
+        }
+    }
     Ok(Surface {
-        flags: cli_longs(&std::fs::read_to_string(repo().join(CLI_SOURCE))?)?,
+        flags: flags_of(cli_files.iter().map(|(p, t)| (p.as_str(), t.as_str())))?,
         tools: tool_names(mcp.iter().map(String::as_str))?,
         routes: rest_routes(&std::fs::read_to_string(repo().join(API_SOURCE))?)?,
     })
@@ -867,6 +923,52 @@ fn the_tested_on_check_reads_what_the_guides_write() -> Result<(), TestError> {
             "g.md:26: #or-forward says it ran with sipnab 0.5.200, but --vcon-forward first shipped in 0.5.205"
         ],
         "an excluded section is held to the release its own statement names"
+    );
+    Ok(())
+}
+
+/// The flag sources are `src/cli.rs` and the files directly in `src/cli/`,
+/// nothing nested and nothing else.
+#[test]
+fn the_flag_sources_are_cli_rs_and_its_direct_groups() {
+    assert!(is_cli_source("src/cli.rs"));
+    assert!(is_cli_source("src/cli/aggregate_args.rs"));
+    assert!(!is_cli_source("src/cli/deeper/x.rs"));
+    assert!(!is_cli_source("src/cli/notes.md"));
+    assert!(!is_cli_source("src/client.rs"));
+    assert!(!is_cli_source("src/cli"));
+}
+
+/// A file in `src/cli/` that derives `clap::Parser` is a command line of its
+/// own (`sipnab g729`), so its flags are not `Cli`'s.
+#[test]
+fn a_separate_parser_declares_no_cli_flags() -> Result<(), TestError> {
+    let group = "#[derive(clap::Args)]\npub struct G {\n    #[arg(long)]\n    pub one: bool,\n}\n";
+    let parser =
+        "#[derive(clap::Parser, Debug)]\npub struct P {\n    #[arg(long)]\n    pub two: bool,\n}\n";
+    assert_eq!(group_flags(group)?, BTreeSet::from(["--one".to_string()]));
+    assert!(group_flags(parser)?.is_empty());
+    Ok(())
+}
+
+/// A command line is `src/cli.rs` with its group files, read by one rule for
+/// a tag and for the working tree: a group's flags count, a separate parser's
+/// and an unrelated file's do not.
+#[test]
+fn a_command_line_is_cli_rs_with_its_groups() -> Result<(), TestError> {
+    let main = "pub struct Cli {\n    #[arg(long)]\n    pub zero: bool,\n}\n";
+    let group = "#[derive(clap::Args)]\npub struct G {\n    #[arg(long)]\n    pub one: bool,\n}\n";
+    let parser =
+        "#[derive(clap::Parser, Debug)]\npub struct P {\n    #[arg(long)]\n    pub two: bool,\n}\n";
+    let flags = flags_of([
+        ("src/cli.rs", main),
+        ("src/cli/group_args.rs", group),
+        ("src/cli/sub_args.rs", parser),
+        ("src/other.rs", group),
+    ])?;
+    assert_eq!(
+        flags,
+        BTreeSet::from(["--zero".to_string(), "--one".to_string()])
     );
     Ok(())
 }

@@ -14,8 +14,12 @@ Removed from [the CLI reference](../cli-reference.md).
 [`scripts/flag-since.py`](../../scripts/flag-since.py) writes the **Since**
 column of `docs/cli-reference.md` from the release tags.
 
-- It reads [`src/cli.rs`](../../src/cli.rs) at each release tag, `v0.3.0`
-  onward. A flag counts under its current name or any alias.
+- It reads [`src/cli.rs`](../../src/cli.rs) and the clap groups directly in
+  `src/cli/` at each release tag, `v0.3.0` onward. A flag
+  counts under its current name or any alias, and a flag moved from one of
+  those files to another keeps the release it first appeared in. A file there
+  that derives `clap::Parser` is a command line of its own (`sipnab g729`),
+  and its flags are not counted.
 - The pre-release tags `v0.1.0-alpha` and `v0.2.0-beta` do not count as
   releases.
 - A flag that a release removed and a later release restored keeps the release
