@@ -13,6 +13,9 @@ entry that carries them.
 ### Security
 
 - **`zod` advanced past [GHSA-mrhx-c7xc-m3w5](https://osv.dev/vulnerability/GHSA-mrhx-c7xc-m3w5) (CVE-2023-54404), which osv-scanner first reported on 2026-10-23.** zod could exhaust memory while validating an oversized constrained collection. `clients/typescript/package-lock.json` now resolves zod 4.6.7. The e2e tooling for the site's Lighthouse step keeps zod 3.25.76, through `@lhci/cli` -> `lighthouse` 12.6.1 -> `puppeteer-core` 24.43.1 -> `chromium-bidi` 14.0.0, because no zod 3 release is fixed; that path is never loaded, since Lighthouse attaches to Chrome over CDP. `osv-scanner.toml` and `vex/sipnab.openvex.json` record the exception.
+- **Two npm dependencies advanced past advisories published on 2026-10-23.**
+  - [GHSA-xhq7-xmqj-769h](https://osv.dev/vulnerability/GHSA-xhq7-xmqj-769h) (CVE-2026-110095), [GHSA-wjr9-j795-jxcr](https://osv.dev/vulnerability/GHSA-wjr9-j795-jxcr) (CVE-2026-110180), [GHSA-w74x-v6f9-j3xg](https://osv.dev/vulnerability/GHSA-w74x-v6f9-j3xg) (CVE-2026-110306) and [GHSA-333x-w4r6-6crp](https://osv.dev/vulnerability/GHSA-333x-w4r6-6crp) (CVE-2026-110725): `fast-uri` 3.1.8, which `ajv` uses, in the TypeScript client. `clients/typescript/package-lock.json` now resolves 3.1.9.
+  - [GHSA-27r3-jxmh-p828](https://osv.dev/vulnerability/GHSA-27r3-jxmh-p828) (CVE-2026-111181): `body-parser`, under `express`. `clients/typescript/package-lock.json` now resolves 2.4.0, with the `qs` 6.16.1 it requires, and `e2e/package-lock.json` resolves 1.20.9.
 
 ### Fixed
 
