@@ -235,16 +235,16 @@ impl SipnabMcp {
         &self,
         Parameters(params): Parameters<TimelineParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
-        let width = params.bucket_seconds.unwrap_or(60);
-        if width == 0 {
-            return Err(errors::refuse_param(
-                Reason::InvalidValue,
-                "bucket_seconds",
-                "bucket_seconds must be greater than zero: a zero-width bucket \
-                 describes no interval, and every dialog would fall into all of \
-                 them at once",
-            ));
-        }
+        // The width rule REST and `--timeline` apply, refused in this
+        // surface's own error shape.
+        let width =
+            crate::output::query::timeline::bucket_width(params.bucket_seconds).map_err(|why| {
+                errors::refuse_param(
+                    Reason::InvalidValue,
+                    "bucket_seconds",
+                    format!("bucket_seconds {why}"),
+                )
+            })?;
         // Capture lock first, stores second, all three held together — see
         // `CaptureState`. The series and the identity stamped on it must
         // describe one capture.

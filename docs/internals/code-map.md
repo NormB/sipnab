@@ -170,6 +170,7 @@ src/
 │   ├── cli_print.rs / json.rs / hexdump.rs / fail2ban.rs / wireshark.rs
 │   ├── dialog_report.rs / call_report.rs / synthetic.rs
 │   ├── api.rs            # axum REST (api feature)
+│   ├── query/            # query answers REST serializes and the CLI query flags print
 │   ├── prometheus.rs / prometheus_server.rs
 │   ├── vcon.rs / vcon_schema.rs   # vCon container export (vcon feature)
 │   ├── redact.rs         # --redact rewriting, with the reversible map

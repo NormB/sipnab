@@ -164,7 +164,7 @@ What is the call volume over time, in fixed-width buckets?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a volume histogram is a one-shot batch fact, but no flag produces per-bucket counts (PAR5) |
+| CLI | `--timeline` |
 | TUI | `CallVolume` |
 | REST | `/v1/timeline` |
 | MCP | `timeline` |

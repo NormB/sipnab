@@ -20,7 +20,43 @@ use super::one_shot::OneShot;
 /// Split out of [`super::Cli`] so clap's generated parser builds this group
 /// in its own stack frame, like every other group.
 #[derive(clap::Args, Debug, Clone, Default)]
-pub struct AggregateArgs {}
+pub struct AggregateArgs {
+    /// Print the call volume over time: how many dialogs opened in each
+    /// fixed-width interval, oldest first.
+    ///
+    /// The width is in seconds, 60 when the flag is given bare
+    /// (`--timeline`, or `--timeline=300` for five minutes). Intervals align
+    /// to the epoch, not to the first call, so two captures line up, and an
+    /// empty interval is printed with a count of zero. Counts the dialogs the
+    /// run's filter admits (`--filter`, the diagnostic aliases,
+    /// `--since`/`--until`). With `--json`, one JSON object on the last line
+    /// of stdout, the shape `GET /v1/timeline` returns. Makes the run
+    /// headless, as `--call-report` does.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "SECONDS",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = DEFAULT_TIMELINE_SECONDS,
+        value_parser = parse_bucket_seconds,
+    )]
+    pub timeline: Option<u64>,
+}
+
+/// A bare `--timeline`'s width as clap reads it: the text of
+/// [`crate::output::query::timeline::DEFAULT_BUCKET_SECONDS`], which a unit
+/// test holds equal to it.
+const DEFAULT_TIMELINE_SECONDS: &str = "60";
+
+/// Parse a `--timeline` width: a whole number of seconds above zero, refused
+/// for zero by the rule REST and MCP apply.
+fn parse_bucket_seconds(s: &str) -> Result<u64, String> {
+    let n: u64 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a whole number of seconds"))?;
+    crate::output::query::timeline::bucket_width(Some(n)).map_err(str::to_string)
+}
 
 impl AggregateArgs {
     /// The one-shot declarations of this group's flags, active or not.
@@ -29,6 +65,40 @@ impl AggregateArgs {
     /// itself here, once. See [`OneShot`] for what each field decides.
     #[must_use]
     pub fn one_shots(&self) -> Vec<OneShot> {
-        Vec::new()
+        vec![OneShot {
+            name: "--timeline",
+            active: self.timeline.is_some(),
+            implies_no_tui: true,
+            owns_stdout: true,
+        }]
+    }
+}
+
+/// The flags' own parsing rules.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bare flag's width is the shared default, not a second number.
+    #[test]
+    fn the_bare_timeline_width_is_the_shared_default() {
+        assert_eq!(
+            parse_bucket_seconds(DEFAULT_TIMELINE_SECONDS),
+            Ok(crate::output::query::timeline::DEFAULT_BUCKET_SECONDS)
+        );
+    }
+
+    /// Zero and text are refused, each naming why.
+    #[test]
+    fn a_zero_or_textual_width_is_refused() {
+        assert!(
+            parse_bucket_seconds("0").is_err_and(|e| e.contains("greater than zero")),
+            "zero"
+        );
+        assert!(
+            parse_bucket_seconds("minute").is_err_and(|e| e.contains("whole number")),
+            "text"
+        );
+        assert_eq!(parse_bucket_seconds("300"), Ok(300));
     }
 }

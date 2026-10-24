@@ -1140,6 +1140,81 @@ Multiple diagnostic flags combine with OR.
 - `sipnab -N -I capture.pcap --tshark-filter 'sip.Method == "INVITE"'` — print a tshark-compatible display filter for the INVITE traffic in a capture. sipnab hands the expression to tshark's `-Y` verbatim, so it takes WIRESHARK display-filter syntax rather than sipnab's `--filter` DSL: `sip.Method`, not `method`. Quote the whole expression in single quotes so the inner double quotes survive the shell
 
 
+## Queries
+
+A query flag answers one question about the capture after sipnab has read
+it, then exits. Each one:
+
+- counts only the dialogs the run's filter admits: `--filter`, the
+  [diagnostic aliases](#diagnostic-aliases) and `--since`/`--until`;
+- makes the run headless, as `--call-report` does, so `-N` is optional;
+- prints a table, or the same table in Markdown under `--markdown`;
+- under `--json`, prints one JSON object on the last line of stdout, with the
+  shape the matching REST route returns. `--json-pretty` prints the same
+  object indented.
+
+Add `--no-cli-print` to leave out the per-message lines, and `--quiet` to leave
+out the end-of-run summary on stderr.
+
+| Flag | Value | Default | Since | Description |
+|------|-------|---------|-------|-------------|
+| `--timeline` | `[=<SECONDS>]` | `60` | Unreleased | Print how many dialogs opened in each interval of this many seconds, oldest first. Intervals align to the epoch, and an empty interval shows a count of zero. `--json` prints the shape of `GET /v1/timeline`. `0` exits 2. A span of more than 100,000 intervals exits 1 |
+
+### Call volume over time
+
+Count the calls that opened in each five-second interval:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --timeline=5 --no-cli-print --quiet
+```
+
+```text
+Call volume: 3 buckets of 5 s, 5 dialogs
+Start                      Dialogs
+----------------------------------
+2023-11-14T22:13:20+00:00  2
+2023-11-14T22:13:25+00:00  2
+2023-11-14T22:13:30+00:00  1
+```
+
+Give the width after `=`. A bare `--timeline` uses 60-second intervals. An
+interval with no call in it shows a count of zero, so a gap in traffic shows
+as a row of zeros.
+
+One histogram holds at most 100,000 intervals. When the calls span more
+intervals of the width than that, sipnab prints no histogram, writes on stderr
+how many intervals the span needs and a width that fits, and exits 1. Run it
+again with that width or a wider one.
+
+Count only the failed calls:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --timeline=5 --no-cli-print --quiet --filter 'state == Failed'
+```
+
+```text
+Call volume: 3 buckets of 5 s, 4 dialogs
+Start                      Dialogs
+----------------------------------
+2023-11-14T22:13:20+00:00  1
+2023-11-14T22:13:25+00:00  2
+2023-11-14T22:13:30+00:00  1
+```
+
+Read the answer as JSON. `capture_identity` names the run that produced it,
+so it differs from run to run. `jq` drops it here:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --timeline --json --no-cli-print --quiet | jq -c 'del(.capture_identity)'
+```
+
+```json
+{"schema_version":1,"buckets":[{"start":"2023-11-14T22:13:00+00:00","bucket_seconds":60,"dialogs":5}],"returned":1,"bucket_seconds":60}
+```
+
+The REST route `GET /v1/timeline?bucket_seconds=60` and the MCP tool
+`timeline` answer the same question about a loaded capture.
+
 ## Dialog
 
 | Flag | Value | Default | Since | Description |

@@ -83,6 +83,19 @@ impl<'a> QueryContext<'a> {
         crate::sip::dsl::select_dialogs(self.filter, self.dialogs, self.streams)
     }
 
+    /// Which capture and store revision this answer comes from: the run's
+    /// own capture identity ([`crate::provenance::run_identity`], the one a
+    /// server started by this run would stamp) with the two stores'
+    /// generations. Stamped on every answer whose REST shape carries
+    /// `capture_identity`, so the CLI's JSON is that shape in full.
+    #[must_use]
+    pub fn capture_identity(&self) -> Option<crate::provenance::CaptureEtag> {
+        Some(
+            crate::provenance::run_identity()
+                .etag(self.dialogs.generation(), self.streams.generation()),
+        )
+    }
+
     /// The `--lint-suppress-file` (or discovered `.sipnab-lint-suppress`)
     /// patterns, by the rule `--lint` reads them with.
     ///
@@ -111,12 +124,7 @@ impl<'a> QueryContext<'a> {
         answer: &T,
         text: impl FnOnce(ReportFormat) -> String,
     ) -> bool {
-        match render_answer(
-            self.cli.output_args.json,
-            table_format(self.cli),
-            answer,
-            text,
-        ) {
+        match render_answer(answer_form(self.cli), answer, text) {
             Ok(out) => super::batch::write_stdout(&out),
             Err(e) => {
                 tracing::error!("{flag}: the answer did not serialize: {e}");
@@ -133,25 +141,48 @@ pub fn table_format(cli: &Cli) -> ReportFormat {
     super::batch::table_report_format(cli)
 }
 
-/// The text one query writes: under `json`, the answer as one JSON object on
-/// its own line; otherwise `text` rendered in `format`.
+/// The form one query's answer is written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerForm {
+    /// `--json`: the serialized answer as one line.
+    Json,
+    /// `--json-pretty`: the same value, indented over several lines.
+    JsonPretty,
+    /// Neither: the answer's table, in this format.
+    Table(ReportFormat),
+}
+
+/// The form this command line asks for: `--json-pretty` before `--json`,
+/// either before the table, the precedence `--call-report` applies.
+#[must_use]
+pub fn answer_form(cli: &Cli) -> AnswerForm {
+    if cli.output_args.json_pretty {
+        AnswerForm::JsonPretty
+    } else if cli.output_args.json {
+        AnswerForm::Json
+    } else {
+        AnswerForm::Table(table_format(cli))
+    }
+}
+
+/// The text one query writes in `form`: the serialized answer on one line,
+/// the same indented, or `text` rendered in the table format.
 ///
 /// # Errors
 ///
 /// The serializer's message when the answer cannot be written as JSON.
 pub fn render_answer<T: Serialize>(
-    json: bool,
-    format: ReportFormat,
+    form: AnswerForm,
     answer: &T,
     text: impl FnOnce(ReportFormat) -> String,
 ) -> Result<String, String> {
-    if json {
-        serde_json::to_string(answer)
-            .map(|line| format!("{line}\n"))
-            .map_err(|e| e.to_string())
-    } else {
-        Ok(text(format))
-    }
+    let json = match form {
+        AnswerForm::Json => serde_json::to_string(answer),
+        AnswerForm::JsonPretty => serde_json::to_string_pretty(answer),
+        AnswerForm::Table(format) => return Ok(text(format)),
+    };
+    json.map(|out| format!("{out}\n"))
+        .map_err(|e| e.to_string())
 }
 
 /// Render every query this command line asked for, from the final stores.
@@ -234,7 +265,7 @@ mod tests {
     /// back to exactly the value serialized: the REST shape, not a wrapper.
     #[test]
     fn json_is_one_line_holding_exactly_the_answer() -> Result<(), TestError> {
-        let out = render_answer(true, ReportFormat::Text, &answer(), |_| "table".into())?;
+        let out = render_answer(AnswerForm::Json, &answer(), |_| "table".into())?;
         assert!(out.ends_with('\n'), "terminated: {out:?}");
         assert_eq!(out.trim_end().lines().count(), 1, "one line: {out:?}");
         let back: serde_json::Value = serde_json::from_str(out.trim_end())?;
@@ -245,10 +276,43 @@ mod tests {
     /// Without `--json` the table renders, in the format it was handed.
     #[test]
     fn without_json_the_table_renders_in_the_given_format() -> Result<(), TestError> {
-        let out = render_answer(false, ReportFormat::Markdown, &answer(), |f| {
+        let out = render_answer(AnswerForm::Table(ReportFormat::Markdown), &answer(), |f| {
             format!("{f:?} table\n")
         })?;
         assert_eq!(out, "Markdown table\n");
+        Ok(())
+    }
+
+    /// Under `--json-pretty` the answer is the same value, indented over
+    /// several lines, as `--call-report --json-pretty` prints its report.
+    #[test]
+    fn json_pretty_is_the_same_value_indented() -> Result<(), TestError> {
+        let out = render_answer(AnswerForm::JsonPretty, &answer(), |_| "table".into())?;
+        assert!(out.ends_with("}\n"), "terminated: {out:?}");
+        assert!(out.trim_end().lines().count() > 1, "indented: {out:?}");
+        let back: serde_json::Value = serde_json::from_str(&out)?;
+        assert_eq!(back, serde_json::to_value(answer())?);
+        Ok(())
+    }
+
+    /// The form follows the flags: `--json-pretty` over `--json`, either over
+    /// `--markdown`, and text when none is given.
+    #[test]
+    fn the_answer_form_follows_the_output_flags() -> Result<(), TestError> {
+        let form = |args: &[&str]| -> Result<AnswerForm, TestError> {
+            let mut argv = vec!["sipnab", "-N", "-I", "x.pcap"];
+            argv.extend_from_slice(args);
+            Ok(answer_form(&Cli::try_parse_from(argv)?))
+        };
+        assert_eq!(form(&[])?, AnswerForm::Table(ReportFormat::Text));
+        assert_eq!(
+            form(&["--markdown"])?,
+            AnswerForm::Table(ReportFormat::Markdown)
+        );
+        assert_eq!(form(&["--json"])?, AnswerForm::Json);
+        assert_eq!(form(&["--json-pretty"])?, AnswerForm::JsonPretty);
+        assert_eq!(form(&["--json", "--markdown"])?, AnswerForm::Json);
+        assert_eq!(form(&["--json", "--json-pretty"])?, AnswerForm::JsonPretty);
         Ok(())
     }
 
