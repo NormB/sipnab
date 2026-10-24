@@ -54,7 +54,6 @@ const MATRIX: &str = "docs/design/surface-capability-matrix.md";
 /// capture analysis, so that cell is a gap, not a present spelling.
 const GAP_LEDGER: &[(&str, &str)] = &[
     // CLI query batch B1: aggregates.
-    ("Top talkers", "CLI"),
     // CLI query batch B2: single-call queries.
     ("B2BUA call tree", "CLI"),
     ("Correlate legs", "CLI"),

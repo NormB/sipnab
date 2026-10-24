@@ -157,6 +157,10 @@ The order and the cut are `output::query::aggregate::rank_by_count`, which
 rates route and tool share `output::query::rates`: its dimension set, its
 metric-list rule (`wanted_metrics`) and the answer. The CLI takes no metric
 list and computes every metric, which a reader narrows with `jq`.
+`--talkers` and the talkers route share `output::query::talkers`, whose
+`rank` (dialogs, then messages, then the key) and `share_pct` the MCP
+`top_talkers` tool also reads; `--prefix-digits` is held to the zero rule
+`TalkerDimension::parse` applies to REST's `prefix_digits`.
 
 Beyond those files, each flag edits only lines that belong to it:
 

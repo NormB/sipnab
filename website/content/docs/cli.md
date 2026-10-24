@@ -1161,7 +1161,9 @@ out the end-of-run summary on stderr.
 | `--timeline` | `[=<SECONDS>]` | `60` | Unreleased | Print how many dialogs opened in each interval of this many seconds, oldest first. Intervals align to the epoch, and an empty interval shows a count of zero. `--json` prints the shape of `GET /v1/timeline`. `0` exits 2. A span of more than 100,000 intervals exits 1 |
 | `--count-by` | `<DIMENSION>` | | Unreleased | Count the dialogs by one dimension, largest first: `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip` or `rtp.codec`. `--json` prints the shape of `GET /v1/aggregate`. Any other dimension exits 2 |
 | `--rates-by` | `<DIMENSION>` | | Unreleased | Print the carrier metrics of each value of one dimension: ASR, NER, ACD, post-dial delay, the tenth-percentile MOS and the retransmit rate. Takes every `--count-by` dimension, plus `to_domain`, `hour` and `next_hop`. `--json` prints the shape of `GET /v1/dialogs/rates`. Any other dimension exits 2 |
-| `--top` | `<N>` | `50` | Unreleased | How many values `--count-by` or `--rates-by` keeps. One line sums the rest, as `other_count` does under `--json`. Needs `--count-by` or `--rates-by`; `0` exits 2 |
+| `--talkers` | `<BY>` | | Unreleased | Rank the busiest participants, most dialogs first: by sending address (`ip`), `User-Agent` or `Server` banner (`ua`), or the dialed number's leading digits (`prefix`). `--json` prints the shape of `GET /v1/talkers`. Any other value exits 2 |
+| `--prefix-digits` | `<N>` | `4` | Unreleased | How many leading digits `--talkers prefix` ranks by. Needs `--talkers`; only `prefix` reads it. `0` exits 2 |
+| `--top` | `<N>` | `50` | Unreleased | How many rows `--count-by`, `--rates-by` or `--talkers` keeps. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those three; `0` exits 2 |
 
 ### Call volume over time
 
@@ -1344,6 +1346,75 @@ sipnab -I tests/pcap-samples/sip-problem-call.pcap --rates-by state --json --no-
 
 The REST route `GET /v1/dialogs/rates?by=state` and the MCP tool
 `group_dialogs` answer the same question about a loaded capture.
+
+### The busiest talkers
+
+Rank the addresses that sent the most dialogs, keeping three:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --talkers ip --top 3 --no-cli-print --quiet
+```
+
+```text
+Talkers by ip: 10 talkers, 5 dialogs
+Talker      Dialogs  Messages  INVITEs  Answered  Failed  Share%
+----------------------------------------------------------------
+192.0.2.20  1        4         1        1         0       20
+192.0.2.10  1        3         1        1         0       20
+192.0.2.30  1        2         1        0         1       20
+Other: 7 talkers past --top 3
+```
+
+Among talkers with the same number of dialogs, the one with more messages comes
+first, then the lower key.
+`Share%` is the share of the counted dialogs each talker took part in. A
+dialog counts for every participant, so the shares can add up to more than
+100.
+
+Rank the dialed numbers by their first five digits:
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --talkers prefix --prefix-digits 5 --no-cli-print --quiet
+```
+
+```text
+Talkers by prefix: 2 talkers, 5 dialogs
+Talker  Dialogs  Messages  INVITEs  Answered  Failed  Share%
+------------------------------------------------------------
+10009   3        10        0        0         0       60
+10008   2        17        1        1         0       40
+```
+
+`prefix` uses four digits when `--prefix-digits` is not given. Four digits put
+both numbers under one prefix:
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --talkers prefix --prefix-digits 4 --no-cli-print --quiet
+```
+
+```text
+Talkers by prefix: 1 talker, 5 dialogs
+Talker  Dialogs  Messages  INVITEs  Answered  Failed  Share%
+------------------------------------------------------------
+1000    5        27        1        1         0       100
+```
+
+Rank the software by its `User-Agent` or `Server` banner:
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --talkers ua --no-cli-print --quiet
+```
+
+```text
+Talkers by ua: 2 talkers, 5 dialogs
+Talker                            Dialogs  Messages  INVITEs  Answered  Failed  Share%
+--------------------------------------------------------------------------------------
+X-Lite 4 release 4.0 stamp 58832  4        9         1        1         0       80
+Asterisk PBX 1.6.0.6              2        4         1        1         0       40
+```
+
+The REST route `GET /v1/talkers?by=ip` and the MCP tool `top_talkers` answer
+the same question about a loaded capture.
 
 ## Dialog
 

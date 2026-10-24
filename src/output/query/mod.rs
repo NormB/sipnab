@@ -20,6 +20,7 @@ use crate::output::ReportFormat;
 
 pub mod aggregate;
 pub mod rates;
+pub mod talkers;
 pub mod timeline;
 
 /// Whether `key` is one of `dims`, the dimensions a group-by answer accepts.

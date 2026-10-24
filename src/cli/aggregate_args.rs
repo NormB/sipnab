@@ -10,6 +10,7 @@
 //! an entry in [`AggregateArgs::one_shots`], which `normalize` and `validate` read.
 
 use super::one_shot::OneShot;
+use crate::sip::talkers::TalkerDimension;
 
 /// Aggregate query flags (`--count-by`, `--rates-by`, `--talkers`, `--timeline`).
 ///
@@ -23,7 +24,7 @@ use super::one_shot::OneShot;
 #[command(group(
     clap::ArgGroup::new(RANKED)
         .multiple(true)
-        .args(["count_by", "rates_by"])
+        .args(["count_by", "rates_by", "talkers"])
 ))]
 pub struct AggregateArgs {
     /// Print the call volume over time: how many dialogs opened in each
@@ -84,8 +85,37 @@ pub struct AggregateArgs {
     )]
     pub rates_by: Option<String>,
 
-    /// How many rows a ranked query keeps (`--count-by`, `--rates-by`); the
-    /// rest are summed. 50 when not given, the default page REST returns.
+    /// Rank the busiest participants: by the address that sent the messages
+    /// (`ip`), the `User-Agent` or `Server` banner (`ua`), or the dialed
+    /// number's leading digits (`prefix`).
+    ///
+    /// Most dialogs first, then most messages. Keeps the first `--top`
+    /// talkers (50 by default). Counts the dialogs the run's filter admits.
+    /// With `--json`, one JSON object on the last line of stdout, the shape
+    /// `GET /v1/talkers` returns. Makes the run headless, as `--call-report`
+    /// does.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "BY",
+        value_parser = parse_talker_dimension,
+    )]
+    pub talkers: Option<TalkerDimension>,
+
+    /// How many leading digits `--talkers prefix` ranks the dialed number
+    /// by (4 when not given). Only `prefix` reads it.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "N",
+        requires = "talkers",
+        value_parser = parse_prefix_digits,
+    )]
+    pub prefix_digits: Option<u32>,
+
+    /// How many rows a ranked query keeps (`--count-by`, `--rates-by`,
+    /// `--talkers`); the rest are summed or counted. 50 when not given, the
+    /// default page REST returns.
     #[arg(
         help_heading = "Queries",
         long,
@@ -99,6 +129,22 @@ pub struct AggregateArgs {
 /// The ranked query flags `--top` cuts, as one clap group, so `--top` alone
 /// is refused naming them.
 const RANKED: &str = "ranked";
+
+/// Parse a `--talkers` dimension by the rule REST and MCP apply. `prefix`
+/// takes its digits from `--prefix-digits`, applied where the query runs.
+fn parse_talker_dimension(s: &str) -> Result<TalkerDimension, String> {
+    TalkerDimension::parse(s, None)
+}
+
+/// Parse `--prefix-digits` by the rule REST applies to `prefix_digits`,
+/// which refuses zero.
+fn parse_prefix_digits(s: &str) -> Result<u32, String> {
+    let n: u32 = s
+        .parse()
+        .map_err(|_| format!("'{s}' is not a whole number of digits"))?;
+    TalkerDimension::parse("prefix", Some(n))?;
+    Ok(n)
+}
 
 /// Parse a `--rates-by` dimension by the rule REST and MCP apply, refusing
 /// any other with the list of real ones.
@@ -156,6 +202,12 @@ impl AggregateArgs {
                 implies_no_tui: true,
                 owns_stdout: true,
             },
+            OneShot {
+                name: "--talkers",
+                active: self.talkers.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
         ]
     }
 }
@@ -174,6 +226,20 @@ mod tests {
             parse_dimension("bogus")
                 .is_err_and(|e| e.contains("one of: state,") && e.contains("narrow with --filter")),
             "bogus"
+        );
+    }
+
+    /// `--prefix-digits` refuses zero and text, with REST's reason for zero.
+    #[test]
+    fn prefix_digits_refuse_zero_and_text() {
+        assert_eq!(parse_prefix_digits("5"), Ok(5));
+        assert!(
+            parse_prefix_digits("0").is_err_and(|e| e.contains("greater than zero")),
+            "zero"
+        );
+        assert!(
+            parse_prefix_digits("four").is_err_and(|e| e.contains("whole number")),
+            "text"
         );
     }
 

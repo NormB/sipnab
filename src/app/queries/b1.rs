@@ -6,7 +6,8 @@
 //! function and hands the answer to [`QueryContext::answer`].
 
 use super::QueryContext;
-use crate::output::query::{DEFAULT_ROWS, aggregate, rates, timeline};
+use crate::output::query::{DEFAULT_ROWS, aggregate, rates, talkers, timeline};
+use crate::sip::talkers::TalkerDimension;
 
 /// Render batch B1's queries that this command line asked for.
 ///
@@ -15,7 +16,7 @@ use crate::output::query::{DEFAULT_ROWS, aggregate, rates, timeline};
 /// `false` when one was asked for and could not be answered or written;
 /// `true` otherwise, including when none was asked for.
 pub(super) fn render(ctx: &QueryContext<'_>) -> bool {
-    render_timeline(ctx) && render_count_by(ctx) && render_rates_by(ctx)
+    render_timeline(ctx) && render_count_by(ctx) && render_rates_by(ctx) && render_talkers(ctx)
 }
 
 /// `--count-by`: the dialogs the run's filter admits, counted by one
@@ -55,6 +56,31 @@ fn render_rates_by(ctx: &QueryContext<'_>) -> bool {
     };
     ctx.answer("--rates-by", &answer, |format| {
         rates::render(&answer, format)
+    })
+}
+
+/// `--talkers`: the busiest participants among the dialogs the run's filter
+/// admits, cut at `--top`, the answer `GET /v1/talkers` returns.
+fn render_talkers(ctx: &QueryContext<'_>) -> bool {
+    let Some(dimension) = ctx.cli.aggregate_args.talkers else {
+        return true;
+    };
+    // `--prefix-digits` was held to the zero rule when it was parsed; it
+    // applies to `prefix` only, as REST's `prefix_digits` does.
+    let dimension = match (dimension, ctx.cli.aggregate_args.prefix_digits) {
+        (TalkerDimension::Prefix(_), Some(n)) => {
+            TalkerDimension::Prefix(usize::try_from(n).unwrap_or(usize::MAX))
+        }
+        (dimension, _) => dimension,
+    };
+    let answer = talkers::talkers(
+        &ctx.selection(),
+        dimension,
+        top(ctx),
+        ctx.capture_identity(),
+    );
+    ctx.answer("--talkers", &answer, |format| {
+        talkers::render(&answer, format)
     })
 }
 
