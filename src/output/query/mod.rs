@@ -18,7 +18,22 @@ use std::fmt::Write as _;
 
 use crate::output::ReportFormat;
 
+pub mod aggregate;
 pub mod timeline;
+
+/// How many rows a ranked answer keeps when the caller names no limit:
+/// REST's default page (`top_n`, `limit`) and the CLI's `--top`.
+pub const DEFAULT_ROWS: usize = 50;
+
+/// `n` and `noun`, with an `s` unless `n` is one.
+#[must_use]
+pub(crate) fn plural(n: u64, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
 
 /// Render `rows` under `headers` as a table in `format`.
 ///

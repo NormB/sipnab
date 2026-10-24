@@ -147,9 +147,13 @@ the same lines.
 | B4 gates and relay | `--expect`, `--relay-holdings` | [`src/cli/gate_args.rs`](https://github.com/NormB/sipnab/blob/main/src/cli/gate_args.rs) (`GateArgs`) | [`src/app/queries/b4.rs`](https://github.com/NormB/sipnab/blob/main/src/app/queries/b4.rs) |
 
 `--top <N>` belongs in `AggregateArgs`, beside the ranked answers it bounds. It
-is added with its first reader rather than ahead of it, so the CLI never carries
-a flag that nothing reads. Another batch that needs it reads
-`cli.aggregate_args.top`.
+arrived with its first reader, `--count-by`, and requires it, so the CLI never
+carries a flag that nothing reads. A later ranked flag that reads
+`cli.aggregate_args.top` widens that requirement to itself. The default, 50, is
+`output::query::DEFAULT_ROWS`, the page REST returns when `top_n` is not given.
+The order and the cut are `output::query::aggregate::rank_by_count`, which
+`--count-by`, `GET /v1/aggregate`, `GET /v1/dialogs/rates` and the MCP
+`aggregate_dialogs` and `group_dialogs` tools all apply.
 
 Beyond those files, each flag edits only lines that belong to it:
 
