@@ -72,6 +72,7 @@ pub mod persistence;
 pub mod prometheus;
 #[cfg(feature = "metrics")]
 pub mod prometheus_server;
+pub mod query;
 #[cfg(any(feature = "api", feature = "mcp", feature = "vcon"))]
 pub mod redact;
 pub mod relay_statistics;

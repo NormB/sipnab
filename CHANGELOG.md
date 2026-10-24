@@ -10,9 +10,14 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **`--timeline[=<SECONDS>]` prints the call volume over time**: how many dialogs opened in each interval of that many seconds (60 when given bare), oldest first, with empty intervals kept. It counts the dialogs the run's filter admits, makes the run headless, and under `--json` prints one JSON object on the last line of stdout in the shape `GET /v1/timeline` returns, built by the same function. `--timeline=0` exits 2, and a span of more than 100,000 intervals exits 1 naming a width that fits. See [Call volume over time](docs/cli-reference.md#call-volume-over-time).
+
 ### Changed
 
 - **Every surface that labels a SIP message marks one that carries SDP with ` (SDP)`**, as the TUI ladder already did: `INVITE (SDP)`, `200 OK (SDP)`. That covers the `-N` per-message lines, the TUI detail title, `--call-report`'s transaction flow and evidence, the diagnosis summaries, the Mermaid ladder (MCP `render_ladder`), `analyze_vcon` (REST and MCP), the markdown export and the browser analyzer. They share one label, so they also agree on the edge cases: a response with no reason phrase is its code alone, and a message whose method or status code was not parsed reads `request` or `response`.
+- **`--cores` accepts `--json` beside a query flag.** The parallel reader writes no per-message lines, so it refused `--json`; a query flag's answer is printed under `--cores` too, and `--json` now formats it.
 
 ### Fixed
 

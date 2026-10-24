@@ -1785,43 +1785,7 @@ impl DialogStore {
         &self,
         width_seconds: u64,
     ) -> Result<Vec<(chrono::DateTime<chrono::Utc>, u64)>, TimelineTooWide> {
-        debug_assert!(width_seconds > 0, "callers reject zero before calling");
-        let width = i64::try_from(width_seconds).unwrap_or(i64::MAX).max(1);
-
-        let mut counts: std::collections::BTreeMap<i64, u64> = std::collections::BTreeMap::new();
-        let (mut earliest, mut latest) = (i64::MAX, i64::MIN);
-        for d in self.iter() {
-            let at = d.created_at.timestamp();
-            (earliest, latest) = (earliest.min(at), latest.max(at));
-            *counts.entry(at.div_euclid(width)).or_insert(0) += 1;
-        }
-        let (Some(&first), Some(&last)) = (counts.keys().next(), counts.keys().next_back()) else {
-            return Ok(Vec::new());
-        };
-        // Counted in i128: two bucket indexes far apart do not fit an i64
-        // difference.
-        let intervals = u64::try_from(i128::from(last) - i128::from(first) + 1).unwrap_or(u64::MAX);
-        if intervals > MAX_TIMELINE_BUCKETS {
-            // A width w with w * (MAX - 1) >= span splits the span into at most
-            // MAX - 1 steps, so at most MAX intervals wherever the epoch
-            // alignment falls; every wider width fits too.
-            let span = u64::try_from(i128::from(latest) - i128::from(earliest)).unwrap_or(u64::MAX);
-            return Err(TimelineTooWide {
-                bucket_seconds: width_seconds,
-                intervals,
-                fitting_seconds: span.div_ceil(MAX_TIMELINE_BUCKETS - 1).max(1),
-            });
-        }
-
-        Ok((first..=last)
-            .map(|b| {
-                (
-                    chrono::DateTime::from_timestamp(b.saturating_mul(width), 0)
-                        .unwrap_or_default(),
-                    counts.get(&b).copied().unwrap_or(0),
-                )
-            })
-            .collect())
+        bucket_by_start(self.iter().map(|d| d.created_at), width_seconds)
     }
 
     /// A page of dialogs for change-tracking pollers: those updated strictly
@@ -2194,6 +2158,67 @@ impl std::error::Error for TimelineTooWide {}
 fn cseq_key(msg: &SipMessage) -> Option<String> {
     let (num, method) = msg.cseq()?;
     Some(format!("{num} {method}"))
+}
+
+/// The bucketing rule [`DialogStore::timeline_buckets`] applies, over any set
+/// of dialog start instants: the whole store there, the dialogs a filter
+/// admitted for `--timeline`.
+///
+/// Each instant falls in the `width_seconds`-wide interval that holds it,
+/// aligned to the epoch rather than to the first instant, so two captures line
+/// up. Every interval from the first occupied one to the last is returned,
+/// oldest first, empty ones with a count of zero: an empty interval is what an
+/// outage looks like. No instants is no intervals. `width_seconds` must be
+/// non-zero -- callers reject a zero width, which would put every dialog in
+/// every bucket.
+///
+/// # Errors
+///
+/// [`TimelineTooWide`] when the instants span more than
+/// [`MAX_TIMELINE_BUCKETS`] intervals of this width. The instants come from
+/// the capture (a pcap record's timestamp, a HEP sender's clock), so two
+/// dialogs decades apart are one forged packet away, and every interval
+/// between them would be built and serialized.
+pub fn bucket_by_start(
+    instants: impl IntoIterator<Item = chrono::DateTime<chrono::Utc>>,
+    width_seconds: u64,
+) -> Result<Vec<(chrono::DateTime<chrono::Utc>, u64)>, TimelineTooWide> {
+    debug_assert!(width_seconds > 0, "callers reject zero before calling");
+    let width = i64::try_from(width_seconds).unwrap_or(i64::MAX).max(1);
+
+    let mut counts: std::collections::BTreeMap<i64, u64> = std::collections::BTreeMap::new();
+    let (mut earliest, mut latest) = (i64::MAX, i64::MIN);
+    for instant in instants {
+        let at = instant.timestamp();
+        (earliest, latest) = (earliest.min(at), latest.max(at));
+        *counts.entry(at.div_euclid(width)).or_insert(0) += 1;
+    }
+    let (Some(&first), Some(&last)) = (counts.keys().next(), counts.keys().next_back()) else {
+        return Ok(Vec::new());
+    };
+    // Counted in i128: two bucket indexes far apart do not fit an i64
+    // difference.
+    let intervals = u64::try_from(i128::from(last) - i128::from(first) + 1).unwrap_or(u64::MAX);
+    if intervals > MAX_TIMELINE_BUCKETS {
+        // A width w with w * (MAX - 1) >= span splits the span into at most
+        // MAX - 1 steps, so at most MAX intervals wherever the epoch
+        // alignment falls; every wider width fits too.
+        let span = u64::try_from(i128::from(latest) - i128::from(earliest)).unwrap_or(u64::MAX);
+        return Err(TimelineTooWide {
+            bucket_seconds: width_seconds,
+            intervals,
+            fitting_seconds: span.div_ceil(MAX_TIMELINE_BUCKETS - 1).max(1),
+        });
+    }
+
+    Ok((first..=last)
+        .map(|b| {
+            (
+                chrono::DateTime::from_timestamp(b.saturating_mul(width), 0).unwrap_or_default(),
+                counts.get(&b).copied().unwrap_or(0),
+            )
+        })
+        .collect())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

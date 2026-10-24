@@ -15,7 +15,11 @@ same value:
 - by default, as a table for a person at a terminal;
 - under `--markdown`, as the same table in Markdown;
 - under `--json`, as **one JSON object on the last line of stdout**, with
-  exactly the shape the REST route returns.
+  exactly the shape the REST route returns, `capture_identity` included: the
+  CLI stamps the run's own identity (`QueryContext::capture_identity`), the
+  one a server started by the same run would stamp;
+- under `--json-pretty`, as the same object indented, the precedence
+  `--call-report` applies.
 
 So `sipnab -N -I x.pcap --<query> --json | tail -1` and
 `curl …/v1/<route>` produce the same JSON for the same capture. A CLI flag never
@@ -97,6 +101,7 @@ pub struct QueryContext<'a> {
 impl<'a> QueryContext<'a> {
     pub fn selection(&self) -> DialogSelection<'a>;
     pub fn lint_suppressions(&self) -> Result<Option<SuppressionFile>, String>;
+    pub fn capture_identity(&self) -> Option<CaptureEtag>;
     pub fn answer<T: Serialize>(
         &self,
         flag: &str,
@@ -107,9 +112,27 @@ impl<'a> QueryContext<'a> {
 ```
 
 `answer` is the output convention in one place: under `--json` it writes the
-serialized answer as one line, otherwise the table `text` renders in the
-`--markdown` or text format. Its pure half, `render_answer`, carries the unit
-tests.
+serialized answer as one line, under `--json-pretty` indented, otherwise the
+table `text` renders in the `--markdown` or text format. `answer_form` reads
+the flags and its pure half, `render_answer`, writes the text; both carry the
+unit tests.
+
+The answer types and the functions that build them live in
+`src/output/query/`, one file per capability, outside the `api` feature so
+the CLI has them in every build. `api::schema` re-exports each type under its
+old name, so the OpenAPI document does not change when a type moves there.
+`output::query::table` is the one table renderer the answers share.
+
+A shared default lives beside its answer: `--timeline` with no width, REST's
+`bucket_seconds` and the MCP tool's all use `DEFAULT_BUCKET_SECONDS` (60) in
+`output::query::timeline`, and `bucket_width` refuses a zero width for all
+three. A refusal the engine makes after reading the capture is the same on
+each surface too: `sip::dialog_store::bucket_by_start` refuses a span of more
+than `MAX_TIMELINE_BUCKETS` intervals, which REST answers 422, MCP refuses as
+`limit_exceeded`, and `--timeline` writes to stderr before exiting 1.
+
+Under `--cores`, `--json` is refused as a per-message output unless a query
+flag that writes stdout is active, because then it formats that answer.
 
 ## Which file each flag lives in
 

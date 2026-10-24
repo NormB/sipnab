@@ -37,10 +37,17 @@ struct Recipe {
     doc: String,
     mode: Mode,
     fields: BTreeSet<String>,
+    /// The block's own `sipnab` command, up to its first pipe: what a
+    /// [`Mode::Query`] recipe is checked against.
+    command: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Mode {
+    /// A one-shot query flag (`--timeline` and the rest of the family): one
+    /// JSON answer, whose shape depends on the flag and its arguments, so the
+    /// block's own command is run rather than a fixed one.
+    Query(&'static str),
     /// `--json`: one object per SIP message.
     Messages,
     /// `--json-dialogs`: one object per dialog.
@@ -113,7 +120,14 @@ fn recipes() -> Result<Vec<Recipe>, TestError> {
             // near-miss: a `--json-stun` recipe checked against `--json`'s key
             // set reports every one of its real fields as missing, which is
             // how this gate first met `--json-stun` and `--json-analyze`.
-            let mode = if block.contains("--json-dialogs") {
+            let query = query_flags().into_iter().find(|q| {
+                block
+                    .split_whitespace()
+                    .any(|w| w.split('=').next() == Some(*q))
+            });
+            let mode = if let Some(flag) = query {
+                Mode::Query(flag)
+            } else if block.contains("--json-dialogs") {
                 Mode::Dialogs
             } else if block.contains("--json-stun") {
                 Mode::Stun
@@ -146,10 +160,15 @@ fn recipes() -> Result<Vec<Recipe>, TestError> {
                 }
             }
             if !fields.is_empty() {
+                let command = block
+                    .lines()
+                    .find(|l| l.trim_start().starts_with("sipnab "))
+                    .map(|l| l.split(" | ").next().unwrap_or(l).trim().to_string());
                 out.push(Recipe {
                     doc: name.clone(),
                     mode,
                     fields,
+                    command,
                 });
             }
         }
@@ -180,9 +199,103 @@ const STUN_FIXTURES: &[&str] = &[
     "tests/fixtures/turn_relay.pcap",     // an Allocate, a ChannelBind, a lapsed allocation
 ];
 
+/// Every one-shot query flag the CLI declares, from the registry itself, so a
+/// new query flag's recipes are checked without editing this file.
+fn query_flags() -> Vec<&'static str> {
+    use clap::Parser as _;
+    sipnab::cli::Cli::try_parse_from(["sipnab"])
+        .map(|cli| cli.one_shots().iter().map(|s| s.name).collect())
+        .unwrap_or_default()
+}
+
+/// `line` split into words the way a POSIX shell splits it, for the quoting a
+/// documented command uses: single and double quotes, no expansion.
+fn shell_words(line: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    for c in line.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => word.push(c),
+            None if c == '\'' || c == '"' => {
+                quote = Some(c);
+                started = true;
+            }
+            None if c.is_whitespace() => {
+                if started || !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            None => word.push(c),
+        }
+    }
+    if started || !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// Keys a query recipe's own command emits: the block's `sipnab` command run
+/// as written (from the repository root, which is where the documented
+/// sample paths resolve), its JSON lines harvested.
+fn keys_for_command(command: &str) -> Result<BTreeSet<String>, TestError> {
+    let words = shell_words(command);
+    let args = words.get(1..).ok_or("a command names sipnab")?;
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(args)
+        .env("NO_COLOR", "1")
+        .output()
+        .map_err(|e| format!("run sipnab: {e}"))?;
+    assert!(
+        out.status.success(),
+        "the documented command `{command}` failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut keys = BTreeSet::new();
+    for line in String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| l.starts_with('{'))
+    {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            harvest(&v, 3, &mut keys);
+        }
+    }
+    assert!(
+        !keys.is_empty(),
+        "the documented command `{command}` printed no JSON object"
+    );
+    Ok(keys)
+}
+
+/// The keys of `v`, walking objects and the object elements of arrays to
+/// `depth`: see [`keys_for`] for why to depth 3.
+fn harvest(v: &serde_json::Value, depth: usize, keys: &mut BTreeSet<String>) {
+    if depth == 0 {
+        return;
+    }
+    match v {
+        serde_json::Value::Object(obj) => {
+            keys.extend(obj.keys().cloned());
+            for child in obj.values() {
+                harvest(child, depth - 1, keys);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                harvest(item, depth, keys);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Top-level keys the given mode emits across every fixture.
 fn keys_for(mode: Mode) -> Result<BTreeSet<String>, TestError> {
     let flag = match mode {
+        Mode::Query(flag) => return Err(format!("{flag}: a query runs its own command").into()),
         Mode::Messages => "--json",
         Mode::Dialogs => "--json-dialogs",
         Mode::Stun => "--json-stun",
@@ -191,7 +304,7 @@ fn keys_for(mode: Mode) -> Result<BTreeSet<String>, TestError> {
     // `--json-analyze` emits one object per RUN, so it needs a capture with
     // findings in it; `--json-stun` needs one with STUN in it.
     let fixtures: &[&str] = match mode {
-        Mode::Messages | Mode::Dialogs => FIXTURES,
+        Mode::Messages | Mode::Dialogs | Mode::Query(_) => FIXTURES,
         Mode::Stun | Mode::Analyze => STUN_FIXTURES,
     };
     let mut keys = BTreeSet::new();
@@ -227,25 +340,6 @@ fn keys_for(mode: Mode) -> Result<BTreeSet<String>, TestError> {
             // still the failure worth catching — a reader pasting a recipe
             // that names a field nothing emits gets a confidently empty
             // answer — and a path-precise version would have to model jq.
-            fn harvest(v: &serde_json::Value, depth: usize, keys: &mut BTreeSet<String>) {
-                if depth == 0 {
-                    return;
-                }
-                match v {
-                    serde_json::Value::Object(obj) => {
-                        keys.extend(obj.keys().cloned());
-                        for child in obj.values() {
-                            harvest(child, depth - 1, keys);
-                        }
-                    }
-                    serde_json::Value::Array(items) => {
-                        for item in items {
-                            harvest(item, depth, keys);
-                        }
-                    }
-                    _ => {}
-                }
-            }
             harvest(&v, 3, &mut keys);
         }
     }
@@ -276,7 +370,16 @@ fn documented_jq_fields_exist_in_the_output() -> Result<(), TestError> {
 
     let mut bad = Vec::new();
     for r in &recipes {
+        let own;
         let keys = match r.mode {
+            Mode::Query(flag) => {
+                let command = r
+                    .command
+                    .as_deref()
+                    .ok_or_else(|| format!("{}: a {flag} recipe names no sipnab command", r.doc))?;
+                own = keys_for_command(command)?;
+                &own
+            }
             Mode::Messages => &messages,
             Mode::Dialogs => &dialogs,
             Mode::Stun => &stun,
@@ -288,6 +391,7 @@ fn documented_jq_fields_exist_in_the_output() -> Result<(), TestError> {
                     "{}: `.{f}` is not a field of {} output",
                     r.doc,
                     match r.mode {
+                        Mode::Query(flag) => flag,
                         Mode::Messages => "--json",
                         Mode::Dialogs => "--json-dialogs",
                         Mode::Stun => "--json-stun",
@@ -304,4 +408,28 @@ fn documented_jq_fields_exist_in_the_output() -> Result<(), TestError> {
         bad.join("\n  ")
     );
     Ok(())
+}
+
+/// The shell splitter reads the quoting the documented commands use.
+#[test]
+fn shell_words_reads_single_and_double_quotes() {
+    assert_eq!(
+        shell_words(r#"sipnab -I a.pcap --filter 'state == Failed' --x="a b" ''"#),
+        vec![
+            "sipnab",
+            "-I",
+            "a.pcap",
+            "--filter",
+            "state == Failed",
+            "--x=a b",
+            ""
+        ]
+    );
+}
+
+/// Every query flag the registry declares is found, so a recipe for one is
+/// checked against its own command and not against `--json`'s messages.
+#[test]
+fn the_query_flags_come_from_the_registry() {
+    assert!(query_flags().contains(&"--timeline"), "{:?}", query_flags());
 }

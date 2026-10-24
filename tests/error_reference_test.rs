@@ -810,7 +810,9 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // reworded to name detect-only; still one template. Nothing removed.
 // 507 -> 508: src/app/bootstrap.rs refuses --multi-device with -I/--input when
 // the run is planned, instead of the capture thread refusing it later.
-const EXPECTED_TEMPLATES: usize = 508;
+// 508 -> 509: src/app/queries/b1.rs, `--timeline: {e}`, the store refusing a
+// span of more than MAX_TIMELINE_BUCKETS intervals. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 509;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -5602,7 +5602,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // license_per_file / copyright_per_file table.
     // 1274 -> 1275: docs/fault-model.md +1, the "A parser that panics" table
     // of what each contained input shows.
-    const EXPECTED_TABLES: usize = 1275;
+    // 1275 -> 1277: docs/cli-reference.md +1, the `## Queries` flag table
+    // (`--timeline`), and its site mirror website/content/docs/cli.md +1.
+    const EXPECTED_TABLES: usize = 1277;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
