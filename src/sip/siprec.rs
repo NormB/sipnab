@@ -59,18 +59,18 @@ pub struct SirecStream {
 }
 
 /// One part of a multipart MIME body: its Content-Type and body text.
-struct MimePart {
+pub(crate) struct MimePart {
     /// Value of the part's `Content-Type` header, if present.
-    content_type: Option<String>,
+    pub(crate) content_type: Option<String>,
     /// Part body text (everything after the part's blank line).
-    body: String,
+    pub(crate) body: String,
 }
 
 /// Extract the `boundary=` parameter from a Content-Type header value.
 ///
 /// Handles both quoted (`boundary="x"`) and bare (`boundary=x`) forms.
 /// Returns `None` when no boundary parameter is present.
-fn extract_boundary(content_type: &str) -> Option<String> {
+pub(crate) fn extract_boundary(content_type: &str) -> Option<String> {
     content_type.split(';').find_map(|param| {
         // RFC 2045 §5.1: parameter names are case-insensitive, so match the
         // `boundary` name without regard to case (a `BOUNDARY=` was missed),
@@ -100,7 +100,7 @@ fn extract_boundary(content_type: &str) -> Option<String> {
 /// One `MimePart` per non-empty segment, each with its `Content-Type` (if
 /// any) and body text. A missing final `--` terminator is tolerated; empty
 /// segments and the terminator remnant are skipped.
-fn split_multipart(body: &str, boundary: &str) -> Vec<MimePart> {
+pub(crate) fn split_multipart(body: &str, boundary: &str) -> Vec<MimePart> {
     let delimiter = format!("--{}", boundary);
     let mut parts = Vec::new();
 

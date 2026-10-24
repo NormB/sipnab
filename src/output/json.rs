@@ -672,8 +672,7 @@ fn build_message_json(msg: &SipMessage) -> MessageJson<'_> {
     // body is left to the malformed path, not surfaced as a comparable sdp).
     let sdp = if msg
         .content_type()
-        .map(|ct| ct.contains("application/sdp"))
-        .unwrap_or(false)
+        .is_some_and(crate::sip::message::is_sdp_media_type)
     {
         std::str::from_utf8(&msg.body).ok()
     } else {
