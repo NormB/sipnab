@@ -39,12 +39,25 @@ mod tui_e2e {
     /// (tests in one binary run concurrently and must not share sessions).
     static SESSION_SEQ: AtomicU32 = AtomicU32::new(0);
 
+    /// A `tmux` command on the server named `socket` (`tmux -L socket`). Each
+    /// session uses its own name as its server's socket, so no two tests
+    /// share a tmux server: a shared one exits when its last session ends,
+    /// and a test starting a session at that moment fails.
+    fn tmux_for(socket: &str) -> Command {
+        let mut command = Command::new("tmux");
+        command.args(["-L", socket]);
+        command
+    }
+
     /// A tmux session running sipnab; killed automatically on drop.
     struct TuiSession {
         /// tmux session name, unique per process and per test.
         name: String,
         /// The session's own XDG_CONFIG_HOME, removed when the session drops.
         cfg_home: std::path::PathBuf,
+        /// The socket of the session's own tmux server, removed when the
+        /// session drops: `tmux kill-server` leaves it behind.
+        socket: std::path::PathBuf,
     }
 
     impl TuiSession {
@@ -101,7 +114,7 @@ mod tui_e2e {
                     .join(" "),
             );
 
-            let status = Command::new("tmux")
+            let status = tmux_for(&name)
                 .args([
                     "new-session",
                     "-d",
@@ -115,8 +128,16 @@ mod tui_e2e {
                 ])
                 .status()?;
             assert!(status.success(), "tmux new-session failed");
+            let out = tmux_for(&name)
+                .args(["display-message", "-p", "#{socket_path}"])
+                .output()?;
+            let socket = std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
 
-            Ok(TuiSession { name, cfg_home })
+            Ok(TuiSession {
+                name,
+                cfg_home,
+                socket,
+            })
         }
 
         /// Default-size launch loading the bundled SIP call fixture.
@@ -132,7 +153,7 @@ mod tui_e2e {
         /// # Returns
         /// The pane text from `tmux capture-pane -p` (lossy UTF-8).
         fn screen(&self) -> Result<String, TestError> {
-            let out = Command::new("tmux")
+            let out = tmux_for(&self.name)
                 .args(["capture-pane", "-t", &self.name, "-p"])
                 .output()?;
             Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -230,14 +251,14 @@ mod tui_e2e {
         fn send(&self, tail: &[&str]) -> Result<(), TestError> {
             let mut args = vec!["send-keys", "-t", &self.name];
             args.extend_from_slice(tail);
-            let status = Command::new("tmux").args(&args).status()?;
+            let status = tmux_for(&self.name).args(&args).status()?;
             assert!(status.success(), "tmux send-keys failed");
             Ok(())
         }
 
         /// True once the session has ended (the process exited).
         fn ended(&self) -> bool {
-            !Command::new("tmux")
+            !tmux_for(&self.name)
                 .args(["has-session", "-t", &self.name])
                 .status()
                 .map(|s| s.success())
@@ -258,15 +279,47 @@ mod tui_e2e {
     }
 
     impl Drop for TuiSession {
-        /// Best-effort `tmux kill-session` so a failed test never leaks a
-        /// running sipnab process, then removal of the session's own
-        /// XDG_CONFIG_HOME so a run leaves nothing in the temp directory.
+        /// Best-effort `tmux kill-server` on the session's own server, so a
+        /// failed test never leaks a running sipnab process or a server, then
+        /// removal of that server's socket and of the session's own
+        /// XDG_CONFIG_HOME, so a run leaves nothing in the temp directories.
         fn drop(&mut self) {
-            let _ = Command::new("tmux")
-                .args(["kill-session", "-t", &self.name])
-                .status();
+            let _ = tmux_for(&self.name).arg("kill-server").status();
+            let _ = std::fs::remove_file(&self.socket);
             let _ = std::fs::remove_dir_all(&self.cfg_home);
         }
+    }
+
+    /// Every tmux command goes through [`tmux_for`], so each session runs on
+    /// its own tmux server. On one shared server, a test whose session ended
+    /// last took the server down while another test's `new-session` was
+    /// connecting to it, and that `new-session` failed: on main's macOS job on
+    /// 2026-10-24, and in 4 of 200 tries on a Linux host with tmux 3.4 (0 of
+    /// 200 with a server per session).
+    #[test]
+    fn every_tmux_command_runs_on_the_sessions_own_server() -> Result<(), TestError> {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/tui_e2e_test.rs"
+        ))?;
+        let spawns = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//") && l.contains("Command::new(\"tmux\")"))
+            .count();
+        assert_eq!(
+            spawns, 1,
+            "tmux must be started only by tmux_for, which names the session's own server"
+        );
+        let body = src
+            .split("fn tmux_for(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }\n").next())
+            .ok_or("tmux_for not found")?;
+        assert!(
+            body.contains(r#"command.args(["-L", socket]);"#),
+            "tmux_for must select the session's own server with -L: {body}"
+        );
+        Ok(())
     }
 
     /// A session removes its own XDG_CONFIG_HOME when it drops. Each launch
@@ -282,6 +335,29 @@ mod tui_e2e {
         assert!(
             !cfg_home.exists(),
             "{cfg_home:?} is still on disk after the session dropped"
+        );
+        Ok(())
+    }
+
+    /// A session removes its tmux server's socket when it drops. Each session
+    /// runs its own server ([`tmux_for`]), and `tmux kill-server` leaves the
+    /// socket file behind: 16 were left in the tmux directory by one run.
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    fn a_dropped_session_removes_its_tmux_socket() -> Result<(), TestError> {
+        let session = TuiSession::launch_sip_call()?;
+        let out = tmux_for(&session.name)
+            .args(["display-message", "-p", "#{socket_path}"])
+            .output()?;
+        let socket = std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        assert!(
+            socket.exists(),
+            "the session's server has no socket at {socket:?}"
+        );
+        drop(session);
+        assert!(
+            !socket.exists(),
+            "{socket:?} is still on disk after the session dropped"
         );
         Ok(())
     }
