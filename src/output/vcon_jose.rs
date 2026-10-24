@@ -926,8 +926,11 @@ enum DecryptionKey {
 /// A PEM private key: RSA (PKCS #8 or PKCS #1) or EC P-256 (PKCS #8 or
 /// SEC1 `EC PRIVATE KEY`).
 fn decryption_key(pem: &str) -> Result<DecryptionKey, String> {
+    // p256 and rsa implement this trait from two pkcs8 major versions, so
+    // each key type needs its own crate's copy in scope.
     use p256::pkcs8::DecodePrivateKey as _;
     use rsa::pkcs1::DecodeRsaPrivateKey as _;
+    use rsa::pkcs8::DecodePrivateKey as _;
     if let Ok(key) =
         rsa::RsaPrivateKey::from_pkcs8_pem(pem).or_else(|_| rsa::RsaPrivateKey::from_pkcs1_pem(pem))
     {
