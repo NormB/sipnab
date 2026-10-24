@@ -902,7 +902,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // and tests/contained_entry_points_test.rs.
     // 734 -> 735: docs/internals/testing.md +1, src/capture/hep.rs for the
     // contained-panic test of a received HEP packet.
-    const EXPECTED_CODE_LINKS: usize = 735;
+    // 735 -> 737: docs/internals/testing.md +2, src/pipeline.rs and
+    // src/rtp/audio_export.rs for the SIP and RTP contained-panic tests.
+    const EXPECTED_CODE_LINKS: usize = 737;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

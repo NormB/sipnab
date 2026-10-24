@@ -106,8 +106,9 @@ Outside a `crash::contain` scope, the panic hook ends the whole process
 process.** Threads therefore provide *zero* panic containment in a release
 build; `crash::contain`, which needs the release profile's `panic = "unwind"`,
 is the one containment. The frame decoder, the capture-file record reader,
-each archive member, each vCon container read with `-I` and each packet a
-HEP listener receives run inside a scope, so a panic there ends only that input. A parser bug reached from a
+each archive member, each vCon container read with `-I`, each packet a HEP
+listener receives, each SIP message and each RTP frame decoded to audio run
+inside a scope, so a panic there ends only that input. A parser bug reached from a
 crafted packet anywhere else does not kill a worker; it kills the capture, the
 servers, and the evidence.
 

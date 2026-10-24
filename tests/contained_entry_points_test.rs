@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // SPDX-FileCopyrightText: The sipnab contributors
 
-//! Every reader of untrusted bytes under `src/capture` that has been given a
-//! containment scope runs its unit inside it (PANIC-ABORT-HOSTILE-INPUT).
+//! Every reader of untrusted bytes that has been given a containment scope
+//! runs its unit inside it (PANIC-ABORT-HOSTILE-INPUT).
 //!
 //! A panic in a parser, sipnab's or a dependency's, used to end the process,
-//! so one hostile frame, record, archive member, vCon container or HEP
-//! packet ended the whole run. Each reader now passes its unit through
+//! so one hostile frame, record, archive member, vCon container, HEP packet,
+//! SIP message or RTP payload ended the whole run. Each reader now passes its unit through
 //! `crate::capture::contained`, which turns the panic into an error for that
 //! unit. The unit tests beside each reader prove the error; this file holds
 //! the wiring, so a refactor that calls the uncontained half directly fails
@@ -52,6 +52,9 @@ fn body_of<'a>(src: &'a str, name: &str) -> Option<&'a str> {
 /// scope label the seam opens.
 struct Entry {
     file: &'static str,
+    /// Text the entry point's definition follows, when the file defines
+    /// another function of the same name first.
+    within: Option<&'static str>,
     entry: &'static str,
     calls: &'static str,
     seam: &'static str,
@@ -60,6 +63,7 @@ struct Entry {
 
 const ENTRIES: &[Entry] = &[
     Entry {
+        within: None,
         file: "src/capture/mod.rs",
         entry: "decode_captured_frame",
         calls: "decode_frame_with(",
@@ -67,6 +71,7 @@ const ENTRIES: &[Entry] = &[
         opens: "contained_parse(\"captured frame\"",
     },
     Entry {
+        within: None,
         file: "src/capture/frames.rs",
         entry: "next",
         calls: "contained_record(",
@@ -74,6 +79,7 @@ const ENTRIES: &[Entry] = &[
         opens: "crate::capture::contained(\"capture record\"",
     },
     Entry {
+        within: None,
         file: "src/capture/archive/mod.rs",
         entry: "walk",
         calls: "crate::capture::contained(\"archive member\"",
@@ -81,6 +87,7 @@ const ENTRIES: &[Entry] = &[
         opens: "crate::capture::contained(\"archive member\"",
     },
     Entry {
+        within: None,
         file: "src/capture/vcon_input.rs",
         entry: "read_file_reporting",
         calls: "rebuild_bytes_with(",
@@ -88,11 +95,28 @@ const ENTRIES: &[Entry] = &[
         opens: "crate::capture::contained(\"vCon container\"",
     },
     Entry {
+        within: None,
         file: "src/capture/hep.rs",
         entry: "admit",
         calls: "parse_admitted(",
         seam: "parse_admitted",
         opens: "crate::capture::contained(\"HEP datagram\"",
+    },
+    Entry {
+        within: None,
+        file: "src/pipeline.rs",
+        entry: "parse_sip_action",
+        calls: "contained_sip_action(",
+        seam: "contained_sip_action",
+        opens: "crate::capture::contained(\"SIP message\"",
+    },
+    Entry {
+        within: Some("impl FrameDecoder {"),
+        file: "src/rtp/audio_export.rs",
+        entry: "decode",
+        calls: "contained_frame(",
+        seam: "contained_frame",
+        opens: "crate::capture::contained(\"RTP frame\"",
     },
 ];
 
@@ -100,8 +124,17 @@ const ENTRIES: &[Entry] = &[
 fn every_contained_reader_reaches_its_containment_scope() -> Result<(), TestError> {
     for e in ENTRIES {
         let src = read(e.file)?;
+        let scope = match e.within {
+            Some(anchor) => {
+                let at = src
+                    .find(anchor)
+                    .ok_or_else(|| format!("{}: no `{anchor}`", e.file))?;
+                &src[at..]
+            }
+            None => src.as_str(),
+        };
         let entry =
-            body_of(&src, e.entry).ok_or_else(|| format!("{}: no `fn {}(`", e.file, e.entry))?;
+            body_of(scope, e.entry).ok_or_else(|| format!("{}: no `fn {}(`", e.file, e.entry))?;
         assert!(
             entry.contains(e.calls),
             "{}: `{}` no longer calls `{}`, so a panic in it ends the process",

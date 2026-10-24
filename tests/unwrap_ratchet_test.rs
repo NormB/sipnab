@@ -42,7 +42,10 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     // hook (src/crash.rs). Each is the panic the reader must contain.
     // src panic 15 -> 16: the probe in src/capture/hep.rs's test that a
     // received HEP packet whose parser panics is refused as malformed.
-    ("src", 5, 3, 16),
+    // src panic 16 -> 18: the probes in the tests that a SIP message whose
+    // parse panics is dropped (src/pipeline.rs) and that an RTP frame whose
+    // decoder panics is a decode error (src/rtp/audio_export.rs).
+    ("src", 5, 3, 18),
     ("tests", 0, 0, 2),
 ];
 
