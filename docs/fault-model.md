@@ -111,8 +111,9 @@ A `--plugin` that fails to load produces the same exit status `1` and sets
 ### A parser that panics
 
 A panic in a parser is a sipnab defect. When one happens while sipnab reads
-a captured frame, a record of a capture file, an archive member or a vCon
-container, sipnab stops reading that one input and goes on with the run. It
+a captured frame, a record of a capture file, an archive member, a vCon
+container or a packet a HEP listener received, sipnab stops reading that one
+input and goes on with the run. It
 logs a warning, `contained a panic at <location>: <message>`, and you see:
 
 | Input | What you see |
@@ -121,6 +122,7 @@ logs a warning, `contained a panic at <location>: <message>`, and you see:
 | A record of a capture file | `Error reading pcap file '<file>': the record reader panicked: <message>`. sipnab keeps the packets read before it. |
 | An archive member | `'<archive>/<member>' could not be read past this point: the decoder panicked: <message>`. |
 | A vCon container given to `-I` | sipnab skips the container and reports `cannot read the vCon container: the parser panicked: <message>`. |
+| A packet a HEP listener received | The listener refuses the packet as `malformed` in `sipnab_hep_datagrams_refused_total`, as it refuses one that does not parse, and goes on with the next packet. |
 
 To report it, [open an issue](https://github.com/NormB/sipnab/issues/new/choose) with the warning and, if you can share it, the input.
 

@@ -900,7 +900,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 728 -> 734: docs/internals/testing.md +6, the contained-panic tests:
     // src/capture/mod.rs, frames.rs, archive/mod.rs, vcon_input.rs, src/crash.rs
     // and tests/contained_entry_points_test.rs.
-    const EXPECTED_CODE_LINKS: usize = 734;
+    // 734 -> 735: docs/internals/testing.md +1, src/capture/hep.rs for the
+    // contained-panic test of a received HEP packet.
+    const EXPECTED_CODE_LINKS: usize = 735;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

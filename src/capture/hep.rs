@@ -2357,16 +2357,7 @@ impl<'a> HepIngest<'a> {
             return Err(HepRefusal::Allowlist);
         }
         self.rate_limiter.allow(peer).map_err(HepRefusal::from)?;
-        let hep = match parse_hep(datagram) {
-            Ok(h) => h,
-            Err(e) => {
-                tracing::debug!(
-                    "Skipping malformed HEP packet ({} bytes): {e}",
-                    datagram.len()
-                );
-                return Err(HepRefusal::Malformed);
-            }
-        };
+        let hep = parse_admitted(datagram, parse_hep)?;
 
         // Receiver-side authentication (SN-01): when a secret is configured,
         // the sender must prove it via the 0x000e auth-key chunk. This binds
@@ -2395,6 +2386,32 @@ impl<'a> HepIngest<'a> {
         }
         Ok(hep)
     }
+}
+
+/// [`HepIngest::admit`]'s parse of one received packet, with the parser
+/// passed in so a test can hand it one that panics: no real packet is known to
+/// make the parser panic.
+///
+/// The parse runs in a containment scope (PANIC-ABORT-HOSTILE-INPUT), so a
+/// panic in it refuses that one packet instead of ending the process.
+///
+/// # Errors
+///
+/// [`HepRefusal::Malformed`] when the packet does not parse, or its parser
+/// panics.
+fn parse_admitted(
+    datagram: &[u8],
+    parse: impl FnOnce(&[u8]) -> Result<HepPacket>,
+) -> std::result::Result<HepPacket, HepRefusal> {
+    let parsed = crate::capture::contained("HEP datagram", || parse(datagram))
+        .unwrap_or_else(|message| Err(anyhow::anyhow!("the parser panicked: {message}")));
+    parsed.map_err(|e| {
+        tracing::debug!(
+            "Skipping malformed HEP packet ({} bytes): {e}",
+            datagram.len()
+        );
+        HepRefusal::Malformed
+    })
 }
 
 /// The TLS configuration a `--hep-listen-transport tls` listener serves.
@@ -10209,6 +10226,27 @@ mod tests {
     }
 
     // ── The roster, as the listener feeds it ─────────────────────────────
+
+    /// PANIC-ABORT-HOSTILE-INPUT: a received packet whose parser panics is
+    /// refused as malformed, like one that does not parse, and the listener
+    /// goes on with the next packet. The panic comes from the parser handed
+    /// in, because no real packet is known to make the parser panic.
+    #[test]
+    fn a_packet_whose_parser_panics_is_refused_as_malformed() -> Result<(), TestError> {
+        let before = crate::crash::contained_panics();
+        let got = parse_admitted(&[0u8; 16], |_| -> anyhow::Result<HepPacket> {
+            panic!("hostile packet probe")
+        });
+        assert!(
+            matches!(got, Err(HepRefusal::Malformed)),
+            "a panicking parser refuses the packet as malformed"
+        );
+        assert!(
+            crate::crash::contained_panics() > before,
+            "the panic is counted"
+        );
+        Ok(())
+    }
 
     /// **Every reason the rate limiter or the HMAC verifier can give lands
     /// under a roster reason of its own, and the roster's vocabulary is

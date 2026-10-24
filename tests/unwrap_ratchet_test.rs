@@ -40,7 +40,9 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     // (src/capture/archive/mod.rs), a vCon container
     // (src/capture/vcon_input.rs), and `contain` counting without sipnab's
     // hook (src/crash.rs). Each is the panic the reader must contain.
-    ("src", 5, 3, 15),
+    // src panic 15 -> 16: the probe in src/capture/hep.rs's test that a
+    // received HEP packet whose parser panics is refused as malformed.
+    ("src", 5, 3, 16),
     ("tests", 0, 0, 2),
 ];
 
