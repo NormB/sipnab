@@ -6,21 +6,28 @@
 
 Every flag row of the page's flag tables names the first release whose command
 line accepted the flag. The version comes from the tagged history of
-src/cli.rs, never from CHANGELOG.md.
+src/cli.rs and the clap groups beside it in src/cli/*.rs, never from
+CHANGELOG.md.
 
 The rules:
 
 - A release is a tag of the form vX.Y.Z, the same rule scripts/doc-history.py
   applies. Pre-release tags (v0.1.0-alpha, v0.2.0-beta) and any other tag are
   not releases. Releases are ordered by version number, not by tag date.
-- A flag is an `#[arg(...)]` field of src/cli.rs with a long name: `long = "x"`
+- The command line is src/cli.rs and every file directly in src/cli/ (the
+  clap groups flattened into `Cli`, such as the one-shot query groups). A
+  file nested deeper is not read, and neither is a file that derives
+  `clap::Parser`: that is a command line of its own (`sipnab g729`), whose
+  flags are not `Cli`'s.
+- A flag is an `#[arg(...)]` field of those files with a long name: `long = "x"`
   names it, and a bare `long` takes the field's name with `_` written `-`.
   `alias`, `aliases`, `visible_alias` and `visible_aliases` are the same flag
   under another name. A positional argument (no `long`, no `short`) is named
   `<VALUE_NAME>`, from its `value_name` or else its upper-cased field name.
-- The current flags are the ones the working tree's src/cli.rs declares.
-- A flag's Since is the oldest release whose src/cli.rs declares the flag
-  under any of its current names. A flag removed and later restored keeps
+- The current flags are the ones the working tree's files declare.
+- A flag's Since is the oldest release whose files declare the flag under any
+  of its current names, in any of them: a flag moved from src/cli.rs into a
+  group file keeps its first release. A flag removed and later restored keeps
   that first release. A version that was bumped but never tagged was never
   released, so a flag first declared there is Since the next tagged release,
   the one users first received it in.
@@ -52,6 +59,7 @@ import tomllib
 
 RELEASE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 SOURCE = "src/cli.rs"
+GROUPS = "src/cli"  # the directory of clap groups flattened into `Cli`
 DOC = "docs/cli-reference.md"
 UNRELEASED = "Unreleased"
 FLAG_HEADER = "| Flag | Value | Default | Description |"
@@ -264,23 +272,50 @@ def releases(repo) -> list:
     return [(tag, tag[1:]) for _, tag in sorted(out)]
 
 
-def sources_at(repo, tags: list, source: str) -> dict:
-    """`{tag: text of source at tag}`; a tag without the file maps to ""."""
-    request = "".join(f"{tag}:{source}\n" for tag in tags)
+def group_files_at(repo, tag: str) -> list:
+    """The `.rs` files directly in GROUPS at `tag`, in name order.
+
+    `ls-tree` without `-r` lists a nested directory as one entry and never
+    the files inside it, so a deeper file is not read.
+    """
+    listed = git(repo, "ls-tree", "--name-only", tag, f"{GROUPS}/")
+    return sorted(p for p in listed.split("\n") if p.endswith(".rs"))
+
+
+def is_own_parser(text: str) -> bool:
+    """Whether a src/cli/ file is a command line of its own, not a group."""
+    return re.search(r"derive\([^)]*\bclap::Parser\b", strip_comments(text)) is not None
+
+
+def command_lines_at(repo, tags: list, source: str) -> dict:
+    """`{tag: text of source and every group file at tag, joined}`."""
+    paths = {tag: [source, *group_files_at(repo, tag)] for tag in tags}
+    texts = sources_at(repo, [f"{tag}:{p}" for tag in tags for p in paths[tag]])
+    return {tag: "\n".join(t for t in (texts[f"{tag}:{p}"] for p in paths[tag])
+                           if not is_own_parser(t))
+            for tag in tags}
+
+
+def sources_at(repo, specs: list) -> dict:
+    """`{spec: text}` for each `<tag>:<path>` spec; a missing one maps to "".
+
+    One `git cat-file --batch` for every spec, however many tags they span.
+    """
+    request = "".join(f"{spec}\n" for spec in specs)
     r = subprocess.run(["git", "-C", str(repo), "cat-file", "--batch"], input=request.encode(),
                        capture_output=True)
     if r.returncode != 0:
         raise FlagSinceError(f"git cat-file --batch: {r.stderr.decode().strip()}")
     data, out, i = r.stdout, {}, 0
-    for tag in tags:
+    for spec in specs:
         nl = data.index(b"\n", i)
         header = data[i:nl].decode()
         i = nl + 1
         if header.endswith(" missing"):
-            out[tag] = ""
+            out[spec] = ""
             continue
         size = int(header.split()[2])
-        out[tag] = data[i:i + size].decode()
+        out[spec] = data[i:i + size].decode()
         i += size + 1
     return out
 
@@ -319,10 +354,12 @@ def flag_since(repo, source: str = SOURCE) -> dict:
     repo = pathlib.Path(repo)
     tagged = releases(repo)
     unreleased = pending_release(repo, [t for t, _ in tagged]) or UNRELEASED
-    texts = sources_at(repo, [t for t, _ in tagged], source)
+    texts = command_lines_at(repo, [t for t, _ in tagged], source)
     declared = [(version, {n for a in declared_args(texts[tag]) for n in a})
                 for tag, version in tagged]
-    current = declared_args((repo / source).read_text())
+    groups = sorted(p for p in (repo / GROUPS).glob("*.rs") if p.is_file())
+    current = declared_args("\n".join(
+        t for t in (p.read_text() for p in [repo / source, *groups]) if not is_own_parser(t)))
     out = {}
     for names in current:
         first = next((v for v, seen in declared if seen.intersection(names)), unreleased)
@@ -378,7 +415,7 @@ def rewrite(doc: str, since: dict):
         names = row_names(first)
         found = {since[n] for n in names if n in since}
         if not names or any(n not in since for n in names):
-            errors.append(f"{first}: the row names no flag src/cli.rs declares")
+            errors.append(f"{first}: the row names no flag src/cli.rs or src/cli/*.rs declares")
             out.append(line)
             continue
         if len(found) > 1:
