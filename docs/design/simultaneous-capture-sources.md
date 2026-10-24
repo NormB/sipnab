@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:456`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L456)), `capture_hep` ([`src/capture/hep.rs:3157`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3157)), the
+([`src/capture/file.rs:456`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L456)), `capture_hep` ([`src/capture/hep.rs:3175`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3175)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:658`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L658)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore

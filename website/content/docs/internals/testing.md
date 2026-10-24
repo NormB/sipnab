@@ -443,6 +443,8 @@ parser that does:
   ([`src/capture/archive/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/archive/mod.rs)),
 - `a_container_whose_opener_panics_is_refused`
   ([`src/capture/vcon_input.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/vcon_input.rs)),
+- `a_packet_whose_parser_panics_is_refused_as_malformed`
+  ([`src/capture/hep.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs)),
 - `contain_counts_a_panic_without_sipnabs_hook`
   ([`src/crash.rs`](https://github.com/NormB/sipnab/blob/main/src/crash.rs)).
 

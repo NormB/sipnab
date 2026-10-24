@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // SPDX-FileCopyrightText: The sipnab contributors
 
-//! Every offline reader of untrusted bytes runs its unit inside a
-//! containment scope (PANIC-ABORT-HOSTILE-INPUT).
+//! Every reader of untrusted bytes under `src/capture` that has been given a
+//! containment scope runs its unit inside it (PANIC-ABORT-HOSTILE-INPUT).
 //!
 //! A panic in a parser, sipnab's or a dependency's, used to end the process,
-//! so one hostile frame, record, archive member or vCon container ended the
-//! whole run. Each reader now passes its unit through
+//! so one hostile frame, record, archive member, vCon container or HEP
+//! packet ended the whole run. Each reader now passes its unit through
 //! `crate::capture::contained`, which turns the panic into an error for that
 //! unit. The unit tests beside each reader prove the error; this file holds
 //! the wiring, so a refactor that calls the uncontained half directly fails
@@ -87,10 +87,17 @@ const ENTRIES: &[Entry] = &[
         seam: "rebuild_bytes_with",
         opens: "crate::capture::contained(\"vCon container\"",
     },
+    Entry {
+        file: "src/capture/hep.rs",
+        entry: "admit",
+        calls: "parse_admitted(",
+        seam: "parse_admitted",
+        opens: "crate::capture::contained(\"HEP datagram\"",
+    },
 ];
 
 #[test]
-fn every_offline_reader_reaches_its_containment_scope() -> Result<(), TestError> {
+fn every_contained_reader_reaches_its_containment_scope() -> Result<(), TestError> {
     for e in ENTRIES {
         let src = read(e.file)?;
         let entry =
