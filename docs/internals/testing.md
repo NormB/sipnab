@@ -421,6 +421,27 @@ Nobody had ever run the committed fuzz target against that decoder.
 - The regression test `decode_hex_multibyte_utf8_does_not_panic` and the corpus seeds in
   [`fuzz/corpus/keylog_line/`](../../fuzz/corpus/keylog_line) pin it there.
 
+**Contained panics**: the fuzzers look for panics. These tests hold what
+happens when one gets through anyway
+([A parser that panics](../fault-model.md#a-parser-that-panics)). No known real
+input makes these parsers panic, so each test hands its reader a
+parser that does:
+
+- `a_frame_whose_parser_panics_is_a_decode_error`
+  ([`src/capture/mod.rs`](../../src/capture/mod.rs)),
+- `a_record_reader_that_panics_is_an_error_for_the_file`
+  ([`src/capture/frames.rs`](../../src/capture/frames.rs)),
+- `a_member_whose_reader_panics_is_broken_not_fatal`
+  ([`src/capture/archive/mod.rs`](../../src/capture/archive/mod.rs)),
+- `a_container_whose_opener_panics_is_refused`
+  ([`src/capture/vcon_input.rs`](../../src/capture/vcon_input.rs)),
+- `contain_counts_a_panic_without_sipnabs_hook`
+  ([`src/crash.rs`](../../src/crash.rs)).
+
+[`tests/contained_entry_points_test.rs`](../../tests/contained_entry_points_test.rs)
+holds the wiring: each reader's entry point reaches its contained half, and only
+one place under `src/capture` calls `crash::contain`.
+
 **Property tests**: [`tests/property_test.rs`](../../tests/property_test.rs) (proptest) asserts the
 *semantic* invariants the fuzzers cannot:
 

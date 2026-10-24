@@ -1514,7 +1514,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1982 -> 1983: quoted output shown in full. docs/rest-api.md +1: the
     // export example no longer prints a trimmed container and links the
     // full one in vcon.md instead.
-    const EXPECTED_WIKI_LINKS: usize = 1983;
+    // 1983 -> 1984: docs/internals/testing.md +1, linking the fault model's
+    // "A parser that panics" from the contained-panic tests.
+    const EXPECTED_WIKI_LINKS: usize = 1984;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

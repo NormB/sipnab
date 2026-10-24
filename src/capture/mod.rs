@@ -1113,11 +1113,20 @@ pub fn record_undecodable(err: &CaptureError, facts: FrameFacts) {
 /// Bumps the snapped counter when the frame was cut short, whether or not it
 /// decodes, and the undecodable tally when it does not decode.
 pub fn decode_captured_frame(packet: &Packet) -> Result<ParsedPacket, CaptureError> {
+    decode_frame_with(packet, parse_packet)
+}
+
+/// [`decode_captured_frame`] with the parser passed in, so a test can hand it
+/// one that panics: no real frame is known to make the decoder panic.
+fn decode_frame_with(
+    packet: &Packet,
+    parse: impl FnOnce(&Packet) -> Result<ParsedPacket, CaptureError>,
+) -> Result<ParsedPacket, CaptureError> {
     let snapped = packet.is_snapped();
     if snapped {
         note_snapped_frame();
     }
-    parse_packet(packet).inspect_err(|e| {
+    contained_parse("captured frame", || parse(packet)).inspect_err(|e| {
         record_undecodable(
             e,
             FrameFacts {
@@ -1126,6 +1135,41 @@ pub fn decode_captured_frame(packet: &Packet) -> Result<ParsedPacket, CaptureErr
             },
         );
     })
+}
+
+/// Run a parser of untrusted bytes so a panic inside it, from sipnab or a
+/// dependency, becomes a decode error for that one unit instead of ending
+/// the process (PANIC-ABORT-HOSTILE-INPUT). The panic is counted by
+/// [`crate::crash::contained_panics`]. Builds without the crash module (the
+/// WASM build) cannot catch a panic and call the parser directly.
+fn contained_parse<T>(
+    what: &'static str,
+    parse: impl FnOnce() -> Result<T, CaptureError>,
+) -> Result<T, CaptureError> {
+    contained(what, parse).unwrap_or_else(|message| {
+        Err(CaptureError::PacketDecode {
+            what,
+            source: format!("the decoder panicked: {message}").into(),
+        })
+    })
+}
+
+/// Run `parse` over untrusted bytes, and the panic's message when it panicked
+/// (PANIC-ABORT-HOSTILE-INPUT): the one place the capture readers call
+/// [`crate::crash::contain`], so each wraps its unit the same way and
+/// `tests/contained_entry_points_test.rs` can name them. Builds without the
+/// crash module (the WASM build) cannot catch a panic and call `parse`
+/// directly.
+pub(crate) fn contained<T>(what: &'static str, parse: impl FnOnce() -> T) -> Result<T, String> {
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    {
+        crate::crash::contain(what, parse).map_err(|c| c.message)
+    }
+    #[cfg(not(all(not(target_arch = "wasm32"), feature = "native")))]
+    {
+        let _ = what;
+        Ok(parse())
+    }
 }
 
 /// IP protocol number of ESP ([RFC 4303](https://www.rfc-editor.org/rfc/rfc4303.html)).
@@ -3270,6 +3314,38 @@ mod tests {
                     reason: UndecodableReason::DecodeError,
                     frames: 1,
                 }]
+            );
+            Ok(())
+        }
+
+        /// PANIC-ABORT-HOSTILE-INPUT: a frame whose parser panics is counted
+        /// as a decode error, the caller gets an error for that frame, and the
+        /// run goes on. The panic comes from the parser handed in, because no
+        /// real frame is known to make the decoder panic.
+        #[cfg(feature = "native")]
+        #[test]
+        #[serial_test::serial(undecodable_tally)]
+        fn a_frame_whose_parser_panics_is_a_decode_error() -> Result<(), TestError> {
+            reset_undecodable_frames();
+            let before = crate::crash::contained_panics();
+            let packet = packet_dlt(vec![0u8; 64], 1);
+            let got = decode_frame_with(&packet, |_| -> Result<ParsedPacket, CaptureError> {
+                panic!("hostile frame probe")
+            });
+            assert!(
+                matches!(got, Err(CaptureError::PacketDecode { .. })),
+                "a panicking parser is a decode error for that frame"
+            );
+            assert_eq!(
+                undecodable_report().reasons,
+                vec![UndecodableTally {
+                    reason: UndecodableReason::DecodeError,
+                    frames: 1,
+                }]
+            );
+            assert!(
+                crate::crash::contained_panics() > before,
+                "the panic is counted"
             );
             Ok(())
         }

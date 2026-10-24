@@ -105,8 +105,11 @@ Outside a `crash::contain` scope, the panic hook ends the whole process
 ([`src/crash.rs`](https://github.com/NormB/sipnab/blob/main/src/crash.rs)). **A panic on any thread outside such a scope ends the whole
 process.** Threads therefore provide *zero* panic containment in a release
 build; `crash::contain`, which needs the release profile's `panic = "unwind"`,
-is the one containment. A parser bug reached from a crafted packet does not kill a worker; it
-kills the capture, the servers, and the evidence.
+is the one containment. The frame decoder, the capture-file record reader,
+each archive member and each vCon container read with `-I` run inside a
+scope, so a panic there ends only that input. A parser bug reached from a
+crafted packet anywhere else does not kill a worker; it kills the capture, the
+servers, and the evidence.
 
 That is a genuine point in favor of processes. It is also a threat the project
 already attacks head-on. D17 / [invariant "Warn and continue on malformed input"](../internals/invariants.md) says:

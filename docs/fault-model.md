@@ -108,6 +108,22 @@ its source.
 A `--plugin` that fails to load produces the same exit status `1` and sets
 `plugins.failed` in the same record.
 
+### A parser that panics
+
+A panic in a parser is a sipnab defect. When one happens while sipnab reads
+a captured frame, a record of a capture file, an archive member or a vCon
+container, sipnab stops reading that one input and goes on with the run. It
+logs a warning, `contained a panic at <location>: <message>`, and you see:
+
+| Input | What you see |
+|---|---|
+| A captured frame | The frame counts as `decode_error` in `sipnab_capture_undecodable_frames_total`, and the run goes on with the next frame. |
+| A record of a capture file | `Error reading pcap file '<file>': the record reader panicked: <message>`. sipnab keeps the packets read before it. |
+| An archive member | `'<archive>/<member>' could not be read past this point: the decoder panicked: <message>`. |
+| A vCon container given to `-I` | sipnab skips the container and reports `cannot read the vCon container: the parser panicked: <message>`. |
+
+To report it, [open an issue](https://github.com/NormB/sipnab/issues/new/choose) with the warning and, if you can share it, the input.
+
 ## Memory bounds (class 3)
 
 An attacker can invent unlimited unique Call-IDs or SSRCs. Each table keyed by

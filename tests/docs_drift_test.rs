@@ -5600,7 +5600,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // website/content/docs/api.md +1.
     // 1273 -> 1274: docs/design/openssf-badge-answers.md +1, the Gold
     // license_per_file / copyright_per_file table.
-    const EXPECTED_TABLES: usize = 1274;
+    // 1274 -> 1275: docs/fault-model.md +1, the "A parser that panics" table
+    // of what each contained input shows.
+    const EXPECTED_TABLES: usize = 1275;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

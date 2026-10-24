@@ -897,7 +897,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // for `confine_bare_name`, the file-root rule MCP and REST share.
     // 727 -> 728: docs/internals/code-map.md links src/crash.rs where it says
     // the panic hook ends the process outside a `crash::contain` scope.
-    const EXPECTED_CODE_LINKS: usize = 728;
+    // 728 -> 734: docs/internals/testing.md +6, the contained-panic tests:
+    // src/capture/mod.rs, frames.rs, archive/mod.rs, vcon_input.rs, src/crash.rs
+    // and tests/contained_entry_points_test.rs.
+    const EXPECTED_CODE_LINKS: usize = 734;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
