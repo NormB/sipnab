@@ -282,6 +282,20 @@ fn a_span_wider_than_the_bound_exits_1_and_names_a_width_that_fits() -> Result<(
         run.stdout
     );
 
+    // The reason decides the exit code, so it is printed even with logging
+    // off, as `--call-report` prints an unknown Call-ID.
+    let silent = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-I", path, "--timeline", "--no-cli-print", "--quiet"])
+        .env("SIPNAB_LOG", "off")
+        .env("NO_COLOR", "1")
+        .output()?;
+    let stderr = String::from_utf8_lossy(&silent.stderr);
+    assert_eq!(silent.status.code(), Some(1), "stderr:\n{stderr}");
+    assert!(
+        stderr.contains("--timeline: the dialogs span 5256001 intervals of 60 s"),
+        "the reason survives SIPNAB_LOG=off: {stderr:?}"
+    );
+
     let run = run_cli(
         path,
         &["--timeline=3154", "--json", "--no-cli-print", "--quiet"],

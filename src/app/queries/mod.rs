@@ -127,7 +127,10 @@ impl<'a> QueryContext<'a> {
         match render_answer(answer_form(self.cli), answer, text) {
             Ok(out) => super::batch::write_stdout(&out),
             Err(e) => {
-                tracing::error!("{flag}: the answer did not serialize: {e}");
+                // On stderr, not through tracing: the failure decides the exit
+                // code, so it is printed even with logging off, as
+                // `--call-report` prints an unknown Call-ID.
+                stderr_line!("{flag}: the answer did not serialize: {e}");
                 false
             }
         }

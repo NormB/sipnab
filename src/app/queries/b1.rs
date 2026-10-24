@@ -50,7 +50,7 @@ fn render_rates_by(ctx: &QueryContext<'_>) -> bool {
     ) {
         Ok(answer) => answer,
         Err(why) => {
-            tracing::error!("--rates-by: {why}");
+            stderr_line!("--rates-by: {why}");
             return false;
         }
     };
@@ -109,7 +109,9 @@ fn render_timeline(ctx: &QueryContext<'_>) -> bool {
     ) {
         Ok(answer) => answer,
         Err(e) => {
-            tracing::error!("--timeline: {e}");
+            // On stderr, not through tracing: the reason decides the exit
+            // code, so it is printed even with logging off.
+            stderr_line!("--timeline: {e}");
             return false;
         }
     };

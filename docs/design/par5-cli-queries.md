@@ -131,6 +131,10 @@ each surface too: `sip::dialog_store::bucket_by_start` refuses a span of more
 than `MAX_TIMELINE_BUCKETS` intervals, which REST answers 422, MCP refuses as
 `limit_exceeded`, and `--timeline` writes to stderr before exiting 1.
 
+A query that cannot answer prints its reason with `stderr_line!`, never through
+`tracing`: the reason decides the exit code, so it must survive
+`SIPNAB_LOG=off`, as `--call-report`'s unknown Call-ID does.
+
 Under `--cores`, `--json` is refused as a per-message output unless a query
 flag that writes stdout is active, because then it formats that answer.
 
