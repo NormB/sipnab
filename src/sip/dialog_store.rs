@@ -1773,23 +1773,47 @@ impl DialogStore {
     /// not to the first call, so two captures line up. `width_seconds` must be
     /// non-zero -- callers reject a zero width, which would put every dialog in
     /// every bucket.
+    ///
+    /// # Errors
+    ///
+    /// [`TimelineTooWide`] when the dialogs span more than
+    /// [`MAX_TIMELINE_BUCKETS`] intervals of this width. The instants come
+    /// from the capture (a pcap record's timestamp, a HEP sender's clock), so
+    /// two dialogs decades apart are one forged packet away, and every
+    /// interval between them would be built and serialized.
     pub fn timeline_buckets(
         &self,
         width_seconds: u64,
-    ) -> Vec<(chrono::DateTime<chrono::Utc>, u64)> {
+    ) -> Result<Vec<(chrono::DateTime<chrono::Utc>, u64)>, TimelineTooWide> {
         debug_assert!(width_seconds > 0, "callers reject zero before calling");
         let width = i64::try_from(width_seconds).unwrap_or(i64::MAX).max(1);
 
         let mut counts: std::collections::BTreeMap<i64, u64> = std::collections::BTreeMap::new();
+        let (mut earliest, mut latest) = (i64::MAX, i64::MIN);
         for d in self.iter() {
-            let bucket = d.created_at.timestamp().div_euclid(width);
-            *counts.entry(bucket).or_insert(0) += 1;
+            let at = d.created_at.timestamp();
+            (earliest, latest) = (earliest.min(at), latest.max(at));
+            *counts.entry(at.div_euclid(width)).or_insert(0) += 1;
         }
         let (Some(&first), Some(&last)) = (counts.keys().next(), counts.keys().next_back()) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
+        // Counted in i128: two bucket indexes far apart do not fit an i64
+        // difference.
+        let intervals = u64::try_from(i128::from(last) - i128::from(first) + 1).unwrap_or(u64::MAX);
+        if intervals > MAX_TIMELINE_BUCKETS {
+            // A width w with w * (MAX - 1) >= span splits the span into at most
+            // MAX - 1 steps, so at most MAX intervals wherever the epoch
+            // alignment falls; every wider width fits too.
+            let span = u64::try_from(i128::from(latest) - i128::from(earliest)).unwrap_or(u64::MAX);
+            return Err(TimelineTooWide {
+                bucket_seconds: width_seconds,
+                intervals,
+                fitting_seconds: span.div_ceil(MAX_TIMELINE_BUCKETS - 1).max(1),
+            });
+        }
 
-        (first..=last)
+        Ok((first..=last)
             .map(|b| {
                 (
                     chrono::DateTime::from_timestamp(b.saturating_mul(width), 0)
@@ -1797,7 +1821,7 @@ impl DialogStore {
                     counts.get(&b).copied().unwrap_or(0),
                 )
             })
-            .collect()
+            .collect())
     }
 
     /// A page of dialogs for change-tracking pollers: those updated strictly
@@ -2122,6 +2146,38 @@ fn extract_via_branch(via_header: &str) -> Option<&str> {
         .split(';')
         .find_map(|param| param.trim().strip_prefix("branch="))
 }
+
+/// The most intervals one call-volume histogram holds: 100,000, which is
+/// 69 days of one-minute intervals or a day of one-second ones, and about
+/// 7 MB of JSON. [`DialogStore::timeline_buckets`] refuses a span that
+/// needs more, for every surface that draws one.
+pub const MAX_TIMELINE_BUCKETS: u64 = 100_000;
+
+/// A call-volume histogram refused because its dialogs span more intervals
+/// of the asked width than [`MAX_TIMELINE_BUCKETS`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimelineTooWide {
+    /// The width asked for, in seconds.
+    pub bucket_seconds: u64,
+    /// How many intervals of that width the dialogs span, first to last.
+    pub intervals: u64,
+    /// A width, in seconds, that this span always fits in: it and every wider
+    /// width answer.
+    pub fitting_seconds: u64,
+}
+
+impl std::fmt::Display for TimelineTooWide {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the dialogs span {} intervals of {} s, and one histogram holds at \
+             most {MAX_TIMELINE_BUCKETS}; a width of {} s or more fits",
+            self.intervals, self.bucket_seconds, self.fitting_seconds
+        )
+    }
+}
+
+impl std::error::Error for TimelineTooWide {}
 
 /// Build a CSeq key string (`"<num> <method>"`) from a SIP message, used
 /// as the map key for per-transaction retransmit counting in
@@ -5744,6 +5800,72 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             Some(crate::cursor::format_cursor(base_ts()?, "old@h")),
             "the cursor names the row returned, so the next page starts at mid"
         );
+        Ok(())
+    }
+
+    /// A store holding one INVITE at each of `instants` (seconds since the
+    /// epoch), for the timeline bound.
+    fn store_at(instants: &[i64]) -> Result<DialogStore, TestError> {
+        let mut ds = DialogStore::new(1000, true);
+        for (i, at) in instants.iter().enumerate() {
+            let ts = DateTime::from_timestamp(*at, 0).ok_or("a valid instant")?;
+            ds.process_message(make_invite_msg(&format!("span{i}@example.com"), ts)?);
+        }
+        Ok(ds)
+    }
+
+    /// Two dialogs 1.7 billion seconds apart need 28 million one-minute
+    /// intervals. Building them took 7.8 GB and 137 s for `--timeline` and
+    /// for `GET /v1/timeline` alike, from a two-packet capture. The span is
+    /// refused instead, naming how many intervals it needs and a width that
+    /// fits.
+    #[test]
+    fn a_timeline_span_wider_than_the_bound_is_refused() -> Result<(), TestError> {
+        let ds = store_at(&[1, 1_700_000_000])?;
+        let Err(e) = ds.timeline_buckets(60) else {
+            return Err("a 1.7e9-second span at 60 s must be refused".into());
+        };
+        assert_eq!(e.bucket_seconds, 60);
+        assert_eq!(e.intervals, 1_700_000_000 / 60 + 1);
+        assert_eq!(e.fitting_seconds, 17_001);
+        let text = e.to_string();
+        assert!(text.contains("28333334 intervals of 60 s"), "{text}");
+        assert!(text.contains("at most 100000"), "{text}");
+        assert!(text.contains("17001 s or more"), "{text}");
+        Ok(())
+    }
+
+    /// The width the refusal names does fit: it answers, within the bound.
+    /// On this span it is also the narrowest that does.
+    #[test]
+    fn the_width_the_refusal_names_answers_within_the_bound() -> Result<(), TestError> {
+        let ds = store_at(&[1, 1_700_000_000])?;
+        let wide = ds
+            .timeline_buckets(60)
+            .err()
+            .ok_or("refused at 60 s")?
+            .fitting_seconds;
+        let rows = ds.timeline_buckets(wide).map_err(|e| e.to_string())?;
+        assert!(rows.len() as u64 <= MAX_TIMELINE_BUCKETS, "{}", rows.len());
+        assert_eq!(rows.iter().map(|(_, n)| n).sum::<u64>(), 2);
+        let narrower = ds.timeline_buckets(wide - 1);
+        assert!(narrower.is_err(), "one second narrower no longer fits");
+        Ok(())
+    }
+
+    /// Exactly the bound is answered; one interval more is refused.
+    #[test]
+    fn the_bound_itself_is_answered_and_one_more_is_refused() -> Result<(), TestError> {
+        let last = i64::try_from(MAX_TIMELINE_BUCKETS)? - 1;
+        let at_bound = store_at(&[0, last])?;
+        let rows = at_bound.timeline_buckets(1).map_err(|e| e.to_string())?;
+        assert_eq!(rows.len() as u64, MAX_TIMELINE_BUCKETS);
+        let over = store_at(&[0, last + 1])?;
+        let e = over
+            .timeline_buckets(1)
+            .err()
+            .ok_or("one over is refused")?;
+        assert_eq!(e.intervals, MAX_TIMELINE_BUCKETS + 1);
         Ok(())
     }
 }

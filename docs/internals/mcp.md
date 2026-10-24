@@ -650,6 +650,12 @@ Aligning to the earliest call would shift every boundary whenever that call
 changed. The series keeps empty buckets because a gap is a finding, and a series that
 drops it renders as continuous traffic on a shorter axis.
 
+Keeping every empty bucket needs a ceiling, because the instants come from the
+capture: two forged timestamps decades apart would be tens of millions of rows.
+Every surface refuses a span of more than `MAX_TIMELINE_BUCKETS` (100,000)
+intervals and names a width that fits. None truncates it, because a truncated
+series ends early and reads as traffic that stopped.
+
 ### `group_dialogs` design decisions
 
 A rate is the one thing a language model cannot recover from a page of rows:

@@ -2136,7 +2136,9 @@ async fn get_aggregate(
 /// # Returns
 ///
 /// 200 with one row per interval, oldest first, gaps included; 400 for a zero
-/// bucket width; 401/503 from the guard.
+/// bucket width; 422 for a span wider than
+/// [`crate::sip::dialog_store::MAX_TIMELINE_BUCKETS`] intervals; 401/503 from
+/// the guard.
 ///
 /// # Side effects
 ///
@@ -2152,6 +2154,7 @@ async fn get_aggregate(
     responses(
         (status = 200, description = "One row per interval, oldest first.", body = schema::Timeline),
         (status = 400, description = "A bucket width of zero.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 422, description = "The dialogs span more intervals of this width than one answer holds (100,000); the detail names a width that fits.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
@@ -2179,9 +2182,11 @@ async fn get_timeline(
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // The shared bucketing rule, so this route and the MCP `timeline` tool
-    // agree; this surface renders the interval start as RFC 3339.
+    // agree; this surface renders the interval start as RFC 3339. A span too
+    // wide for the width is the store's refusal, answered 422.
     let buckets: Vec<schema::TimelineBucket> = ds
         .timeline_buckets(width)
+        .map_err(|e| Problem::detailed(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?
         .into_iter()
         .map(|(start, dialogs)| schema::TimelineBucket {
             start: start.to_rfc3339(),
@@ -9044,6 +9049,52 @@ mod tests {
         assert_eq!(buckets.len(), 1);
         assert_eq!(buckets[0]["dialogs"], 3);
         assert_eq!(buckets[0]["bucket_seconds"], 60);
+        Ok(())
+    }
+
+    /// A call at the epoch beside the seeded ones of 2024 spans 28.6 million
+    /// one-minute intervals. The route answers 422 naming a width that fits,
+    /// rather than building and serializing every interval between them.
+    #[tokio::test]
+    async fn timeline_refuses_a_span_wider_than_the_bound() -> Result<(), TestError> {
+        let state = make_state();
+        populate_dialogs(&state)?;
+        {
+            let raw = build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:early@example.com>;tag=t9",
+                    "To: <sip:bob@example.com>",
+                    "Call-ID: early@test",
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let localhost = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
+            let at = chrono::DateTime::from_timestamp(1, 0).ok_or("a valid instant")?;
+            let msg = crate::sip::parser::parse_sip(
+                &raw,
+                at,
+                localhost,
+                localhost,
+                5060,
+                5060,
+                TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))?;
+            state.dialog_store.write().process_message(msg);
+        }
+        let app = build_router(state);
+
+        let resp = app
+            .oneshot(test_request("/v1/timeline")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let body = body_to_string(resp.into_body()).await?;
+        assert!(body.contains("at most 100000"), "{body}");
+        assert!(body.contains("s or more fits"), "{body}");
         Ok(())
     }
 
