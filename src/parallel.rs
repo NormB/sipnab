@@ -294,10 +294,6 @@ impl Fanout {
         use crate::capture::parse::TransportPeek;
         use crate::pipeline::port_in_range;
         use crate::sip::parser::starts_sip_message;
-        /// The content type [`crate::sip::SipMessage::sdp`] requires, searched
-        /// for by one searcher built once rather than one per datagram.
-        static SDP_TYPE: std::sync::LazyLock<memchr::memmem::Finder<'static>> =
-            std::sync::LazyLock::new(|| memchr::memmem::Finder::new(b"application/sdp"));
         if !self.enabled {
             return None;
         }
@@ -320,10 +316,31 @@ impl Fanout {
             } => (is_hep(payload)
                 || (port_in_range(src_port, dst_port, self.portrange)
                     && starts_sip_message(payload)
-                    && SDP_TYPE.find(payload).is_some()))
+                    && names_sdp(payload)))
             .then_some(CopyRead::Shared),
         }
     }
+}
+
+/// Whether `payload` names the content type [`crate::sip::SipMessage::sdp`]
+/// reads, `application/sdp`, in any case ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)): the same
+/// rule as [`crate::sip::message::is_sdp_media_type`], applied to raw bytes
+/// before any parse.
+///
+/// Anchored on the `/`, which a SIP message holds a dozen or so times, rather
+/// than on the first letter, which it holds hundreds of times: measured on a
+/// 617-byte INVITE, 59 ns against 227 ns for an `a`-anchored scan and 22 ns
+/// for the case-sensitive `memmem` this replaced, which missed
+/// `Application/SDP`. It allocates nothing.
+fn names_sdp(payload: &[u8]) -> bool {
+    const SDP_TYPE: &[u8] = b"application/sdp";
+    const SLASH_AT: usize = 11;
+    memchr::memchr_iter(b'/', payload).any(|slash| {
+        slash
+            .checked_sub(SLASH_AT)
+            .and_then(|start| payload.get(start..start + SDP_TYPE.len()))
+            .is_some_and(|window| window.eq_ignore_ascii_case(SDP_TYPE))
+    })
 }
 
 /// How the workers that receive a copy read it (see [`Fanout`]).
@@ -4369,6 +4386,38 @@ mod tests {
             ..pcfg_default_range()
         };
         assert!(Fanout::of(&hep_parse).needs(&hep));
+    }
+
+    /// `names_sdp` finds `application/sdp` in any case and at any offset,
+    /// including the very start, and nothing that only resembles it.
+    #[test]
+    fn names_sdp_finds_the_type_in_any_case_and_nothing_else() {
+        assert!(names_sdp(b"application/sdp"), "at offset 0");
+        assert!(names_sdp(b"Content-Type: Application/SDP\r\n"));
+        assert!(names_sdp(b"x: aPPlication/sDp"));
+        assert!(!names_sdp(b"/sdp"), "too short to hold the type");
+        assert!(!names_sdp(b"application/sd"), "one byte short");
+        assert!(!names_sdp(b"Content-Type: application/isup"));
+        assert!(!names_sdp(b"Content-Type: text/sdp"));
+    }
+
+    /// A datagram whose body is SDP is copied to every worker however its
+    /// `Content-Type` is cased, by the rule `SipMessage::sdp` reads: media
+    /// types are case-insensitive ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)). One left uncopied
+    /// leaves the worker that measures its RTP without the SDP, which
+    /// `--cores 1` would have used.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_datagram_with_sdp_is_copied_whatever_the_case_of_its_content_type() {
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "c", ([10, 2, 0, 1], 20000));
+        let text = String::from_utf8_lossy(&offer).replace("application/sdp", "Application/SDP");
+        assert!(
+            text.contains("Application/SDP"),
+            "the fixture declares its body as SDP"
+        );
+        let (a, b) = SIP_HOSTS;
+        let invite = eth_packet(eth_udp_between(a, b, 5060, 5060, text.as_bytes()));
+        assert!(Fanout::of(&pcfg_default_range()).needs(&invite));
     }
 
     /// With no stream store to inform (`--no-rtp`) or no SDP to learn

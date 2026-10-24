@@ -142,7 +142,8 @@ The field drops out otherwise.
 
 `sdp` is the raw SDP body.
 
-- sipnab emits it **only** when `Content-Type` is `application/sdp` and the
+- sipnab emits it **only** when `Content-Type` is `application/sdp`, in any
+  case and with any parameters, and the
   body is valid UTF-8.
 - It lets a consumer verify the negotiated media (connection / `m=` /
   `a=rtpmap`). Dynamic-PT decode depends on that media.

@@ -283,7 +283,7 @@ Offline reconstruction shards by **host pair**, not by packet or by call.
 
 - The reader peeks only the link, IP and transport headers.
   - [`peek_frame()`](../../src/capture/parse.rs) walks to the outer IP header once and reads the host pair and the UDP or TCP ports there.
-  - For a UDP datagram on a `--portrange` port it also checks whether the payload starts a SIP message that names `application/sdp`. That decides whether every worker receives a copy.
+  - For a UDP datagram on a `--portrange` port it also checks whether the payload starts a SIP message that names `application/sdp`, in any case. That decides whether every worker receives a copy.
   - It does no SIP parse and no allocation.
 - Then [`shard_for()`](../../src/parallel.rs) maps that pair to a worker.
 - The mapping is direction-independent.

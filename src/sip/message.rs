@@ -209,15 +209,35 @@ impl SipMessage {
         self.header("Content-Type")
     }
 
+    /// Whether this message carries an SDP body: the one rule every label and
+    /// flag that says "(SDP)" reads.
+    ///
+    /// - `application/sdp` in any case, with any parameters.
+    /// - A `multipart/*` body (SIPREC, SIP-I) with an `application/sdp` part.
+    /// - A body with no `Content-Type` at all that starts `v=`. RFC 3261
+    ///   section 20.15 requires the header on a body; a peer that omits it on
+    ///   SDP is still labeled. A body declared as another type is that type.
+    #[must_use]
+    pub fn carries_sdp(&self) -> bool {
+        match self.content_type() {
+            Some(ct) if is_sdp_media_type(ct) => true,
+            Some(ct)
+                if media_type(ct)
+                    .to_ascii_lowercase()
+                    .starts_with("multipart/") =>
+            {
+                multipart_has_sdp(ct, &self.body)
+            }
+            Some(_) => false,
+            None => self.body.starts_with(b"v="),
+        }
+    }
+
     /// Parse the SDP body, if the `Content-Type` is `application/sdp`.
     ///
     /// Returns `None` if the content type is not SDP or if parsing fails.
     pub fn sdp(&self) -> Option<SdpSession> {
-        if self
-            .content_type()
-            .map(|ct| ct.contains("application/sdp"))
-            .unwrap_or(false)
-        {
+        if self.content_type().is_some_and(is_sdp_media_type) {
             sdp::parse_sdp(&self.body).ok()
         } else {
             None
@@ -579,6 +599,34 @@ fn extract_tag(header_value: &str) -> Option<&str> {
 
 /// Tests for malformation detection, URI user/host/tag/display extraction,
 /// and top-Via branch parsing.
+/// The media type of a `Content-Type` value: what precedes the first `;`,
+/// trimmed.
+fn media_type(content_type: &str) -> &str {
+    content_type.split(';').next().unwrap_or("").trim()
+}
+
+/// Whether a `Content-Type` value names `application/sdp`. The type and
+/// subtype are case-insensitive and parameters do not change the type
+/// ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)).
+#[must_use]
+pub fn is_sdp_media_type(content_type: &str) -> bool {
+    media_type(content_type).eq_ignore_ascii_case("application/sdp")
+}
+
+/// Whether the multipart `body` under `content_type` has an `application/sdp`
+/// part, split by the same MIME reader the SIPREC metadata uses.
+fn multipart_has_sdp(content_type: &str, body: &[u8]) -> bool {
+    let (Some(boundary), Ok(text)) = (
+        super::siprec::extract_boundary(content_type),
+        std::str::from_utf8(body),
+    ) else {
+        return false;
+    };
+    super::siprec::split_multipart(text, &boundary)
+        .iter()
+        .any(|part| part.content_type.as_deref().is_some_and(is_sdp_media_type))
+}
+
 #[cfg(test)]
 mod tests {
     /// Any error a test can return; `?` converts into it.
@@ -1346,6 +1394,79 @@ mod tests {
         // Adversarial: backslashes and quotes must not panic and pass through.
         let m = msg_with_vias(&[r#"Via: SIP/2.0/UDP 10.0.0.1:5060;branch=z9\"h4bK"#])?;
         assert_eq!(m.top_via_branch(), Some(r#"z9\"h4bK"#));
+        Ok(())
+    }
+
+    // ── SDP-LABEL1: one rule for "this message carries SDP" ────────────
+
+    const SDP_BODY: &[u8] = b"v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\n\
+                              t=0 0\r\nm=audio 20000 RTP/AVP 0\r\n";
+
+    fn invite_with(content_type: Option<&str>, body: &[u8]) -> Result<SipMessage, TestError> {
+        let ct = content_type.map(|ct| format!("Content-Type: {ct}"));
+        let mut headers = vec![
+            "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-sdp",
+            "From: <sip:a@example.com>;tag=1",
+            "To: <sip:b@example.com>",
+            "Call-ID: sdp-rule@example.com",
+            "CSeq: 1 INVITE",
+        ];
+        if let Some(ct) = ct.as_deref() {
+            headers.push(ct);
+        }
+        parse_msg("INVITE sip:b@example.com SIP/2.0", &headers, body)
+    }
+
+    fn multipart(sdp_part_type: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"--B\r\nContent-Type: application/rs-metadata+xml\r\n\r\n<x/>\r\n");
+        b.extend_from_slice(format!("--B\r\nContent-Type: {sdp_part_type}\r\n\r\n").as_bytes());
+        b.extend_from_slice(SDP_BODY);
+        b.extend_from_slice(b"\r\n--B--\r\n");
+        b
+    }
+
+    #[test]
+    fn an_application_sdp_body_carries_sdp() -> Result<(), TestError> {
+        assert!(invite_with(Some("application/sdp"), SDP_BODY)?.carries_sdp());
+        Ok(())
+    }
+
+    /// [RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1): the type and subtype are case-insensitive.
+    #[test]
+    fn the_media_type_is_matched_without_regard_to_case() -> Result<(), TestError> {
+        let m = invite_with(Some("Application/SDP"), SDP_BODY)?;
+        assert!(m.carries_sdp());
+        assert!(m.sdp().is_some(), "sdp() reads an Application/SDP body");
+        Ok(())
+    }
+
+    /// A body declared as another type is that type, whatever its first bytes.
+    #[test]
+    fn a_body_declared_as_another_type_does_not_carry_sdp() -> Result<(), TestError> {
+        assert!(!invite_with(Some("text/plain"), SDP_BODY)?.carries_sdp());
+        Ok(())
+    }
+
+    /// [RFC 3261 section 20.15](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.15) requires a Content-Type on a body; a peer that
+    /// omits it on an SDP body is still labeled from the body.
+    #[test]
+    fn an_undeclared_body_that_starts_like_sdp_carries_sdp() -> Result<(), TestError> {
+        assert!(invite_with(None, SDP_BODY)?.carries_sdp());
+        assert!(!invite_with(None, b"")?.carries_sdp(), "no body, no SDP");
+        Ok(())
+    }
+
+    /// A multipart body (SIPREC, SIP-I) carries SDP when one part is SDP.
+    #[test]
+    fn a_multipart_body_with_an_sdp_part_carries_sdp() -> Result<(), TestError> {
+        let ct = Some("multipart/mixed;boundary=B");
+        assert!(invite_with(ct, &multipart("application/sdp"))?.carries_sdp());
+        assert!(invite_with(ct, &multipart("Application/SDP"))?.carries_sdp());
+        assert!(
+            !invite_with(ct, &multipart("application/isup"))?.carries_sdp(),
+            "no SDP part, no SDP"
+        );
         Ok(())
     }
 }
