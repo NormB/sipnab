@@ -194,6 +194,69 @@ def test_a_release_without_the_source_file_declares_nothing(repo):
     assert since.flag_since(repo) == {"device": "0.2.0"}
 
 
+def args_group(*fields):
+    """A src/cli/<group>.rs whose flattened clap group declares `fields`."""
+    return "#[derive(clap::Args)]\npub struct GroupArgs {\n" + "\n".join(fields) + "\n}\n"
+
+
+def commit_file(root, rel, text, message="change"):
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    git(root, "add", rel)
+    git(root, "commit", "-q", "-m", message)
+
+
+def test_a_flag_declared_in_a_group_under_src_cli_is_dated(repo):
+    # A clap group flattened into Cli is part of the command line, wherever
+    # its file lives: the one-shot query groups are in src/cli/*.rs.
+    commit(repo, cli(DEVICE))
+    commit_file(repo, "src/cli/group_args.rs", args_group(DRY_RUN))
+    git(repo, "tag", "v0.1.0")
+    assert since.flag_since(repo) == {"device": "0.1.0", "dry-run": "0.1.0"}
+
+
+def test_a_flag_only_the_working_tree_group_declares_is_unreleased(repo):
+    commit(repo, cli(DEVICE))
+    git(repo, "tag", "v0.1.0")
+    (repo / "src/cli").mkdir()
+    (repo / "src/cli/group_args.rs").write_text(args_group(DRY_RUN))  # not committed
+    assert since.flag_since(repo) == {"device": "0.1.0", "dry-run": "Unreleased"}
+
+
+def test_a_flag_moved_into_a_group_file_keeps_its_first_release(repo):
+    commit(repo, cli(DEVICE, DRY_RUN))
+    git(repo, "tag", "v0.1.0")
+    commit(repo, cli(DEVICE))
+    commit_file(repo, "src/cli/group_args.rs", args_group(DRY_RUN))
+    git(repo, "tag", "v0.2.0")
+    assert since.flag_since(repo)["dry-run"] == "0.1.0"
+
+
+def test_a_file_nested_below_src_cli_is_not_read(repo):
+    # Only the files directly in src/cli/ are clap groups; a deeper file is
+    # not part of the command line this script dates.
+    commit(repo, cli(DEVICE))
+    commit_file(repo, "src/cli/deeper/x.rs", args_group(DRY_RUN))
+    git(repo, "tag", "v0.1.0")
+    assert since.flag_since(repo) == {"device": "0.1.0"}
+    # Declared on the command line only from v0.2.0: the nested file at
+    # v0.1.0 must not date it.
+    commit(repo, cli(DEVICE, DRY_RUN))
+    git(repo, "tag", "v0.2.0")
+    assert since.flag_since(repo) == {"device": "0.1.0", "dry-run": "0.2.0"}
+
+
+def test_a_file_under_src_cli_that_is_its_own_parser_is_not_read(repo):
+    # src/cli/g729_args.rs derives clap::Parser: the `sipnab g729` command
+    # line, not a group of Cli. Its flags are not Cli's flags.
+    commit(repo, cli(DEVICE))
+    commit_file(repo, "src/cli/sub_args.rs",
+                "#[derive(clap::Parser, Debug)]\npub struct SubCli {\n" + DRY_RUN + "}\n")
+    git(repo, "tag", "v0.1.0")
+    assert since.flag_since(repo) == {"device": "0.1.0"}
+
+
 def test_a_clone_without_tags_is_refused(repo):
     commit(repo, cli(DEVICE))
     with pytest.raises(since.FlagSinceError, match="no v\\* tags in this clone; fetch tags"):
@@ -330,13 +393,13 @@ def test_an_alias_in_the_flag_cell_names_the_same_flag():
 def test_a_row_naming_no_declared_flag_is_an_error():
     doc = DOC_OLD.replace("`--dry-run`", "`--gone`")
     _, errors = since.rewrite(doc, SINCE)
-    assert errors == ["`--gone`: the row names no flag src/cli.rs declares"]
+    assert errors == ["`--gone`: the row names no flag src/cli.rs or src/cli/*.rs declares"]
 
 
 def test_a_row_naming_a_declared_and_an_undeclared_flag_is_an_error():
     doc = DOC_OLD.replace("`--dry-run`", "`--dry-run`, `--gone`")
     _, errors = since.rewrite(doc, SINCE)
-    assert errors == ["`--dry-run`, `--gone`: the row names no flag src/cli.rs declares"]
+    assert errors == ["`--dry-run`, `--gone`: the row names no flag src/cli.rs or src/cli/*.rs declares"]
 
 
 def test_a_row_naming_two_flags_of_different_releases_is_an_error():
