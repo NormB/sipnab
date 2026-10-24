@@ -529,6 +529,26 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--count-by`: one dimension of the groupable set, any other refused
+    // with the list of real ones.
+    (
+        "count-by",
+        Kind::Text {
+            accept: &["state", "rtp.codec", " method "],
+            reject: &[("bogus", 2), ("", 2), ("state,method", 2)],
+        },
+        &[],
+    ),
+    // `--top`: how many rows a ranked query keeps, from one up; it needs a
+    // ranked query to cut.
+    (
+        "top",
+        Kind::Int {
+            lo: 1,
+            hi: 18446744073709551615,
+        },
+        &["--count-by", "state"],
+    ),
     (
         "since",
         Kind::Text {

@@ -498,8 +498,10 @@ fn resolve_page_limit(requested: Option<usize>, cap: usize) -> usize {
 /// Rows a list-style response returns when the caller names no `limit`.
 ///
 /// A page size, not a ceiling: it is what `?limit=` defaults to, and any
-/// caller can ask for more up to [`ApiState::max_rows`].
-const DEFAULT_PAGE_ROWS: usize = 50;
+/// caller can ask for more up to [`ApiState::max_rows`]. The same default
+/// the CLI's `--top` takes, so a ranked answer is cut at the same row on
+/// both surfaces.
+const DEFAULT_PAGE_ROWS: usize = crate::output::query::DEFAULT_ROWS;
 
 /// Resolve a caller's bare filename against `--api-file-root`, confined.
 ///
@@ -2064,16 +2066,8 @@ async fn get_aggregate(
     guard(&state, &headers, addr.ip())?;
 
     let key = params.by.as_deref().map(str::trim).unwrap_or("");
-    if !crate::sip::dialog::GROUPABLE.contains(&key) {
-        return Err(Problem::detailed(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "cannot group by '{key}'; one of: {}. One dimension only — narrow \
-                 with `filter` rather than adding a second.",
-                crate::sip::dialog::GROUPABLE.join(", ")
-            ),
-        ));
-    }
+    crate::output::query::aggregate::check_dimension(key, "`filter`")
+        .map_err(|why| Problem::detailed(StatusCode::BAD_REQUEST, why))?;
 
     // Same DSL and 400-on-parse-failure as `/v1/dialogs?filter=`.
     let dsl = compile_query_filter(&state.alias_thresholds, params.filter.as_deref())?;
@@ -2086,41 +2080,17 @@ async fn get_aggregate(
     let ss = state.stream_store.read();
     // `select_dialogs` applies the filter and pairs each dialog with its
     // streams, the path the CLI and the MCP tool also take, so the surfaces
-    // count the same store. The bucketing rule is `dialog_group_value_raw`.
+    // count the same store. The answer is the one `--count-by` prints.
     let selection = crate::sip::dsl::select_dialogs(dsl.as_ref(), &ds, &ss);
-    let total_matched = selection.dialogs.len();
-    let mut tally: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for item in &selection.dialogs {
-        if let Some(value) = crate::sip::dialog::dialog_group_value_raw(key, item.0, &item.1) {
-            *tally.entry(value).or_insert(0) += 1;
-        }
-    }
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer =
+        crate::output::query::aggregate::aggregate(&selection, key, top_n, capture_identity);
+    drop(selection);
     drop(ss);
     drop(ds);
     drop(capture);
 
-    let distinct_values = tally.len();
-    let mut ordered: Vec<(String, usize)> = tally.into_iter().collect();
-    // Largest first, ties broken by value so a cursor-free aggregate does not
-    // reorder between calls and look like the capture changed.
-    ordered.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let other_count: usize = ordered.iter().skip(top_n).map(|(_, c)| *c).sum();
-    let buckets: Vec<schema::AggregateBucket> = ordered
-        .into_iter()
-        .take(top_n)
-        .map(|(value, count)| schema::AggregateBucket { value, count })
-        .collect();
-
-    Ok(Json(schema::Aggregate {
-        schema_version: 1,
-        group_by: key.to_string(),
-        buckets,
-        other_count,
-        distinct_values,
-        total_matched,
-        capture_identity,
-    }))
+    Ok(Json(answer))
 }
 
 /// `GET /v1/timeline` — call volume over time, in fixed-width buckets (PAR3:
@@ -2499,17 +2469,10 @@ async fn get_rates(
     drop(ds);
     drop(capture);
 
-    let distinct_values = tally.len();
-    let mut ordered: Vec<(String, crate::sip::group_metrics::GroupAccumulator)> =
-        tally.into_iter().collect();
-    // Largest first, ties broken by value so a cursor-free grouping does not
-    // reorder between calls and look like the capture changed.
-    ordered.sort_by(|a, b| {
-        b.1.dialogs()
-            .cmp(&a.1.dialogs())
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    let other_count: usize = ordered.iter().skip(top_n).map(|(_, a)| a.dialogs()).sum();
+    // Largest first, ties broken by value, the cut summed: the ordering every
+    // group-by answer shares.
+    let ranked = crate::output::query::aggregate::rank_by_count(tally, &|a| a.dialogs(), top_n);
+    let (distinct_values, other_count) = (ranked.distinct, ranked.other_count);
 
     // Not `Vec::with_capacity`: the size would flow from the `top_n` query
     // parameter, and though `resolve_page_limit` clamps it to the row cap,
@@ -2517,7 +2480,7 @@ async fn get_rates(
     // the loop pushes at most `top_n` items regardless, so the capacity hint
     // bought nothing worth the alert.
     let mut groups: Vec<schema::RateGroup> = Vec::new();
-    for (value, acc) in ordered.into_iter().take(top_n) {
+    for (value, acc) in ranked.kept {
         let mut metrics = std::collections::BTreeMap::new();
         let mut not_grounded = std::collections::BTreeMap::new();
         for m in &wanted {
@@ -6951,42 +6914,10 @@ pub mod schema {
         pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
-    /// One bucket of an aggregate: a grouped value and how many dialogs fell in
-    /// it. A null in the data becomes the literal `(none)` rather than being
-    /// dropped, so the buckets sum to the total.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct AggregateBucket {
-        /// The grouped value, rendered as a string.
-        pub value: String,
-        /// How many dialogs fell in this bucket.
-        pub count: usize,
-    }
-
-    /// A "how many, by what" count over the dialog store, one dimension.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct Aggregate {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// The dimension the count grouped by, echoed verbatim.
-        pub group_by: String,
-        /// The buckets, largest first, ties broken by value for a stable answer.
-        pub buckets: Vec<AggregateBucket>,
-        /// Total count in every bucket past the `top_n` cut, so the answer still
-        /// sums to `total_matched`.
-        pub other_count: usize,
-        /// How many distinct values the dimension took, before the cut.
-        pub distinct_values: usize,
-        /// How many dialogs the filter admitted, across all buckets.
-        pub total_matched: usize,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
+    /// The group-by count's answer, built by
+    /// [`crate::output::query::aggregate::aggregate`] for this route and
+    /// `--count-by` alike.
+    pub use crate::output::query::aggregate::{Aggregate, AggregateBucket};
 
     /// One RFC-conformance finding: the rule, its severity and basis, the RFC
     /// section it reads from, and what the message held against what the section

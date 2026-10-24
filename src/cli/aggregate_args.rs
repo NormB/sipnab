@@ -42,6 +42,43 @@ pub struct AggregateArgs {
         value_parser = parse_bucket_seconds,
     )]
     pub timeline: Option<u64>,
+
+    /// Count the dialogs by one dimension: how many fall in each value,
+    /// largest first, ties broken by value.
+    ///
+    /// One of `state`, `response_code`, `method`, `from.user`, `to.user`,
+    /// `ua`, `src.ip`, `dst.ip`, `rtp.codec`. A dialog with no value counts
+    /// under `(none)`. Keeps the first `--top` values (50 by default) and
+    /// sums the rest in one line. Counts the dialogs the run's filter
+    /// admits. With `--json`, one JSON object on the last line of stdout,
+    /// the shape `GET /v1/aggregate` returns. Makes the run headless, as
+    /// `--call-report` does.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "DIMENSION",
+        value_parser = parse_dimension,
+    )]
+    pub count_by: Option<String>,
+
+    /// How many rows a ranked query keeps (`--count-by`); the rest are
+    /// summed. 50 when not given, the default page REST returns.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "N",
+        requires = "count_by",
+        value_parser = clap::value_parser!(u64).range(1..),
+    )]
+    pub top: Option<u64>,
+}
+
+/// Parse a `--count-by` dimension by the rule REST applies, refusing any
+/// other with the list of real ones.
+fn parse_dimension(s: &str) -> Result<String, String> {
+    let key = s.trim();
+    crate::output::query::aggregate::check_dimension(key, "--filter")?;
+    Ok(key.to_string())
 }
 
 /// A bare `--timeline`'s width as clap reads it: the text of
@@ -65,12 +102,20 @@ impl AggregateArgs {
     /// itself here, once. See [`OneShot`] for what each field decides.
     #[must_use]
     pub fn one_shots(&self) -> Vec<OneShot> {
-        vec![OneShot {
-            name: "--timeline",
-            active: self.timeline.is_some(),
-            implies_no_tui: true,
-            owns_stdout: true,
-        }]
+        vec![
+            OneShot {
+                name: "--timeline",
+                active: self.timeline.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+            OneShot {
+                name: "--count-by",
+                active: self.count_by.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+        ]
     }
 }
 
@@ -78,6 +123,18 @@ impl AggregateArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A dimension is checked by the rule REST applies; the refusal lists
+    /// the real ones and names `--filter` as the way to narrow.
+    #[test]
+    fn a_dimension_is_checked_by_the_shared_rule() {
+        assert_eq!(parse_dimension(" state "), Ok("state".to_string()));
+        assert!(
+            parse_dimension("bogus")
+                .is_err_and(|e| e.contains("one of: state,") && e.contains("narrow with --filter")),
+            "bogus"
+        );
+    }
 
     /// The bare flag's width is the shared default, not a second number.
     #[test]

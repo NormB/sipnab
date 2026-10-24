@@ -199,6 +199,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("content-deny-tombstone", Link::Pending),
     ("cores", Link::Pending),
     ("count", Link::PerRun),
+    ("count-by", Link::PerRun),
     (
         "delta-time",
         Link::Key("display", "delta_time", Merge::Override),
@@ -724,6 +725,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("to", Link::Key("filter", "to", Merge::Override)),
     ("token-id", Link::PerRun),
     ("token-scope", Link::PerRun),
+    ("top", Link::PerRun),
     ("tshark-filter", Link::PerRun),
     ("tui-audit-file", Link::Pending),
     ("ua", Link::Pending),

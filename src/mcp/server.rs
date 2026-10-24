@@ -5334,7 +5334,7 @@ impl SipnabMcp {
         let top_n = resolve_limit_with_cap(params.top_n, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
 
-        let (mut tally, total_matched, capture_identity) = {
+        let (tally, total_matched, capture_identity) = {
             // Capture, dialogs, streams -- the order `CaptureState` documents.
             let state = self.capture.read();
             let ds = self.dialog_store.read();
@@ -5366,18 +5366,15 @@ impl SipnabMcp {
             (tally, total, capture_identity)
         };
 
-        let distinct_values = tally.len();
-        let mut ordered: Vec<(String, usize)> = tally.drain().collect();
         // Largest first, ties broken by value so the same store always gives
         // the same answer -- a cursor-free aggregate that reordered between
-        // calls would look like the capture changed.
-        crate::sort::sort_by_dyn(&mut ordered, &mut |a, b| {
-            b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
-        });
-        let other_count: usize = ordered.iter().skip(top_n).map(|(_, c)| *c).sum();
-        let buckets: Vec<AggregateBucket> = ordered
+        // calls would look like the capture changed. The ordering REST and
+        // `--count-by` apply too.
+        let ranked = crate::output::query::aggregate::rank_by_count(tally, &|n| *n, top_n);
+        let (distinct_values, other_count) = (ranked.distinct, ranked.other_count);
+        let buckets: Vec<AggregateBucket> = ranked
+            .kept
             .into_iter()
-            .take(top_n)
             .map(|(value, count)| AggregateBucket { value, count })
             .collect();
 

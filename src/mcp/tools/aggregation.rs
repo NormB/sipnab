@@ -382,7 +382,7 @@ impl SipnabMcp {
         let top_n = resolve_limit_with_cap(params.top_n, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
 
-        let (mut tally, total_matched, capture_identity) = {
+        let (tally, total_matched, capture_identity) = {
             // Capture, dialogs, streams -- the order `CaptureState` documents.
             let state = self.capture.read();
             let ds = self.dialog_store.read();
@@ -428,20 +428,15 @@ impl SipnabMcp {
             (tally, total, capture_identity)
         };
 
-        let distinct_values = tally.len();
-        let mut ordered: Vec<(String, GroupAccumulator)> = tally.drain().collect();
         // Largest first, ties broken by value so the same store always gives
         // the same answer -- a cursor-free grouping that reordered between
-        // calls would look like the capture changed.
-        crate::sort::sort_by_dyn(&mut ordered, &mut |a, b| {
-            b.1.dialogs()
-                .cmp(&a.1.dialogs())
-                .then_with(|| a.0.cmp(&b.0))
-        });
-        let other_count: usize = ordered.iter().skip(top_n).map(|(_, a)| a.dialogs()).sum();
+        // calls would look like the capture changed. The ordering every
+        // group-by answer shares, REST's and `--count-by`'s included.
+        let ranked = crate::output::query::aggregate::rank_by_count(tally, &|a| a.dialogs(), top_n);
+        let (distinct_values, other_count) = (ranked.distinct, ranked.other_count);
 
-        let mut groups = Vec::with_capacity(ordered.len().min(top_n));
-        for (value, acc) in ordered.into_iter().take(top_n) {
+        let mut groups = Vec::with_capacity(ranked.kept.len());
+        for (value, acc) in ranked.kept {
             let mut metrics = BTreeMap::new();
             let mut not_grounded = BTreeMap::new();
             for m in &wanted {

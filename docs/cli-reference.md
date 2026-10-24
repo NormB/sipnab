@@ -1151,6 +1151,8 @@ out the end-of-run summary on stderr.
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
 | `--timeline` | `[=<SECONDS>]` | `60` | Unreleased | Print how many dialogs opened in each interval of this many seconds, oldest first. Intervals align to the epoch, and an empty interval shows a count of zero. `--json` prints the shape of `GET /v1/timeline`. `0` exits 2. A span of more than 100,000 intervals exits 1 |
+| `--count-by` | `<DIMENSION>` | | Unreleased | Count the dialogs by one dimension, largest first: `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip` or `rtp.codec`. `--json` prints the shape of `GET /v1/aggregate`. Any other dimension exits 2 |
+| `--top` | `<N>` | `50` | Unreleased | How many values `--count-by` keeps. One line sums the rest, as `other_count` does under `--json`. Needs `--count-by`; `0` exits 2 |
 
 ### Call volume over time
 
@@ -1206,6 +1208,72 @@ sipnab -I tests/pcap-samples/sip-problem-call.pcap --timeline --json --no-cli-pr
 
 The REST route `GET /v1/timeline?bucket_seconds=60` and the MCP tool
 `timeline` answer the same question about a loaded capture.
+
+### Dialogs by one dimension
+
+Count the calls in a capture by their state:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --count-by state --no-cli-print --quiet
+```
+
+```text
+Dialogs by state: 2 values, 5 dialogs
+Value      Dialogs
+------------------
+Failed     4
+Completed  1
+```
+
+The values are largest first, and values with the same count are in
+alphabetical order. A dialog with no value for the dimension counts under
+`(none)`.
+
+Keep only the first values with `--top`. The last line sums the rest:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --count-by response_code --top 2 --no-cli-print --quiet
+```
+
+```text
+Dialogs by response_code: 5 values, 5 dialogs
+Value  Dialogs
+--------------
+200    1
+404    1
+Other: 3 dialogs in 3 values past --top 2
+```
+
+Count one dimension at a time. To count a subset of the calls, narrow the run
+with `--filter` instead of adding a second dimension. Count who the failed calls
+were for, keeping three:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --count-by to.user --filter 'state == Failed' --top 3 --no-cli-print --quiet
+```
+
+```text
+Dialogs by to.user: 4 values, 4 dialogs
+Value  Dialogs
+--------------
+dave   1
+frank  1
+heidi  1
+Other: 1 dialog in 1 value past --top 3
+```
+
+Read the answer as JSON. `jq` drops `capture_identity`, which names the run:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --count-by state --json --no-cli-print --quiet | jq -c 'del(.capture_identity)'
+```
+
+```json
+{"schema_version":1,"group_by":"state","buckets":[{"value":"Failed","count":4},{"value":"Completed","count":1}],"other_count":0,"distinct_values":2,"total_matched":5}
+```
+
+The REST route `GET /v1/aggregate?by=state` and the MCP tool
+`aggregate_dialogs` answer the same question about a loaded capture.
 
 ## Dialog
 
