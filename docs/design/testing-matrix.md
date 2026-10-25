@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 376 | 298 | 35 | 43 | 0 |
+| CLI flags | 377 | 299 | 35 | 43 | 0 |
 | HTTP routes | 47 | 47 | -- | 0 | 0 |
 | MCP tools | 76 | 76 | -- | 0 | 0 |
 
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_help_test.rs`, `tests/cli_options_test.rs` +6 |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +2 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/capture_probe_test.rs` +4 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +136 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +137 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--vcon-key` |  | `FILE` | Capture | e2e | `tests/vcon_audio_fetch_test.rs`, `tests/vcon_directory_report_test.rs` +2 |  |  |
@@ -126,7 +126,7 @@ behind them.
 | `--calls-only` | `-c` |  | Mode | e2e | `tests/calls_only_dialogs_test.rs`, `tests/cli_flag_behavior_test.rs` +3 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/cli_options_test.rs`, `tests/cores_refusal_test.rs` +5 |  |  |
 | `--dtmf-cleartext` |  |  | Mode | e2e | `tests/decryption_wrapper_matrix_test.rs`, `tests/dtmf_dynamic_payload_type_test.rs` +1 | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
-| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/capture_clock_test.rs` +56 |  |  |
+| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/capture_clock_test.rs` +57 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
 | `--no-resolve` |  |  | Name resolution | referenced | `src/cli.rs` |  |  |
 | `--reverse-dns` |  |  | Name resolution | parsed | `src/cli.rs` |  |  |
@@ -147,7 +147,7 @@ behind them.
 | `--to` |  | `PATTERN` | Matching | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +1 |  |  |
 | `--contact` |  | `PATTERN` | Matching | e2e | `tests/cli_options_test.rs`, `tests/cores_refusal_test.rs` |  |  |
 | `--ua` |  | `PATTERN` | Matching | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
-| `--filter` |  | `EXPR` | Matching | e2e | `tests/analyze_test.rs`, `tests/calls_only_dialogs_test.rs` +11 |  |  |
+| `--filter` |  | `EXPR` | Matching | e2e | `tests/analyze_test.rs`, `tests/calls_only_dialogs_test.rs` +13 |  |  |
 | `--since` |  |  | Matching | e2e | `tests/cli_time_window_test.rs` |  |  |
 | `--until` |  |  | Matching | e2e | `tests/cli_time_window_test.rs` |  |  |
 | `--problems` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +3 |  |  |
@@ -155,7 +155,7 @@ behind them.
 | `--short-calls` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +2 | **parse-only** | short_calls_filter asserts only count <= 7; the alias-equivalence test is vacuous (0 of 1334 dialogs selected on its fixture) |
 | `--one-way` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **behavior** | one_way_filter plus one_way_output_carries_the_stun_versus_sdp_finding (tests/stun_test.rs); both directions pinned |
 | `--nat-issues` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **behavior** | nat_issues_filter plus the_nat_issues_alias_selects_the_rewritten_call (tests/media_diagnosis_wiring_test.rs) |
-| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +23 |  |  |
+| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +24 |  |  |
 | `--json-pretty` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/json_schema_test.rs` +2 |  |  |
 | `--json-dialogs` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/archive_password_prompt_test.rs` +43 |  |  |
 | `--plugin` |  | `PATH` | Output | e2e | `tests/partial_run_exit_code_test.rs`, `tests/plugin_example_test.rs` |  |  |
@@ -179,7 +179,7 @@ behind them.
 | `--redact-key-file` |  | `FILE` | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/vcon_cli_test.rs` +2 |  |  |
 | `--redact-keep-prefix` |  | `N` | Output | parsed | `src/cli.rs` |  |  |
 | `--redact-map` |  | `FILE` | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/doc_commands_run_test.rs` |  |  |
-| `--markdown` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/call_report_siprec_test.rs` +1 |  |  |
+| `--markdown` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/call_report_siprec_test.rs` +2 |  |  |
 | `--hexdump` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/cores_refusal_test.rs` +1 |  |  |
 | `--delta-time` |  |  | Output | e2e | `tests/cli_options_test.rs` | **behavior** | golden tests/cli/out/text-delta.trycmd pins relative stamps where the flagless golden pins absolute |
 | `--no-delta-time` |  |  | Output | referenced | `src/cli.rs` |  |  |
@@ -190,7 +190,7 @@ behind them.
 | `--color` |  | `WHEN` | Output | e2e | `tests/cli_options_test.rs`, `tests/config_wiring_test.rs` |  |  |
 | `--payload-limit` |  | `BYTES` | Output | e2e | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
 | `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
-| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +67 |  |  |
+| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +68 |  |  |
 | `--wireshark` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/closed_stdout_test.rs` +1 | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
 | `--lint` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/config_cli_flag_values_test.rs` +4 |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | e2e | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
@@ -401,7 +401,7 @@ behind them.
 | `--max-tcp-buffer` |  | `BYTES` | Resource limits | parsed | `src/cli.rs` |  |  |
 | `--max-metadata-file-bytes` |  | `BYTES` | Resource limits | referenced | `src/capture/pcapng_meta.rs`, `src/cli.rs` | **behavior** | probe_max_metadata_file_bytes turns "stripped" into "refused" at a 10-byte cap |
 | `--max-gunzip-bytes` |  | `BYTES` | Resource limits | e2e | `tests/archive_input_test.rs` | **behavior** | probe_max_gunzip_bytes turns "stripped" into "refused" at a 100-byte ceiling |
-| `--cores` |  | `N` | Resource limits | e2e | `tests/archive_input_test.rs`, `tests/batch_run_paths_test.rs` +19 |  |  |
+| `--cores` |  | `N` | Resource limits | e2e | `tests/archive_input_test.rs`, `tests/batch_run_paths_test.rs` +20 |  |  |
 | `--mint-token` |  |  | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-id` |  | `ID` | Token minting | e2e | `tests/cli_flag_behavior_test.rs`, `tests/mcp_token_test.rs` |  |  |
 | `--token-scope` |  | `SCOPE` | Token minting | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
@@ -458,6 +458,7 @@ behind them.
 | `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/call_report_siprec_test.rs` +35 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +6 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |
+| `--timeline` |  |  | Queries | e2e | `tests/cli_timeline_test.rs` |  |  |
 | `--panic-selftest` |  |  | Config (hidden) | referenced | `tests/crash_test.rs` |  |  |
 
 ## HTTP routes

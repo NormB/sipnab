@@ -352,6 +352,14 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (`-L`) in one ru
 
 **Exit code:** 2.
 
+### `--timeline: {e}`
+
+`--timeline` read the capture, but its calls span more intervals of the width than one histogram holds. `{e}` names how many intervals the span needs, the most a histogram holds (100,000), and a width that fits, for example `the dialogs span 5256001 intervals of 60 s, and one histogram holds at most 100000; a width of 3154 s or more fits`. sipnab prints no histogram.
+
+**What to do:** Run again with the width it names, or a wider one: `--timeline=3154`. To keep a narrow width, narrow the calls instead with `--since` and `--until`.
+
+**Exit code:** 1.
+
 ### `--until {} is not after --since {}: the window [--since, --until) would hold no instant`
 
 `--since` and `--until` keep the dialogs whose first message falls at or after `--since` and before `--until`.

@@ -519,6 +519,16 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--timeline`: an interval width in seconds, from one up; zero is the
+    // width every surface refuses.
+    (
+        "timeline",
+        Kind::Int {
+            lo: 1,
+            hi: 18446744073709551615,
+        },
+        &[],
+    ),
     (
         "since",
         Kind::Text {

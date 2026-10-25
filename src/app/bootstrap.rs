@@ -1539,8 +1539,12 @@ fn cores_unsupported_flags(cli: &Cli, config: &Config) -> Vec<&'static str> {
     let matching = &cli.matching_args;
     let tls = &cli.tls_args;
     let security = &cli.security_args;
+    // `--json` picks the per-message stream's form, which the parallel reader
+    // does not write, and also the form of a query flag's answer, which it
+    // prints. Beside an active query it is carried out.
+    let query_answer = cli.one_shots().iter().any(|s| s.active && s.owns_stdout);
     [
-        (out.json || out.json_pretty, "--json"),
+        ((out.json || out.json_pretty) && !query_answer, "--json"),
         (out.text_dump, "--text-dump"),
         (out.fail2ban, "--fail2ban"),
         (cli.capture_args.output.is_some(), "-O/--output"),
@@ -11447,6 +11451,27 @@ mod decision_tests {
         let single = cli_from(&["--cores", "1", "-I", FIXTURE_FILE, "--json"]);
         assert!(cores_unsupported_flags(&single, &config).is_empty());
         Ok(())
+    }
+
+    /// `--json` formats a query flag's answer, which the parallel reader
+    /// prints, so beside an active query it is carried out and not refused;
+    /// without one it still names the per-message stream it would ask for.
+    #[test]
+    fn cores_carries_out_json_for_a_query_answer() {
+        let config = Config::default();
+        let query = cli_from(&["--cores", "2", "-I", FIXTURE_FILE, "--timeline", "--json"]);
+        assert!(cores_unsupported_flags(&query, &config).is_empty());
+        let pretty = cli_from(&[
+            "--cores",
+            "2",
+            "-I",
+            FIXTURE_FILE,
+            "--timeline",
+            "--json-pretty",
+        ]);
+        assert!(cores_unsupported_flags(&pretty, &config).is_empty());
+        let report = cli_from(&["--cores", "2", "-I", FIXTURE_FILE, "--report", "--json"]);
+        assert_eq!(cores_unsupported_flags(&report, &config), vec!["--json"]);
     }
 
     /// Every whole-capture view counts as asking for one; a run naming none,

@@ -2167,45 +2167,29 @@ async fn get_timeline(
 ) -> Result<impl IntoResponse, Problem> {
     guard(&state, &headers, addr.ip())?;
 
-    let width = params.bucket_seconds.unwrap_or(60);
-    if width == 0 {
-        return Err(Problem::detailed(
-            StatusCode::BAD_REQUEST,
-            "bucket_seconds must be greater than zero: a zero-width bucket \
-             describes no interval, and every dialog would fall into all of them",
-        ));
-    }
+    let width =
+        crate::output::query::timeline::bucket_width(params.bucket_seconds).map_err(|why| {
+            Problem::detailed(StatusCode::BAD_REQUEST, format!("bucket_seconds {why}"))
+        })?;
 
     // Capture lock, then dialogs, then streams -- the order `CaptureState`
     // documents -- held until the answer and its identity are both built.
     let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
-    // The shared bucketing rule, so this route and the MCP `timeline` tool
-    // agree; this surface renders the interval start as RFC 3339. A span too
-    // wide for the width is the store's refusal, answered 422.
-    let buckets: Vec<schema::TimelineBucket> = ds
-        .timeline_buckets(width)
-        .map_err(|e| Problem::detailed(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()))?
-        .into_iter()
-        .map(|(start, dialogs)| schema::TimelineBucket {
-            start: start.to_rfc3339(),
-            bucket_seconds: width,
-            dialogs,
-        })
-        .collect();
+    // The shared answer, so this route and `--timeline` print the same
+    // histogram; its bucketing rule is the one the MCP `timeline` tool reads.
+    // Every dialog in the store: this route takes no filter. A span too wide
+    // for the width is the store's refusal, answered 422.
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer = crate::output::query::timeline::timeline(ds.iter(), width, capture_identity);
     drop(ss);
     drop(ds);
     drop(capture);
 
-    Ok(Json(schema::Timeline {
-        schema_version: 1,
-        returned: buckets.len(),
-        bucket_seconds: width,
-        buckets,
-        capture_identity,
-    }))
+    Ok(Json(answer.map_err(|e| {
+        Problem::detailed(StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
+    })?))
 }
 
 /// `GET /v1/dialogs/compare` — two calls side by side, with the fields that
@@ -7080,40 +7064,10 @@ pub mod schema {
         pub errors: Vec<VconFinding>,
     }
 
-    /// One interval of a call-volume histogram.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct TimelineBucket {
-        /// Start of the interval, inclusive, RFC 3339. Aligned to the epoch, not
-        /// to the first call, so two captures line up.
-        pub start: String,
-        /// Width of the interval in seconds, echoed so a row reads on its own.
-        pub bucket_seconds: u64,
-        /// Dialogs whose first message fell in this interval.
-        pub dialogs: u64,
-    }
-
-    /// Call volume over time, in fixed-width buckets.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct Timeline {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// One row per interval, oldest first, gaps included (an empty interval
-        /// is the outage, so it is not dropped).
-        pub buckets: Vec<TimelineBucket>,
-        /// Rows in `buckets`.
-        pub returned: usize,
-        /// The bucket width actually used, echoed because the caller may have
-        /// omitted it.
-        pub bucket_seconds: u64,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
+    /// The call-volume histogram's answer, built by
+    /// [`crate::output::query::timeline::timeline`] for this route and
+    /// `--timeline` alike.
+    pub use crate::output::query::timeline::{Timeline, TimelineBucket};
 
     /// One call summarized for a side-by-side comparison: the fields
     /// `/v1/dialogs/compare` diffs, the same the MCP `compare_dialogs` tool

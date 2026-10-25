@@ -718,6 +718,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("telephone-event", Link::Pending),
     ("text-dump", Link::PerRun),
     ("tfps-ctl", Link::Key("tfps", "ctl", Merge::Override)),
+    ("timeline", Link::PerRun),
     ("tls-key", Link::Pending),
     ("tls-lockon-window", Link::Pending),
     ("to", Link::Key("filter", "to", Merge::Override)),
