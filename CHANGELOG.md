@@ -28,6 +28,7 @@ entry that carries them.
 ### Fixed
 
 - **A relay reply that arrives and cannot be decoded is reported `suspect`, not `unreachable`.** A reply with no cookie framing, a body that is not bencode, or one missing what its answer needs was classified as no answer at all, so `--relay-stats`, `--relay-holdings`, the TUI relay view and the `/v1/relay/*` routes said "asked, nothing came back" about a reply sipnab held. It is now the answer's own problem, as a reply to another request already was.
+- **The MCP `find_correlated` tool refuses a Call-ID the capture does not hold.** It answered with no legs, which reads as "this call stands alone", while `GET /v1/dialogs/{call_id}/correlated` answered 404 and `--correlate` exited 1. It now fails with `invalid_params` and `data.reason: "not_found"`, as the other Call-ID tools do, and decides "unknown" with the same function the REST route and the flag call.
 
 ### Dependencies
 

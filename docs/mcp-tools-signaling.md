@@ -646,13 +646,16 @@ Finds the other legs of one call — the far side of a B2BUA, SBC or PBX hop.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `call_id` | string | A Call-ID the store holds — the leg to correlate **from**. | Required — the call fails. |
+| `call_id` | string | A Call-ID the store holds — the leg to correlate **from**. A Call-ID the store does not hold fails with a message such as `call_id 'nope@192.0.2.1' not found`. | Required — the call fails. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 legs. |
 
 Returns `source_call_id`, `legs`, `total_matched`, `heuristic_only`,
 `capture_identity`, `timing_clock`, `source_exhausted`,
-`source_stopped_early` and `schema_version`. A call with no related legs
-answers with an empty `legs` array and `total_matched: 0`, not an error. There
+`source_stopped_early` and `schema_version`. An unknown `call_id` fails with
+`invalid_params` (`call_id 'nope' not found`, `data.reason: "not_found"`), the
+answer REST's `/correlated` route gives as 404 and `--correlate` as exit 1. A
+call with no related legs answers with an empty `legs` array and
+`total_matched: 0`, not an error. There
 is no cursor: when `total_matched` is larger than the legs returned, raise
 `limit`, up to `--mcp-max-rows`.
 
