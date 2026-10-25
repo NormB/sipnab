@@ -11,7 +11,14 @@ import os
 import re
 import tempfile
 
-from refresh_csp_hashes import csp, extract_inline_scripts, sha256_token, write_headers
+from refresh_csp_hashes import (
+    ANALYTICS_REPORT_ORIGIN,
+    ANALYTICS_SCRIPT_ORIGIN,
+    csp,
+    extract_inline_scripts,
+    sha256_token,
+    write_headers,
+)
 
 
 def check(name, cond):
@@ -59,6 +66,10 @@ check("NUL byte body hashed not crashed",
 script_src = re.search(r"script-src([^;]*);", csp(["'sha256-x'"])).group(1)
 check("script-src does not grant 'unsafe-inline'", "'unsafe-inline'" not in script_src)
 check("script-src carries the hash tokens", "'sha256-x'" in script_src)
+check("script-src admits the analytics beacon", ANALYTICS_SCRIPT_ORIGIN in script_src)
+connect_src = re.search(r"connect-src([^;]*);", csp(["'sha256-x'"])).group(1).split()
+check("connect-src is 'self' and the analytics report origin only",
+      connect_src == ["'self'", ANALYTICS_REPORT_ORIGIN])
 
 # write_headers rewrites exactly the CSP line and leaves the rest alone.
 HEADERS = "\n".join([

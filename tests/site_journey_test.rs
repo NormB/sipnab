@@ -5572,11 +5572,17 @@ fn csp_refresh_site_dir_hashes_executable_inline_scripts() -> Result<(), TestErr
         stdout.contains("distinct inline-script hashes: 3"),
         "expected exactly 3 hashes (src= and ld+json excluded):\n{stdout}"
     );
-    // Dry run must print the CSP that would ship, with the hashes in place.
+    // Dry run must print the CSP that would ship, with the hashes in place,
+    // admitting the analytics beacon and its reports.
     assert!(
         stdout.contains("script-src 'self' 'wasm-unsafe-eval'")
             && stdout.contains(&csp_token(root_body)),
         "dry run should print the resulting CSP:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!("{ANALYTICS_SCRIPT_ORIGIN};"))
+            && stdout.contains(&format!("connect-src 'self' {ANALYTICS_REPORT_ORIGIN};")),
+        "the published CSP must admit the analytics beacon and its reports:\n{stdout}"
     );
     Ok(())
 }
@@ -7218,11 +7224,13 @@ fn assert_script_src_cannot_run_injected_script(
     for token in &script_src {
         assert!(
             matches!(*token, "'self'" | "'unsafe-inline'" | "'wasm-unsafe-eval'")
-                || token.starts_with("'sha256-"),
+                || token.starts_with("'sha256-")
+                || *token == ANALYTICS_SCRIPT_ORIGIN,
             "{where_} script-src carries `{token}`. The site loads scripts from \
-             its own origin and nowhere else, so a host, a scheme, `*`, \
-             `'unsafe-eval'` or `'unsafe-hashes'` here is a widening nobody \
-             asked for: script-src = {script_src:?}"
+             its own origin and, for Cloudflare Web Analytics, \
+             {ANALYTICS_SCRIPT_ORIGIN} and nowhere else, so another host, a \
+             scheme, `*`, `'unsafe-eval'` or `'unsafe-hashes'` here is a \
+             widening nobody asked for: script-src = {script_src:?}"
         );
     }
 
@@ -9700,7 +9708,14 @@ fn docs_search_is_absent_rather_than_broken_without_javascript() -> Result<(), T
     Ok(())
 }
 
-/// Adding search did not reopen inline script execution or admit a new origin.
+/// Cloudflare Web Analytics, the one outside origin the site admits: Cloudflare
+/// adds its beacon script to each page it serves, and the beacon reports to
+/// the second origin. Every policy names both, and nothing else from outside.
+const ANALYTICS_SCRIPT_ORIGIN: &str = "https://static.cloudflareinsights.com";
+const ANALYTICS_REPORT_ORIGIN: &str = "https://cloudflareinsights.com";
+
+/// Adding search did not reopen inline script execution or admit a new origin
+/// beyond Cloudflare Web Analytics.
 ///
 /// The reference policy in `website/static/_headers` is what a host honoring
 /// that file enforces, and it is deliberately STRICTER than the meta tag in
@@ -9712,7 +9727,7 @@ fn docs_search_is_absent_rather_than_broken_without_javascript() -> Result<(), T
 /// already needs, and `connect-src` to `'self'`, which is what makes the
 /// Pagefind index chunks loadable and a remote index not.
 #[test]
-fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() -> Result<(), TestError> {
+fn the_site_csp_grants_no_unsafe_inline_and_no_origin_but_analytics() -> Result<(), TestError> {
     let headers = read("website/static/_headers")?;
     let policy = headers
         .lines()
@@ -9731,7 +9746,11 @@ fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() -> Result<(), TestEr
          actually running one under which an injected <script> executes: \
          script-src = {script_src:?}"
     );
-    let allowed_script = ["'self'", "'wasm-unsafe-eval'"];
+    assert!(
+        script_src.contains(&ANALYTICS_SCRIPT_ORIGIN),
+        "the reference script-src does not admit the analytics beacon: {script_src:?}"
+    );
+    let allowed_script = ["'self'", "'wasm-unsafe-eval'", ANALYTICS_SCRIPT_ORIGIN];
     let extra: Vec<&&str> = script_src
         .iter()
         .filter(|t| !allowed_script.contains(*t) && !t.starts_with("'sha256-"))
@@ -9746,10 +9765,10 @@ fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() -> Result<(), TestEr
     let connect_src = csp_directive(&policy, "connect-src").ok_or("the CSP names connect-src")?;
     assert_eq!(
         connect_src,
-        vec!["'self'"],
-        "connect-src is no longer 'self' alone. The search index is fetched \
-         over it, and widening it is how a same-origin index quietly becomes a \
-         request to somebody else's server"
+        vec!["'self'", ANALYTICS_REPORT_ORIGIN],
+        "connect-src is no longer 'self' and the analytics report origin alone. \
+         The search index is fetched over it, and widening it is how a \
+         same-origin index quietly becomes a request to somebody else's server"
     );
 
     // The meta tag is the enforceable layer on GitHub Pages, which cannot set
@@ -9759,8 +9778,21 @@ fn the_site_csp_grants_no_unsafe_inline_and_no_new_origin() -> Result<(), TestEr
     let meta_script = csp_directive(&meta, "script-src").ok_or("the meta CSP names script-src")?;
     let meta_extra: Vec<&&str> = meta_script
         .iter()
-        .filter(|t| !t.starts_with('\'') && !t.starts_with("'sha256-"))
+        .filter(|t| {
+            !t.starts_with('\'') && !t.starts_with("'sha256-") && **t != ANALYTICS_SCRIPT_ORIGIN
+        })
         .collect();
+    assert!(
+        meta_script.contains(&ANALYTICS_SCRIPT_ORIGIN),
+        "the meta CSP's script-src does not admit the analytics beacon: {meta_script:?}"
+    );
+    let meta_connect =
+        csp_directive(&meta, "connect-src").ok_or("the meta CSP names connect-src")?;
+    assert_eq!(
+        meta_connect,
+        vec!["'self'", ANALYTICS_REPORT_ORIGIN],
+        "the meta CSP's connect-src must be 'self' and the analytics report origin"
+    );
     assert!(
         meta_extra.is_empty(),
         "the meta CSP's script-src names the origin(s) {meta_extra:?}. A \
