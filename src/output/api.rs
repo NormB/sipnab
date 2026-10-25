@@ -5730,21 +5730,15 @@ fn relay_rest_answer(
         (Some(r), Some(p)) => (r, p),
     };
 
-    let label = format!("relay ({})", relay.describe());
+    let label = crate::output::query::relay_holdings::relay_label(relay.as_ref());
     let now = chrono::Utc::now();
     // A fetch that did not yield a trustworthy reply. ST-S4: a reply that
     // arrived but could not be trusted (a mismatched cookie) is `suspect` -- the
     // answer's own problem -- and everything else is `unreachable`. Classified
     // through the single seam rule so REST and the CLI agree.
-    let fetch_failure = |e: &anyhow::Error| match crate::relay::types::fetch_error_outcome(e) {
-        O::Suspect => to_value(fmt::relay_rest_outcome(
-            O::Suspect,
-            &format!("{label}: {e}; the reply was discarded and not read"),
-        )),
-        _ => to_value(fmt::relay_rest_outcome(
-            O::Unreachable,
-            &format!("{label} did not answer ({e}); asked, nothing came back"),
-        )),
+    let fetch_failure = |e: &anyhow::Error| {
+        let (outcome, detail) = crate::output::query::relay_holdings::fetch_failure(&label, e);
+        to_value(fmt::relay_rest_outcome(outcome, &detail))
     };
 
     match ask {
@@ -5875,28 +5869,11 @@ fn relay_rest_answer(
                 Err(e) => fetch_failure(&e),
             }
         }
-        RelayAsk::Holdings { max_calls } => match relay.list(&permit, *max_calls) {
-            Ok(ControlReply::Calls(e)) => to_value(fmt::relay_rest_ok(
-                &json!({
-                    "kind": "calls",
-                    "call_ids": e.call_ids,
-                    "truncated": e.truncated,
-                    "relay": label,
-                    "obtained_at": now.to_rfc3339(),
-                    "origin": "asked",
-                })
-                .to_string(),
-            )),
-            Ok(ControlReply::Refused { reason }) => to_value(fmt::relay_rest_outcome(
-                O::Refused,
-                &format!("{label}: {reason}"),
-            )),
-            Ok(_) => to_value(fmt::relay_rest_outcome(
-                O::Suspect,
-                "the relay answered with something other than a call list",
-            )),
-            Err(e) => fetch_failure(&e),
-        },
+        // The answer `--relay-holdings` prints too.
+        RelayAsk::Holdings { max_calls } => {
+            crate::output::query::relay_holdings::ask(relay.as_ref(), &permit, *max_calls, now)
+                .body()
+        }
         RelayAsk::Holding(call_id) => match relay.query(&permit, call_id) {
             Ok(ControlReply::Call(view)) => to_value(fmt::relay_rest_ok(
                 &json!({

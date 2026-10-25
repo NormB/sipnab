@@ -2207,6 +2207,78 @@ fn report_relay_stats_blocked(blocked: &RelayAskBlocked) {
     }
 }
 
+/// Answer `--relay-holdings` and return the exit code, when it was asked;
+/// `None` otherwise.
+///
+/// Runs after the plan and before the capture opens: the permit is decided
+/// from the planned source (device auto-detection included, as `launch`
+/// does), through the same gate `--relay-stats` passes, and the run ends with
+/// the answer. A refusal is the invocation's to fix, so it exits 2.
+#[must_use]
+pub fn run_relay_holdings(cli: &Cli, planned: Option<&CaptureSource>) -> Option<i32> {
+    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+
+    if !cli.gate_args.relay_holdings {
+        return None;
+    }
+    let detected;
+    let source = match planned {
+        Some(source) => source,
+        None => {
+            detected = auto_detect_source();
+            &detected
+        }
+    };
+    let permit = TransmitPermit::for_source(source);
+    let action = relay_stats_action(
+        true,
+        cli.rtp_args.rtpengine_control.as_deref(),
+        permit.is_some(),
+    );
+    match relay_ask(action, permit) {
+        Ok(ask) => {
+            let client = ControlClient::new(ask.socket, DEFAULT_CONTROL_TIMEOUT);
+            Some(crate::app::queries::relay_holdings(
+                cli,
+                &client,
+                &ask.permit,
+            ))
+        }
+        Err(blocked) => {
+            report_relay_holdings_blocked(&blocked);
+            Some(2)
+        }
+    }
+}
+
+/// Report why `--relay-holdings` asked nothing, on stderr so the reason for
+/// exit 2 survives `SIPNAB_LOG=off`.
+fn report_relay_holdings_blocked(blocked: &RelayAskBlocked) {
+    match blocked {
+        // Clap requires `--rtpengine-control` beside the flag, so neither is
+        // reached from a command line; both mean there is no relay to ask.
+        RelayAskBlocked::Silent | RelayAskBlocked::NotConfigured => {
+            stderr_line!(
+                "--relay-holdings needs a relay to ask. Name one with \
+                 --rtpengine-control <addr>, for example \
+                 --rtpengine-control 127.0.0.1:22222."
+            );
+        }
+        RelayAskBlocked::NotPermitted => {
+            stderr_line!(
+                "--relay-holdings will not ask a relay on a run that reads a file: \
+                 asking transmits. Ask from a live source (-d <device> or -L <addr>)."
+            );
+        }
+        RelayAskBlocked::BadAddress { addr, error: e } => {
+            stderr_line!(
+                "--rtpengine-control {addr} is not an address and port ({e}); \
+                 nothing was asked."
+            );
+        }
+    }
+}
+
 /// Report why `--relay-compare` asked nothing.
 fn report_relay_compare_blocked(blocked: &RelayAskBlocked) {
     match blocked {

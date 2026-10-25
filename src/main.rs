@@ -109,6 +109,12 @@ fn main() {
     // archive password.
     bootstrap::end_archive_prompts();
 
+    // 7b. --relay-holdings: ask the relay what it holds and exit, before any
+    //     capture opens. The permit is decided from the planned source.
+    if let Some(code) = bootstrap::run_relay_holdings(&cli, plan.source.as_ref()) {
+        sipnab::capture::archive::release_run_and_exit(code);
+    }
+
     // 8. Multi-core offline reconstruction bypasses the capture thread.
     //
     //    It still needs the file set, and the set is already on the plan:

@@ -1175,6 +1175,8 @@ out the end-of-run summary on stderr.
 | `--compare-dimensions` | `<DIMENSIONS>` | `state,response_code` | Unreleased | The dimensions `--compare-captures` diffs, comma-separated, from the `--count-by` set. Any other exits 2. Needs `--compare-captures` |
 | `--find-in-files` | `<PATH>...` | | Unreleased | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
 | `--expect` | `<FILE>` | | Unreleased | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `1` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns |
+| `--relay-holdings` | -- | | Unreleased | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native` |
+| `--relay-holdings-max` | `<CALLS>` | `32` | Unreleased | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Needs `--relay-holdings`; `0` exits 2 |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
@@ -1903,6 +1905,80 @@ sipnab -I tests/pcap-samples/sip-problem-call.pcap --expect tests/fixtures/expec
 
 ```json
 {"verdict":"fail","exit_code":1,"failed":["answer-seizure ratio","no busy answers"]}
+```
+
+### Ask the relay which calls it holds
+
+During an incident, ask the media relay which calls it is carrying right now,
+without starting a capture. sipnab sends the relay named by
+`--rtpengine-control` one `list` request, prints the Call-IDs it answers with,
+and exits:
+
+```sh
+sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-holdings
+```
+
+```text
+Holdings of relay (rtpengine at 127.0.0.1:22222), asked 2026-10-25T08:10:20.740734142+00:00
+3 calls held.
+Call-ID
+--------------------------------
+a84b4c76e66710@192.0.2.10
+3848276298220188511@198.51.100.7
+1-4242@192.0.2.10
+```
+
+Asking transmits, so sipnab asks only from a live source: an interface
+(`-d`) or a HEP listener (`-L`). On a run that reads a file it asks nothing,
+says why, and exits `2`. sipnab answers before it opens the capture, so the
+run reads no packet and answers no other query flag.
+
+The relay returns at most 32 Call-IDs unless you ask for a different number.
+When it returns as many as you asked for, it may hold more, and the answer
+says so:
+
+```sh
+sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-holdings --relay-holdings-max 2
+```
+
+```text
+Holdings of relay (rtpengine at 127.0.0.1:22222), asked 2026-10-25T08:12:28.613317624+00:00
+2 calls returned, as many as asked for, so the relay may hold more.
+Call-ID
+--------------------------------
+a84b4c76e66710@192.0.2.10
+3848276298220188511@198.51.100.7
+```
+
+On a busy relay, raise the limit. A HEP listener is a live source too, so a
+host that only receives HEP can ask:
+
+```sh
+sipnab -L 0.0.0.0:9060 --rtpengine-control 127.0.0.1:22222 --relay-holdings --relay-holdings-max 500
+```
+
+rtpengine answers over UDP, and a large list may not fit in one datagram.
+
+Under `--json`, the answer is the body `GET /v1/relay/holdings` returns:
+
+```sh
+sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-holdings --json
+```
+
+```json
+{"call_ids":["a84b4c76e66710@192.0.2.10","3848276298220188511@198.51.100.7","1-4242@192.0.2.10"],"kind":"calls","obtained_at":"2026-10-25T08:10:20.788134229+00:00","origin":"asked","outcome":"ok","relay":"relay (rtpengine at 127.0.0.1:22222)","truncated":false}
+```
+
+A relay that sends no answer is not a relay that holds no calls. sipnab
+prints the reason on stderr and exits `1`. Under `--json` the answer names the
+classification instead of a list:
+
+```text
+--relay-holdings: unreachable: relay (rtpengine at 127.0.0.1:22222) did not answer (no reply from 127.0.0.1:22222 within 2s); asked, nothing came back
+```
+
+```json
+{"detail":"relay (rtpengine at 127.0.0.1:22222) did not answer (no reply from 127.0.0.1:22222 within 2s); asked, nothing came back","outcome":"unreachable","responsibility":"relay_or_network"}
 ```
 
 ## Dialog

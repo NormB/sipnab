@@ -2977,6 +2977,36 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
+### `--relay-holdings needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
+
+`--relay-holdings` asks a media relay which calls it holds, but the run has no relay address to ask. The command line refuses `--relay-holdings` without `--rtpengine-control` before this point, so this message is a fallback. sipnab asked nothing.
+
+**What to do:** Add `--rtpengine-control <ip:port>`, for example `--rtpengine-control 127.0.0.1:22222`.
+
+**Exit code:** 2.
+
+### `--relay-holdings will not ask a relay on a run that reads a file: asking transmits. Ask from a live source (-d <device> or -L <addr>).`
+
+Asking the relay sends a packet. sipnab transmits only on a run that watches a live source: a network interface or a HEP listener. This run reads a capture file, so `--relay-holdings` asked nothing and printed no answer.
+
+**What to do:** Ask from a live source, for example `-d <device>` or `-L <addr>`.
+
+**Exit code:** 2.
+
+### `--relay-holdings: {}`
+
+`--relay-holdings` asked the relay which calls it holds, and no call list came back. `{}` names the classification and what happened:
+
+- `unreachable`: no reply arrived within the timeout. Over UDP, a relay that is down, a filtered port and a lost reply look the same.
+- `refused`: the relay answered and declined, in its own words.
+- `suspect`: a reply arrived that sipnab cannot trust, such as one for another request, or one that is not a call list.
+
+This is not a relay that holds no calls. That answer prints `The relay holds no calls.` and exits 0.
+
+**What to do:** For `unreachable`, check that `--rtpengine-control` names the relay's ng control port and that the relay is running. For `refused`, read the relay's reason. For `suspect`, ask again. If it repeats, look at the relay, or at something else answering on its port.
+
+**Exit code:** 1.
+
 ### `--relay-stats-interval needs a relay to poll. Name one with --rtpengine-control <addr>.`
 
 `--relay-stats-interval` asks sipnab to poll a media relay's statistics every N seconds, but the command names no relay, so sipnab polls nothing. The rest of the run continues.
@@ -3057,11 +3087,11 @@ The value of `--rtpengine-control` must be a literal IP address and port, such a
 
 ### `--rtpengine-control {addr} is not an address and port ({e}); nothing was asked.`
 
-The `--rtpengine-control` value `{addr}` is not an IP address and port, so the relay statistics request (`--relay-stats`, `--relay-stats-call` or `--relay-stats-list`) asked nothing. `{e}` is the parse error.
+The `--rtpengine-control` value `{addr}` is not an IP address and port, so the relay statistics request (`--relay-stats`, `--relay-stats-call` or `--relay-stats-list`) or `--relay-holdings` asked nothing. `{e}` is the parse error.
 
 **What to do:** Give the address as numeric `IP:port`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** None for the statistics request: sipnab logs the error, and the run continues. 2 for `--relay-holdings`, which exits without answering.
 
 ### `{}: {} stepped backwards {} -> {} between polls; a cumulative counter cannot decrease, so the relay probably restarted (suspect). The counters below are since an unknown start.`
 

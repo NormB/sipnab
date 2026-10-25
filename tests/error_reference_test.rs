@@ -829,7 +829,12 @@ const EXPECTED_UNRESOLVED: usize = 87;
 // cannot list) and the refusal of a sweep with no filter. Nothing removed.
 // 516 -> 518: src/app/queries/b4.rs, `--expect: {why}` (a suppression file it
 // cannot read) and `--expect {}: {e}` (a rule refused at evaluation).
-const EXPECTED_TEMPLATES: usize = 518;
+// 518 -> 521: src/app/bootstrap.rs, `--relay-holdings needs a relay to ask`
+// and `--relay-holdings will not ask a relay on a run that reads a file`;
+// src/app/queries/b4.rs, `--relay-holdings: {}` (no call list came back).
+// Its bad-address refusal reuses the `--relay-stats` template. Nothing
+// removed.
+const EXPECTED_TEMPLATES: usize = 521;
 
 // ---------------------------------------------------------------------------
 // The page gates

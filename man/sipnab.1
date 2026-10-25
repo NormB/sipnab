@@ -1297,6 +1297,12 @@ Find which of several capture files hold the dialogs the run's filter selects: \
 .TP
 \fB\-\-expect\fR \fIFILE\fR
 Judge the capture against the expectations in a suite file (\fBsipnab.expect.toml\fR), print each rule's verdict, and exit with the suite's: 0 when every rule that ran passed, 1 when one failed, 2 when no rule ran.
+.TP
+\fB\-\-relay\-holdings\fR
+Ask the relay named by \fB\-\-rtpengine\-control\fR which calls it is holding right now, print their Call\-IDs, and exit.
+.TP
+\fB\-\-relay\-holdings\-max\fR \fICALLS\fR
+The most Call\-IDs \fB\-\-relay\-holdings\fR asks the relay for (default 32). When the relay returns that many it may hold more, and the answer says so (\fBtruncated\fR under \fB\-\-json\fR).
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR

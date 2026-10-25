@@ -217,6 +217,15 @@ failure and the lint gate, and the `--cores` path in the same order. The suite
 is read and checked by clap's value parser, which evaluates it against an empty
 capture, so a defect in it stops the run before the capture is read.
 
+`--relay-holdings` reads no capture, so it is answered neither by the report
+chain nor by `startup`: `main` calls `bootstrap::run_relay_holdings` once the
+plan has resolved the source, before `--cores` or `launch`. The permit comes
+from that source (device auto-detection included) through `relay_ask`, the
+gate `--relay-stats` passes, and the answer is
+`output::query::relay_holdings::ask`, which `GET /v1/relay/holdings` returns
+too. Its refusals exit 2; a relay that gave no call list exits 1, and under
+`--json` prints the classification REST returns.
+
 Beyond those files, each flag edits only lines that belong to it:
 
 - its own `gap:` cell in [`docs/design/surface-capability-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/surface-capability-matrix.md), flipped to

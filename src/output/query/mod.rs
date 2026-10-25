@@ -27,6 +27,8 @@ pub mod endpoint;
 pub mod expectations;
 pub mod find_files;
 pub mod rates;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod relay_holdings;
 pub mod talkers;
 pub mod timeline;
 pub mod tree;

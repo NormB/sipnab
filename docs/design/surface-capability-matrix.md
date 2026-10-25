@@ -362,7 +362,7 @@ What Call-IDs is the live relay holding right now?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a one-shot holdings query is CLI-shaped for incident response, but the relay-stats family transmits only for stats, not holdings (PAR5) |
+| CLI | `--relay-holdings` |
 | TUI | `RelayStats` |
 | REST | `/v1/relay/holdings` and `/v1/relay/holdings/{call_id}` |
 | MCP | `query_relay` |

@@ -57,7 +57,6 @@ const GAP_LEDGER: &[(&str, &str)] = &[
     // CLI query batch B2: single-call queries.
     // CLI query batch B3: file jobs.
     // CLI query batch B4: gates and the relay.
-    ("Relay holdings", "CLI"),
     // TUI (PAR4).
     ("Whole-capture report", "TUI"),
     // REST: the vCon directory report arrived on the CLI (`--report`) and

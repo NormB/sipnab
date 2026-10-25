@@ -63,3 +63,47 @@ fn render_expect(ctx: &QueryContext<'_>) -> bool {
         expectations::render(&answer.report, format)
     })
 }
+
+/// `--relay-holdings`: what the relay holds, the answer
+/// `GET /v1/relay/holdings` returns, asked for `--relay-holdings-max` calls
+/// or the shared default.
+///
+/// # Returns
+///
+/// The exit code: 0 when the relay answered with its call list and the
+/// answer was written; 1 when it did not answer, declined or answered with
+/// something that cannot be trusted, or stdout refused the answer.
+pub(super) fn relay_holdings(
+    cli: &crate::cli::Cli,
+    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    permit: &crate::security::transmit_guard::TransmitPermit,
+) -> i32 {
+    use crate::output::query::relay_holdings::{Holdings, ask};
+
+    let max_calls = cli
+        .gate_args
+        .relay_holdings_max
+        .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+    let answer = ask(relay, permit, max_calls, chrono::Utc::now());
+    let json = !matches!(super::answer_form(cli), super::AnswerForm::Table(_));
+    if let Holdings::NotAnswered { .. } = &answer
+        && !json
+    {
+        stderr_line!(
+            "--relay-holdings: {}",
+            answer.render(crate::output::ReportFormat::Text).trim_end()
+        );
+        return FAILED;
+    }
+    let written = super::write_answer(cli, "--relay-holdings", &answer.body(), |format| {
+        answer.render(format)
+    });
+    if written && answer.answered() {
+        0
+    } else {
+        FAILED
+    }
+}
+
+/// The exit status of a relay ask that brought back no call list.
+const FAILED: i32 = 1;

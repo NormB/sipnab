@@ -277,6 +277,17 @@ pub fn startup(cli: &Cli) -> Option<i32> {
     b3::startup(cli)
 }
 
+/// Answer `--relay-holdings` from `relay` and return the exit code: 0 with
+/// the call list, 1 when the relay gave none or stdout refused the answer.
+#[must_use]
+pub fn relay_holdings(
+    cli: &Cli,
+    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    permit: &crate::security::transmit_guard::TransmitPermit,
+) -> i32 {
+    b4::relay_holdings(cli, relay, permit)
+}
+
 /// A file job a unit test declares to prove `run_startup_commands` reaches
 /// [`startup`] and exits with its code.
 #[cfg(test)]
