@@ -1087,3 +1087,30 @@ fn relay_holdings_without_a_usable_relay_address_is_a_usage_error() -> Result<()
     );
     Ok(())
 }
+
+/// A reply that arrives and cannot be read is `suspect`, the answer's own
+/// problem, and never `unreachable`, whose detail says nothing came back.
+#[test]
+fn relay_holdings_an_unreadable_reply_is_suspect_not_unreachable() -> Result<(), TestError> {
+    let relay = FakeRelay::start(|_, _| Answer::Body(b"this is not bencode".to_vec()))?;
+    let addr = relay.addr.to_string();
+    let done = run_to_exit(&[
+        "-L",
+        "127.0.0.1:0",
+        "--rtpengine-control",
+        &addr,
+        "--relay-holdings",
+        "--json",
+    ])?;
+    assert_eq!(done.code, Some(1), "{}", done.dump());
+    let v = last_json(&done)?;
+    assert_eq!(v["outcome"], "suspect", "{v}");
+    assert_eq!(v["responsibility"], "answer", "{v}");
+    assert!(
+        !v["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("nothing came back")),
+        "a reply came back: {v}"
+    );
+    Ok(())
+}

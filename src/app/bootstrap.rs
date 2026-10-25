@@ -2403,8 +2403,9 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
 fn relay_stats_fetch_failure(addr: &str, e: &anyhow::Error) -> String {
     match crate::relay::types::fetch_error_outcome(e) {
         // ST-S4 condition 7: a reply arrived and could not be trusted (a
-        // mismatched cookie). Discarded, not interpreted, and reported as the
-        // answer's own problem -- suspect -- not as no answer at all.
+        // mismatched cookie, or one that could not be decoded). Discarded, not
+        // interpreted, and reported as the answer's own problem -- suspect --
+        // not as no answer at all.
         crate::stats_vocab::StatisticsOutcome::Suspect => {
             format!("relay at {addr}: {e}; the reply was discarded and not read (suspect).")
         }

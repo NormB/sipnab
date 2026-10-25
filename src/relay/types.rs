@@ -91,10 +91,11 @@ pub enum ControlReply {
 /// The reason is supplied by whatever read the reply, so this type stays
 /// vendor-neutral the way the rest of this module is: the control decoder that
 /// finds a reply answering a different transaction passes its own words in, and
-/// this carries them to the surface unchanged. Today the one cause is a reply
-/// whose cookie does not match the request; such a reply is discarded and never
-/// interpreted, and this marks the fetch so a surface classifies it suspect
-/// rather than as no answer at all.
+/// this carries them to the surface unchanged. Two causes today: a reply whose
+/// cookie does not match the request, which is discarded and never
+/// interpreted, and a reply that arrived and could not be read (no framing, not
+/// bencode, or missing what its answer needs). Either marks the fetch so a
+/// surface classifies it suspect rather than as no answer at all.
 #[derive(Debug, thiserror::Error)]
 #[error("a relay reply could not be trusted: {reason}")]
 pub struct UntrustedReply {

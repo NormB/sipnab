@@ -23616,9 +23616,9 @@ The relay at `{addr}` answered the `--relay-compare` request for call `{call_id}
 
 ### `relay at {addr}: {e}; the reply was discarded and not read (suspect).`
 
-The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not trust (for example a mismatched cookie). So sipnab discarded the reply. The run continues.
+The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not trust: one whose cookie answers a different request, or one sipnab cannot decode. So sipnab discarded the reply. The run continues.
 
-**What to do:** Check that only one client talks to the relay's control port with this address, then retry.
+**What to do:** Check that `--rtpengine-control` names the relay's ng control port and that only one client talks to it with this address, then retry.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
@@ -23660,7 +23660,7 @@ Asking the relay sends a packet. sipnab transmits only on a run that watches a l
 
 - `unreachable`: no reply arrived within the timeout. Over UDP, a relay that is down, a filtered port and a lost reply look the same.
 - `refused`: the relay answered and declined, in its own words.
-- `suspect`: a reply arrived that sipnab cannot trust, such as one for another request, or one that is not a call list.
+- `suspect`: a reply arrived that sipnab cannot trust: one for another request, one sipnab cannot decode, or one that is not a call list.
 
 This is not a relay that holds no calls. That answer prints `The relay holds no calls.` and exits 0.
 
