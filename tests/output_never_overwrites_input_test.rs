@@ -22,12 +22,46 @@ use std::path::{Path, PathBuf};
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
 
+/// One test's temp directory, used as the path it names, and removed when the
+/// test is done with it.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl std::ops::Deref for Scratch {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
 /// A fresh temp directory for one test.
-fn tmp_dir(name: &str) -> Result<PathBuf, TestError> {
+fn tmp_dir(name: &str) -> Result<Scratch, TestError> {
     let d = std::env::temp_dir().join(format!("sipnab-clobber-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d)?;
-    Ok(d)
+    Ok(Scratch(d))
+}
+
+/// A test's temp directory is gone once the test is done with it. Each test
+/// made `/tmp/sipnab-clobber-<name>-<pid>` and none removed it: 2219 had built
+/// up on one host by 2026-10-25.
+#[test]
+fn a_scratch_directory_is_removed_when_it_drops() -> Result<(), TestError> {
+    let dir = tmp_dir("drop-probe")?;
+    let path = dir.to_path_buf();
+    std::fs::write(path.join("f"), b"x")?;
+    drop(dir);
+    assert!(
+        !path.exists(),
+        "{path:?} is still on disk after its test dropped it"
+    );
+    Ok(())
 }
 
 /// Copy a checked-in sample capture into `dir` under `name` and return its path.
