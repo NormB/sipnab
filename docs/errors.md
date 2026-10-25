@@ -356,6 +356,22 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (`-L`) in one ru
 
 **Exit code:** 2 for the same file or a dimension, 1 for a file that yields nothing.
 
+### `--find-in-files needs something to find: give --filter, or a diagnostic alias such as --problems, to say which dialogs to look for`
+
+`--find-in-files` reports the files that hold the dialogs a filter selects, and the command line gave no filter: no `--filter`, no diagnostic alias, and no `--since` or `--until`.
+
+**What to do:** Say what to look for, for example `--filter 'call_id == "abc@example.com"'` to find one call, or `--problems` to find the files with failed calls.
+
+**Exit code:** 2.
+
+### `--find-in-files: {why}`
+
+`--find-in-files` could not list a directory named on the command line. `{why}` names the directory and the operating system's reason.
+
+**What to do:** Check that the path exists and that this user may read it.
+
+**Exit code:** 1.
+
 ### `--export-audio: {why}`
 
 `--export-audio <CALL-ID>` could not write the call's audio. `{why}` says which of these happened:

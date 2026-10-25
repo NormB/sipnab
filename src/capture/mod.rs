@@ -91,6 +91,11 @@ pub mod reassembly;
 pub mod compare;
 #[cfg(feature = "native")]
 pub mod reconfigure;
+// Sweeps capture FILES for the dialogs a filter selects -- shared by the MCP
+// `find_in_captures` job and `--find-in-files`. Native for the same reason as
+// `replay`, which it reads through.
+#[cfg(feature = "native")]
+pub mod sweep;
 // Reads a capture FILE into a fresh pair of stores, off the live path — shared
 // by MCP `open_capture`/`compare_captures` and the REST capture-compare route.
 // Native because it opens a pcap; `api` and `mcp` both imply `native`.

@@ -721,7 +721,9 @@ fn lists() -> Result<Lists, TestError> {
 // e.to_string(), }` 12 -> 13, the `[hep]` validate() call in apply_config.
 // 84 -> 85: src/app/queries/b3.rs `stderr_line!("{}", e.message)`, the
 // load_config refusal `--compare-captures` reports before it reads a file.
-const EXPECTED_UNRESOLVED: usize = 85;
+// 85 -> 87: the same b3.rs site 1 -> 3, `--find-in-files` reporting its
+// load_config and build_filter_expr refusals the same way.
+const EXPECTED_UNRESOLVED: usize = 87;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -823,7 +825,9 @@ const EXPECTED_UNRESOLVED: usize = 85;
 // (not compiled in)`. Nothing removed.
 // 513 -> 514: src/app/queries/b3.rs, `--compare-captures: {e}`, the engine's
 // refusal of the same file twice, a dimension, or a file that yields nothing.
-const EXPECTED_TEMPLATES: usize = 514;
+// 514 -> 516: src/app/queries/b3.rs, `--find-in-files: {why}` (a directory it
+// cannot list) and the refusal of a sweep with no filter. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 516;
 
 // ---------------------------------------------------------------------------
 // The page gates

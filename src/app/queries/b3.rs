@@ -14,7 +14,76 @@ use crate::cli::Cli;
 ///
 /// The process exit code when a job ran; `None` when none was asked for.
 pub(super) fn startup(cli: &Cli) -> Option<i32> {
-    vcon_validate(cli).or_else(|| compare_captures(cli))
+    vcon_validate(cli)
+        .or_else(|| compare_captures(cli))
+        .or_else(|| find_in_files(cli))
+}
+
+/// `--find-in-files`: which of the files hold dialogs the run's filter
+/// selects, the sweep the MCP `find_in_captures` tool runs. The filter is
+/// the one a run of the same command line compiles, aliases and time window
+/// included, so the job reads the config; each file's scratch stores hold
+/// what an MCP server started by it would hold (`--mcp-max-rows`).
+fn find_in_files(cli: &Cli) -> Option<i32> {
+    use crate::capture::sweep::{StoppedBecause, SweepControl, SweepInput, sweep_files};
+    use crate::output::query::find_files::{candidates, render};
+
+    let paths = &cli.file_job_args.find_in_files;
+    if paths.is_empty() {
+        return None;
+    }
+    let loaded = match crate::app::bootstrap::load_config(cli) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            stderr_line!("{}", e.message);
+            return Some(e.exit_code);
+        }
+    };
+    let filter = match crate::app::bootstrap::build_filter_expr(cli, &loaded.config) {
+        Ok(Some(filter)) => filter,
+        Ok(None) => {
+            stderr_line!(
+                "--find-in-files needs something to find: give --filter, or a diagnostic \
+                 alias such as --problems, to say which dialogs to look for"
+            );
+            return Some(USAGE);
+        }
+        Err(e) => {
+            stderr_line!("{}", e.message);
+            return Some(e.exit_code);
+        }
+    };
+    let files = match candidates(paths) {
+        Ok(files) => files,
+        Err(why) => {
+            stderr_line!("--find-in-files: {why}");
+            return Some(FAILED);
+        }
+    };
+    // The command line's only stop is the process's: a SIGTERM or Ctrl-C ends
+    // the sweep inside the file it is reading, and the answer says so.
+    let stop = || crate::signals::shutdown_requested().then_some(StoppedBecause::Shutdown);
+    let answer = sweep_files(
+        &SweepInput {
+            candidates: &files,
+            filter: &filter,
+            row_cap: cli.mcp_row_cap(&loaded.config),
+            options: &crate::app::server_pipeline_options(cli, &loaded.config),
+            max_files: files.len(),
+        },
+        &SweepControl {
+            between_files: &stop,
+            inside_file: &stop,
+            examined: &|_| {},
+        },
+    );
+    let written = super::write_answer(cli, "--find-in-files", &answer, |format| {
+        render(&answer, format)
+    });
+    Some(match (written, answer.complete) {
+        (true, true) => SUCCESS,
+        _ => FAILED,
+    })
 }
 
 /// The exit code of a usage error: the same file named twice.

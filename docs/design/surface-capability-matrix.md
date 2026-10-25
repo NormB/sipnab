@@ -463,7 +463,7 @@ Which of these rotated files holds Call-ID X, without disturbing what is loaded?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a bounded sweep of several files reporting which match is a textbook one-shot CLI job, but no dedicated flag exists (PAR5) |
+| CLI | `--find-in-files` |
 | TUI | decision: a cross-file content sweep is a batch affordance, and a human opens one file and searches within it |
 | REST | decision: the do-not-touch-the-loaded-capture guarantee is an agent-cursor concern, and REST has no file-root surface |
 | MCP | `find_in_captures`, polled with `find_in_captures_status` and stopped with `cancel_find_in_captures` |

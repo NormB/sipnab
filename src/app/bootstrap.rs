@@ -5236,7 +5236,10 @@ const CALLS_ONLY_EXPR: &str = "method == 'INVITE'";
 /// # Errors
 ///
 /// As [`build_selection_expr`].
-fn build_filter_expr(cli: &Cli, config: &Config) -> Result<Option<FilterExpr>, PlanError> {
+pub(crate) fn build_filter_expr(
+    cli: &Cli,
+    config: &Config,
+) -> Result<Option<FilterExpr>, PlanError> {
     // The `--since`/`--until` window joins the one compiled filter, so every
     // output that honors `--filter` honors the window.
     Ok(FilterExpr::with_time_window(

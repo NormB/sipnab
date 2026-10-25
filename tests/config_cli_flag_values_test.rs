@@ -723,6 +723,17 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--find-in-files`: a path, read when the job runs. With no filter the
+    // job refuses when it runs, which tests/cli_find_in_files_test.rs holds;
+    // parsing accepts it.
+    (
+        "find-in-files",
+        Kind::Text {
+            accept: &["spool"],
+            reject: &[],
+        },
+        &[],
+    ),
     // `--correlate`: any Call-ID parses; one the run did not track exits 1
     // after the run, as `--call-report`'s does.
     (

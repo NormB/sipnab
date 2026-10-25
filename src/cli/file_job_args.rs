@@ -64,6 +64,23 @@ pub struct FileJobArgs {
         value_parser = parse_compare_dimension,
     )]
     pub compare_dimensions: Vec<String>,
+
+    /// Find which of several capture files hold the dialogs the run's filter
+    /// selects: `--filter`, a diagnostic alias such as `--problems`, and
+    /// `--since`/`--until`.
+    ///
+    /// Each path is a file, or a directory standing for the capture and vCon
+    /// files directly in it, chosen by name and sorted, as an MCP file root
+    /// lists them (symbolic links skipped). Reads each file in turn and
+    /// exits; needs no `-I`. Prints each file that held a match with the
+    /// count and the first matching Call-ID, every file it could not read,
+    /// and whether every file was read: it exits 0 when it read them all and
+    /// 1 when it did not, because a "not found" over a file nobody read is
+    /// not an answer. With no filter to apply it exits 2. With `--json`, one
+    /// JSON object on the last line of stdout, the `sweep` the MCP
+    /// `find_in_captures` tool reports.
+    #[arg(help_heading = "Queries", long, value_name = "PATH", num_args = 1..)]
+    pub find_in_files: Vec<std::path::PathBuf>,
 }
 
 /// Parse one `--compare-dimensions` value by the rule REST applies to
@@ -91,6 +108,12 @@ impl FileJobArgs {
             OneShot {
                 name: "--compare-captures",
                 active: self.compare_captures.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+            OneShot {
+                name: "--find-in-files",
+                active: !self.find_in_files.is_empty(),
                 implies_no_tui: true,
                 owns_stdout: true,
             },

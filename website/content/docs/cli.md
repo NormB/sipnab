@@ -1173,6 +1173,7 @@ out the end-of-run summary on stderr.
 | `--vcon-validate` | `<FILE>` | | Unreleased | Check a vCon container file against sipnab's vendored schema and print the verdict and every finding. Exits 0 when valid and 3 when invalid, and 1 when sipnab cannot read or check the file. Needs no `-I`. `--json` prints the shape of `POST /v1/vcon/validate`. Needs the `vcon` feature |
 | `--compare-captures` | `<A> <B>` | | Unreleased | Compare two capture files: for each dimension, the dialogs per value in A (the baseline) and B, and the change, largest movement first. Needs no `-I`. `--json` prints the shape of `GET /v1/captures/compare`. The same file twice exits 2; a file that yields no dialogs exits 1 |
 | `--compare-dimensions` | `<DIMENSIONS>` | `state,response_code` | Unreleased | The dimensions `--compare-captures` diffs, comma-separated, from the `--count-by` set. Any other exits 2. Needs `--compare-captures` |
+| `--find-in-files` | `<PATH>...` | | Unreleased | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
@@ -1802,6 +1803,61 @@ sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-sa
 The REST route reads its two files from `--api-file-root`, and its summary adds
 that neither file is the capture the server holds. The MCP tool
 `compare_captures` runs the same comparison.
+
+### Find the files that hold a call
+
+Find which of several captures hold failed calls:
+
+```sh
+sipnab --find-in-files tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap tests/pcap-samples/sip-auth-failure.pcapng --problems
+```
+
+```text
+Found in 3 of 3 files; every file was read.
+File                     Dialogs  First Call-ID
+----------------------------------------------------------------------
+sip-problem-call.pcap    4        busy-3a2b1c@192.0.2.30
+sip-rtp-g711.pcap        2        1-1966@10.0.2.20
+sip-auth-failure.pcapng  1        auth-fail-register-synth@203.0.113.1
+```
+
+- The filter is the one a run with the same flags applies: `--filter`, a
+  diagnostic alias such as `--problems`, and `--since`/`--until`.
+- Each row is a file with a match, how many of its dialogs matched, and the
+  first matching Call-ID.
+- sipnab reads the files and exits. It needs no capture, so give no `-I`.
+
+Name a directory to search the capture files directly in it. Here the search is
+for one Call-ID:
+
+```sh
+sipnab --find-in-files tests/pcap-samples --filter 'call_id == "busy-3a2b1c@192.0.2.30"'
+```
+
+```text
+Found in 1 of 36 files; not complete: 34 of 36 read, so a file not read may hold a match.
+File                   Dialogs  First Call-ID
+------------------------------------------------------
+sip-problem-call.pcap  1        busy-3a2b1c@192.0.2.30
+Not read: c07-sip-r2.cap: Failed to open pcap file 'tests/pcap-samples/c07-sip-r2.cap': libpcap error: unknown file format
+Not read: rtsp-packets.cap: Failed to open pcap file 'tests/pcap-samples/rtsp-packets.cap': libpcap error: unknown file format
+```
+
+The two `.cap` files are in a format sipnab does not read, so the answer says
+it could not read every file, and the run exits 1. When a search is not
+complete, a call it did not find may still be in a file it did not read.
+
+Under `--json`, `complete` says whether sipnab read every file:
+
+```sh
+sipnab --find-in-files tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap --filter 'state == Failed' --json | jq -c '{complete, files: [.matches[] | {filename, dialogs_matched}]}'
+```
+
+```json
+{"complete":true,"files":[{"filename":"sip-problem-call.pcap","dialogs_matched":4}]}
+```
+
+The MCP tool `find_in_captures` runs the same search over its file root.
 
 ## Dialog
 

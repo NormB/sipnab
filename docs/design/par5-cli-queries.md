@@ -199,6 +199,14 @@ shared with REST. The engine's summary has two forms: a server's adds that
 neither file is the capture it holds (`NOT_THE_HELD_CAPTURE`), and the command
 line's, which holds no capture, does not.
 
+`--find-in-files` runs the sweep the MCP `find_in_captures` tool runs on a job
+thread, `capture::sweep::sweep_files`, moved out of `mcp::sweep` so a build
+without MCP has it; the tool's job keeps its cancel, deadline and file limit,
+and the CLI stops only on the process's own stop. The filter is the run's
+compiled filter (`bootstrap::build_filter_expr`), and each file's scratch
+stores hold what an MCP server started by the same command line would hold
+(`Cli::mcp_row_cap`).
+
 Beyond those files, each flag edits only lines that belong to it:
 
 - its own `gap:` cell in [`docs/design/surface-capability-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/surface-capability-matrix.md), flipped to

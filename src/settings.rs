@@ -243,6 +243,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("export-vcon-when", Link::Pending),
     ("fail2ban", Link::PerRun),
     ("filter", Link::Key("filter", "expression", Merge::Override)),
+    ("find-in-files", Link::Action),
     (
         "findings-history",
         Link::Key("security", "findings_history", Merge::Override),

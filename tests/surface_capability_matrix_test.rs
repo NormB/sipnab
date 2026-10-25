@@ -56,7 +56,6 @@ const GAP_LEDGER: &[(&str, &str)] = &[
     // CLI query batch B1: aggregates.
     // CLI query batch B2: single-call queries.
     // CLI query batch B3: file jobs.
-    ("Find a Call-ID across files", "CLI"),
     // CLI query batch B4: gates and the relay.
     ("Evaluate expectations", "CLI"),
     ("Relay holdings", "CLI"),
