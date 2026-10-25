@@ -123,6 +123,17 @@ Omit `call_id` to enumerate. `truncated` reports that the relay held more than
 it returned, because "the relay holds these 32 calls" and "the relay returned
 the first 32 of an unknown number" are different statements.
 
+When the relay gives no usable answer, the tool reports one of three classes,
+the same ones `--relay-holdings` and `GET /v1/relay/holdings` report:
+
+| class | what happened | what the tool returns |
+|---|---|---|
+| unreachable | asked, nothing came back (a timeout or a socket error) | an `internal_error` (-32603) whose message reads `relay (rtpengine at ADDR) did not answer (ERROR); asked, nothing came back.`, followed by what is not known |
+| refused | the relay answered and declined | a success with `outcome: "refused"` and the relay's own words in `refusal` |
+| suspect | a reply arrived that sipnab could not trust: a reply to another request, no cookie framing, not bencode, or missing what its answer needs | a success with `outcome: "suspect"` and a `detail` that reads `relay (rtpengine at ADDR): REASON; the reply was discarded and not read` |
+
+`relay_stats` and `relay_compare` report the same three classes the same way.
+
 ```jsonc
 // query_relay { "call_id": "call-2c9d47@192.0.2.10" }
 {
@@ -172,8 +183,10 @@ and a live source.
 
 A relay that answers but declines -- a Call-ID it does not hold -- is a
 **success** carrying `outcome: "refused"` and the relay's own words, not an
-error: the relay answered, it just said no. An unreachable relay is the error,
-because nothing is then known.
+error: the relay answered, it just said no. A reply that arrived but that sipnab
+could not trust is a success carrying `outcome: "suspect"` and a `detail`. An
+unreachable relay is the error, because nothing is then known. These are the
+classes [`query_relay`](#query-relay) reports.
 
 ```jsonc
 // relay_stats { "call_id": "call-2c9d47@192.0.2.10" }

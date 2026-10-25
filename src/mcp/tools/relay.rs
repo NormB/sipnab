@@ -696,7 +696,10 @@ impl SipnabMcp {
     /// which of the three reasons applies: the opt-in is off, no relay address
     /// was configured, or this run reads a file and can obtain no transmit
     /// permit. Three separate messages rather than one, because the operator
-    /// action differs for each.
+    /// action differs for each. `internal_error` (-32603) when the relay was
+    /// asked and nothing came back (`unreachable`). A reply that arrived and
+    /// could not be trusted is a success with `outcome: "suspect"`, and a
+    /// relay that declined is a success with `outcome: "refused"`.
     #[tool(
         name = "query_relay",
         description = "Asks the configured relay what it is \
@@ -749,19 +752,17 @@ impl SipnabMcp {
                     .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT),
             ),
         };
-        let reply = reply.map_err(|e| {
-            rmcp::ErrorData::internal_error(
-                format!(
-                    "the relay at {} did not answer: {e:#}. Nothing is known \
-                     about what it holds; this is not an answer that it holds \
-                     nothing.",
-                    access.addr
-                ),
-                None,
-            )
-        })?;
-
-        let payload = RelayAnswer::from_reply(asked, access.addr, &reply);
+        let payload = match reply {
+            Ok(reply) => RelayAnswer::from_reply(asked, access.addr, &reply),
+            Err(e) => {
+                let detail = suspect_or_unreachable(
+                    &relay_label(client.as_ref()),
+                    &e,
+                    "about what it holds; this is not an answer that it holds nothing",
+                )?;
+                RelayAnswer::suspect(asked, access.addr, detail)
+            }
+        };
         Ok(CallToolResult::success(vec![
             ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
                 rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
@@ -828,18 +829,25 @@ impl SipnabMcp {
             Some(cid) => client.call_statistics(&access.permit, cid),
             None => client.statistics(&access.permit),
         };
-        let reply = reply.map_err(|e| {
-            rmcp::ErrorData::internal_error(
-                format!(
-                    "the relay at {} did not answer: {e:#}. Nothing is known \
-                     about its statistics; this is not an answer that it has none.",
-                    access.addr
-                ),
-                None,
-            )
-        })?;
-
-        let payload = RelayStatsAnswer::from_reply(access.addr, &reply, call_id, names_only);
+        let payload = match reply {
+            Ok(reply) => RelayStatsAnswer::from_reply(access.addr, &reply, call_id, names_only),
+            Err(e) => {
+                let label = relay_label(client.as_ref());
+                let label = match call_id {
+                    Some(cid) => format!("{label}, call {cid}"),
+                    None => label,
+                };
+                let detail = suspect_or_unreachable(
+                    &label,
+                    &e,
+                    "about its statistics; this is not an answer that it has none",
+                )?;
+                RelayStatsAnswer {
+                    detail: Some(detail),
+                    ..RelayStatsAnswer::base(access.addr, "suspect")
+                }
+            }
+        };
         Ok(CallToolResult::success(vec![
             ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
                 rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
@@ -919,19 +927,7 @@ impl SipnabMcp {
             }
         };
 
-        let reply = access
-            .relay
-            .call_statistics(&access.permit, call_id)
-            .map_err(|e| {
-                rmcp::ErrorData::internal_error(
-                    format!(
-                        "the relay at {} did not answer for call {call_id}: {e:#}. \
-                     Nothing is known; this is not an answer that it holds nothing.",
-                        access.addr
-                    ),
-                    None,
-                )
-            })?;
+        let reply = access.relay.call_statistics(&access.permit, call_id);
 
         use crate::relay::types::ControlReply;
         use crate::stats_vocab::{
@@ -939,7 +935,18 @@ impl SipnabMcp {
             relay_reported,
         };
         let payload = match reply {
-            ControlReply::Statistics(pairs) => {
+            Err(e) => {
+                let detail = suspect_or_unreachable(
+                    &format!("{}, call {call_id}", relay_label(access.relay.as_ref())),
+                    &e,
+                    "about this call; this is not an answer that it holds nothing",
+                )?;
+                RelayCompareAnswer {
+                    detail: Some(detail),
+                    ..RelayCompareAnswer::suspect(access.addr, call_id)
+                }
+            }
+            Ok(ControlReply::Statistics(pairs)) => {
                 if let Some(reason) = relay_reply_refusal(&pairs) {
                     RelayCompareAnswer::refused(access.addr, call_id, reason)
                 } else {
@@ -965,7 +972,7 @@ impl SipnabMcp {
                     }
                 }
             }
-            _ => RelayCompareAnswer::suspect(access.addr, call_id),
+            Ok(_) => RelayCompareAnswer::suspect(access.addr, call_id),
         };
         Ok(CallToolResult::success(vec![
             ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
@@ -1376,6 +1383,37 @@ pub struct RelayTagView {
     pub streams: Vec<RelayStreamView>,
 }
 
+/// Classify a relay fetch that brought back no trustworthy reply.
+///
+/// The rule `--relay-holdings`, the `/v1/relay/*` routes and the TUI relay
+/// view use, [`fetch_failure`], so every surface draws the same line. A reply
+/// that arrived and could not be trusted is `suspect`: `Ok` with the shared
+/// words, for the tool to return as an answer whose `outcome` is `suspect`.
+/// Anything else is `unreachable`: asked, nothing came back, so nothing is
+/// known and the tool answers `internal_error` (-32603) carrying the shared
+/// words and `unknown`, which says what is not known.
+///
+/// [`fetch_failure`]: crate::output::query::relay_holdings::fetch_failure
+fn suspect_or_unreachable(
+    label: &str,
+    e: &anyhow::Error,
+    unknown: &str,
+) -> Result<String, rmcp::ErrorData> {
+    use crate::stats_vocab::StatisticsOutcome;
+    match crate::output::query::relay_holdings::fetch_failure(label, e) {
+        (StatisticsOutcome::Suspect, detail) => Ok(detail),
+        (_, detail) => Err(rmcp::ErrorData::internal_error(
+            format!("{detail}. Nothing is known {unknown}."),
+            None,
+        )),
+    }
+}
+
+/// How an answer names the relay it asked, as REST's answers do.
+fn relay_label(relay: &dyn crate::relay::reconcile::ReadOnlyRelay) -> String {
+    crate::output::query::relay_holdings::relay_label(relay)
+}
+
 /// What the relay said, and what asking it is worth.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1386,8 +1424,13 @@ pub struct RelayAnswer {
     ///
     /// Echoed from CONFIGURATION, which is the only place it can come from.
     pub relay_address: String,
-    /// `calls`, `call`, or `refused`.
+    /// `calls`, `call`, `statistics`, `refused`, or `suspect` (a reply arrived
+    /// and could not be trusted).
     pub outcome: String,
+    /// What happened, naming the relay, on a `suspect` answer: the words
+    /// `--relay-holdings` and REST use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// The Call-IDs an enumeration returned.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub call_ids: Option<Vec<String>>,
@@ -1437,23 +1480,7 @@ impl RelayAnswer {
         reply: &crate::relay::types::ControlReply,
     ) -> Self {
         use crate::relay::types::ControlReply;
-        let base = |outcome: &str| Self {
-            // Absent unless statistics were what was asked for.
-            statistics: None,
-            asked: asked.to_string(),
-            relay_address: addr.to_string(),
-            outcome: outcome.to_string(),
-            call_ids: None,
-            truncated: None,
-            call_id: None,
-            tags: None,
-            refusal: None,
-            // This tool ASKED. That is the strongest reading on the scale, and
-            // the only one no third party could have produced.
-            delivery_trust: DeliveryTrust::Asked,
-            delivery_note: DeliveryTrust::Asked.explain().to_string(),
-            schema_version: 1,
-        };
+        let base = |outcome: &str| Self::base(asked, addr, outcome);
         match reply {
             ControlReply::Calls(e) => Self {
                 call_ids: Some(e.call_ids.clone()),
@@ -1502,6 +1529,37 @@ impl RelayAnswer {
             },
         }
     }
+
+    /// A reply arrived and could not be trusted; `detail` says why.
+    fn suspect(asked: &str, addr: std::net::SocketAddr, detail: String) -> Self {
+        Self {
+            detail: Some(detail),
+            ..Self::base(asked, addr, "suspect")
+        }
+    }
+
+    /// An answer with the given outcome and every optional field empty, for
+    /// one of the constructors above to fill.
+    fn base(asked: &str, addr: std::net::SocketAddr, outcome: &str) -> Self {
+        Self {
+            // Absent unless statistics were what was asked for.
+            statistics: None,
+            asked: asked.to_string(),
+            relay_address: addr.to_string(),
+            outcome: outcome.to_string(),
+            detail: None,
+            call_ids: None,
+            truncated: None,
+            call_id: None,
+            tags: None,
+            refusal: None,
+            // This tool ASKED. That is the strongest reading on the scale, and
+            // the only one no third party could have produced.
+            delivery_trust: DeliveryTrust::Asked,
+            delivery_note: DeliveryTrust::Asked.explain().to_string(),
+            schema_version: 1,
+        }
+    }
 }
 
 // ── relay_stats / relay_compare (ST6) ────────────────────────────────────────
@@ -1547,8 +1605,13 @@ pub struct RelayStatsAnswer {
     /// blended with what sipnab measured.
     pub tier: String,
     /// `ok`, or `refused` when the relay declined (e.g. a Call-ID it does not
-    /// hold), or `suspect` when the reply was not statistics.
+    /// hold), or `suspect` when the reply was not statistics or could not be
+    /// trusted.
     pub outcome: String,
+    /// What happened, naming the relay, when a reply arrived and could not be
+    /// trusted: the words `--relay-stats` and REST use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// Counted values (C1 global, or C2 per-call). Absent on a names-only or
     /// refused answer.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1585,6 +1648,7 @@ impl RelayStatsAnswer {
                 .as_wire_str()
                 .to_string(),
             outcome: outcome.to_string(),
+            detail: None,
             statistics: None,
             names: None,
             names_source: None,
@@ -1667,8 +1731,12 @@ pub struct RelayCompareAnswer {
     pub call_id: String,
     /// `compared`, `sipnab_has_no_rtp`, `relay_does_not_hold_call`, `neither`,
     /// `refused` (the relay said no), or `suspect` (the reply was not
-    /// statistics).
+    /// statistics, or could not be trusted).
     pub outcome: String,
+    /// What happened, naming the relay, when a reply arrived and could not be
+    /// trusted: the words `--relay-compare` and REST use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// The relay's count (`relay_reported`) and its own key name, when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay_reported: Option<RelayComparedFigure>,
@@ -1712,6 +1780,7 @@ impl RelayCompareAnswer {
             relay_address: addr.to_string(),
             call_id: call_id.to_string(),
             outcome: outcome.to_string(),
+            detail: None,
             relay_reported: None,
             sipnab_measured: None,
             verdict: None,
@@ -3366,13 +3435,18 @@ mod relay_handler_tests {
     /// A relay that records every question and answers from a script.
     ///
     /// `None` for a verb is a relay that did not answer, which is how a timeout
-    /// reaches the handler: as an `Err` from the client.
+    /// reaches the handler: as an `Err` from the client. With `unreadable` set,
+    /// `None` is instead a reply that arrived and could not be read, typed the
+    /// way the control client types one ([`UntrustedReply`]).
+    ///
+    /// [`UntrustedReply`]: crate::relay::types::UntrustedReply
     #[derive(Default)]
     struct RelayDouble {
         list: Option<ControlReply>,
         query: Option<ControlReply>,
         statistics: Option<ControlReply>,
         call_statistics: Option<ControlReply>,
+        unreadable: bool,
         asked: Mutex<Vec<String>>,
     }
 
@@ -3383,9 +3457,15 @@ mod relay_handler_tests {
             reply: &Option<ControlReply>,
         ) -> anyhow::Result<ControlReply> {
             self.asked.lock().push(question);
-            reply
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("no reply within 1000 ms"))
+            reply.clone().ok_or_else(|| {
+                if self.unreadable {
+                    anyhow::Error::new(crate::relay::types::UntrustedReply {
+                        reason: "the reply body could not be decoded".to_string(),
+                    })
+                } else {
+                    anyhow::anyhow!("no reply within 1000 ms")
+                }
+            })
         }
 
         fn asked(&self) -> Vec<String> {
@@ -3411,7 +3491,7 @@ mod relay_handler_tests {
             self.answer(format!("call_statistics {call_id}"), &self.call_statistics)
         }
         fn describe(&self) -> String {
-            "relay-double".to_string()
+            "relay-double at 127.0.0.1:22222".to_string()
         }
     }
 
@@ -3903,6 +3983,142 @@ mod relay_handler_tests {
             .ok_or("no answer must not be a success")?;
         assert_eq!(err.code.0, -32603);
         assert!(err.message.contains("c@example.invalid"), "{}", err.message);
+        Ok(())
+    }
+
+    /// Every ask a transmitting tool can put to the relay, each run against
+    /// `relay`, as `(what was asked, the tool's result)`.
+    ///
+    /// The five are `query_relay` enumerating and for one call, `relay_stats`
+    /// global and for one call, and `relay_compare`. A class test drives all
+    /// five so no tool keeps a classification of its own.
+    async fn every_ask(
+        relay: &Arc<RelayDouble>,
+    ) -> Result<Vec<(&'static str, Result<CallToolResult, rmcp::ErrorData>)>, TestError> {
+        let srv = asking(empty(), relay)?;
+        let call = || Some("c@example.invalid".to_string());
+        Ok(vec![
+            (
+                "query_relay list",
+                srv.query_relay(Parameters(QueryRelayParams::default()))
+                    .await,
+            ),
+            (
+                "query_relay query",
+                srv.query_relay(Parameters(QueryRelayParams {
+                    call_id: call(),
+                    max_calls: None,
+                }))
+                .await,
+            ),
+            (
+                "relay_stats global",
+                srv.relay_stats(Parameters(RelayStatsParams::default()))
+                    .await,
+            ),
+            (
+                "relay_stats call",
+                srv.relay_stats(Parameters(RelayStatsParams {
+                    call_id: call(),
+                    names_only: None,
+                }))
+                .await,
+            ),
+            (
+                "relay_compare",
+                srv.relay_compare(Parameters(RelayCompareParams {
+                    call_id: "c@example.invalid".to_string(),
+                }))
+                .await,
+            ),
+        ])
+    }
+
+    /// A relay that sends nothing back is `unreachable` on every transmitting
+    /// tool, in the words `--relay-holdings` and REST use for that class.
+    ///
+    /// Unreachable stays an internal error (-32603): nothing is known, which is
+    /// not an answer. Its message is the shared classification's, so an agent
+    /// reads the same "asked, nothing came back" a CLI user does.
+    #[tokio::test]
+    async fn a_silent_relay_is_unreachable_on_every_transmitting_tool() -> Result<(), TestError> {
+        let relay = Arc::new(RelayDouble::default());
+        for (ask, result) in every_ask(&relay).await? {
+            let err = result
+                .err()
+                .ok_or_else(|| format!("{ask}: no answer must not be a success"))?;
+            assert_eq!(err.code.0, -32603, "{ask}: {}", err.message);
+            assert!(
+                err.message
+                    .contains("did not answer (no reply within 1000 ms); asked, nothing came back")
+                    && err.message.contains("127.0.0.1:22222")
+                    && err.message.contains("Nothing is known"),
+                "{ask}: {}",
+                err.message
+            );
+        }
+        Ok(())
+    }
+
+    /// A reply that arrived and could not be read is `suspect` on every
+    /// transmitting tool, never "did not answer".
+    ///
+    /// The answer's own problem: a success whose `outcome` is `suspect` and
+    /// whose `detail` is the shared classification's words, the decoder's
+    /// reason included, as `--relay-holdings` and REST report it.
+    #[tokio::test]
+    async fn an_unreadable_reply_is_suspect_on_every_transmitting_tool() -> Result<(), TestError> {
+        let relay = Arc::new(RelayDouble {
+            unreadable: true,
+            ..Default::default()
+        });
+        for (ask, result) in every_ask(&relay).await? {
+            let result = result
+                .map_err(|e| format!("{ask}: a reply arrived, so this is an answer: {e:?}"))?;
+            let v = payload(&result)?;
+            assert_eq!(v["outcome"], "suspect", "{ask}: {v}");
+            let detail = v["detail"].as_str().unwrap_or_default();
+            assert!(
+                detail.contains("the reply body could not be decoded")
+                    && detail.contains("the reply was discarded and not read")
+                    && !detail.contains("did not answer"),
+                "{ask}: {v}"
+            );
+            assert_eq!(v["delivery_trust"], "asked", "{ask}: {v}");
+        }
+        Ok(())
+    }
+
+    /// A relay that answers and declines is `refused` on every transmitting
+    /// tool, carrying the relay's own words.
+    ///
+    /// The third class beside unreachable and suspect. A refusal arrives as a
+    /// reply, not a fetch error, so this pins the tools' reply handling
+    /// alongside the two failure classes above.
+    #[tokio::test]
+    async fn a_declining_relay_is_refused_on_every_transmitting_tool() -> Result<(), TestError> {
+        let declined = || ControlReply::Refused {
+            reason: "Unknown call-id".to_string(),
+        };
+        let relay = Arc::new(RelayDouble {
+            list: Some(declined()),
+            query: Some(declined()),
+            call_statistics: Some(stats(&[
+                ("result", "error"),
+                ("error-reason", "Unknown call-id"),
+            ])),
+            // A global statistics ask has no refusal of its own to give.
+            statistics: Some(stats(&[("totals.RTP.packets", "1")])),
+            ..Default::default()
+        });
+        for (ask, result) in every_ask(&relay).await? {
+            if ask == "relay_stats global" {
+                continue;
+            }
+            let v = payload(&result.map_err(|e| format!("{ask}: a refusal is an answer: {e:?}"))?)?;
+            assert_eq!(v["outcome"], "refused", "{ask}: {v}");
+            assert_eq!(v["refusal"], "Unknown call-id", "{ask}: {v}");
+        }
         Ok(())
     }
 
