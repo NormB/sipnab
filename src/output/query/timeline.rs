@@ -127,9 +127,9 @@ pub fn render(answer: &Timeline, format: ReportFormat) -> String {
     let total: u64 = answer.buckets.iter().map(|b| b.dialogs).sum();
     let mut out = format!(
         "Call volume: {} of {} s, {}\n",
-        plural(answer.returned as u64, "bucket"),
+        super::plural(answer.returned as u64, "bucket"),
         answer.bucket_seconds,
-        plural(total, "dialog"),
+        super::plural(total, "dialog"),
     );
     let rows: Vec<Vec<String>> = answer
         .buckets
@@ -138,15 +138,6 @@ pub fn render(answer: &Timeline, format: ReportFormat) -> String {
         .collect();
     out.push_str(&super::table(format, &["Start", "Dialogs"], &rows));
     out
-}
-
-/// `n` and `noun`, with an `s` unless `n` is one.
-fn plural(n: u64, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
 }
 
 /// The width rule, the builder and the table, driven directly.

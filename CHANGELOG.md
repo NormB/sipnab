@@ -13,6 +13,7 @@ entry that carries them.
 ### Added
 
 - **`--timeline[=<SECONDS>]` prints the call volume over time**: how many dialogs opened in each interval of that many seconds (60 when given bare), oldest first, with empty intervals kept. It counts the dialogs the run's filter admits, makes the run headless, and under `--json` prints one JSON object on the last line of stdout in the shape `GET /v1/timeline` returns, built by the same function. `--timeline=0` exits 2, and a span of more than 100,000 intervals exits 1 naming a width that fits. See [Call volume over time](docs/cli-reference.md#call-volume-over-time).
+- **`--count-by <DIMENSION>` counts the dialogs by one dimension**: state, response code, method, a user part, the User-Agent, an address or the codec, largest first, ties in alphabetical order. `--top <N>` keeps the first N values (50 by default) and sums the rest on one line. It counts the dialogs the run's filter admits, makes the run headless, and under `--json` prints the answer `GET /v1/aggregate` returns, built by the same function. An unknown dimension, `--top 0`, or `--top` without `--count-by` exits 2. See [Dialogs by one dimension](docs/cli-reference.md#dialogs-by-one-dimension).
 
 ### Changed
 

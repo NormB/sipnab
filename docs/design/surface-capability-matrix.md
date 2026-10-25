@@ -175,7 +175,7 @@ Count dialogs grouped by one field — state, response code, source IP, codec.
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: arbitrary single-field counts are one-shot, but no group-by flag exists (PAR5) |
+| CLI | `--count-by` |
 | TUI | `Statistics` |
 | REST | `/v1/aggregate` |
 | MCP | `aggregate_dialogs` |
