@@ -812,7 +812,9 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // the run is planned, instead of the capture thread refusing it later.
 // 508 -> 509: src/app/queries/b1.rs, `--timeline: {e}`, the store refusing a
 // span of more than MAX_TIMELINE_BUCKETS intervals. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 509;
+// 509 -> 510: src/app/queries/b1.rs, `--rates-by: {why}`, a metric the
+// table has no extractor for. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 510;
 
 // ---------------------------------------------------------------------------
 // The page gates

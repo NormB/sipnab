@@ -69,15 +69,7 @@ pub struct Aggregate {
 /// of adding a second dimension: `` `filter` `` on REST, `--filter` on the
 /// CLI.
 pub fn check_dimension(key: &str, narrow_with: &str) -> Result<(), String> {
-    if GROUPABLE.contains(&key) {
-        Ok(())
-    } else {
-        Err(format!(
-            "cannot group by '{key}'; one of: {}. One dimension only — narrow \
-             with {narrow_with} rather than adding a second.",
-            GROUPABLE.join(", ")
-        ))
-    }
+    super::check_dimension_in(key, GROUPABLE, narrow_with)
 }
 
 /// Values ranked by a count, cut after the first `top`.

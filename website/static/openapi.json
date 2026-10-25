@@ -3762,7 +3762,7 @@
             "type": "array"
           },
           "metrics": {
-            "description": "The metric names computed, sorted.",
+            "description": "The metric names computed: every metric, in the order of the metric\ntable, when none were named; otherwise the named ones, sorted and\nde-duplicated.",
             "items": {
               "type": "string"
             },

@@ -9,7 +9,7 @@ use crate::mcp::shape::resolve_limit_with_cap;
 // The per-group metric rule lives outside the `mcp` feature so the REST
 // `/v1/dialogs/rates` route computes the same figures. This surface fences the
 // dimension values and renders the shared result.
-use crate::sip::group_metrics::{self, EXTRA_DIMENSIONS, GroupAccumulator, METRICS, rounded};
+use crate::sip::group_metrics::{self, GroupAccumulator, METRICS, rounded};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock};
 use rmcp::schemars::JsonSchema;
@@ -330,11 +330,8 @@ impl SipnabMcp {
         Parameters(params): Parameters<GroupDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let key = params.by.trim();
-        let dimensions: Vec<&str> = crate::mcp::server::GROUPABLE
-            .iter()
-            .chain(EXTRA_DIMENSIONS)
-            .copied()
-            .collect();
+        // The dimension set REST and `--rates-by` accept.
+        let dimensions = crate::output::query::rates::dimensions();
         if !dimensions.contains(&key) {
             return Err(errors::refuse_choice(
                 "by",
@@ -347,37 +344,19 @@ impl SipnabMcp {
             ));
         }
 
-        // Sorted and de-duplicated, so the answer's key order does not depend
-        // on the order the caller happened to list them in and a repeated name
-        // is not computed twice.
-        let wanted: Vec<String> = match params.metrics {
-            Some(ref asked) => {
-                let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-                for m in asked {
-                    let m = m.trim();
-                    if !METRICS.iter().any(|(name, _)| *name == m) {
-                        return Err(errors::refuse_choice(
-                            "metrics",
-                            METRICS.iter().map(|(name, _)| *name),
-                            format!(
-                                "unknown metric '{m}'; one of: {}",
-                                METRICS
-                                    .iter()
-                                    .map(|(name, _)| *name)
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ),
-                        ));
-                    }
-                    set.insert(m.to_string());
-                }
-                set.into_iter().collect()
-            }
-            None => METRICS
-                .iter()
-                .map(|(name, _)| (*name).to_string())
-                .collect(),
-        };
+        // Every metric in the table's order when none are named; the named
+        // ones sorted and de-duplicated otherwise, so the answer's key order
+        // does not depend on the order the caller listed them in. The rule
+        // REST and `--rates-by` apply, refused in this surface's own shape.
+        let wanted = crate::output::query::rates::wanted_metrics(
+            params
+                .metrics
+                .as_ref()
+                .map(|asked| asked.iter().map(String::as_str)),
+        )
+        .map_err(|why| {
+            errors::refuse_choice("metrics", METRICS.iter().map(|(name, _)| *name), why)
+        })?;
 
         let top_n = resolve_limit_with_cap(params.top_n, self.row_cap);
         let filter = self.compile_filter(params.filter.as_deref())?;
@@ -1091,6 +1070,29 @@ mod tests {
             !value.contains(crate::mcp::shape::UNTRUSTED_OPEN),
             "an address sipnab read off the wire is not sender-written: {value}"
         );
+        Ok(())
+    }
+
+    /// An empty `metrics` list computes every metric, the rule REST applies
+    /// to an empty `metrics=` and `--rates-by` to no list at all, rather than
+    /// none: an empty request is a default, not a request for nothing.
+    #[tokio::test]
+    async fn an_empty_metric_list_computes_every_metric() -> Result<(), TestError> {
+        let msgs = vec![
+            invite("e1@h", base_ts()?)?,
+            invite_response("e1@h", "SIP/2.0 200 OK", at(1)?)?,
+        ];
+        let result = server_of(msgs)?
+            .group_dialogs(Parameters(GroupDialogsParams {
+                by: "state".to_string(),
+                metrics: Some(Vec::new()),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("group_dialogs should succeed: {e:?}"))?;
+        let v = payload(&result)?;
+        let names: Vec<&str> = METRICS.iter().map(|(n, _)| *n).collect();
+        assert_eq!(v["metrics"], serde_json::json!(names), "{v}");
         Ok(())
     }
 

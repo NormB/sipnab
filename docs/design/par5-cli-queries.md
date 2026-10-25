@@ -153,7 +153,10 @@ carries a flag that nothing reads. A later ranked flag that reads
 `output::query::DEFAULT_ROWS`, the page REST returns when `top_n` is not given.
 The order and the cut are `output::query::aggregate::rank_by_count`, which
 `--count-by`, `GET /v1/aggregate`, `GET /v1/dialogs/rates` and the MCP
-`aggregate_dialogs` and `group_dialogs` tools all apply.
+`aggregate_dialogs` and `group_dialogs` tools all apply. `--rates-by` and the
+rates route and tool share `output::query::rates`: its dimension set, its
+metric-list rule (`wanted_metrics`) and the answer. The CLI takes no metric
+list and computes every metric, which a reader narrows with `jq`.
 
 Beyond those files, each flag edits only lines that belong to it:
 

@@ -344,6 +344,14 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (`-L`) in one ru
 
 **Exit code:** 2.
 
+### `--rates-by: {why}`
+
+`--rates-by` asked the metric table for a metric it has no way to compute. Every metric `--rates-by` computes comes from that same table, so this message means a defect in sipnab, not in the capture or the command line. sipnab prints no metrics.
+
+**What to do:** Report it with the command line and the sipnab version. `--count-by` with the same dimension still counts the dialogs.
+
+**Exit code:** 1.
+
 ### `--timeline: {e}`
 
 `--timeline` read the capture, but its calls span more intervals of the width than one histogram holds. `{e}` names how many intervals the span needs, the most a histogram holds (100,000), and a width that fits, for example `the dialogs span 5256001 intervals of 60 s, and one histogram holds at most 100000; a width of 3154 s or more fits`. sipnab prints no histogram.

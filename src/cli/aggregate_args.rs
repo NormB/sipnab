@@ -20,6 +20,11 @@ use super::one_shot::OneShot;
 /// Split out of [`super::Cli`] so clap's generated parser builds this group
 /// in its own stack frame, like every other group.
 #[derive(clap::Args, Debug, Clone, Default)]
+#[command(group(
+    clap::ArgGroup::new(RANKED)
+        .multiple(true)
+        .args(["count_by", "rates_by"])
+))]
 pub struct AggregateArgs {
     /// Print the call volume over time: how many dialogs opened in each
     /// fixed-width interval, oldest first.
@@ -61,16 +66,46 @@ pub struct AggregateArgs {
     )]
     pub count_by: Option<String>,
 
-    /// How many rows a ranked query keeps (`--count-by`); the rest are
-    /// summed. 50 when not given, the default page REST returns.
+    /// Print the carrier metrics of each value of one dimension: ASR, NER,
+    /// ACD, post-dial delay (p50, p95), the 10th-percentile MOS and the
+    /// retransmit rate.
+    ///
+    /// Every `--count-by` dimension, plus `to_domain`, `hour` and
+    /// `next_hop`. Groups are largest first, cut at `--top`. A figure whose
+    /// population is empty prints `-`, and `--json` names why. Counts the
+    /// dialogs the run's filter admits. With `--json`, one JSON object on the
+    /// last line of stdout, the shape `GET /v1/dialogs/rates` returns. Makes
+    /// the run headless, as `--call-report` does.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "DIMENSION",
+        value_parser = parse_rates_dimension,
+    )]
+    pub rates_by: Option<String>,
+
+    /// How many rows a ranked query keeps (`--count-by`, `--rates-by`); the
+    /// rest are summed. 50 when not given, the default page REST returns.
     #[arg(
         help_heading = "Queries",
         long,
         value_name = "N",
-        requires = "count_by",
+        requires = RANKED,
         value_parser = clap::value_parser!(u64).range(1..),
     )]
     pub top: Option<u64>,
+}
+
+/// The ranked query flags `--top` cuts, as one clap group, so `--top` alone
+/// is refused naming them.
+const RANKED: &str = "ranked";
+
+/// Parse a `--rates-by` dimension by the rule REST and MCP apply, refusing
+/// any other with the list of real ones.
+fn parse_rates_dimension(s: &str) -> Result<String, String> {
+    let key = s.trim();
+    crate::output::query::rates::check_dimension(key, "--filter")?;
+    Ok(key.to_string())
 }
 
 /// Parse a `--count-by` dimension by the rule REST applies, refusing any
@@ -112,6 +147,12 @@ impl AggregateArgs {
             OneShot {
                 name: "--count-by",
                 active: self.count_by.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+            OneShot {
+                name: "--rates-by",
+                active: self.rates_by.is_some(),
                 implies_no_tui: true,
                 owns_stdout: true,
             },
