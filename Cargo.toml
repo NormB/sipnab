@@ -354,6 +354,7 @@ harness = false
 [[bench]]
 name = "tui_derived"
 harness = false
+required-features = ["tui"]
 
 [features]
 default = ["native", "tui", "audio", "metrics"]
