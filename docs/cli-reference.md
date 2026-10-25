@@ -1150,12 +1150,12 @@ out the end-of-run summary on stderr.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `--timeline` | `[=<SECONDS>]` | `60` | Unreleased | Print how many dialogs opened in each interval of this many seconds, oldest first. Intervals align to the epoch, and an empty interval shows a count of zero. `--json` prints the shape of `GET /v1/timeline`. `0` exits 2. A span of more than 100,000 intervals exits 1 |
-| `--count-by` | `<DIMENSION>` | | Unreleased | Count the dialogs by one dimension, largest first: `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip` or `rtp.codec`. `--json` prints the shape of `GET /v1/aggregate`. Any other dimension exits 2 |
-| `--rates-by` | `<DIMENSION>` | | Unreleased | Print the carrier metrics of each value of one dimension: ASR, NER, ACD, post-dial delay, the tenth-percentile MOS and the retransmit rate. Takes every `--count-by` dimension, plus `to_domain`, `hour` and `next_hop`. `--json` prints the shape of `GET /v1/dialogs/rates`. Any other dimension exits 2 |
-| `--talkers` | `<BY>` | | Unreleased | Rank the busiest participants, most dialogs first: by sending address (`ip`), `User-Agent` or `Server` banner (`ua`), or the dialed number's leading digits (`prefix`). `--json` prints the shape of `GET /v1/talkers`. Any other value exits 2 |
-| `--prefix-digits` | `<N>` | `4` | Unreleased | How many leading digits `--talkers prefix` ranks by. Needs `--talkers`; only `prefix` reads it. `0` exits 2 |
-| `--top` | `<N>` | `50` | Unreleased | How many rows `--count-by`, `--rates-by` or `--talkers` keeps. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those three; `0` exits 2 |
+| `--timeline` | `[=<SECONDS>]` | `60` | 0.5.230 | Print how many dialogs opened in each interval of this many seconds, oldest first. Intervals align to the epoch, and an empty interval shows a count of zero. `--json` prints the shape of `GET /v1/timeline`. `0` exits 2. A span of more than 100,000 intervals exits 1 |
+| `--count-by` | `<DIMENSION>` | | 0.5.230 | Count the dialogs by one dimension, largest first: `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`, `src.ip`, `dst.ip` or `rtp.codec`. `--json` prints the shape of `GET /v1/aggregate`. Any other dimension exits 2 |
+| `--rates-by` | `<DIMENSION>` | | 0.5.230 | Print the carrier metrics of each value of one dimension: ASR, NER, ACD, post-dial delay, the tenth-percentile MOS and the retransmit rate. Takes every `--count-by` dimension, plus `to_domain`, `hour` and `next_hop`. `--json` prints the shape of `GET /v1/dialogs/rates`. Any other dimension exits 2 |
+| `--talkers` | `<BY>` | | 0.5.230 | Rank the busiest participants, most dialogs first: by sending address (`ip`), `User-Agent` or `Server` banner (`ua`), or the dialed number's leading digits (`prefix`). `--json` prints the shape of `GET /v1/talkers`. Any other value exits 2 |
+| `--prefix-digits` | `<N>` | `4` | 0.5.230 | How many leading digits `--talkers prefix` ranks by. Needs `--talkers`; only `prefix` reads it. `0` exits 2 |
+| `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those three; `0` exits 2 |
 
 ### Call volume over time
 
