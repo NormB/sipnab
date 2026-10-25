@@ -2509,69 +2509,16 @@ async fn get_endpoints(
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // The scan is shared with the MCP `describe_endpoint` tool. This surface
-    // renders the raw values and omits findings — a separate capability.
-    let report = crate::sip::endpoint::describe(&ds, &ss, &selector, limit);
-
-    let user_agents: Vec<Value> = report
-        .banners
-        .iter()
-        .map(|b| json!({ "header": b.header, "value": b.value, "count": b.count }))
-        .collect();
-    let recent_dialogs: Vec<Value> = report
-        .recent_call_ids
-        .iter()
-        .filter_map(|id| ds.get(id))
-        .map(dialog_summary)
-        .collect();
+    // renders the raw values and omits findings — a separate capability. The
+    // answer is the one `--endpoint-ip` and `--endpoint-user` print.
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer =
+        crate::output::query::endpoint::endpoint(&ds, &ss, &selector, limit, capture_identity);
     drop(ss);
     drop(ds);
     drop(capture);
 
-    let calls = json!({
-        "invites": report.calls.invites,
-        "with_final_status": report.calls.with_final_status,
-        "failed": report.calls.failed,
-        "failure_rate_pct": report.calls.failure_rate_pct,
-        "by_final_status": report.calls.by_final_status,
-    });
-    let registration = json!({
-        "applicable": report.registration.applicable,
-        "dialogs": report.registration.dialogs,
-        "succeeded": report.registration.succeeded,
-        "failed": report.registration.failed,
-        "auth_loops": report.registration.auth_loops,
-        "problem_call_ids": report.registration.problem_call_ids,
-    });
-    let streams = json!({
-        "count": report.streams.count,
-        "orphaned": report.streams.orphaned,
-        "packets": report.streams.packets,
-        "lost_packets": report.streams.lost_packets,
-        "max_jitter_ms": report.streams.max_jitter_ms,
-        "codecs": report.streams.codecs,
-    });
-
-    Ok(Json(json!({
-        "schema_version": 1,
-        "endpoint_kind": report.kind,
-        "endpoint": report.value,
-        "dialogs": report.dialogs,
-        "by_method": report.by_method,
-        "by_state": report.by_state,
-        "messages_sent": report.messages_sent,
-        "messages_received": report.messages_received,
-        "calls": calls,
-        "registration": registration,
-        "user_agents": user_agents,
-        "stack": report.stack,
-        "contact_rewrite": report.contact_rewrite,
-        "streams": streams,
-        "recent_dialogs": recent_dialogs,
-        "truncated": report.truncated,
-        // Which capture this description came from; see `/v1/dialogs`.
-        "capture_identity": capture_identity,
-    })))
+    Ok(Json(answer.json))
 }
 
 /// `GET /v1/security/findings` — the armed detectors' recorded findings (PAR3:

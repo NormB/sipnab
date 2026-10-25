@@ -6,7 +6,7 @@
 //! function and hands the answer to [`QueryContext::answer`].
 
 use super::{QueryContext, call_not_found};
-use crate::output::query::{compare, correlated, tree};
+use crate::output::query::{DEFAULT_ROWS, compare, correlated, endpoint, tree};
 
 /// Render batch B2's queries that this command line asked for.
 ///
@@ -15,7 +15,38 @@ use crate::output::query::{compare, correlated, tree};
 /// `false` when one was asked for and could not be answered or written;
 /// `true` otherwise, including when none was asked for.
 pub(super) fn render(ctx: &QueryContext<'_>) -> bool {
-    render_call_tree(ctx) && render_correlate(ctx) && render_compare_dialogs(ctx)
+    render_call_tree(ctx)
+        && render_correlate(ctx)
+        && render_compare_dialogs(ctx)
+        && render_endpoint(ctx)
+}
+
+/// `--endpoint-ip` and `--endpoint-user`: everything one endpoint did, the
+/// answer `GET /v1/endpoints` returns, with `--top` recent dialogs. The
+/// rollup covers every dialog of the capture, as REST's does.
+fn render_endpoint(ctx: &QueryContext<'_>) -> bool {
+    let args = &ctx.cli.call_query_args;
+    let Some(selector) = args.endpoint_ip.as_ref().or(args.endpoint_user.as_ref()) else {
+        return true;
+    };
+    let limit = ctx
+        .cli
+        .aggregate_args
+        .top
+        .map_or(DEFAULT_ROWS, |n| usize::try_from(n).unwrap_or(usize::MAX));
+    let answer = endpoint::endpoint(
+        ctx.dialogs,
+        ctx.streams,
+        selector,
+        limit,
+        ctx.capture_identity(),
+    );
+    let flag = if args.endpoint_ip.is_some() {
+        "--endpoint-ip"
+    } else {
+        "--endpoint-user"
+    };
+    ctx.answer(flag, &answer, |format| endpoint::render(&answer, format))
 }
 
 /// `--compare-dialogs`: two named calls side by side, the answer

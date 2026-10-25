@@ -21,6 +21,7 @@ use crate::output::ReportFormat;
 pub mod aggregate;
 pub mod compare;
 pub mod correlated;
+pub mod endpoint;
 pub mod rates;
 pub mod talkers;
 pub mod timeline;

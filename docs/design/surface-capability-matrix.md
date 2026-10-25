@@ -307,7 +307,7 @@ Everything one endpoint did — counts, INVITE outcomes, REGISTER state, streams
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a one-shot per-endpoint rollup is CLI-shaped, but the match flags filter and dump, they do not aggregate (PAR5) |
+| CLI | `--endpoint-ip`, `--endpoint-user` |
 | TUI | `EndpointRollup` |
 | REST | `/v1/endpoints` |
 | MCP | `describe_endpoint` |

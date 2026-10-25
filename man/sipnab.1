@@ -1260,7 +1260,7 @@ Rank the busiest participants: by the address that sent the messages (\fBip\fR),
 How many leading digits \fB\-\-talkers prefix\fR ranks the dialed number by (4 when not given). Only \fBprefix\fR reads it.
 .TP
 \fB\-\-top\fR \fIN\fR
-How many rows a ranked query keeps (\fB\-\-count\-by\fR, \fB\-\-rates\-by\fR, \fB\-\-talkers\fR); the rest are summed or counted. 50 when not given, the default page REST returns.
+How many rows a ranked query keeps (\fB\-\-count\-by\fR, \fB\-\-rates\-by\fR, \fB\-\-talkers\fR), or how many recent dialogs an endpoint rollup lists (\fB\-\-endpoint\-ip\fR, \fB\-\-endpoint\-user\fR); the rest are summed or counted. 50 when not given, the default page REST returns.
 .TP
 \fB\-\-call\-tree\fR \fICALL\-ID\fR
 Print every leg of one call as a tree across B2BUA, SBC and PBX hops: the legs sipnab matched to it by an identifier (\fBX\-Call\-ID\fR, \fBSession\-ID\fR, SDP origin, P\-Charging\-Vector, a Via branch), each leg's own matches, and the legs a timing guess suggests, which the walk does not follow.
@@ -1270,6 +1270,12 @@ Print the other legs of one call and the strategy that matched each: an identifi
 .TP
 \fB\-\-compare\-dialogs\fR \fICALL\-ID\-A\fR \fICALL\-ID\-B\fR
 Put two calls side by side: state, final response code, message count and methods for each, the fields that differ marked, and each call's diagnosis hints.
+.TP
+\fB\-\-endpoint\-ip\fR \fIIP\fR
+Print everything one address did: dialogs by method and state, messages sent and received, call outcomes, registration, the banners it sent, the signaling stack, its media, and its most recent dialogs.
+.TP
+\fB\-\-endpoint\-user\fR \fIUSER\fR
+Print everything one SIP user did, matched against the user part of each dialog's From and To: the rollup \fB\-\-endpoint\-ip\fR prints for an address, without the message counts, which belong to an address.
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR

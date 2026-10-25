@@ -226,6 +226,8 @@ pub const FLAGS: &[(&str, Link)] = &[
         "duration-asymmetry-secs",
         Link::Key("diagnosis", "duration_asymmetry_secs", Merge::Override),
     ),
+    ("endpoint-ip", Link::PerRun),
+    ("endpoint-user", Link::PerRun),
     ("evidence-out", Link::Input),
     (
         "exec-queue-depth",

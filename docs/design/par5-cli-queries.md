@@ -172,6 +172,13 @@ run with `--call-report`'s message (`queries::call_not_found`). Where REST
 caps a list by its row cap, the CLI applies the cap a server started by the
 same run would (`QueryContext::row_cap`).
 
+The endpoint rollup (`--endpoint-ip`, `--endpoint-user`) covers every dialog of
+the capture, as `GET /v1/endpoints` and the MCP `describe_endpoint` tool do:
+`crate::sip::endpoint::describe` reads the stores whole, so no surface narrows
+it by a filter. Its answer is the untyped JSON the route returns
+(`output::query::endpoint::EndpointAnswer`), and the CLI's text is drawn from
+the report the JSON is built from.
+
 Beyond those files, each flag edits only lines that belong to it:
 
 - its own `gap:` cell in [`docs/design/surface-capability-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/surface-capability-matrix.md), flipped to

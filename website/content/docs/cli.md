@@ -1166,7 +1166,9 @@ out the end-of-run summary on stderr.
 | `--call-tree` | `<CALL-ID>` | | Unreleased | Print every leg of one call as a tree across B2BUA, SBC and PBX hops, with the strategy that matched each leg. `--json` prints the shape of `GET /v1/dialogs/{call_id}/tree`. A Call-ID the run did not track exits 1 |
 | `--correlate` | `<CALL-ID>` | | Unreleased | Print the other legs of one call and the strategy that matched each: an identifier the legs share, or a timing guess. `--json` prints the shape of `GET /v1/dialogs/{call_id}/correlated`. A Call-ID the run did not track exits 1 |
 | `--compare-dialogs` | `<CALL-ID-A> <CALL-ID-B>` | | Unreleased | Put two calls side by side: state, final response code, message count and methods, with the fields that differ marked, and each call's diagnosis hints. `--json` prints the shape of `GET /v1/dialogs/compare`. A Call-ID the run did not track exits 1 |
-| `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those three; `0` exits 2 |
+| `--endpoint-ip` | `<IP>` | | Unreleased | Print everything one address did: dialogs by method and state, messages sent and received, call outcomes, registration, banners, the signaling stack, media, and the most recent dialogs. `--json` prints the shape of `GET /v1/endpoints`. An address that does not parse exits 2 |
+| `--endpoint-user` | `<USER>` | | Unreleased | Print everything one SIP user did, matched against the user part of each dialog's From and To: the `--endpoint-ip` rollup without the message counts. `--json` prints the shape of `GET /v1/endpoints`. Not with `--endpoint-ip` |
+| `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
 
@@ -1531,6 +1533,86 @@ sipnab -I tests/pcap-samples/sip-problem-call.pcap --compare-dialogs completed-9
 
 The REST route `GET /v1/dialogs/compare`, given the two Call-IDs as `a` and `b`,
 and the MCP tool `compare_dialogs` compare the same fields.
+
+### Everything one endpoint did
+
+Name an address to see what it did in the capture, keeping its three most
+recent dialogs:
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --endpoint-ip 192.168.10.2 --top 3 --no-cli-print --quiet
+```
+
+```text
+Endpoint ip 192.168.10.2: 5 dialogs
+Dialogs by method: INVITE 1, OPTIONS 1, REGISTER 1, SUBSCRIBE 2
+Dialogs by state: Completed 2, Registered 1, Terminated 2
+Messages: 14 sent, 13 received
+Calls: 1 INVITE, 1 with a final response, 0 failed (0%); final responses: 200 x1
+Registration: 1 dialog, 1 succeeded, 0 failed, 0 authentication loops
+Banners: User-Agent Asterisk PBX 1.6.0.6 (4)
+Signaling stack: chan_sip, 2 of 3 observations agree, from 4 requests
+Media: 1 stream (0 orphaned), 2 packets, 0 lost, max jitter 0.03 ms, codecs PCMU
+Most recent dialogs (3 of 5):
+Call-ID                                       Method     State       Final  Started
+------------------------------------------------------------------------------------------------------------
+ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E.  INVITE     Completed   200    2010-09-27T07:12:58.755873+00:00
+MDA3MzcwMWQxNmNhNTBmMTZiNGNkY2JjYjZkNzViZTM.  SUBSCRIBE  Terminated  404    2010-09-27T07:12:50.010873+00:00
+OGY5ZTk4MzFkYzZhM2FlYjNjNTA3ZTM2ZWY0YzI1ODA.  SUBSCRIBE  Terminated  404    2010-09-27T07:12:50.003249+00:00
+```
+
+- `Messages` counts what the address sent and what other hosts sent to it.
+- `Banners` are the `User-Agent` and `Server` values it sent.
+- `Signaling stack` names the SIP library its requests look built by, and how
+  many of three observations (the Via branch, the From tag and the Call-ID)
+  agree.
+- The counts cover every dialog the address took part in. `--filter` does not
+  narrow them, and `--top` bounds only the list of recent dialogs.
+
+Name a SIP user instead, matched against the user part of each dialog's From
+and To:
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --endpoint-user 10009 --top 2 --no-cli-print --quiet
+```
+
+```text
+Endpoint user 10009: 5 dialogs
+Dialogs by method: INVITE 1, OPTIONS 1, REGISTER 1, SUBSCRIBE 2
+Dialogs by state: Completed 2, Registered 1, Terminated 2
+Calls: 1 INVITE, 1 with a final response, 0 failed (0%); final responses: 200 x1
+Registration: 1 dialog, 1 succeeded, 0 failed, 0 authentication loops
+Banners: none
+Signaling stack: not inferred
+Media: 3 streams (0 orphaned), 997 packets, 370 lost, max jitter 0.56 ms, codecs PCMU
+Most recent dialogs (2 of 5):
+Call-ID                                       Method     State       Final  Started
+------------------------------------------------------------------------------------------------------------
+ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E.  INVITE     Completed   200    2010-09-27T07:12:58.755873+00:00
+MDA3MzcwMWQxNmNhNTBmMTZiNGNkY2JjYjZkNzViZTM.  SUBSCRIBE  Terminated  404    2010-09-27T07:12:50.010873+00:00
+```
+
+A user has no message counts, because messages belong to an address. Under
+`--json`, the answer has the fields `GET /v1/endpoints` returns:
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --endpoint-ip 192.168.10.2 --json --no-cli-print --quiet | jq -c '{dialogs, messages_sent, messages_received, calls: .calls.invites}'
+```
+
+```json
+{"dialogs":5,"messages_sent":14,"messages_received":13,"calls":1}
+```
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --endpoint-user 10009 --json --no-cli-print --quiet | jq -c '{dialogs, by_method, codecs: .streams.codecs}'
+```
+
+```json
+{"dialogs":5,"by_method":{"INVITE":1,"OPTIONS":1,"REGISTER":1,"SUBSCRIBE":2},"codecs":["PCMU"]}
+```
+
+The REST route `GET /v1/endpoints`, given `ip` or `user`, and the MCP tool
+`describe_endpoint` describe the same endpoint.
 
 ## Dialog
 

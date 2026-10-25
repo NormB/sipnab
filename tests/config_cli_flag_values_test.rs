@@ -650,6 +650,30 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--endpoint-ip`: an IPv4 or IPv6 address, the rule REST applies to
+    // `ip`; anything else refused naming it.
+    (
+        "endpoint-ip",
+        Kind::Text {
+            accept: &["192.0.2.1", "2001:db8::1", "::1"],
+            reject: &[
+                ("bogus", 2),
+                ("", 2),
+                ("192.0.2.256", 2),
+                ("192.0.2.1:5060", 2),
+            ],
+        },
+        &[],
+    ),
+    // `--endpoint-user`: any SIP user part.
+    (
+        "endpoint-user",
+        Kind::Text {
+            accept: &["alice", "10009", "0"],
+            reject: &[],
+        },
+        &[],
+    ),
     // `--correlate`: any Call-ID parses; one the run did not track exits 1
     // after the run, as `--call-report`'s does.
     (

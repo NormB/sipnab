@@ -10,6 +10,7 @@
 //! an entry in [`CallQueryArgs::one_shots`], which `normalize` and `validate` read.
 
 use super::one_shot::OneShot;
+use crate::sip::endpoint::Selector;
 
 /// Single-call query flags (`--call-tree`, `--correlate`, `--compare-dialogs`,
 /// `--endpoint-ip`, `--endpoint-user`, `--export-audio`).
@@ -58,6 +59,45 @@ pub struct CallQueryArgs {
         value_names = ["CALL-ID-A", "CALL-ID-B"],
     )]
     pub compare_dialogs: Option<Vec<String>>,
+
+    /// Print everything one address did: dialogs by method and state,
+    /// messages sent and received, call outcomes, registration, the banners
+    /// it sent, the signaling stack, its media, and its most recent dialogs.
+    ///
+    /// Covers every dialog the address took part in; `--filter` does not
+    /// narrow it. `--top` bounds the recent dialogs (50 by default). With
+    /// `--json`, one JSON object on the last line of stdout, the shape
+    /// `GET /v1/endpoints` returns. Makes the run headless, as
+    /// `--call-report` does.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "IP",
+        conflicts_with = "endpoint_user",
+        value_parser = parse_endpoint_ip,
+    )]
+    pub endpoint_ip: Option<Selector>,
+
+    /// Print everything one SIP user did, matched against the user part of
+    /// each dialog's From and To: the rollup `--endpoint-ip` prints for an
+    /// address, without the message counts, which belong to an address.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "USER",
+        value_parser = parse_endpoint_user,
+    )]
+    pub endpoint_user: Option<Selector>,
+}
+
+/// Parse `--endpoint-ip` by the rule REST and MCP apply to `ip`.
+fn parse_endpoint_ip(s: &str) -> Result<Selector, String> {
+    Selector::parse(Some(s), None)
+}
+
+/// Parse `--endpoint-user` by the rule REST and MCP apply to `user`.
+fn parse_endpoint_user(s: &str) -> Result<Selector, String> {
+    Selector::parse(None, Some(s))
 }
 
 impl CallQueryArgs {
@@ -83,6 +123,18 @@ impl CallQueryArgs {
             OneShot {
                 name: "--compare-dialogs",
                 active: self.compare_dialogs.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+            OneShot {
+                name: "--endpoint-ip",
+                active: self.endpoint_ip.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+            OneShot {
+                name: "--endpoint-user",
+                active: self.endpoint_user.is_some(),
                 implies_no_tui: true,
                 owns_stdout: true,
             },
