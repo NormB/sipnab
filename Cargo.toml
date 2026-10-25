@@ -316,7 +316,7 @@ unicode-width = "0.2"
 parking_lot = "0.12"
 proptest = "1"
 trycmd = "1"
-jsonschema = "0.58"
+jsonschema = "0.60"
 # Decodes the COSE_Sign1 statements the vCon forwarder registers with a
 # SCITT transparency service, in tests/vcon_scitt_test.rs: a CBOR reader
 # independent of the encoder in src/app/vcon_scitt.rs. DEV ONLY.
