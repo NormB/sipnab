@@ -191,6 +191,14 @@ A file job (`--vcon-validate`) has no stores, so it writes its answer with
 Its exit status carries the verdict: `0` valid, `3` invalid (the lint gate's
 "the tool worked, the input is non-conformant"), `1` not checked.
 
+`--compare-captures` reads the config itself (`bootstrap::load_config`), so the
+two files are read with the pipeline options a run started by the same command
+line would use, which are the ones a REST server started by it would use. The
+dialog and stream caps are `output::query::capture_compare::compare_files`'s,
+shared with REST. The engine's summary has two forms: a server's adds that
+neither file is the capture it holds (`NOT_THE_HELD_CAPTURE`), and the command
+line's, which holds no capture, does not.
+
 Beyond those files, each flag edits only lines that belong to it:
 
 - its own `gap:` cell in [`docs/design/surface-capability-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/surface-capability-matrix.md), flipped to

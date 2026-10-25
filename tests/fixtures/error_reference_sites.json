@@ -539,6 +539,13 @@
       "why": "PlanError values from load_config (struct literals carrying config/limits/security validate() e.to_string()), logged by apply_read_config, and the startup commands' results logged by finish_startup_command, which include strip_secrets_copy/annotated_copy (.map_err(PlanError::arg) of src/capture/output_guard.rs check), out of scope."
     },
     {
+      "file": "src/app/queries/b3.rs",
+      "call": "stderr_line!(\"{}\", e.message)",
+      "count": 1,
+      "carries": [],
+      "why": "The PlanError load_config returns when --compare-captures reads the config before comparing: the same values bootstrap.rs logs through apply_read_config, from out-of-scope config, limits and security validation."
+    },
+    {
       "file": "src/app/bootstrap.rs",
       "call": "error!(\"{}\", self.message)",
       "count": 2,

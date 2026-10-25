@@ -719,7 +719,9 @@ fn lists() -> Result<Lists, TestError> {
 // live_rtp file notice in warn_live_rtp.
 // 83 -> 84: src/app/bootstrap.rs `PlanError { exit_code: 1, message:
 // e.to_string(), }` 12 -> 13, the `[hep]` validate() call in apply_config.
-const EXPECTED_UNRESOLVED: usize = 84;
+// 84 -> 85: src/app/queries/b3.rs `stderr_line!("{}", e.message)`, the
+// load_config refusal `--compare-captures` reports before it reads a file.
+const EXPECTED_UNRESOLVED: usize = 85;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -819,7 +821,9 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 511 -> 513: src/app/queries/b3.rs, `--vcon-validate {}: {why}` (a file it
 // cannot read or validate) and `--vcon-validate requires the 'vcon' feature
 // (not compiled in)`. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 513;
+// 513 -> 514: src/app/queries/b3.rs, `--compare-captures: {e}`, the engine's
+// refusal of the same file twice, a dimension, or a file that yields nothing.
+const EXPECTED_TEMPLATES: usize = 514;
 
 // ---------------------------------------------------------------------------
 // The page gates

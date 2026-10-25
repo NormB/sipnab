@@ -639,6 +639,26 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--compare-captures`: two paths, read when the job runs; each value
+    // here is the first, `MORE_VALUES` gives the second.
+    (
+        "compare-captures",
+        Kind::Text {
+            accept: &["a.pcap"],
+            reject: &[],
+        },
+        &[],
+    ),
+    // `--compare-dimensions`: a dimension of the groupable set, any other
+    // refused with the vocabulary; it needs `--compare-captures`.
+    (
+        "compare-dimensions",
+        Kind::Text {
+            accept: &["state", "rtp.codec"],
+            reject: &[("bogus", 2)],
+        },
+        &["--compare-captures", "a.pcap", "b.pcap"],
+    ),
     // `--compare-dialogs`: two Call-IDs, any text; each value here is the
     // first of the pair, `MORE_VALUES` gives the second. One the run did not
     // track exits 1 after the run.
@@ -3129,7 +3149,10 @@ fn flag_argv(long: &str, ctx: &[&str], flag_token: &str) -> Vec<String> {
 /// requires more than one value of (`--compare-dialogs A B`) cannot be
 /// written `--long=value`, which carries one; it is written `--long value
 /// rest...` instead. [`more_values`] refuses a multi-value flag missing here.
-const MORE_VALUES: &[(&str, &[&str])] = &[("compare-dialogs", &["y"])];
+const MORE_VALUES: &[(&str, &[&str])] = &[
+    ("compare-captures", &["b.pcap"]),
+    ("compare-dialogs", &["y"]),
+];
 
 /// The values after the first that `long` takes, from [`MORE_VALUES`]; empty
 /// for a flag that takes one value.

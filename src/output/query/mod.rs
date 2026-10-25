@@ -20,6 +20,7 @@ use crate::output::ReportFormat;
 
 pub mod aggregate;
 pub mod audio;
+pub mod capture_compare;
 pub mod compare;
 pub mod correlated;
 pub mod endpoint;

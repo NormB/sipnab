@@ -344,6 +344,18 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (`-L`) in one ru
 
 **Exit code:** 2.
 
+### `--compare-captures: {e}`
+
+`--compare-captures <A> <B>` could not compare the two files. `{e}` says which of these happened:
+
+- `'{a}' and '{b}' are the same file; a capture compared with itself differs from itself nowhere`. Exit code 2.
+- A dimension outside the `--count-by` set. Exit code 2. sipnab refuses it before it reads any file.
+- `'{name}' yielded no dialogs and reported: {reason}. Refusing to diff against it — every bucket would appear to have collapsed to zero, which is a finding that is not there.` The file is missing, is not a capture, or holds no SIP dialog. Exit code 1.
+
+**What to do:** Name two different files. For a file that yielded nothing, check the reason it gives: a path that does not exist, or a capture taken where no SIP passed.
+
+**Exit code:** 2 for the same file or a dimension, 1 for a file that yields nothing.
+
 ### `--export-audio: {why}`
 
 `--export-audio <CALL-ID>` could not write the call's audio. `{why}` says which of these happened:

@@ -83,9 +83,18 @@ pub struct CaptureComparison {
     pub b: CaptureSide,
     /// One entry per requested dimension, in the order requested.
     pub dimensions: Vec<DimensionDiff>,
-    /// What the two sides are and what the numbers do not cover.
+    /// What the two sides are and what the numbers do not cover, as a
+    /// server reports it: it also says neither file is the capture it holds.
     pub summary: String,
+    /// The same summary without that sentence, for the command line, which
+    /// holds no capture: `--compare-captures` reports this one.
+    #[serde(skip)]
+    pub summary_off_server: String,
 }
+
+/// The sentence a server's summary carries between the baseline sentence and
+/// any read notes: the two files are not the capture the server holds.
+pub const NOT_THE_HELD_CAPTURE: &str = " Neither is the capture this server holds.";
 
 /// Why a comparison could not be produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -405,20 +414,21 @@ pub fn compare(
         })
         .collect();
 
-    let mut summary = format!(
+    let head = format!(
         "'{}' ({} dialogs) is the baseline; '{}' ({} dialogs) is held against \
-         it, so delta is b minus a. Neither is the capture this server holds.",
+         it, so delta is b minus a.",
         snap_a.side.filename, snap_a.side.dialogs, snap_b.side.filename, snap_b.side.dialogs,
     );
+    let mut notes = String::new();
     for side in [&snap_a.side, &snap_b.side] {
         if let Some(err) = &side.read_error {
-            summary.push_str(&format!(
+            notes.push_str(&format!(
                 " '{}' was read only in part ({err}), so its counts are a floor.",
                 side.filename
             ));
         }
         if side.dialogs_dropped > 0 {
-            summary.push_str(&format!(
+            notes.push_str(&format!(
                 " '{}' exceeded the dialog ceiling and {} dialog(s) were not \
                  counted.",
                 side.filename, side.dialogs_dropped
@@ -430,7 +440,8 @@ pub fn compare(
         a: snap_a.side,
         b: snap_b.side,
         dimensions: dimensions_out,
-        summary,
+        summary: format!("{head}{NOT_THE_HELD_CAPTURE}{notes}"),
+        summary_off_server: format!("{head}{notes}"),
     })
 }
 
@@ -699,6 +710,50 @@ mod tests {
         assert!(
             snap.side.dialogs_dropped > 0,
             "a one-dialog ceiling over a multi-dialog capture must report the loss"
+        );
+        Ok(())
+    }
+
+    /// The server's summary and the command line's differ by the one
+    /// sentence about the held capture, in the same place, before any read
+    /// note.
+    #[test]
+    fn the_command_line_summary_drops_only_the_server_sentence()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/pcap-samples");
+        let (a, b) = (
+            root.join("sip-problem-call.pcap"),
+            root.join("sip-rtp-g711.pcap"),
+        );
+        let cmp = compare(
+            CaptureRef {
+                path: &a,
+                name: "a.pcap",
+            },
+            CaptureRef {
+                path: &b,
+                name: "b.pcap",
+            },
+            &resolve_dimensions(None).map_err(|e| e.to_string())?,
+            &crate::pipeline::PipelineOptions::default(),
+            1000,
+            1000,
+            10,
+        )
+        .map_err(|e| e.to_string())?;
+        assert!(
+            cmp.summary.contains(NOT_THE_HELD_CAPTURE),
+            "{}",
+            cmp.summary
+        );
+        assert!(
+            !cmp.summary_off_server.contains("server"),
+            "{}",
+            cmp.summary_off_server
+        );
+        assert_eq!(
+            cmp.summary.replacen(NOT_THE_HELD_CAPTURE, "", 1),
+            cmp.summary_off_server
         );
         Ok(())
     }

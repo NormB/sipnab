@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 390 | 313 | 34 | 43 | 0 |
+| CLI flags | 392 | 315 | 34 | 43 | 0 |
 | HTTP routes | 47 | 47 | -- | 0 | 0 |
 | MCP tools | 76 | 76 | -- | 0 | 0 |
 
@@ -155,7 +155,7 @@ behind them.
 | `--short-calls` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +2 | **parse-only** | short_calls_filter asserts only count <= 7; the alias-equivalence test is vacuous (0 of 1334 dialogs selected on its fixture) |
 | `--one-way` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **behavior** | one_way_filter plus one_way_output_carries_the_stun_versus_sdp_finding (tests/stun_test.rs); both directions pinned |
 | `--nat-issues` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **behavior** | nat_issues_filter plus the_nat_issues_alias_selects_the_rewritten_call (tests/media_diagnosis_wiring_test.rs) |
-| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +33 |  |  |
+| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +34 |  |  |
 | `--json-pretty` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/json_schema_test.rs` +2 |  |  |
 | `--json-dialogs` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/archive_password_prompt_test.rs` +43 |  |  |
 | `--plugin` |  | `PATH` | Output | e2e | `tests/partial_run_exit_code_test.rs`, `tests/plugin_example_test.rs` |  |  |
@@ -296,7 +296,7 @@ behind them.
 | `--api-max-rows` |  | `N` | Network listeners | referenced | `src/cli.rs`, `src/output/api.rs` | **parse-only** | Resolver tested and enforcement tested by setting state.max_rows directly; the wiring between them is not |
 | `--api-allow-relay-query` |  |  | Network listeners | e2e | `tests/app_servers_wiring_test.rs` |  |  |
 | `--api-allow-vcon-fetch` |  |  | Network listeners | e2e | `tests/vcon_fetch_doors_test.rs` |  |  |
-| `--api-file-root` |  | `DIR` | Network listeners | e2e | `tests/api_test.rs`, `tests/app_servers_wiring_test.rs` +1 |  |  |
+| `--api-file-root` |  | `DIR` | Network listeners | e2e | `tests/api_test.rs`, `tests/app_servers_wiring_test.rs` +2 |  |  |
 | `--api-accept-archive-passwords` |  |  | Network listeners | e2e | `tests/archive_password_test.rs` |  |  |
 | `--api-rate-limit-per-peer` |  | `N` | Network listeners | e2e | `tests/actions_journal_rest_test.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
 | `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/actions_journal_mcp_test.rs`, `tests/analyze_test.rs` +21 |  |  |
@@ -463,7 +463,7 @@ behind them.
 | `--rates-by` |  | `DIMENSION` | Queries | e2e | `tests/cli_rates_by_test.rs` |  |  |
 | `--talkers` |  | `BY` | Queries | e2e | `tests/cli_talkers_test.rs`, `tests/config_cli_flag_values_test.rs` |  |  |
 | `--prefix-digits` |  | `N` | Queries | e2e | `tests/cli_talkers_test.rs` |  |  |
-| `--top` |  | `N` | Queries | e2e | `tests/cli_count_by_test.rs`, `tests/cli_endpoint_test.rs` +2 |  |  |
+| `--top` |  | `N` | Queries | e2e | `tests/cli_compare_captures_test.rs`, `tests/cli_count_by_test.rs` +3 |  |  |
 | `--call-tree` |  |  | Queries | e2e | `tests/cli_call_tree_test.rs` |  |  |
 | `--correlate` |  |  | Queries | e2e | `tests/cli_correlate_test.rs` |  |  |
 | `--compare-dialogs` |  |  | Queries | e2e | `tests/cli_compare_dialogs_test.rs` |  |  |
@@ -472,6 +472,8 @@ behind them.
 | `--export-audio` |  |  | Queries | e2e | `tests/cli_export_audio_test.rs`, `tests/config_cli_flag_values_test.rs` |  |  |
 | `--export-audio-out` |  | `FILE` | Queries | e2e | `tests/cli_export_audio_test.rs` |  |  |
 | `--vcon-validate` |  | `FILE` | Queries | e2e | `tests/cli_vcon_validate_test.rs` |  |  |
+| `--compare-captures` |  | `A` | Queries | e2e | `tests/cli_compare_captures_test.rs`, `tests/config_cli_flag_values_test.rs` |  |  |
+| `--compare-dimensions` |  | `DIMENSIONS` | Queries | e2e | `tests/cli_compare_captures_test.rs` |  |  |
 | `--panic-selftest` |  |  | Config (hidden) | referenced | `tests/crash_test.rs` |  |  |
 
 ## HTTP routes
@@ -486,7 +488,7 @@ behind them.
 | `/v1/calls/live/events` | exercised | `tests/api_capture_identity_test.rs`, `tests/live_audio_test.rs` |
 | `/v1/calls/{call_id}/audio` | exercised | `tests/api_capture_identity_test.rs`, `tests/live_audio_test.rs` |
 | `/v1/capabilities` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` |
-| `/v1/captures/compare` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +3 |
+| `/v1/captures/compare` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +4 |
 | `/v1/dialogs` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_operator_flows_test.rs` +7 |
 | `/v1/dialogs/compare` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/dialogs/rates` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |

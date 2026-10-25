@@ -1171,7 +1171,9 @@ out the end-of-run summary on stderr.
 | `--export-audio` | `<CALL-ID>` | | Unreleased | Write one call's decoded RTP audio to a WAV file, and print the export summary. Holds the call's audio payload for the run, as `--retain-audio` does. A Call-ID the capture does not hold, a call with nothing to decode, or an existing file exits 1 |
 | `--export-audio-out` | `<FILE>` | the Call-ID with `.wav` | Unreleased | The file `--export-audio` writes. It must not exist. Needs `--export-audio` |
 | `--vcon-validate` | `<FILE>` | | Unreleased | Check a vCon container file against sipnab's vendored schema and print the verdict and every finding. Exits 0 when valid and 3 when invalid, and 1 when sipnab cannot read or check the file. Needs no `-I`. `--json` prints the shape of `POST /v1/vcon/validate`. Needs the `vcon` feature |
-| `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
+| `--compare-captures` | `<A> <B>` | | Unreleased | Compare two capture files: for each dimension, the dialogs per value in A (the baseline) and B, and the change, largest movement first. Needs no `-I`. `--json` prints the shape of `GET /v1/captures/compare`. The same file twice exits 2; a file that yields no dialogs exits 1 |
+| `--compare-dimensions` | `<DIMENSIONS>` | `state,response_code` | Unreleased | The dimensions `--compare-captures` diffs, comma-separated, from the `--count-by` set. Any other exits 2. Needs `--compare-captures` |
+| `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
 
@@ -1702,6 +1704,104 @@ sipnab --vcon-validate tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json --json
 
 The MCP tool `validate_vcon` runs the same check on a container an agent
 passes it.
+
+### Compare two captures
+
+Hold one capture against another, such as today's against yesterday's, and see
+what moved:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap
+```
+
+```text
+A: tests/pcap-samples/sip-problem-call.pcap, 23 packets, 5 dialogs, 0 streams
+B: tests/pcap-samples/sip-rtp-g711.pcap, 852 packets, 2 dialogs, 2 streams
+
+By state:
+Value      A  B  Change
+-----------------------
+Failed     4  0  -4
+InCall     0  1  +1
+Completed  1  1  0
+
+By response_code:
+Value  A  B  Change
+-------------------
+200    1  2  +1
+404    1  0  -1
+486    1  0  -1
+503    1  0  -1
+603    1  0  -1
+
+'tests/pcap-samples/sip-problem-call.pcap' (5 dialogs) is the baseline; 'tests/pcap-samples/sip-rtp-g711.pcap' (2 dialogs) is held against it, so delta is b minus a.
+```
+
+- The first file, A, is the baseline. `Change` is B minus A, so a negative
+  change means the value became rarer.
+- Each dimension lists the values that moved most first.
+- sipnab reads both files and exits. It needs no capture, so give no `-I`.
+
+Choose the dimensions with `--compare-dimensions`, and keep fewer values with
+`--top`. An `(other)` row sums the values past the cut:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap --compare-dimensions method,ua --top 1
+```
+
+```text
+A: tests/pcap-samples/sip-problem-call.pcap, 23 packets, 5 dialogs, 0 streams
+B: tests/pcap-samples/sip-rtp-g711.pcap, 852 packets, 2 dialogs, 2 streams
+
+By method:
+Value   A  B  Change
+--------------------
+INVITE  5  2  -3
+
+By ua:
+Value    A  B  Change
+---------------------
+(none)   5  0  -5
+(other)  0  2  +2
+
+'tests/pcap-samples/sip-problem-call.pcap' (5 dialogs) is the baseline; 'tests/pcap-samples/sip-rtp-g711.pcap' (2 dialogs) is held against it, so delta is b minus a.
+```
+
+`(none)` counts the dialogs with no value for the dimension. Here no call in A
+carried a `User-Agent`. Compare the codecs the two captures carried:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap --compare-dimensions rtp.codec
+```
+
+```text
+A: tests/pcap-samples/sip-problem-call.pcap, 23 packets, 5 dialogs, 0 streams
+B: tests/pcap-samples/sip-rtp-g711.pcap, 852 packets, 2 dialogs, 2 streams
+
+By rtp.codec:
+Value   A  B  Change
+--------------------
+(none)  5  0  -5
+PCMA    0  1  +1
+PCMU    0  1  +1
+
+'tests/pcap-samples/sip-problem-call.pcap' (5 dialogs) is the baseline; 'tests/pcap-samples/sip-rtp-g711.pcap' (2 dialogs) is held against it, so delta is b minus a.
+```
+
+Under `--json`, the answer is the one `GET /v1/captures/compare` returns. List
+the values that moved in each dimension:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap --json | jq -c '[.dimensions[] | {dimension, moved: [.buckets[] | select(.delta != 0) | .value]}]'
+```
+
+```json
+[{"dimension":"state","moved":["Failed","InCall"]},{"dimension":"response_code","moved":["200","404","486","503","603"]}]
+```
+
+The REST route reads its two files from `--api-file-root`, and its summary adds
+that neither file is the capture the server holds. The MCP tool
+`compare_captures` runs the same comparison.
 
 ## Dialog
 

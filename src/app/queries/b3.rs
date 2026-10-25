@@ -14,18 +14,83 @@ use crate::cli::Cli;
 ///
 /// The process exit code when a job ran; `None` when none was asked for.
 pub(super) fn startup(cli: &Cli) -> Option<i32> {
-    vcon_validate(cli)
+    vcon_validate(cli).or_else(|| compare_captures(cli))
 }
 
-/// The exit code a valid container gives.
-const VALID: i32 = 0;
+/// The exit code of a usage error: the same file named twice.
+const USAGE: i32 = 2;
 
-/// The exit code an invalid container gives: the tool worked, the input is
-/// non-conformant, the code the lint gate uses.
-const INVALID: i32 = 3;
+/// `--compare-captures`: two capture files diffed by dimension, the answer
+/// `GET /v1/captures/compare` returns. The files are read with the pipeline
+/// options a run started by this command line would use, which need the
+/// config, so the job reads it here.
+fn compare_captures(cli: &Cli) -> Option<i32> {
+    use crate::capture::compare::{CaptureRef, CompareError, resolve_dimensions};
+    use crate::output::query::capture_compare::{Reporter, compare_files, render, view};
 
-/// The exit code a document that could not be validated gives.
-const NOT_VALIDATED: i32 = 1;
+    let [a, b] = cli.file_job_args.compare_captures.as_deref()? else {
+        return None;
+    };
+    let loaded = match crate::app::bootstrap::load_config(cli) {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            stderr_line!("{}", e.message);
+            return Some(e.exit_code);
+        }
+    };
+    let options = crate::app::server_pipeline_options(cli, &loaded.config);
+    let requested = &cli.file_job_args.compare_dimensions;
+    let top = cli
+        .aggregate_args
+        .top
+        .map_or(crate::output::query::DEFAULT_ROWS, |n| {
+            usize::try_from(n).unwrap_or(usize::MAX)
+        });
+    let (name_a, name_b) = (a.display().to_string(), b.display().to_string());
+    // The dimensions were held to the vocabulary when they were parsed; the
+    // same rule runs here to resolve the default and drop repeats, and any
+    // refusal takes the comparison's own path.
+    let compared = resolve_dimensions(Some(requested.as_slice())).and_then(|dimensions| {
+        compare_files(
+            CaptureRef {
+                path: a,
+                name: &name_a,
+            },
+            CaptureRef {
+                path: b,
+                name: &name_b,
+            },
+            &dimensions,
+            &options,
+            top,
+        )
+    });
+    let answer = match compared {
+        Ok(comparison) => view(comparison, Reporter::CommandLine),
+        Err(e) => {
+            stderr_line!("--compare-captures: {e}");
+            return Some(match e {
+                CompareError::SameFile { .. } | CompareError::UnknownDimension { .. } => USAGE,
+                CompareError::Unreadable { .. } => FAILED,
+            });
+        }
+    };
+    let written = super::write_answer(cli, "--compare-captures", &answer, |format| {
+        render(&answer, format)
+    });
+    Some(if written { SUCCESS } else { FAILED })
+}
+
+/// The exit code of a job that answered: a valid container, a comparison.
+const SUCCESS: i32 = 0;
+
+/// The exit code of an input that does not conform (an invalid container):
+/// the tool worked, the input did not, the code the lint gate uses.
+const NON_CONFORMANT: i32 = 3;
+
+/// The exit code of a job that could not answer: a file it could not read
+/// or check, a capture that yielded nothing, an answer stdout refused.
+const FAILED: i32 = 1;
 
 /// `--vcon-validate`: one container file checked against the vendored
 /// schema, the answer `POST /v1/vcon/validate` returns.
@@ -43,7 +108,7 @@ fn vcon_validate(cli: &Cli) -> Option<i32> {
             Ok(answer) => answer,
             Err(why) => {
                 stderr_line!("--vcon-validate {}: {why}", path.display());
-                return Some(NOT_VALIDATED);
+                return Some(FAILED);
             }
         };
         let shown = path.display().to_string();
@@ -51,14 +116,14 @@ fn vcon_validate(cli: &Cli) -> Option<i32> {
             render(&shown, &answer, format)
         });
         Some(match (written, answer.errors.is_empty()) {
-            (false, _) => NOT_VALIDATED,
-            (true, true) => VALID,
-            (true, false) => INVALID,
+            (false, _) => FAILED,
+            (true, true) => SUCCESS,
+            (true, false) => NON_CONFORMANT,
         })
     }
     #[cfg(not(feature = "vcon"))]
     {
-        let _ = (path, VALID, INVALID, NOT_VALIDATED);
+        let _ = (path, SUCCESS, NON_CONFORMANT, FAILED);
         stderr_line!("--vcon-validate requires the 'vcon' feature (not compiled in)");
         Some(2)
     }

@@ -474,7 +474,7 @@ Is today's capture worse than yesterday's, and in which bucket?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: diff capture A against B and rank what moved is exactly a cron job, but it is absent (PAR5) |
+| CLI | `--compare-captures` |
 | TUI | decision: a whole-file cross-capture trend is a batch artifact, not an interactive terminal affordance |
 | REST | `/v1/captures/compare` |
 | MCP | `compare_captures` |

@@ -2817,8 +2817,6 @@ async fn captures_compare(
     let path_a = resolve_in_file_root(state.file_root.as_deref(), a)?;
     let path_b = resolve_in_file_root(state.file_root.as_deref(), b)?;
     let (name_a, name_b) = (a.to_string(), b.to_string());
-    let max_dialogs = crate::cli::Cli::DEFAULT_DIALOG_LIMIT as usize;
-    let max_streams = crate::cli::Cli::DEFAULT_MAX_STREAMS as usize;
     let options = state.pipeline_options;
 
     // A token past its wrong passwords for either archive is turned away
@@ -2870,7 +2868,7 @@ async fn captures_compare(
     let (label_a, label_b) = (path_a.display().to_string(), path_b.display().to_string());
     let (result, attempts, locked, wrong) = tokio::task::spawn_blocking(move || {
         let run = || {
-            crate::capture::compare::compare(
+            crate::output::query::capture_compare::compare_files(
                 crate::capture::compare::CaptureRef {
                     path: &path_a,
                     name: &name_a,
@@ -2881,8 +2879,6 @@ async fn captures_compare(
                 },
                 &dims,
                 &options,
-                max_dialogs,
-                max_streams,
                 top_n,
             )
         };
@@ -2945,39 +2941,12 @@ async fn captures_compare(
     })?;
 
     // RAW: REST returns the bucket values unfenced (the MCP tool fences the
-    // sender-controlled dimensions). One map from the shared shape to the view.
-    let side = |s: crate::capture::compare::CaptureSide| schema::CaptureSideView {
-        filename: s.filename,
-        packets: s.packets,
-        dialogs: s.dialogs,
-        streams: s.streams,
-        dialogs_dropped: s.dialogs_dropped,
-        read_error: s.read_error,
-    };
-    let bucket = |bd: crate::capture::compare::BucketDelta| schema::BucketDeltaView {
-        value: bd.value,
-        a: bd.a,
-        b: bd.b,
-        delta: bd.delta,
-    };
-    let dimensions = comparison
-        .dimensions
-        .into_iter()
-        .map(|dd| schema::DimensionDiffView {
-            dimension: dd.dimension,
-            buckets: dd.buckets.into_iter().map(&bucket).collect(),
-            other: bucket(dd.other),
-            distinct_values: dd.distinct_values,
-        })
-        .collect();
-
-    Ok(Json(schema::CaptureComparisonView {
-        schema_version: 1,
-        a: side(comparison.a),
-        b: side(comparison.b),
-        dimensions,
-        summary: comparison.summary,
-    }))
+    // sender-controlled dimensions). One map from the shared shape to the
+    // view, the one `--compare-captures` prints.
+    Ok(Json(crate::output::query::capture_compare::view(
+        comparison,
+        crate::output::query::capture_compare::Reporter::Server,
+    )))
 }
 
 /// The `Content-Disposition` filename stem for a Call-ID's WAV: the rule
@@ -6797,66 +6766,12 @@ pub mod schema {
         pub detail: String,
     }
 
-    /// What reading one capture produced, for `GET /v1/captures/compare`.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CaptureSideView {
-        /// The name the caller gave.
-        pub filename: String,
-        /// Packets read from the file.
-        pub packets: u64,
-        /// Dialogs the read produced.
-        pub dialogs: usize,
-        /// RTP streams the read produced.
-        pub streams: usize,
-        /// Dialogs the scratch store's capacity refused; non-zero means this
-        /// side is truncated and every count is a floor.
-        pub dialogs_dropped: u64,
-        /// Why the read stopped early, when it did.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub read_error: Option<String>,
-    }
-
-    /// One value's movement between the two captures. `value` is raw.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct BucketDeltaView {
-        /// The grouped value, raw. Absent from a side means zero there.
-        pub value: String,
-        /// Dialogs in this bucket in capture `a`.
-        pub a: usize,
-        /// Dialogs in this bucket in capture `b`.
-        pub b: usize,
-        /// `b - a`. Negative means the value became rarer.
-        pub delta: i64,
-    }
-
-    /// One dimension's diff.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct DimensionDiffView {
-        /// The field grouped on.
-        pub dimension: String,
-        /// Buckets, largest absolute movement first.
-        pub buckets: Vec<BucketDeltaView>,
-        /// Everything past `top_n`, summed.
-        pub other: BucketDeltaView,
-        /// Distinct values seen across both captures.
-        pub distinct_values: usize,
-    }
-
-    /// Two capture files diffed by aggregate. Bucket values are raw.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CaptureComparisonView {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// The baseline.
-        pub a: CaptureSideView,
-        /// The capture held against it.
-        pub b: CaptureSideView,
-        /// One entry per requested dimension, in the order requested.
-        pub dimensions: Vec<DimensionDiffView>,
-        /// What the two sides are and what the numbers do not cover.
-        pub summary: String,
-    }
+    /// The capture comparison's answer, built by
+    /// [`crate::output::query::capture_compare::view`] for this route and
+    /// `--compare-captures` alike.
+    pub use crate::output::query::capture_compare::{
+        BucketDeltaView, CaptureComparisonView, CaptureSideView, DimensionDiffView,
+    };
 
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]

@@ -1260,7 +1260,7 @@ Rank the busiest participants: by the address that sent the messages (\fBip\fR),
 How many leading digits \fB\-\-talkers prefix\fR ranks the dialed number by (4 when not given). Only \fBprefix\fR reads it.
 .TP
 \fB\-\-top\fR \fIN\fR
-How many rows a ranked query keeps (\fB\-\-count\-by\fR, \fB\-\-rates\-by\fR, \fB\-\-talkers\fR), or how many recent dialogs an endpoint rollup lists (\fB\-\-endpoint\-ip\fR, \fB\-\-endpoint\-user\fR); the rest are summed or counted. 50 when not given, the default page REST returns.
+How many rows a ranked query keeps (\fB\-\-count\-by\fR, \fB\-\-rates\-by\fR, \fB\-\-talkers\fR, and per dimension \fB\-\-compare\-captures\fR), or how many recent dialogs an endpoint rollup lists (\fB\-\-endpoint\-ip\fR, \fB\-\-endpoint\-user\fR); the rest are summed or counted. 50 when not given, the default page REST returns.
 .TP
 \fB\-\-call\-tree\fR \fICALL\-ID\fR
 Print every leg of one call as a tree across B2BUA, SBC and PBX hops: the legs sipnab matched to it by an identifier (\fBX\-Call\-ID\fR, \fBSession\-ID\fR, SDP origin, P\-Charging\-Vector, a Via branch), each leg's own matches, and the legs a timing guess suggests, which the walk does not follow.
@@ -1285,6 +1285,12 @@ The file \fB\-\-export\-audio\fR writes. It must not exist.
 .TP
 \fB\-\-vcon\-validate\fR \fIFILE\fR
 Check a vCon container file against sipnab's vendored schema (draft\-ietf\-vcon\-vcon\-core\-04), and print the verdict and every finding.
+.TP
+\fB\-\-compare\-captures\fR \fIA\fR \fIB\fR
+Compare two capture files: for each dimension, how many dialogs took each value in A (the baseline) and in B, and the change, largest movement first.
+.TP
+\fB\-\-compare\-dimensions\fR \fIDIMENSIONS\fR
+The dimensions \fB\-\-compare\-captures\fR diffs, comma\-separated: any of \fBstate\fR, \fBresponse_code\fR, \fBmethod\fR, \fBfrom.user\fR, \fBto.user\fR, \fBua\fR, \fBsrc.ip\fR, \fBdst.ip\fR, \fBrtp.codec\fR. \fBstate,response_code\fR when not given.
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR

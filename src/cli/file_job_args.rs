@@ -33,6 +33,45 @@ pub struct FileJobArgs {
     /// Needs the `vcon` feature.
     #[arg(help_heading = "Queries", long, value_name = "FILE")]
     pub vcon_validate: Option<std::path::PathBuf>,
+
+    /// Compare two capture files: for each dimension, how many dialogs took
+    /// each value in A (the baseline) and in B, and the change, largest
+    /// movement first.
+    ///
+    /// Reads both files, then exits; needs no `-I`. The dimensions are
+    /// `--compare-dimensions`, `state` and `response_code` by default, and
+    /// `--top` keeps that many values per dimension (50 by default), summing
+    /// the rest. The same file twice exits 2; a file that yields no dialogs
+    /// exits 1. With `--json`, one JSON object on the last line of stdout,
+    /// the shape `GET /v1/captures/compare` returns.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        num_args = 2,
+        value_names = ["A", "B"],
+    )]
+    pub compare_captures: Option<Vec<std::path::PathBuf>>,
+
+    /// The dimensions `--compare-captures` diffs, comma-separated: any of
+    /// `state`, `response_code`, `method`, `from.user`, `to.user`, `ua`,
+    /// `src.ip`, `dst.ip`, `rtp.codec`. `state,response_code` when not given.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "DIMENSIONS",
+        value_delimiter = ',',
+        requires = "compare_captures",
+        value_parser = parse_compare_dimension,
+    )]
+    pub compare_dimensions: Vec<String>,
+}
+
+/// Parse one `--compare-dimensions` value by the rule REST applies to
+/// `dimensions`, refusing any other with the vocabulary.
+fn parse_compare_dimension(s: &str) -> Result<String, String> {
+    crate::capture::compare::resolve_dimensions(Some(&[s.to_string()]))
+        .map_err(|e| e.to_string())
+        .map(|_| s.trim().to_string())
 }
 
 impl FileJobArgs {
@@ -42,11 +81,19 @@ impl FileJobArgs {
     /// itself here, once. See [`OneShot`] for what each field decides.
     #[must_use]
     pub fn one_shots(&self) -> Vec<OneShot> {
-        vec![OneShot {
-            name: "--vcon-validate",
-            active: self.vcon_validate.is_some(),
-            implies_no_tui: true,
-            owns_stdout: true,
-        }]
+        vec![
+            OneShot {
+                name: "--vcon-validate",
+                active: self.vcon_validate.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+            OneShot {
+                name: "--compare-captures",
+                active: self.compare_captures.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+        ]
     }
 }
