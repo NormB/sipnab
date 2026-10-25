@@ -355,18 +355,13 @@ fn do_ask(
     let (call_id, mode) = key;
     let obtained_at = chrono::Utc::now();
     let label = answer_label(access.relay.as_ref(), access.addr, call_id.as_deref());
-    // ST-S4: a reply that arrived but could not be trusted (a mismatched cookie)
-    // is `suspect`; everything else is `unreachable`. Classified through the one
-    // seam rule so the TUI, REST and the CLI agree on which is which.
-    let fetch_failure = |e: &anyhow::Error| match crate::relay::types::fetch_error_outcome(e) {
-        StatisticsOutcome::Suspect => compose_outcome_text(
-            StatisticsOutcome::Suspect,
-            &format!("{label}: {e}; the reply was discarded and not read"),
-        ),
-        _ => compose_outcome_text(
-            StatisticsOutcome::Unreachable,
-            &format!("{label} did not answer ({e}); asked, nothing came back"),
-        ),
+    // ST-S4: a reply that arrived but could not be trusted (a mismatched cookie,
+    // or one that could not be decoded) is `suspect`; everything else is
+    // `unreachable`. Classified and worded by the function REST uses, so the
+    // TUI and REST agree on which is which.
+    let fetch_failure = |e: &anyhow::Error| {
+        let (outcome, detail) = crate::output::query::relay_holdings::fetch_failure(&label, e);
+        compose_outcome_text(outcome, &detail)
     };
     match mode {
         RelayStatsMode::Counters => match call_id {

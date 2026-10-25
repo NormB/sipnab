@@ -344,6 +344,64 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (`-L`) in one ru
 
 **Exit code:** 2.
 
+### `--compare-captures: {e}`
+
+`--compare-captures <A> <B>` could not compare the two files. `{e}` says which of these happened:
+
+- `'{a}' and '{b}' are the same file; a capture compared with itself differs from itself nowhere`. Exit code 2.
+- A dimension outside the `--count-by` set. Exit code 2. sipnab refuses it before it reads any file.
+- `'{name}' yielded no dialogs and reported: {reason}. Refusing to diff against it — every bucket would appear to have collapsed to zero, which is a finding that is not there.` The file is missing, is not a capture, or holds no SIP dialog. Exit code 1.
+
+**What to do:** Name two different files. For a file that yielded nothing, check the reason it gives: a path that does not exist, or a capture taken where no SIP passed.
+
+**Exit code:** 2 for the same file or a dimension, 1 for a file that yields nothing.
+
+### `--find-in-files needs something to find: give --filter, or a diagnostic alias such as --problems, to say which dialogs to look for`
+
+`--find-in-files` reports the files that hold the dialogs a filter selects, and the command line gave no filter: no `--filter`, no diagnostic alias, and no `--since` or `--until`.
+
+**What to do:** Say what to look for, for example `--filter 'call_id == "abc@example.com"'` to find one call, or `--problems` to find the files with failed calls.
+
+**Exit code:** 2.
+
+### `--find-in-files: {why}`
+
+`--find-in-files` could not list a directory named on the command line. `{why}` names the directory and the operating system's reason.
+
+**What to do:** Check that the path exists and that this user may read it.
+
+**Exit code:** 1.
+
+### `--expect: {why}`
+
+`--expect` judges `lint_errors` rules with the lint suppression file in force, and sipnab could not read it. `{why}` names the file (`--lint-suppress-file`, or a `.sipnab-lint-suppress` found beside the capture) and the reason. sipnab prints no verdict.
+
+**What to do:** Fix or remove the suppression file, or name a readable one with `--lint-suppress-file`.
+
+**Exit code:** 2.
+
+### `--expect {}: {e}`
+
+The suite file `{}` holds a rule the evaluator refused when it judged the capture: `{e}` names the rule by its index and says why. sipnab checks every rule before it reads the capture, so this is rare: a rule whose filter compiles with the default thresholds and not with the ones the run's configuration sets.
+
+**What to do:** Fix the rule `{e}` names. The suite's exit code `2` means no verdict.
+
+**Exit code:** 2.
+
+### `--export-audio: {why}`
+
+`--export-audio <CALL-ID>` could not write the call's audio. `{why}` says which of these happened:
+
+- The capture holds neither a SIP dialog nor an RTP stream with that Call-ID. The message is `no SIP dialog and no RTP stream associated with call_id '{call_id}' in this capture`.
+- The call has no RTP streams, or none with audio sipnab can decode. The message names what sipnab measured and why it kept nothing to decode.
+- sipnab could not create the file. An existing file is one cause: sipnab never replaces one.
+
+sipnab writes no file in any of these cases.
+
+**What to do:** For an unknown Call-ID, run with `--report` to list the Call-IDs this run holds. For nothing to decode, check the message: a `--snaplen` too short for the payload is the usual cause. For a file that exists, name another with `--export-audio-out`, or remove the old one.
+
+**Exit code:** 1.
+
 ### `--rates-by: {why}`
 
 `--rates-by` asked the metric table for a metric it has no way to compute. Every metric `--rates-by` computes comes from that same table, so this message means a defect in sipnab, not in the capture or the command line. sipnab prints no metrics.
@@ -2184,7 +2242,7 @@ A query flag, named by `{flag}`, computed its answer, and sipnab could not write
 
 ### `Call-ID '{call_id}' not found in tracked dialogs`
 
-`--call-report <CALL-ID>` asks for a detailed report of one call, and this run tracked no dialog with that exact Call-ID. The match is exact and case-sensitive. The run exits 1, and sipnab produces none of the later reports.
+`--call-report <CALL-ID>` asks for a detailed report of one call, `--call-tree <CALL-ID>` and `--correlate <CALL-ID>` for the legs of one call, and `--compare-dialogs <CALL-ID-A> <CALL-ID-B>` for two calls side by side. This run tracked no dialog with that exact Call-ID. The match is exact and case-sensitive. The run exits 1, and sipnab produces none of the later reports.
 
 **What to do:** Run with `--report` (or `--json-dialogs`) to list the Call-IDs this run holds, then pass one of them exactly. The text `--report` table shortens Call-IDs to 30 characters, and `--markdown` shows them in full.
 
@@ -2889,9 +2947,9 @@ The relay at `{addr}` answered the `--relay-compare` request for call `{call_id}
 
 ### `relay at {addr}: {e}; the reply was discarded and not read (suspect).`
 
-The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not trust (for example a mismatched cookie). So sipnab discarded the reply. The run continues.
+The relay at `{addr}` answered `--relay-stats` with a reply sipnab could not trust: one whose cookie answers a different request, or one sipnab cannot decode. So sipnab discarded the reply. The run continues.
 
-**What to do:** Check that only one client talks to the relay's control port with this address, then retry.
+**What to do:** Check that `--rtpengine-control` names the relay's ng control port and that only one client talks to it with this address, then retry.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
@@ -2910,6 +2968,36 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 **What to do:** Run the comparison during a live capture, for example with `-d <device>`.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
+
+### `--relay-holdings needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
+
+`--relay-holdings` asks a media relay which calls it holds, but the run has no relay address to ask. The command line refuses `--relay-holdings` without `--rtpengine-control` before this point, so this message is a fallback. sipnab asked nothing.
+
+**What to do:** Add `--rtpengine-control <ip:port>`, for example `--rtpengine-control 127.0.0.1:22222`.
+
+**Exit code:** 2.
+
+### `--relay-holdings will not ask a relay on a run that reads a file: asking transmits. Ask from a live source (-d <device> or -L <addr>).`
+
+Asking the relay sends a packet. sipnab transmits only on a run that watches a live source: a network interface or a HEP listener. This run reads a capture file, so `--relay-holdings` asked nothing and printed no answer.
+
+**What to do:** Ask from a live source, for example `-d <device>` or `-L <addr>`.
+
+**Exit code:** 2.
+
+### `--relay-holdings: {}`
+
+`--relay-holdings` asked the relay which calls it holds, and no call list came back. `{}` names the classification and what happened:
+
+- `unreachable`: no reply arrived within the timeout. Over UDP, a relay that is down, a filtered port and a lost reply look the same.
+- `refused`: the relay answered and declined, in its own words.
+- `suspect`: a reply arrived that sipnab cannot trust: one for another request, one sipnab cannot decode, or one that is not a call list.
+
+This is not a relay that holds no calls. That answer prints `The relay holds no calls.` and exits 0.
+
+**What to do:** For `unreachable`, check that `--rtpengine-control` names the relay's ng control port and that the relay is running. For `refused`, read the relay's reason. For `suspect`, ask again. If it repeats, look at the relay, or at something else answering on its port.
+
+**Exit code:** 1.
 
 ### `--relay-stats-interval needs a relay to poll. Name one with --rtpengine-control <addr>.`
 
@@ -2991,11 +3079,11 @@ The value of `--rtpengine-control` must be a literal IP address and port, such a
 
 ### `--rtpengine-control {addr} is not an address and port ({e}); nothing was asked.`
 
-The `--rtpengine-control` value `{addr}` is not an IP address and port, so the relay statistics request (`--relay-stats`, `--relay-stats-call` or `--relay-stats-list`) asked nothing. `{e}` is the parse error.
+The `--rtpengine-control` value `{addr}` is not an IP address and port, so the relay statistics request (`--relay-stats`, `--relay-stats-call` or `--relay-stats-list`) or `--relay-holdings` asked nothing. `{e}` is the parse error.
 
 **What to do:** Give the address as numeric `IP:port`, for example `--rtpengine-control 127.0.0.1:22222`.
 
-**Exit code:** None. sipnab logs the error, and the run continues.
+**Exit code:** None for the statistics request: sipnab logs the error, and the run continues. 2 for `--relay-holdings`, which exits without answering.
 
 ### `{}: {} stepped backwards {} -> {} between polls; a cumulative counter cannot decrease, so the relay probably restarted (suspect). The counters below are since an unknown start.`
 
@@ -4241,6 +4329,30 @@ The file a recording names is larger than the limit. `{}` is the limit and `{max
 The server that holds a recording's file closed the connection before it sent the length it declared. `{problem}` gives the two lengths. sipnab writes nothing for the recording.
 
 **What to do:** Run the command again. If it recurs, check the server.
+
+**Exit code:** 1.
+
+### `--vcon-validate requires the 'vcon' feature (not compiled in)`
+
+`--vcon-validate` checks a container against the vCon schema sipnab ships, and the schema is part of the `vcon` feature. This binary does not include it.
+
+**What to do:** Use a build with the `vcon` feature: the release binaries and `cargo install sipnab --features full` include it.
+
+**Exit code:** 2.
+
+### `--vcon-validate {}: {why}`
+
+`--vcon-validate <FILE>` could not check the file. The first `{}` is the path, and `{why}` is one of these:
+
+- sipnab could not read the file: the operating system's reason, such as `No such file or directory (os error 2)`.
+- `the body must be a JSON vCon container`: the file is not JSON.
+- `a vCon container is a JSON object; pass the container itself, not a string or array holding it`: the file is JSON but not an object.
+- `sipnab must not validate this vCon container: {why}`: the container lists a `critical` extension sipnab does not support, which draft-ietf-vcon-vcon-core-04 section 4.1.4 forbids operating on.
+- A signed, encrypted or gzip container that does not open, with the reason.
+
+An invalid container is not this message: it prints its findings and exits 3.
+
+**What to do:** Check the path and that the file is the container itself. For a `critical` extension, this sipnab cannot check the container.
 
 **Exit code:** 1.
 

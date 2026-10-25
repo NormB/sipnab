@@ -120,7 +120,7 @@ Show me every leg of this call as a tree across the B2BUA, SBC and PBX hops.
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: transitive multi-leg reassembly is a one-shot fact, but no flag exposes correlation (PAR5) |
+| CLI | `--call-tree` |
 | TUI | `CallFlow` |
 | REST | `/v1/dialogs/{call_id}/tree` |
 | MCP | `get_call_tree` |
@@ -131,7 +131,7 @@ What are the other legs of this call, and by which strategy was each matched?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a one-shot "where did this call go next" is legitimate, but no flag exposes correlation (PAR5) |
+| CLI | `--correlate` |
 | TUI | `CallFlow` |
 | REST | `/v1/dialogs/{call_id}/correlated` |
 | MCP | `find_correlated` |
@@ -197,7 +197,7 @@ Put two calls side by side and list what differs.
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: one-shot comparison belongs here, but there is no compare flag (PAR5) |
+| CLI | `--compare-dialogs` |
 | TUI | `CompareDialogs` |
 | REST | `/v1/dialogs/compare` |
 | MCP | `compare_dialogs` |
@@ -307,7 +307,7 @@ Everything one endpoint did — counts, INVITE outcomes, REGISTER state, streams
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a one-shot per-endpoint rollup is CLI-shaped, but the match flags filter and dump, they do not aggregate (PAR5) |
+| CLI | `--endpoint-ip`, `--endpoint-user` |
 | TUI | `EndpointRollup` |
 | REST | `/v1/endpoints` |
 | MCP | `describe_endpoint` |
@@ -318,7 +318,7 @@ Give me this call's decoded RTP audio as a file.
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a one-shot `--export-audio` to a WAV is CLI-shaped, but audio leaves the CLI only inside a vCon, never as a standalone WAV (PAR5) |
+| CLI | `--export-audio` |
 | TUI | `StreamDetail` |
 | REST | `/v1/dialogs/{call_id}/audio` |
 | MCP | `export_audio` |
@@ -362,7 +362,7 @@ What Call-IDs is the live relay holding right now?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a one-shot holdings query is CLI-shaped for incident response, but the relay-stats family transmits only for stats, not holdings (PAR5) |
+| CLI | `--relay-holdings` |
 | TUI | `RelayStats` |
 | REST | `/v1/relay/holdings` and `/v1/relay/holdings/{call_id}` |
 | MCP | `query_relay` |
@@ -463,7 +463,7 @@ Which of these rotated files holds Call-ID X, without disturbing what is loaded?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a bounded sweep of several files reporting which match is a textbook one-shot CLI job, but no dedicated flag exists (PAR5) |
+| CLI | `--find-in-files` |
 | TUI | decision: a cross-file content sweep is a batch affordance, and a human opens one file and searches within it |
 | REST | decision: the do-not-touch-the-loaded-capture guarantee is an agent-cursor concern, and REST has no file-root surface |
 | MCP | `find_in_captures`, polled with `find_in_captures_status` and stopped with `cancel_find_in_captures` |
@@ -474,7 +474,7 @@ Is today's capture worse than yesterday's, and in which bucket?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: diff capture A against B and rank what moved is exactly a cron job, but it is absent (PAR5) |
+| CLI | `--compare-captures` |
 | TUI | decision: a whole-file cross-capture trend is a batch artifact, not an interactive terminal affordance |
 | REST | `/v1/captures/compare` |
 | MCP | `compare_captures` |
@@ -507,7 +507,7 @@ Does this vCon container pass sipnab's vendored schema?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: schema conformance of a document is a one-shot CI check, but no flag exists (PAR5) |
+| CLI | `--vcon-validate` |
 | TUI | decision: validating JSON against a schema is a CI concern, and a human at a terminal would not reach for a conformance screen |
 | REST | `/v1/vcon/validate` (POST) |
 | MCP | `validate_vcon` |
@@ -727,7 +727,7 @@ Judge this capture against a rule suite and return a build exit code.
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: the engine returns a CI exit code, but [`src/expect.rs`](https://github.com/NormB/sipnab/blob/main/src/expect.rs) records that no flag reaches it yet, so a checked-in expectations file cannot fail a build and only the agent tool can run it — the strongest close-worthy gap in this matrix (PAR5) |
+| CLI | `--expect` |
 | TUI | decision: a build gate is not interactive |
 | REST | decision: CI gates run through CLI exit codes, and a monitoring poll uses the stats route with its own thresholds |
 | MCP | `evaluate_expectations` |

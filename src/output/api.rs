@@ -1898,42 +1898,22 @@ async fn get_correlated(
     let ss = state.stream_store.read();
     // 404 an unknown Call-ID, the same answer `/v1/dialogs/{call_id}` gives, so
     // an empty-legs 200 always means "this call stands alone" and never "this
-    // call is not here" — two facts a caller acts on differently.
-    let source_created = match ds.get(&call_id) {
-        Some(d) => d.created_at,
-        None => return Err(Problem::new(StatusCode::NOT_FOUND)),
-    };
-    let results = ds.find_correlated_scored(&call_id);
-    let total_matched = results.len();
-    let legs: Vec<schema::CorrelatedLeg> = results
-        .iter()
-        .take(state.max_rows)
-        .map(|r| {
-            let (strategy, identifier_match, observed_gap_ms) =
-                r.strategy_and_gap(Some(source_created));
-            schema::CorrelatedLeg {
-                call_id: r.dialog.call_id.clone(),
-                score: r.score,
-                strategy: strategy.to_string(),
-                identifier_match,
-                observed_gap_ms,
-            }
-        })
-        .collect();
-    let heuristic_only = !legs.is_empty() && legs.iter().all(|l| !l.identifier_match);
+    // call is not here" — two facts a caller acts on differently. The answer
+    // is the one `--correlate` prints.
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer = crate::output::query::correlated::correlated(
+        &ds,
+        &call_id,
+        state.max_rows,
+        capture_identity,
+    );
     drop(ss);
     drop(ds);
     drop(capture);
 
-    Ok(Json(schema::Correlated {
-        schema_version: 1,
-        source_call_id: call_id,
-        legs,
-        total_matched,
-        heuristic_only,
-        capture_identity,
-    }))
+    answer
+        .map(Json)
+        .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND))
 }
 
 /// `GET /v1/dialogs/{call_id}/tree` — the whole tree of legs reachable from this
@@ -1985,42 +1965,18 @@ async fn get_tree(
     let capture = state.capture.as_ref().map(|c| c.read());
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
-    // The one walk, shared with the MCP `get_call_tree` tool. 404 an unknown
-    // Call-ID, the same answer the sibling routes give.
-    let tree = ds
-        .correlation_tree(&call_id, state.max_rows)
-        .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND))?;
-    let legs: Vec<schema::CallTreeLeg> = tree
-        .legs
-        .iter()
-        .map(|leg| schema::CallTreeLeg {
-            call_id: leg.call_id.clone(),
-            depth: leg.depth,
-            parent_call_id: leg.parent_call_id.clone(),
-            score: leg.score,
-            strategy: leg.strategy.map(str::to_string),
-            identifier_match: leg.identifier_match,
-            followed: leg.followed,
-        })
-        .collect();
+    // The one walk, shared with the MCP `get_call_tree` tool; the answer is
+    // the one `--call-tree` prints. 404 an unknown Call-ID, the same answer
+    // the sibling routes give.
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let tree =
+        crate::output::query::tree::call_tree(&ds, &call_id, state.max_rows, capture_identity);
     drop(ss);
     drop(ds);
     drop(capture);
 
-    Ok(Json(schema::CallTree {
-        schema_version: 1,
-        root_call_id: call_id,
-        total_legs: legs.len(),
-        legs,
-        max_depth: tree.max_depth,
-        truncated: tree.truncated,
-        heuristic_edges: tree.heuristic_edges,
-        total_messages: tree.total_messages,
-        first_activity: tree.first_activity.map(|t| t.to_rfc3339()),
-        last_activity: tree.last_activity.map(|t| t.to_rfc3339()),
-        capture_identity,
-    }))
+    tree.map(Json)
+        .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND))
 }
 
 /// `GET /v1/aggregate` — count dialogs grouped by one dimension (PAR3:
@@ -2247,27 +2203,14 @@ async fn get_compare(
     })?;
 
     // The shared comparison rule, so this route and the MCP `compare_dialogs`
-    // tool name the same differences.
-    let cmp = crate::sip::dialog::compare_dialogs(a, b);
-    let side = |s: crate::sip::dialog::DialogSide| schema::ComparisonSide {
-        call_id: s.call_id,
-        state: s.state,
-        final_status_code: s.final_status_code,
-        msg_count: s.msg_count,
-        methods: s.methods,
-        hints: s.hints,
-    };
+    // tool name the same differences; the answer is the one
+    // `--compare-dialogs` prints.
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer = crate::output::query::compare::comparison(a, b, capture_identity);
     drop(ss);
     drop(ds);
     drop(capture);
-    Ok(Json(schema::Comparison {
-        schema_version: 1,
-        a: side(cmp.a),
-        b: side(cmp.b),
-        differences: cmp.differences,
-        capture_identity,
-    }))
+    Ok(Json(answer))
 }
 
 /// `GET /v1/dialogs/tail` — dialogs changed since a cursor, for change-tracking
@@ -2566,69 +2509,16 @@ async fn get_endpoints(
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // The scan is shared with the MCP `describe_endpoint` tool. This surface
-    // renders the raw values and omits findings — a separate capability.
-    let report = crate::sip::endpoint::describe(&ds, &ss, &selector, limit);
-
-    let user_agents: Vec<Value> = report
-        .banners
-        .iter()
-        .map(|b| json!({ "header": b.header, "value": b.value, "count": b.count }))
-        .collect();
-    let recent_dialogs: Vec<Value> = report
-        .recent_call_ids
-        .iter()
-        .filter_map(|id| ds.get(id))
-        .map(dialog_summary)
-        .collect();
+    // renders the raw values and omits findings — a separate capability. The
+    // answer is the one `--endpoint-ip` and `--endpoint-user` print.
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer =
+        crate::output::query::endpoint::endpoint(&ds, &ss, &selector, limit, capture_identity);
     drop(ss);
     drop(ds);
     drop(capture);
 
-    let calls = json!({
-        "invites": report.calls.invites,
-        "with_final_status": report.calls.with_final_status,
-        "failed": report.calls.failed,
-        "failure_rate_pct": report.calls.failure_rate_pct,
-        "by_final_status": report.calls.by_final_status,
-    });
-    let registration = json!({
-        "applicable": report.registration.applicable,
-        "dialogs": report.registration.dialogs,
-        "succeeded": report.registration.succeeded,
-        "failed": report.registration.failed,
-        "auth_loops": report.registration.auth_loops,
-        "problem_call_ids": report.registration.problem_call_ids,
-    });
-    let streams = json!({
-        "count": report.streams.count,
-        "orphaned": report.streams.orphaned,
-        "packets": report.streams.packets,
-        "lost_packets": report.streams.lost_packets,
-        "max_jitter_ms": report.streams.max_jitter_ms,
-        "codecs": report.streams.codecs,
-    });
-
-    Ok(Json(json!({
-        "schema_version": 1,
-        "endpoint_kind": report.kind,
-        "endpoint": report.value,
-        "dialogs": report.dialogs,
-        "by_method": report.by_method,
-        "by_state": report.by_state,
-        "messages_sent": report.messages_sent,
-        "messages_received": report.messages_received,
-        "calls": calls,
-        "registration": registration,
-        "user_agents": user_agents,
-        "stack": report.stack,
-        "contact_rewrite": report.contact_rewrite,
-        "streams": streams,
-        "recent_dialogs": recent_dialogs,
-        "truncated": report.truncated,
-        // Which capture this description came from; see `/v1/dialogs`.
-        "capture_identity": capture_identity,
-    })))
+    Ok(Json(answer.json))
 }
 
 /// `GET /v1/security/findings` — the armed detectors' recorded findings (PAR3:
@@ -2927,8 +2817,6 @@ async fn captures_compare(
     let path_a = resolve_in_file_root(state.file_root.as_deref(), a)?;
     let path_b = resolve_in_file_root(state.file_root.as_deref(), b)?;
     let (name_a, name_b) = (a.to_string(), b.to_string());
-    let max_dialogs = crate::cli::Cli::DEFAULT_DIALOG_LIMIT as usize;
-    let max_streams = crate::cli::Cli::DEFAULT_MAX_STREAMS as usize;
     let options = state.pipeline_options;
 
     // A token past its wrong passwords for either archive is turned away
@@ -2980,7 +2868,7 @@ async fn captures_compare(
     let (label_a, label_b) = (path_a.display().to_string(), path_b.display().to_string());
     let (result, attempts, locked, wrong) = tokio::task::spawn_blocking(move || {
         let run = || {
-            crate::capture::compare::compare(
+            crate::output::query::capture_compare::compare_files(
                 crate::capture::compare::CaptureRef {
                     path: &path_a,
                     name: &name_a,
@@ -2991,8 +2879,6 @@ async fn captures_compare(
                 },
                 &dims,
                 &options,
-                max_dialogs,
-                max_streams,
                 top_n,
             )
         };
@@ -3055,65 +2941,17 @@ async fn captures_compare(
     })?;
 
     // RAW: REST returns the bucket values unfenced (the MCP tool fences the
-    // sender-controlled dimensions). One map from the shared shape to the view.
-    let side = |s: crate::capture::compare::CaptureSide| schema::CaptureSideView {
-        filename: s.filename,
-        packets: s.packets,
-        dialogs: s.dialogs,
-        streams: s.streams,
-        dialogs_dropped: s.dialogs_dropped,
-        read_error: s.read_error,
-    };
-    let bucket = |bd: crate::capture::compare::BucketDelta| schema::BucketDeltaView {
-        value: bd.value,
-        a: bd.a,
-        b: bd.b,
-        delta: bd.delta,
-    };
-    let dimensions = comparison
-        .dimensions
-        .into_iter()
-        .map(|dd| schema::DimensionDiffView {
-            dimension: dd.dimension,
-            buckets: dd.buckets.into_iter().map(&bucket).collect(),
-            other: bucket(dd.other),
-            distinct_values: dd.distinct_values,
-        })
-        .collect();
-
-    Ok(Json(schema::CaptureComparisonView {
-        schema_version: 1,
-        a: side(comparison.a),
-        b: side(comparison.b),
-        dimensions,
-        summary: comparison.summary,
-    }))
+    // sender-controlled dimensions). One map from the shared shape to the
+    // view, the one `--compare-captures` prints.
+    Ok(Json(crate::output::query::capture_compare::view(
+        comparison,
+        crate::output::query::capture_compare::Reporter::Server,
+    )))
 }
 
-/// Sanitize a Call-ID into a safe `Content-Disposition` filename stem.
-///
-/// The Call-ID is attacker-controlled — a stranger's `Call-ID:` header — and
-/// goes into a response header, so any character outside a conservative set
-/// becomes `_`. That closes header (CRLF) injection and keeps the filename
-/// portable. An empty result falls back to `audio`, never a nameless download.
-fn wav_filename_stem(call_id: &str) -> String {
-    let stem: String = call_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let trimmed = stem.trim_matches('.');
-    if trimmed.is_empty() {
-        "audio".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
+/// The `Content-Disposition` filename stem for a Call-ID's WAV: the rule
+/// `--export-audio` names its default file by too.
+use crate::rtp::audio_export::wav_filename_stem;
 
 /// `GET /v1/dialogs/{call_id}/audio` — the call's decoded RTP as a WAV (PAR3:
 /// export_audio on REST).
@@ -3806,56 +3644,20 @@ async fn post_vcon_validate(
 
     let bytes = vcon_body(&headers, body)?;
     // A signed or encrypted container is validated by the unsigned vCon
-    // inside, opened by the readers' one step.
-    let container = match crate::capture::vcon_input::open_bytes(&bytes) {
-        Ok((container, _)) => container,
-        Err(crate::capture::vcon_input::ContainerError::NotJson(_)) => {
-            return Err(Problem::detailed(
-                StatusCode::BAD_REQUEST,
-                "the body must be a JSON vCon container",
-            ));
-        }
-        Err(e) => {
-            return Err(Problem::detailed(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                e.to_string(),
-            ));
-        }
-    };
-    if !container.is_object() {
-        return Err(Problem::detailed(
-            StatusCode::BAD_REQUEST,
-            "a vCon container is a JSON object; pass the container itself, not a \
-             string or array holding it",
-        ));
-    }
-
-    if let Some(why) = crate::capture::vcon_input::critical_refusal(&container) {
-        return Err(Problem::detailed(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("sipnab must not validate this vCon container: {why}"),
-        ));
-    }
-
-    // The shared validator the MCP tool also runs; not feature-gated, so an
-    // api-only build validates too.
-    let report = crate::output::vcon_schema::validate(&container);
-    let finding = |f: &crate::output::vcon_schema::SchemaFinding| schema::VconFinding {
-        instance_path: f.instance_path.clone(),
-        keyword: f.keyword.to_string(),
-        detail: f.detail.clone(),
-    };
-
-    Ok(Json(schema::VconValidation {
-        // 2: the core-04 schema left nothing to excuse, so `deviations`,
-        // `explanations` and the `valid-except-documented-deviation` verdict
-        // are gone.
-        schema_version: 2,
-        verdict: report.verdict.as_str().to_string(),
-        schema_id: report.schema_id.clone(),
-        schema_path: report.schema_path.to_string(),
-        errors: report.errors.iter().map(finding).collect(),
-    }))
+    // inside, opened by the readers' one step. The shared validator the MCP
+    // tool also runs; it needs the vendored schema, which is part of the
+    // vcon feature, as this route is. The answer is the one
+    // `--vcon-validate` prints.
+    use crate::output::query::vcon_validate::{NotValidated, validate_bytes};
+    validate_bytes(&bytes).map(Json).map_err(|refusal| {
+        let status = match refusal {
+            NotValidated::NotJson | NotValidated::NotObject => StatusCode::BAD_REQUEST,
+            NotValidated::Unopened(_) | NotValidated::Critical(_) => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+        };
+        Problem::detailed(status, refusal.to_string())
+    })
 }
 
 #[cfg(feature = "vcon")]
@@ -5928,21 +5730,15 @@ fn relay_rest_answer(
         (Some(r), Some(p)) => (r, p),
     };
 
-    let label = format!("relay ({})", relay.describe());
+    let label = crate::output::query::relay_holdings::relay_label(relay.as_ref());
     let now = chrono::Utc::now();
     // A fetch that did not yield a trustworthy reply. ST-S4: a reply that
     // arrived but could not be trusted (a mismatched cookie) is `suspect` -- the
     // answer's own problem -- and everything else is `unreachable`. Classified
     // through the single seam rule so REST and the CLI agree.
-    let fetch_failure = |e: &anyhow::Error| match crate::relay::types::fetch_error_outcome(e) {
-        O::Suspect => to_value(fmt::relay_rest_outcome(
-            O::Suspect,
-            &format!("{label}: {e}; the reply was discarded and not read"),
-        )),
-        _ => to_value(fmt::relay_rest_outcome(
-            O::Unreachable,
-            &format!("{label} did not answer ({e}); asked, nothing came back"),
-        )),
+    let fetch_failure = |e: &anyhow::Error| {
+        let (outcome, detail) = crate::output::query::relay_holdings::fetch_failure(&label, e);
+        to_value(fmt::relay_rest_outcome(outcome, &detail))
     };
 
     match ask {
@@ -6073,28 +5869,11 @@ fn relay_rest_answer(
                 Err(e) => fetch_failure(&e),
             }
         }
-        RelayAsk::Holdings { max_calls } => match relay.list(&permit, *max_calls) {
-            Ok(ControlReply::Calls(e)) => to_value(fmt::relay_rest_ok(
-                &json!({
-                    "kind": "calls",
-                    "call_ids": e.call_ids,
-                    "truncated": e.truncated,
-                    "relay": label,
-                    "obtained_at": now.to_rfc3339(),
-                    "origin": "asked",
-                })
-                .to_string(),
-            )),
-            Ok(ControlReply::Refused { reason }) => to_value(fmt::relay_rest_outcome(
-                O::Refused,
-                &format!("{label}: {reason}"),
-            )),
-            Ok(_) => to_value(fmt::relay_rest_outcome(
-                O::Suspect,
-                "the relay answered with something other than a call list",
-            )),
-            Err(e) => fetch_failure(&e),
-        },
+        // The answer `--relay-holdings` prints too.
+        RelayAsk::Holdings { max_calls } => {
+            crate::output::query::relay_holdings::ask(relay.as_ref(), &permit, *max_calls, now)
+                .body()
+        }
         RelayAsk::Holding(call_id) => match relay.query(&permit, call_id) {
             Ok(ControlReply::Call(view)) => to_value(fmt::relay_rest_ok(
                 &json!({
@@ -6660,108 +6439,15 @@ pub mod schema {
         pub api_allow_vcon_fetch: bool,
     }
 
-    /// One other leg of a call, and the strategy that matched it. The fields
-    /// mirror the MCP `find_correlated` tool's `CorrelatedLeg`, built from the
-    /// one `CorrelationResult::strategy_and_gap` rule so the two surfaces cannot
-    /// disagree about whether a strategy is an identifier match.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CorrelatedLeg {
-        /// Call-ID of the correlated dialog. Feed it to `/v1/dialogs/{call_id}`.
-        pub call_id: String,
-        /// Confidence, 0-100.
-        #[schema(minimum = 0, maximum = 100)]
-        pub score: u8,
-        /// Which strategy matched, by name: `session_id`, `x_call_id`,
-        /// `sdp_origin`, `charging_vector_related_icid`, `charging_vector_icid`,
-        /// `via_branch` or `timing_heuristic`.
-        pub strategy: String,
-        /// True when the strategy compared identifiers, false for a guess.
-        pub identifier_match: bool,
-        /// For `timing_heuristic` only: the observed gap between the two
-        /// dialogs' creation, in milliseconds. Null for an identifier match,
-        /// where it would be a number with no bearing on why they matched.
-        pub observed_gap_ms: Option<i64>,
-    }
+    /// The correlation answer, built by
+    /// [`crate::output::query::correlated::correlated`] for this route and
+    /// `--correlate` alike.
+    pub use crate::output::query::correlated::{Correlated, CorrelatedLeg};
 
-    /// The other legs of one call, with the source it was asked about.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct Correlated {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// The Call-ID the legs were correlated against.
-        pub source_call_id: String,
-        /// The correlated legs, highest score first.
-        pub legs: Vec<CorrelatedLeg>,
-        /// How many legs matched before the row cap.
-        pub total_matched: usize,
-        /// True when every matched leg is a timing guess rather than an
-        /// identifier match, so a reader weighs the whole answer accordingly.
-        pub heuristic_only: bool,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
-
-    /// One leg of a call tree: a dialog, and how the walk reached it. Follow
-    /// `call_id` to `/v1/dialogs/{call_id}` for the leg's detail.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CallTreeLeg {
-        /// Call-ID of this leg.
-        pub call_id: String,
-        /// Hops from the root. Zero for the root itself.
-        pub depth: u32,
-        /// The leg this one was correlated FROM. Null for the root.
-        pub parent_call_id: Option<String>,
-        /// Confidence of the edge from the parent, 0-100. Null for the root.
-        #[schema(minimum = 0, maximum = 100)]
-        pub score: Option<u8>,
-        /// Which strategy matched this edge. Null for the root.
-        pub strategy: Option<String>,
-        /// Whether the edge compared identifiers rather than guessing. Null for
-        /// the root, which the caller named rather than the walk matching.
-        pub identifier_match: Option<bool>,
-        /// Whether the walk continued THROUGH this leg. False on a leg reached
-        /// by a timing guess, and on any leg the cap cut the walk short of.
-        pub followed: bool,
-    }
-
-    /// The tree of legs reachable from one call across a B2BUA, SBC or PBX.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CallTree {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// Call-ID the walk started from, echoed verbatim.
-        pub root_call_id: String,
-        /// Every leg found, ordered by depth then creation time.
-        pub legs: Vec<CallTreeLeg>,
-        /// Number of legs returned, root included.
-        pub total_legs: usize,
-        /// Deepest hop count reached.
-        pub max_depth: u32,
-        /// True when the row cap stopped the walk before it ran out of legs.
-        pub truncated: bool,
-        /// How many edges are timing guesses rather than identifier matches.
-        pub heuristic_edges: usize,
-        /// Total SIP messages across every leg.
-        pub total_messages: usize,
-        /// Earliest leg creation time in the tree, RFC 3339.
-        pub first_activity: Option<String>,
-        /// Latest leg update time in the tree, RFC 3339.
-        pub last_activity: Option<String>,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
+    /// The call tree's answer, built by
+    /// [`crate::output::query::tree::call_tree`] for this route and
+    /// `--call-tree` alike.
+    pub use crate::output::query::tree::{CallTree, CallTreeLeg};
 
     /// The group-by count's answer, built by
     /// [`crate::output::query::aggregate::aggregate`] for this route and
@@ -6817,81 +6503,20 @@ pub mod schema {
         pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
-    /// One place a vCon container disagrees with the vendored schema.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct VconFinding {
-        /// JSON Pointer to the offending value, `/dialog/2` shaped.
-        pub instance_path: String,
-        /// The schema keyword that refused it.
-        pub keyword: String,
-        /// What was wrong, in one sentence.
-        pub detail: String,
-    }
-
-    /// The verdict on a vCon container checked against the vendored schema.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct VconValidation {
-        /// Version of this response's shape.
-        #[schema(example = 2)]
-        pub schema_version: u32,
-        /// The one-word verdict: `valid` or `invalid`.
-        pub verdict: String,
-        /// The `$id` the vendored schema declares.
-        pub schema_id: String,
-        /// Where that schema lives in the repository.
-        pub schema_path: String,
-        /// Every finding. Empty on a clean pass.
-        pub errors: Vec<VconFinding>,
-    }
+    /// The vCon validation answer, built by
+    /// [`crate::output::query::vcon_validate::validate_bytes`] for this route
+    /// and `--vcon-validate` alike.
+    pub use crate::output::query::vcon_validate::{VconFinding, VconValidation};
 
     /// The call-volume histogram's answer, built by
     /// [`crate::output::query::timeline::timeline`] for this route and
     /// `--timeline` alike.
     pub use crate::output::query::timeline::{Timeline, TimelineBucket};
 
-    /// One call summarized for a side-by-side comparison: the fields
-    /// `/v1/dialogs/compare` diffs, the same the MCP `compare_dialogs` tool
-    /// reports.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct ComparisonSide {
-        /// The dialog's Call-ID.
-        pub call_id: String,
-        /// The dialog state (`InCall`, `Failed`, `Completed`, …).
-        pub state: String,
-        /// The final response code of the dialog's INVITE, or of the request
-        /// that opened a dialog without one; null while it has none.
-        pub final_status_code: Option<u16>,
-        /// How many SIP messages the dialog holds.
-        pub msg_count: usize,
-        /// The distinct request methods seen, sorted.
-        pub methods: Vec<String>,
-        /// The signaling-diagnosis hints for the call.
-        pub hints: Vec<String>,
-    }
-
-    /// Two calls side by side, naming which fields differ.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct Comparison {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// The first call's summary.
-        pub a: ComparisonSide,
-        /// The second call's summary.
-        pub b: ComparisonSide,
-        /// The field names that differ — a subset of `state`,
-        /// `final_status_code`, `msg_count`, `methods`, in that order. Empty
-        /// when the two calls match on all four. `hints` is reported per side
-        /// but not diffed.
-        pub differences: Vec<String>,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
+    /// The comparison's answer, built by
+    /// [`crate::output::query::compare::comparison`] for this route and
+    /// `--compare-dialogs` alike.
+    pub use crate::output::query::compare::{Comparison, ComparisonSide};
 
     /// A page of dialogs updated since a cursor, for change-tracking pollers.
     /// Doc-only, like [`DialogList`]: the route answers with the same untyped
@@ -7118,66 +6743,12 @@ pub mod schema {
         pub detail: String,
     }
 
-    /// What reading one capture produced, for `GET /v1/captures/compare`.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CaptureSideView {
-        /// The name the caller gave.
-        pub filename: String,
-        /// Packets read from the file.
-        pub packets: u64,
-        /// Dialogs the read produced.
-        pub dialogs: usize,
-        /// RTP streams the read produced.
-        pub streams: usize,
-        /// Dialogs the scratch store's capacity refused; non-zero means this
-        /// side is truncated and every count is a floor.
-        pub dialogs_dropped: u64,
-        /// Why the read stopped early, when it did.
-        #[serde(skip_serializing_if = "Option::is_none")]
-        pub read_error: Option<String>,
-    }
-
-    /// One value's movement between the two captures. `value` is raw.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct BucketDeltaView {
-        /// The grouped value, raw. Absent from a side means zero there.
-        pub value: String,
-        /// Dialogs in this bucket in capture `a`.
-        pub a: usize,
-        /// Dialogs in this bucket in capture `b`.
-        pub b: usize,
-        /// `b - a`. Negative means the value became rarer.
-        pub delta: i64,
-    }
-
-    /// One dimension's diff.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct DimensionDiffView {
-        /// The field grouped on.
-        pub dimension: String,
-        /// Buckets, largest absolute movement first.
-        pub buckets: Vec<BucketDeltaView>,
-        /// Everything past `top_n`, summed.
-        pub other: BucketDeltaView,
-        /// Distinct values seen across both captures.
-        pub distinct_values: usize,
-    }
-
-    /// Two capture files diffed by aggregate. Bucket values are raw.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CaptureComparisonView {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// The baseline.
-        pub a: CaptureSideView,
-        /// The capture held against it.
-        pub b: CaptureSideView,
-        /// One entry per requested dimension, in the order requested.
-        pub dimensions: Vec<DimensionDiffView>,
-        /// What the two sides are and what the numbers do not cover.
-        pub summary: String,
-    }
+    /// The capture comparison's answer, built by
+    /// [`crate::output::query::capture_compare::view`] for this route and
+    /// `--compare-captures` alike.
+    pub use crate::output::query::capture_compare::{
+        BucketDeltaView, CaptureComparisonView, CaptureSideView, DimensionDiffView,
+    };
 
     /// Transaction timing, as carried by every dialog summary.
     #[derive(Debug, Clone, ToSchema)]

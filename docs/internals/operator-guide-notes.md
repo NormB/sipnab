@@ -579,10 +579,13 @@ frame limit. It is `MAX_FRAME_SIZE` (65,536 bytes) in
 
 #### Scripted WAV export
 
-There is no CLI flag that writes WAV files. The library functions
-`export_stream_to_wav` and `export_dialog_to_wav` in
+`--export-audio <CALL-ID>` writes one call's audio to a WAV file (see
+[One call's audio as a WAV file](../cli-reference.md#one-calls-audio-as-a-wav-file)).
+The library functions `export_stream_to_wav` and `export_dialog_to_wav` in
 [`src/rtp/audio_export.rs`](../../src/rtp/audio_export.rs) are what the TUI's
-Save dialog calls.
+Save dialog calls. `--export-audio` and the MCP `export_audio` tool write
+through `write_dialog_audio` in the same file, and `GET
+/v1/dialogs/{call_id}/audio` serves the bytes `decode_dialog_audio` returns.
 
 #### `--no-cli-print` on old binaries
 

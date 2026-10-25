@@ -575,6 +575,22 @@ fn framed_reply_body<'a>(buf: &'a [u8], cookie: &str) -> anyhow::Result<Option<&
     Ok(Some(&buf[space + 1..]))
 }
 
+/// Mark a reply that ARRIVED and could not be read as untrusted.
+///
+/// A body that is not bencode, lacks the keys its answer needs, or a datagram
+/// with no cookie framing came back from the relay's port; reported as a fetch
+/// that got nothing, every surface would say "asked, nothing came back"
+/// (`unreachable`) about a reply it holds. Typed as
+/// [`crate::relay::types::UntrustedReply`], it classifies `suspect`, the
+/// answer's own problem, as a mismatched cookie does. The parser's words travel
+/// in the reason.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+fn unreadable_reply(e: anyhow::Error) -> anyhow::Error {
+    anyhow::Error::new(crate::relay::types::UntrustedReply {
+        reason: format!("{e:#}"),
+    })
+}
+
 /// How long to wait for a relay's answer before giving up.
 ///
 /// A CHOICE, not a measurement. rtpengine's control port is normally on the
@@ -631,7 +647,7 @@ impl ControlClient {
     pub fn list(&self, _permit: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
         let request = ControlRequest::new(ReadOnlyCommand::List { limit }, self.next_seed());
         let body = self.round_trip(&request)?;
-        parse_list_reply(&body, limit)
+        parse_list_reply(&body, limit).map_err(unreadable_reply)
     }
 
     /// Ask the relay about ONE call.
@@ -654,7 +670,7 @@ impl ControlClient {
             self.next_seed(),
         );
         let body = self.round_trip(&request)?;
-        parse_query_reply(&body, call_id)
+        parse_query_reply(&body, call_id).map_err(unreadable_reply)
     }
 
     /// Ask the relay for its own counters.
@@ -697,7 +713,7 @@ impl ControlClient {
         // `result: error` / `error-reason: Unknown call-id`, which flattens to
         // those two pairs rather than to counters -- the caller sees the
         // relay's own words, not an invented "no such call".
-        parse_statistics_reply(&body)
+        parse_statistics_reply(&body).map_err(unreadable_reply)
     }
 
     /// Ask the relay for its own counters.
@@ -713,7 +729,7 @@ impl ControlClient {
     pub fn statistics(&self, _permit: &TransmitPermit) -> anyhow::Result<ControlReply> {
         let request = ControlRequest::new(ReadOnlyCommand::Statistics, self.next_seed());
         let body = self.round_trip(&request)?;
-        parse_statistics_reply(&body)
+        parse_statistics_reply(&body).map_err(unreadable_reply)
     }
 
     /// Whether this command's ANSWER is too big for a datagram to carry.
@@ -860,7 +876,7 @@ impl ControlClient {
         // a cookie check that can be fixed on one path and left wrong on the
         // other.
         let body = framed_reply_body(&buf, request.cookie())?
-            .context("reply carries no cookie framing")?;
+            .ok_or_else(|| unreadable_reply(anyhow::anyhow!("reply carries no cookie framing")))?;
         Ok(body.to_vec())
     }
 }
@@ -1109,6 +1125,64 @@ mod tests {
             "a reply that could not be trusted is suspect, not unreachable"
         );
         relay.join().map_err(|e| format!("relay thread: {e:?}"))?;
+        Ok(())
+    }
+
+    /// A reply that arrives and cannot be read is `suspect`, never
+    /// `unreachable`.
+    ///
+    /// `unreachable` says "asked, nothing came back", and every surface words
+    /// it that way. A datagram that came back with our cookie and a body that
+    /// is not bencode, or with no framing at all, did come back: it is an
+    /// answer that cannot be trusted, ST-S4's suspect. Each of the four asks
+    /// reads its reply through its own parser, so each is driven here.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn a_reply_that_arrives_and_cannot_be_read_is_suspect() -> Result<(), TestError> {
+        type Ask = fn(&ControlClient, &TransmitPermit) -> anyhow::Result<ControlReply>;
+        let asks: [(&str, Ask); 4] = [
+            ("list", |c, p| c.list(p, 32)),
+            ("query", |c, p| c.query(p, "c@192.0.2.10")),
+            ("statistics", |c, p| c.statistics(p)),
+            ("call_statistics", |c, p| {
+                c.call_statistics(p, "c@192.0.2.10")
+            }),
+        ];
+        // The body after our own cookie, or the whole datagram when `None`
+        // marks a reply with no framing at all.
+        let replies: [(&str, Option<&[u8]>); 3] = [
+            ("not bencode", Some(b"this is not bencode")),
+            ("an empty dictionary", Some(b"de")),
+            ("no framing", None),
+        ];
+        for (what, body) in replies {
+            for (name, ask) in asks {
+                let sock =
+                    std::net::UdpSocket::bind("127.0.0.1:0").map_err(|e| format!("bind: {e:?}"))?;
+                let addr = sock.local_addr().map_err(|e| format!("addr: {e:?}"))?;
+                let relay = std::thread::spawn(move || {
+                    let mut buf = [0u8; 4096];
+                    if let Ok((n, peer)) = sock.recv_from(&mut buf) {
+                        let space = buf[..n].iter().position(|b| *b == b' ').unwrap_or(0);
+                        let out = match body {
+                            Some(body) => [&buf[..=space], body].concat(),
+                            None => b"garbage".to_vec(),
+                        };
+                        let _ = sock.send_to(&out, peer);
+                    }
+                });
+                let client = ControlClient::new(addr, Duration::from_secs(2));
+                let err = ask(&client, &live_permit()?)
+                    .err()
+                    .ok_or_else(|| format!("{name}, {what}: an unreadable reply was accepted"))?;
+                assert_eq!(
+                    crate::relay::types::fetch_error_outcome(&err),
+                    crate::stats_vocab::StatisticsOutcome::Suspect,
+                    "{name}, {what}: a reply came back, so it is suspect: {err:#}"
+                );
+                relay.join().map_err(|e| format!("relay thread: {e:?}"))?;
+            }
+        }
         Ok(())
     }
 

@@ -1259,6 +1259,11 @@ pub fn run_cores_file(
             if lint_tripped {
                 crate::capture::archive::release_run_and_exit(3);
             }
+            // The same order as the single reader's `run_exit_code`: a
+            // failure, then the lint gate, then a query gate.
+            if let Some(code) = crate::app::queries::gate_exit_code() {
+                crate::capture::archive::release_run_and_exit(code);
+            }
         }
         Err(e) => {
             tracing::error!("multi-core reconstruction failed: {e:#}");
@@ -1367,6 +1372,9 @@ pub(crate) fn audio_retention_wanted(cli: &Cli, config: &Config) -> bool {
     // the config: that rule's containers carry the audio, which has to be
     // retained to be carried.
     cli.mcp_args.retain_audio
+        // Asking for one call's audio as a WAV is the same consent, given
+        // for the run that writes it.
+        || cli.call_query_args.export_audio.is_some()
         || config.vcon.rule.iter().any(|r| {
             matches!(
                 RuleAudio::parse(r.audio.as_deref()),
@@ -3857,6 +3865,7 @@ impl BatchRunner {
             capture_failed: lp.capture_failed,
             run_failed: crate::output::run_integrity::run_failed(),
             lint_gate_tripped,
+            query_gate: crate::app::queries::gate_exit_code(),
         }) {
             crate::capture::archive::release_run_and_exit(code);
         }
@@ -5262,6 +5271,8 @@ struct RunOutcome {
     run_failed: bool,
     /// `--lint` found what its gate fails on.
     lint_gate_tripped: bool,
+    /// The exit status a query gate (`--expect`) asked for, when not 0.
+    query_gate: Option<i32>,
 }
 
 /// The exit code a batch run ends with, or `None` to exit 0.
@@ -5300,7 +5311,7 @@ fn run_exit_code(outcome: RunOutcome) -> Option<i32> {
     } else if outcome.lint_gate_tripped {
         Some(3)
     } else {
-        None
+        outcome.query_gate
     }
 }
 
@@ -19790,6 +19801,34 @@ mod run_end_tests {
     fn a_tripped_lint_gate_exits_three() {
         assert_eq!(
             run_exit_code(RunOutcome {
+                lint_gate_tripped: true,
+                ..RunOutcome::default()
+            }),
+            Some(3)
+        );
+    }
+
+    /// A query gate's code (`--expect`) is the run's exit when nothing failed
+    /// and the lint gate did not trip; a failure and the lint gate both win
+    /// over it.
+    #[test]
+    fn a_query_gate_sets_the_exit_after_failures_and_the_lint_gate() {
+        let gated = |outcome: RunOutcome| {
+            run_exit_code(RunOutcome {
+                query_gate: Some(2),
+                ..outcome
+            })
+        };
+        assert_eq!(gated(RunOutcome::default()), Some(2));
+        assert_eq!(
+            gated(RunOutcome {
+                capture_failed: true,
+                ..RunOutcome::default()
+            }),
+            Some(1)
+        );
+        assert_eq!(
+            gated(RunOutcome {
                 lint_gate_tripped: true,
                 ..RunOutcome::default()
             }),

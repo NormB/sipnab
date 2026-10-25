@@ -55,18 +55,8 @@ const MATRIX: &str = "docs/design/surface-capability-matrix.md";
 const GAP_LEDGER: &[(&str, &str)] = &[
     // CLI query batch B1: aggregates.
     // CLI query batch B2: single-call queries.
-    ("B2BUA call tree", "CLI"),
-    ("Correlate legs", "CLI"),
-    ("Compare two dialogs", "CLI"),
-    ("Per-endpoint rollup", "CLI"),
-    ("Export decoded audio", "CLI"),
     // CLI query batch B3: file jobs.
-    ("Find a Call-ID across files", "CLI"),
-    ("Compare two captures", "CLI"),
-    ("Validate vCon", "CLI"),
     // CLI query batch B4: gates and the relay.
-    ("Evaluate expectations", "CLI"),
-    ("Relay holdings", "CLI"),
     // TUI (PAR4).
     ("Whole-capture report", "TUI"),
     // REST: the vCon directory report arrived on the CLI (`--report`) and

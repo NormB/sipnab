@@ -639,6 +639,131 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--compare-captures`: two paths, read when the job runs; each value
+    // here is the first, `MORE_VALUES` gives the second.
+    (
+        "compare-captures",
+        Kind::Text {
+            accept: &["a.pcap"],
+            reject: &[],
+        },
+        &[],
+    ),
+    // `--compare-dimensions`: a dimension of the groupable set, any other
+    // refused with the vocabulary; it needs `--compare-captures`.
+    (
+        "compare-dimensions",
+        Kind::Text {
+            accept: &["state", "rtp.codec"],
+            reject: &[("bogus", 2)],
+        },
+        &["--compare-captures", "a.pcap", "b.pcap"],
+    ),
+    // `--compare-dialogs`: two Call-IDs, any text; each value here is the
+    // first of the pair, `MORE_VALUES` gives the second. One the run did not
+    // track exits 1 after the run.
+    (
+        "compare-dialogs",
+        Kind::Text {
+            accept: &["x", "0", ""],
+            reject: &[],
+        },
+        &[],
+    ),
+    // `--endpoint-ip`: an IPv4 or IPv6 address, the rule REST applies to
+    // `ip`; anything else refused naming it.
+    (
+        "endpoint-ip",
+        Kind::Text {
+            accept: &["192.0.2.1", "2001:db8::1", "::1"],
+            reject: &[
+                ("bogus", 2),
+                ("", 2),
+                ("192.0.2.256", 2),
+                ("192.0.2.1:5060", 2),
+            ],
+        },
+        &[],
+    ),
+    // `--endpoint-user`: any SIP user part.
+    (
+        "endpoint-user",
+        Kind::Text {
+            accept: &["alice", "10009", "0"],
+            reject: &[],
+        },
+        &[],
+    ),
+    // `--expect`: a suite file, read and checked while the command line is
+    // parsed, so a path with no suite behind it is refused naming the flag.
+    (
+        "expect",
+        Kind::Text {
+            accept: &[],
+            reject: &[("/nonexistent/sipnab.expect.toml", 2), ("", 2)],
+        },
+        &[],
+    ),
+    // `--export-audio`: any Call-ID parses; one neither store holds exits 1
+    // after the run.
+    (
+        "export-audio",
+        Kind::Text {
+            accept: &["x", "0"],
+            reject: &[],
+        },
+        &[],
+    ),
+    // `--export-audio-out`: a path, read only when the export runs; it needs
+    // `--export-audio`.
+    (
+        "export-audio-out",
+        Kind::Text {
+            accept: &["out.wav"],
+            reject: &[],
+        },
+        &["--export-audio", "x"],
+    ),
+    // `--vcon-validate`: a path, read when the job runs, before any capture.
+    (
+        "vcon-validate",
+        Kind::Text {
+            accept: &["c.vcon.json"],
+            reject: &[],
+        },
+        &[],
+    ),
+    // `--find-in-files`: a path, read when the job runs. With no filter the
+    // job refuses when it runs, which tests/cli_find_in_files_test.rs holds;
+    // parsing accepts it.
+    (
+        "find-in-files",
+        Kind::Text {
+            accept: &["spool"],
+            reject: &[],
+        },
+        &[],
+    ),
+    // `--correlate`: any Call-ID parses; one the run did not track exits 1
+    // after the run, as `--call-report`'s does.
+    (
+        "correlate",
+        Kind::Text {
+            accept: &["x", "", " ", "0"],
+            reject: &[],
+        },
+        &[],
+    ),
+    // `--call-tree`: any Call-ID parses; one the run did not track exits 1
+    // after the run, as `--call-report`'s does.
+    (
+        "call-tree",
+        Kind::Text {
+            accept: &["x", "", " ", "0"],
+            reject: &[],
+        },
+        &[],
+    ),
     (
         "export-vcon",
         Kind::Text {
@@ -906,6 +1031,23 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     ("relay-stats-interval", Kind::Int { lo: 1, hi: 3600 }, &[]),
+    // `--relay-holdings`: asks the relay `--rtpengine-control` names, which it
+    // requires.
+    (
+        "relay-holdings",
+        Kind::Switch,
+        &["--rtpengine-control", "127.0.0.1:22222"],
+    ),
+    // `--relay-holdings-max`: the relay's `list` limit, from one up; it needs
+    // `--relay-holdings`.
+    (
+        "relay-holdings-max",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &["--relay-holdings", "--rtpengine-control", "127.0.0.1:22222"],
+    ),
     (
         "max-streams",
         Kind::Int {
@@ -3040,13 +3182,61 @@ fn flag_argv(long: &str, ctx: &[&str], flag_token: &str) -> Vec<String> {
     a
 }
 
-/// Run one `--long=value` (or bare `--long` when `value` is `None`).
+/// The values after the first that a flag taking several values at once is
+/// given, so a row's value is the first of a complete set. A flag clap
+/// requires more than one value of (`--compare-dialogs A B`) cannot be
+/// written `--long=value`, which carries one; it is written `--long value
+/// rest...` instead. [`more_values`] refuses a multi-value flag missing here.
+const MORE_VALUES: &[(&str, &[&str])] = &[
+    ("compare-captures", &["b.pcap"]),
+    ("compare-dialogs", &["y"]),
+];
+
+/// The values after the first that `long` takes, from [`MORE_VALUES`]; empty
+/// for a flag that takes one value.
+///
+/// # Panics
+///
+/// When clap requires more than one value of `long` and [`MORE_VALUES`] has
+/// no row for it: the harness would otherwise write a form clap refuses and
+/// report the refusal as the flag's.
+fn more_values(long: &str) -> &'static [&'static str] {
+    let needs = sipnab::cli::Cli::command()
+        .get_arguments()
+        .find(|a| a.get_long() == Some(long))
+        .and_then(clap::Arg::get_num_args)
+        .map_or(1, |r| r.min_values());
+    let rest = MORE_VALUES
+        .iter()
+        .find(|(l, _)| *l == long)
+        .map_or(&[][..], |(_, rest)| *rest);
+    assert_eq!(
+        rest.len() + 1,
+        needs.max(1),
+        "--{long} takes {needs} values at once: MORE_VALUES must give the {} after the first",
+        needs.saturating_sub(1)
+    );
+    rest
+}
+
+/// Run one `--long=value` (or bare `--long` when `value` is `None`). A flag
+/// that takes several values at once runs as `--long value rest...`.
 fn run_flag(long: &str, ctx: &[&str], value: Option<&str>) -> Outcome {
+    let rest = more_values(long);
     let token = match value {
-        Some(v) => format!("--{long}={v}"),
-        None => format!("--{long}"),
+        Some(v) if rest.is_empty() => format!("--{long}={v}"),
+        _ => format!("--{long}"),
     };
-    run_exact(&flag_argv(long, ctx, &token))
+    let mut argv = flag_argv(long, ctx, &token);
+    if let Some(v) = value.filter(|_| !rest.is_empty()) {
+        let at = argv
+            .iter()
+            .position(|t| *t == token)
+            .map_or(argv.len(), |i| i + 1);
+        let values = std::iter::once(v.to_string()).chain(rest.iter().map(|r| (*r).to_string()));
+        argv.splice(at..at, values);
+    }
+    run_exact(&argv)
 }
 
 /// The field id clap stores `long` under.

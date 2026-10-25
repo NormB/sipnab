@@ -21,10 +21,9 @@
 //! nothing about MCP, JSON-RPC or `clap`. [`Report::exit_code`] is the shape a
 //! command line consumes; [`Report`] serializes for everything else.
 //!
-//! The MCP tool `evaluate_expectations` is the only caller today. The command
-//! line is NOT wired yet: [`Suite::from_toml_str`] and [`Report::exit_code`]
-//! are the two halves it needs and they are tested, but no flag reaches them,
-//! so a checked-in `sipnab.expect.toml` cannot yet fail a build on its own.
+//! Two callers: the MCP tool `evaluate_expectations`, and `--expect <FILE>`,
+//! which reads a checked-in `sipnab.expect.toml` with [`Suite::from_toml_str`]
+//! and ends the run with [`Report::exit_code`], so the file can fail a build.
 //!
 //! # A gate that cannot report failure is worse than no gate
 //!

@@ -719,7 +719,11 @@ fn lists() -> Result<Lists, TestError> {
 // live_rtp file notice in warn_live_rtp.
 // 83 -> 84: src/app/bootstrap.rs `PlanError { exit_code: 1, message:
 // e.to_string(), }` 12 -> 13, the `[hep]` validate() call in apply_config.
-const EXPECTED_UNRESOLVED: usize = 84;
+// 84 -> 85: src/app/queries/b3.rs `stderr_line!("{}", e.message)`, the
+// load_config refusal `--compare-captures` reports before it reads a file.
+// 85 -> 87: the same b3.rs site 1 -> 3, `--find-in-files` reporting its
+// load_config and build_filter_expr refusals the same way.
+const EXPECTED_UNRESOLVED: usize = 87;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -814,7 +818,23 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // span of more than MAX_TIMELINE_BUCKETS intervals. Nothing removed.
 // 509 -> 510: src/app/queries/b1.rs, `--rates-by: {why}`, a metric the
 // table has no extractor for. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 510;
+// 510 -> 511: src/app/queries/b2.rs, `--export-audio: {why}`, a call with
+// nothing to export or a file that exists. Nothing removed.
+// 511 -> 513: src/app/queries/b3.rs, `--vcon-validate {}: {why}` (a file it
+// cannot read or validate) and `--vcon-validate requires the 'vcon' feature
+// (not compiled in)`. Nothing removed.
+// 513 -> 514: src/app/queries/b3.rs, `--compare-captures: {e}`, the engine's
+// refusal of the same file twice, a dimension, or a file that yields nothing.
+// 514 -> 516: src/app/queries/b3.rs, `--find-in-files: {why}` (a directory it
+// cannot list) and the refusal of a sweep with no filter. Nothing removed.
+// 516 -> 518: src/app/queries/b4.rs, `--expect: {why}` (a suppression file it
+// cannot read) and `--expect {}: {e}` (a rule refused at evaluation).
+// 518 -> 521: src/app/bootstrap.rs, `--relay-holdings needs a relay to ask`
+// and `--relay-holdings will not ask a relay on a run that reads a file`;
+// src/app/queries/b4.rs, `--relay-holdings: {}` (no call list came back).
+// Its bad-address refusal reuses the `--relay-stats` template. Nothing
+// removed.
+const EXPECTED_TEMPLATES: usize = 521;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -46,6 +46,21 @@ use std::path::{Path, PathBuf};
 const ALLOWED: &[(&str, &str, &str)] = &[
     (
         "CHANGELOG.md",
+        r#"- **`--find-in-files <PATH>...` finds which capture files hold the dialogs the run's filter selects**: `--filter`, a diagnostic alias such as `--problems`, and `--since`/`--until`. A directory stands for the capture files directly in it. It prints each file with a match, the count and the first matching Call-ID, and every file it could not read, and says whether it read every file: it exits 0 when it did and 1 when it did not, and 2 with no filter. Under `--json` it prints the `sweep` the MCP `find_in_captures` tool reports, from the same sweep. See [Find the files that hold a call](docs/cli-reference.md#find-the-files-that-hold-a-call)."#,
+        r#"clap's notation for a value that repeats, as `--help` prints `--find-in-files <PATH>...`"#,
+    ),
+    (
+        "docs/cli-reference.md",
+        r#"| `--find-in-files` | `<PATH>...` | | Unreleased | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |"#,
+        r#"clap's notation for a value that repeats, as `--help` prints `--find-in-files <PATH>...`"#,
+    ),
+    (
+        "man/sipnab.1",
+        r#"\fB\-\-find\-in\-files\fR \fIPATH\fR\&..."#,
+        r#"clap's notation for a value that repeats, as `--help` prints `--find-in-files <PATH>...`"#,
+    ),
+    (
+        "CHANGELOG.md",
         r#"  - A line 3 wider than the terminal now ends in `…` instead of stopping at"#,
         r#"sipnab's own cut marker: a status line wider than the terminal ends in U+2026 (`fit_spans_to_cols` in src/tui/render/status.rs)"#,
     ),

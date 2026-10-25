@@ -52,6 +52,10 @@ pub struct QueryContext<'a> {
     /// The thresholds a diagnostic alias expands with, resolved from the
     /// command line and the config the way `--filter <alias>` resolves them.
     pub alias: AliasThresholds,
+    /// The most rows one answer lists where REST caps a list by its row cap
+    /// (a call tree's legs): `--api-max-rows`, `[limits] api_max_rows`, or
+    /// the default, the cap a REST server started by this run applies.
+    pub row_cap: usize,
 }
 
 impl<'a> QueryContext<'a> {
@@ -71,6 +75,7 @@ impl<'a> QueryContext<'a> {
             streams,
             filter,
             alias: cli.alias_thresholds(config),
+            row_cap: cli.api_row_cap(config),
         }
     }
 
@@ -124,13 +129,7 @@ impl<'a> QueryContext<'a> {
         answer: &T,
         text: impl FnOnce(ReportFormat) -> String,
     ) -> bool {
-        match render_answer(answer_form(self.cli), answer, text) {
-            Ok(out) => super::batch::write_stdout(&out),
-            Err(e) => {
-                tracing::error!("{flag}: the answer did not serialize: {e}");
-                false
-            }
-        }
+        write_answer(self.cli, flag, answer, text)
     }
 }
 
@@ -139,6 +138,55 @@ impl<'a> QueryContext<'a> {
 #[must_use]
 pub fn table_format(cli: &Cli) -> ReportFormat {
     super::batch::table_report_format(cli)
+}
+
+/// Write `flag`'s answer to stdout in the form this command line asks for:
+/// the output convention every query and file job shares.
+///
+/// # Returns
+///
+/// `false` when the answer did not serialize or stdout refused it, which the
+/// caller turns into a failed run.
+pub fn write_answer<T: Serialize>(
+    cli: &Cli,
+    flag: &str,
+    answer: &T,
+    text: impl FnOnce(ReportFormat) -> String,
+) -> bool {
+    match render_answer(answer_form(cli), answer, text) {
+        Ok(out) => super::batch::write_stdout(&out),
+        Err(e) => {
+            // On stderr, not through tracing: the failure decides the exit
+            // code, so it is printed even with logging off, as
+            // `--call-report` prints an unknown Call-ID.
+            stderr_line!("{flag}: the answer did not serialize: {e}");
+            false
+        }
+    }
+}
+
+/// Report that this run tracked no dialog with `call_id`, the message
+/// `--call-report` gives, on stderr so it survives `SIPNAB_LOG=off`. A query
+/// about one named call that cannot find it fails the run.
+pub fn call_not_found(call_id: &str) {
+    stderr_line!("Call-ID '{call_id}' not found in tracked dialogs");
+}
+
+/// The exit status a query gate (`--expect`) asked for, `0` when none did.
+static GATE_EXIT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Record the exit status a query gate asks the run to end with.
+pub fn set_gate_exit(code: i32) {
+    GATE_EXIT.store(code, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The exit status a query gate asked for, `None` when none asked for one
+/// other than success. Read by both the single reader's and `--cores`'s end
+/// of run, so the gate holds on either path.
+#[must_use]
+pub fn gate_exit_code() -> Option<i32> {
+    let code = GATE_EXIT.load(std::sync::atomic::Ordering::SeqCst);
+    (code != 0).then_some(code)
 }
 
 /// The form one query's answer is written in.
@@ -227,6 +275,17 @@ pub fn startup(cli: &Cli) -> Option<i32> {
         return Some(TEST_FILE_JOB_EXIT);
     }
     b3::startup(cli)
+}
+
+/// Answer `--relay-holdings` from `relay` and return the exit code: 0 with
+/// the call list, 1 when the relay gave none or stdout refused the answer.
+#[must_use]
+pub fn relay_holdings(
+    cli: &Cli,
+    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    permit: &crate::security::transmit_guard::TransmitPermit,
+) -> i32 {
+    b4::relay_holdings(cli, relay, permit)
 }
 
 /// A file job a unit test declares to prove `run_startup_commands` reaches

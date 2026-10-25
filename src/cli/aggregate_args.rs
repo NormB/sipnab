@@ -24,7 +24,14 @@ use crate::sip::talkers::TalkerDimension;
 #[command(group(
     clap::ArgGroup::new(RANKED)
         .multiple(true)
-        .args(["count_by", "rates_by", "talkers"])
+        .args([
+            "count_by",
+            "rates_by",
+            "talkers",
+            "endpoint_ip",
+            "endpoint_user",
+            "compare_captures",
+        ])
 ))]
 pub struct AggregateArgs {
     /// Print the call volume over time: how many dialogs opened in each
@@ -114,8 +121,10 @@ pub struct AggregateArgs {
     pub prefix_digits: Option<u32>,
 
     /// How many rows a ranked query keeps (`--count-by`, `--rates-by`,
-    /// `--talkers`); the rest are summed or counted. 50 when not given, the
-    /// default page REST returns.
+    /// `--talkers`, and per dimension `--compare-captures`), or how many
+    /// recent dialogs an endpoint rollup lists (`--endpoint-ip`,
+    /// `--endpoint-user`); the rest are summed or counted. 50 when not
+    /// given, the default page REST returns.
     #[arg(
         help_heading = "Queries",
         long,

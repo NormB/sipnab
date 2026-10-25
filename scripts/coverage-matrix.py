@@ -121,6 +121,9 @@ SIPNAB_LAUNCHERS = (
     '"support/run.rs"',
     '"support/server.rs"',
     '"support/mcp.rs"',
+    # Its `run_cli` and `Surfaces::cli` spawn the binary; a query flag's
+    # parity test drives sipnab only through them.
+    '"support/surface_parity.rs"',
 )
 
 

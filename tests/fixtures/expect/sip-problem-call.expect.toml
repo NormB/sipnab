@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+#
+# An expectation suite for tests/pcap-samples/sip-problem-call.pcap, the
+# example `--expect` runs in docs/cli-reference.md. Each rule names a metric,
+# a comparison and a threshold; `scope` narrows a rule to the dialogs a filter
+# selects.
+
+[[rules]]
+name = "calls captured"
+metric = "count"
+op = ">="
+value = 5
+
+[[rules]]
+name = "answer-seizure ratio"
+metric = "asr"
+op = ">="
+value = 50
+
+[[rules]]
+name = "no busy answers"
+metric = "count"
+op = "=="
+value = 0
+scope = "filter:response_code == 486"

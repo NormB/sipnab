@@ -1155,7 +1155,21 @@ out the end-of-run summary on stderr.
 | `--rates-by` | `<DIMENSION>` | | 0.5.230 | Print the carrier metrics of each value of one dimension: ASR, NER, ACD, post-dial delay, the tenth-percentile MOS and the retransmit rate. Takes every `--count-by` dimension, plus `to_domain`, `hour` and `next_hop`. `--json` prints the shape of `GET /v1/dialogs/rates`. Any other dimension exits 2 |
 | `--talkers` | `<BY>` | | 0.5.230 | Rank the busiest participants, most dialogs first: by sending address (`ip`), `User-Agent` or `Server` banner (`ua`), or the dialed number's leading digits (`prefix`). `--json` prints the shape of `GET /v1/talkers`. Any other value exits 2 |
 | `--prefix-digits` | `<N>` | `4` | 0.5.230 | How many leading digits `--talkers prefix` ranks by. Needs `--talkers`; only `prefix` reads it. `0` exits 2 |
-| `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those three; `0` exits 2 |
+| `--call-tree` | `<CALL-ID>` | | Unreleased | Print every leg of one call as a tree across B2BUA, SBC and PBX hops, with the strategy that matched each leg. `--json` prints the shape of `GET /v1/dialogs/{call_id}/tree`. A Call-ID the run did not track exits 1 |
+| `--correlate` | `<CALL-ID>` | | Unreleased | Print the other legs of one call and the strategy that matched each: an identifier the legs share, or a timing guess. `--json` prints the shape of `GET /v1/dialogs/{call_id}/correlated`. A Call-ID the run did not track exits 1 |
+| `--compare-dialogs` | `<CALL-ID-A> <CALL-ID-B>` | | Unreleased | Put two calls side by side: state, final response code, message count and methods, with the fields that differ marked, and each call's diagnosis hints. `--json` prints the shape of `GET /v1/dialogs/compare`. A Call-ID the run did not track exits 1 |
+| `--endpoint-ip` | `<IP>` | | Unreleased | Print everything one address did: dialogs by method and state, messages sent and received, call outcomes, registration, banners, the signaling stack, media, and the most recent dialogs. `--json` prints the shape of `GET /v1/endpoints`. An address that does not parse exits 2 |
+| `--endpoint-user` | `<USER>` | | Unreleased | Print everything one SIP user did, matched against the user part of each dialog's From and To: the `--endpoint-ip` rollup without the message counts. `--json` prints the shape of `GET /v1/endpoints`. Not with `--endpoint-ip` |
+| `--export-audio` | `<CALL-ID>` | | Unreleased | Write one call's decoded RTP audio to a WAV file, and print the export summary. Holds the call's audio payload for the run, as `--retain-audio` does. A Call-ID the capture does not hold, a call with nothing to decode, or an existing file exits 1 |
+| `--export-audio-out` | `<FILE>` | the Call-ID with `.wav` | Unreleased | The file `--export-audio` writes. It must not exist. Needs `--export-audio` |
+| `--vcon-validate` | `<FILE>` | | Unreleased | Check a vCon container file against sipnab's vendored schema and print the verdict and every finding. Exits 0 when valid and 3 when invalid, and 1 when sipnab cannot read or check the file. Needs no `-I`. `--json` prints the shape of `POST /v1/vcon/validate`. Needs the `vcon` feature |
+| `--compare-captures` | `<A> <B>` | | Unreleased | Compare two capture files: for each dimension, the dialogs per value in A (the baseline) and B, and the change, largest movement first. Needs no `-I`. `--json` prints the shape of `GET /v1/captures/compare`. The same file twice exits 2; a file that yields no dialogs exits 1 |
+| `--compare-dimensions` | `<DIMENSIONS>` | `state,response_code` | Unreleased | The dimensions `--compare-captures` diffs, comma-separated, from the `--count-by` set. Any other exits 2. Needs `--compare-captures` |
+| `--find-in-files` | `<PATH>...` | | Unreleased | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
+| `--expect` | `<FILE>` | | Unreleased | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `1` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns |
+| `--relay-holdings` | -- | | Unreleased | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native` |
+| `--relay-holdings-max` | `<CALLS>` | `32` | Unreleased | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Needs `--relay-holdings`; `0` exits 2 |
+| `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
 
@@ -1407,6 +1421,557 @@ Asterisk PBX 1.6.0.6              2        4         1        1         0       
 
 The REST route `GET /v1/talkers?by=ip` and the MCP tool `top_talkers` answer
 the same question about a loaded capture.
+
+### Every leg of one call
+
+A call through a B2BUA, an SBC or a PBX is several dialogs, one per hop. Name
+one of them to see the others as a tree:
+
+```sh
+sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --call-tree b2bua-caller-synth@203.0.113.1 --no-cli-print --quiet
+```
+
+```text
+Call tree from b2bua-caller-synth@203.0.113.1: 2 legs, depth 1, 28 messages, 1 timing guess
+Leg                                   Strategy          Score  Match  Followed
+------------------------------------------------------------------------------
+b2bua-caller-synth@203.0.113.1        root              -      -      yes
+  b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  50     guess  no
+```
+
+- Each hop indents the leg two more spaces.
+- `Match` is `identifier` when the legs share an identifier (`X-Call-ID`,
+  `Session-ID`, the SDP origin, P-Charging-Vector or a Via branch), and
+  `guess` when only their timing ties them.
+- `Followed` is `no` on a guess: sipnab lists the leg but does not look for
+  that leg's own matches, so one wrong guess does not pull in unrelated calls.
+
+The Call-ID must match exactly, and `--report` lists the ones the run holds. Under
+`--json`, each leg names its parent and depth:
+
+```sh
+sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --call-tree b2bua-caller-synth@203.0.113.1 --json --no-cli-print --quiet | jq -c '.legs[] | {call_id, depth, strategy, followed}'
+```
+
+```json
+{"call_id":"b2bua-caller-synth@203.0.113.1","depth":0,"strategy":null,"followed":true}
+{"call_id":"b2bua-leg-synth@203.0.113.101:5060","depth":1,"strategy":"timing_heuristic","followed":false}
+```
+
+The REST route `GET /v1/dialogs/{call_id}/tree` and the MCP tool
+`get_call_tree` walk the same tree.
+
+### The other legs of one call
+
+List the calls sipnab ties to one call, and how:
+
+```sh
+sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --correlate 1-1966@10.0.2.20 --no-cli-print --quiet
+```
+
+```text
+Legs correlated with 1-1966@10.0.2.20: 1 leg
+Leg               Strategy    Score  Match       Gap ms
+-------------------------------------------------------
+1-1968@10.0.2.20  sdp_origin  90     identifier  -
+```
+
+The two calls carry the same SDP origin, an identifier, so the score is high.
+When no identifier ties two legs and only their timing does, the match is a
+guess, `Gap ms` shows how far apart the two calls began, and the answer says
+so:
+
+```sh
+sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --correlate b2bua-caller-synth@203.0.113.1 --no-cli-print --quiet
+```
+
+```text
+Legs correlated with b2bua-caller-synth@203.0.113.1: 1 leg
+Leg                                 Strategy          Score  Match  Gap ms
+--------------------------------------------------------------------------
+b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  50     guess  3
+Every leg here is a timing guess: no identifier ties it to this call.
+```
+
+A call that no other leg ties to prints no rows and exits 0. A Call-ID the run
+did not track exits 1. `--call-tree` follows these matches leg by leg. The
+REST route `GET /v1/dialogs/{call_id}/correlated` and the MCP tool
+`find_correlated` answer for one leg as this flag does.
+
+### Two calls side by side
+
+Compare a call that failed with another, to see what they have in common:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --compare-dialogs busy-3a2b1c@192.0.2.30 unavail-4e5f60@192.0.2.50 --no-cli-print --quiet
+```
+
+```text
+Comparing busy-3a2b1c@192.0.2.30 (A) with unavail-4e5f60@192.0.2.50 (B): 1 field differs
+Field              A           B           Differs
+--------------------------------------------------
+state              Failed      Failed      
+final_status_code  486         503         differs
+msg_count          4           4           
+methods            ACK,INVITE  ACK,INVITE  
+Hints for A: Call failed: 486 Busy Here.
+Hints for B: Call failed: 503 Service Unavailable.
+```
+
+Give the two Call-IDs after the flag, each matched exactly. sipnab compares the
+four fields in the table, and `differs` marks the ones that are not the same.
+It lists the hints for each call without comparing them.
+
+Under `--json`, `differences` names the fields that differ:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --compare-dialogs completed-9f8e7d@192.0.2.10 busy-3a2b1c@192.0.2.30 --json --no-cli-print --quiet | jq -c '{differences, a: .a.final_status_code, b: .b.final_status_code}'
+```
+
+```json
+{"differences":["state","final_status_code","msg_count","methods"],"a":200,"b":486}
+```
+
+The REST route `GET /v1/dialogs/compare`, given the two Call-IDs as `a` and `b`,
+and the MCP tool `compare_dialogs` compare the same fields.
+
+### Everything one endpoint did
+
+Name an address to see what it did in the capture, keeping its three most
+recent dialogs:
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --endpoint-ip 192.168.10.2 --top 3 --no-cli-print --quiet
+```
+
+```text
+Endpoint ip 192.168.10.2: 5 dialogs
+Dialogs by method: INVITE 1, OPTIONS 1, REGISTER 1, SUBSCRIBE 2
+Dialogs by state: Completed 2, Registered 1, Terminated 2
+Messages: 14 sent, 13 received
+Calls: 1 INVITE, 1 with a final response, 0 failed (0%); final responses: 200 x1
+Registration: 1 dialog, 1 succeeded, 0 failed, 0 authentication loops
+Banners: User-Agent Asterisk PBX 1.6.0.6 (4)
+Signaling stack: chan_sip, 2 of 3 observations agree, from 4 requests
+Media: 1 stream (0 orphaned), 2 packets, 0 lost, max jitter 0.03 ms, codecs PCMU
+Most recent dialogs (3 of 5):
+Call-ID                                       Method     State       Final  Started
+------------------------------------------------------------------------------------------------------------
+ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E.  INVITE     Completed   200    2010-09-27T07:12:58.755873+00:00
+MDA3MzcwMWQxNmNhNTBmMTZiNGNkY2JjYjZkNzViZTM.  SUBSCRIBE  Terminated  404    2010-09-27T07:12:50.010873+00:00
+OGY5ZTk4MzFkYzZhM2FlYjNjNTA3ZTM2ZWY0YzI1ODA.  SUBSCRIBE  Terminated  404    2010-09-27T07:12:50.003249+00:00
+```
+
+- `Messages` counts what the address sent and what other hosts sent to it.
+- `Banners` are the `User-Agent` and `Server` values it sent.
+- `Signaling stack` names the SIP library its requests look built by, and how
+  many of three observations (the Via branch, the From tag and the Call-ID)
+  agree.
+- The counts cover every dialog the address took part in. `--filter` does not
+  narrow them, and `--top` bounds only the list of recent dialogs.
+
+Name a SIP user instead, matched against the user part of each dialog's From
+and To:
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --endpoint-user 10009 --top 2 --no-cli-print --quiet
+```
+
+```text
+Endpoint user 10009: 5 dialogs
+Dialogs by method: INVITE 1, OPTIONS 1, REGISTER 1, SUBSCRIBE 2
+Dialogs by state: Completed 2, Registered 1, Terminated 2
+Calls: 1 INVITE, 1 with a final response, 0 failed (0%); final responses: 200 x1
+Registration: 1 dialog, 1 succeeded, 0 failed, 0 authentication loops
+Banners: none
+Signaling stack: not inferred
+Media: 3 streams (0 orphaned), 997 packets, 370 lost, max jitter 0.56 ms, codecs PCMU
+Most recent dialogs (2 of 5):
+Call-ID                                       Method     State       Final  Started
+------------------------------------------------------------------------------------------------------------
+ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E.  INVITE     Completed   200    2010-09-27T07:12:58.755873+00:00
+MDA3MzcwMWQxNmNhNTBmMTZiNGNkY2JjYjZkNzViZTM.  SUBSCRIBE  Terminated  404    2010-09-27T07:12:50.010873+00:00
+```
+
+A user has no message counts, because messages belong to an address. Under
+`--json`, the answer has the fields `GET /v1/endpoints` returns:
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --endpoint-ip 192.168.10.2 --json --no-cli-print --quiet | jq -c '{dialogs, messages_sent, messages_received, calls: .calls.invites}'
+```
+
+```json
+{"dialogs":5,"messages_sent":14,"messages_received":13,"calls":1}
+```
+
+```sh
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --endpoint-user 10009 --json --no-cli-print --quiet | jq -c '{dialogs, by_method, codecs: .streams.codecs}'
+```
+
+```json
+{"dialogs":5,"by_method":{"INVITE":1,"OPTIONS":1,"REGISTER":1,"SUBSCRIBE":2},"codecs":["PCMU"]}
+```
+
+The REST route `GET /v1/endpoints`, given `ip` or `user`, and the MCP tool
+`describe_endpoint` describe the same endpoint.
+
+### One call's audio as a WAV file
+
+Write the decoded audio of one call to a file:
+
+```sh
+sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --export-audio 1-1966@10.0.2.20 --no-cli-print --quiet
+```
+
+```text
+Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to 1-1966_10.0.2.20.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.
+```
+
+- The file is in the current directory, named after the Call-ID with every
+  character other than a letter, a digit, `-`, `_` or `.` replaced by `_`.
+- One stream makes a mono file and two make a stereo one.
+- The summary says when the file holds less than the call. Here the capture
+  saw the audio in one direction only, so the summary says `PARTIAL`. The
+  file carries the same note inside it.
+- sipnab does not keep audio unless asked. `--export-audio` asks, for this run,
+  as `--retain-audio` does.
+
+Name the file with `--export-audio-out`:
+
+```sh
+sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --export-audio 1-1966@10.0.2.20 --export-audio-out call.wav --no-cli-print --quiet
+```
+
+```text
+Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to call.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.
+```
+
+sipnab never replaces an existing file: if the file is there, the run exits 1
+and leaves it as it was. Under `--json`, the answer names the file and what it
+holds:
+
+```sh
+sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --export-audio 1-1966@10.0.2.20 --export-audio-out call.wav --json --no-cli-print --quiet
+```
+
+```json
+{"schema_version":1,"path":"call.wav","summary":"Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to call.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.","partial":true,"dialog_seen":true,"duration_secs":8.5,"sample_rate":8000,"channels":1,"bytes":136516}
+```
+
+`partial` and `dialog_seen` are the two facts the REST route
+`GET /v1/dialogs/{call_id}/audio` sends as headers beside the same WAV bytes.
+The MCP tool `export_audio` writes the same file into its file root.
+
+### Check a vCon file against the schema
+
+Check that a vCon container conforms to the draft-ietf-vcon-vcon-core-04 schema
+sipnab ships:
+
+```sh
+sipnab --vcon-validate tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json
+```
+
+```text
+tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json: valid against https://ietf.org/vcon/schemas/unsigned-vcon.json
+```
+
+`--vcon-validate` reads the file and exits. It needs no capture, so give no
+`-I`. For a signed or encrypted container, sipnab checks the unsigned vCon
+inside.
+
+The exit status is the verdict, so a CI step can stop on a container that does
+not conform:
+
+- `0`: the container is valid.
+- `3`: the container is invalid. sipnab prints one row per finding: the JSON
+  Pointer to the value, the schema keyword that refused it, and why.
+- `1`: sipnab could not check it: the file is missing, it is not JSON, it is
+  JSON but not an object, or a `critical` extension forbids reading it.
+
+Under `--json`, the answer is the one `POST /v1/vcon/validate` returns:
+
+```sh
+sipnab --vcon-validate tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json --json
+```
+
+```json
+{"schema_version":2,"verdict":"valid","schema_id":"https://ietf.org/vcon/schemas/unsigned-vcon.json","schema_path":"tests/schemas/vcon.schema.json","errors":[]}
+```
+
+The MCP tool `validate_vcon` runs the same check on a container an agent
+passes it.
+
+### Compare two captures
+
+Hold one capture against another, such as today's against yesterday's, and see
+what moved:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap
+```
+
+```text
+A: tests/pcap-samples/sip-problem-call.pcap, 23 packets, 5 dialogs, 0 streams
+B: tests/pcap-samples/sip-rtp-g711.pcap, 852 packets, 2 dialogs, 2 streams
+
+By state:
+Value      A  B  Change
+-----------------------
+Failed     4  0  -4
+InCall     0  1  +1
+Completed  1  1  0
+
+By response_code:
+Value  A  B  Change
+-------------------
+200    1  2  +1
+404    1  0  -1
+486    1  0  -1
+503    1  0  -1
+603    1  0  -1
+
+'tests/pcap-samples/sip-problem-call.pcap' (5 dialogs) is the baseline; 'tests/pcap-samples/sip-rtp-g711.pcap' (2 dialogs) is held against it, so delta is b minus a.
+```
+
+- The first file, A, is the baseline. `Change` is B minus A, so a negative
+  change means the value became rarer.
+- Each dimension lists the values that moved most first.
+- sipnab reads both files and exits. It needs no capture, so give no `-I`.
+
+Choose the dimensions with `--compare-dimensions`, and keep fewer values with
+`--top`. An `(other)` row sums the values past the cut:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap --compare-dimensions method,ua --top 1
+```
+
+```text
+A: tests/pcap-samples/sip-problem-call.pcap, 23 packets, 5 dialogs, 0 streams
+B: tests/pcap-samples/sip-rtp-g711.pcap, 852 packets, 2 dialogs, 2 streams
+
+By method:
+Value   A  B  Change
+--------------------
+INVITE  5  2  -3
+
+By ua:
+Value    A  B  Change
+---------------------
+(none)   5  0  -5
+(other)  0  2  +2
+
+'tests/pcap-samples/sip-problem-call.pcap' (5 dialogs) is the baseline; 'tests/pcap-samples/sip-rtp-g711.pcap' (2 dialogs) is held against it, so delta is b minus a.
+```
+
+`(none)` counts the dialogs with no value for the dimension. Here no call in A
+carried a `User-Agent`. Compare the codecs the two captures carried:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap --compare-dimensions rtp.codec
+```
+
+```text
+A: tests/pcap-samples/sip-problem-call.pcap, 23 packets, 5 dialogs, 0 streams
+B: tests/pcap-samples/sip-rtp-g711.pcap, 852 packets, 2 dialogs, 2 streams
+
+By rtp.codec:
+Value   A  B  Change
+--------------------
+(none)  5  0  -5
+PCMA    0  1  +1
+PCMU    0  1  +1
+
+'tests/pcap-samples/sip-problem-call.pcap' (5 dialogs) is the baseline; 'tests/pcap-samples/sip-rtp-g711.pcap' (2 dialogs) is held against it, so delta is b minus a.
+```
+
+Under `--json`, the answer is the one `GET /v1/captures/compare` returns. List
+the values that moved in each dimension:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap --json | jq -c '[.dimensions[] | {dimension, moved: [.buckets[] | select(.delta != 0) | .value]}]'
+```
+
+```json
+[{"dimension":"state","moved":["Failed","InCall"]},{"dimension":"response_code","moved":["200","404","486","503","603"]}]
+```
+
+The REST route reads its two files from `--api-file-root`, and its summary adds
+that neither file is the capture the server holds. The MCP tool
+`compare_captures` runs the same comparison.
+
+### Find the files that hold a call
+
+Find which of several captures hold failed calls:
+
+```sh
+sipnab --find-in-files tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap tests/pcap-samples/sip-auth-failure.pcapng --problems
+```
+
+```text
+Found in 3 of 3 files; every file was read.
+File                     Dialogs  First Call-ID
+----------------------------------------------------------------------
+sip-problem-call.pcap    4        busy-3a2b1c@192.0.2.30
+sip-rtp-g711.pcap        2        1-1966@10.0.2.20
+sip-auth-failure.pcapng  1        auth-fail-register-synth@203.0.113.1
+```
+
+- The filter is the one a run with the same flags applies: `--filter`, a
+  diagnostic alias such as `--problems`, and `--since`/`--until`.
+- Each row is a file with a match, how many of its dialogs matched, and the
+  first matching Call-ID.
+- sipnab reads the files and exits. It needs no capture, so give no `-I`.
+
+Name a directory to search the capture files directly in it. Here the search is
+for one Call-ID:
+
+```sh
+sipnab --find-in-files tests/pcap-samples --filter 'call_id == "busy-3a2b1c@192.0.2.30"'
+```
+
+```text
+Found in 1 of 36 files; not complete: 34 of 36 read, so a file not read may hold a match.
+File                   Dialogs  First Call-ID
+------------------------------------------------------
+sip-problem-call.pcap  1        busy-3a2b1c@192.0.2.30
+Not read: c07-sip-r2.cap: Failed to open pcap file 'tests/pcap-samples/c07-sip-r2.cap': libpcap error: unknown file format
+Not read: rtsp-packets.cap: Failed to open pcap file 'tests/pcap-samples/rtsp-packets.cap': libpcap error: unknown file format
+```
+
+The two `.cap` files are in a format sipnab does not read, so the answer says
+it could not read every file, and the run exits 1. When a search is not
+complete, a call it did not find may still be in a file it did not read.
+
+Under `--json`, `complete` says whether sipnab read every file:
+
+```sh
+sipnab --find-in-files tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap --filter 'state == Failed' --json | jq -c '{complete, files: [.matches[] | {filename, dialogs_matched}]}'
+```
+
+```json
+{"complete":true,"files":[{"filename":"sip-problem-call.pcap","dialogs_matched":4}]}
+```
+
+The MCP tool `find_in_captures` runs the same search over its file root.
+
+### Fail a build on what a capture shows
+
+Write the thresholds the traffic must meet in a suite file, and let the exit
+status fail the CI step that runs it. Each rule names a metric (`count`,
+`asr`, `lint_errors`, or a MOS percentile such as `mos_p10`), a comparison,
+and a threshold, and may narrow itself with a `filter:` scope:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --expect tests/fixtures/expect/sip-problem-call.expect.toml --no-cli-print --quiet
+```
+
+```text
+Expectations: fail, 1 of 3 rules passed, 2 failed
+Rule                  Metric  Op  Threshold  Observed  Sample  Verdict
+----------------------------------------------------------------------
+calls captured        count   >=  5          5         5       pass
+answer-seizure ratio  asr     >=  50         20        5       fail
+no busy answers       count   ==  0          1         5       fail
+answer-seizure ratio: 20 is NOT >= 50 over 5 seizure(s)
+no busy answers: 1 is NOT == 0 over 5 dialog(s)
+```
+
+The run exits with the suite's verdict:
+
+- `0`: every rule that ran passed.
+- `1`: at least one rule failed, as here.
+- `2`: no rule ran, because every rule's population was below the
+  `min_sample` it declared. A suite that checked nothing does not pass.
+
+sipnab reads and checks the suite before it reads the capture, so a misspelled
+metric or a filter that does not parse stops the run at once with exit `2`. The
+rules judge every dialog of the capture: each rule's `scope` narrows it, and
+`--filter` does not. For `lint_errors` rules, `--lint-suppress-file` applies.
+
+Under `--json`, the answer is the report the MCP tool `evaluate_expectations`
+returns, and `exit_code` is the run's exit status:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --expect tests/fixtures/expect/sip-problem-call.expect.toml --json --no-cli-print --quiet | jq -c '{verdict, exit_code, failed: [.results[] | select(.verdict == "fail") | .name]}'
+```
+
+```json
+{"verdict":"fail","exit_code":1,"failed":["answer-seizure ratio","no busy answers"]}
+```
+
+### Ask the relay which calls it holds
+
+During an incident, ask the media relay which calls it is carrying right now,
+without starting a capture. sipnab sends the relay named by
+`--rtpengine-control` one `list` request, prints the Call-IDs it answers with,
+and exits:
+
+```sh
+sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-holdings
+```
+
+```text
+Holdings of relay (rtpengine at 127.0.0.1:22222), asked 2026-10-25T08:10:20.740734142+00:00
+3 calls held.
+Call-ID
+--------------------------------
+a84b4c76e66710@192.0.2.10
+3848276298220188511@198.51.100.7
+1-4242@192.0.2.10
+```
+
+Asking transmits, so sipnab asks only from a live source: an interface
+(`-d`) or a HEP listener (`-L`). On a run that reads a file it asks nothing,
+says why, and exits `2`. sipnab answers before it opens the capture, so the
+run reads no packet and answers no other query flag.
+
+The relay returns at most 32 Call-IDs unless you ask for a different number.
+When it returns as many as you asked for, it may hold more, and the answer
+says so:
+
+```sh
+sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-holdings --relay-holdings-max 2
+```
+
+```text
+Holdings of relay (rtpengine at 127.0.0.1:22222), asked 2026-10-25T08:12:28.613317624+00:00
+2 calls returned, as many as asked for, so the relay may hold more.
+Call-ID
+--------------------------------
+a84b4c76e66710@192.0.2.10
+3848276298220188511@198.51.100.7
+```
+
+On a busy relay, raise the limit. A HEP listener is a live source too, so a
+host that only receives HEP can ask:
+
+```sh
+sipnab -L 0.0.0.0:9060 --rtpengine-control 127.0.0.1:22222 --relay-holdings --relay-holdings-max 500
+```
+
+rtpengine answers over UDP, and a large list may not fit in one datagram.
+
+Under `--json`, the answer is the body `GET /v1/relay/holdings` returns:
+
+```sh
+sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-holdings --json
+```
+
+```json
+{"call_ids":["a84b4c76e66710@192.0.2.10","3848276298220188511@198.51.100.7","1-4242@192.0.2.10"],"kind":"calls","obtained_at":"2026-10-25T08:10:20.788134229+00:00","origin":"asked","outcome":"ok","relay":"relay (rtpengine at 127.0.0.1:22222)","truncated":false}
+```
+
+A relay that sends no answer is not a relay that holds no calls. sipnab
+prints the reason on stderr and exits `1`. Under `--json` the answer names the
+classification instead of a list:
+
+```text
+--relay-holdings: unreachable: relay (rtpengine at 127.0.0.1:22222) did not answer (no reply from 127.0.0.1:22222 within 2s); asked, nothing came back
+```
+
+```json
+{"detail":"relay (rtpengine at 127.0.0.1:22222) did not answer (no reply from 127.0.0.1:22222 within 2s); asked, nothing came back","outcome":"unreachable","responsibility":"relay_or_network"}
+```
 
 ## Dialog
 
@@ -2554,7 +3119,12 @@ Scripts can rely on these:
 | `0` | Success |
 | `1` | Runtime failure — capture error, I/O error, a capture file that was not read in full (a truncated pcap, a member that would not open, a BPF filter that would not compile against one), a `--plugin` that would not load, or sipnab could not produce a requested report (e.g. `--call-report` Call-ID not found). Also a refused configuration: a config file sipnab cannot read, or a value in it sipnab refuses, whichever startup step refuses it |
 | `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code |
-| `3` | Lint gate tripped — `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity. Distinct from `1` on purpose: the tool worked, the CAPTURE is non-conformant. Also the vCon forwarder stopping because the store answered `401` or `403` (`--vcon-forward`) |
+| `3` | Lint gate tripped — `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity. Distinct from `1` on purpose: the tool worked, the CAPTURE is non-conformant. Also an invalid vCon container under `--vcon-validate`, and the vCon forwarder stopping because the store answered `401` or `403` (`--vcon-forward`) |
+
+`--expect` exits with its suite's verdict instead, the `exit_code` its report
+carries: `0` every rule that ran passed, `1` a rule failed, `2` no rule ran or
+the suite itself is at fault. A run that fails for another reason exits `1`
+first, and a tripped `--lint-fail-on` gate exits `3` before the suite's code.
 
 [Error messages](errors.md) lists the message sipnab prints with a non-zero
 exit code, what it means, and what to do.

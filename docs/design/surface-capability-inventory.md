@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 382, TUI 25, REST 47, MCP 76.
+Totals: CLI 396, TUI 25, REST 47, MCP 76.
 
-## CLI flags (382)
+## CLI flags (396)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -51,18 +51,23 @@ Totals: CLI 382, TUI 25, REST 47, MCP 76.
 - `--buffer-budget`
 - `--business-hours`
 - `--call-report`
+- `--call-tree`
 - `--calls-only`
 - `--capture-profile`
 - `--capture-tunnels`
 - `--chroot`
 - `--cn-suppression-ratio`
 - `--color`
+- `--compare-captures`
+- `--compare-dialogs`
+- `--compare-dimensions`
 - `--completions`
 - `--config`
 - `--contact`
 - `--content-deny-header`
 - `--content-deny-tombstone`
 - `--cores`
+- `--correlate`
 - `--count`
 - `--count-by`
 - `--delta-time`
@@ -76,14 +81,20 @@ Totals: CLI 382, TUI 25, REST 47, MCP 76.
 - `--duration`
 - `--duration-asymmetry-pct`
 - `--duration-asymmetry-secs`
+- `--endpoint-ip`
+- `--endpoint-user`
 - `--evidence-out`
 - `--exec-queue-depth`
 - `--exec-rate-limit`
+- `--expect`
+- `--export-audio`
+- `--export-audio-out`
 - `--export-vcon`
 - `--export-vcon-dir`
 - `--export-vcon-when`
 - `--fail2ban`
 - `--filter`
+- `--find-in-files`
 - `--findings-history`
 - `--fraud-destination`
 - `--fraud-detect`
@@ -271,6 +282,8 @@ Totals: CLI 382, TUI 25, REST 47, MCP 76.
 - `--reg-flood-transaction-timeout`
 - `--reg-flood-window`
 - `--relay-compare`
+- `--relay-holdings`
+- `--relay-holdings-max`
 - `--relay-stats`
 - `--relay-stats-call`
 - `--relay-stats-interval`
@@ -390,6 +403,7 @@ Totals: CLI 382, TUI 25, REST 47, MCP 76.
 - `--vcon-signer-ca`
 - `--vcon-signer-sha256`
 - `--vcon-spool-status`
+- `--vcon-validate`
 - `--vcon-x5u-ca`
 - `--version`
 - `--wireshark`

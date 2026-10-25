@@ -19,9 +19,20 @@ use std::fmt::Write as _;
 use crate::output::ReportFormat;
 
 pub mod aggregate;
+pub mod audio;
+pub mod capture_compare;
+pub mod compare;
+pub mod correlated;
+pub mod endpoint;
+pub mod expectations;
+pub mod find_files;
 pub mod rates;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod relay_holdings;
 pub mod talkers;
 pub mod timeline;
+pub mod tree;
+pub mod vcon_validate;
 
 /// Whether `key` is one of `dims`, the dimensions a group-by answer accepts.
 ///
@@ -46,14 +57,28 @@ pub fn check_dimension_in(key: &str, dims: &[&str], narrow_with: &str) -> Result
 /// REST's default page (`top_n`, `limit`) and the CLI's `--top`.
 pub const DEFAULT_ROWS: usize = 50;
 
-/// `n` and `noun`, with an `s` unless `n` is one.
+/// `n` and `noun`, plural unless `n` is one: `es` after a noun ending in
+/// `s` ("2 timing guesses"), `s` otherwise.
 #[must_use]
 pub(crate) fn plural(n: u64, noun: &str) -> String {
     if n == 1 {
         format!("1 {noun}")
+    } else if noun.ends_with('s') {
+        format!("{n} {noun}es")
     } else {
         format!("{n} {noun}s")
     }
+}
+
+/// `s` with every control character (a terminal escape sequence carried in a
+/// captured header) replaced by U+FFFD, so a value read off the wire cannot
+/// drive the reader's terminal. Every cell [`table`] prints goes through it,
+/// and so must any wire text an answer prints outside a table.
+#[must_use]
+pub fn clean(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
 }
 
 /// Render `rows` under `headers` as a table in `format`.
@@ -73,11 +98,6 @@ pub(crate) fn plural(n: u64, noun: &str) -> String {
 /// * `rows` — the cells, one `Vec` per row, each as long as `headers`.
 #[must_use]
 pub fn table(format: ReportFormat, headers: &[&str], rows: &[Vec<String>]) -> String {
-    let clean = |s: &str| -> String {
-        s.chars()
-            .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
-            .collect()
-    };
     let rows: Vec<Vec<String>> = rows
         .iter()
         .map(|r| r.iter().map(|c| clean(c)).collect())
@@ -169,6 +189,14 @@ mod tests {
         );
         assert!(!out.contains('\u{1b}'), "{out:?}");
         assert!(out.contains("evil\u{FFFD}[2Jua"), "{out:?}");
+    }
+
+    /// One is singular, any other count plural, `es` after an `s`.
+    #[test]
+    fn plural_takes_es_after_s() {
+        assert_eq!(plural(1, "guess"), "1 guess");
+        assert_eq!(plural(2, "timing guess"), "2 timing guesses");
+        assert_eq!(plural(0, "leg"), "0 legs");
     }
 
     /// No rows is the header and the rule, never an error.

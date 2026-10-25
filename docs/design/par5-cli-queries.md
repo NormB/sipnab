@@ -131,6 +131,10 @@ each surface too: `sip::dialog_store::bucket_by_start` refuses a span of more
 than `MAX_TIMELINE_BUCKETS` intervals, which REST answers 422, MCP refuses as
 `limit_exceeded`, and `--timeline` writes to stderr before exiting 1.
 
+A query that cannot answer prints its reason with `stderr_line!`, never through
+`tracing`: the reason decides the exit code, so it must survive
+`SIPNAB_LOG=off`, as `--call-report`'s unknown Call-ID does.
+
 Under `--cores`, `--json` is refused as a per-message output unless a query
 flag that writes stdout is active, because then it formats that answer.
 
@@ -161,6 +165,66 @@ list and computes every metric, which a reader narrows with `jq`.
 `rank` (dialogs, then messages, then the key) and `share_pct` the MCP
 `top_talkers` tool also reads; `--prefix-digits` is held to the zero rule
 `TalkerDimension::parse` applies to REST's `prefix_digits`.
+
+A query about named calls (`--call-tree`, `--correlate`, `--compare-dialogs`) reads that call whatever the
+run's filter admits, as `--call-report` does, and an unknown Call-ID fails the
+run with `--call-report`'s message (`queries::call_not_found`). Where REST
+caps a list by its row cap, the CLI applies the cap a server started by the
+same run would (`QueryContext::row_cap`).
+
+The endpoint rollup (`--endpoint-ip`, `--endpoint-user`) covers every dialog of
+the capture, as `GET /v1/endpoints` and the MCP `describe_endpoint` tool do:
+`crate::sip::endpoint::describe` reads the stores whole, so no surface narrows
+it by a filter. Its answer is the untyped JSON the route returns
+(`output::query::endpoint::EndpointAnswer`), and the CLI's text is drawn from
+the report the JSON is built from.
+
+`--export-audio` writes a file rather than printing an answer, so its JSON is
+its own: the `path` and `summary` the MCP `export_audio` tool answers with, and
+the `partial` and `dialog_seen` facts REST sends as headers beside the WAV.
+The bytes come from `rtp::audio_export::decode_dialog_audio`, and the file and
+its summary from `write_dialog_audio`, which the MCP tool's export uses too.
+The flag is consent to retain audio for the run (`audio_retention_wanted`).
+
+A file job (`--vcon-validate`) has no stores, so it writes its answer with
+`queries::write_answer`, the convention `QueryContext::answer` delegates to.
+Its exit status carries the verdict: `0` valid, `3` invalid (the lint gate's
+"the tool worked, the input is non-conformant"), `1` not checked.
+
+`--compare-captures` reads the config itself (`bootstrap::load_config`), so the
+two files are read with the pipeline options a run started by the same command
+line would use, which are the ones a REST server started by it would use. The
+dialog and stream caps are `output::query::capture_compare::compare_files`'s,
+shared with REST. The engine's summary has two forms: a server's adds that
+neither file is the capture it holds (`NOT_THE_HELD_CAPTURE`), and the command
+line's, which holds no capture, does not.
+
+`--find-in-files` runs the sweep the MCP `find_in_captures` tool runs on a job
+thread, `capture::sweep::sweep_files`, moved out of `mcp::sweep` so a build
+without MCP has it; the tool's job keeps its cancel, deadline and file limit,
+and the CLI stops only on the process's own stop. The filter is the run's
+compiled filter (`bootstrap::build_filter_expr`), and each file's scratch
+stores hold what an MCP server started by the same command line would hold
+(`Cli::mcp_row_cap`).
+
+`--expect` ends the run with the exit status its report names, the code the
+expectation engine defines for a command line (`Report::exit_code`: 0, 1, 2)
+and the MCP tool already reports as `exit_code`. The report chain returns only
+whether it could answer, so the gate records its code with
+`queries::set_gate_exit`, and both ends of a run read it
+(`queries::gate_exit_code`): the single reader's `run_exit_code`, after a
+failure and the lint gate, and the `--cores` path in the same order. The suite
+is read and checked by clap's value parser, which evaluates it against an empty
+capture, so a defect in it stops the run before the capture is read.
+
+`--relay-holdings` reads no capture, so it is answered neither by the report
+chain nor by `startup`: `main` calls `bootstrap::run_relay_holdings` once the
+plan has resolved the source, before `--cores` or `launch`. The permit comes
+from that source (device auto-detection included) through `relay_ask`, the
+gate `--relay-stats` passes, and the answer is
+`output::query::relay_holdings::ask`, which `GET /v1/relay/holdings` returns
+too. Its refusals exit 2; a relay that gave no call list exits 1, and under
+`--json` prints the classification REST returns.
 
 Beyond those files, each flag edits only lines that belong to it:
 
