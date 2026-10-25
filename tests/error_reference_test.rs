@@ -19,7 +19,10 @@
 //! * `Error::CliValidation(…)` and `Error::ConfigInvalid(…)`, the flag and
 //!   configuration refusals of `Cli::validate` and the config validators;
 //! * `Err(format!(…))`, the helpers that build a message as a `String` for a
-//!   caller to print.
+//!   caller to print;
+//! * `report_uncompiled(out, …)` and `uncompiled_when(refused, …)`, the
+//!   refusals of a flag whose feature the build lacks, which
+//!   `bootstrap::report_uncompiled` prints on stderr.
 //!
 //! A site whose message is a string literal (directly or as the first
 //! argument of `format!`) contributes that literal, placeholders as written,
@@ -93,6 +96,7 @@ enum Kind {
     CliValidation,
     ConfigInvalid,
     PlanStruct,
+    Uncompiled,
 }
 
 /// Every site kind and the text that opens it, up to and including the `(`
@@ -116,6 +120,10 @@ const KINDS: &[(Kind, &str)] = &[
     (Kind::CliValidation, "Error::CliValidation("),
     (Kind::ConfigInvalid, "Error::ConfigInvalid("),
     (Kind::PlanStruct, "PlanError {"),
+    // The printer and the table entry of a missing-feature refusal; the
+    // message is the second argument of each.
+    (Kind::Uncompiled, "report_uncompiled("),
+    (Kind::Uncompiled, "uncompiled_when("),
 ];
 
 /// One place in a source file that raises or prints a message.
@@ -267,6 +275,10 @@ fn extract_sites(src: &str) -> Vec<Site> {
             {
                 continue;
             }
+            // `fn report_uncompiled(` declares the function; it raises nothing.
+            if src[..i].trim_end().ends_with("fn") {
+                continue;
+            }
             let paren = i + open.len() - 1;
             let Some(close) = matching_paren(b, &class, paren) else {
                 continue;
@@ -286,7 +298,7 @@ fn extract_sites(src: &str) -> Vec<Site> {
                     field = value;
                     field.as_deref()
                 }
-                Kind::PlanNew | Kind::PlanRefused => args.get(1).copied(),
+                Kind::PlanNew | Kind::PlanRefused | Kind::Uncompiled => args.get(1).copied(),
                 Kind::ErrorLog | Kind::WarnLog => args
                     .iter()
                     .copied()
@@ -723,7 +735,10 @@ fn lists() -> Result<Lists, TestError> {
 // load_config refusal `--compare-captures` reports before it reads a file.
 // 85 -> 87: the same b3.rs site 1 -> 3, `--find-in-files` reporting its
 // load_config and build_filter_expr refusals the same way.
-const EXPECTED_UNRESOLVED: usize = 87;
+// 87 -> 86: src/app/bootstrap.rs `error!("{msg}")` 5 -> 4. launch's
+// missing-feature refusal is printed by `report_uncompiled`, whose message
+// comes from `uncompiled_when` literal sites, so it is resolved.
+const EXPECTED_UNRESOLVED: usize = 86;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -834,7 +849,13 @@ const EXPECTED_UNRESOLVED: usize = 87;
 // src/app/queries/b4.rs, `--relay-holdings: {}` (no call list came back).
 // Its bad-address refusal reuses the `--relay-stats` template. Nothing
 // removed.
-const EXPECTED_TEMPLATES: usize = 521;
+// 521 -> 533: src/app/bootstrap.rs, the missing-feature refusals that were
+// entries of a tuple table the extractor could not read are now
+// `uncompiled_when` sites it reads: --mcp, --hep-listen, `HEP support
+// requires --features hep`, --tls-key, --keylog, --keylog-watch,
+// --srtp-keys, --dtls-keylog, --api, --api-key, --api-tls-cert and
+// --api-tls-key. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 533;
 
 // ---------------------------------------------------------------------------
 // The page gates
@@ -1042,7 +1063,10 @@ fn f() -> anyhow::Result<()> {
         exit_code: 1,
         message: format!("fourteen {d}"),
     });
+    report_uncompiled(&mut out, "sixteen");
+    let gate = uncompiled_when(no_tls && x, "seventeen");
 }
+fn report_uncompiled(out: &mut dyn Write, message: &str) -> i32 { 2 }
 pub struct PlanError {
     pub exit_code: i32,
     pub message: String,
@@ -1069,6 +1093,8 @@ enum E { #[error("twelve: {0}")] A(String), CliValidation(String), ConfigInvalid
         "thirteen {c}",
         "fifteen",
         "fourteen {d}",
+        "sixteen",
+        "seventeen",
     ]
     .iter()
     .map(|s| Some((*s).to_string()))
@@ -1093,6 +1119,8 @@ enum E { #[error("twelve: {0}")] A(String), CliValidation(String), ConfigInvalid
             Kind::CliValidation,
             Kind::ConfigInvalid,
             Kind::PlanStruct,
+            Kind::Uncompiled,
+            Kind::Uncompiled,
             Kind::PlanStruct,
             Kind::ErrorAttr,
         ]
