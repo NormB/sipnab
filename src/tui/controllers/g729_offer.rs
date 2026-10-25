@@ -159,21 +159,30 @@ pub(in crate::tui) fn handle_g729_install_key(app: &mut App, key: KeyEvent) {
 /// Downloads from itu.int, writes the table file where this run reads it,
 /// and puts the outcome on the status line.
 pub(crate) fn run_pending_install(app: &mut App) {
-    if !std::mem::take(&mut app.g729_offer.pending_install) {
-        return;
-    }
-    #[cfg(feature = "g729")]
-    {
-        let location = crate::rtp::g729_tables::configured_location().unwrap_or_default();
-        match crate::app::g729_install::install_download(
-            &location,
-            &crate::app::g729_install::download,
-        ) {
-            Ok(done) => app.status_error = Some(done.replace('\n', "; ")),
-            Err(e) => app.set_status_error(e),
-        }
+    if std::mem::take(&mut app.g729_offer.pending_install) {
+        install_now(app);
     }
 }
+
+/// Download and install the tables, and put the outcome on the status line.
+///
+/// Its own function, with a no-op twin for a build without `g729`, so that
+/// [`run_pending_install`] has the same shape in both builds. A `#[cfg]`
+/// block inside it left an early `return` as the function's tail when the
+/// block compiled out, which clippy denies (`needless_return`).
+#[cfg(feature = "g729")]
+fn install_now(app: &mut App) {
+    let location = crate::rtp::g729_tables::configured_location().unwrap_or_default();
+    match crate::app::g729_install::install_download(&location, &crate::app::g729_install::download)
+    {
+        Ok(done) => app.status_error = Some(done.replace('\n', "; ")),
+        Err(e) => app.set_status_error(e),
+    }
+}
+
+/// Without `g729` there is no decoder to install; the request is dropped.
+#[cfg(not(feature = "g729"))]
+fn install_now(_app: &mut App) {}
 
 #[cfg(test)]
 mod tests {

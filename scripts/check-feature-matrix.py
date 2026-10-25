@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # SPDX-FileCopyrightText: The sipnab contributors
 
-"""Run CI's feature-matrix compile checks locally, before the push.
+"""Run CI's feature-matrix lint checks locally, before the push.
 
 Why this exists as a gate rather than a habit: the pre-commit hook builds
 `--features full`, and a break that only appears when a feature is ABSENT is
@@ -133,8 +133,12 @@ def main() -> int:
             # `--tests` is not optional. Without it no test file is built, and
             # a break that lives in a test compiles nowhere -- the gate stays
             # green while CI, which passes it, goes red.
-            cmd = ["cargo", "check", "--no-default-features", "--features", f,
-                   "--tests"]
+            # Clippy, not `cargo check`, because CI's Features job lints every
+            # leg: a lint that fires only in one combination (a `return` left
+            # as a function's tail once a `#[cfg]` block compiled out) passes
+            # `cargo check` and fails CI.
+            cmd = ["cargo", "clippy", "--no-default-features", "--features", f,
+                   "--tests", "--", "-D", "warnings"]
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
         if r.returncode != 0:
             failed.append((f, r.stdout + r.stderr))

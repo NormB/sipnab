@@ -271,9 +271,10 @@ them blocks the push:
 | `scripts/commit-signature-check.sh` on every pushed commit, before any other gate | Branch protection on `main` requires signed commits, and GitHub applies that only at merge time: a pull request with an unsigned commit shows every check green and stays blocked with no reason given. The gate refuses a commit without a good signature, names it, and prints the command that re-signs it. A good signature from a key that `.github/allowed_signers` does not list passes with a note, because GitHub checks the key against the GitHub account that owns the committer email of the commit. Nothing in `cargo test` sees the commits a push carries. |
 
 CI's full feature matrix is not in the hook. That matrix is every combination
-`.github/workflows/ci.yml` lists, with its `RUSTFLAGS=-Dwarnings`.
+`.github/workflows/ci.yml` lists, linted with clippy under its
+`RUSTFLAGS=-Dwarnings`.
 
-- The Features job builds it on the project's aarch64 self-hosted runners
+- The Features job lints it on the project's aarch64 self-hosted runners
   within minutes of every push.
 - To see it before you push, run `python3 scripts/check-feature-matrix.py`.
   It reads the combos and the flags out of `ci.yml` rather than restating
@@ -715,9 +716,11 @@ tests/openssf_badge_test.rs holds the quote to this line, so its wording stays. 
 - Ensure the CI gate passes locally. Beyond `cargo fmt` and
   `cargo test --all-features`, CI enforces:
   - `cargo clippy --workspace --all-features --all-targets -- -D warnings`
-  - a reduced-feature matrix that must compile (`native`, `tls`, `api`,
-    `mcp`, `hep`, `tls,api`, `native,tui,audio`, `native,tui,tls,hep,api`,
-    `native,hep,api,mcp,mcp-http`, `wasm`)
+  - a reduced-feature matrix that must pass
+    `cargo clippy --no-default-features --features <combo> --tests -- -D warnings`
+    for every combination the `features` job of `.github/workflows/ci.yml`
+    lists, the default features among them (`wasm` gets a wasm32
+    `cargo check`)
   - a docs gate
     (`RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features`)
   - `cargo audit` + `cargo deny`

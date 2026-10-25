@@ -1196,6 +1196,40 @@ else
 	sed 's/^/    /' "$TMP/out.log"
 fi
 
+# ...and blocks a LINT that fires only in one combo, which compiles cleanly.
+# CI's Features job runs clippy on every leg, so the script must too: under
+# `--features plain` alone the gated block below vanishes, the `return`
+# becomes the function's tail, and clippy denies `needless_return` while
+# `cargo check` sees nothing wrong. The same shape failed `cargo clippy` with
+# sipnab's default features on main (`run_pending_install` without `g729`).
+cat >"$CRATE/src/main.rs" <<'EOF'
+fn main() {
+    let mut n = u32::from(std::env::args().count() > 1);
+    bump(&mut n);
+    println!("{n}");
+}
+
+fn bump(n: &mut u32) {
+    if *n == 0 {
+        return;
+    }
+    #[cfg(any(not(feature = "plain"), feature = "extra"))]
+    {
+        *n += 1;
+    }
+}
+EOF
+( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+run_matrix_script
+if [ "$MX_RC" -eq 2 ]; then
+	skip "check-feature-matrix.py blocks a lint that fires only in one combo -- NOT CHECKED on $(uname -s)"
+elif [ "$MX_RC" -ne 0 ] && grep -q 'needless_return\|unneeded `return`' "$TMP/out.log"; then
+	ok "check-feature-matrix.py blocks a lint that fires only in one combo"
+else
+	bad "check-feature-matrix.py did NOT block a lint that fires only in one combo (exit $MX_RC)"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
 # Put the fixture back exactly as it was found: the workflow, the feature list
 # and the source. A scenario that leaves its own Cargo.toml behind changes what
 # every later scenario compiles.
