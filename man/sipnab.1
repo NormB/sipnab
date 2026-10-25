@@ -1264,6 +1264,9 @@ How many rows a ranked query keeps (\fB\-\-count\-by\fR, \fB\-\-rates\-by\fR, \f
 .TP
 \fB\-\-call\-tree\fR \fICALL\-ID\fR
 Print every leg of one call as a tree across B2BUA, SBC and PBX hops: the legs sipnab matched to it by an identifier (\fBX\-Call\-ID\fR, \fBSession\-ID\fR, SDP origin, P\-Charging\-Vector, a Via branch), each leg's own matches, and the legs a timing guess suggests, which the walk does not follow.
+.TP
+\fB\-\-correlate\fR \fICALL\-ID\fR
+Print the other legs of one call and the strategy that matched each: an identifier the legs share, or a timing guess, with the gap between the two calls for a guess.
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR

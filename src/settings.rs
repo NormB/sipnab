@@ -199,6 +199,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("content-deny-header", Link::Pending),
     ("content-deny-tombstone", Link::Pending),
     ("cores", Link::Pending),
+    ("correlate", Link::PerRun),
     ("count", Link::PerRun),
     ("count-by", Link::PerRun),
     (

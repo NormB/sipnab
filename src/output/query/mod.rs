@@ -19,6 +19,7 @@ use std::fmt::Write as _;
 use crate::output::ReportFormat;
 
 pub mod aggregate;
+pub mod correlated;
 pub mod rates;
 pub mod talkers;
 pub mod timeline;

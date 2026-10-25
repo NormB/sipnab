@@ -8948,7 +8948,11 @@ impl SipnabMcp {
             drop(ds);
             drop(state);
 
-            let heuristic_only = !legs.is_empty() && legs.iter().all(|l| !l.identifier_match);
+            // The rule REST and `--correlate` apply: at least one leg, and no
+            // identifier match among them.
+            let heuristic_only = crate::output::query::correlated::heuristic_only(
+                legs.iter().map(|l| l.identifier_match),
+            );
             // Only when a time-based match is actually being reported. Sending
             // the clock unconditionally would invite a reader to weigh it
             // against identifier matches, which do not depend on it at all.

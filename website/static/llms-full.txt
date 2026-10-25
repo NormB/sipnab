@@ -18633,6 +18633,7 @@ out the end-of-run summary on stderr.
 | `--talkers` | `<BY>` | | 0.5.230 | Rank the busiest participants, most dialogs first: by sending address (`ip`), `User-Agent` or `Server` banner (`ua`), or the dialed number's leading digits (`prefix`). `--json` prints the shape of `GET /v1/talkers`. Any other value exits 2 |
 | `--prefix-digits` | `<N>` | `4` | 0.5.230 | How many leading digits `--talkers prefix` ranks by. Needs `--talkers`; only `prefix` reads it. `0` exits 2 |
 | `--call-tree` | `<CALL-ID>` | | Unreleased | Print every leg of one call as a tree across B2BUA, SBC and PBX hops, with the strategy that matched each leg. `--json` prints the shape of `GET /v1/dialogs/{call_id}/tree`. A Call-ID the run did not track exits 1 |
+| `--correlate` | `<CALL-ID>` | | Unreleased | Print the other legs of one call and the strategy that matched each: an identifier the legs share, or a timing guess. `--json` prints the shape of `GET /v1/dialogs/{call_id}/correlated`. A Call-ID the run did not track exits 1 |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those three; `0` exits 2 |
 
 ### Call volume over time
@@ -18924,6 +18925,43 @@ sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --call-tree b2bua-caller-synt
 
 The REST route `GET /v1/dialogs/{call_id}/tree` and the MCP tool
 `get_call_tree` walk the same tree.
+
+### The other legs of one call
+
+List the calls sipnab ties to one call, and how:
+
+```sh
+sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --correlate 1-1966@10.0.2.20 --no-cli-print --quiet
+```
+
+```text
+Legs correlated with 1-1966@10.0.2.20: 1 leg
+Leg               Strategy    Score  Match       Gap ms
+-------------------------------------------------------
+1-1968@10.0.2.20  sdp_origin  90     identifier  -
+```
+
+The two calls carry the same SDP origin, an identifier, so the score is high.
+When no identifier ties two legs and only their timing does, the match is a
+guess, `Gap ms` shows how far apart the two calls began, and the answer says
+so:
+
+```sh
+sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --correlate b2bua-caller-synth@203.0.113.1 --no-cli-print --quiet
+```
+
+```text
+Legs correlated with b2bua-caller-synth@203.0.113.1: 1 leg
+Leg                                 Strategy          Score  Match  Gap ms
+--------------------------------------------------------------------------
+b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  50     guess  3
+Every leg here is a timing guess: no identifier ties it to this call.
+```
+
+A call that no other leg ties to prints no rows and exits 0. A Call-ID the run
+did not track exits 1. `--call-tree` follows these matches leg by leg. The
+REST route `GET /v1/dialogs/{call_id}/correlated` and the MCP tool
+`find_correlated` answer for one leg as this flag does.
 
 ## Dialog
 
@@ -22323,7 +22361,7 @@ A query flag, named by `{flag}`, computed its answer, and sipnab could not write
 
 ### `Call-ID '{call_id}' not found in tracked dialogs`
 
-`--call-report <CALL-ID>` asks for a detailed report of one call, and `--call-tree <CALL-ID>` for the legs of one call. This run tracked no dialog with that exact Call-ID. The match is exact and case-sensitive. The run exits 1, and sipnab produces none of the later reports.
+`--call-report <CALL-ID>` asks for a detailed report of one call, and `--call-tree <CALL-ID>` and `--correlate <CALL-ID>` for the legs of one call. This run tracked no dialog with that exact Call-ID. The match is exact and case-sensitive. The run exits 1, and sipnab produces none of the later reports.
 
 **What to do:** Run with `--report` (or `--json-dialogs`) to list the Call-IDs this run holds, then pass one of them exactly. The text `--report` table shortens Call-IDs to 30 characters, and `--markdown` shows them in full.
 

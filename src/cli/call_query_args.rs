@@ -30,6 +30,18 @@ pub struct CallQueryArgs {
     /// run headless, as `--call-report` does.
     #[arg(help_heading = "Queries", long, value_name = "CALL-ID")]
     pub call_tree: Option<String>,
+
+    /// Print the other legs of one call and the strategy that matched each:
+    /// an identifier the legs share, or a timing guess, with the gap
+    /// between the two calls for a guess.
+    ///
+    /// The Call-ID must match exactly, and one the run did not track exits
+    /// with status 1; a call with no other leg prints none. With `--json`,
+    /// one JSON object on the last line of stdout, the shape
+    /// `GET /v1/dialogs/{call_id}/correlated` returns. Makes the run
+    /// headless, as `--call-report` does.
+    #[arg(help_heading = "Queries", long, value_name = "CALL-ID")]
+    pub correlate: Option<String>,
 }
 
 impl CallQueryArgs {
@@ -39,11 +51,19 @@ impl CallQueryArgs {
     /// itself here, once. See [`OneShot`] for what each field decides.
     #[must_use]
     pub fn one_shots(&self) -> Vec<OneShot> {
-        vec![OneShot {
-            name: "--call-tree",
-            active: self.call_tree.is_some(),
-            implies_no_tui: true,
-            owns_stdout: true,
-        }]
+        vec![
+            OneShot {
+                name: "--call-tree",
+                active: self.call_tree.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+            OneShot {
+                name: "--correlate",
+                active: self.correlate.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+        ]
     }
 }

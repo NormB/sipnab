@@ -55,7 +55,6 @@ const MATRIX: &str = "docs/design/surface-capability-matrix.md";
 const GAP_LEDGER: &[(&str, &str)] = &[
     // CLI query batch B1: aggregates.
     // CLI query batch B2: single-call queries.
-    ("Correlate legs", "CLI"),
     ("Compare two dialogs", "CLI"),
     ("Per-endpoint rollup", "CLI"),
     ("Export decoded audio", "CLI"),

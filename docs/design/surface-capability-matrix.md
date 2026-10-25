@@ -131,7 +131,7 @@ What are the other legs of this call, and by which strategy was each matched?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a one-shot "where did this call go next" is legitimate, but no flag exposes correlation (PAR5) |
+| CLI | `--correlate` |
 | TUI | `CallFlow` |
 | REST | `/v1/dialogs/{call_id}/correlated` |
 | MCP | `find_correlated` |

@@ -2192,7 +2192,7 @@ A query flag, named by `{flag}`, computed its answer, and sipnab could not write
 
 ### `Call-ID '{call_id}' not found in tracked dialogs`
 
-`--call-report <CALL-ID>` asks for a detailed report of one call, and `--call-tree <CALL-ID>` for the legs of one call. This run tracked no dialog with that exact Call-ID. The match is exact and case-sensitive. The run exits 1, and sipnab produces none of the later reports.
+`--call-report <CALL-ID>` asks for a detailed report of one call, and `--call-tree <CALL-ID>` and `--correlate <CALL-ID>` for the legs of one call. This run tracked no dialog with that exact Call-ID. The match is exact and case-sensitive. The run exits 1, and sipnab produces none of the later reports.
 
 **What to do:** Run with `--report` (or `--json-dialogs`) to list the Call-IDs this run holds, then pass one of them exactly. The text `--report` table shortens Call-IDs to 30 characters, and `--markdown` shows them in full.
 

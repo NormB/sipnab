@@ -6,7 +6,7 @@
 //! function and hands the answer to [`QueryContext::answer`].
 
 use super::{QueryContext, call_not_found};
-use crate::output::query::tree;
+use crate::output::query::{correlated, tree};
 
 /// Render batch B2's queries that this command line asked for.
 ///
@@ -15,7 +15,26 @@ use crate::output::query::tree;
 /// `false` when one was asked for and could not be answered or written;
 /// `true` otherwise, including when none was asked for.
 pub(super) fn render(ctx: &QueryContext<'_>) -> bool {
-    render_call_tree(ctx)
+    render_call_tree(ctx) && render_correlate(ctx)
+}
+
+/// `--correlate`: the other legs of one named call, the answer
+/// `GET /v1/dialogs/{call_id}/correlated` returns. Like `--call-tree`, it
+/// reads the named call whatever the run's filter admits; an unknown
+/// Call-ID fails the run.
+fn render_correlate(ctx: &QueryContext<'_>) -> bool {
+    let Some(call_id) = ctx.cli.call_query_args.correlate.as_deref() else {
+        return true;
+    };
+    let Some(answer) =
+        correlated::correlated(ctx.dialogs, call_id, ctx.row_cap, ctx.capture_identity())
+    else {
+        call_not_found(call_id);
+        return false;
+    };
+    ctx.answer("--correlate", &answer, |format| {
+        correlated::render(&answer, format)
+    })
 }
 
 /// `--call-tree`: the legs reachable from one named call, the answer

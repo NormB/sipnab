@@ -1898,42 +1898,22 @@ async fn get_correlated(
     let ss = state.stream_store.read();
     // 404 an unknown Call-ID, the same answer `/v1/dialogs/{call_id}` gives, so
     // an empty-legs 200 always means "this call stands alone" and never "this
-    // call is not here" — two facts a caller acts on differently.
-    let source_created = match ds.get(&call_id) {
-        Some(d) => d.created_at,
-        None => return Err(Problem::new(StatusCode::NOT_FOUND)),
-    };
-    let results = ds.find_correlated_scored(&call_id);
-    let total_matched = results.len();
-    let legs: Vec<schema::CorrelatedLeg> = results
-        .iter()
-        .take(state.max_rows)
-        .map(|r| {
-            let (strategy, identifier_match, observed_gap_ms) =
-                r.strategy_and_gap(Some(source_created));
-            schema::CorrelatedLeg {
-                call_id: r.dialog.call_id.clone(),
-                score: r.score,
-                strategy: strategy.to_string(),
-                identifier_match,
-                observed_gap_ms,
-            }
-        })
-        .collect();
-    let heuristic_only = !legs.is_empty() && legs.iter().all(|l| !l.identifier_match);
+    // call is not here" — two facts a caller acts on differently. The answer
+    // is the one `--correlate` prints.
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer = crate::output::query::correlated::correlated(
+        &ds,
+        &call_id,
+        state.max_rows,
+        capture_identity,
+    );
     drop(ss);
     drop(ds);
     drop(capture);
 
-    Ok(Json(schema::Correlated {
-        schema_version: 1,
-        source_call_id: call_id,
-        legs,
-        total_matched,
-        heuristic_only,
-        capture_identity,
-    }))
+    answer
+        .map(Json)
+        .ok_or_else(|| Problem::new(StatusCode::NOT_FOUND))
 }
 
 /// `GET /v1/dialogs/{call_id}/tree` — the whole tree of legs reachable from this
@@ -6636,52 +6616,10 @@ pub mod schema {
         pub api_allow_vcon_fetch: bool,
     }
 
-    /// One other leg of a call, and the strategy that matched it. The fields
-    /// mirror the MCP `find_correlated` tool's `CorrelatedLeg`, built from the
-    /// one `CorrelationResult::strategy_and_gap` rule so the two surfaces cannot
-    /// disagree about whether a strategy is an identifier match.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct CorrelatedLeg {
-        /// Call-ID of the correlated dialog. Feed it to `/v1/dialogs/{call_id}`.
-        pub call_id: String,
-        /// Confidence, 0-100.
-        #[schema(minimum = 0, maximum = 100)]
-        pub score: u8,
-        /// Which strategy matched, by name: `session_id`, `x_call_id`,
-        /// `sdp_origin`, `charging_vector_related_icid`, `charging_vector_icid`,
-        /// `via_branch` or `timing_heuristic`.
-        pub strategy: String,
-        /// True when the strategy compared identifiers, false for a guess.
-        pub identifier_match: bool,
-        /// For `timing_heuristic` only: the observed gap between the two
-        /// dialogs' creation, in milliseconds. Null for an identifier match,
-        /// where it would be a number with no bearing on why they matched.
-        pub observed_gap_ms: Option<i64>,
-    }
-
-    /// The other legs of one call, with the source it was asked about.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct Correlated {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// The Call-ID the legs were correlated against.
-        pub source_call_id: String,
-        /// The correlated legs, highest score first.
-        pub legs: Vec<CorrelatedLeg>,
-        /// How many legs matched before the row cap.
-        pub total_matched: usize,
-        /// True when every matched leg is a timing guess rather than an
-        /// identifier match, so a reader weighs the whole answer accordingly.
-        pub heuristic_only: bool,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
+    /// The correlation answer, built by
+    /// [`crate::output::query::correlated::correlated`] for this route and
+    /// `--correlate` alike.
+    pub use crate::output::query::correlated::{Correlated, CorrelatedLeg};
 
     /// The call tree's answer, built by
     /// [`crate::output::query::tree::call_tree`] for this route and

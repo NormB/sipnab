@@ -166,7 +166,7 @@ list and computes every metric, which a reader narrows with `jq`.
 `top_talkers` tool also reads; `--prefix-digits` is held to the zero rule
 `TalkerDimension::parse` applies to REST's `prefix_digits`.
 
-A query about one named call (`--call-tree`) reads that call whatever the
+A query about one named call (`--call-tree`, `--correlate`) reads that call whatever the
 run's filter admits, as `--call-report` does, and an unknown Call-ID fails the
 run with `--call-report`'s message (`queries::call_not_found`). Where REST
 caps a list by its row cap, the CLI applies the cap a server started by the
