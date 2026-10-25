@@ -1282,6 +1282,9 @@ Write one call's decoded RTP audio to a WAV file: mono for one stream, stereo fo
 .TP
 \fB\-\-export\-audio\-out\fR \fIFILE\fR
 The file \fB\-\-export\-audio\fR writes. It must not exist.
+.TP
+\fB\-\-vcon\-validate\fR \fIFILE\fR
+Check a vCon container file against sipnab's vendored schema (draft\-ietf\-vcon\-vcon\-core\-04), and print the verdict and every finding.
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR
@@ -1439,7 +1442,7 @@ Runtime failure \(em capture error, I/O error, a capture file that was not read 
 Invalid usage \(em bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code.
 .TP
 .B 3
-Lint gate tripped \(em \fB\-\-lint \-\-lint\-fail\-on <severity>\fR found a conformance finding at or above that severity. Distinct from \fB1\fR on purpose: the tool worked, the CAPTURE is non\-conformant. Also the vCon forwarder stopping because the store answered \fB401\fR or \fB403\fR (\fB\-\-vcon\-forward\fR).
+Lint gate tripped \(em \fB\-\-lint \-\-lint\-fail\-on <severity>\fR found a conformance finding at or above that severity. Distinct from \fB1\fR on purpose: the tool worked, the CAPTURE is non\-conformant. Also an invalid vCon container under \fB\-\-vcon\-validate\fR, and the vCon forwarder stopping because the store answered \fB401\fR or \fB403\fR (\fB\-\-vcon\-forward\fR).
 .\" END GENERATED EXIT STATUS
 .SH LICENSE
 MIT OR Apache-2.0. Copyright 2024-2026 Norm Brandinger.

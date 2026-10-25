@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 389 | 312 | 34 | 43 | 0 |
+| CLI flags | 390 | 313 | 34 | 43 | 0 |
 | HTTP routes | 47 | 47 | -- | 0 | 0 |
 | MCP tools | 76 | 76 | -- | 0 | 0 |
 
@@ -155,7 +155,7 @@ behind them.
 | `--short-calls` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +2 | **parse-only** | short_calls_filter asserts only count <= 7; the alias-equivalence test is vacuous (0 of 1334 dialogs selected on its fixture) |
 | `--one-way` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **behavior** | one_way_filter plus one_way_output_carries_the_stun_versus_sdp_finding (tests/stun_test.rs); both directions pinned |
 | `--nat-issues` |  |  | Diagnostic aliases | e2e | `tests/cli_options_test.rs`, `tests/filter_corpus_test.rs` +1 | **behavior** | nat_issues_filter plus the_nat_issues_alias_selects_the_rewritten_call (tests/media_diagnosis_wiring_test.rs) |
-| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +32 |  |  |
+| `--json` |  |  | Output | e2e | `tests/annotate_cli_test.rs`, `tests/archive_input_test.rs` +33 |  |  |
 | `--json-pretty` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/json_schema_test.rs` +2 |  |  |
 | `--json-dialogs` |  |  | Output | e2e | `tests/archive_input_test.rs`, `tests/archive_password_prompt_test.rs` +43 |  |  |
 | `--plugin` |  | `PATH` | Output | e2e | `tests/partial_run_exit_code_test.rs`, `tests/plugin_example_test.rs` |  |  |
@@ -471,6 +471,7 @@ behind them.
 | `--endpoint-user` |  | `USER` | Queries | e2e | `tests/cli_endpoint_test.rs` |  |  |
 | `--export-audio` |  |  | Queries | e2e | `tests/cli_export_audio_test.rs`, `tests/config_cli_flag_values_test.rs` |  |  |
 | `--export-audio-out` |  | `FILE` | Queries | e2e | `tests/cli_export_audio_test.rs` |  |  |
+| `--vcon-validate` |  | `FILE` | Queries | e2e | `tests/cli_vcon_validate_test.rs` |  |  |
 | `--panic-selftest` |  |  | Config (hidden) | referenced | `tests/crash_test.rs` |  |  |
 
 ## HTTP routes
@@ -523,7 +524,7 @@ behind them.
 | `/v1/vcon/analyze` | exercised | `tests/api_test.rs`, `tests/vcon_reader_forms_test.rs` |
 | `/v1/vcon/fetch/{uuid}` | exercised | `tests/api_capture_identity_test.rs`, `tests/openapi_contract_test.rs` +1 |
 | `/v1/vcon/spool` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` |
-| `/v1/vcon/validate` | exercised | `tests/api_test.rs`, `tests/vcon_reader_forms_test.rs` |
+| `/v1/vcon/validate` | exercised | `tests/api_test.rs`, `tests/cli_vcon_validate_test.rs` +1 |
 
 ## MCP tools
 

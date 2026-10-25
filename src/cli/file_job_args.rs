@@ -19,7 +19,21 @@ use super::one_shot::OneShot;
 /// Split out of [`super::Cli`] so clap's generated parser builds this group
 /// in its own stack frame, like every other group.
 #[derive(clap::Args, Debug, Clone, Default)]
-pub struct FileJobArgs {}
+pub struct FileJobArgs {
+    /// Check a vCon container file against sipnab's vendored schema
+    /// (draft-ietf-vcon-vcon-core-04), and print the verdict and every
+    /// finding.
+    ///
+    /// A signed or encrypted container is checked by the unsigned vCon
+    /// inside. Exits 0 when the container is valid and 3 when it is invalid,
+    /// so a CI step can gate on it; a file that cannot be read, is not JSON,
+    /// or is not a container sipnab may validate exits 1. Runs before any
+    /// capture opens and needs no `-I`. With `--json`, one JSON object on
+    /// the last line of stdout, the shape `POST /v1/vcon/validate` returns.
+    /// Needs the `vcon` feature.
+    #[arg(help_heading = "Queries", long, value_name = "FILE")]
+    pub vcon_validate: Option<std::path::PathBuf>,
+}
 
 impl FileJobArgs {
     /// The one-shot declarations of this group's flags, active or not.
@@ -28,6 +42,11 @@ impl FileJobArgs {
     /// itself here, once. See [`OneShot`] for what each field decides.
     #[must_use]
     pub fn one_shots(&self) -> Vec<OneShot> {
-        Vec::new()
+        vec![OneShot {
+            name: "--vcon-validate",
+            active: self.vcon_validate.is_some(),
+            implies_no_tui: true,
+            owns_stdout: true,
+        }]
     }
 }

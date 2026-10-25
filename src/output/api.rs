@@ -3675,56 +3675,20 @@ async fn post_vcon_validate(
 
     let bytes = vcon_body(&headers, body)?;
     // A signed or encrypted container is validated by the unsigned vCon
-    // inside, opened by the readers' one step.
-    let container = match crate::capture::vcon_input::open_bytes(&bytes) {
-        Ok((container, _)) => container,
-        Err(crate::capture::vcon_input::ContainerError::NotJson(_)) => {
-            return Err(Problem::detailed(
-                StatusCode::BAD_REQUEST,
-                "the body must be a JSON vCon container",
-            ));
-        }
-        Err(e) => {
-            return Err(Problem::detailed(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                e.to_string(),
-            ));
-        }
-    };
-    if !container.is_object() {
-        return Err(Problem::detailed(
-            StatusCode::BAD_REQUEST,
-            "a vCon container is a JSON object; pass the container itself, not a \
-             string or array holding it",
-        ));
-    }
-
-    if let Some(why) = crate::capture::vcon_input::critical_refusal(&container) {
-        return Err(Problem::detailed(
-            StatusCode::UNPROCESSABLE_ENTITY,
-            format!("sipnab must not validate this vCon container: {why}"),
-        ));
-    }
-
-    // The shared validator the MCP tool also runs; not feature-gated, so an
-    // api-only build validates too.
-    let report = crate::output::vcon_schema::validate(&container);
-    let finding = |f: &crate::output::vcon_schema::SchemaFinding| schema::VconFinding {
-        instance_path: f.instance_path.clone(),
-        keyword: f.keyword.to_string(),
-        detail: f.detail.clone(),
-    };
-
-    Ok(Json(schema::VconValidation {
-        // 2: the core-04 schema left nothing to excuse, so `deviations`,
-        // `explanations` and the `valid-except-documented-deviation` verdict
-        // are gone.
-        schema_version: 2,
-        verdict: report.verdict.as_str().to_string(),
-        schema_id: report.schema_id.clone(),
-        schema_path: report.schema_path.to_string(),
-        errors: report.errors.iter().map(finding).collect(),
-    }))
+    // inside, opened by the readers' one step. The shared validator the MCP
+    // tool also runs; it needs the vendored schema, which is part of the
+    // vcon feature, as this route is. The answer is the one
+    // `--vcon-validate` prints.
+    use crate::output::query::vcon_validate::{NotValidated, validate_bytes};
+    validate_bytes(&bytes).map(Json).map_err(|refusal| {
+        let status = match refusal {
+            NotValidated::NotJson | NotValidated::NotObject => StatusCode::BAD_REQUEST,
+            NotValidated::Unopened(_) | NotValidated::Critical(_) => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+        };
+        Problem::detailed(status, refusal.to_string())
+    })
 }
 
 #[cfg(feature = "vcon")]
@@ -6593,32 +6557,10 @@ pub mod schema {
         pub capture_identity: Option<crate::provenance::CaptureEtag>,
     }
 
-    /// One place a vCon container disagrees with the vendored schema.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct VconFinding {
-        /// JSON Pointer to the offending value, `/dialog/2` shaped.
-        pub instance_path: String,
-        /// The schema keyword that refused it.
-        pub keyword: String,
-        /// What was wrong, in one sentence.
-        pub detail: String,
-    }
-
-    /// The verdict on a vCon container checked against the vendored schema.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct VconValidation {
-        /// Version of this response's shape.
-        #[schema(example = 2)]
-        pub schema_version: u32,
-        /// The one-word verdict: `valid` or `invalid`.
-        pub verdict: String,
-        /// The `$id` the vendored schema declares.
-        pub schema_id: String,
-        /// Where that schema lives in the repository.
-        pub schema_path: String,
-        /// Every finding. Empty on a clean pass.
-        pub errors: Vec<VconFinding>,
-    }
+    /// The vCon validation answer, built by
+    /// [`crate::output::query::vcon_validate::validate_bytes`] for this route
+    /// and `--vcon-validate` alike.
+    pub use crate::output::query::vcon_validate::{VconFinding, VconValidation};
 
     /// The call-volume histogram's answer, built by
     /// [`crate::output::query::timeline::timeline`] for this route and

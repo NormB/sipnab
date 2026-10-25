@@ -186,6 +186,11 @@ The bytes come from `rtp::audio_export::decode_dialog_audio`, and the file and
 its summary from `write_dialog_audio`, which the MCP tool's export uses too.
 The flag is consent to retain audio for the run (`audio_retention_wanted`).
 
+A file job (`--vcon-validate`) has no stores, so it writes its answer with
+`queries::write_answer`, the convention `QueryContext::answer` delegates to.
+Its exit status carries the verdict: `0` valid, `3` invalid (the lint gate's
+"the tool worked, the input is non-conformant"), `1` not checked.
+
 Beyond those files, each flag edits only lines that belong to it:
 
 - its own `gap:` cell in [`docs/design/surface-capability-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/surface-capability-matrix.md), flipped to

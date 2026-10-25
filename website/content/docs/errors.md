@@ -4266,6 +4266,30 @@ The server that holds a recording's file closed the connection before it sent th
 
 **Exit code:** 1.
 
+### `--vcon-validate requires the 'vcon' feature (not compiled in)`
+
+`--vcon-validate` checks a container against the vCon schema sipnab ships, and the schema is part of the `vcon` feature. This binary does not include it.
+
+**What to do:** Use a build with the `vcon` feature: the release binaries and `cargo install sipnab --features full` include it.
+
+**Exit code:** 2.
+
+### `--vcon-validate {}: {why}`
+
+`--vcon-validate <FILE>` could not check the file. The first `{}` is the path, and `{why}` is one of these:
+
+- sipnab could not read the file: the operating system's reason, such as `No such file or directory (os error 2)`.
+- `the body must be a JSON vCon container`: the file is not JSON.
+- `a vCon container is a JSON object; pass the container itself, not a string or array holding it`: the file is JSON but not an object.
+- `sipnab must not validate this vCon container: {why}`: the container lists a `critical` extension sipnab does not support, which draft-ietf-vcon-vcon-core-04 section 4.1.4 forbids operating on.
+- A signed, encrypted or gzip container that does not open, with the reason.
+
+An invalid container is not this message: it prints its findings and exits 3.
+
+**What to do:** Check the path and that the file is the container itself. For a `critical` extension, this sipnab cannot check the container.
+
+**Exit code:** 1.
+
 ### `--vcon-spool-status requires the 'vcon' feature (not compiled in)`
 
 `--vcon-spool-status` counts the vCon export spool: the containers pending, delivered and failed. This build does not include the `vcon` feature, so it cannot read the spool.

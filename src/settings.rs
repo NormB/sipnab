@@ -917,6 +917,7 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("vcon_input", "signer_sha256", Merge::Override),
     ),
     ("vcon-spool-status", Link::Action),
+    ("vcon-validate", Link::Action),
     (
         "vcon-x5u-ca",
         Link::Key("vcon_input", "x5u_ca", Merge::Override),

@@ -694,6 +694,15 @@ static SPECS: &[Spec] = &[
         },
         &["--export-audio", "x"],
     ),
+    // `--vcon-validate`: a path, read when the job runs, before any capture.
+    (
+        "vcon-validate",
+        Kind::Text {
+            accept: &["c.vcon.json"],
+            reject: &[],
+        },
+        &[],
+    ),
     // `--correlate`: any Call-ID parses; one the run did not track exits 1
     // after the run, as `--call-report`'s does.
     (

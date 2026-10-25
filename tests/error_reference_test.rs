@@ -816,7 +816,10 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // table has no extractor for. Nothing removed.
 // 510 -> 511: src/app/queries/b2.rs, `--export-audio: {why}`, a call with
 // nothing to export or a file that exists. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 511;
+// 511 -> 513: src/app/queries/b3.rs, `--vcon-validate {}: {why}` (a file it
+// cannot read or validate) and `--vcon-validate requires the 'vcon' feature
+// (not compiled in)`. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 513;
 
 // ---------------------------------------------------------------------------
 // The page gates

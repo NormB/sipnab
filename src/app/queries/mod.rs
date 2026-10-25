@@ -129,16 +129,7 @@ impl<'a> QueryContext<'a> {
         answer: &T,
         text: impl FnOnce(ReportFormat) -> String,
     ) -> bool {
-        match render_answer(answer_form(self.cli), answer, text) {
-            Ok(out) => super::batch::write_stdout(&out),
-            Err(e) => {
-                // On stderr, not through tracing: the failure decides the exit
-                // code, so it is printed even with logging off, as
-                // `--call-report` prints an unknown Call-ID.
-                stderr_line!("{flag}: the answer did not serialize: {e}");
-                false
-            }
-        }
+        write_answer(self.cli, flag, answer, text)
     }
 }
 
@@ -147,6 +138,31 @@ impl<'a> QueryContext<'a> {
 #[must_use]
 pub fn table_format(cli: &Cli) -> ReportFormat {
     super::batch::table_report_format(cli)
+}
+
+/// Write `flag`'s answer to stdout in the form this command line asks for:
+/// the output convention every query and file job shares.
+///
+/// # Returns
+///
+/// `false` when the answer did not serialize or stdout refused it, which the
+/// caller turns into a failed run.
+pub fn write_answer<T: Serialize>(
+    cli: &Cli,
+    flag: &str,
+    answer: &T,
+    text: impl FnOnce(ReportFormat) -> String,
+) -> bool {
+    match render_answer(answer_form(cli), answer, text) {
+        Ok(out) => super::batch::write_stdout(&out),
+        Err(e) => {
+            // On stderr, not through tracing: the failure decides the exit
+            // code, so it is printed even with logging off, as
+            // `--call-report` prints an unknown Call-ID.
+            stderr_line!("{flag}: the answer did not serialize: {e}");
+            false
+        }
+    }
 }
 
 /// Report that this run tracked no dialog with `call_id`, the message

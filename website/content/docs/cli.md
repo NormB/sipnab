@@ -1170,6 +1170,7 @@ out the end-of-run summary on stderr.
 | `--endpoint-user` | `<USER>` | | Unreleased | Print everything one SIP user did, matched against the user part of each dialog's From and To: the `--endpoint-ip` rollup without the message counts. `--json` prints the shape of `GET /v1/endpoints`. Not with `--endpoint-ip` |
 | `--export-audio` | `<CALL-ID>` | | Unreleased | Write one call's decoded RTP audio to a WAV file, and print the export summary. Holds the call's audio payload for the run, as `--retain-audio` does. A Call-ID the capture does not hold, a call with nothing to decode, or an existing file exits 1 |
 | `--export-audio-out` | `<FILE>` | the Call-ID with `.wav` | Unreleased | The file `--export-audio` writes. It must not exist. Needs `--export-audio` |
+| `--vcon-validate` | `<FILE>` | | Unreleased | Check a vCon container file against sipnab's vendored schema and print the verdict and every finding. Exits 0 when valid and 3 when invalid, and 1 when sipnab cannot read or check the file. Needs no `-I`. `--json` prints the shape of `POST /v1/vcon/validate`. Needs the `vcon` feature |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
@@ -1662,6 +1663,45 @@ sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --export-audio 1-1966@10.0.2.20 -
 `partial` and `dialog_seen` are the two facts the REST route
 `GET /v1/dialogs/{call_id}/audio` sends as headers beside the same WAV bytes.
 The MCP tool `export_audio` writes the same file into its file root.
+
+### Check a vCon file against the schema
+
+Check that a vCon container conforms to the draft-ietf-vcon-vcon-core-04 schema
+sipnab ships:
+
+```sh
+sipnab --vcon-validate tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json
+```
+
+```text
+tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json: valid against https://ietf.org/vcon/schemas/unsigned-vcon.json
+```
+
+`--vcon-validate` reads the file and exits. It needs no capture, so give no
+`-I`. For a signed or encrypted container, sipnab checks the unsigned vCon
+inside.
+
+The exit status is the verdict, so a CI step can stop on a container that does
+not conform:
+
+- `0`: the container is valid.
+- `3`: the container is invalid. sipnab prints one row per finding: the JSON
+  Pointer to the value, the schema keyword that refused it, and why.
+- `1`: sipnab could not check it: the file is missing, it is not JSON, it is
+  JSON but not an object, or a `critical` extension forbids reading it.
+
+Under `--json`, the answer is the one `POST /v1/vcon/validate` returns:
+
+```sh
+sipnab --vcon-validate tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json --json
+```
+
+```json
+{"schema_version":2,"verdict":"valid","schema_id":"https://ietf.org/vcon/schemas/unsigned-vcon.json","schema_path":"tests/schemas/vcon.schema.json","errors":[]}
+```
+
+The MCP tool `validate_vcon` runs the same check on a container an agent
+passes it.
 
 ## Dialog
 
@@ -2809,7 +2849,7 @@ Scripts can rely on these:
 | `0` | Success |
 | `1` | Runtime failure — capture error, I/O error, a capture file that was not read in full (a truncated pcap, a member that would not open, a BPF filter that would not compile against one), a `--plugin` that would not load, or sipnab could not produce a requested report (e.g. `--call-report` Call-ID not found). Also a refused configuration: a config file sipnab cannot read, or a value in it sipnab refuses, whichever startup step refuses it |
 | `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code |
-| `3` | Lint gate tripped — `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity. Distinct from `1` on purpose: the tool worked, the CAPTURE is non-conformant. Also the vCon forwarder stopping because the store answered `401` or `403` (`--vcon-forward`) |
+| `3` | Lint gate tripped — `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity. Distinct from `1` on purpose: the tool worked, the CAPTURE is non-conformant. Also an invalid vCon container under `--vcon-validate`, and the vCon forwarder stopping because the store answered `401` or `403` (`--vcon-forward`) |
 
 [Error messages](@/docs/errors.md) lists the message sipnab prints with a non-zero
 exit code, what it means, and what to do.

@@ -27,6 +27,7 @@ pub mod rates;
 pub mod talkers;
 pub mod timeline;
 pub mod tree;
+pub mod vcon_validate;
 
 /// Whether `key` is one of `dims`, the dimensions a group-by answer accepts.
 ///
