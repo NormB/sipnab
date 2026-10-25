@@ -2498,58 +2498,19 @@ async fn get_talkers(
     let ds = state.dialog_store.read();
     let ss = state.stream_store.read();
     // Same filter + selection path `/v1/aggregate` and `/v1/dialogs/rates` take.
-    // The crediting rule is shared with the MCP tool in `crate::sip::talkers`.
+    // The answer is the one `--talkers` prints; the crediting rule is shared
+    // with the MCP tool in `crate::sip::talkers`, the order in
+    // `output::query::talkers::rank`.
     let selection = crate::sip::dsl::select_dialogs(dsl.as_ref(), &ds, &ss);
-    let total_matched = selection.dialogs.len();
-    let mut tally: std::collections::BTreeMap<String, crate::sip::talkers::TalkerAccumulator> =
-        std::collections::BTreeMap::new();
-    for item in &selection.dialogs {
-        dimension.credit(item.0, &mut tally);
-    }
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer =
+        crate::output::query::talkers::talkers(&selection, dimension, limit, capture_identity);
+    drop(selection);
     drop(ss);
     drop(ds);
     drop(capture);
 
-    let distinct_talkers = tally.len();
-    let mut ordered: Vec<(String, crate::sip::talkers::TalkerAccumulator)> =
-        tally.into_iter().collect();
-    // Dialogs first, messages as the tie-break, then the key so the same store
-    // always answers in the same order.
-    ordered.sort_by(|(ka, a), (kb, b)| {
-        b.dialogs
-            .cmp(&a.dialogs)
-            .then_with(|| b.messages.cmp(&a.messages))
-            .then_with(|| ka.cmp(kb))
-    });
-    // RAW keys: a program consuming REST wants the value it can key on, so a
-    // `ua` banner is returned verbatim (the MCP surface fences it).
-    let talkers: Vec<schema::Talker> = ordered
-        .into_iter()
-        .take(limit)
-        .map(|(key, acc)| schema::Talker {
-            key,
-            dialogs: acc.dialogs,
-            messages: acc.messages,
-            invites: acc.invites,
-            answered: acc.answered,
-            failed: acc.failed,
-            // Guarded rather than defaulted: a zero share on an empty capture
-            // reads as a talker measured to be idle.
-            share_pct: (total_matched > 0)
-                .then(|| (acc.dialogs as f64 / total_matched as f64) * 100.0),
-        })
-        .collect();
-
-    Ok(Json(schema::Talkers {
-        schema_version: 1,
-        by: dimension.name().to_string(),
-        truncated: distinct_talkers > talkers.len(),
-        talkers,
-        distinct_talkers,
-        total_matched,
-        capture_identity,
-    }))
+    Ok(Json(answer))
 }
 
 /// `GET /v1/endpoints` — everything one endpoint did (PAR3: describe_endpoint on
@@ -6962,54 +6923,10 @@ pub mod schema {
     /// alike.
     pub use crate::output::query::rates::{RateGroup, RatePopulation, Rates};
 
-    /// One ranked talker: a participant and what it did across the dialogs it
-    /// took part in. The same fields the MCP `top_talkers` tool reports.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct Talker {
-        /// The talker's key — an address (`ip`), a banner (`ua`), or the dialed
-        /// number's leading digits (`prefix`).
-        pub key: String,
-        /// Dialogs the talker appeared in.
-        pub dialogs: usize,
-        /// Messages attributed to the talker.
-        pub messages: usize,
-        /// Of `dialogs`, the INVITE ones.
-        pub invites: usize,
-        /// Of `invites`, the ones that reached a 2xx.
-        pub answered: usize,
-        /// Of `invites`, the ones that ended 4xx, 5xx or 6xx.
-        pub failed: usize,
-        /// The share of matched dialogs this talker appeared in, as a percent.
-        /// Null on an empty capture, where a zero would read as a talker
-        /// measured to be idle. Shares sum above 100% because a dialog counts
-        /// for every participant.
-        pub share_pct: Option<f64>,
-    }
-
-    /// The busiest participants, ranked largest first.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct Talkers {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// The dimension ranked by (`ip`, `ua` or `prefix`), echoed verbatim.
-        pub by: String,
-        /// The ranked talkers, busiest first, ties broken by messages then key.
-        pub talkers: Vec<Talker>,
-        /// True when there are more distinct talkers than the page returned.
-        pub truncated: bool,
-        /// How many distinct talkers the filter admitted, before the page cut.
-        pub distinct_talkers: usize,
-        /// How many dialogs the filter admitted, the share denominator.
-        pub total_matched: usize,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
+    /// The talker ranking's answer, built by
+    /// [`crate::output::query::talkers::talkers`] for this route and
+    /// `--talkers` alike.
+    pub use crate::output::query::talkers::{Talker, Talkers};
 
     /// A `User-Agent` or `Server` banner an endpoint sent, and how often.
     #[derive(Debug, Clone, ToSchema)]

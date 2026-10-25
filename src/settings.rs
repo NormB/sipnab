@@ -602,6 +602,7 @@ pub const FLAGS: &[(&str, Link)] = &[
         "portrange",
         Link::Key("capture", "portrange", Merge::Override),
     ),
+    ("prefix-digits", Link::PerRun),
     ("print-yang-module", Link::Action),
     (
         "priv-drop",
@@ -717,6 +718,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("stun", Link::PerRun),
     ("syslog", Link::Key("security", "alert", Merge::Either)),
     ("tag", Link::PerRun),
+    ("talkers", Link::PerRun),
     ("telephone-event", Link::Pending),
     ("text-dump", Link::PerRun),
     ("tfps-ctl", Link::Key("tfps", "ctl", Merge::Override)),

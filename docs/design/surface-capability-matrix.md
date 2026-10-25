@@ -296,7 +296,7 @@ Who are the busiest participants, largest first?
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: a one-shot ranked talker table needs no human, but no flag produces it (PAR5) |
+| CLI | `--talkers` |
 | TUI | `Talkers` |
 | REST | `/v1/talkers` |
 | MCP | `top_talkers` |

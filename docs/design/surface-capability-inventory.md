@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 380, TUI 25, REST 47, MCP 76.
+Totals: CLI 382, TUI 25, REST 47, MCP 76.
 
-## CLI flags (380)
+## CLI flags (382)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -249,6 +249,7 @@ Totals: CLI 380, TUI 25, REST 47, MCP 76.
 - `--pdd-threshold`
 - `--plugin`
 - `--portrange`
+- `--prefix-digits`
 - `--print-yang-module`
 - `--priv-drop`
 - `--problems`
@@ -312,6 +313,7 @@ Totals: CLI 380, TUI 25, REST 47, MCP 76.
 - `--stun`
 - `--syslog`
 - `--tag`
+- `--talkers`
 - `--telephone-event`
 - `--text-dump`
 - `--tfps-ctl`

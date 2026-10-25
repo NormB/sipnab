@@ -549,6 +549,25 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--talkers`: what a ranking ranks by, one of three names.
+    (
+        "talkers",
+        Kind::Text {
+            accept: &["ip", "ua", "prefix", " ip "],
+            reject: &[("bogus", 2), ("", 2), ("ip,ua", 2)],
+        },
+        &[],
+    ),
+    // `--prefix-digits`: how many leading digits `prefix` ranks by, from one
+    // up; it needs `--talkers`.
+    (
+        "prefix-digits",
+        Kind::Int {
+            lo: 1,
+            hi: 4294967295,
+        },
+        &["--talkers", "prefix"],
+    ),
     // `--top`: how many rows a ranked query keeps, from one up; it needs a
     // ranked query to cut.
     (

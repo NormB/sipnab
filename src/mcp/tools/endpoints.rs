@@ -562,17 +562,10 @@ impl SipnabMcp {
         };
 
         let distinct_talkers = tally.len();
-        let mut ordered: Vec<(String, TalkerAccumulator)> = tally.into_iter().collect();
         // Dialogs first, messages as the tie-break, then the key itself so the
-        // same store always answers in the same order.
-        ordered.sort_by(|(ka, a), (kb, b)| {
-            b.dialogs
-                .cmp(&a.dialogs)
-                .then_with(|| b.messages.cmp(&a.messages))
-                .then_with(|| ka.cmp(kb))
-        });
-
-        let talkers: Vec<TopTalker> = ordered
+        // same store always answers in the same order: the ordering REST and
+        // `--talkers` apply too.
+        let talkers: Vec<TopTalker> = crate::output::query::talkers::rank(tally)
             .into_iter()
             .take(limit)
             .map(|(key, acc)| TopTalker {
@@ -590,8 +583,7 @@ impl SipnabMcp {
                 failed: acc.failed,
                 // Guarded rather than defaulted: a zero share on an empty
                 // capture reads as a talker measured to be idle.
-                share_pct: (total_matched > 0)
-                    .then(|| (acc.dialogs as f64 / total_matched as f64) * 100.0),
+                share_pct: crate::output::query::talkers::share_pct(acc.dialogs, total_matched),
             })
             .collect();
 
