@@ -27,6 +27,56 @@ pub fn build_sip_message(first_line: &str, headers: &[&str], body: &[u8]) -> Vec
     msg
 }
 
+/// An INVITE carrying an SDP offer and the 200 OK carrying its answer, both
+/// for `call_id`, parsed: the fixture the surfaces that label a message
+/// `(SDP)` are tested with. RFC 5737 addresses, `example.com` hosts.
+///
+/// # Errors
+///
+/// Either message failing to parse, which would be a defect in the parser.
+pub fn sdp_offer_and_answer(
+    call_id: &str,
+) -> Result<(crate::sip::SipMessage, crate::sip::SipMessage), String> {
+    let sdp = b"v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\n\
+                t=0 0\r\nm=audio 20000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n";
+    let ts = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap_or_default();
+    let (a, b): (std::net::IpAddr, std::net::IpAddr) =
+        ([192, 0, 2, 1].into(), [192, 0, 2, 2].into());
+    let call = format!("Call-ID: {call_id}");
+    let parse = |first: &str, to: &str, ts| {
+        let raw = build_sip_message(
+            first,
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-sdp",
+                "From: <sip:a@example.com>;tag=1",
+                to,
+                &call,
+                "CSeq: 1 INVITE",
+                "Content-Type: application/sdp",
+            ],
+            sdp,
+        );
+        crate::sip::parser::parse_sip(&raw, ts, a, b, 5060, 5060, crate::net::TransportProto::Udp)
+    };
+    match (
+        parse(
+            "INVITE sip:b@example.com SIP/2.0",
+            "To: <sip:b@example.com>",
+            ts,
+        ),
+        parse(
+            "SIP/2.0 200 OK",
+            "To: <sip:b@example.com>;tag=2",
+            ts + chrono::TimeDelta::milliseconds(500),
+        ),
+    ) {
+        (Ok(offer), Ok(answer)) => Ok((offer, answer)),
+        (offer, answer) => Err(format!(
+            "the fixed SDP fixture must parse: {offer:?} {answer:?}"
+        )),
+    }
+}
+
 /// A classic little-endian Ethernet pcap holding one record that captured
 /// `caplen` of the `origlen` bytes that crossed the wire -- a snapped frame
 /// when `caplen` is the smaller -- filled with `0xAB`.

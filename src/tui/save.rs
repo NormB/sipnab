@@ -735,19 +735,7 @@ pub(super) fn save_to_markdown_path(app: &App, path_str: &str) -> String {
                 } else {
                     "\u{2190}" // ←
                 };
-                let label = if m.is_request {
-                    m.method
-                        .as_ref()
-                        .map(|m| m.as_str())
-                        .unwrap_or("?")
-                        .to_string()
-                } else {
-                    match (m.status_code, m.reason.as_deref()) {
-                        (Some(code), Some(reason)) => format!("{code} {reason}"),
-                        (Some(code), None) => code.to_string(),
-                        _ => "?".to_string(),
-                    }
-                };
+                let label = m.label();
                 md.push_str(&format!(
                     "| {} | {} | {} | {} |\n",
                     i + 1,
@@ -1619,6 +1607,21 @@ mod tests {
         );
         // header + 2 dialog rows
         assert_eq!(content.lines().count(), 3);
+        Ok(())
+    }
+
+    /// SDP-LABEL2: the markdown Message Flow table labels a message that
+    /// carries SDP `(SDP)`, by `SipMessage::label`.
+    #[test]
+    fn the_markdown_flow_marks_messages_that_carry_sdp() -> Result<(), TestError> {
+        let (offer, answer) = crate::test_utils::sdp_offer_and_answer("markdown-sdp")?;
+        let app = App::with_processed_messages(vec![offer, answer]);
+        let p = tmp_path("sdp.md")?;
+        let msg = save_to_markdown_path(&app, p.to_str().ok_or("to_str() returned None")?);
+        assert!(msg.contains("Saved"), "got: {msg}");
+        let content = std::fs::read_to_string(&p)?;
+        assert!(content.contains("| INVITE (SDP) |"), "{content}");
+        assert!(content.contains("| 200 OK (SDP) |"), "{content}");
         Ok(())
     }
 

@@ -158,7 +158,7 @@ Timing:
   Retransmits: 0
 
 SIP Transactions:
-  INVITE -> 100 (6ms) -> 180 (180ms) -> 200 (2420ms)
+  INVITE (SDP) -> 100 (6ms) -> 180 (180ms) -> 200 (SDP) (2420ms)
   ACK
   BYE -> 200 (8468ms)
 

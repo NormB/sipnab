@@ -220,25 +220,27 @@ A sipnab HEP listener binds the port and reads the copies itself:
 sipnab -L 127.0.0.1:9063 -N
 ```
 
-It prints each message it receives with `origin=hep`:
+It prints each message it receives with `origin=hep`. With
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap)
+replayed to it as shown below, the first lines read:
 
 ```text
-18:35:36.817 127.0.0.1:5082 -> 127.0.0.1:5080 INVITE UDP origin=hep
-18:35:36.817 127.0.0.1:5080 -> 127.0.0.1:5082 100 Trying UDP origin=hep
-18:35:36.818 127.0.0.1:5080 -> 127.0.0.1:5082 180 Ringing UDP origin=hep
-18:35:36.819 127.0.0.1:5080 -> 127.0.0.1:5082 200 OK UDP origin=hep
+14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP origin=hep
+14:52:59.666 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP origin=hep
+14:52:59.670 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK (SDP) UDP origin=hep
+14:52:59.670 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP origin=hep
 ```
 
 To test the path without the proxy, replay a capture to the port with `-H`:
 
 ```sh
-sipnab -I call.pcap -N --portrange 1-65535 -H 127.0.0.1:9063
+sipnab -I sip-rtp-g711.pcap -N --portrange 1-65535 -H 127.0.0.1:9063
 ```
 
 The last lines on stderr report what it sent:
 
 ```text
-INFO sipnab::app::batch: HEP export to 127.0.0.1:9063 over udp: 7 packet(s) sent, none failed, 0 reconnect(s); sent means handed to the kernel: UDP reports no delivery, so a collector that is down produces no failure here
+INFO sipnab::app::batch: HEP export to 127.0.0.1:9063 over udp: 10 packet(s) sent, 10 queued, 0 replayed after an outage, none dropped, 0 still queued, none failed, 0 reconnect(s); sent means handed to the kernel: UDP reports no delivery, so a collector that is down produces no failure here unless its host refuses with ICMP
 ```
 
 ### [display]

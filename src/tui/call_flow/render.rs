@@ -1136,9 +1136,15 @@ pub struct DetailMetrics {
     pub max_hscroll: u16,
 }
 
+/// The detail pane's title: `[pos/count]` and the message's label, the same
+/// label the ladder draws.
+fn detail_title(pos: usize, count: usize, msg: &crate::sip::SipMessage) -> String {
+    format!(" [{pos}/{count}] {} ", msg.label())
+}
+
 /// Render the message detail panel (right side of the split view).
 ///
-/// Draws a bordered pane titled `[pos/count] <method-or-status>` holding the
+/// Draws a bordered pane titled `[pos/count] <label>` (see `detail_title`) holding the
 /// syntax-highlighted raw SIP message, wrapped or h-scrollable per
 /// `view.wrap`, with vertical/horizontal scrollbars when content overflows.
 ///
@@ -1214,24 +1220,7 @@ pub fn render_message_detail(
         }
         None => (selected_msg + 1, dialog.messages.len()),
     };
-    let title = format!(
-        " [{}/{}] {} ",
-        pos,
-        count,
-        if msg.is_request {
-            msg.method
-                .as_ref()
-                .map(|m| m.as_str())
-                .unwrap_or("?")
-                .to_string()
-        } else {
-            format!(
-                "{} {}",
-                msg.status_code.unwrap_or(0),
-                msg.reason.as_deref().unwrap_or("")
-            )
-        },
-    );
+    let title = detail_title(pos, count, msg);
 
     // A focused pane gets a bright, bold border so the user can see which side
     // the arrow keys are driving.
@@ -3906,6 +3895,22 @@ mod tests {
             )
         })?;
         assert_eq!(a, b);
+        Ok(())
+    }
+}
+
+/// SDP-LABEL2: the detail pane's title labels a message as the ladder does.
+#[cfg(test)]
+mod detail_title_tests {
+    use super::detail_title;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    #[test]
+    fn the_detail_title_marks_a_message_that_carries_sdp() -> Result<(), TestError> {
+        let (offer, answer) = crate::test_utils::sdp_offer_and_answer("title-sdp")?;
+        assert_eq!(detail_title(1, 2, &offer), " [1/2] INVITE (SDP) ");
+        assert_eq!(detail_title(2, 2, &answer), " [2/2] 200 OK (SDP) ");
         Ok(())
     }
 }

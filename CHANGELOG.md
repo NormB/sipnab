@@ -10,6 +10,10 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **Every surface that labels a SIP message marks one that carries SDP with ` (SDP)`**, as the TUI ladder already did: `INVITE (SDP)`, `200 OK (SDP)`. That covers the `-N` per-message lines, the TUI detail title, `--call-report`'s transaction flow and evidence, the diagnosis summaries, the Mermaid ladder (MCP `render_ladder`), `analyze_vcon` (REST and MCP), the markdown export and the browser analyzer. They share one label, so they also agree on the edge cases: a response with no reason phrase is its code alone, and a message whose method or status code was not parsed reads `request` or `response`.
+
 ### Fixed
 
 - **The TUI end-to-end tests no longer fail when two of them start or end a tmux session at the same moment.** They shared one tmux server, which exits when its last session ends, so a test whose session started just then failed with `tmux new-session failed`; it did on main's macOS job on 2026-10-24, and in 4 of 200 tries on a Linux host. Each session now runs on its own server (`tmux -L`), and its socket is removed when the session ends.

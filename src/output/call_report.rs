@@ -347,15 +347,7 @@ fn evidence_label(dialog: &SipDialog, indices: &[usize]) -> String {
     let parts: Vec<String> = indices
         .iter()
         .map(|&i| match dialog.messages.get(i) {
-            Some(m) if m.is_request => match &m.method {
-                Some(meth) => format!("#{i} {meth}"),
-                None => format!("#{i} request"),
-            },
-            Some(m) => match (m.status_code, &m.reason) {
-                (Some(c), Some(r)) => format!("#{i} {c} {r}"),
-                (Some(c), None) => format!("#{i} {c}"),
-                _ => format!("#{i} response"),
-            },
+            Some(m) => format!("#{i} {}", m.label()),
             // An index outside the list would mean the diagnosis and the dialog
             // disagree about the message set. Say so rather than dropping it.
             None => format!("#{i} (out of range)"),
@@ -731,8 +723,7 @@ fn write_transaction_flow(out: &mut String, dialog: &SipDialog) {
                 let _ = writeln!(out, "  {line}");
                 line.clear();
             }
-            let method = msg.method.as_ref().map(|m| m.as_str()).unwrap_or("???");
-            line = method.to_string();
+            line = msg.label();
             current_cseq = cseq_key;
         } else if cseq_key == current_cseq {
             // Response to the current transaction
@@ -750,7 +741,10 @@ fn write_transaction_flow(out: &mut String, dialog: &SipDialog) {
                 } else {
                     String::new()
                 };
-                let _ = write!(line, " -> {code}{delay}");
+                // The code alone, as this compact line shows every response,
+                // marked as the message's label marks it.
+                let sdp = if msg.carries_sdp() { " (SDP)" } else { "" };
+                let _ = write!(line, " -> {code}{sdp}{delay}");
             }
         }
     }
@@ -1786,6 +1780,40 @@ mod tests {
                 "{format:?}: a call nobody recorded is not labeled as recorded:\n{report}"
             );
         }
+        Ok(())
+    }
+}
+
+/// SDP-LABEL2: a message that carries SDP is labeled `(SDP)` here, by
+/// `SipMessage::label`.
+#[cfg(test)]
+mod sdp_label_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn dialog() -> Result<SipDialog, TestError> {
+        let (offer, answer) = crate::test_utils::sdp_offer_and_answer("report-sdp")?;
+        let mut d = SipDialog::new(&offer).ok_or("a dialog from the INVITE")?;
+        d.updated_at = answer.timestamp;
+        d.messages.push(answer);
+        Ok(d)
+    }
+
+    #[test]
+    fn the_evidence_label_marks_messages_that_carry_sdp() -> Result<(), TestError> {
+        assert_eq!(
+            evidence_label(&dialog()?, &[0, 1]),
+            "#0 INVITE (SDP), #1 200 OK (SDP)"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_transaction_flow_marks_messages_that_carry_sdp() -> Result<(), TestError> {
+        let mut out = String::new();
+        write_transaction_flow(&mut out, &dialog()?);
+        assert_eq!(out, "  INVITE (SDP) -> 200 (SDP) (500ms)\n");
         Ok(())
     }
 }

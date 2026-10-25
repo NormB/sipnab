@@ -389,14 +389,7 @@ pub fn report_directory(
 
 /// One message as a ladder row.
 fn ladder_row(m: &crate::sip::SipMessage) -> LadderRow {
-    let label = match (&m.method, m.status_code) {
-        (Some(method), _) if m.is_request => method.as_str().to_string(),
-        (_, Some(code)) => match m.reason.as_deref() {
-            Some(reason) if !reason.is_empty() => format!("{code} {reason}"),
-            _ => code.to_string(),
-        },
-        _ => String::new(),
-    };
+    let label = m.label();
     LadderRow {
         timestamp: m.timestamp.to_rfc3339(),
         src: std::net::SocketAddr::new(m.src_addr, m.src_port).to_string(),
@@ -613,6 +606,23 @@ mod tests {
                 .any(|p| p.uuid.as_deref() == Some("01928e10-193e-8231-b9a2-000000000009")),
             "an inline container is not part of this process's capture"
         );
+        Ok(())
+    }
+}
+
+/// SDP-LABEL2: a message that carries SDP is labeled `(SDP)` here, by
+/// `SipMessage::label`.
+#[cfg(test)]
+mod sdp_label_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    #[test]
+    fn a_ladder_row_marks_a_message_that_carries_sdp() -> Result<(), TestError> {
+        let (offer, answer) = crate::test_utils::sdp_offer_and_answer("vcon-sdp")?;
+        assert_eq!(ladder_row(&offer).label, "INVITE (SDP)");
+        assert_eq!(ladder_row(&answer).label, "200 OK (SDP)");
         Ok(())
     }
 }

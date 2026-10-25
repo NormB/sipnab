@@ -4534,15 +4534,15 @@ sipnab -N -I capture.pcap -v -e 'BYE' | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0
 ```
 
 ```text
-14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
+14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
 14:52:59.666 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
-14:52:59.670 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
+14:52:59.670 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK (SDP) UDP
 14:52:59.670 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
 14:53:08.170 10.0.2.15:5060 -> 10.0.2.20:5060 BYE UDP
 14:53:08.170 10.0.2.20:5060 -> 10.0.2.15:5060 200 OK UDP
-14:53:08.286 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
+14:53:08.286 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
 14:53:08.286 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
-14:53:08.290 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
+14:53:08.290 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK (SDP) UDP
 14:53:08.290 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
 ```
 
@@ -4675,9 +4675,11 @@ Or a retransmission argument needs the actual timers, rather than "it looked imm
 sipnab -N -I capture.pcap --delta-time
 ```
 
+Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), the first two summary lines read:
+
 ```text
-+0.000s 192.0.2.20:5060 -> 192.0.2.15:5060 INVITE UDP
-+0.512s 192.0.2.15:5060 -> 192.0.2.20:5060 100 Trying UDP
++0.000s 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
++0.000s 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
 ```
 
 Add the full header block of the bodyless messages. Otherwise they print as a one-line summary:
@@ -10896,9 +10898,9 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: app
   ],
   "first_finding": "rebuilt_from_vcon",
   "ladder": [
-    "INVITE",
+    "INVITE (SDP)",
     "100 Trying",
-    "200 OK",
+    "200 OK (SDP)",
     "ACK",
     "BYE",
     "200 OK"
@@ -27557,6 +27559,17 @@ capture unmarked:
 12:57:47.360 0.0.0.0:0 -> 0.0.0.0:0 REGISTER TCP origin=uprobe
 ```
 
+A message that carries SDP has ` (SDP)` after its method or status, as in
+`INVITE (SDP)` or `200 OK (SDP)`. The `-N` lines, the TUI ladder and detail
+title, `--call-report`, the Mermaid ladder, `analyze_vcon` and the browser
+analyzer all use the same label. A body counts as SDP when its `Content-Type`
+is `application/sdp` in any case, or when it is `multipart/*` with an
+`application/sdp` part:
+
+```text
+14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
+```
+
 `schema_version` increments on breaking field changes. Pin your consumers to
 it.
 
@@ -28460,25 +28473,27 @@ A sipnab HEP listener binds the port and reads the copies itself:
 sipnab -L 127.0.0.1:9063 -N
 ```
 
-It prints each message it receives with `origin=hep`:
+It prints each message it receives with `origin=hep`. With
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap)
+replayed to it as shown below, the first lines read:
 
 ```text
-18:35:36.817 127.0.0.1:5082 -> 127.0.0.1:5080 INVITE UDP origin=hep
-18:35:36.817 127.0.0.1:5080 -> 127.0.0.1:5082 100 Trying UDP origin=hep
-18:35:36.818 127.0.0.1:5080 -> 127.0.0.1:5082 180 Ringing UDP origin=hep
-18:35:36.819 127.0.0.1:5080 -> 127.0.0.1:5082 200 OK UDP origin=hep
+14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP origin=hep
+14:52:59.666 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP origin=hep
+14:52:59.670 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK (SDP) UDP origin=hep
+14:52:59.670 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP origin=hep
 ```
 
 To test the path without the proxy, replay a capture to the port with `-H`:
 
 ```sh
-sipnab -I call.pcap -N --portrange 1-65535 -H 127.0.0.1:9063
+sipnab -I sip-rtp-g711.pcap -N --portrange 1-65535 -H 127.0.0.1:9063
 ```
 
 The last lines on stderr report what it sent:
 
 ```text
-INFO sipnab::app::batch: HEP export to 127.0.0.1:9063 over udp: 7 packet(s) sent, none failed, 0 reconnect(s); sent means handed to the kernel: UDP reports no delivery, so a collector that is down produces no failure here
+INFO sipnab::app::batch: HEP export to 127.0.0.1:9063 over udp: 10 packet(s) sent, 10 queued, 0 replayed after an outage, none dropped, 0 still queued, none failed, 0 reconnect(s); sent means handed to the kernel: UDP reports no delivery, so a collector that is down produces no failure here unless its host refuses with ICMP
 ```
 
 ### [display]
@@ -42117,7 +42132,7 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
       "ladder": [
         {
           "dst": "10.0.2.15:5060",
-          "label": "INVITE",
+          "label": "INVITE (SDP)",
           "src": "10.0.2.20:5060",
           "timestamp": "2016-11-26T14:52:59.666393+00:00",
           "transport": "UDP"
@@ -42131,7 +42146,7 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
         },
         {
           "dst": "10.0.2.20:5060",
-          "label": "200 OK",
+          "label": "200 OK (SDP)",
           "src": "10.0.2.15:5060",
           "timestamp": "2016-11-26T14:52:59.670743+00:00",
           "transport": "UDP"
@@ -51428,37 +51443,37 @@ sipnab -N -I trunk.pcap0 --portrange 1-65535 --quiet \
 ```
 
 ```text
-15:44:29.029 203.0.113.180:37402 -> 192.0.2.10:5080 INVITE UDP
+15:44:29.029 203.0.113.180:37402 -> 192.0.2.10:5080 INVITE (SDP) UDP
 Via: SIP/2.0/UDP 192.168.40.35:5060;branch=z9hG4bK5a0c71e2b8934fd10cae4
 CSeq: 1 INVITE
 15:44:29.035 192.0.2.10:5080 -> 203.0.113.180:37402 407 Proxy Authentication Required UDP
 15:44:29.047 203.0.113.180:37402 -> 192.0.2.10:5080 ACK UDP
-15:44:29.048 203.0.113.180:37402 -> 192.0.2.10:5080 INVITE UDP
+15:44:29.048 203.0.113.180:37402 -> 192.0.2.10:5080 INVITE (SDP) UDP
 Via: SIP/2.0/UDP 192.168.40.35:5060;branch=z9hG4bK4071938265
 CSeq: 2 INVITE
 15:44:29.082 192.0.2.10:5080 -> 203.0.113.180:37402 100 trying -- your call is important to us UDP
 15:44:29.084 198.51.100.12:8090 -> 198.51.100.13:8090 KDMQ UDP
 Via: SIP/2.0/UDP 198.51.100.12:8090;branch=z9hG4bKb809.7c41ad9e000000000000000000000000.0
 CSeq: 10 KDMQ
-15:44:29.084 198.51.100.14:5060 -> 198.51.100.24:5080 INVITE UDP
+15:44:29.084 198.51.100.14:5060 -> 198.51.100.24:5080 INVITE (SDP) UDP
 Via: SIP/2.0/UDP 198.51.100.14;branch=z9hG4bK4fb4.e08d5c1a7b264f39a1c8074e2dd6b953.0
 Via: SIP/2.0/UDP 192.168.40.35:5060;rport=37402;received=203.0.113.180;branch=z9hG4bK4071938265
 CSeq: 2 INVITE
 15:44:29.085 198.51.100.13:8090 -> 198.51.100.12:8090 200 OK UDP
 15:44:29.104 198.51.100.24:5080 -> 198.51.100.14:5060 401 Unauthorized UDP
 15:44:29.105 198.51.100.14:5060 -> 198.51.100.24:5080 ACK UDP
-15:44:29.127 198.51.100.14:5060 -> 198.51.100.24:5080 INVITE UDP
+15:44:29.127 198.51.100.14:5060 -> 198.51.100.24:5080 INVITE (SDP) UDP
 Via: SIP/2.0/UDP 198.51.100.14;branch=z9hG4bK4fb4.e08d5c1a7b264f39a1c8074e2dd6b953.1.cs2
 Via: SIP/2.0/UDP 192.168.40.35:5060;rport=37402;received=203.0.113.180;branch=z9hG4bK4071938265
 CSeq: 3 INVITE
 15:44:29.141 198.51.100.24:5080 -> 198.51.100.14:5060 100 Trying UDP
-15:44:31.805 198.51.100.24:5080 -> 198.51.100.14:5060 183 Session Progress UDP
+15:44:31.805 198.51.100.24:5080 -> 198.51.100.14:5060 183 Session Progress (SDP) UDP
 CSeq: 3 INVITE
-15:44:31.808 192.0.2.10:5080 -> 203.0.113.180:37402 183 Session Progress UDP
+15:44:31.808 192.0.2.10:5080 -> 203.0.113.180:37402 183 Session Progress (SDP) UDP
 CSeq: 2 INVITE
-15:44:31.995 198.51.100.24:5080 -> 198.51.100.14:5060 183 Session Progress UDP
+15:44:31.995 198.51.100.24:5080 -> 198.51.100.14:5060 183 Session Progress (SDP) UDP
 CSeq: 3 INVITE
-15:44:31.998 192.0.2.10:5080 -> 203.0.113.180:37402 183 Session Progress UDP
+15:44:31.998 192.0.2.10:5080 -> 203.0.113.180:37402 183 Session Progress (SDP) UDP
 CSeq: 2 INVITE
 ```
 
@@ -51533,7 +51548,7 @@ sipnab -N -I pbx.pcap4 --portrange 1-65535 --quiet \
 verbatim):
 
 ```text
-17:40:41.924 203.0.113.66:53168 -> 192.0.2.30:5060 INVITE UDP
+17:40:41.924 203.0.113.66:53168 -> 192.0.2.30:5060 INVITE (SDP) UDP
 INVITE sip:<redacted-e164>@192.0.2.30 SIP/2.0
 Via: SIP/2.0/UDP 0.0.0.0:53168;branch=z9hG4bK704192338
 Max-Forwards: 70
@@ -51658,7 +51673,7 @@ line and the three header fields that carry the finding. Header lines belong to
 the message above them:
 
 ```text
-15:27:14.693 203.0.113.41:5060 -> 192.0.2.10:5060 INVITE UDP
+15:27:14.693 203.0.113.41:5060 -> 192.0.2.10:5060 INVITE (SDP) UDP
 Via: SIP/2.0/UDP 203.0.113.41:5060;branch=z9hG4bK4f3e.b7e94c1052d8a3f6417c02be95d3ff81.0
 Via: SIP/2.0/UDP 203.0.113.51:5060;branch=z9hG4bK4f3e.9c0a44b7e1d2650fa839cb7f21e408d6.2
 Via: SIP/2.0/UDP 203.0.113.52:5060;branch=z9hG4bK4f3e.2fb18e05c3947da6b0e572139c4a86ef.0
@@ -51670,7 +51685,7 @@ CSeq: 543439 INVITE
 15:27:49.170 192.0.2.10:5060 -> 203.0.113.41:5060 BYE UDP
 15:27:49.327 203.0.113.41:5060 -> 192.0.2.10:5060 200 OK UDP
 15:30:14.459 203.0.113.41:5060 -> 192.0.2.10:5060 CANCEL UDP
-15:30:14.460 203.0.113.42:5060 -> 192.0.2.10:5060 INVITE UDP
+15:30:14.460 203.0.113.42:5060 -> 192.0.2.10:5060 INVITE (SDP) UDP
 Via: SIP/2.0/UDP 203.0.113.42:5060;branch=z9hG4bK4f3e.5d3ab8146fc70e29d5b1938ae0c6274b.0
 Via: SIP/2.0/UDP 203.0.113.51:5060;branch=z9hG4bK4f3e.9c0a44b7e1d2650fa839cb7f21e408d6.3
 Via: SIP/2.0/UDP 203.0.113.52:5060;branch=z9hG4bK4f3e.2fb18e05c3947da6b0e572139c4a86ef.0
@@ -51925,7 +51940,7 @@ Timing:
   Retransmits: 0
 
 SIP Transactions:
-  INVITE -> 100 (6ms) -> 180 (180ms) -> 200 (2420ms)
+  INVITE (SDP) -> 100 (6ms) -> 180 (180ms) -> 200 (SDP) (2420ms)
   ACK
   BYE -> 200 (8468ms)
 
@@ -60636,7 +60651,7 @@ The report covers the caller's leg. Its `SIP Transactions` show:
 
 ```text
 SIP Transactions:
-  INVITE -> 100 -> 180 (1ms) -> 200 (3ms)
+  INVITE (SDP) -> 100 -> 180 (1ms) -> 200 (SDP) (3ms)
   ACK
   BYE -> 200 (9008ms)
 ```
@@ -61561,13 +61576,13 @@ The answer is a Mermaid `sequenceDiagram` of the caller's leg.
     participant p0 as 192.0.2.10:5090
     participant p1 as 192.0.2.10:5080
 
-    p0->>p1: INVITE
+    p0->>p1: INVITE (SDP)
     Note right of p1: +0.000s
     p1-->>p0: 100 Trying
     Note right of p0: +0.001s
     p1-->>p0: 180 Ringing
     Note right of p0: +0.003s · PDD 3ms
-    p1-->>p0: 200 OK
+    p1-->>p0: 200 OK (SDP)
     Note right of p0: +0.041s
     p0->>p1: ACK
     Note right of p1: +0.041s

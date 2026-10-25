@@ -4428,9 +4428,9 @@ curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H "Content-Type: app
   ],
   "first_finding": "rebuilt_from_vcon",
   "ladder": [
-    "INVITE",
+    "INVITE (SDP)",
     "100 Trying",
-    "200 OK",
+    "200 OK (SDP)",
     "ACK",
     "BYE",
     "200 OK"

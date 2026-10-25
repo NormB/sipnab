@@ -1354,19 +1354,7 @@ fn detect_auth_sequence(messages: &[SipMessage], start: usize) -> Option<usize> 
 ///
 /// Appends "(SDP)" when the message body contains SDP.
 pub fn format_message_label(msg: &SipMessage) -> String {
-    let sdp_suffix = if msg.carries_sdp() { " (SDP)" } else { "" };
-
-    if msg.is_request {
-        format!(
-            "{}{}",
-            msg.method.as_ref().map(|m| m.as_str()).unwrap_or("?"),
-            sdp_suffix
-        )
-    } else {
-        let code = msg.status_code.unwrap_or(0);
-        let reason = msg.reason.as_deref().unwrap_or("");
-        format!("{} {}{}", code, reason, sdp_suffix)
-    }
+    msg.label()
 }
 
 /// Derive the theme-free `MessageClass` of a message — the layout-stage

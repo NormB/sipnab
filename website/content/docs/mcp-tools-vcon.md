@@ -1161,7 +1161,7 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
       "ladder": [
         {
           "dst": "10.0.2.15:5060",
-          "label": "INVITE",
+          "label": "INVITE (SDP)",
           "src": "10.0.2.20:5060",
           "timestamp": "2016-11-26T14:52:59.666393+00:00",
           "transport": "UDP"
@@ -1175,7 +1175,7 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
         },
         {
           "dst": "10.0.2.20:5060",
-          "label": "200 OK",
+          "label": "200 OK (SDP)",
           "src": "10.0.2.15:5060",
           "timestamp": "2016-11-26T14:52:59.670743+00:00",
           "transport": "UDP"

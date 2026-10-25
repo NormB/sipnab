@@ -130,34 +130,34 @@ class MockSipnabSession {
 
     this._flows = {
       "12013223@10.0.2.20": [
-        { timestamp: "2026-04-14T14:52:59.666Z", is_request: true, method: "INVITE", status_code: null, reason: null, src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 283, raw_length: 891 },
-        { timestamp: "2026-04-14T14:52:59.670Z", is_request: false, method: null, status_code: 100, reason: "Trying", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 342 },
-        { timestamp: "2026-04-14T14:53:00.513Z", is_request: false, method: null, status_code: 180, reason: "Ringing", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 378 },
-        { timestamp: "2026-04-14T14:53:01.800Z", is_request: false, method: null, status_code: 200, reason: "OK", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 264, raw_length: 724 },
-        { timestamp: "2026-04-14T14:53:01.801Z", is_request: true, method: "ACK", status_code: null, reason: null, src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 412 },
-        { timestamp: "2026-04-14T14:53:10.200Z", is_request: true, method: "BYE", status_code: null, reason: null, src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 398 }
+        { timestamp: "2026-04-14T14:52:59.666Z", is_request: true, method: "INVITE", status_code: null, reason: null, label: "INVITE (SDP)", src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 283, raw_length: 891 },
+        { timestamp: "2026-04-14T14:52:59.670Z", is_request: false, method: null, status_code: 100, reason: "Trying", label: "100 Trying", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 342 },
+        { timestamp: "2026-04-14T14:53:00.513Z", is_request: false, method: null, status_code: 180, reason: "Ringing", label: "180 Ringing", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 378 },
+        { timestamp: "2026-04-14T14:53:01.800Z", is_request: false, method: null, status_code: 200, reason: "OK", label: "200 OK (SDP)", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 264, raw_length: 724 },
+        { timestamp: "2026-04-14T14:53:01.801Z", is_request: true, method: "ACK", status_code: null, reason: null, label: "ACK", src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 412 },
+        { timestamp: "2026-04-14T14:53:10.200Z", is_request: true, method: "BYE", status_code: null, reason: null, label: "BYE", src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 398 }
       ],
       "12013224@10.0.2.20": [
-        { timestamp: "2026-04-14T14:53:10.100Z", is_request: true, method: "INVITE", status_code: null, reason: null, src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 283, raw_length: 891 },
-        { timestamp: "2026-04-14T14:53:10.105Z", is_request: false, method: null, status_code: 100, reason: "Trying", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 342 },
-        { timestamp: "2026-04-14T14:53:10.412Z", is_request: false, method: null, status_code: 180, reason: "Ringing", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 378 },
-        { timestamp: "2026-04-14T14:53:11.640Z", is_request: false, method: null, status_code: 200, reason: "OK", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 264, raw_length: 724 },
-        { timestamp: "2026-04-14T14:53:11.641Z", is_request: true, method: "ACK", status_code: null, reason: null, src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 412 }
+        { timestamp: "2026-04-14T14:53:10.100Z", is_request: true, method: "INVITE", status_code: null, reason: null, label: "INVITE (SDP)", src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 283, raw_length: 891 },
+        { timestamp: "2026-04-14T14:53:10.105Z", is_request: false, method: null, status_code: 100, reason: "Trying", label: "100 Trying", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 342 },
+        { timestamp: "2026-04-14T14:53:10.412Z", is_request: false, method: null, status_code: 180, reason: "Ringing", label: "180 Ringing", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 378 },
+        { timestamp: "2026-04-14T14:53:11.640Z", is_request: false, method: null, status_code: 200, reason: "OK", label: "200 OK (SDP)", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 264, raw_length: 724 },
+        { timestamp: "2026-04-14T14:53:11.641Z", is_request: true, method: "ACK", status_code: null, reason: null, label: "ACK", src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 412 }
       ],
       "78992001@10.0.3.5": [
-        { timestamp: "2026-04-14T14:51:02.100Z", is_request: true, method: "REGISTER", status_code: null, reason: null, src_addr: "10.0.3.5", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 456 },
-        { timestamp: "2026-04-14T14:51:02.112Z", is_request: false, method: null, status_code: 401, reason: "Unauthorized", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.3.5", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 512 },
-        { timestamp: "2026-04-14T14:51:02.230Z", is_request: true, method: "REGISTER", status_code: null, reason: null, src_addr: "10.0.3.5", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 634 },
-        { timestamp: "2026-04-14T14:51:02.245Z", is_request: false, method: null, status_code: 200, reason: "OK", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.3.5", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 482 }
+        { timestamp: "2026-04-14T14:51:02.100Z", is_request: true, method: "REGISTER", status_code: null, reason: null, label: "REGISTER", src_addr: "10.0.3.5", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 456 },
+        { timestamp: "2026-04-14T14:51:02.112Z", is_request: false, method: null, status_code: 401, reason: "Unauthorized", label: "401 Unauthorized", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.3.5", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 512 },
+        { timestamp: "2026-04-14T14:51:02.230Z", is_request: true, method: "REGISTER", status_code: null, reason: null, label: "REGISTER", src_addr: "10.0.3.5", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 634 },
+        { timestamp: "2026-04-14T14:51:02.245Z", is_request: false, method: null, status_code: 200, reason: "OK", label: "200 OK", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.3.5", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 482 }
       ],
       "44558812@10.0.2.30": [
-        { timestamp: "2026-04-14T14:53:45.000Z", is_request: true, method: "INVITE", status_code: null, reason: null, src_addr: "10.0.2.30", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 283, raw_length: 891 },
-        { timestamp: "2026-04-14T14:53:45.010Z", is_request: false, method: null, status_code: 100, reason: "Trying", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.30", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 342 },
-        { timestamp: "2026-04-14T14:53:45.520Z", is_request: false, method: null, status_code: 404, reason: "Not Found", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.30", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 389 }
+        { timestamp: "2026-04-14T14:53:45.000Z", is_request: true, method: "INVITE", status_code: null, reason: null, label: "INVITE (SDP)", src_addr: "10.0.2.30", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 283, raw_length: 891 },
+        { timestamp: "2026-04-14T14:53:45.010Z", is_request: false, method: null, status_code: 100, reason: "Trying", label: "100 Trying", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.30", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 342 },
+        { timestamp: "2026-04-14T14:53:45.520Z", is_request: false, method: null, status_code: 404, reason: "Not Found", label: "404 Not Found", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.30", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 389 }
       ],
       "99001234@10.0.2.20": [
-        { timestamp: "2026-04-14T14:54:00.000Z", is_request: true, method: "OPTIONS", status_code: null, reason: null, src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 312 },
-        { timestamp: "2026-04-14T14:54:00.008Z", is_request: false, method: null, status_code: 200, reason: "OK", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 345 }
+        { timestamp: "2026-04-14T14:54:00.000Z", is_request: true, method: "OPTIONS", status_code: null, reason: null, label: "OPTIONS", src_addr: "10.0.2.20", src_port: 5060, dst_addr: "10.0.2.15", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 312 },
+        { timestamp: "2026-04-14T14:54:00.008Z", is_request: false, method: null, status_code: 200, reason: "OK", label: "200 OK", src_addr: "10.0.2.15", src_port: 5060, dst_addr: "10.0.2.20", dst_port: 5060, is_retransmission: false, body_length: 0, raw_length: 345 }
       ]
     };
 
@@ -287,7 +287,7 @@ class MockSipnabSession {
       var from = (m.src_addr + ":" + m.src_port).replace(/[.:]/g, "_");
       var to = (m.dst_addr + ":" + m.dst_port).replace(/[.:]/g, "_");
       var arrow = m.is_request ? "->>" : "-->>";
-      var label = m.is_request ? m.method : (m.status_code + " " + m.reason);
+      var label = m.label;
       out += "    " + from + arrow + to + ": " + label + "\n";
     }
     return out;
@@ -1148,10 +1148,10 @@ function renderCallFlow() {
 
     var labelText, labelColorClass;
     if (isReq) {
-      labelText = m.method || "?";
+      labelText = m.label;
       labelColorClass = "flow-label-" + (m.method || "").toLowerCase();
     } else {
-      labelText = m.status_code + " " + (m.reason || "");
+      labelText = m.label;
       var century = Math.floor((m.status_code || 0) / 100);
       labelColorClass = "flow-label-" + century + "xx";
     }

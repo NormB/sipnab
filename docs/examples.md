@@ -3278,15 +3278,15 @@ sipnab -N -I capture.pcap -v -e 'BYE' | grep -E '^[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0
 ```
 
 ```text
-14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
+14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
 14:52:59.666 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
-14:52:59.670 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
+14:52:59.670 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK (SDP) UDP
 14:52:59.670 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
 14:53:08.170 10.0.2.15:5060 -> 10.0.2.20:5060 BYE UDP
 14:53:08.170 10.0.2.20:5060 -> 10.0.2.15:5060 200 OK UDP
-14:53:08.286 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE UDP
+14:53:08.286 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
 14:53:08.286 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
-14:53:08.290 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK UDP
+14:53:08.290 10.0.2.15:5060 -> 10.0.2.20:5060 200 OK (SDP) UDP
 14:53:08.290 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
 ```
 
@@ -3419,9 +3419,11 @@ Or a retransmission argument needs the actual timers, rather than "it looked imm
 sipnab -N -I capture.pcap --delta-time
 ```
 
+Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), the first two summary lines read:
+
 ```text
-+0.000s 192.0.2.20:5060 -> 192.0.2.15:5060 INVITE UDP
-+0.512s 192.0.2.15:5060 -> 192.0.2.20:5060 100 Trying UDP
++0.000s 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
++0.000s 10.0.2.15:5060 -> 10.0.2.20:5060 100 Trying UDP
 ```
 
 Add the full header block of the bodyless messages. Otherwise they print as a one-line summary:
