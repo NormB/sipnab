@@ -639,6 +639,17 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--compare-dialogs`: two Call-IDs, any text; each value here is the
+    // first of the pair, `MORE_VALUES` gives the second. One the run did not
+    // track exits 1 after the run.
+    (
+        "compare-dialogs",
+        Kind::Text {
+            accept: &["x", "0", ""],
+            reject: &[],
+        },
+        &[],
+    ),
     // `--correlate`: any Call-ID parses; one the run did not track exits 1
     // after the run, as `--call-report`'s does.
     (
@@ -3060,13 +3071,58 @@ fn flag_argv(long: &str, ctx: &[&str], flag_token: &str) -> Vec<String> {
     a
 }
 
-/// Run one `--long=value` (or bare `--long` when `value` is `None`).
+/// The values after the first that a flag taking several values at once is
+/// given, so a row's value is the first of a complete set. A flag clap
+/// requires more than one value of (`--compare-dialogs A B`) cannot be
+/// written `--long=value`, which carries one; it is written `--long value
+/// rest...` instead. [`more_values`] refuses a multi-value flag missing here.
+const MORE_VALUES: &[(&str, &[&str])] = &[("compare-dialogs", &["y"])];
+
+/// The values after the first that `long` takes, from [`MORE_VALUES`]; empty
+/// for a flag that takes one value.
+///
+/// # Panics
+///
+/// When clap requires more than one value of `long` and [`MORE_VALUES`] has
+/// no row for it: the harness would otherwise write a form clap refuses and
+/// report the refusal as the flag's.
+fn more_values(long: &str) -> &'static [&'static str] {
+    let needs = sipnab::cli::Cli::command()
+        .get_arguments()
+        .find(|a| a.get_long() == Some(long))
+        .and_then(clap::Arg::get_num_args)
+        .map_or(1, |r| r.min_values());
+    let rest = MORE_VALUES
+        .iter()
+        .find(|(l, _)| *l == long)
+        .map_or(&[][..], |(_, rest)| *rest);
+    assert_eq!(
+        rest.len() + 1,
+        needs.max(1),
+        "--{long} takes {needs} values at once: MORE_VALUES must give the {} after the first",
+        needs.saturating_sub(1)
+    );
+    rest
+}
+
+/// Run one `--long=value` (or bare `--long` when `value` is `None`). A flag
+/// that takes several values at once runs as `--long value rest...`.
 fn run_flag(long: &str, ctx: &[&str], value: Option<&str>) -> Outcome {
+    let rest = more_values(long);
     let token = match value {
-        Some(v) => format!("--{long}={v}"),
-        None => format!("--{long}"),
+        Some(v) if rest.is_empty() => format!("--{long}={v}"),
+        _ => format!("--{long}"),
     };
-    run_exact(&flag_argv(long, ctx, &token))
+    let mut argv = flag_argv(long, ctx, &token);
+    if let Some(v) = value.filter(|_| !rest.is_empty()) {
+        let at = argv
+            .iter()
+            .position(|t| *t == token)
+            .map_or(argv.len(), |i| i + 1);
+        let values = std::iter::once(v.to_string()).chain(rest.iter().map(|r| (*r).to_string()));
+        argv.splice(at..at, values);
+    }
+    run_exact(&argv)
 }
 
 /// The field id clap stores `long` under.

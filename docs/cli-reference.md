@@ -1157,6 +1157,7 @@ out the end-of-run summary on stderr.
 | `--prefix-digits` | `<N>` | `4` | 0.5.230 | How many leading digits `--talkers prefix` ranks by. Needs `--talkers`; only `prefix` reads it. `0` exits 2 |
 | `--call-tree` | `<CALL-ID>` | | Unreleased | Print every leg of one call as a tree across B2BUA, SBC and PBX hops, with the strategy that matched each leg. `--json` prints the shape of `GET /v1/dialogs/{call_id}/tree`. A Call-ID the run did not track exits 1 |
 | `--correlate` | `<CALL-ID>` | | Unreleased | Print the other legs of one call and the strategy that matched each: an identifier the legs share, or a timing guess. `--json` prints the shape of `GET /v1/dialogs/{call_id}/correlated`. A Call-ID the run did not track exits 1 |
+| `--compare-dialogs` | `<CALL-ID-A> <CALL-ID-B>` | | Unreleased | Put two calls side by side: state, final response code, message count and methods, with the fields that differ marked, and each call's diagnosis hints. `--json` prints the shape of `GET /v1/dialogs/compare`. A Call-ID the run did not track exits 1 |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those three; `0` exits 2 |
 
 ### Call volume over time
@@ -1485,6 +1486,43 @@ A call that no other leg ties to prints no rows and exits 0. A Call-ID the run
 did not track exits 1. `--call-tree` follows these matches leg by leg. The
 REST route `GET /v1/dialogs/{call_id}/correlated` and the MCP tool
 `find_correlated` answer for one leg as this flag does.
+
+### Two calls side by side
+
+Compare a call that failed with another, to see what they have in common:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --compare-dialogs busy-3a2b1c@192.0.2.30 unavail-4e5f60@192.0.2.50 --no-cli-print --quiet
+```
+
+```text
+Comparing busy-3a2b1c@192.0.2.30 (A) with unavail-4e5f60@192.0.2.50 (B): 1 field differs
+Field              A           B           Differs
+--------------------------------------------------
+state              Failed      Failed      
+final_status_code  486         503         differs
+msg_count          4           4           
+methods            ACK,INVITE  ACK,INVITE  
+Hints for A: Call failed: 486 Busy Here.
+Hints for B: Call failed: 503 Service Unavailable.
+```
+
+Give the two Call-IDs after the flag, each matched exactly. sipnab compares the
+four fields in the table, and `differs` marks the ones that are not the same.
+It lists the hints for each call without comparing them.
+
+Under `--json`, `differences` names the fields that differ:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --compare-dialogs completed-9f8e7d@192.0.2.10 busy-3a2b1c@192.0.2.30 --json --no-cli-print --quiet | jq -c '{differences, a: .a.final_status_code, b: .b.final_status_code}'
+```
+
+```json
+{"differences":["state","final_status_code","msg_count","methods"],"a":200,"b":486}
+```
+
+The REST route `GET /v1/dialogs/compare`, given the two Call-IDs as `a` and `b`,
+and the MCP tool `compare_dialogs` compare the same fields.
 
 ## Dialog
 

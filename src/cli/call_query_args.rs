@@ -42,6 +42,22 @@ pub struct CallQueryArgs {
     /// headless, as `--call-report` does.
     #[arg(help_heading = "Queries", long, value_name = "CALL-ID")]
     pub correlate: Option<String>,
+
+    /// Put two calls side by side: state, final response code, message
+    /// count and methods for each, the fields that differ marked, and each
+    /// call's diagnosis hints.
+    ///
+    /// Takes two Call-IDs, each matched exactly, and one the run did not
+    /// track exits with status 1. With `--json`, one JSON object on the last
+    /// line of stdout, the shape `GET /v1/dialogs/compare` returns. Makes
+    /// the run headless, as `--call-report` does.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        num_args = 2,
+        value_names = ["CALL-ID-A", "CALL-ID-B"],
+    )]
+    pub compare_dialogs: Option<Vec<String>>,
 }
 
 impl CallQueryArgs {
@@ -61,6 +77,12 @@ impl CallQueryArgs {
             OneShot {
                 name: "--correlate",
                 active: self.correlate.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+            OneShot {
+                name: "--compare-dialogs",
+                active: self.compare_dialogs.is_some(),
                 implies_no_tui: true,
                 owns_stdout: true,
             },

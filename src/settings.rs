@@ -193,6 +193,7 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("diagnosis", "cn_suppression_ratio", Merge::Override),
     ),
     ("color", Link::Key("display", "color", Merge::Override)),
+    ("compare-dialogs", Link::PerRun),
     ("completions", Link::Action),
     ("config", Link::PerRun),
     ("contact", Link::Pending),

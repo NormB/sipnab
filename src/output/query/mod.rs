@@ -19,6 +19,7 @@ use std::fmt::Write as _;
 use crate::output::ReportFormat;
 
 pub mod aggregate;
+pub mod compare;
 pub mod correlated;
 pub mod rates;
 pub mod talkers;
@@ -61,6 +62,17 @@ pub(crate) fn plural(n: u64, noun: &str) -> String {
     }
 }
 
+/// `s` with every control character (a terminal escape sequence carried in a
+/// captured header) replaced by U+FFFD, so a value read off the wire cannot
+/// drive the reader's terminal. Every cell [`table`] prints goes through it,
+/// and so must any wire text an answer prints outside a table.
+#[must_use]
+pub fn clean(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
+        .collect()
+}
+
 /// Render `rows` under `headers` as a table in `format`.
 ///
 /// Text: the header line, a rule of dashes as wide as the table, then one line
@@ -78,11 +90,6 @@ pub(crate) fn plural(n: u64, noun: &str) -> String {
 /// * `rows` — the cells, one `Vec` per row, each as long as `headers`.
 #[must_use]
 pub fn table(format: ReportFormat, headers: &[&str], rows: &[Vec<String>]) -> String {
-    let clean = |s: &str| -> String {
-        s.chars()
-            .map(|c| if c.is_control() { '\u{FFFD}' } else { c })
-            .collect()
-    };
     let rows: Vec<Vec<String>> = rows
         .iter()
         .map(|r| r.iter().map(|c| clean(c)).collect())

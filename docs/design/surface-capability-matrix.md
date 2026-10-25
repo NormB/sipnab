@@ -197,7 +197,7 @@ Put two calls side by side and list what differs.
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: one-shot comparison belongs here, but there is no compare flag (PAR5) |
+| CLI | `--compare-dialogs` |
 | TUI | `CompareDialogs` |
 | REST | `/v1/dialogs/compare` |
 | MCP | `compare_dialogs` |

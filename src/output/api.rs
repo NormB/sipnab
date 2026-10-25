@@ -2203,27 +2203,14 @@ async fn get_compare(
     })?;
 
     // The shared comparison rule, so this route and the MCP `compare_dialogs`
-    // tool name the same differences.
-    let cmp = crate::sip::dialog::compare_dialogs(a, b);
-    let side = |s: crate::sip::dialog::DialogSide| schema::ComparisonSide {
-        call_id: s.call_id,
-        state: s.state,
-        final_status_code: s.final_status_code,
-        msg_count: s.msg_count,
-        methods: s.methods,
-        hints: s.hints,
-    };
+    // tool name the same differences; the answer is the one
+    // `--compare-dialogs` prints.
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    let answer = crate::output::query::compare::comparison(a, b, capture_identity);
     drop(ss);
     drop(ds);
     drop(capture);
-    Ok(Json(schema::Comparison {
-        schema_version: 1,
-        a: side(cmp.a),
-        b: side(cmp.b),
-        differences: cmp.differences,
-        capture_identity,
-    }))
+    Ok(Json(answer))
 }
 
 /// `GET /v1/dialogs/tail` — dialogs changed since a cursor, for change-tracking
@@ -6712,49 +6699,10 @@ pub mod schema {
     /// `--timeline` alike.
     pub use crate::output::query::timeline::{Timeline, TimelineBucket};
 
-    /// One call summarized for a side-by-side comparison: the fields
-    /// `/v1/dialogs/compare` diffs, the same the MCP `compare_dialogs` tool
-    /// reports.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct ComparisonSide {
-        /// The dialog's Call-ID.
-        pub call_id: String,
-        /// The dialog state (`InCall`, `Failed`, `Completed`, …).
-        pub state: String,
-        /// The final response code of the dialog's INVITE, or of the request
-        /// that opened a dialog without one; null while it has none.
-        pub final_status_code: Option<u16>,
-        /// How many SIP messages the dialog holds.
-        pub msg_count: usize,
-        /// The distinct request methods seen, sorted.
-        pub methods: Vec<String>,
-        /// The signaling-diagnosis hints for the call.
-        pub hints: Vec<String>,
-    }
-
-    /// Two calls side by side, naming which fields differ.
-    #[derive(Debug, Clone, serde::Serialize, ToSchema)]
-    pub struct Comparison {
-        /// Version of this response's shape.
-        #[schema(example = 1)]
-        pub schema_version: u32,
-        /// The first call's summary.
-        pub a: ComparisonSide,
-        /// The second call's summary.
-        pub b: ComparisonSide,
-        /// The field names that differ — a subset of `state`,
-        /// `final_status_code`, `msg_count`, `methods`, in that order. Empty
-        /// when the two calls match on all four. `hints` is reported per side
-        /// but not diffed.
-        pub differences: Vec<String>,
-        /// WHICH capture this answer came from, and which revision of its
-        /// stores, stamped under the locks the answer was built with. A
-        /// different `instance` from an earlier answer means a different
-        /// capture. The same identity the MCP tool answering this question
-        /// carries. `null` when nobody told this server what it is attached to.
-        #[schema(value_type = Option<CaptureIdentity>)]
-        pub capture_identity: Option<crate::provenance::CaptureEtag>,
-    }
+    /// The comparison's answer, built by
+    /// [`crate::output::query::compare::comparison`] for this route and
+    /// `--compare-dialogs` alike.
+    pub use crate::output::query::compare::{Comparison, ComparisonSide};
 
     /// A page of dialogs updated since a cursor, for change-tracking pollers.
     /// Doc-only, like [`DialogList`]: the route answers with the same untyped
