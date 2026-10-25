@@ -487,12 +487,17 @@ input:focus-visible,
 }
 
 .nav-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
   font-family: $font-mono;
   font-size: 1.25rem;
   font-weight: 700;
   color: $accent;
   letter-spacing: -0.02em;
   &:hover { color: $accent; }
+  // The mark, from website/brand/mark.svg; decorative, the name says it.
+  img { display: block; }
 }
 
 .nav-links {
