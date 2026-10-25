@@ -75,7 +75,10 @@ by sipnab, so the agent does not fetch and bucket every dialog itself.
 | `schema_version` | u32 | `1` for this shape. |
 
 There is no `truncated` and no cursor: this tool takes no `limit` and returns
-every bucket in the capture.
+every bucket in the capture, up to 100,000. When the dialogs span more intervals
+of the width than that, the call fails with reason `limit_exceeded` on
+`bucket_seconds`, and the message names a width that fits. Ask again with that
+width or a wider one.
 
 The example runs against
 [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap),

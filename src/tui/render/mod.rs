@@ -1614,13 +1614,19 @@ pub(in crate::tui) const VOLUME_BUCKET_SECONDS: u64 = 60;
 /// Build the call-volume histogram: dialogs per fixed-width time bucket, the
 /// same buckets `GET /v1/timeline` and the MCP `timeline` tool report, drawn as
 /// one text bar per bucket. Empty intervals are kept — a lull is information.
-///
-/// STUB — filled in after the failing test.
+/// A span wider than the store's bound is one line saying so, with the
+/// store's reason.
 pub(in crate::tui) fn volume_histogram_text(ds: &DialogStore, width_seconds: u64) -> String {
     use std::fmt::Write as _;
 
-    let buckets = ds.timeline_buckets(width_seconds);
     let mut out = String::new();
+    let buckets = match ds.timeline_buckets(width_seconds) {
+        Ok(buckets) => buckets,
+        Err(e) => {
+            let _ = writeln!(out, "  No histogram: {e}.");
+            return out;
+        }
+    };
     if buckets.is_empty() {
         let _ = writeln!(out, "  No calls in the capture.");
         return out;
@@ -3371,6 +3377,49 @@ mod tests {
             quiet.matches('█').count() < busy.matches('█').count(),
             "a quieter bucket's bar is shorter:\n{text}"
         );
+        Ok(())
+    }
+
+    /// Two calls decades apart are more one-minute intervals than one
+    /// histogram holds. The view says so and names a width that fits, rather
+    /// than drawing tens of millions of rows on every refresh.
+    #[test]
+    fn volume_histogram_text_reports_a_span_wider_than_the_bound() -> Result<(), TestError> {
+        use crate::net::TransportProto;
+        use crate::sip::parser::parse_sip;
+        use crate::test_utils::build_sip_message as build_sip;
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let src = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1));
+        let dst = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let mut ds = DialogStore::new(1000, true);
+        for (i, at) in [1i64, 1_700_000_000].into_iter().enumerate() {
+            let raw = build_sip(
+                "INVITE sip:bob@example.com SIP/2.0",
+                &[
+                    "From: <sip:alice@example.com>;tag=t1",
+                    "To: <sip:bob@example.com>",
+                    &format!("Call-ID: wide{i}@h"),
+                    "CSeq: 1 INVITE",
+                    "Content-Length: 0",
+                ],
+                b"",
+            );
+            let ts = chrono::DateTime::from_timestamp(at, 0).ok_or("a valid instant")?;
+            ds.process_message(
+                parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                    .map_err(|e| format!("parse: {e:?}"))?,
+            );
+        }
+
+        let text = volume_histogram_text(&ds, 60);
+        assert!(
+            text.lines().count() < 5,
+            "a refusal, not a row per interval: {} lines",
+            text.lines().count()
+        );
+        assert!(text.contains("at most 100000"), "{text}");
+        assert!(text.contains("s or more fits"), "{text}");
         Ok(())
     }
 

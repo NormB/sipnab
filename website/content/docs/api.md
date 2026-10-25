@@ -3638,6 +3638,8 @@ dashboard polls.
 **Query parameters:**
 
 - `bucket_seconds` (optional) — the interval width, default 60. Zero is a `400`.
+  The dialogs may span at most `MAX_TIMELINE_BUCKETS` (100,000) intervals of
+  the width. A span of more is a `422` whose `detail` names a width that fits.
 
 **curl:**
 

@@ -252,7 +252,9 @@ impl SipnabMcp {
             let state = self.capture.read();
             let ds = self.dialog_store.read();
             let ss = self.stream_store.read();
-            let buckets = crate::mcp::server::timeline_rows(&ds, width);
+            let buckets = crate::mcp::server::timeline_rows(&ds, width).map_err(|e| {
+                errors::refuse_param(Reason::LimitExceeded, "bucket_seconds", e.to_string())
+            })?;
             let capture_identity = state.identity.etag(ds.generation(), ss.generation());
             drop(ss);
             drop(ds);
@@ -1325,7 +1327,7 @@ mod tests {
             invite_to("a", "sip:bob@example.com", at(0)?, 20000)?,
             invite_to("b", "sip:bob@example.com", at(180)?, 20002)?,
         ])?;
-        let rows = crate::mcp::server::timeline_rows(&server.dialog_store.read(), 60);
+        let rows = crate::mcp::server::timeline_rows(&server.dialog_store.read(), 60)?;
         assert_eq!(
             rows.len(),
             4,
@@ -1356,7 +1358,7 @@ mod tests {
             at(offset)?,
             20000,
         )?])?;
-        let rows = crate::mcp::server::timeline_rows(&server.dialog_store.read(), 60);
+        let rows = crate::mcp::server::timeline_rows(&server.dialog_store.read(), 60)?;
         assert_eq!(rows.len(), 1, "one call is one bucket: {rows:?}");
         assert_eq!(
             rows[0].start.timestamp() % 60,
@@ -1379,7 +1381,7 @@ mod tests {
     fn timeline_of_an_empty_store_is_empty() -> Result<(), TestError> {
         let server = server_of(vec![])?;
         assert!(
-            crate::mcp::server::timeline_rows(&server.dialog_store.read(), 60).is_empty(),
+            crate::mcp::server::timeline_rows(&server.dialog_store.read(), 60)?.is_empty(),
             "no dialogs means no intervals to report"
         );
         Ok(())
@@ -1392,7 +1394,7 @@ mod tests {
             invite_to("a", "sip:bob@example.com", at(0)?, 20000)?,
             invite_to("b", "sip:bob@example.com", at(700)?, 20002)?,
         ])?;
-        let rows = crate::mcp::server::timeline_rows(&server.dialog_store.read(), 300);
+        let rows = crate::mcp::server::timeline_rows(&server.dialog_store.read(), 300)?;
         assert!(
             rows.iter().all(|r| r.bucket_seconds == 300),
             "each row must carry the width it was built at, so a row is \
@@ -1423,6 +1425,30 @@ mod tests {
             err.message.contains("greater than zero"),
             "the refusal must name the constraint it enforced: {err:?}"
         );
+        Ok(())
+    }
+
+    /// Two calls decades apart are refused at a width whose intervals would
+    /// exceed the bound, as a limit on `bucket_seconds` naming a width that
+    /// fits, not built as tens of millions of rows.
+    #[tokio::test]
+    async fn timeline_refuses_a_span_wider_than_the_bound() -> Result<(), TestError> {
+        let server = server_of(vec![
+            invite_to("a", "sip:bob@example.com", at(0)?, 20000)?,
+            invite_to("b", "sip:bob@example.com", at(1_000_000_000)?, 20002)?,
+        ])?;
+        let err = server
+            .timeline(Parameters(TimelineParams {
+                bucket_seconds: Some(60),
+            }))
+            .await
+            .err()
+            .ok_or("a span of 16.7 million intervals must be refused")?;
+        assert!(err.message.contains("at most 100000"), "{err:?}");
+        assert!(err.message.contains("s or more fits"), "{err:?}");
+        let data = err.data.clone().ok_or("the refusal carries data")?;
+        assert_eq!(data["reason"], "limit_exceeded", "{data}");
+        assert_eq!(data["param"], "bucket_seconds", "{data}");
         Ok(())
     }
 }
