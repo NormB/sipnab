@@ -166,6 +166,26 @@ def test_sipnab_run_through_the_shared_harness_is_end_to_end():
     )
 
 
+PARITY = """
+#[path = "support/surface_parity.rs"]
+mod surface_parity;
+
+#[test]
+fn a_failing_suite_exits_1() {
+    let run = surface_parity::run_cli(PCAP, &["--expect", &path, "--json"]).unwrap();
+    assert_eq!(run.code, Some(1));
+}
+"""
+
+
+def test_sipnab_run_through_the_surface_parity_harness_is_end_to_end():
+    """`surface_parity::run_cli` spawns the binary, so its argument list is e2e."""
+    assert classify({"tests/cli_expect_test.rs": PARITY}, "--expect") == (
+        "e2e",
+        ["tests/cli_expect_test.rs"],
+    )
+
+
 BESIDE_THE_TEST = """
 fn sipnab_bin() -> std::path::PathBuf {
     let mut p = std::env::current_exe().expect("test binary path");

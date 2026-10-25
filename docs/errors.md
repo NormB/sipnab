@@ -372,6 +372,22 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (`-L`) in one ru
 
 **Exit code:** 1.
 
+### `--expect: {why}`
+
+`--expect` judges `lint_errors` rules with the lint suppression file in force, and sipnab could not read it. `{why}` names the file (`--lint-suppress-file`, or a `.sipnab-lint-suppress` found beside the capture) and the reason. sipnab prints no verdict.
+
+**What to do:** Fix or remove the suppression file, or name a readable one with `--lint-suppress-file`.
+
+**Exit code:** 2.
+
+### `--expect {}: {e}`
+
+The suite file `{}` holds a rule the evaluator refused when it judged the capture: `{e}` names the rule by its index and says why. sipnab checks every rule before it reads the capture, so this is rare: a rule whose filter compiles with the default thresholds and not with the ones the run's configuration sets.
+
+**What to do:** Fix the rule `{e}` names. The suite's exit code `2` means no verdict.
+
+**Exit code:** 2.
+
 ### `--export-audio: {why}`
 
 `--export-audio <CALL-ID>` could not write the call's audio. `{why}` says which of these happened:

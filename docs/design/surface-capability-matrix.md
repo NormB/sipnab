@@ -727,7 +727,7 @@ Judge this capture against a rule suite and return a build exit code.
 
 | Surface | Detail |
 |---|---|
-| CLI | gap: the engine returns a CI exit code, but [`src/expect.rs`](https://github.com/NormB/sipnab/blob/main/src/expect.rs) records that no flag reaches it yet, so a checked-in expectations file cannot fail a build and only the agent tool can run it — the strongest close-worthy gap in this matrix (PAR5) |
+| CLI | `--expect` |
 | TUI | decision: a build gate is not interactive |
 | REST | decision: CI gates run through CLI exit codes, and a monitoring poll uses the stats route with its own thresholds |
 | MCP | `evaluate_expectations` |

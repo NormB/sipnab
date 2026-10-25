@@ -694,6 +694,16 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--expect`: a suite file, read and checked while the command line is
+    // parsed, so a path with no suite behind it is refused naming the flag.
+    (
+        "expect",
+        Kind::Text {
+            accept: &[],
+            reject: &[("/nonexistent/sipnab.expect.toml", 2), ("", 2)],
+        },
+        &[],
+    ),
     // `--export-audio`: any Call-ID parses; one neither store holds exits 1
     // after the run.
     (

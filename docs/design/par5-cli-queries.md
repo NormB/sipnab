@@ -207,6 +207,16 @@ compiled filter (`bootstrap::build_filter_expr`), and each file's scratch
 stores hold what an MCP server started by the same command line would hold
 (`Cli::mcp_row_cap`).
 
+`--expect` ends the run with the exit status its report names, the code the
+expectation engine defines for a command line (`Report::exit_code`: 0, 1, 2)
+and the MCP tool already reports as `exit_code`. The report chain returns only
+whether it could answer, so the gate records its code with
+`queries::set_gate_exit`, and both ends of a run read it
+(`queries::gate_exit_code`): the single reader's `run_exit_code`, after a
+failure and the lint gate, and the `--cores` path in the same order. The suite
+is read and checked by clap's value parser, which evaluates it against an empty
+capture, so a defect in it stops the run before the capture is read.
+
 Beyond those files, each flag edits only lines that belong to it:
 
 - its own `gap:` cell in [`docs/design/surface-capability-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/surface-capability-matrix.md), flipped to

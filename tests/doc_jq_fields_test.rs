@@ -238,6 +238,25 @@ fn shell_words(line: &str) -> Vec<String> {
     words
 }
 
+/// Gate flags whose exit status is their verdict, with the codes that still
+/// mean "answered": `--expect` exits 1 when a rule failed, which is the
+/// answer a recipe that shows a failing suite documents, not a failed run.
+const GATE_VERDICT_EXITS: &[(&str, &[i32])] = &[("--expect", &[1])];
+
+/// Whether a documented command's exit `code` means it answered: 0, or a
+/// verdict code of a gate flag the command uses.
+fn answered(command: &str, code: Option<i32>) -> bool {
+    let Some(code) = code else {
+        return false;
+    };
+    code == 0
+        || shell_words(command).iter().any(|word| {
+            GATE_VERDICT_EXITS
+                .iter()
+                .any(|(flag, codes)| word == flag && codes.contains(&code))
+        })
+}
+
 /// Keys a query recipe's own command emits: the block's `sipnab` command run
 /// as written (from the repository root, which is where the documented
 /// sample paths resolve), its JSON lines harvested.
@@ -250,7 +269,7 @@ fn keys_for_command(command: &str) -> Result<BTreeSet<String>, TestError> {
         .output()
         .map_err(|e| format!("run sipnab: {e}"))?;
     assert!(
-        out.status.success(),
+        answered(command, out.status.code()),
         "the documented command `{command}` failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );

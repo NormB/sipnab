@@ -1294,6 +1294,9 @@ The dimensions \fB\-\-compare\-captures\fR diffs, comma\-separated: any of \fBst
 .TP
 \fB\-\-find\-in\-files\fR \fIPATH\fR\&...
 Find which of several capture files hold the dialogs the run's filter selects: \fB\-\-filter\fR, a diagnostic alias such as \fB\-\-problems\fR, and \fB\-\-since\fR/\fB\-\-until\fR.
+.TP
+\fB\-\-expect\fR \fIFILE\fR
+Judge the capture against the expectations in a suite file (\fBsipnab.expect.toml\fR), print each rule's verdict, and exit with the suite's: 0 when every rule that ran passed, 1 when one failed, 2 when no rule ran.
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR

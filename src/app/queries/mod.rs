@@ -172,6 +172,23 @@ pub fn call_not_found(call_id: &str) {
     stderr_line!("Call-ID '{call_id}' not found in tracked dialogs");
 }
 
+/// The exit status a query gate (`--expect`) asked for, `0` when none did.
+static GATE_EXIT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+/// Record the exit status a query gate asks the run to end with.
+pub fn set_gate_exit(code: i32) {
+    GATE_EXIT.store(code, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The exit status a query gate asked for, `None` when none asked for one
+/// other than success. Read by both the single reader's and `--cores`'s end
+/// of run, so the gate holds on either path.
+#[must_use]
+pub fn gate_exit_code() -> Option<i32> {
+    let code = GATE_EXIT.load(std::sync::atomic::Ordering::SeqCst);
+    (code != 0).then_some(code)
+}
+
 /// The form one query's answer is written in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnswerForm {

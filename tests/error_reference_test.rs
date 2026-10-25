@@ -827,7 +827,9 @@ const EXPECTED_UNRESOLVED: usize = 87;
 // refusal of the same file twice, a dimension, or a file that yields nothing.
 // 514 -> 516: src/app/queries/b3.rs, `--find-in-files: {why}` (a directory it
 // cannot list) and the refusal of a sweep with no filter. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 516;
+// 516 -> 518: src/app/queries/b4.rs, `--expect: {why}` (a suppression file it
+// cannot read) and `--expect {}: {e}` (a rule refused at evaluation).
+const EXPECTED_TEMPLATES: usize = 518;
 
 // ---------------------------------------------------------------------------
 // The page gates

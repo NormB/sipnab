@@ -24,6 +24,7 @@ pub mod capture_compare;
 pub mod compare;
 pub mod correlated;
 pub mod endpoint;
+pub mod expectations;
 pub mod find_files;
 pub mod rates;
 pub mod talkers;

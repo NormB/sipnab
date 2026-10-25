@@ -640,8 +640,9 @@ or a percentile outside 0 to 100. For example:
 rule 0: unknown metric 'bogus'. Known metrics: count, asr, lint_errors, mos_p<N>. A percentile is spelled mos_p10, mos_p50, mos_p90 and so on, from mos_p0 (worst stream) to mos_p100 (best)
 ```
 
-> No command-line flag runs this evaluator. To fail a build on a
-> `sipnab.expect.toml`, call this tool over MCP and act on `exit_code`.
+> `--expect <FILE>` runs this evaluator from the command line and exits with
+> `exit_code`, so a `sipnab.expect.toml` in a repository can fail a build. See
+> [Fail a build on what a capture shows](@/docs/cli.md#fail-a-build-on-what-a-capture-shows).
 
 
 ## Security

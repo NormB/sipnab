@@ -236,6 +236,7 @@ pub const FLAGS: &[(&str, Link)] = &[
         Link::Key("limits", "exec_queue_depth", Merge::Override),
     ),
     ("exec-rate-limit", Link::Pending),
+    ("expect", Link::PerRun),
     ("export-audio", Link::PerRun),
     ("export-audio-out", Link::PerRun),
     ("export-vcon", Link::PerRun),
