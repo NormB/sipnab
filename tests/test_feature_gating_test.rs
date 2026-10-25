@@ -2,7 +2,9 @@
 // SPDX-FileCopyrightText: The sipnab contributors
 
 //! A test file that imports a feature-gated module must carry that feature's
-//! gate.
+//! gate, and so must a bench or an example: a bench by its `required-features`
+//! or a `cfg`, an example by a `cfg` (see
+//! `a_bench_or_example_importing_a_gated_module_declares_that_feature`).
 //!
 //! # The defect
 //!
@@ -312,6 +314,90 @@ fn a_test_importing_a_gated_module_names_that_feature() -> Result<(), TestError>
         orphans.is_empty(),
         "these support modules are excluded from the scan above and included by \
          no test target, so nothing checks their imports at all: {orphans:?}"
+    );
+    Ok(())
+}
+
+/// A bench's `required-features` from `Cargo.toml`, by the bench's name.
+fn bench_required_features() -> Result<BTreeMap<String, Vec<String>>, TestError> {
+    let manifest: toml::Table = std::fs::read_to_string(repo().join("Cargo.toml"))?.parse()?;
+    let mut out = BTreeMap::new();
+    for bench in manifest
+        .get("bench")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let name = bench
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .ok_or("a [[bench]] without a name")?;
+        let required = bench
+            .get("required-features")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect();
+        out.insert(name.to_string(), required);
+    }
+    Ok(out)
+}
+
+/// Every bench and example importing a gated module declares that feature:
+/// in a `cfg` of its own, as the examples do, or, for a bench, in its
+/// `required-features`. `benches/tui_derived.rs` imported `sipnab::tui` and
+/// declared neither, so `cargo clippy --no-default-features --features api
+/// --all-targets` failed to compile it.
+#[test]
+fn a_bench_or_example_importing_a_gated_module_declares_that_feature() -> Result<(), TestError> {
+    let modules = gated_modules()?;
+    let graph = feature_graph()?;
+    let required = bench_required_features()?;
+    let feat = regex::Regex::new(r#"feature = "([a-z0-9_-]+)""#)?;
+    let mut checked = 0;
+    let mut problems = Vec::new();
+    for dir in ["benches", "examples"] {
+        for path in rs_files(dir) {
+            checked += 1;
+            let src = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut named: Vec<String> = src
+                .lines()
+                .filter(|l| l.contains("cfg(") || l.contains("cfg_attr("))
+                .flat_map(|l| {
+                    feat.captures_iter(l)
+                        .map(|c| c[1].to_string())
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            if dir == "benches" {
+                let stem = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                named.extend(required.get(&stem).into_iter().flatten().cloned());
+            }
+            let enabled = closure(&named, &graph);
+            for (module, feature) in &modules {
+                if imports_module(&src, module)? && !enabled.contains(feature) {
+                    problems.push(format!(
+                        "{}: imports `sipnab::{module}`, which is behind `{feature}`, and \
+                         neither its cfgs nor its required-features reach it",
+                        path.strip_prefix(repo()).unwrap_or(&path).display()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= 11,
+        "found {checked} benches and examples; there are at least 11"
+    );
+    assert!(
+        problems.is_empty(),
+        "these benches and examples import a feature-gated module without \
+         declaring the feature, so a build without it fails to compile them:\n  {}",
+        problems.join("\n  ")
     );
     Ok(())
 }
