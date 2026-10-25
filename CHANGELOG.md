@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Dependencies
+
+- `jsonschema` 0.58 → 0.60, `parking_lot` 0.12 → 0.13 (main crate and fuzz targets), `tokio` 1.53.3 → 1.54.1, `rmcp` 3.5.1 → 3.6.0, `lzma-rust2` 0.22 → 0.23, and patch releases of `libc`, `memmap2`, `zip`, `unicode-normalization` and `sevenz-rust2`; five GitHub Actions bumped, including `rust-lang/crates-io-auth-action` 1.0.5 → 1.0.6. From Dependabot #552 to #557.
+
 ## [0.5.230] - 2026-10-25
 
 ### Added

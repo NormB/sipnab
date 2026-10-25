@@ -51,7 +51,7 @@ Files copied into the repository unmodified from another project's release. None
 | `tests/schemas/publisher/vcon_json_schema.json` | vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working group's draft-ietf-vcon-vcon-core repository, unmodified. Test fixture only; it is in no release artifact. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 | `tests/schemas/vcon.schema.json` | vCon JSON schema: the same file as tests/schemas/publisher/vcon_json_schema.json, byte for byte, under the name sipnab's validator reads. Compiled into the binary as the schema the validate_vcon tool and the REST validate route check against. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 
-## Rust crates (433)
+## Rust crates (437)
 
 | Crate | Version | License |
 |---|---|---|
@@ -226,7 +226,7 @@ Files copied into the repository unmodified from another project's release. None
 | lab | 0.11.0 | MIT |
 | lazy_static | 1.5.0 | MIT OR Apache-2.0 |
 | leb128fmt | 0.1.0 | MIT OR Apache-2.0 |
-| libc | 0.2.190 | MIT OR Apache-2.0 |
+| libc | 0.2.191 | MIT OR Apache-2.0 |
 | libloading | 0.8.9 | ISC |
 | libloading | 0.9.0 | ISC |
 | libm | 0.2.16 | MIT |
@@ -235,14 +235,15 @@ Files copied into the repository unmodified from another project's release. None
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | litrs | 1.0.0 | MIT OR Apache-2.0 |
 | lock_api | 0.4.14 | MIT OR Apache-2.0 |
+| lock_api | 0.5.0 | MIT OR Apache-2.0 |
 | log | 0.4.34 | MIT OR Apache-2.0 |
 | lru | 0.18.2 | MIT |
-| lzma-rust2 | 0.22.0 | Apache-2.0 |
+| lzma-rust2 | 0.23.0 | Apache-2.0 |
 | mac_address | 1.1.8 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
 | memchr | 2.8.3 | Unlicense OR MIT |
-| memmap2 | 0.9.11 | MIT OR Apache-2.0 |
+| memmap2 | 0.9.12 | MIT OR Apache-2.0 |
 | memmem | 0.1.1 | MIT/Apache-2.0 |
 | memoffset | 0.9.1 | MIT |
 | mimalloc | 0.1.52 | MIT |
@@ -273,6 +274,8 @@ Files copied into the repository unmodified from another project's release. None
 | palette | 0.7.6 | MIT OR Apache-2.0 |
 | palette_derive | 0.7.6 | MIT OR Apache-2.0 |
 | parking_lot | 0.12.5 | MIT OR Apache-2.0 |
+| parking_lot | 0.13.0 | MIT OR Apache-2.0 |
+| parking_lot_core | 0.10.0 | MIT OR Apache-2.0 |
 | parking_lot_core | 0.9.12 | MIT OR Apache-2.0 |
 | pastey | 0.2.2 | MIT OR Apache-2.0 |
 | pbkdf2 | 0.13.0 | MIT OR Apache-2.0 |
@@ -317,14 +320,15 @@ Files copied into the repository unmodified from another project's release. None
 | ratatui-termwiz | 0.1.2 | MIT |
 | ratatui-widgets | 0.3.2 | MIT |
 | redox_syscall | 0.5.18 | MIT |
+| redox_syscall | 0.9.5 | MIT |
 | ref-cast | 1.0.25 | MIT OR Apache-2.0 |
 | ref-cast-impl | 1.0.25 | MIT OR Apache-2.0 |
 | regex | 1.13.1 | MIT OR Apache-2.0 |
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.5.1 | Apache-2.0 |
-| rmcp-macros | 3.5.1 | Apache-2.0 |
+| rmcp | 3.6.0 | Apache-2.0 |
+| rmcp-macros | 3.7.0 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -348,7 +352,7 @@ Files copied into the repository unmodified from another project's release. None
 | serde_spanned | 1.1.1 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
 | serdect | 0.4.3 | Apache-2.0 OR MIT |
-| sevenz-rust2 | 0.24.0 | Apache-2.0 |
+| sevenz-rust2 | 0.24.1 | Apache-2.0 |
 | sha1 | 0.10.7 | MIT OR Apache-2.0 |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
@@ -393,7 +397,7 @@ Files copied into the repository unmodified from another project's release. None
 | time-core | 0.1.8 | MIT OR Apache-2.0 |
 | time-macros | 0.2.27 | MIT OR Apache-2.0 |
 | tinyvec | 1.13.3 | Zlib OR Apache-2.0 OR MIT |
-| tokio | 1.53.3 | MIT |
+| tokio | 1.54.1 | MIT |
 | tokio-macros | 2.7.0 | MIT |
 | tokio-rustls | 0.26.6 | MIT OR Apache-2.0 |
 | tokio-stream | 0.1.18 | MIT |
@@ -416,7 +420,7 @@ Files copied into the repository unmodified from another project's release. None
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | ucd-trie | 0.1.7 | MIT OR Apache-2.0 |
 | unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
-| unicode-normalization | 0.1.25 | MIT OR Apache-2.0 |
+| unicode-normalization | 0.1.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-segmentation | 1.13.2 | MIT OR Apache-2.0 |
 | unicode-truncate | 2.0.1 | MIT OR Apache-2.0 |
 | unicode-width | 0.2.2 | MIT OR Apache-2.0 |
@@ -485,6 +489,6 @@ Files copied into the repository unmodified from another project's release. None
 | zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zeroize | 1.9.1 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
-| zip | 9.0.4 | MIT |
+| zip | 9.0.5 | MIT |
 | zlib-rs | 0.6.7 | Zlib |
 | zmij | 1.0.23 | MIT |
