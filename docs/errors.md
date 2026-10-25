@@ -344,6 +344,20 @@ sipnab refuses to read a capture file (`-I`) and listen for HEP (`-L`) in one ru
 
 **Exit code:** 2.
 
+### `--export-audio: {why}`
+
+`--export-audio <CALL-ID>` could not write the call's audio. `{why}` says which of these happened:
+
+- The capture holds neither a SIP dialog nor an RTP stream with that Call-ID. The message is `no SIP dialog and no RTP stream associated with call_id '{call_id}' in this capture`.
+- The call has no RTP streams, or none with audio sipnab can decode. The message names what sipnab measured and why it kept nothing to decode.
+- sipnab could not create the file. An existing file is one cause: sipnab never replaces one.
+
+sipnab writes no file in any of these cases.
+
+**What to do:** For an unknown Call-ID, run with `--report` to list the Call-IDs this run holds. For nothing to decode, check the message: a `--snaplen` too short for the payload is the usual cause. For a file that exists, name another with `--export-audio-out`, or remove the old one.
+
+**Exit code:** 1.
+
 ### `--rates-by: {why}`
 
 `--rates-by` asked the metric table for a metric it has no way to compute. Every metric `--rates-by` computes comes from that same table, so this message means a defect in sipnab, not in the capture or the command line. sipnab prints no metrics.

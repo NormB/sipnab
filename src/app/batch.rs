@@ -1367,6 +1367,9 @@ pub(crate) fn audio_retention_wanted(cli: &Cli, config: &Config) -> bool {
     // the config: that rule's containers carry the audio, which has to be
     // retained to be carried.
     cli.mcp_args.retain_audio
+        // Asking for one call's audio as a WAV is the same consent, given
+        // for the run that writes it.
+        || cli.call_query_args.export_audio.is_some()
         || config.vcon.rule.iter().any(|r| {
             matches!(
                 RuleAudio::parse(r.audio.as_deref()),

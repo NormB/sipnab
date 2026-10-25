@@ -179,6 +179,13 @@ it by a filter. Its answer is the untyped JSON the route returns
 (`output::query::endpoint::EndpointAnswer`), and the CLI's text is drawn from
 the report the JSON is built from.
 
+`--export-audio` writes a file rather than printing an answer, so its JSON is
+its own: the `path` and `summary` the MCP `export_audio` tool answers with, and
+the `partial` and `dialog_seen` facts REST sends as headers beside the WAV.
+The bytes come from `rtp::audio_export::decode_dialog_audio`, and the file and
+its summary from `write_dialog_audio`, which the MCP tool's export uses too.
+The flag is consent to retain audio for the run (`audio_retention_wanted`).
+
 Beyond those files, each flag edits only lines that belong to it:
 
 - its own `gap:` cell in [`docs/design/surface-capability-matrix.md`](https://github.com/NormB/sipnab/blob/main/docs/design/surface-capability-matrix.md), flipped to

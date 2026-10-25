@@ -814,7 +814,9 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // span of more than MAX_TIMELINE_BUCKETS intervals. Nothing removed.
 // 509 -> 510: src/app/queries/b1.rs, `--rates-by: {why}`, a metric the
 // table has no extractor for. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 510;
+// 510 -> 511: src/app/queries/b2.rs, `--export-audio: {why}`, a call with
+// nothing to export or a file that exists. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 511;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -6,7 +6,7 @@
 //! function and hands the answer to [`QueryContext::answer`].
 
 use super::{QueryContext, call_not_found};
-use crate::output::query::{DEFAULT_ROWS, compare, correlated, endpoint, tree};
+use crate::output::query::{DEFAULT_ROWS, audio, compare, correlated, endpoint, tree};
 
 /// Render batch B2's queries that this command line asked for.
 ///
@@ -19,6 +19,30 @@ pub(super) fn render(ctx: &QueryContext<'_>) -> bool {
         && render_correlate(ctx)
         && render_compare_dialogs(ctx)
         && render_endpoint(ctx)
+        && render_export_audio(ctx)
+}
+
+/// `--export-audio`: one call's decoded audio written to a WAV, the decode
+/// `GET /v1/dialogs/{call_id}/audio` serves. A Call-ID neither store holds,
+/// a call with nothing to decode, or a file that exists fails the run.
+fn render_export_audio(ctx: &QueryContext<'_>) -> bool {
+    let args = &ctx.cli.call_query_args;
+    let Some(call_id) = args.export_audio.as_deref() else {
+        return true;
+    };
+    let path = args
+        .export_audio_out
+        .clone()
+        .unwrap_or_else(|| audio::default_path(call_id));
+    match audio::export_audio(ctx.dialogs, ctx.streams, call_id, &path) {
+        Ok(answer) => ctx.answer("--export-audio", &answer, |format| {
+            audio::render(&answer, format)
+        }),
+        Err(why) => {
+            stderr_line!("--export-audio: {why}");
+            false
+        }
+    }
 }
 
 /// `--endpoint-ip` and `--endpoint-user`: everything one endpoint did, the

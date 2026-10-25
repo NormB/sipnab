@@ -203,8 +203,23 @@ pub fn export_dialog_to_wav_with(
     path: &Path,
     mode: crate::new_file::CreateMode,
 ) -> Result<String> {
+    write_dialog_audio(&decode_dialog_audio(streams)?, path, mode)
+}
+
+/// Write `audio`, decoded by [`decode_dialog_audio`], to `path`, opening the
+/// file as `mode` says, and return the export summary: the one line every
+/// exporter prints beside the file, naming it and anything the file falls
+/// short of.
+///
+/// # Errors
+///
+/// The open's error when `mode` refuses the path, or the write's.
+pub fn write_dialog_audio(
+    audio: &DialogAudio,
+    path: &Path,
+    mode: crate::new_file::CreateMode,
+) -> Result<String> {
     use std::io::Write;
-    let audio = decode_dialog_audio(streams)?;
     crate::new_file::open_for_write(path, mode, 0o666)
         .and_then(|mut file| file.write_all(&audio.wav))
         .with_context(|| format!("Failed to create WAV file: {}", path.display()))?;
@@ -219,6 +234,36 @@ pub fn export_dialog_to_wav_with(
         path.display(),
         audio.partial
     ))
+}
+
+/// Sanitize a Call-ID into a safe filename stem for its WAV: the
+/// `Content-Disposition` filename `GET /v1/dialogs/{call_id}/audio` offers,
+/// and the file `--export-audio` writes when no `--export-audio-out` is
+/// given.
+///
+/// The Call-ID is attacker-controlled — a stranger's `Call-ID:` header — and
+/// goes into a response header and a file name, so any character outside a
+/// conservative set becomes `_`. That closes header (CRLF) injection and path
+/// separators, and keeps the filename portable. An empty result falls back to
+/// `audio`, never a nameless file.
+#[must_use]
+pub fn wav_filename_stem(call_id: &str) -> String {
+    let stem: String = call_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let trimmed = stem.trim_matches('.');
+    if trimmed.is_empty() {
+        "audio".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// One dialog's audio, decoded into a WAV that has not been written anywhere.

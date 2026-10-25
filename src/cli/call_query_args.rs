@@ -88,6 +88,29 @@ pub struct CallQueryArgs {
         value_parser = parse_endpoint_user,
     )]
     pub endpoint_user: Option<Selector>,
+
+    /// Write one call's decoded RTP audio to a WAV file: mono for one
+    /// stream, stereo for two.
+    ///
+    /// Asking for it is consent to hold the call's audio payload, which
+    /// sipnab otherwise does not keep (as `--retain-audio` asks). The file is
+    /// `--export-audio-out`, or the Call-ID made safe for a file name with
+    /// `.wav` added, in the current directory; an existing file is never
+    /// replaced. A Call-ID with neither a dialog nor a stream in the capture,
+    /// or a call with nothing to decode, exits with status 1. Prints the
+    /// export summary; with `--json`, one JSON object on the last line of
+    /// stdout. Makes the run headless, as `--call-report` does.
+    #[arg(help_heading = "Queries", long, value_name = "CALL-ID")]
+    pub export_audio: Option<String>,
+
+    /// The file `--export-audio` writes. It must not exist.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "FILE",
+        requires = "export_audio"
+    )]
+    pub export_audio_out: Option<std::path::PathBuf>,
 }
 
 /// Parse `--endpoint-ip` by the rule REST and MCP apply to `ip`.
@@ -135,6 +158,12 @@ impl CallQueryArgs {
             OneShot {
                 name: "--endpoint-user",
                 active: self.endpoint_user.is_some(),
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
+            OneShot {
+                name: "--export-audio",
+                active: self.export_audio.is_some(),
                 implies_no_tui: true,
                 owns_stdout: true,
             },

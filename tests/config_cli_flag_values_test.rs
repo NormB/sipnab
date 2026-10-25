@@ -674,6 +674,26 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--export-audio`: any Call-ID parses; one neither store holds exits 1
+    // after the run.
+    (
+        "export-audio",
+        Kind::Text {
+            accept: &["x", "0"],
+            reject: &[],
+        },
+        &[],
+    ),
+    // `--export-audio-out`: a path, read only when the export runs; it needs
+    // `--export-audio`.
+    (
+        "export-audio-out",
+        Kind::Text {
+            accept: &["out.wav"],
+            reject: &[],
+        },
+        &["--export-audio", "x"],
+    ),
     // `--correlate`: any Call-ID parses; one the run did not track exits 1
     // after the run, as `--call-report`'s does.
     (

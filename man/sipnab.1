@@ -1276,6 +1276,12 @@ Print everything one address did: dialogs by method and state, messages sent and
 .TP
 \fB\-\-endpoint\-user\fR \fIUSER\fR
 Print everything one SIP user did, matched against the user part of each dialog's From and To: the rollup \fB\-\-endpoint\-ip\fR prints for an address, without the message counts, which belong to an address.
+.TP
+\fB\-\-export\-audio\fR \fICALL\-ID\fR
+Write one call's decoded RTP audio to a WAV file: mono for one stream, stereo for two.
+.TP
+\fB\-\-export\-audio\-out\fR \fIFILE\fR
+The file \fB\-\-export\-audio\fR writes. It must not exist.
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR

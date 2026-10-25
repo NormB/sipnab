@@ -1160,6 +1160,8 @@ out the end-of-run summary on stderr.
 | `--compare-dialogs` | `<CALL-ID-A> <CALL-ID-B>` | | Unreleased | Put two calls side by side: state, final response code, message count and methods, with the fields that differ marked, and each call's diagnosis hints. `--json` prints the shape of `GET /v1/dialogs/compare`. A Call-ID the run did not track exits 1 |
 | `--endpoint-ip` | `<IP>` | | Unreleased | Print everything one address did: dialogs by method and state, messages sent and received, call outcomes, registration, banners, the signaling stack, media, and the most recent dialogs. `--json` prints the shape of `GET /v1/endpoints`. An address that does not parse exits 2 |
 | `--endpoint-user` | `<USER>` | | Unreleased | Print everything one SIP user did, matched against the user part of each dialog's From and To: the `--endpoint-ip` rollup without the message counts. `--json` prints the shape of `GET /v1/endpoints`. Not with `--endpoint-ip` |
+| `--export-audio` | `<CALL-ID>` | | Unreleased | Write one call's decoded RTP audio to a WAV file, and print the export summary. Holds the call's audio payload for the run, as `--retain-audio` does. A Call-ID the capture does not hold, a call with nothing to decode, or an existing file exits 1 |
+| `--export-audio-out` | `<FILE>` | the Call-ID with `.wav` | Unreleased | The file `--export-audio` writes. It must not exist. Needs `--export-audio` |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
@@ -1605,6 +1607,53 @@ sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --endpoint-user 10009 --j
 
 The REST route `GET /v1/endpoints`, given `ip` or `user`, and the MCP tool
 `describe_endpoint` describe the same endpoint.
+
+### One call's audio as a WAV file
+
+Write the decoded audio of one call to a file:
+
+```sh
+sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --export-audio 1-1966@10.0.2.20 --no-cli-print --quiet
+```
+
+```text
+Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to 1-1966_10.0.2.20.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.
+```
+
+- The file is in the current directory, named after the Call-ID with every
+  character other than a letter, a digit, `-`, `_` or `.` replaced by `_`.
+- One stream makes a mono file and two make a stereo one.
+- The summary says when the file holds less than the call. Here the capture
+  saw the audio in one direction only, so the summary says `PARTIAL`. The
+  file carries the same note inside it.
+- sipnab does not keep audio unless asked. `--export-audio` asks, for this run,
+  as `--retain-audio` does.
+
+Name the file with `--export-audio-out`:
+
+```sh
+sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --export-audio 1-1966@10.0.2.20 --export-audio-out call.wav --no-cli-print --quiet
+```
+
+```text
+Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to call.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.
+```
+
+sipnab never replaces an existing file: if the file is there, the run exits 1
+and leaves it as it was. Under `--json`, the answer names the file and what it
+holds:
+
+```sh
+sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --export-audio 1-1966@10.0.2.20 --export-audio-out call.wav --json --no-cli-print --quiet
+```
+
+```json
+{"schema_version":1,"path":"call.wav","summary":"Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to call.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.","partial":true,"dialog_seen":true,"duration_secs":8.5,"sample_rate":8000,"channels":1,"bytes":136516}
+```
+
+`partial` and `dialog_seen` are the two facts the REST route
+`GET /v1/dialogs/{call_id}/audio` sends as headers beside the same WAV bytes.
+The MCP tool `export_audio` writes the same file into its file root.
 
 ## Dialog
 

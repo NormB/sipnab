@@ -1518,7 +1518,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // "A parser that panics" from the contained-panic tests.
     // 1984 -> 1985: docs/cli-reference.md +1, the `## Queries` section
     // linking the diagnostic aliases it narrows by.
-    const EXPECTED_WIKI_LINKS: usize = 1985;
+    // 1985 -> 1986: docs/internals/operator-guide-notes.md +1, "Scripted WAV
+    // export" linking the `--export-audio` how-to.
+    const EXPECTED_WIKI_LINKS: usize = 1986;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

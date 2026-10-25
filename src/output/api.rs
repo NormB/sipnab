@@ -2980,30 +2980,9 @@ async fn captures_compare(
     }))
 }
 
-/// Sanitize a Call-ID into a safe `Content-Disposition` filename stem.
-///
-/// The Call-ID is attacker-controlled — a stranger's `Call-ID:` header — and
-/// goes into a response header, so any character outside a conservative set
-/// becomes `_`. That closes header (CRLF) injection and keeps the filename
-/// portable. An empty result falls back to `audio`, never a nameless download.
-fn wav_filename_stem(call_id: &str) -> String {
-    let stem: String = call_id
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let trimmed = stem.trim_matches('.');
-    if trimmed.is_empty() {
-        "audio".to_string()
-    } else {
-        trimmed.to_string()
-    }
-}
+/// The `Content-Disposition` filename stem for a Call-ID's WAV: the rule
+/// `--export-audio` names its default file by too.
+use crate::rtp::audio_export::wav_filename_stem;
 
 /// `GET /v1/dialogs/{call_id}/audio` — the call's decoded RTP as a WAV (PAR3:
 /// export_audio on REST).
