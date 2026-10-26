@@ -8920,39 +8920,42 @@ impl SipnabMcp {
             let capture_identity = state.identity.etag(ds.generation(), ss.generation());
             drop(ss);
 
-            let source_created = ds.get(&params.call_id).map(|d| d.created_at);
-            let results = ds.find_correlated_scored(&params.call_id);
-            let total_matched = results.len();
-
-            let legs: Vec<CorrelatedLeg> = results
-                .iter()
-                .take(limit)
-                .map(|r| {
-                    // One rule, in `CorrelationResult::strategy_and_gap`, so
-                    // `get_call_tree` and the REST route report the same
-                    // vocabulary. A second copy is how one tool ends up calling
-                    // a timing guess an identifier match while another does
-                    // not. The gap rides along, attached only where it is the
-                    // evidence for a guess.
-                    let (strategy, identifier_match, observed_gap_ms) =
-                        r.strategy_and_gap(source_created);
-                    CorrelatedLeg {
-                        call_id: r.dialog.call_id.clone(),
-                        score: r.score,
-                        strategy: strategy.to_string(),
-                        identifier_match,
-                        observed_gap_ms,
-                    }
-                })
-                .collect();
+            // One function decides "is this Call-ID here" and builds the legs,
+            // the one REST's `/correlated` route and `--correlate` call: an
+            // unknown Call-ID is `None` there, which REST answers 404 and the
+            // flag exit 1. An empty `legs` here would read as "this call
+            // stands alone" when the truth is "this call is not here".
+            let answer = crate::output::query::correlated::correlated(
+                &ds,
+                &params.call_id,
+                limit,
+                Some(capture_identity.clone()),
+            );
             drop(ds);
             drop(state);
+            let Some(answer) = answer else {
+                return Err(errors::refuse_param(
+                    Reason::NotFound,
+                    "call_id",
+                    format!("call_id '{}' not found", params.call_id),
+                ));
+            };
 
-            // The rule REST and `--correlate` apply: at least one leg, and no
-            // identifier match among them.
-            let heuristic_only = crate::output::query::correlated::heuristic_only(
-                legs.iter().map(|l| l.identifier_match),
-            );
+            // The strategy vocabulary, the gap and `heuristic_only` come from
+            // that function, which reads `CorrelationResult::strategy_and_gap`
+            // and `heuristic_only`: one rule, so `get_call_tree`, REST and
+            // this tool cannot disagree about what is a guess.
+            let legs: Vec<CorrelatedLeg> = answer
+                .legs
+                .into_iter()
+                .map(|l| CorrelatedLeg {
+                    call_id: l.call_id,
+                    score: l.score,
+                    strategy: l.strategy,
+                    identifier_match: l.identifier_match,
+                    observed_gap_ms: l.observed_gap_ms,
+                })
+                .collect();
             // Only when a time-based match is actually being reported. Sending
             // the clock unconditionally would invite a reader to weigh it
             // against identifier matches, which do not depend on it at all.
@@ -8962,10 +8965,10 @@ impl SipnabMcp {
                 .then(crate::clock::discipline);
             FindCorrelatedResponse {
                 schema_version: 1,
-                source_call_id: params.call_id.clone(),
+                source_call_id: answer.source_call_id,
                 legs,
-                total_matched,
-                heuristic_only,
+                total_matched: answer.total_matched,
+                heuristic_only: answer.heuristic_only,
                 capture_identity,
                 timing_clock,
             }
@@ -19224,6 +19227,63 @@ mod tests {
 
     // ---- find_correlated: the strategy name is the point --------------------
 
+    /// An unknown Call-ID is refused as `not_found` on `call_id`, the answer
+    /// every other Call-ID tool gives and the one REST (404) and
+    /// `--correlate` (exit 1) give for this question. An empty `legs` would
+    /// read as "this call stands alone" when the truth is "this call is not
+    /// here".
+    #[tokio::test]
+    async fn find_correlated_refuses_an_unknown_call_id() -> Result<(), TestError> {
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(invite("present@example.com", base_ts())?);
+        let server = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let err = server
+            .find_correlated(Parameters(FindCorrelatedParams {
+                call_id: "nope@example.com".into(),
+                limit: None,
+            }))
+            .await
+            .err()
+            .ok_or("an unknown call_id must be refused, not answered with no legs")?;
+        let json = serde_json::to_value(err)?;
+        assert_eq!(json["code"], -32602);
+        assert_eq!(
+            json["data"],
+            serde_json::json!({"reason": "not_found", "param": "call_id"})
+        );
+        assert_eq!(json["message"], "call_id 'nope@example.com' not found");
+        Ok(())
+    }
+
+    /// A known call with no other legs is an answer, not a refusal: the call
+    /// is here and stands alone.
+    #[tokio::test]
+    async fn find_correlated_answers_a_lone_known_call_with_no_legs() -> Result<(), TestError> {
+        let mut ds = DialogStore::new(100, false);
+        ds.process_message(invite("alone@example.com", base_ts())?);
+        let server = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let v: serde_json::Value = serde_json::from_str(&text_of(
+            &server
+                .find_correlated(Parameters(FindCorrelatedParams {
+                    call_id: "alone@example.com".into(),
+                    limit: None,
+                }))
+                .await
+                .map_err(|e| format!("a known call is answered: {e:?}"))?,
+        )?)?;
+        assert_eq!(v["source_call_id"], "alone@example.com");
+        assert_eq!(v["total_matched"], 0);
+        assert_eq!(v["legs"], serde_json::json!([]));
+        assert_eq!(v["heuristic_only"], false);
+        Ok(())
+    }
+
     /// A Session-ID match reports the STANDARD by name, flags itself as an
     /// identifier match, and carries no timing gap — because the gap is not
     /// why they matched, and attaching it would invite a reader to weigh it.
@@ -19433,29 +19493,6 @@ mod tests {
             v["heuristic_only"], false,
             "no legs is not the same as legs we guessed at"
         );
-        Ok(())
-    }
-
-    /// An unknown Call-ID correlates with nothing, and does NOT claim the
-    /// answer was heuristic — there was no answer at all.
-    #[tokio::test]
-    async fn an_unknown_call_id_returns_nothing_and_claims_nothing() -> Result<(), TestError> {
-        let server = server_with_dialog("known@x")?;
-        let v: serde_json::Value = serde_json::from_str(&text_of(
-            &server
-                .find_correlated(Parameters(FindCorrelatedParams {
-                    call_id: "never-seen@x".into(),
-                    limit: None,
-                }))
-                .await
-                .map_err(|e| format!("answers: {e:?}"))?,
-        )?)?;
-        assert_eq!(v["total_matched"], 0);
-        assert_eq!(
-            v["heuristic_only"], false,
-            "no legs is not the same as legs we guessed at"
-        );
-        assert!(v["capture_identity"]["dialog_generation"].is_u64());
         Ok(())
     }
 

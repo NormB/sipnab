@@ -4,11 +4,11 @@
 //! The other legs of one call, and the strategy that matched each.
 //!
 //! One answer, [`Correlated`], built by [`correlated`]:
-//! `GET /v1/dialogs/{call_id}/correlated` serializes it and `--correlate`
-//! prints it. The matching is [`DialogStore::find_correlated_scored`] and the
-//! vocabulary [`crate::sip::dialog_store::CorrelationResult::strategy_and_gap`],
-//! which the MCP `find_correlated` tool also reads, as it reads
-//! [`heuristic_only`].
+//! `GET /v1/dialogs/{call_id}/correlated` serializes it, `--correlate`
+//! prints it, and the MCP `find_correlated` tool copies its legs into its own
+//! response, so all three decide "unknown Call-ID" in one place. The matching
+//! is [`DialogStore::find_correlated_scored`] and the vocabulary
+//! [`crate::sip::dialog_store::CorrelationResult::strategy_and_gap`].
 
 use crate::output::ReportFormat;
 use crate::sip::dialog_store::DialogStore;
