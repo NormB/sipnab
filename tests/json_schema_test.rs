@@ -81,6 +81,115 @@ fn message_schema_validates_ndjson_output() -> Result<(), TestError> {
     Ok(())
 }
 
+/// Whether each per-message summary line of sipnab's human output labels its
+/// message `(SDP)`, in output order. A summary line is
+/// `HH:MM:SS.mmm SRC -> DST LABEL TRANSPORT`; header and body lines never
+/// start with a timestamp.
+fn human_sdp_labels(out: &str) -> Vec<bool> {
+    out.lines()
+        .filter(|l| {
+            let b = l.as_bytes();
+            b.len() > 13
+                && b[2] == b':'
+                && b[5] == b':'
+                && b[8] == b'.'
+                && b[..2].iter().all(u8::is_ascii_digit)
+                && l.contains(" -> ")
+        })
+        .map(|l| l.contains(" (SDP) "))
+        .collect()
+}
+
+/// The `has_sdp` of every `--json` line, in output order.
+fn ndjson_has_sdp(out: &str) -> Result<Vec<bool>, TestError> {
+    out.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| {
+            let v: Value = serde_json::from_str(line)?;
+            Ok(v["has_sdp"]
+                .as_bool()
+                .ok_or_else(|| format!("has_sdp is a boolean on every line: {line}"))?)
+        })
+        .collect()
+}
+
+/// Each `--json` record says `has_sdp: true` exactly where the per-message
+/// line of the same run labels the message `(SDP)`: one rule, two renderings
+/// of it, message for message.
+#[test]
+fn ndjson_has_sdp_matches_the_human_sdp_label() -> Result<(), TestError> {
+    for fixture in [
+        "tests/pcap-samples/sip-rtp-g711.pcap",
+        "tests/pcap-samples/sip-sdp-example.pcap",
+    ] {
+        let human = human_sdp_labels(&run_sipnab(&["-N", "-I", fixture])?);
+        let json = ndjson_has_sdp(&run_sipnab(&["-N", "-I", fixture, "--json"])?)?;
+        assert!(
+            json.len() >= 3,
+            "{fixture}: several messages, got {}",
+            json.len()
+        );
+        assert_eq!(
+            json, human,
+            "{fixture}: has_sdp per message vs the (SDP) label"
+        );
+        assert!(
+            json.contains(&true) && json.contains(&false),
+            "{fixture}: the fixture exercises both answers: {json:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The offer and the answer of the sample call are flagged, and nothing else:
+/// INVITE and its 200 OK carry SDP, 100 Trying, ACK, BYE and the BYE's 200 do
+/// not.
+#[test]
+fn ndjson_has_sdp_flags_the_offer_and_the_answer() -> Result<(), TestError> {
+    let out = run_sipnab(&["-N", "-I", "tests/pcap-samples/sip-rtp-g711.pcap", "--json"])?;
+    let flagged: Vec<String> = out
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|line| -> Result<Option<String>, TestError> {
+            let v: Value = serde_json::from_str(line)?;
+            let name = v["method"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| v["status_code"].as_u64().map(|c| c.to_string()))
+                .ok_or("a method or a status code")?;
+            let cseq = v["cseq"]["method"].as_str().unwrap_or("?");
+            Ok((v["has_sdp"] == true).then(|| format!("{name}/{cseq}")))
+        })
+        .filter_map(Result::transpose)
+        .collect::<Result<_, _>>()?;
+    assert_eq!(
+        flagged,
+        ["INVITE/INVITE", "200/INVITE", "INVITE/INVITE", "200/INVITE"],
+        "only the two calls' offers and answers carry SDP"
+    );
+    Ok(())
+}
+
+/// `has_sdp` is required and boolean: a line without it, or with it as a
+/// string, fails `message.schema.json`.
+#[test]
+fn message_schema_requires_a_boolean_has_sdp() -> Result<(), TestError> {
+    let v = load_validator("message.schema.json")?;
+    let out = run_sipnab(&["-N", "-I", "tests/fixtures/sip_call.pcap", "--json"])?;
+    let good: Value = serde_json::from_str(out.lines().next().ok_or("≥1 message")?)?;
+    assert!(v.is_valid(&good), "sanity: real message must validate");
+    let mut bad = good.clone();
+    bad.as_object_mut()
+        .ok_or("a JSON object")?
+        .remove("has_sdp")
+        .ok_or("the real line carries has_sdp")?;
+    assert!(!v.is_valid(&bad), "must reject a line without has_sdp");
+    let mut bad = good;
+    bad["has_sdp"] = Value::String("true".into());
+    assert!(!v.is_valid(&bad), "must reject has_sdp as a string");
+    Ok(())
+}
+
 /// Negative test (spec §13.3): corrupting a real message line — wrong-typed
 /// src_port, missing/wrong schema_version, extra field — makes validation fail.
 #[test]

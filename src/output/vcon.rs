@@ -7938,6 +7938,42 @@ mod tests {
         Ok(())
     }
 
+    /// Each trace message says whether it carried SDP, as `--json` does: the
+    /// body-less INVITE `false`, the 200 OK carrying the answer `true`.
+    #[test]
+    fn the_trace_flags_the_message_that_carried_sdp() -> Result<(), TestError> {
+        let sdp = b"v=0\r\no=- 1 1 IN IP4 192.0.2.2\r\ns=-\r\nc=IN IP4 192.0.2.2\r\n\
+                    t=0 0\r\nm=audio 20000 RTP/AVP 0\r\n";
+        let cl = format!("Content-Length: {}", sdp.len());
+        let answer = parse_sip(
+            &build_sip(
+                "SIP/2.0 200 OK",
+                &[
+                    "From: \"Alice\" <sip:alice@example.com>;tag=t1",
+                    "To: \"Bob\" <sip:bob@example.net>;tag=t2",
+                    "Call-ID: vcon-fixture@example.com",
+                    "CSeq: 1 INVITE",
+                    "Contact: <sip:bob@10.0.0.2:5060>",
+                    "Content-Type: application/sdp",
+                    &cl,
+                ],
+                sdp,
+            ),
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )?;
+        let dialog = dialog_with(&[answer])?;
+        let v = serde_json::to_value(export_with(&dialog, &clean_facts())?)?;
+        let trace = body_of(&v["attachments"][0])?;
+        assert_eq!(trace["messages"][0]["has_sdp"], false, "{trace}");
+        assert_eq!(trace["messages"][1]["has_sdp"], true, "{trace}");
+        Ok(())
+    }
+
     /// The trace carries the headers, which is what gives the filter work.
     ///
     /// This is the other half of `no_credential_survives_an_export` and exists

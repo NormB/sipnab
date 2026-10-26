@@ -814,7 +814,7 @@ Paginated dialog with full SIP messages.
 | `schema_version` | u32 | `2` for this shape. |
 | `capture_identity` | object | Which capture answered — see [`capture_status`](#capture_status). |
 
-Every `messages` row carries `call_id`, `is_request`, `cseq` (`method` and
+Every `messages` row carries `call_id`, `is_request`, `has_sdp`, `cseq` (`method` and
 `number`), `from`, `to`, `src`, `src_port`, `dst`, `dst_port`, `transport`,
 `timestamp`, `frame` and `schema_version`. Two more appear when sipnab observed
 them and are **left out rather than sent as null** when it did not:
@@ -849,53 +849,74 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
 ```jsonc
 // get_dialog { "call_id": "1-1966@10.0.2.20", "max_messages": 1 }
 {
-  "schema_version": 2,
+  "capture_identity": {
+    "dialog_generation": 13,
+    "instance": "14608218e1f875411a76dc-2",
+    "node": "capture-01",
+    "stream_generation": 2
+  },
   "complete": false,
-  "returned": 1,
-  "first_index": 0,
-  "total_messages": 6,
-  "truncated": true,
-  "truncated_by": "rows",
-  "next_cursor": "2016-11-26T14:52:59.666393Z|1-1966@10.0.2.20#0000000000",
-  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
-                        "dialog_generation": 13, "stream_generation": 2 },
   "dialog": {
     "call_id": "1-1966@10.0.2.20",
-    "state": "Completed",
-    "method": "INVITE",
-    "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
-    "to_user": "⟦untrusted-capture-data⟧test⟦/untrusted-capture-data⟧",
-    "msg_count": 6,
-    "final_status_code": 200,
-    "duration_sec": 8.504,
     "created_at": "2016-11-26T14:52:59.666393+00:00",
-    "updated_at": "2016-11-26T14:53:08.170676+00:00",
-    "timing": { "pdd_ms": null, "setup_ms": 4, "retransmits": 0, "duration_ms": 8499 },
+    "duration_sec": 8.504,
+    "final_status_code": 200,
     "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
-    "input_origin": "wire"
+    "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
+    "input_origin": "wire",
+    "method": "INVITE",
+    "msg_count": 6,
+    "state": "Completed",
+    "timing": {
+      "duration_ms": 8499,
+      "pdd_ms": null,
+      "retransmits": 0,
+      "setup_ms": 4
+    },
+    "to_user": "⟦untrusted-capture-data⟧test⟦/untrusted-capture-data⟧",
+    "updated_at": "2016-11-26T14:53:08.170676+00:00"
   },
+  "first_index": 0,
   "messages": [
     {
       "call_id": "1-1966@10.0.2.20",
-      "method": "INVITE",
-      "is_request": true,
-      "cseq": { "method": "INVITE", "number": 1 },
-      "from": "⟦untrusted-capture-data⟧\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1⟦/untrusted-capture-data⟧",
-      "to": "⟦untrusted-capture-data⟧test <sip:test@10.0.2.15:5060>⟦/untrusted-capture-data⟧",
       "contact": "⟦untrusted-capture-data⟧sip:sipp@10.0.2.20:5060⟦/untrusted-capture-data⟧",
-      "src": "10.0.2.20",
-      "src_port": 5060,
+      "cseq": {
+        "method": "INVITE",
+        "number": 1
+      },
+      "dscp": 0,
       "dst": "10.0.2.15",
       "dst_port": 5060,
-      "transport": "UDP",
-      "timestamp": "2016-11-26T14:52:59.666393+00:00",
-      "sdp": "⟦untrusted-capture-data⟧v=0\no=- 42 42 IN IP4 10.0.2.20\ns=-\nc=IN IP4 10.0.2.20\nt=0 0\nm=audio 6000 RTP/AVP 0\na=rtpmap:0 PCMU/8000\na=recvonly\n⟦/untrusted-capture-data⟧",
+      "extension_headers": [
+        "⟦untrusted-capture-data⟧Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0⟦/untrusted-capture-data⟧",
+        "⟦untrusted-capture-data⟧Max-Forwards: 70⟦/untrusted-capture-data⟧",
+        "⟦untrusted-capture-data⟧Content-Type: application/sdp⟦/untrusted-capture-data⟧",
+        "⟦untrusted-capture-data⟧Content-Length: 123⟦/untrusted-capture-data⟧"
+      ],
       "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
-      "dscp": 0,
+      "from": "⟦untrusted-capture-data⟧\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1⟦/untrusted-capture-data⟧",
+      "has_sdp": true,
       "input_origin": "wire",
-      "schema_version": 1
+      "is_request": true,
+      "method": "INVITE",
+      "schema_version": 1,
+      "sdp": "⟦untrusted-capture-data⟧v=0\no=- 42 42 IN IP4 10.0.2.20\ns=-\nc=IN IP4 10.0.2.20\nt=0 0\nm=audio 6000 RTP/AVP 0\na=rtpmap:0 PCMU/8000\na=recvonly\n⟦/untrusted-capture-data⟧",
+      "src": "10.0.2.20",
+      "src_port": 5060,
+      "timestamp": "2016-11-26T14:52:59.666393+00:00",
+      "to": "⟦untrusted-capture-data⟧test <sip:test@10.0.2.15:5060>⟦/untrusted-capture-data⟧",
+      "transport": "UDP"
     }
-  ]
+  ],
+  "next_cursor": "2016-11-26T14:52:59.666393Z|1-1966@10.0.2.20#0000000000",
+  "returned": 1,
+  "schema_version": 2,
+  "source_exhausted": true,
+  "source_stopped_early": false,
+  "total_messages": 6,
+  "truncated": true,
+  "truncated_by": "rows"
 }
 ```
 

@@ -978,40 +978,48 @@ Returns one message in the same shape [`get_dialog`](@/docs/mcp-tools-core.md#ge
 `messages` row, plus the provenance note as a second content block. The
 difference is the fencing: this tool wraps `from`, `to`, `contact`, `sdp`, `ua`,
 `reason`, `malformed` and `extension_headers`, and leaves `call_id`, addresses,
-ports, `method`, `status_code`, `cseq` and timestamps verbatim so they pass into
+ports, `method`, `status_code`, `cseq`, `has_sdp` and timestamps verbatim so they pass into
 the next call.
 
 ```jsonc
 // get_message { "call_id": "1-1966@10.0.2.20", "index": 0 }
 {
-  "schema_version": 1,
   "call_id": "1-1966@10.0.2.20",
-  "method": "INVITE",
-  "is_request": true,
-  "cseq": { "method": "INVITE", "number": 1 },
-  "from": "⟦untrusted-capture-data⟧\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1⟦/untrusted-capture-data⟧",
-  "to": "⟦untrusted-capture-data⟧test <sip:test@10.0.2.15:5060>⟦/untrusted-capture-data⟧",
+  "capture_identity": {
+    "dialog_generation": 13,
+    "instance": "145e7218e1f87297474f48-2",
+    "node": "capture-01",
+    "stream_generation": 2
+  },
   "contact": "⟦untrusted-capture-data⟧sip:sipp@10.0.2.20:5060⟦/untrusted-capture-data⟧",
-  "sdp": "⟦untrusted-capture-data⟧v=0\no=- 42 42 IN IP4 10.0.2.20\ns=-\nc=IN IP4 10.0.2.20\nt=0 0\nm=audio 6000 RTP/AVP 0\na=rtpmap:0 PCMU/8000\na=recvonly\n⟦/untrusted-capture-data⟧",
-  "src": "10.0.2.20",
-  "src_port": 5060,
+  "cseq": {
+    "method": "INVITE",
+    "number": 1
+  },
+  "dscp": 0,
   "dst": "10.0.2.15",
   "dst_port": 5060,
-  "transport": "UDP",
-  "timestamp": "2016-11-26T14:52:59.666393+00:00",
-  "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
-  "dscp": 0,
-  "input_origin": "wire",
   "extension_headers": [
     "⟦untrusted-capture-data⟧Via: SIP/2.0/UDP 10.0.2.20:5060;branch=z9hG4bK-1966-1-0⟦/untrusted-capture-data⟧",
     "⟦untrusted-capture-data⟧Max-Forwards: 70⟦/untrusted-capture-data⟧",
     "⟦untrusted-capture-data⟧Content-Type: application/sdp⟦/untrusted-capture-data⟧",
     "⟦untrusted-capture-data⟧Content-Length: 123⟦/untrusted-capture-data⟧"
   ],
-  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
-                        "dialog_generation": 13, "stream_generation": 2 },
+  "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
+  "from": "⟦untrusted-capture-data⟧\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1⟦/untrusted-capture-data⟧",
+  "has_sdp": true,
+  "input_origin": "wire",
+  "is_request": true,
+  "method": "INVITE",
+  "schema_version": 1,
+  "sdp": "⟦untrusted-capture-data⟧v=0\no=- 42 42 IN IP4 10.0.2.20\ns=-\nc=IN IP4 10.0.2.20\nt=0 0\nm=audio 6000 RTP/AVP 0\na=rtpmap:0 PCMU/8000\na=recvonly\n⟦/untrusted-capture-data⟧",
   "source_exhausted": true,
-  "source_stopped_early": false
+  "source_stopped_early": false,
+  "src": "10.0.2.20",
+  "src_port": 5060,
+  "timestamp": "2016-11-26T14:52:59.666393+00:00",
+  "to": "⟦untrusted-capture-data⟧test <sip:test@10.0.2.15:5060>⟦/untrusted-capture-data⟧",
+  "transport": "UDP"
 }
 ```
 

@@ -345,6 +345,9 @@ pub const MESSAGE_VERBATIM_FIELDS: &[&str] = &[
     "dst_port",
     "transport",
     "is_request",
+    // A boolean sipnab computed from the Content-Type and body
+    // (`SipMessage::carries_sdp`), not text the sender wrote.
+    "has_sdp",
     "method",
     "status_code",
     "call_id",

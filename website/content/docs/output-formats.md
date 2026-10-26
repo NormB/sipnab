@@ -81,6 +81,7 @@ value drop out rather than reading `null`:
   "to": "Callee <sip:callee@biloxi.example.com>",
   "contact": "<sip:caller@192.0.2.101:5060>",
   "ua": "SynthPhone/1.0",
+  "has_sdp": true,
   "sdp": "v=0\r\no=caller 10003 1 IN IP4 192.0.2.101\r\ns=synthetic session\r\nc=IN IP4 192.0.2.101\r\nt=0 0\r\nm=audio 6010 RTP/AVP 8 96\r\na=rtpmap:8 PCMA/8000\r\na=rtpmap:96 telephone-event/8000\r\na=sendrecv\r\n",
   "cseq": {
     "number": 1,
@@ -118,6 +119,7 @@ same output:
   "from": "Caller <sip:caller@atlanta.example.com>;tag=tag-caller-sdp",
   "to": "Callee <sip:callee@biloxi.example.com>;tag=tag-callee-sdp",
   "contact": "<sip:callee@192.0.2.100:5060>",
+  "has_sdp": false,
   "cseq": {
     "number": 1,
     "method": "INVITE"
@@ -156,6 +158,28 @@ The field drops out otherwise.
 - It lets a consumer verify the negotiated media (connection / `m=` /
   `a=rtpmap`). Dynamic-PT decode depends on that media.
 - sipnab omits it for non-SDP or non-UTF-8 bodies.
+
+`has_sdp` is `true` when the message carries SDP and `false` when it does
+not. Every message carries it.
+
+- It uses the rule that marks a message `(SDP)` in the per-message lines, the
+  ladders and the reports: a `Content-Type` of `application/sdp` in any case, a
+  `multipart/*` body with an `application/sdp` part, or a body with no
+  `Content-Type` that starts `v=`.
+- A `multipart/*` body, such as a SIPREC INVITE, has `has_sdp: true` and no
+  `sdp` field, because `sdp` holds only a whole `application/sdp` body.
+
+Print the messages that carry an offer or an answer:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-sdp-example.pcap --json \
+  | jq -c 'select(.has_sdp) | {method, status_code, cseq}'
+```
+
+```json
+{"method":"INVITE","status_code":null,"cseq":{"number":1,"method":"INVITE"}}
+{"method":null,"status_code":200,"cseq":{"number":1,"method":"INVITE"}}
+```
 
 `response_context` is `"<num> <method>"`, on responses only. It says what the
 response answers. It is a deprecated alias of `cseq`, retained for backward

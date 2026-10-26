@@ -379,10 +379,10 @@ on a server started with `--node-name capture-01` and without
           "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. Most often audio payload retention was off — start the server with --retain-audio to hold payload for export. With retention already on, the other causes are a --snaplen that truncated the payload away before sipnab saw it, or packets that carried no payload at all.",
           "messages_evicted": 0,
           "node": "capture-01",
-          "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+          "note": "Produced by sipnab 0.5.230 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
           "sip_discarded_by_port_gate": 0,
           "sip_discarded_by_websocket_gate": 0,
-          "sipnab_version": "0.5.225",
+          "sipnab_version": "0.5.230",
           "undecodable_frames": 0
         },
         "final_status_code": 200,
@@ -405,7 +405,7 @@ on a server started with `--node-name capture-01` and without
       "dialog": 0,
       "encoding": "json",
       "mediatype": "application/json",
-      "product": "sipnab 0.5.225 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.230 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "type": "report",
       "vendor": "sipnab"
@@ -430,6 +430,7 @@ on a server started with `--node-name capture-01` and without
             "dst_port": 5060,
             "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
             "from": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "has_sdp": true,
             "headers": {
               "CSeq": [
                 "1 INVITE"
@@ -483,6 +484,7 @@ on a server started with `--node-name capture-01` and without
             "dst_port": 5060,
             "frame": "tests/pcap-samples/sip-rtp-g711.pcap#1@8d04fd910bd99ff1",
             "from": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "has_sdp": false,
             "headers": {
               "CSeq": [
                 "1 INVITE"
@@ -534,6 +536,7 @@ on a server started with `--node-name capture-01` and without
             "dst_port": 5060,
             "frame": "tests/pcap-samples/sip-rtp-g711.pcap#3@4c4849d94af362f3",
             "from": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "has_sdp": true,
             "headers": {
               "Accept": [
                 "application/sdp"
@@ -610,6 +613,7 @@ on a server started with `--node-name capture-01` and without
             "dst_port": 5060,
             "frame": "tests/pcap-samples/sip-rtp-g711.pcap#4@9e84c7dc02d02a09",
             "from": "\"PCMU/8000\" <sip:sipp@10.0.2.20:5060>;tag=1",
+            "has_sdp": false,
             "headers": {
               "CSeq": [
                 "1 ACK"
@@ -659,6 +663,7 @@ on a server started with `--node-name capture-01` and without
             "dst_port": 5060,
             "frame": "tests/pcap-samples/sip-rtp-g711.pcap#431@a9c9bc44d77f6c84",
             "from": "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK",
+            "has_sdp": false,
             "headers": {
               "Allow": [
                 "INVITE, ACK, BYE, CANCEL, OPTIONS, MESSAGE, INFO, UPDATE, REGISTER, REFER, NOTIFY, PUBLISH, SUBSCRIBE"
@@ -719,6 +724,7 @@ on a server started with `--node-name capture-01` and without
             "dst_port": 5060,
             "frame": "tests/pcap-samples/sip-rtp-g711.pcap#432@64f13fceb4479dda",
             "from": "test <sip:test@10.0.2.15:5060>;tag=QvN92t713vSZK",
+            "has_sdp": false,
             "headers": {
               "CSeq": [
                 "99749930 BYE"
@@ -782,10 +788,10 @@ on a server started with `--node-name capture-01` and without
         "media_note": "No audio payload retained: sipnab measured 425 RTP packet(s) of PCMU on 1 decodable stream, but kept none of their payload, so there is nothing to decode. This is a statement about what this run kept, not a finding that the call was silent. Most often audio payload retention was off — start the server with --retain-audio to hold payload for export. With retention already on, the other causes are a --snaplen that truncated the payload away before sipnab saw it, or packets that carried no payload at all.",
         "messages_evicted": 0,
         "node": "capture-01",
-        "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "note": "Produced by sipnab 0.5.230 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
-        "sipnab_version": "0.5.225",
+        "sipnab_version": "0.5.230",
         "undecodable_frames": 0
       },
       "dialog": 0,
@@ -802,7 +808,7 @@ on a server started with `--node-name capture-01` and without
             "identifier_match": true,
             "score": 90,
             "strategy": "sdp_origin",
-            "uuid": "0158a120-253e-8919-90fc-f30d9978c6c2"
+            "uuid": "0158a120-253e-8c52-80ff-fb7de8c13332"
           }
         ]
       },
@@ -814,7 +820,7 @@ on a server started with `--node-name capture-01` and without
       "start": "2016-11-26T14:52:59.666393+00:00"
     }
   ],
-  "created_at": "2026-10-18T15:35:01.504598565+00:00",
+  "created_at": "2026-10-26T04:02:15.972700292+00:00",
   "dialog": [
     {
       "duration": 8.499,
@@ -874,12 +880,12 @@ on a server started with `--node-name capture-01` and without
     },
     {
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.225 (observer; node capture-01)",
+      "sip_user_agent": "sipnab/0.5.230 (observer; node capture-01)",
       "validation": "none"
     }
   ],
   "subject": "SIP call 1-1966@10.0.2.20",
-  "uuid": "0158a120-0392-8b5e-bd41-98a42d51ee70",
+  "uuid": "0158a120-0392-8951-a37f-022a14a898b2",
   "vcon": "0.4.0"
 }
 ```
@@ -1321,7 +1327,7 @@ Here the store holds the container that the
 it unchanged as `container`. Its other members:
 
 ```jsonc
-// fetch_vcon { "uuid": "0158a120-0392-8b5e-bd41-98a42d51ee70" }: every member except "container"
+// fetch_vcon { "uuid": "0158a120-0392-8951-a37f-022a14a898b2" }: every member except "container"
 {
   "decrypted": false,
   "schema_findings": [],
@@ -1329,7 +1335,7 @@ it unchanged as `container`. Its other members:
   "signature_verified": false,
   "signer_sha256": null,
   "stored_form": "unsigned",
-  "uuid": "0158a120-0392-8b5e-bd41-98a42d51ee70"
+  "uuid": "0158a120-0392-8951-a37f-022a14a898b2"
 }
 ```
 

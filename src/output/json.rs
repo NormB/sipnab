@@ -60,6 +60,10 @@ struct MessageJson<'a> {
     /// `User-Agent` header value, if present.
     #[serde(skip_serializing_if = "Option::is_none")]
     ua: Option<&'a str>,
+    /// Whether the message carries SDP, by [`SipMessage::carries_sdp`]: the
+    /// rule every label that reads `(SDP)` uses, so this is `true` exactly
+    /// when the message's label ends ` (SDP)`. Present on every message.
+    has_sdp: bool,
     /// Raw SDP body, emitted only when `Content-Type` is `application/sdp` and
     /// the body is valid UTF-8 — so the cross-check can verify the negotiated
     /// media (connection/media/rtpmap) the dynamic-PT decode relies on.
@@ -696,6 +700,7 @@ fn build_message_json(msg: &SipMessage) -> MessageJson<'_> {
         to: msg.to_header(),
         contact: msg.contact(),
         ua: msg.user_agent(),
+        has_sdp: msg.carries_sdp(),
         sdp,
         cseq,
         response_context,
@@ -2005,6 +2010,187 @@ mod tests {
             sdp.contains("a=label:a\\b\"c"),
             "adversarial bytes preserved: {sdp:?}"
         );
+        Ok(())
+    }
+
+    // ── SDP-LABEL3: `has_sdp` on every message object ──────────────────
+
+    const HAS_SDP_BODY: &[u8] = b"v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\n\
+                                  t=0 0\r\nm=audio 20000 RTP/AVP 0\r\n";
+
+    /// Parse one message: `start` line, an optional `Content-Type`, `body`.
+    fn msg_with_body(
+        start: &str,
+        content_type: Option<&str>,
+        body: &[u8],
+    ) -> Result<SipMessage, TestError> {
+        let ct = content_type.map(|ct| format!("Content-Type: {ct}"));
+        let cl = format!("Content-Length: {}", body.len());
+        let mut headers = vec![
+            "From: <sip:a@example.com>;tag=t1",
+            "To: <sip:b@example.com>",
+            "Call-ID: has-sdp@example.com",
+            "CSeq: 1 INVITE",
+        ];
+        if let Some(ct) = ct.as_deref() {
+            headers.push(ct);
+        }
+        headers.push(&cl);
+        let raw = build_sip(start, &headers, body);
+        Ok(parse_sip(
+            &raw,
+            ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("should parse: {e:?}"))?)
+    }
+
+    /// A multipart body: a metadata part, then a part of `second_type`
+    /// holding the SDP.
+    fn has_sdp_multipart(second_type: &str) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"--B\r\nContent-Type: application/rs-metadata+xml\r\n\r\n<x/>\r\n");
+        b.extend_from_slice(format!("--B\r\nContent-Type: {second_type}\r\n\r\n").as_bytes());
+        b.extend_from_slice(HAS_SDP_BODY);
+        b.extend_from_slice(b"\r\n--B--\r\n");
+        b
+    }
+
+    /// The `has_sdp` value of `msg`'s NDJSON line, failing when it is absent
+    /// or not a boolean.
+    fn has_sdp_of(msg: &SipMessage) -> Result<bool, TestError> {
+        Ok(parsed_json(msg)?
+            .get("has_sdp")
+            .ok_or("has_sdp is present on every message")?
+            .as_bool()
+            .ok_or("has_sdp is a boolean")?)
+    }
+
+    const INVITE_LINE: &str = "INVITE sip:b@example.com SIP/2.0";
+
+    #[test]
+    fn has_sdp_is_true_for_an_application_sdp_invite() -> Result<(), TestError> {
+        let msg = msg_with_body(INVITE_LINE, Some("application/sdp"), HAS_SDP_BODY)?;
+        assert!(has_sdp_of(&msg)?);
+        assert!(
+            parsed_json(&msg)?["sdp"].is_string(),
+            "the body rides beside it"
+        );
+        Ok(())
+    }
+
+    /// A response with an answer is flagged the same way as the offer.
+    #[test]
+    fn has_sdp_is_true_for_a_200_ok_with_sdp() -> Result<(), TestError> {
+        let msg = msg_with_body("SIP/2.0 200 OK", Some("application/sdp"), HAS_SDP_BODY)?;
+        assert!(has_sdp_of(&msg)?);
+        Ok(())
+    }
+
+    /// The field is present and `false`, never omitted: an absent key would
+    /// leave a consumer unable to tell "no SDP" from "an older sipnab".
+    #[test]
+    fn has_sdp_is_false_and_present_without_a_body() -> Result<(), TestError> {
+        assert!(!has_sdp_of(&make_invite()?)?);
+        assert!(!has_sdp_of(&msg_with_body(
+            "SIP/2.0 180 Ringing",
+            None,
+            b""
+        )?)?);
+        Ok(())
+    }
+
+    #[test]
+    fn has_sdp_is_false_for_a_text_plain_body() -> Result<(), TestError> {
+        let msg = msg_with_body(
+            "MESSAGE sip:b@example.com SIP/2.0",
+            Some("text/plain"),
+            b"plain text body",
+        )?;
+        assert!(!has_sdp_of(&msg)?);
+        Ok(())
+    }
+
+    /// A body declared as another type is that type, even when it starts `v=`.
+    #[test]
+    fn has_sdp_is_false_for_sdp_bytes_declared_as_another_type() -> Result<(), TestError> {
+        let msg = msg_with_body(INVITE_LINE, Some("text/plain"), HAS_SDP_BODY)?;
+        assert!(!has_sdp_of(&msg)?);
+        Ok(())
+    }
+
+    /// The media type is case-insensitive ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)).
+    #[test]
+    fn has_sdp_is_true_for_an_upper_case_content_type() -> Result<(), TestError> {
+        let msg = msg_with_body(INVITE_LINE, Some("Application/SDP"), HAS_SDP_BODY)?;
+        assert!(has_sdp_of(&msg)?);
+        Ok(())
+    }
+
+    /// A SIPREC or SIP-I body is flagged when one of its parts is SDP.
+    #[test]
+    fn has_sdp_is_true_for_a_multipart_body_with_an_sdp_part() -> Result<(), TestError> {
+        let ct = Some("multipart/mixed;boundary=B");
+        let with = msg_with_body(INVITE_LINE, ct, &has_sdp_multipart("application/sdp"))?;
+        assert!(has_sdp_of(&with)?);
+        let without = msg_with_body(INVITE_LINE, ct, &has_sdp_multipart("application/isup"))?;
+        assert!(!has_sdp_of(&without)?, "no SDP part, no SDP");
+        Ok(())
+    }
+
+    /// A body with no `Content-Type` that starts `v=` is SDP: [RFC 3261 section 20.15](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.15)
+    /// requires the header, and a peer that omits it is still read.
+    #[test]
+    fn has_sdp_is_true_for_an_undeclared_body_that_starts_like_sdp() -> Result<(), TestError> {
+        let msg = msg_with_body(INVITE_LINE, None, HAS_SDP_BODY)?;
+        assert!(has_sdp_of(&msg)?);
+        Ok(())
+    }
+
+    /// The JSON says `has_sdp` exactly when the human label says `(SDP)`, on
+    /// every case above: one rule, two renderings.
+    #[test]
+    fn has_sdp_agrees_with_the_label_on_every_message() -> Result<(), TestError> {
+        let ct_multi = Some("multipart/mixed;boundary=B");
+        let cases = [
+            make_invite()?,
+            msg_with_body(INVITE_LINE, Some("application/sdp"), HAS_SDP_BODY)?,
+            msg_with_body("SIP/2.0 200 OK", Some("application/sdp"), HAS_SDP_BODY)?,
+            msg_with_body("SIP/2.0 180 Ringing", None, b"")?,
+            msg_with_body(INVITE_LINE, Some("text/plain"), HAS_SDP_BODY)?,
+            msg_with_body(INVITE_LINE, Some("Application/SDP"), HAS_SDP_BODY)?,
+            msg_with_body(INVITE_LINE, ct_multi, &has_sdp_multipart("application/sdp"))?,
+            msg_with_body(
+                INVITE_LINE,
+                ct_multi,
+                &has_sdp_multipart("application/isup"),
+            )?,
+            msg_with_body(INVITE_LINE, None, HAS_SDP_BODY)?,
+        ];
+        let mut flagged = 0;
+        for msg in &cases {
+            let label = msg.label();
+            let has = has_sdp_of(msg)?;
+            assert_eq!(has, label.ends_with(" (SDP)"), "label {label:?}");
+            flagged += usize::from(has);
+        }
+        assert_eq!(flagged, 5, "the case list covers both answers");
+        Ok(())
+    }
+
+    /// The `Value` and pretty projections carry the same flag as the line.
+    #[test]
+    fn has_sdp_is_the_same_in_every_projection() -> Result<(), TestError> {
+        let msg = msg_with_body(INVITE_LINE, Some("application/sdp"), HAS_SDP_BODY)?;
+        assert_eq!(message_to_json_value(&msg)["has_sdp"], true);
+        let pretty: serde_json::Value = serde_json::from_str(&message_to_json_pretty(&msg))?;
+        assert_eq!(pretty["has_sdp"], true);
+        let none = make_invite()?;
+        assert_eq!(message_to_json_value(&none)["has_sdp"], false);
         Ok(())
     }
 
