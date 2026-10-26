@@ -238,7 +238,9 @@ fn worker_stream_store(cfg: &ParallelConfig) -> StreamStore {
 /// a small share of SIP and none of the media:
 ///
 /// * a UDP datagram on a SIP port that is SIP and names `application/sdp`
-///   (the content type [`crate::sip::SipMessage::sdp`] requires);
+///   anywhere: as the message's `Content-Type`, or as the type of a part of a
+///   `multipart/*` body, the two places [`crate::sip::SipMessage::sdp`] reads
+///   SDP from;
 /// * every TCP segment on a SIP port, because a segment in the middle of a
 ///   connection is only readable after the ones before it;
 /// * every IP fragment, whose ports are unknown until reassembly;
@@ -323,7 +325,8 @@ impl Fanout {
 }
 
 /// Whether `payload` names the content type [`crate::sip::SipMessage::sdp`]
-/// reads, `application/sdp`, in any case ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)): the same
+/// reads, `application/sdp`, in any case and at any offset, so a multipart
+/// part's own `Content-Type` counts as the message's does ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)): the same
 /// rule as [`crate::sip::message::is_sdp_media_type`], applied to raw bytes
 /// before any parse.
 ///
@@ -4417,6 +4420,48 @@ mod tests {
         );
         let (a, b) = SIP_HOSTS;
         let invite = eth_packet(eth_udp_between(a, b, 5060, 5060, text.as_bytes()));
+        assert!(Fanout::of(&pcfg_default_range()).needs(&invite));
+    }
+
+    /// A datagram whose SDP is a part of a `multipart/mixed` body, as in a
+    /// SIP-I INVITE (SDP beside ISUP), is copied to every worker: `sdp()`
+    /// reads that part, so the worker that measures its RTP needs it as
+    /// `--cores 1` has it.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_datagram_with_an_sdp_part_in_a_multipart_body_is_copied() {
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "c", ([10, 2, 0, 1], 20000));
+        let text = String::from_utf8_lossy(&offer).into_owned();
+        let (head, sdp) = text.split_once("\r\n\r\n").unwrap_or_default();
+        let body = format!(
+            "--B\r\nContent-Type: application/SDP\r\n\r\n{sdp}\r\n\
+             --B\r\nContent-Type: application/ISUP; version=itu-t\r\n\r\nIAM\r\n--B--\r\n"
+        );
+        let head = head
+            .replace(
+                "Content-Type: application/sdp",
+                "Content-Type: multipart/mixed; boundary=B",
+            )
+            .replace(
+                &format!("Content-Length: {}", sdp.len()),
+                &format!("Content-Length: {}", body.len()),
+            );
+        let message = format!("{head}\r\n\r\n{body}");
+        let parsed = crate::sip::parser::parse_sip(
+            message.as_bytes(),
+            chrono::Utc::now(),
+            std::net::IpAddr::from([10, 9, 0, 1]),
+            std::net::IpAddr::from([10, 9, 0, 2]),
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        );
+        assert!(
+            parsed.is_ok_and(|m| m.sdp().is_some()),
+            "the fixture's SDP is a multipart part that sdp() reads"
+        );
+        let (a, b) = SIP_HOSTS;
+        let invite = eth_packet(eth_udp_between(a, b, 5060, 5060, message.as_bytes()));
         assert!(Fanout::of(&pcfg_default_range()).needs(&invite));
     }
 

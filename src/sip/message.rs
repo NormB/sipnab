@@ -221,13 +221,7 @@ impl SipMessage {
     pub fn carries_sdp(&self) -> bool {
         match self.content_type() {
             Some(ct) if is_sdp_media_type(ct) => true,
-            Some(ct)
-                if media_type(ct)
-                    .to_ascii_lowercase()
-                    .starts_with("multipart/") =>
-            {
-                multipart_has_sdp(ct, &self.body)
-            }
+            Some(ct) if is_multipart_media_type(ct) => !sdp_parts(ct, &self.body).is_empty(),
             Some(_) => false,
             None => self.body.starts_with(b"v="),
         }
@@ -259,14 +253,20 @@ impl SipMessage {
         }
     }
 
-    /// Parse the SDP body, if the `Content-Type` is `application/sdp`.
+    /// Parse the message's SDP: the whole body when the `Content-Type` is
+    /// `application/sdp`, or the first `application/sdp` part that parses
+    /// when it is `multipart/*`, as in a SIP-I message,
+    /// whose SDP sits beside an ISUP part
+    /// ([RFC 3204 section 4.1](https://www.rfc-editor.org/rfc/rfc3204.html#section-4.1)),
+    /// or a SIPREC one, whose SDP sits beside the recording metadata
+    /// ([RFC 7866 section 9.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-9.1)).
     ///
-    /// Returns `None` if the content type is not SDP or if parsing fails.
+    /// Returns `None` if the body holds no SDP or if parsing fails.
     pub fn sdp(&self) -> Option<SdpSession> {
-        if self.content_type().is_some_and(is_sdp_media_type) {
-            sdp::parse_sdp(&self.body).ok()
-        } else {
-            None
+        match self.content_type() {
+            Some(ct) if is_sdp_media_type(ct) => sdp::parse_sdp(&self.body).ok(),
+            Some(ct) if is_multipart_media_type(ct) => multipart_sdp(ct, &self.body),
+            _ => None,
         }
     }
 
@@ -639,18 +639,36 @@ pub fn is_sdp_media_type(content_type: &str) -> bool {
     media_type(content_type).eq_ignore_ascii_case("application/sdp")
 }
 
-/// Whether the multipart `body` under `content_type` has an `application/sdp`
-/// part, split by the same MIME reader the SIPREC metadata uses.
-fn multipart_has_sdp(content_type: &str, body: &[u8]) -> bool {
-    let (Some(boundary), Ok(text)) = (
-        super::siprec::extract_boundary(content_type),
-        std::str::from_utf8(body),
-    ) else {
-        return false;
+/// Whether a `Content-Type` value names a `multipart/*` type, in any case
+/// ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)).
+fn is_multipart_media_type(content_type: &str) -> bool {
+    media_type(content_type)
+        .get(..10)
+        .is_some_and(|t| t.eq_ignore_ascii_case("multipart/"))
+}
+
+/// The `application/sdp` parts of the multipart `body` under `content_type`,
+/// in body order, split by the same MIME reader the SIPREC metadata uses
+/// ([RFC 2046 section 5.1.1](https://www.rfc-editor.org/rfc/rfc2046.html#section-5.1.1)).
+/// Another part may be binary. Empty when the type carries no boundary.
+fn sdp_parts(content_type: &str, body: &[u8]) -> Vec<super::siprec::MimePart> {
+    let Some(boundary) = super::siprec::extract_boundary(content_type) else {
+        return Vec::new();
     };
-    super::siprec::split_multipart(text, &boundary)
+    super::siprec::split_multipart(body, &boundary)
+        .into_iter()
+        .filter(|part| part.content_type.as_deref().is_some_and(is_sdp_media_type))
+        .collect()
+}
+
+/// The session description of the multipart `body` under `content_type`: the
+/// first `application/sdp` part that parses. The one rule for which part is a
+/// multipart message's SDP: [`SipMessage::sdp`] reads it, and so do the
+/// SIPREC stream labels ([`super::siprec::labeled_streams`]).
+pub(crate) fn multipart_sdp(content_type: &str, body: &[u8]) -> Option<SdpSession> {
+    sdp_parts(content_type, body)
         .iter()
-        .any(|part| part.content_type.as_deref().is_some_and(is_sdp_media_type))
+        .find_map(|part| sdp::parse_sdp(&part.body).ok())
 }
 
 #[cfg(test)]
@@ -1493,6 +1511,132 @@ mod tests {
             !invite_with(ct, &multipart("application/isup"))?.carries_sdp(),
             "no SDP part, no SDP"
         );
+        Ok(())
+    }
+
+    // ── MULTIPART-SDP-MEDIA: sdp() reads the SDP part of a multipart body ──
+
+    /// A binary ISUP message, as [RFC 3204 section 3.1](https://www.rfc-editor.org/rfc/rfc3204.html#section-3.1)
+    /// encodes one ("Encoding scheme: binary"): not UTF-8, and holding a CR LF
+    /// pair and a `--` that are part of the message, not framing.
+    const ISUP: &[u8] = &[
+        0x01, 0x00, 0x60, 0x0d, 0x0a, 0x2d, 0x2d, 0x42, 0x83, 0x90, 0x55, 0x05, 0x01, 0x00, 0xff,
+        0xc3, 0x28,
+    ];
+
+    /// The [RFC 3204 section 4.1](https://www.rfc-editor.org/rfc/rfc3204.html#section-4.1)
+    /// shape: an SDP part typed in capitals with a charset, then a binary ISUP
+    /// part whose `Content-Type` is folded.
+    fn sip_i(sdp_part: &[u8]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(b"--B\r\nContent-Type: application/SDP; charset=ISO-10646\r\n\r\n");
+        b.extend_from_slice(sdp_part);
+        b.extend_from_slice(
+            b"\r\n--B\r\nContent-Type: application/ISUP; version=itu-t;\r\n base=itu-t92+\r\n\
+              Content-Disposition: signal; handling=optional\r\n\r\n",
+        );
+        b.extend_from_slice(ISUP);
+        b.extend_from_slice(b"\r\n--B--\r\n");
+        b
+    }
+
+    /// `sdp()` reads the SDP part of a SIP-I body, beside a binary ISUP part.
+    #[test]
+    fn sdp_reads_the_sdp_part_of_a_sip_i_body() -> Result<(), TestError> {
+        let m = invite_with(Some("multipart/mixed; boundary=B"), &sip_i(SDP_BODY))?;
+        let sdp = m.sdp().ok_or("the SDP part is read")?;
+        assert_eq!(sdp.media.len(), 1);
+        assert_eq!(sdp.media[0].port, 20000);
+        assert_eq!(
+            sdp.connection.as_ref().map(|c| c.addr.as_str()),
+            Some("192.0.2.1")
+        );
+        Ok(())
+    }
+
+    /// A binary part does not hide the SDP part from the label rule either.
+    #[test]
+    fn a_binary_isup_part_does_not_hide_the_sdp_part() -> Result<(), TestError> {
+        let m = invite_with(Some("multipart/mixed; boundary=B"), &sip_i(SDP_BODY))?;
+        assert!(
+            std::str::from_utf8(&m.body).is_err(),
+            "the fixture is binary"
+        );
+        assert!(m.carries_sdp(), "the SDP part is found beside binary ISUP");
+        Ok(())
+    }
+
+    /// The SIPREC shape: metadata first, SDP second.
+    #[test]
+    fn sdp_reads_the_sdp_part_after_another_part() -> Result<(), TestError> {
+        let m = invite_with(
+            Some("multipart/mixed;boundary=B"),
+            &multipart("application/sdp"),
+        )?;
+        let sdp = m.sdp().ok_or("the SDP part is read")?;
+        assert_eq!(sdp.media[0].port, 20000);
+        Ok(())
+    }
+
+    /// [RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1):
+    /// the type, the subtype and the parameter name are case-insensitive, so
+    /// `Multipart/Mixed; Boundary=B` is read as `multipart/mixed; boundary=B`.
+    #[test]
+    fn a_multipart_type_is_matched_without_regard_to_case() -> Result<(), TestError> {
+        let m = invite_with(Some("Multipart/Mixed; Boundary=B"), &sip_i(SDP_BODY))?;
+        assert!(m.sdp().is_some(), "sdp() reads the part");
+        assert!(m.carries_sdp(), "and the label rule agrees");
+        Ok(())
+    }
+
+    /// Negative controls: no SDP part, no boundary, or a boundary the body
+    /// never uses give no SDP, and a whole `application/sdp` body still does.
+    #[test]
+    fn sdp_is_none_without_an_sdp_part() -> Result<(), TestError> {
+        let ct = Some("multipart/mixed;boundary=B");
+        assert!(
+            invite_with(ct, &multipart("application/isup"))?
+                .sdp()
+                .is_none()
+        );
+        assert!(invite_with(ct, &multipart("text/plain"))?.sdp().is_none());
+        assert!(
+            invite_with(Some("multipart/mixed"), &multipart("application/sdp"))?
+                .sdp()
+                .is_none(),
+            "no boundary parameter"
+        );
+        assert!(
+            invite_with(
+                Some("multipart/mixed;boundary=Z"),
+                &multipart("application/sdp")
+            )?
+            .sdp()
+            .is_none(),
+            "a boundary the body does not use"
+        );
+        assert!(
+            invite_with(Some("application/sdp"), SDP_BODY)?
+                .sdp()
+                .is_some()
+        );
+        Ok(())
+    }
+
+    /// [RFC 2046 section 5.1.1](https://www.rfc-editor.org/rfc/rfc2046.html#section-5.1.1):
+    /// the preamble before the first delimiter and the epilogue after the
+    /// close delimiter "are to be ignored". SDP-looking text in either is not
+    /// the message's SDP.
+    #[test]
+    fn sdp_ignores_the_preamble_and_the_epilogue() -> Result<(), TestError> {
+        let mut body = b"Content-Type: application/sdp\r\n\r\n".to_vec();
+        body.extend_from_slice(SDP_BODY);
+        body.extend_from_slice(b"\r\n--B\r\nContent-Type: text/plain\r\n\r\nhello\r\n--B--\r\n");
+        body.extend_from_slice(b"--B\r\nContent-Type: application/sdp\r\n\r\n");
+        body.extend_from_slice(SDP_BODY);
+        let m = invite_with(Some("multipart/mixed;boundary=B"), &body)?;
+        assert!(m.sdp().is_none(), "only the preamble and epilogue hold SDP");
+        assert!(!m.carries_sdp(), "and the label rule agrees");
         Ok(())
     }
 

@@ -58,12 +58,22 @@ pub struct SirecStream {
     pub participant_id: Option<String>,
 }
 
-/// One part of a multipart MIME body: its Content-Type and body text.
+/// One part of a multipart MIME body: its Content-Type and its bytes.
 pub(crate) struct MimePart {
     /// Value of the part's `Content-Type` header, if present.
     pub(crate) content_type: Option<String>,
-    /// Part body text (everything after the part's blank line).
-    pub(crate) body: String,
+    /// The part's body: every byte after its blank line, up to the line break
+    /// that belongs to the next delimiter. A part may be binary
+    /// ([RFC 3204 section 3.1](https://www.rfc-editor.org/rfc/rfc3204.html#section-3.1)
+    /// encodes ISUP as "binary"), so this is bytes, not text.
+    pub(crate) body: Vec<u8>,
+}
+
+impl MimePart {
+    /// The body as text, or `None` when it is not UTF-8.
+    pub(crate) fn text(&self) -> Option<&str> {
+        std::str::from_utf8(&self.body).ok()
+    }
 }
 
 /// Extract the `boundary=` parameter from a Content-Type header value.
@@ -88,59 +98,103 @@ pub(crate) fn extract_boundary(content_type: &str) -> Option<String> {
     })
 }
 
-/// Split a multipart body into MIME parts using the given boundary.
+/// Split a multipart body into MIME parts using the given boundary, by
+/// [RFC 2046 section 5.1.1](https://www.rfc-editor.org/rfc/rfc2046.html#section-5.1.1).
 ///
 /// # Arguments
 ///
-/// * `body` — the full multipart body text.
+/// * `body` — the full multipart body, as bytes: a part may be binary.
 /// * `boundary` — the boundary token (without the leading `--`).
 ///
 /// # Returns
 ///
-/// One `MimePart` per non-empty segment, each with its `Content-Type` (if
-/// any) and body text. A missing final `--` terminator is tolerated; empty
-/// segments and the terminator remnant are skipped.
-pub(crate) fn split_multipart(body: &str, boundary: &str) -> Vec<MimePart> {
-    let delimiter = format!("--{}", boundary);
-    let mut parts = Vec::new();
+/// One `MimePart` per body part between the first delimiter and the close
+/// delimiter, each with its `Content-Type` (if any) and its bytes.
+///
+/// - A delimiter is `--boundary` at the start of a line, followed by
+///   optional linear white space and the line break, or by `--` for the
+///   close delimiter. A `--boundary` inside a line, or followed by other
+///   text, is part content.
+/// - The line break before a delimiter belongs to the delimiter, not to the
+///   part before it ("the CRLF preceding the boundary delimiter line is
+///   conceptually attached to the boundary").
+/// - The preamble before the first delimiter and the epilogue after the close
+///   delimiter "are to be ignored".
+/// - A missing close delimiter is tolerated: the last part runs to the end of
+///   the body. Bare-LF line breaks are tolerated beside CRLF. A part with
+///   nothing in it but white space is skipped.
+pub(crate) fn split_multipart(body: &[u8], boundary: &str) -> Vec<MimePart> {
+    let delimiter = format!("--{boundary}");
+    let delimiter = delimiter.as_bytes();
 
-    // RFC 2046 §5.1.1: a delimiter only counts when it starts a line — at the
-    // very start of the body or preceded by a line break (CRLF, or bare LF for
-    // tolerance). Mid-line occurrences inside part content are literal text.
-    let mut segments = Vec::new();
-    let mut segment_start = 0;
+    // Every delimiter line: where it starts, where its part's bytes start,
+    // and whether it is the close delimiter.
+    let mut lines: Vec<(usize, usize, bool)> = Vec::new();
     let mut search_from = 0;
-    while let Some(rel) = body[search_from..].find(&delimiter) {
+    while let Some(rel) = memchr::memmem::find(&body[search_from..], delimiter) {
         let pos = search_from + rel;
-        let line_anchored = pos == 0 || body.as_bytes()[pos - 1] == b'\n';
-        if !line_anchored {
-            search_from = pos + delimiter.len();
+        search_from = pos + delimiter.len();
+        if pos != 0 && body[pos - 1] != b'\n' {
             continue;
         }
-        segments.push(&body[segment_start..pos]);
-        segment_start = pos + delimiter.len();
-        search_from = segment_start;
+        let after = &body[pos + delimiter.len()..];
+        if after.starts_with(b"--") {
+            lines.push((pos, body.len(), true));
+            break;
+        }
+        // Transport padding, then the line break, or the end of the body.
+        let padding = after
+            .iter()
+            .take_while(|b| **b == b' ' || **b == b'\t')
+            .count();
+        let rest = &after[padding..];
+        let line_break = if rest.starts_with(b"\r\n") {
+            2
+        } else if rest.starts_with(b"\n") || rest.is_empty() {
+            usize::from(!rest.is_empty())
+        } else {
+            continue;
+        };
+        lines.push((pos, pos + delimiter.len() + padding + line_break, false));
     }
-    segments.push(&body[segment_start..]);
 
-    for segment in segments {
-        let segment = segment.trim();
-        if segment.is_empty() || segment == "--" {
+    let mut parts = Vec::new();
+    for (i, &(_, part_start, close)) in lines.iter().enumerate() {
+        if close {
+            break;
+        }
+        let part_end = lines.get(i + 1).map_or(body.len(), |next| next.0);
+        let mut segment = &body[part_start..part_end];
+        // The line break before the next delimiter is the delimiter's.
+        if lines.get(i + 1).is_some() {
+            segment = segment
+                .strip_suffix(b"\r\n")
+                .or_else(|| segment.strip_suffix(b"\n"))
+                .unwrap_or(segment);
+        }
+        if segment.trim_ascii().is_empty() {
             continue;
         }
-        // Remove trailing terminator marker if present
-        let segment = segment.strip_suffix("--").map_or(segment, |s| s.trim());
 
-        // Split headers from body at first blank line
-        let (headers_part, body_part) = if let Some(pos) = segment.find("\r\n\r\n") {
+        // Headers end at the first blank line. A part that starts with the
+        // blank line has no headers; one with no blank line at all is read
+        // as a body with no headers, which is how this reader always
+        // treated it.
+        let (headers_part, body_part): (&[u8], &[u8]) = if let Some(b) = segment
+            .strip_prefix(b"\r\n")
+            .or_else(|| segment.strip_prefix(b"\n"))
+        {
+            (b"", b)
+        } else if let Some(pos) = memchr::memmem::find(segment, b"\r\n\r\n") {
             (&segment[..pos], &segment[pos + 4..])
-        } else if let Some(pos) = segment.find("\n\n") {
+        } else if let Some(pos) = memchr::memmem::find(segment, b"\n\n") {
             (&segment[..pos], &segment[pos + 2..])
         } else {
-            ("", segment)
+            (b"", segment)
         };
 
-        let content_type = unfold_header_lines(headers_part)
+        let headers_text = String::from_utf8_lossy(headers_part);
+        let content_type = unfold_header_lines(&headers_text)
             .into_iter()
             .find_map(|line| {
                 let lower = line.to_ascii_lowercase();
@@ -153,7 +207,7 @@ pub(crate) fn split_multipart(body: &str, boundary: &str) -> Vec<MimePart> {
 
         parts.push(MimePart {
             content_type,
-            body: body_part.to_string(),
+            body: body_part.to_vec(),
         });
     }
 
@@ -411,22 +465,23 @@ fn extract_xml_attr(xml: &str, attr_name: &str) -> Option<String> {
 ///
 /// # Errors
 ///
-/// Fails when the Content-Type has no `boundary` parameter, the body is not
-/// valid UTF-8, or no `rs-metadata` part is found in the multipart body.
+/// Fails when the Content-Type has no `boundary` parameter, no `rs-metadata`
+/// part is found in the multipart body, or that part is not valid UTF-8.
+/// Another part may be binary.
 pub fn parse_siprec_body(content_type: &str, body: &[u8]) -> Result<SirecMetadata> {
     let boundary = extract_boundary(content_type)
         .ok_or_else(|| anyhow::anyhow!("no boundary in content-type"))?;
 
-    let body_str = std::str::from_utf8(body)?;
-    let parts = split_multipart(body_str, &boundary);
-
-    for part in parts {
+    for part in split_multipart(body, &boundary) {
         if part
             .content_type
             .as_deref()
             .is_some_and(|ct| ct.contains("rs-metadata") || ct.contains("rs-metadata+xml"))
         {
-            return parse_rs_metadata(&part.body);
+            let xml = part
+                .text()
+                .ok_or_else(|| anyhow::anyhow!("the rs-metadata part is not UTF-8"))?;
+            return parse_rs_metadata(xml);
         }
     }
 
@@ -470,25 +525,12 @@ pub struct LabeledStream {
 /// conveyed in the bodies of the SIP request or response that the label
 /// appeared in." A label from another message's SDP may name another stream.
 ///
-/// Empty when the body has no boundary, no SDP part, or an SDP part that does
-/// not parse.
+/// The SDP part is the one [`crate::sip::SipMessage::sdp`] reads, by the same
+/// rule. Empty when the body has no boundary, no SDP part, or an SDP part that
+/// does not parse.
 #[must_use]
 pub fn labeled_streams(content_type: &str, body: &[u8]) -> Vec<LabeledStream> {
-    let Some(boundary) = extract_boundary(content_type) else {
-        return Vec::new();
-    };
-    let Ok(text) = std::str::from_utf8(body) else {
-        return Vec::new();
-    };
-    let Some(session) = split_multipart(text, &boundary)
-        .into_iter()
-        .filter(|part| {
-            part.content_type
-                .as_deref()
-                .is_some_and(|ct| ct.to_ascii_lowercase().contains("application/sdp"))
-        })
-        .find_map(|part| crate::sip::sdp::parse_sdp(part.body.as_bytes()).ok())
-    else {
+    let Some(session) = crate::sip::message::multipart_sdp(content_type, body) else {
         return Vec::new();
     };
     session
@@ -1007,6 +1049,48 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         Ok(())
     }
 
+    /// A binary part beside the SDP and the metadata (a vendor extension
+    /// body, or ISUP, which [RFC 3204 section 3.1](https://www.rfc-editor.org/rfc/rfc3204.html#section-3.1)
+    /// encodes as binary) hides neither: the labels and the metadata are both
+    /// still read from the same body.
+    #[test]
+    fn a_binary_part_hides_neither_the_labels_nor_the_metadata() -> Result<(), TestError> {
+        let mut body = labeled_body();
+        let close = body.len() - b"--OSS--".len();
+        body.truncate(close);
+        body.extend_from_slice(b"--OSS\r\nContent-Type: application/octet-stream\r\n\r\n");
+        body.extend_from_slice(&[0x00, 0xff, 0xc3, 0x28, 0x0d, 0x0a, 0x80]);
+        body.extend_from_slice(b"\r\n--OSS--");
+        assert!(std::str::from_utf8(&body).is_err(), "the fixture is binary");
+        let ct = "multipart/mixed; boundary=OSS";
+        assert_eq!(labeled_streams(ct, &body).len(), 3);
+        let md = parse_siprec_body(ct, &body)?;
+        assert_eq!(md.participants.len(), 2);
+        Ok(())
+    }
+
+    /// A binary part comes back byte for byte: the line break before the next
+    /// delimiter is the delimiter's ([RFC 2046 section 5.1.1](https://www.rfc-editor.org/rfc/rfc2046.html#section-5.1.1):
+    /// "the CRLF preceding the boundary delimiter line is conceptually
+    /// attached to the boundary"), while a CR LF and a `--b` inside the part
+    /// are content. Transport padding after a delimiter is not.
+    #[test]
+    fn a_binary_part_is_returned_byte_for_byte() -> Result<(), TestError> {
+        let isup: &[u8] = &[0x01, 0x0d, 0x0a, 0x2d, 0x2d, 0x62, 0x80, 0x0d, 0x0a];
+        let mut body = b"--b \t\r\nContent-Type: application/ISUP; version=itu-t\r\n\r\n".to_vec();
+        body.extend_from_slice(isup);
+        body.extend_from_slice(b"\r\n--b\r\nContent-Type: text/plain\r\n\r\nx\r\n--b--\r\n");
+        let parts = split_multipart(&body, "b");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(
+            parts[0].content_type.as_deref(),
+            Some("application/ISUP; version=itu-t")
+        );
+        assert_eq!(parts[0].body, isup, "the ISUP bytes, exactly");
+        assert_eq!(parts[1].body, b"x");
+        Ok(())
+    }
+
     /// A body with no SDP part, or none that parses, yields no labels.
     #[test]
     fn no_sdp_part_yields_no_labels() -> Result<(), TestError> {
@@ -1084,15 +1168,17 @@ v=0\r\ns=call--b1session\r\n\
 Content-Type: text/plain\r\n\r\n\
 hello\r\n\
 --b1--";
-        let parts = split_multipart(body, "b1");
+        let parts = split_multipart(body.as_bytes(), "b1");
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].content_type.as_deref(), Some("application/sdp"));
         assert!(
-            parts[0].body.contains("s=call--b1session"),
+            parts[0]
+                .text()
+                .is_some_and(|t| t.contains("s=call--b1session")),
             "mid-line boundary must survive intact, got: {:?}",
-            parts[0].body
+            parts[0].text()
         );
-        assert_eq!(parts[1].body.trim(), "hello");
+        assert_eq!(parts[1].text().map(str::trim), Some("hello"));
         Ok(())
     }
 
@@ -1106,9 +1192,9 @@ v=0\n\
 Content-Type: text/plain\n\n\
 world\n\
 --b1--";
-        let parts = split_multipart(body, "b1");
+        let parts = split_multipart(body.as_bytes(), "b1");
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[1].body.trim(), "world");
+        assert_eq!(parts[1].text().map(str::trim), Some("world"));
         Ok(())
     }
 
@@ -1144,7 +1230,7 @@ charset=\"utf-8\"\r\n\r\n\
             body.contains(";\r\n charset"),
             "test fixture must contain a genuine folded (SP-prefixed) line"
         );
-        let parts = split_multipart(body, "b1");
+        let parts = split_multipart(body.as_bytes(), "b1");
         assert_eq!(parts.len(), 1);
         assert_eq!(
             parts[0].content_type.as_deref(),
@@ -1167,7 +1253,7 @@ charset=\"utf-8\"\r\n\r\n\
             body.contains(";\r\n\tcharset"),
             "test fixture must contain a genuine HTAB-folded line"
         );
-        let parts = split_multipart(body, "b1");
+        let parts = split_multipart(body.as_bytes(), "b1");
         assert_eq!(parts.len(), 1);
         // Unfolding removes the line break but preserves the folding WSP, so the
         // HTAB is retained in the joined value (RFC 5322 §2.2.3).
