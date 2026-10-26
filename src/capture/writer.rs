@@ -50,17 +50,26 @@ pub enum PcapExportMode {
 }
 
 impl PcapExportMode {
-    /// Parse from the CLI string value.
-    ///
-    /// Returns `None` for unrecognized values (caller should reject at
-    /// validation time, so this is a fallback).
-    pub fn parse_mode(s: &str) -> Option<Self> {
-        match s {
-            "decrypted" => Some(Self::Decrypted),
-            "encrypted+dsb" => Some(Self::EncryptedWithDsb),
-            "raw" => Some(Self::Raw),
-            _ => None,
+    /// Every mode, in the order `--help` lists them. The one list of the
+    /// `--pcap-export-mode` vocabulary: the flag's accepted values, the
+    /// parser and the `-O` log line all read it.
+    pub const ALL: [Self; 3] = [Self::Decrypted, Self::EncryptedWithDsb, Self::Raw];
+
+    /// The name `--pcap-export-mode` takes for this mode.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Decrypted => "decrypted",
+            Self::EncryptedWithDsb => "encrypted+dsb",
+            Self::Raw => "raw",
         }
+    }
+
+    /// The mode a `--pcap-export-mode` name names, or `None` for any other
+    /// string.
+    #[must_use]
+    pub fn parse_mode(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.name() == s)
     }
 
     /// Whether this mode should include DSB blocks in the output.
@@ -420,11 +429,7 @@ impl PcapWriter {
             "Writing packets to '{}' ({}, mode={})",
             path.display(),
             if pcapng { "pcapng" } else { "pcap" },
-            match export_mode {
-                PcapExportMode::Decrypted => "decrypted",
-                PcapExportMode::EncryptedWithDsb => "encrypted+dsb",
-                PcapExportMode::Raw => "raw",
-            },
+            export_mode.name(),
         );
 
         Ok(Self {
@@ -2018,6 +2023,31 @@ mod tests {
         assert_eq!(
             pre_nanos, 0,
             "pre-epoch timestamp should fall back to 0 nanos"
+        );
+        Ok(())
+    }
+
+    /// Each mode has one name, the name parses back to that mode, and no two
+    /// modes share a name. `ALL` is the one list the CLI's accepted values,
+    /// the parser and the `-O` log line read.
+    #[test]
+    fn every_export_mode_has_one_name_and_parses_back() -> Result<(), TestError> {
+        let names: Vec<&str> = PcapExportMode::ALL.iter().map(|m| m.name()).collect();
+        assert_eq!(names, ["decrypted", "encrypted+dsb", "raw"]);
+        for mode in PcapExportMode::ALL {
+            assert_eq!(
+                PcapExportMode::parse_mode(mode.name()),
+                Some(mode),
+                "{mode:?}"
+            );
+        }
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "two modes share a name: {names:?}"
         );
         Ok(())
     }

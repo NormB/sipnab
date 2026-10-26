@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **`--pcap-export-mode` takes its three modes from one list.** The mode names were written in five places: the flag's accepted values, a startup check, the parser, the `-O` log line and a check in argument validation. The flag now holds the mode itself, so a name the writer does not know cannot reach a run, and the startup check, which no command line could reach, is removed. The accepted values, their order, the refusal of any other value and `--help` are unchanged.
+
 ## [0.5.231] - 2026-10-27
 
 ### Security

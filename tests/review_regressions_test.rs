@@ -26,8 +26,7 @@ fn exported_secrets_require_an_explicit_mode() -> Result<(), TestError> {
     let secret = b"CLIENT_RANDOM 00112233 aabbccdd\n";
     std::fs::write(&keylog, secret)?;
     let cli = Cli::try_parse_from(["sipnab"])?;
-    let default = PcapExportMode::parse_mode(&cli.tls_args.pcap_export_mode)
-        .ok_or("PcapExportMode::parse_mode(&cli.tls_args.pcap_export_mode) returned None")?;
+    let default = cli.tls_args.pcap_export_mode;
     for (name, mode, expected) in [
         ("default", default, 0),
         ("raw", PcapExportMode::Raw, 0),

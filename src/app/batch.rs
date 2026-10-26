@@ -3545,8 +3545,7 @@ impl BatchRunner {
         //     packet in run_loop, once the link type is known.
         let writer: Option<PcapWriter> = None;
         let use_pcapng = cli.capture_args.pcapng;
-        let export_mode = PcapExportMode::parse_mode(&cli.tls_args.pcap_export_mode)
-            .unwrap_or(PcapExportMode::Raw);
+        let export_mode = cli.tls_args.pcap_export_mode;
 
         // 16a. Initialize HEP sender if --hep-send is set
         #[cfg(feature = "hep")]

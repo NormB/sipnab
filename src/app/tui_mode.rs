@@ -1364,8 +1364,7 @@ impl TuiOutput {
     /// The `-O` output `cli` asks for, rotating per `split` (bytes, duration,
     /// files kept).
     pub fn new(cli: &Cli, split: (Option<u64>, Option<std::time::Duration>, Option<u32>)) -> Self {
-        let mode = PcapExportMode::parse_mode(&cli.tls_args.pcap_export_mode)
-            .unwrap_or(PcapExportMode::Raw);
+        let mode = cli.tls_args.pcap_export_mode;
         let path = cli.capture_args.output.as_ref().map(PathBuf::from);
         #[cfg(feature = "tls")]
         let export = (mode == PcapExportMode::Decrypted && path.is_some()).then(|| {

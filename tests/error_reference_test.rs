@@ -738,7 +738,10 @@ fn lists() -> Result<Lists, TestError> {
 // 87 -> 86: src/app/bootstrap.rs `error!("{msg}")` 5 -> 4. launch's
 // missing-feature refusal is printed by `report_uncompiled`, whose message
 // comes from `uncompiled_when` literal sites, so it is resolved.
-const EXPECTED_UNRESOLVED: usize = 86;
+// 86 -> 85: pcap_export_mode_refusal is gone. --pcap-export-mode is typed
+// as PcapExportMode, so clap refuses any other value and the refusal could
+// not be reached.
+const EXPECTED_UNRESOLVED: usize = 85;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
