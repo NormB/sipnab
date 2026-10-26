@@ -2253,7 +2253,7 @@ The [library page](@/docs/library.md) covers reading a capture into a `DialogSto
 jq . call.json
 ```
 
-The output below is that file in full, from a run of sipnab 0.5.225. The
+The output below is that file in full, from a run of sipnab 0.5.230. The
 `uuid` and `created_at` differ on every run.
 
 **Reading `body`.** Every attachment and analysis `body`
@@ -2271,8 +2271,8 @@ below declares `"encoding": "json"`.
 ```json
 {
   "vcon": "0.4.0",
-  "uuid": "018bcfe5-6800-8012-9cdb-50568c2cf298",
-  "created_at": "2026-10-18T15:38:12.660173471+00:00",
+  "uuid": "018bcfe5-6800-8cac-a713-1277218e9960",
+  "created_at": "2026-10-26T05:12:56.929430909+00:00",
   "subject": "SIP call test-call-1@192.0.2.1",
   "extensions": [
     "sip-signaling",
@@ -2293,7 +2293,7 @@ below declares `"encoding": "json"`.
     {
       "validation": "none",
       "role": "observer",
-      "sip_user_agent": "sipnab/0.5.225 (observer; node capture-01)"
+      "sip_user_agent": "sipnab/0.5.230 (observer; node capture-01)"
     }
   ],
   "dialog": [
@@ -2357,6 +2357,7 @@ below declares `"encoding": "json"`.
             "dst_port": 5060,
             "frame": "tests/fixtures/sip_call.pcap#0@4ed7f4560fa79e74",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "has_sdp": true,
             "headers": {
               "CSeq": [
                 "1 INVITE"
@@ -2414,6 +2415,7 @@ below declares `"encoding": "json"`.
             "dst_port": 5060,
             "frame": "tests/fixtures/sip_call.pcap#1@d391158030fec0ed",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "has_sdp": false,
             "headers": {
               "CSeq": [
                 "1 INVITE"
@@ -2459,6 +2461,7 @@ below declares `"encoding": "json"`.
             "dst_port": 5060,
             "frame": "tests/fixtures/sip_call.pcap#2@6223651e1d41c203",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "has_sdp": false,
             "headers": {
               "CSeq": [
                 "1 INVITE"
@@ -2506,6 +2509,7 @@ below declares `"encoding": "json"`.
             "dst_port": 5060,
             "frame": "tests/fixtures/sip_call.pcap#3@b8cb1b0c6d1dcb06",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "has_sdp": false,
             "headers": {
               "CSeq": [
                 "1 INVITE"
@@ -2555,6 +2559,7 @@ below declares `"encoding": "json"`.
             "dst_port": 5060,
             "frame": "tests/fixtures/sip_call.pcap#4@79f3b0a0fb7668dc",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "has_sdp": false,
             "headers": {
               "CSeq": [
                 "1 ACK"
@@ -2601,6 +2606,7 @@ below declares `"encoding": "json"`.
             "dst_port": 5060,
             "frame": "tests/fixtures/sip_call.pcap#5@72aa4e7a6836c5a4",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "has_sdp": false,
             "headers": {
               "CSeq": [
                 "2 BYE"
@@ -2647,6 +2653,7 @@ below declares `"encoding": "json"`.
             "dst_port": 5060,
             "frame": "tests/fixtures/sip_call.pcap#6@81da8415cc56003a",
             "from": "<sip:1001@192.0.2.1>;tag=1928301774",
+            "has_sdp": false,
             "headers": {
               "CSeq": [
                 "2 BYE"
@@ -2707,10 +2714,10 @@ below declares `"encoding": "json"`.
         "media_note": "No RTP streams to export",
         "messages_evicted": 0,
         "node": "capture-01",
-        "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+        "note": "Produced by sipnab 0.5.230 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
         "sip_discarded_by_port_gate": 0,
         "sip_discarded_by_websocket_gate": 0,
-        "sipnab_version": "0.5.225",
+        "sipnab_version": "0.5.230",
         "undecodable_frames": 0
       }
     }
@@ -2720,7 +2727,7 @@ below declares `"encoding": "json"`.
       "type": "report",
       "dialog": 0,
       "vendor": "sipnab",
-      "product": "sipnab 0.5.225 (passive observer; not a recording system)",
+      "product": "sipnab 0.5.230 (passive observer; not a recording system)",
       "schema": "sipnab-dialog-diagnosis/1",
       "mediatype": "application/json",
       "encoding": "json",
@@ -2738,10 +2745,10 @@ below declares `"encoding": "json"`.
           "media_note": "No RTP streams to export",
           "messages_evicted": 0,
           "node": "capture-01",
-          "note": "Produced by sipnab 0.5.225 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+          "note": "Produced by sipnab 0.5.230 on node capture-01. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 7 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
           "sip_discarded_by_port_gate": 0,
           "sip_discarded_by_websocket_gate": 0,
-          "sipnab_version": "0.5.225",
+          "sipnab_version": "0.5.230",
           "undecodable_frames": 0
         },
         "final_status_code": 200,

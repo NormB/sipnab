@@ -20321,6 +20321,57 @@ mod in_process_handler_tests {
         Ok(serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?)
     }
 
+    // ── has_sdp on the message objects an agent reads ──────────────
+
+    const HAS_SDP_OFFER: &[u8] = b"v=0\r\no=- 1 1 IN IP4 192.0.2.10\r\ns=-\r\n\
+                                   c=IN IP4 192.0.2.10\r\nt=0 0\r\nm=audio 20000 RTP/AVP 0\r\n";
+
+    /// `get_message` returns `has_sdp` as a JSON boolean, outside the
+    /// untrusted-text fencing: sipnab computed it, the sender did not write it.
+    #[tokio::test]
+    async fn get_message_carries_a_verbatim_has_sdp() -> Result<(), TestError> {
+        for (call, body, want) in [
+            (
+                "offer@example.invalid",
+                Some(("application/sdp", HAS_SDP_OFFER)),
+                true,
+            ),
+            ("bare@example.invalid", None, false),
+        ] {
+            let v = payload(
+                &server_over(dialogs(vec![invite(call, body)?]), StreamStore::new(16))
+                    .get_message(Parameters(GetMessageParams {
+                        call_id: call.to_string(),
+                        index: 0,
+                    }))
+                    .await
+                    .map_err(|e| format!("a held message is answered: {e:?}"))?,
+            )?;
+            assert_eq!(v["has_sdp"], Value::Bool(want), "{call}: {v}");
+        }
+        Ok(())
+    }
+
+    /// `get_dialog`'s `messages[]` rows carry the same flag, a SIPREC
+    /// multipart INVITE included.
+    #[tokio::test]
+    async fn get_dialog_message_rows_carry_has_sdp() -> Result<(), TestError> {
+        let call = "rec@example.invalid";
+        let v = payload(
+            &server_over(recorded_call(call)?, StreamStore::new(16))
+                .get_dialog(Parameters(GetDialogParams {
+                    call_id: call.to_string(),
+                    max_messages: None,
+                    cursor: None,
+                    max_response_bytes: None,
+                }))
+                .await
+                .map_err(|e| format!("a held call is answered: {e:?}"))?,
+        )?;
+        assert_eq!(v["messages"][0]["has_sdp"], Value::Bool(true), "{v}");
+        Ok(())
+    }
+
     // ── siprec_metadata ─────────────────────────────────────────────
 
     /// Recording metadata in the shape OpenSIPS's SRC writes: the mode in

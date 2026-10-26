@@ -13,7 +13,8 @@
     "dst",
     "dst_port",
     "transport",
-    "is_request"
+    "is_request",
+    "has_sdp"
   ],
   "properties": {
     "schema_version": {
@@ -70,6 +71,10 @@
     },
     "ua": {
       "type": "string"
+    },
+    "has_sdp": {
+      "type": "boolean",
+      "description": "true when the message carries SDP: Content-Type application/sdp in any case, a multipart body with an application/sdp part, or a body with no Content-Type that starts v=. The same rule marks the message (SDP) in every label."
     },
     "sdp": {
       "type": "string"
