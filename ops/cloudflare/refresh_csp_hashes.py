@@ -132,14 +132,23 @@ def collect_hashes_from_dir(root):
     return tokens
 
 
+# Cloudflare Web Analytics: Cloudflare adds its beacon script to each page it
+# serves, and the beacon reports to the second origin. The only outside
+# origins the policy admits; tests/site_journey_test.rs holds every policy to
+# exactly these.
+ANALYTICS_SCRIPT_ORIGIN = "https://static.cloudflareinsights.com"
+ANALYTICS_REPORT_ORIGIN = "https://cloudflareinsights.com"
+
+
 def csp(script_hashes):
     return (
         "default-src 'self'; "
-        "script-src 'self' 'wasm-unsafe-eval' %s; "
+        "script-src 'self' 'wasm-unsafe-eval' %s " + ANALYTICS_SCRIPT_ORIGIN + "; "
         # ~141 style= attributes on the site require 'unsafe-inline' here
         "style-src 'self' 'unsafe-inline'; "
         "font-src 'self'; img-src 'self' data:; "
-        "connect-src 'self'; object-src 'none'; base-uri 'self'; "
+        "connect-src 'self' " + ANALYTICS_REPORT_ORIGIN + "; "
+        "object-src 'none'; base-uri 'self'; "
         "form-action 'self'; upgrade-insecure-requests; frame-ancestors 'none'"
     ) % " ".join(sorted(script_hashes))
 

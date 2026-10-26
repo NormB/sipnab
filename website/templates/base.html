@@ -11,6 +11,11 @@
        headers, so this meta CSP is the enforceable layer there; the full
        header set (incl. frame-ancestors/HSTS, which meta cannot carry)
        lives in static/_headers for hosts/proxies that honor it.
+       The one outside origin is Cloudflare Web Analytics: Cloudflare adds its
+       beacon script to each page it serves (static.cloudflareinsights.com)
+       and the beacon reports to cloudflareinsights.com. Every policy names
+       exactly those two; the_site_csp_grants_no_unsafe_inline_and_no_origin_but_analytics
+       holds them to it.
        'wasm-unsafe-eval' + connect-src 'self' keep the /analyze/ WASM
        tool working.
 
@@ -36,7 +41,7 @@
        so nothing legitimate is lost. Removing 'unsafe-inline' outright needs
        the inline scripts externalized to .js files first; see
        ops/cloudflare/README.md. #}
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval' https://static.cloudflareinsights.com; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self' https://cloudflareinsights.com; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests">
   <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
   <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
