@@ -400,6 +400,10 @@ fn fence_value_in_place(field: &mut serde_json::Value, block: Option<usize>) {
                 }
             }
         }
+        // A number, a boolean or null has no text to fence, so a policy that
+        // names one as fenced is a policy nothing honors.
+        // `every_fenced_message_field_is_text_and_reaches_the_agent_fenced`
+        // (tests/mcp_untrusted_fencing_test.rs) refuses such a list entry.
         _ => {}
     }
 }
