@@ -8976,6 +8976,276 @@ fn the_base_template_emits_the_social_card_meta_tags() -> Result<(), TestError> 
     Ok(())
 }
 
+/// The icons `base.html` links: (rel, file under `website/static/`, the
+/// attribute the link must carry so a browser picks the right one).
+///
+/// `sizes="32x32"` and not `sizes="any"` on the ICO: a browser may prefer a
+/// `sizes=any` icon to the SVG, and the ICO's largest image is 48 pixels, so
+/// the tab would show a scaled bitmap where it could show the drawing.
+const HEAD_ICONS: &[(&str, &str, &str)] = &[
+    ("icon", "favicon.ico", r#"sizes="32x32""#),
+    ("icon", "favicon.svg", r#"type="image/svg+xml""#),
+    ("apple-touch-icon", "apple-touch-icon.png", ""),
+];
+
+/// The width and height a PNG's IHDR chunk states, or `None` when `bytes` is
+/// not a PNG.
+fn png_size(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let be =
+        |at: usize| u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    Some((be(16), be(20)))
+}
+
+/// The images an ICO file holds, as (width, height) read from each image's
+/// own PNG header, after checking the directory entry states the same size.
+fn ico_sizes(bytes: &[u8]) -> Result<Vec<(u32, u32)>, TestError> {
+    let le16 = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+    let le32 =
+        |at: usize| u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    if bytes.len() < 6 || le16(0) != 0 || le16(2) != 1 {
+        return Err("not an ICO file: the header is not 0, 1".into());
+    }
+    let count = usize::from(le16(4));
+    let mut out = Vec::new();
+    for i in 0..count {
+        let entry = 6 + 16 * i;
+        if bytes.len() < entry + 16 {
+            return Err(format!("directory entry {i} runs past the end of the file").into());
+        }
+        // A width or height of 0 in the directory means 256.
+        let stated = |b: u8| if b == 0 { 256 } else { u32::from(b) };
+        let (w, h) = (stated(bytes[entry]), stated(bytes[entry + 1]));
+        let (len, at) = (le32(entry + 8) as usize, le32(entry + 12) as usize);
+        let image = bytes
+            .get(at..at + len)
+            .ok_or_else(|| format!("image {i} runs past the end of the file"))?;
+        let size = png_size(image).ok_or_else(|| format!("image {i} is not a PNG"))?;
+        if size != (w, h) {
+            return Err(format!(
+                "image {i}: the directory says {w}x{h}, the PNG is {}x{}",
+                size.0, size.1
+            )
+            .into());
+        }
+        out.push(size);
+    }
+    Ok(out)
+}
+
+/// The head links the logo's icons, each file ships in the shape its link
+/// promises, and the navigation bar shows the mark.
+///
+/// A missing icon is never seen on the page: the browser falls back to a
+/// blank tab, a phone's home screen to a screenshot, and nothing reports it.
+/// So each link is held to a file, and each file to its format and size. The
+/// old favicon was an inline `data:` SVG; a second icon source would make the
+/// browser's choice between two drawings, so none may come back.
+#[test]
+fn the_head_names_the_logo_icons_and_each_one_ships() -> Result<(), TestError> {
+    let base = read("website/templates/base.html")?;
+    let link_rel = regex::Regex::new(r#"<link rel="(icon|apple-touch-icon|shortcut icon)""#)?;
+    let mut faults = Vec::new();
+    for line in base.lines().filter(|l| link_rel.is_match(l)) {
+        if !HEAD_ICONS
+            .iter()
+            .any(|(_, file, _)| line.contains(&format!("path='{file}'")))
+        {
+            faults.push(format!(
+                "an icon link names a file outside the logo set: {}",
+                line.trim()
+            ));
+        }
+    }
+    for (rel, file, attr) in HEAD_ICONS {
+        let line = base.lines().find(|l| {
+            l.contains(&format!(r#"<link rel="{rel}""#)) && l.contains(&format!("path='{file}'"))
+        });
+        match line {
+            None => faults.push(format!(
+                "base.html has no <link rel=\"{rel}\"> naming {file}"
+            )),
+            Some(l) if !l.contains(attr) => {
+                faults.push(format!("the {file} link lacks {attr}: {}", l.trim()))
+            }
+            Some(_) => {}
+        }
+        let path = repo().join("website/static").join(file);
+        match std::fs::metadata(&path) {
+            Ok(m) if m.len() > 0 => {}
+            _ => faults.push(format!(
+                "base.html links {file} but website/static/{file} is missing or empty"
+            )),
+        }
+    }
+    assert!(
+        faults.is_empty(),
+        "the logo icons:\n  {}",
+        faults.join("\n  ")
+    );
+
+    let ico = std::fs::read(repo().join("website/static/favicon.ico"))?;
+    assert_eq!(
+        ico_sizes(&ico)?,
+        vec![(16, 16), (32, 32), (48, 48)],
+        "favicon.ico must hold the 16, 32 and 48 pixel images a tab, a bookmark \
+         and a Windows shortcut each pick from"
+    );
+    let touch = std::fs::read(repo().join("website/static/apple-touch-icon.png"))?;
+    assert_eq!(
+        png_size(&touch),
+        Some((180, 180)),
+        "apple-touch-icon.png must be the 180-pixel square iOS asks for"
+    );
+
+    // The card's size is stated in the head; the PNG must agree, or an
+    // unfurler that trusts the tags lays the card out at the wrong ratio.
+    let stated = |prop: &str| -> Result<u32, TestError> {
+        let re = regex::Regex::new(&format!(r#"property="og:image:{prop}" content="(\d+)""#))?;
+        let caps = re
+            .captures(&base)
+            .ok_or_else(|| format!("base.html states no og:image:{prop}"))?;
+        Ok(caps[1].parse()?)
+    };
+    let card = std::fs::read(repo().join("website/static/og-image.png"))?;
+    assert_eq!(
+        png_size(&card),
+        Some((stated("width")?, stated("height")?)),
+        "og-image.png is not the size base.html's og:image:width/height state"
+    );
+
+    let nav = base
+        .lines()
+        .find(|l| l.contains(r#"class="nav-logo""#))
+        .ok_or("base.html has no nav-logo link")?;
+    assert!(
+        nav.contains("path='favicon.svg'"),
+        "the navigation bar's sipnab link does not show the mark: {}",
+        nav.trim()
+    );
+    Ok(())
+}
+
+/// Why an SVG is not a plain drawing, one reason per offending construct; an
+/// empty list is a plain drawing.
+///
+/// A plain drawing has no script, no stylesheet, no embedded HTML, no event
+/// handler, no entity declaration and no reference out of the file. A
+/// reference to an element of the same file (`url(#clip)`, `href="#a"`) stays
+/// in the file and is allowed; the badges under `website/static/badges/` are
+/// drawn that way.
+fn svg_faults(svg: &str) -> Result<Vec<String>, TestError> {
+    let rules: &[(&str, &str)] = &[
+        (r"(?i)<script", "a <script> element"),
+        (r"(?i)<style", "a <style> element"),
+        (r"(?i)<foreignObject", "a <foreignObject>"),
+        (r"(?i)<!ENTITY", "an entity declaration"),
+        (r#"(?i)\son[a-z]+\s*="#, "an event-handler attribute"),
+        (r#"(?i)href\s*=\s*["'][^#"']"#, "a link out of the file"),
+        (r#"(?i)url\(\s*["']?[^#"'\s]"#, "a url() out of the file"),
+    ];
+    let mut out = Vec::new();
+    for (pattern, what) in rules {
+        if regex::Regex::new(pattern)?.is_match(svg) {
+            out.push((*what).to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// Every SVG the site serves, and every brand file, is a plain drawing.
+///
+/// An SVG is a document, not a picture: opened by its own URL it runs any
+/// script it carries with the site's origin, and the favicon is exactly the
+/// kind of file someone opens that way. The meta CSP does not reach a file
+/// opened directly, and GitHub Pages sends no header, so the check is on the
+/// file itself.
+#[test]
+fn every_served_svg_is_a_plain_drawing() -> Result<(), TestError> {
+    // The rule must bite before its silence means anything.
+    for bad in [
+        r#"<svg><script>alert(1)</script></svg>"#,
+        r#"<svg><style>rect{fill:red}</style></svg>"#,
+        r#"<svg><foreignObject/></svg>"#,
+        r#"<svg><rect onload="x()"/></svg>"#,
+        r#"<svg><image href="https://example.com/a.png"/></svg>"#,
+        r#"<svg><rect fill="url(https://example.com/p.svg#g)"/></svg>"#,
+    ] {
+        assert!(!svg_faults(bad)?.is_empty(), "svg_faults passes {bad}");
+    }
+    assert!(
+        svg_faults(
+            r##"<svg><clipPath id="r"/><g clip-path="url(#r)"><use href="#r"/></g></svg>"##
+        )?
+        .is_empty(),
+        "svg_faults refuses a reference within the file"
+    );
+
+    let mut svgs = Vec::new();
+    let mut stack = vec![repo().join("website/static"), repo().join("website/brand")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|x| x.to_str()) == Some("svg") {
+                svgs.push(path);
+            }
+        }
+    }
+    svgs.sort();
+    let rel = |p: &Path| p.strip_prefix(repo()).unwrap_or(p).display().to_string();
+    let names: Vec<String> = svgs.iter().map(|p| rel(p)).collect();
+    for must in ["website/static/favicon.svg", "website/brand/mark.svg"] {
+        assert!(
+            names.iter().any(|n| n == must),
+            "{must} was not found, so the scan below did not read it: {names:?}"
+        );
+    }
+    let mut bad = Vec::new();
+    for path in &svgs {
+        for fault in svg_faults(&std::fs::read_to_string(path)?)? {
+            bad.push(format!("{}: {fault}", rel(path)));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} SVG(s) read; these are not plain drawings:\n  {}",
+        svgs.len(),
+        bad.join("\n  ")
+    );
+    Ok(())
+}
+
+/// The favicon is the brand mark, byte for byte, and the social card draws
+/// the same mark.
+///
+/// `scripts/build-icons.py` writes both from `website/brand/mark.svg`. A hand
+/// edit to either copy would ship a logo the source no longer describes, and
+/// the next run of the script would silently undo it.
+#[test]
+fn the_favicon_and_the_social_card_draw_the_brand_mark() -> Result<(), TestError> {
+    let mark = read("website/brand/mark.svg")?;
+    assert_eq!(
+        read("website/static/favicon.svg")?,
+        mark,
+        "website/static/favicon.svg differs from website/brand/mark.svg. Edit the \
+         mark, then run python3 scripts/build-icons.py"
+    );
+    let open = mark.find('>').ok_or("mark.svg has no opening tag")?;
+    let close = mark.rfind("</svg>").ok_or("mark.svg has no closing tag")?;
+    let body = mark[open + 1..close].trim();
+    assert!(!body.is_empty(), "mark.svg draws nothing");
+    assert!(
+        read("website/og-image.svg")?.contains(body),
+        "website/og-image.svg does not draw the mark in website/brand/mark.svg. \
+         Run python3 scripts/build-icons.py"
+    );
+    Ok(())
+}
+
 /// Docs pages declare `og:type = article`, not the site-wide `website`.
 ///
 /// `website` is right for the homepage, the download page and a section index;

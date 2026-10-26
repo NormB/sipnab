@@ -32,9 +32,11 @@ Fonts: **JetBrains Mono** for the wordmark and any code/terminal text;
 **Inter** for the tagline. If exact fonts are unavailable, any clean
 monospace + neutral sans is acceptable, but monospace must dominate.
 
-Logo mark: a rounded square (radius ≈ 12%) filled `#ffcc66` containing a
-bold lowercase monospace "s" in `#0a0e14` — this is the site favicon and
-may be reproduced at small size, but the full wordmark matters more.
+Logo mark: `website/brand/mark.svg`, a call ladder (two amber rails, a
+request and its response) on a `#0a0e14` tile with radius 6 of 32. It is
+the site favicon. `scripts/build-icons.py` draws it into the card's marked
+place, then renders the card to `og-image.png`; the full wordmark still
+matters more.
 
 ## Required content
 

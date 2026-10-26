@@ -91,6 +91,8 @@ contract (`DEPLOY_PATH`, `DEPLOY_OWNER`, `ZOLA_BIN`, `SKIP_BUILD`).
 ```text
 website/
 ├── config.toml             # Zola config (base_url, [extra] vars, search index)
+├── brand/                  # The logo: mark.svg (the source), lockups, social preview
+├── og-image.svg            # The social card's source; og-image.png is drawn from it
 ├── content/                # Markdown source
 │   ├── _index.md           # Homepage front-matter (body in templates/index.html)
 │   ├── analyze/            # Browser pcap-analysis page
@@ -105,6 +107,23 @@ website/
 ├── static/                 # Verbatim assets
 └── public/                 # Generated output. `.gitignore` excludes it; every build regenerates it
 ```
+
+## Regenerating the logo files
+
+`brand/mark.svg` is the logo's one source. `scripts/build-icons.py` draws
+the favicon (SVG and ICO), the Apple touch icon, the mark on the social
+card and the card itself (`og-image.svg` to `static/og-image.png`), the
+repository's social preview and the two lockups from it. After changing
+the mark or the card, from the repository root:
+
+```sh
+python3 scripts/build-icons.py
+```
+
+It needs `resvg`, the Python `fontTools` package, and JetBrains Mono and
+Inter installed where `fc-match` finds them. `--check` writes nothing and
+names any file that differs. `brand/README.md` says who may use the logo,
+and how.
 
 ## Regenerating the animated demos
 
