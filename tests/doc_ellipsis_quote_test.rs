@@ -51,7 +51,7 @@ const ALLOWED: &[(&str, &str, &str)] = &[
     ),
     (
         "docs/cli-reference.md",
-        r#"| `--find-in-files` | `<PATH>...` | | Unreleased | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |"#,
+        r#"| `--find-in-files` | `<PATH>...` | | 0.5.231 | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |"#,
         r#"clap's notation for a value that repeats, as `--help` prints `--find-in-files <PATH>...`"#,
     ),
     (

@@ -1456,7 +1456,7 @@ checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
 name = "sipnab"
-version = "0.5.230"
+version = "0.5.231"
 dependencies = [
  "aes",
  "ahash",
