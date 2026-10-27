@@ -259,19 +259,21 @@ mod mcp {
     }
 
     /// A client that connects and never speaks does not hold up another
-    /// client's handshake.
+    /// client's handshake: the second client is served while the silent one
+    /// is still connected. An inline handshake would close the silent
+    /// connection at the 10 s handshake timeout before serving anyone else,
+    /// so the open connection is the proof, not the elapsed time.
     #[test]
     fn mcp_a_silent_client_does_not_block_other_handshakes() -> Result<(), TestError> {
         let pki = test_pki("mcp-silent")?;
         let (child, addr) = spawn_tls(&pki, &[])?;
-        let _silent = std::net::TcpStream::connect(&addr)?;
-        let started = std::time::Instant::now();
+        let silent = std::net::TcpStream::connect(&addr)?;
         let init = initialize(&addr, &pki.ca, None)?;
         assert_eq!(init.status, 200);
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(2),
-            "served after {:?}: the silent peer held the accept loop",
-            started.elapsed()
+            crate::tls_pki::server_still_holds(&silent)?,
+            "the server closed the silent connection before it served the \
+             second client: the silent peer held the accept loop"
         );
         drop(child);
         Ok(())
@@ -517,19 +519,21 @@ mod metrics {
     }
 
     /// A client that connects and never speaks does not hold up another
-    /// client's handshake.
+    /// client's handshake: the second client is served while the silent one
+    /// is still connected. A handshake on the accept loop would close the
+    /// silent connection at the 5 s connection timeout before serving anyone
+    /// else, so the open connection is the proof, not the elapsed time.
     #[test]
     fn metrics_a_silent_client_does_not_block_other_handshakes() -> Result<(), TestError> {
         let pki = test_pki("metrics-silent")?;
         let run = spawn_tls(&pki, &[])?;
-        let _silent = std::net::TcpStream::connect(&run.addr)?;
-        let started = std::time::Instant::now();
+        let silent = std::net::TcpStream::connect(&run.addr)?;
         let (status, _) = https_get(&run.addr, "/metrics", &pki.ca, test_timeout(10))?;
         assert_eq!(status, 200);
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(2),
-            "served after {:?}: the silent peer held the accept loop",
-            started.elapsed()
+            crate::tls_pki::server_still_holds(&silent)?,
+            "the server closed the silent connection before it served the \
+             second client: the silent peer held the accept loop"
         );
         stop(run);
         Ok(())

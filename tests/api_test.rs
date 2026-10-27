@@ -1266,21 +1266,25 @@ fn a_failed_handshake_does_not_stop_the_server() -> Result<(), TestError> {
 
 /// A client that connects and never speaks does not hold up anyone else's
 /// handshake (Slowloris): the handshakes run side by side, off the accept
-/// path, so a trusting client connecting after it is served within 2 s — far
-/// inside the 10 s handshake timeout the silent peer would otherwise hold
-/// the listener for.
+/// path, so a trusting client connecting after it is served while the silent
+/// peer is still connected.
+///
+/// The check is the silent connection, not the elapsed time. A listener that ran
+/// each handshake inline would serve the second client only after closing
+/// the silent one at the 10 s handshake timeout, so the silent connection
+/// still being open when the answer arrives proves the two ran side by side,
+/// on a loaded host as on an idle one.
 #[test]
 fn a_silent_client_does_not_block_other_handshakes() -> Result<(), TestError> {
     let pki = test_pki()?;
     let srv = ApiServer::spawn_unsettled(&api_args(&pki))?;
-    let _silent = std::net::TcpStream::connect(&srv.addr)?;
-    let started = std::time::Instant::now();
+    let silent = std::net::TcpStream::connect(&srv.addr)?;
     let (status, _) = https_get(&srv.addr, "/health", &pki.ca)?;
     assert_eq!(status, 200);
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "served after {:?}: the silent peer held the accept loop",
-        started.elapsed()
+        tls_pki::server_still_holds(&silent)?,
+        "the server closed the silent connection before it served the second \
+         client: the silent peer held the accept loop until its handshake timeout"
     );
     Ok(())
 }

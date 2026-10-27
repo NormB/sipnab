@@ -210,3 +210,30 @@ pub fn plain_http_get(
     let _ = sock.read_to_end(&mut raw);
     Ok(String::from_utf8_lossy(&raw).into_owned())
 }
+
+/// Whether the server still holds `sock` open: nothing on it says the server
+/// closed or reset it. Asked without blocking and without consuming a byte.
+///
+/// The silent-client tests use it in place of a bound on elapsed time. A
+/// listener that runs each handshake inline serves a second client only after
+/// it gives up on the silent one and closes it, at its handshake timeout. So
+/// a second client served while the silent connection is still open proves
+/// the handshakes ran side by side, however slowly the host ran.
+///
+/// # Errors
+///
+/// The socket's blocking mode cannot be changed.
+pub fn server_still_holds(sock: &std::net::TcpStream) -> std::io::Result<bool> {
+    sock.set_nonblocking(true)?;
+    let mut byte = [0u8; 1];
+    let open = match sock.peek(&mut byte) {
+        // An end of stream: the server closed its side.
+        Ok(0) => false,
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
+        // A reset or any other error: the connection is gone.
+        Err(_) => false,
+    };
+    sock.set_nonblocking(false)?;
+    Ok(open)
+}
