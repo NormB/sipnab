@@ -249,9 +249,11 @@ capture unmarked:
 A message that carries SDP has ` (SDP)` after its method or status, as in
 `INVITE (SDP)` or `200 OK (SDP)`. The `-N` lines, the TUI ladder and detail
 title, `--call-report`, the Mermaid ladder, `analyze_vcon` and the browser
-analyzer all use the same label. A body counts as SDP when its `Content-Type`
-is `application/sdp` in any case, or when it is `multipart/*` with an
-`application/sdp` part:
+analyzer all use the same label. A message counts as carrying SDP when its
+`Content-Type` is `application/sdp` in any case, when it is `multipart/*` with
+an `application/sdp` part, or when it has no `Content-Type` and its body
+starts `v=`. A body declared as another type is that type, whatever its first
+bytes:
 
 ```text
 14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP

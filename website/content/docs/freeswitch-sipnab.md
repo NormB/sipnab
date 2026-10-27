@@ -276,15 +276,15 @@ The answer is a Mermaid `sequenceDiagram` of the caller's leg.
     p1-->>p0: 100 Trying
     Note right of p0: +0.001s
     p1-->>p0: 180 Ringing
-    Note right of p0: +0.003s · PDD 3ms
+    Note right of p0: +0.023s · PDD 23ms
     p1-->>p0: 200 OK (SDP)
-    Note right of p0: +0.041s
+    Note right of p0: +0.045s
     p0->>p1: ACK
-    Note right of p1: +0.041s
+    Note right of p1: +0.046s
     p0->>p1: BYE
-    Note right of p1: +9.047s
+    Note right of p1: +9.051s
     p1-->>p0: 200 OK
-    Note right of p0: +9.054s
+    Note right of p0: +9.074s
 ⟦/untrusted-capture-data⟧
 ```
 

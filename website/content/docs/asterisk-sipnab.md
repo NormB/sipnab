@@ -204,9 +204,9 @@ The report covers the caller's leg. Its `SIP Transactions` show:
 
 ```text
 SIP Transactions:
-  INVITE (SDP) -> 100 -> 180 (1ms) -> 200 (SDP) (3ms)
+  INVITE (SDP) -> 100 -> 180 (3ms) -> 200 (SDP) (4ms)
   ACK
-  BYE -> 200 (9008ms)
+  BYE -> 200 (9012ms)
 ```
 
 Under `Media Streams`:
