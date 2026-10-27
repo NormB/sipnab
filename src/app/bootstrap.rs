@@ -3079,6 +3079,8 @@ fn apply_core_dump_policy(allow_coredump: bool) -> Result<(), PlanError> {
 struct Compiled {
     /// The `mcp` feature: the MCP server.
     mcp: bool,
+    /// The `mcp-http` feature: MCP over HTTP (`--mcp-transport http`).
+    mcp_http: bool,
     /// The `hep` feature: HEP send, listen and parse.
     hep: bool,
     /// The `tls` feature: TLS and SRTP decryption.
@@ -3091,6 +3093,7 @@ impl Compiled {
     /// This build.
     const THIS_BUILD: Self = Self {
         mcp: cfg!(feature = "mcp"),
+        mcp_http: cfg!(feature = "mcp-http"),
         hep: cfg!(feature = "hep"),
         tls: cfg!(feature = "tls"),
         api: cfg!(feature = "api"),
@@ -3123,10 +3126,17 @@ fn uncompiled_flag(cli: &Cli, config: &Config, compiled: Compiled) -> Option<&'s
         (!compiled.mcp, !compiled.hep, !compiled.tls, !compiled.api);
     let tls = &cli.tls_args;
     let listener = &cli.listener_args;
-    let gates: [(bool, &str); 14] = [
+    let gates: [(bool, &str); 15] = [
         uncompiled_when(
             no_mcp && cli.mcp_args.mcp,
             "--mcp requires the 'mcp' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            !compiled.mcp_http
+                && cli.mcp_args.mcp
+                && matches!(cli.mcp_args.mcp_transport, crate::cli::McpTransport::Http),
+            "--mcp-transport http requires the mcp-http feature; rebuild with \
+             --features mcp-http (or full).",
         ),
         uncompiled_when(
             no_hep && cli.hep_args.hep_listen.is_some(),
@@ -7281,12 +7291,14 @@ mod tests {
         use clap::Parser as _;
         const NONE: Compiled = Compiled {
             mcp: false,
+            mcp_http: false,
             hep: false,
             tls: false,
             api: false,
         };
         const ALL: Compiled = Compiled {
             mcp: true,
+            mcp_http: true,
             hep: true,
             tls: true,
             api: true,
@@ -7354,6 +7366,47 @@ mod tests {
             assert_eq!(uncompiled_flag(&cli, &config, NONE), want, "{flags:?}");
             assert_eq!(uncompiled_flag(&cli, &config, ALL), None, "{flags:?}");
         }
+        Ok(())
+    }
+
+    /// `--mcp-transport http` in a build with MCP but without `mcp-http` is
+    /// refused here, before any capture opens, like every other flag whose
+    /// feature is absent.
+    ///
+    /// The defect this pays for: the refusal was an error from
+    /// `servers::start_servers`, reached only after the capture had opened
+    /// and, in batch, after the whole input was read; and it went through
+    /// the log, so `SIPNAB_LOG=off` exited 2 with nothing said.
+    #[test]
+    fn mcp_http_without_its_feature_is_refused_before_the_capture() -> Result<(), TestError> {
+        use clap::Parser as _;
+        const NO_HTTP: Compiled = Compiled {
+            mcp: true,
+            mcp_http: false,
+            hep: true,
+            tls: true,
+            api: true,
+        };
+        const ALL: Compiled = Compiled {
+            mcp: true,
+            mcp_http: true,
+            hep: true,
+            tls: true,
+            api: true,
+        };
+        let config = Config::default();
+        let http = Cli::try_parse_from(["sipnab", "-N", "--mcp", "--mcp-transport", "http"])?;
+        assert_eq!(
+            uncompiled_flag(&http, &config, NO_HTTP),
+            Some(
+                "--mcp-transport http requires the mcp-http feature; rebuild with \
+                 --features mcp-http (or full)."
+            )
+        );
+        assert_eq!(uncompiled_flag(&http, &config, ALL), None);
+        // stdio, the default transport, needs only `mcp`.
+        let stdio = Cli::try_parse_from(["sipnab", "-N", "--mcp"])?;
+        assert_eq!(uncompiled_flag(&stdio, &config, NO_HTTP), None);
         Ok(())
     }
 
