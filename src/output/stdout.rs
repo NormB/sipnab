@@ -31,11 +31,11 @@ pub fn write_to<W: Write>(w: &mut W, args: std::fmt::Arguments<'_>) -> std::io::
 
 /// Write `args` to standard output.
 ///
-/// A closed pipe is ignored. Any other write error is logged and the run
-/// exits 1.
+/// A closed pipe is ignored. Any other write error is printed on stderr and
+/// the run exits 1.
 pub fn emit(args: std::fmt::Arguments<'_>) {
     if let Err(e) = write_to(&mut std::io::stdout().lock(), args) {
-        tracing::error!("writing to standard output failed: {e}");
+        stderr_line!("writing to standard output failed: {e}");
         crate::capture::archive::release_run_and_exit(1);
     }
 }

@@ -760,7 +760,7 @@ fn worker_main(args: &[String]) -> i32 {
 /// 4 when the worker cannot stop being root.
 fn start(args: &WorkerArgs) -> Result<SendSockets, i32> {
     let sockets = adopt(&args.send_fds).map_err(|e| {
-        tracing::error!("scanner-kill worker refused to start: {e}");
+        stderr_line!("scanner-kill worker refused to start: {e}");
         3
     })?;
     if let Err(e) = harden(&args.run_as) {
@@ -831,7 +831,7 @@ fn exit_code(result: std::io::Result<()>) -> i32 {
     match result {
         Ok(()) => 0,
         Err(e) => {
-            tracing::error!("scanner-kill worker stopped: {e}");
+            stderr_line!("scanner-kill worker stopped: {e}");
             5
         }
     }

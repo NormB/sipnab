@@ -22,18 +22,6 @@
   "resolved": [
     {
       "file": "src/app/batch.rs",
-      "call": "error!(\"{message}\")",
-      "count": 1,
-      "carries": [
-        "--export-vcon-when needs --export-vcon-dir. Nothing was exported.",
-        "Could not create the vCon directory '{}': {e}. Nothing was exported.",
-        "The {what} for Call-ID '{}' would not serialize: {e}",
-        "Could not write '{}': {e}. {written} container(s) were written before this."
-      ],
-      "why": "LiveVconTracker::fail callers in batch.rs: vcon_selection (anyhow! site), prepare_export_dir and write_vcon_containers (format! literals carried)."
-    },
-    {
-      "file": "src/app/batch.rs",
       "call": "stderr_line!(\"{}\", target.say(&format!(\"{e:#}\")))",
       "count": 1,
       "carries": [],
@@ -72,12 +60,14 @@
     {
       "file": "src/app/batch.rs",
       "call": "stderr_line!(\"{message}\")",
-      "count": 2,
+      "count": 3,
       "carries": [
         "--export-vcon-when needs --export-vcon-dir. Nothing was exported.",
-        "Could not create the vCon directory '{}': {e}. Nothing was exported."
+        "Could not create the vCon directory '{}': {e}. Nothing was exported.",
+        "The {what} for Call-ID '{}' would not serialize: {e}",
+        "Could not write '{}': {e}. {written} container(s) were written before this."
       ],
-      "why": "export_vcon_selection_after (VconTarget::from_flags) and export_target (prepare_target_dir) in batch.rs."
+      "why": "export_vcon_selection_after (VconTarget::from_flags) and export_target (prepare_target_dir) in batch.rs; and LiveVconTracker::fail callers in batch.rs: vcon_selection (anyhow! site), prepare_export_dir and write_vcon_containers (format! literals carried)."
     },
     {
       "file": "src/app/batch.rs",
@@ -233,7 +223,7 @@
     },
     {
       "file": "src/app/servers.rs",
-      "call": "error!(\"{flag} '{path}': {e}\")",
+      "call": "stderr_line!(\"{flag} '{path}': {e}\")",
       "count": 1,
       "carries": [
         "{flag} '{path}': {e}"
@@ -421,7 +411,7 @@
     },
     {
       "file": "src/app/batch.rs",
-      "call": "error!( \"{}\", crate::capture::writer::describe_output_error( &e, crate::privilege::dropped_to() ) )",
+      "call": "stderr_line!( \"{}\", crate::capture::writer::describe_output_error( &e, crate::privilege::dropped_to() ) )",
       "count": 1,
       "carries": [],
       "why": "Text comes from src/capture/writer.rs::describe_output_error (out of scope), which wraps the writer's anyhow error."
@@ -526,17 +516,17 @@
     },
     {
       "file": "src/app/bootstrap.rs",
-      "call": "error!(\"{e}\")",
-      "count": 1,
+      "call": "error!(\"{msg}\")",
+      "count": 3,
       "carries": [],
-      "why": "Error from src/privilege setup_capabilities (--setup-caps), out of scope."
+      "why": "The vcon_forward ForwardPlan::resolve_refusal/into_settings and vcon_fetch::prepare occurrences carry format! text from another in-scope file without sites, plus out-of-scope error text (Endpoint parse, credential file reads)."
     },
     {
       "file": "src/app/bootstrap.rs",
-      "call": "error!(\"{msg}\")",
-      "count": 4,
+      "call": "stderr_line!(\"{msg}\")",
+      "count": 1,
       "carries": [],
-      "why": "mint_token is an in-file literal, but the vcon_forward ForwardPlan::resolve_refusal/into_settings and vcon_fetch::prepare occurrences carry format! text from another in-scope file without sites, plus out-of-scope error text (Endpoint parse, credential file reads)."
+      "why": "run_mint_token prints mint_token's error: the missing-key literal and the TTL and audience format! errors in bootstrap.rs, which have no sites of their own."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -554,17 +544,17 @@
     },
     {
       "file": "src/app/bootstrap.rs",
-      "call": "error!(\"{}\", self.message)",
+      "call": "stderr_line!(\"{}\", self.message)",
       "count": 2,
       "carries": [],
-      "why": "PlanError::exit/exit_after print any PlanError, including struct-literal ones (PlanError { message: e.to_string() } in bootstrap.rs load_config and batch.rs start-up) whose text comes from out-of-scope errors."
+      "why": "PlanError::exit/exit_after print any PlanError, including struct-literal ones (PlanError { message: e.to_string() } in bootstrap.rs load_config and batch.rs start-up) whose text comes from out-of-scope errors. main.rs reports three refusals through PlanError::usage too: install_archive_passwords (src/capture/archive/password errors passed through), run_provenance::write_record, and Cli::validate's crate::Error Display (CliValidation strings built in src/cli.rs without sites)."
     },
     {
       "file": "src/app/bootstrap.rs",
       "call": "stderr_line!(\"{e}\")",
-      "count": 1,
+      "count": 2,
       "carries": [],
-      "why": "src/capture/uprobe/discover parse_flavor error, out of scope."
+      "why": "src/capture/uprobe/discover parse_flavor error, out of scope; and Error from src/privilege setup_capabilities (--setup-caps), out of scope."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -611,9 +601,16 @@
     {
       "file": "src/app/tui_mode.rs",
       "call": "error!(\"{e}\")",
-      "count": 3,
+      "count": 1,
       "carries": [],
-      "why": "servers::start_actions returns format!(\"actions journal {}: {e}\") (servers.rs, not a site) around src/journal / src/security/actions errors, out of scope; the server-start error is likewise passed through. The processing-loop occurrence prints bail! sites."
+      "why": "The processing-loop occurrence prints bail! sites."
+    },
+    {
+      "file": "src/app/tui_mode.rs",
+      "call": "stderr_line!(\"{e}\")",
+      "count": 2,
+      "carries": [],
+      "why": "servers::start_actions returns format!(\"actions journal {}: {e}\") (servers.rs, not a site) around src/journal / src/security/actions errors, out of scope; the server-start error is likewise passed through."
     },
     {
       "file": "src/app/tui_mode.rs",
@@ -631,7 +628,7 @@
     },
     {
       "file": "src/app/vcon_fetch.rs",
-      "call": "error!(\"{e}\")",
+      "call": "stderr_line!(\"{e}\")",
       "count": 1,
       "carries": [],
       "why": "Fetcher::new error includes vcon_forward.rs::client_config, which passes through src/tls_files pem_certificates and rustls error text verbatim."
@@ -656,20 +653,6 @@
       "count": 1,
       "carries": [],
       "why": "Error::CliValidation(String) is built in src/cli.rs (Cli::validate, not a site kind) and from src/output/group.rs::GroupField::parse."
-    },
-    {
-      "file": "src/main.rs",
-      "call": "error!(\"{msg}\")",
-      "count": 2,
-      "carries": [],
-      "why": "install_archive_passwords passes src/capture/archive/password errors through; run_provenance::write_record also returns a String."
-    },
-    {
-      "file": "src/main.rs",
-      "call": "error!(\"{}\", msg)",
-      "count": 1,
-      "carries": [],
-      "why": "Cli::validate's crate::Error Display; CliValidation strings are built in src/cli.rs without sites."
     },
     {
       "file": "src/app/bootstrap.rs",

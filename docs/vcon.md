@@ -94,7 +94,7 @@ libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
 A binary without `vcon` refuses the export, with exit code 2:
 
 ```text
-2026-10-16T11:46:58.806503Z ERROR sipnab: --export-vcon needs the 'vcon' Cargo feature, which this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with
+--export-vcon needs the 'vcon' Cargo feature, which this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with
 ```
 
 To build one that carries it from a source checkout:
@@ -128,7 +128,7 @@ Two refusals of the CLI pair, each with exit code 2:
   --export-vcon '1-1966@10.0.2.20' --vcon-out sip-rtp-g711.pcap` prints:
 
   ```text
-  2026-10-18T15:36:13.809790Z ERROR sipnab::app::bootstrap: --vcon-out 'sip-rtp-g711.pcap' would overwrite the capture being read ('/tmp/captures/sip-rtp-g711.pcap'). They are the same file. Writing it would destroy the input — choose a different output path.
+  --vcon-out 'sip-rtp-g711.pcap' would overwrite the capture being read ('/tmp/captures/sip-rtp-g711.pcap'). They are the same file. Writing it would destroy the input — choose a different output path.
   ```
 
   Choose another output path.

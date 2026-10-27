@@ -1214,7 +1214,7 @@ pub fn run_cores_file(
         // `input_set::resolve` already failed the run if nothing resolved. Say
         // so loudly anyway rather than exiting 0 with an empty report, which is
         // precisely the failure this path used to have.
-        tracing::error!("--cores: no capture files to read");
+        stderr_line!("--cores: no capture files to read");
         crate::capture::archive::release_run_and_exit(1);
     }
     crate::app::bootstrap::refuse_cores_without_a_view(cli, !vcon_rules.is_empty());
@@ -1266,7 +1266,7 @@ pub fn run_cores_file(
             }
         }
         Err(e) => {
-            tracing::error!("multi-core reconstruction failed: {e:#}");
+            stderr_line!("multi-core reconstruction failed: {e:#}");
             crate::capture::archive::release_run_and_exit(1);
         }
     }
@@ -4205,7 +4205,7 @@ impl BatchRunner {
                 w
             }
             Err(e) => {
-                tracing::error!(
+                stderr_line!(
                     "{}",
                     crate::capture::writer::describe_output_error(
                         &e,
@@ -4524,7 +4524,7 @@ impl BatchRunner {
         // emitted output is incomplete — same class as a truncated -O file, and
         // it must not exit 0 either.
         if let Some(e) = lp.sink.hard_error() {
-            tracing::error!("Failed to write output: {e}");
+            stderr_line!("Failed to write output: {e}");
             lp.output_failed = true;
         }
 
@@ -4543,7 +4543,7 @@ impl BatchRunner {
         if let Some(ref mut w) = self.writer
             && let Err(e) = w.finish()
         {
-            tracing::error!("Output file may be incomplete: {e:#}");
+            stderr_line!("Output file may be incomplete: {e:#}");
             lp.output_failed = true;
         }
     }
@@ -7237,11 +7237,12 @@ impl LiveVconTracker {
         self.failed
     }
 
-    /// Log why a sweep could not write a container it owed, and remember
-    /// that it failed so the run ends non-zero.
+    /// Print why a sweep could not write a container it owed, on stderr
+    /// because it decides the exit code, and remember that it failed so the
+    /// run ends non-zero.
     #[cfg(feature = "vcon")]
     fn fail(&mut self, message: &str) {
-        tracing::error!("{message}");
+        stderr_line!("{message}");
         self.failed = true;
     }
 }
