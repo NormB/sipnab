@@ -30,15 +30,6 @@ import sys
 import time
 
 
-def parse(text):
-    """The JSON the API answered, or None when it is not JSON at all."""
-    try:
-        v = json.loads(text)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return v if isinstance(v, list) else None
-
-
 def open_alerts(alerts):
     """Alerts whose state is open -- dismissed and fixed ones are not findings."""
     return [a for a in alerts if isinstance(a, dict) and a.get("state") == "open"]
@@ -69,6 +60,37 @@ def describe(alert):
     return f"  {rule}  {loc.get('path', '?')}:{loc.get('start_line', '?')}  {msg}"
 
 
+def merge_pages(text):
+    """The pages `gh api --paginate` printed, as one list, or None if unreadable.
+
+    --paginate writes each page's JSON array straight after the last one,
+    `[...][...]`. Each page is decoded where it starts, so `][` inside an
+    alert's text is just text. Splitting the output on `][` did read it as a
+    page boundary: on 2026-10-27 a PR's open-alerts answer (an osv-scanner
+    alert quoting a version range) became five unparseable pieces, and the
+    gate refused to judge. Anything but whole JSON arrays, with only
+    whitespace between them, is unreadable, and so is an empty answer.
+    """
+    if not isinstance(text, str):
+        return None
+    decoder = json.JSONDecoder()
+    merged, i, pages = [], 0, 0
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i == len(text):
+            break
+        try:
+            page, i = decoder.raw_decode(text, i)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(page, list):
+            return None
+        merged.extend(page)
+        pages += 1
+    return merged if pages else None
+
+
 def gh_paginated(path):
     """Every page of a list endpoint via `gh api --paginate`, or None if unreadable."""
     p = subprocess.run(
@@ -78,14 +100,7 @@ def gh_paginated(path):
     if p.returncode != 0:
         sys.stderr.write(p.stderr)
         return None
-    # --paginate concatenates JSON arrays; join them into one.
-    merged = []
-    for chunk in p.stdout.replace("][", "]\n[").splitlines():
-        v = parse(chunk)
-        if v is None:
-            return None
-        merged.extend(v)
-    return merged
+    return merge_pages(p.stdout)
 
 
 def judge(alerts, analyses, sha, category):
@@ -120,8 +135,8 @@ def main():
     a = ap.parse_args()
 
     if a.alerts_json or a.analyses_json:
-        alerts = parse(open(a.alerts_json).read()) if a.alerts_json else []
-        analyses = parse(open(a.analyses_json).read()) if a.analyses_json else []
+        alerts = merge_pages(open(a.alerts_json).read()) if a.alerts_json else []
+        analyses = merge_pages(open(a.analyses_json).read()) if a.analyses_json else []
         rc, msg = judge(alerts, analyses, a.sha, a.category)
     else:
         deadline = time.time() + a.wait_secs

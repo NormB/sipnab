@@ -134,6 +134,26 @@ fn an_unreadable_answer_is_reported_not_passed() -> Result<(), TestError> {
     Ok(())
 }
 
+/// `gh api --paginate` prints one JSON array per page, back to back. An alert
+/// whose text holds `][` (an advisory quoting a version range) is text inside
+/// its page, not a page boundary: the open alert on the second page is found
+/// and named, not reported as an unreadable answer.
+#[test]
+fn an_open_alert_on_a_second_page_with_brackets_in_its_text_is_found() -> Result<(), TestError> {
+    let dismissed = alert("x/y", "a.rs", "dismissed");
+    let bracketed = format!(
+        r#"{{"number": 522, "state": "open", "rule": {{"id": "osv/GHSA-6pq8-jhm2-2vcw", "severity": "warning"}}, "most_recent_instance": {{"commit_sha": "{SHA}", "location": {{"path": "e2e/package-lock.json", "start_line": 1}}, "message": {{"text": "qs affected [6.7.0][6.16.1)"}}}}}}"#
+    );
+    let alerts = format!("[{dismissed}][{bracketed}]");
+    let (rc, out) = run(&alerts, &analysis_for(SHA), SHA)?;
+    assert_eq!(rc, 1, "{out}");
+    assert!(
+        out.contains("osv/GHSA-6pq8-jhm2-2vcw") && out.contains("e2e/package-lock.json"),
+        "{out}"
+    );
+    Ok(())
+}
+
 /// CodeQL runs one analysis per language; the fast ones finish in seconds.
 /// The alerts come from the Rust one, so only ITS analysis of the commit
 /// counts -- an `actions` analysis of this SHA says nothing about Rust alerts.
