@@ -8,9 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
-
-**Held:** 0.5.231 is cut once the four fixes queued behind this line land, one pull request each; the owner approved that cut on 2026-10-26.
+## [0.5.231] - 2026-10-27
 
 ### Security
 
