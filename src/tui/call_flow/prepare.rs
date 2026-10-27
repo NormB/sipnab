@@ -689,13 +689,9 @@ fn push_sdp_info_lines(
 /// ordinary ladder: the lines appear only on a message that carries an
 /// `application/rs-metadata+xml` part.
 fn push_siprec_lines(extra_lines: &mut Vec<String>, msg: &SipMessage) {
-    let Some(ct) = msg.content_type() else {
-        return;
-    };
-    if !ct.contains("multipart/mixed") {
-        return;
-    }
-    let Ok(md) = crate::sip::siprec::parse_siprec_body(ct, &msg.body) else {
+    // The dialog store's rule, so the ladder annotates exactly the messages
+    // the store keeps metadata from.
+    let Some(md) = crate::sip::siprec::metadata_of(msg) else {
         return;
     };
     let ind = " ".repeat(TS_COL_WIDTH + 1);
@@ -2286,6 +2282,30 @@ mod tests {
             joined.contains("aor not stated"),
             "an unnamed party is shown as unnamed, not omitted: {joined}"
         );
+        Ok(())
+    }
+
+    /// The ladder reads a recording by the dialog store's rule, so a
+    /// `Multipart/Mixed` body with an `Application/RS-Metadata+XML` part is
+    /// annotated too: media types are case-insensitive
+    /// ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)).
+    #[test]
+    fn prepare_annotates_a_siprec_invite_whatever_the_case_of_its_types() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let o = opts(&theme);
+        let upper = siprec_invite("srec-case", 1, t0())?;
+        let raw = String::from_utf8(upper.raw.to_vec())?
+            .replace("multipart/mixed", "Multipart/Mixed")
+            .replace("application/rs-metadata+xml", "Application/RS-Metadata+XML");
+        let msg = parse_req(raw.as_bytes(), t0())?;
+        let (_p, prepared) = prepare_messages(&[msg], t0(), None, &o, &HashSet::new());
+        let joined: String = prepared[0]
+            .extra_lines
+            .iter()
+            .map(|(s, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(joined.contains("SIPREC: session 4f1c0a2e"), "{joined}");
         Ok(())
     }
 

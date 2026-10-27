@@ -476,7 +476,7 @@ pub fn parse_siprec_body(content_type: &str, body: &[u8]) -> Result<SirecMetadat
         if part
             .content_type
             .as_deref()
-            .is_some_and(|ct| ct.contains("rs-metadata") || ct.contains("rs-metadata+xml"))
+            .is_some_and(is_rs_metadata_type)
         {
             let xml = part
                 .text()
@@ -498,10 +498,26 @@ pub fn parse_siprec_body(content_type: &str, body: &[u8]) -> Result<SirecMetadat
 #[must_use]
 pub fn metadata_of(msg: &crate::sip::SipMessage) -> Option<SirecMetadata> {
     let ct = msg.content_type()?;
-    if !ct.contains("multipart/mixed") {
+    if !media_type_of(ct).eq_ignore_ascii_case("multipart/mixed") {
         return None;
     }
     parse_siprec_body(ct, &msg.body).ok()
+}
+
+/// The type and subtype of a `Content-Type` value, without its parameters.
+fn media_type_of(content_type: &str) -> &str {
+    content_type.split(';').next().unwrap_or("").trim()
+}
+
+/// Whether a part's `Content-Type` is the recording metadata:
+/// `application/rs-metadata+xml`, the type [RFC 7865 section 5](https://www.rfc-editor.org/rfc/rfc7865.html#section-5)
+/// names, or `application/rs-metadata`, as the examples in
+/// [RFC 7866 section 9.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-9.1) write it. Matched in any case
+/// ([RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1)), on the type and subtype only.
+fn is_rs_metadata_type(content_type: &str) -> bool {
+    media_type_of(content_type)
+        .to_ascii_lowercase()
+        .contains("rs-metadata")
 }
 
 /// One media description of a SIPREC message's SDP that carries an `a=label`.
@@ -1046,6 +1062,79 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
                 },
             ]
         );
+        Ok(())
+    }
+
+    /// A SIP message from an SRC carrying `body` as `content_type`.
+    fn src_message(content_type: &str, body: &[u8]) -> Result<crate::sip::SipMessage, TestError> {
+        let ct = format!("Content-Type: {content_type}");
+        let len = format!("Content-Length: {}", body.len());
+        // Built here rather than with the shared test-message builder, which the wasm32
+        // build does not compile and this module does.
+        let mut raw = String::from("INVITE sip:srs@192.0.2.30 SIP/2.0\r\n");
+        for h in [
+            "Via: SIP/2.0/UDP 192.0.2.31:5060;branch=z9hG4bKcase",
+            "From: <sip:src@192.0.2.31>;tag=s1",
+            "To: <sip:srs@192.0.2.30>",
+            "Call-ID: case@192.0.2.31",
+            "CSeq: 1 INVITE",
+            &ct,
+            &len,
+        ] {
+            raw.push_str(h);
+            raw.push_str("\r\n");
+        }
+        raw.push_str("\r\n");
+        let mut raw = raw.into_bytes();
+        raw.extend_from_slice(body);
+        Ok(crate::sip::parser::parse_sip(
+            &raw,
+            chrono::Utc::now(),
+            std::net::IpAddr::from([192, 0, 2, 31]),
+            std::net::IpAddr::from([192, 0, 2, 30]),
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )?)
+    }
+
+    /// [RFC 2045 section 5.1](https://www.rfc-editor.org/rfc/rfc2045.html#section-5.1):
+    /// type and subtype are case-insensitive. A recording whose
+    /// `Multipart/Mixed` body carries an `Application/RS-Metadata+XML` part is
+    /// a recording, read by the rule the dialog store and the vCon export
+    /// share.
+    #[test]
+    fn the_recording_types_are_matched_without_regard_to_case() -> Result<(), TestError> {
+        let body = String::from_utf8(opensips_body())?.replace(
+            "Content-Type: application/rs-metadata+xml",
+            "Content-Type: Application/RS-Metadata+XML",
+        );
+        let md = parse_siprec_body("Multipart/Mixed; Boundary=OSS", body.as_bytes())?;
+        assert!(md.session_id.is_some(), "the metadata part is read");
+        let msg = src_message("Multipart/Mixed; boundary=OSS", body.as_bytes())?;
+        assert!(
+            metadata_of(&msg).is_some(),
+            "the message describes a recording"
+        );
+        Ok(())
+    }
+
+    /// Negative controls. [RFC 7866 section 9.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-9.1):
+    /// a message carrying SDP and metadata "MUST have content type
+    /// "multipart/mixed"". Another multipart type is not a recording, and
+    /// neither is a type that only names `multipart/mixed` inside a parameter.
+    #[test]
+    fn only_a_multipart_mixed_body_describes_a_recording() -> Result<(), TestError> {
+        let body = opensips_body();
+        let mixed = src_message("multipart/mixed; boundary=OSS", &body)?;
+        assert!(metadata_of(&mixed).is_some(), "the ordinary case");
+        for ct in [
+            "multipart/alternative; boundary=OSS",
+            "text/plain; note=\"multipart/mixed\"; boundary=OSS",
+        ] {
+            let msg = src_message(ct, &body)?;
+            assert!(metadata_of(&msg).is_none(), "{ct} is not a recording");
+        }
         Ok(())
     }
 
