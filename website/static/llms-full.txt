@@ -23446,7 +23446,7 @@ sipnab could not read the file named by `--mcp-token-file`. The file holds the s
 
 ### `--mcp-transport http requires the mcp-http feature; rebuild with --features mcp-http (or full).`
 
-You gave `--mcp-transport http`, but this sipnab binary does not include the `mcp-http` build feature, so it cannot serve MCP over HTTP.
+You gave `--mcp-transport http`, but this sipnab binary does not include the `mcp-http` build feature, so it cannot serve MCP over HTTP. sipnab refuses the run before it opens the capture.
 
 **What to do:** Use `--mcp-transport stdio`, or use a build that includes the `mcp-http` feature (for example one built with `--features mcp-http` or `--features full`).
 

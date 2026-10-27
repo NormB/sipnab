@@ -987,6 +987,9 @@ pub fn start_servers(
                     tls,
                 })
             }
+            // `bootstrap::uncompiled_flag` refuses this before any capture
+            // opens; this arm answers a caller that starts the servers
+            // without that check.
             #[cfg(not(feature = "mcp-http"))]
             crate::cli::McpTransport::Http => {
                 return Err(anyhow::anyhow!(
