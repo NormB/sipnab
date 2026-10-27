@@ -3863,6 +3863,55 @@ mod quiet_bad_parse_tests {
         Ok(())
     }
 
+    /// [`sip_with_sdp`] with its `Content-Type` line replaced by `content_type`,
+    /// or removed when it is `None`.
+    fn sip_with_body_typed(content_type: Option<&str>, call_id: &str) -> Vec<u8> {
+        let message = String::from_utf8_lossy(&sip_with_sdp(
+            "INVITE sip:bob@example.com SIP/2.0",
+            call_id,
+            "1 INVITE",
+            "192.0.2.86",
+            15886,
+        ))
+        .into_owned();
+        let header = "Content-Type: application/sdp\r\n";
+        let replacement =
+            content_type.map_or_else(String::new, |ct| format!("Content-Type: {ct}\r\n"));
+        message.replacen(header, &replacement, 1).into_bytes()
+    }
+
+    /// An SDP body sent with no `Content-Type` links its media, by the rule
+    /// that labels it `(SDP)` ([`sip::SipMessage::carries_sdp`]): a body with no
+    /// `Content-Type` that starts `v=` is SDP. The label and the link read one
+    /// rule, so a message labeled `(SDP)` is never one whose media is ignored.
+    #[test]
+    fn an_sdp_body_without_a_content_type_links_its_stream() -> Result<(), TestError> {
+        let (_, callee) = media_sockets();
+        let near = (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 30000);
+        let invite = sip_with_body_typed(None, "noct-1@test");
+        assert!(
+            !String::from_utf8_lossy(&invite).contains("Content-Type"),
+            "the fixture has no Content-Type"
+        );
+        let store = store_after(&[invite], near, callee, 10)?;
+        let stream = store.iter().next().ok_or("one stream")?;
+        assert_eq!(stream.associated_dialog.as_deref(), Some("noct-1@test"));
+        Ok(())
+    }
+
+    /// Negative control: the same body declared as another type is that type
+    /// and links nothing.
+    #[test]
+    fn an_sdp_looking_body_declared_as_another_type_links_no_stream() -> Result<(), TestError> {
+        let (_, callee) = media_sockets();
+        let near = (IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 30000);
+        let invite = sip_with_body_typed(Some("text/plain"), "typed-1@test");
+        let store = store_after(&[invite], near, callee, 10)?;
+        let stream = store.iter().next().ok_or("one stream")?;
+        assert_eq!(stream.associated_dialog, None);
+        Ok(())
+    }
+
     /// The capture that found the defect, reduced: an OPTIONS 200 advertised
     /// the sender's socket, the INVITE advertised the receiver's, and RTP
     /// began before the INVITE's 200 OK. Every packet is the call's, in one

@@ -238,9 +238,10 @@ fn worker_stream_store(cfg: &ParallelConfig) -> StreamStore {
 /// a small share of SIP and none of the media:
 ///
 /// * a UDP datagram on a SIP port that is SIP and names `application/sdp`
-///   anywhere: as the message's `Content-Type`, or as the type of a part of a
-///   `multipart/*` body, the two places [`crate::sip::SipMessage::sdp`] reads
-///   SDP from;
+///   anywhere (as the message's `Content-Type`, or as the type of a part of a
+///   `multipart/*` body), or whose body starts `v=` (SDP sent with no
+///   `Content-Type`): every body [`crate::sip::SipMessage::sdp`] reads SDP
+///   from;
 /// * every TCP segment on a SIP port, because a segment in the middle of a
 ///   connection is only readable after the ones before it;
 /// * every IP fragment, whose ports are unknown until reassembly;
@@ -318,10 +319,22 @@ impl Fanout {
             } => (is_hep(payload)
                 || (port_in_range(src_port, dst_port, self.portrange)
                     && starts_sip_message(payload)
-                    && names_sdp(payload)))
+                    && (names_sdp(payload) || body_starts_sdp(payload))))
             .then_some(CopyRead::Shared),
         }
     }
+}
+
+/// Whether the body of the SIP message in `payload` starts `v=`, the body
+/// [`crate::sip::SipMessage::sdp`] reads as SDP when no `Content-Type` declares
+/// it. The headers are not read: a copy that turns out to carry no SDP costs
+/// one worker one parse, and a datagram left uncopied gives `--cores N` an
+/// answer `--cores 1` does not, so this errs toward copying.
+fn body_starts_sdp(payload: &[u8]) -> bool {
+    let body = memchr::memmem::find(payload, b"\r\n\r\n")
+        .map(|at| &payload[at + 4..])
+        .or_else(|| memchr::memmem::find(payload, b"\n\n").map(|at| &payload[at + 2..]));
+    body.is_some_and(|b| b.starts_with(b"v="))
 }
 
 /// Whether `payload` names the content type [`crate::sip::SipMessage::sdp`]
@@ -4462,6 +4475,23 @@ mod tests {
         );
         let (a, b) = SIP_HOSTS;
         let invite = eth_packet(eth_udp_between(a, b, 5060, 5060, message.as_bytes()));
+        assert!(Fanout::of(&pcfg_default_range()).needs(&invite));
+    }
+
+    /// A datagram whose SDP body carries no `Content-Type` is copied to every
+    /// worker: `sdp()` reads such a body, by the label's rule, so the worker
+    /// that measures its RTP needs it as `--cores 1` has it.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_datagram_with_an_sdp_body_and_no_content_type_is_copied() {
+        let offer = sip_with_sdp("INVITE sip:b@x SIP/2.0", "c", ([10, 2, 0, 1], 20000));
+        let text = String::from_utf8_lossy(&offer).replace("Content-Type: application/sdp\r\n", "");
+        assert!(
+            !text.contains("Content-Type"),
+            "the fixture has no Content-Type"
+        );
+        let (a, b) = SIP_HOSTS;
+        let invite = eth_packet(eth_udp_between(a, b, 5060, 5060, text.as_bytes()));
         assert!(Fanout::of(&pcfg_default_range()).needs(&invite));
     }
 
