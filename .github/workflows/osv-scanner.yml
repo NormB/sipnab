@@ -92,3 +92,12 @@ jobs:
         with:
           sarif_file: osv.sarif
           category: osv-scanner
+
+      # An exception in osv-scanner.toml that waits for a fixed release has a
+      # canary: this fails once that release is out, so the move to it is not
+      # left to the exception's expiry. On the schedule and on demand only, so
+      # an upstream release surfaces in the weekly run rather than failing
+      # unrelated pull requests. It asks crates.io, so it needs the network.
+      - name: Dependency canaries
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: python3 scripts/check-dependency-canaries.py

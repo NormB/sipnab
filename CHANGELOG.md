@@ -12,6 +12,10 @@ entry that carries them.
 
 **Held:** 0.5.231 is cut once the four fixes queued behind this line land, one pull request each; the owner approved that cut on 2026-10-26.
 
+### Security
+
+- **The vCon uuid hash no longer uses the `block-buffer` 0.10 line flagged by GHSA-qwgh-2vcv-g2f7.** SHA-1 over the `uuid_domain` name now comes from `sha1` 0.11. `block-buffer` 0.10.4 stays only under `rsa` 0.9, whose newest stable release still takes the `digest` 0.10 traits, for JWE `RSA-OAEP`; `osv-scanner.toml` records why the advisory does not apply there (0.10.4 keeps its cursor outside the buffer, and the only hashers are created and consumed inside one `encrypt` or `decrypt` call), with an expiry, and a weekly check fails once a stable `rsa` 0.10 exists.
+
 ### Added
 
 - **`--call-tree <CALL-ID>` prints every leg of one call as a tree** across B2BUA, SBC and PBX hops: the legs matched to it by an identifier, their own matches, and the legs a timing guess suggests, each with its strategy, score, and whether the walk continued through it. The named call is read whatever the run's filter admits, as `--call-report` reads it. Under `--json` it prints the answer `GET /v1/dialogs/{call_id}/tree` returns, built by the same function. A Call-ID the run did not track exits 1. See [Every leg of one call](docs/cli-reference.md#every-leg-of-one-call).

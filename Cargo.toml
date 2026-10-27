@@ -191,8 +191,11 @@ cbc = { version = "0.2", features = ["alloc"], optional = true }
 # secret. PKCS#1 v1.5; PEM parsing for PKCS#1/#8 private keys.
 rsa = { version = "0.9", default-features = false, features = ["std", "pem"], optional = true }
 # The hash of JWE `RSA-OAEP` (RFC 7518 section 4.3), for the encrypted vCon
-# form. `rsa` 0.9 takes the 0.10 digest traits; `zip` brings `sha1` 0.11.
+# form, and nothing else: `rsa` 0.9 takes the 0.10 digest traits. Every other
+# SHA-1 is `sha1` below; tests/digest_010_confinement_test.rs holds that.
 sha1_oaep = { package = "sha1", version = "0.10", optional = true }
+# SHA-1 over the `uuid_domain` name for a vCon uuid (core-04 section 4.1.2).
+sha1 = { version = "0.11", optional = true }
 # P-256 key agreement with a STATIC private key, for decrypting a JWE
 # `ECDH-ES+A256KW` recipient (RFC 7518 section 4.6). ring agrees only with
 # an ephemeral key, which covers encrypting, and signs ES256 itself.
@@ -406,7 +409,7 @@ bpf = ["native", "dep:aya", "sipnab-bpf-types/pod"]
 # `rustls` is HTTPS for the forwarder (`--vcon-forward`), the separate process
 # that delivers the spool to a vCon store; the capture process never connects
 # anywhere for a container.
-vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64", "dep:rustls", "dep:rsa", "dep:ring", "dep:aes", "dep:cbc", "dep:sha1_oaep", "dep:webpki", "dep:p256"]
+vcon = ["native", "dep:sha2", "dep:hmac", "dep:base64", "dep:rustls", "dep:rsa", "dep:ring", "dep:aes", "dep:cbc", "dep:sha1_oaep", "dep:sha1", "dep:webpki", "dep:p256"]
 # Password-protected capture archives: ZIP (none, ZipCrypto, WinZip AES)
 # opened in memory with a password the operator supplies. NON-DEFAULT, and IN
 # `full`, so the pre-commit hook's `cargo test --features full` covers it.
