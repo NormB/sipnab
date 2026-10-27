@@ -28660,9 +28660,11 @@ capture unmarked:
 A message that carries SDP has ` (SDP)` after its method or status, as in
 `INVITE (SDP)` or `200 OK (SDP)`. The `-N` lines, the TUI ladder and detail
 title, `--call-report`, the Mermaid ladder, `analyze_vcon` and the browser
-analyzer all use the same label. A body counts as SDP when its `Content-Type`
-is `application/sdp` in any case, or when it is `multipart/*` with an
-`application/sdp` part:
+analyzer all use the same label. A message counts as carrying SDP when its
+`Content-Type` is `application/sdp` in any case, when it is `multipart/*` with
+an `application/sdp` part, or when it has no `Content-Type` and its body
+starts `v=`. A body declared as another type is that type, whatever its first
+bytes:
 
 ```text
 14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP
@@ -43203,9 +43205,9 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
             },
             "endpoints": [
               "inline",
-              "vcon 0158a120-0392-8940-8117-7af10a0d166e"
+              "vcon 0158a120-0392-8169-a7de-dcfb92c69a52"
             ],
-            "note": "6 SIP message(s) rebuilt from this container. Not recomputed or not stored: media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it; the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed; request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid; header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent. The producer's caveat: Produced by sipnab 0.5.222 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established, and nothing here is signed. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots."
+            "note": "6 SIP message(s) rebuilt from this container. Not recomputed or not stored: media: a vCon carries no RTP, so no stream, MOS, jitter or loss was computed from it; the producer's analysis holds 1 media_quality row(s), its own numbers, not recomputed; request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid; header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent. The producer's caveat: Produced by sipnab 0.5.230 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots."
           }
         ],
         "evidence_omitted": 0,
@@ -43345,7 +43347,7 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
     "request-URI: not stored for 3 request(s), which carry sip:request-uri-not-stored.invalid",
     "header order: the trace keys headers by name, so their order across names is the container's, not the wire's, and headers the producer did not store (credential headers, when sipnab produced it) are absent"
   ],
-  "producer_note": "Produced by sipnab 0.5.222 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
+  "producer_note": "Produced by sipnab 0.5.230 on node tap-a. sipnab OBSERVED this dialog and took no part in it: the parties below are what the From and To headers said, not identities anyone established. No media is in this container because this run decoded none for the dialog; the capture_completeness media_note says what was measured. That is a statement about what this run kept, not a finding that the call was silent. sipnab read 852 frame(s) for this capture. No omissions recorded: every message sipnab held for this dialog is in this container. A capture-level analysis ran and ranked no blind spots.",
   "schema_findings": [],
   "schema_version": 1,
   "stored_media_quality": [
@@ -43363,7 +43365,7 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
   ],
   "total_dialogs": 1,
   "truncated": false,
-  "uuid": "0158a120-0392-8940-8117-7af10a0d166e",
+  "uuid": "0158a120-0392-8169-a7de-dcfb92c69a52",
   "verdict": "analyzed"
 }
 ```
@@ -52840,7 +52842,7 @@ Via: SIP/2.0/UDP 203.0.113.52:5060;branch=z9hG4bK4f3e.2fb18e05c3947da6b0e572139c
 Via: SIP/2.0/UDP 203.0.113.53:5060;branch=z9hG4bK00B1a97f38e6dc410b2
 Call-ID: 708134922_51772608@203.0.113.53
 CSeq: 543439 INVITE
-15:27:14.698 192.0.2.10:5060 -> 203.0.113.41:5060 100 trying UDP
+15:27:14.698 192.0.2.10:5060 -> 203.0.113.41:5060 100 trying -- your call is important to us UDP
 15:27:15.614 192.0.2.10:5060 -> 203.0.113.41:5060 180 Ringing UDP
 15:27:49.170 192.0.2.10:5060 -> 203.0.113.41:5060 BYE UDP
 15:27:49.327 203.0.113.41:5060 -> 192.0.2.10:5060 200 OK UDP
@@ -52852,7 +52854,7 @@ Via: SIP/2.0/UDP 203.0.113.52:5060;branch=z9hG4bK4f3e.2fb18e05c3947da6b0e572139c
 Via: SIP/2.0/UDP 203.0.113.53:5060;branch=z9hG4bK00B1a97f38e6dc410b2
 Call-ID: 708134922_51772608@203.0.113.53
 CSeq: 543439 INVITE
-15:30:14.465 192.0.2.10:5060 -> 203.0.113.42:5060 100 trying UDP
+15:30:14.465 192.0.2.10:5060 -> 203.0.113.42:5060 100 trying -- your call is important to us UDP
 15:30:14.490 203.0.113.42:5060 -> 192.0.2.10:5060 CANCEL UDP
 15:30:14.493 192.0.2.10:5060 -> 203.0.113.42:5060 200 canceling UDP
 15:30:14.612 192.0.2.10:5060 -> 203.0.113.42:5060 487 Request Terminated UDP
@@ -61811,9 +61813,9 @@ The report covers the caller's leg. Its `SIP Transactions` show:
 
 ```text
 SIP Transactions:
-  INVITE (SDP) -> 100 -> 180 (1ms) -> 200 (SDP) (3ms)
+  INVITE (SDP) -> 100 -> 180 (3ms) -> 200 (SDP) (4ms)
   ACK
-  BYE -> 200 (9008ms)
+  BYE -> 200 (9012ms)
 ```
 
 Under `Media Streams`:
@@ -62741,15 +62743,15 @@ The answer is a Mermaid `sequenceDiagram` of the caller's leg.
     p1-->>p0: 100 Trying
     Note right of p0: +0.001s
     p1-->>p0: 180 Ringing
-    Note right of p0: +0.003s · PDD 3ms
+    Note right of p0: +0.023s · PDD 23ms
     p1-->>p0: 200 OK (SDP)
-    Note right of p0: +0.041s
+    Note right of p0: +0.045s
     p0->>p1: ACK
-    Note right of p1: +0.041s
+    Note right of p1: +0.046s
     p0->>p1: BYE
-    Note right of p1: +9.047s
+    Note right of p1: +9.051s
     p1-->>p0: 200 OK
-    Note right of p0: +9.054s
+    Note right of p0: +9.074s
 ⟦/untrusted-capture-data⟧
 ```
 

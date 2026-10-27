@@ -8528,3 +8528,81 @@ fn every_prompt_is_documented_with_its_tools_and_bundles() -> Result<(), TestErr
     }
     Ok(())
 }
+
+/// A SIP INVITE carrying `body`, with `content_type` when given, parsed the
+/// way a capture's message is.
+fn sdp_rule_invite(
+    content_type: Option<&str>,
+    body: &[u8],
+) -> Result<sipnab::sip::SipMessage, TestError> {
+    let mut raw = String::from(
+        "INVITE sip:b@example.com SIP/2.0\r\n\
+         Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-sdp-rule\r\n\
+         From: <sip:a@example.com>;tag=1\r\n\
+         To: <sip:b@example.com>\r\n\
+         Call-ID: sdp-rule@example.com\r\n\
+         CSeq: 1 INVITE\r\n",
+    )
+    .into_bytes();
+    if let Some(ct) = content_type {
+        raw.extend_from_slice(format!("Content-Type: {ct}\r\n").as_bytes());
+    }
+    raw.extend_from_slice(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes());
+    raw.extend_from_slice(body);
+    let addr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1));
+    Ok(sipnab::sip::parser::parse_sip(
+        &raw,
+        chrono::Utc::now(),
+        addr,
+        addr,
+        5060,
+        5060,
+        sipnab::capture::parse::TransportProto::Udp,
+    )?)
+}
+
+/// `docs/output-formats.md` says which messages are marked `(SDP)`. The
+/// paragraph names every case `SipMessage::carries_sdp` accepts, and each case
+/// it names is one the code accepts: an `application/sdp` body, a
+/// `multipart/*` body with an `application/sdp` part, and a body with no
+/// `Content-Type` that starts `v=`.
+#[test]
+fn output_formats_names_every_case_of_the_sdp_rule() -> Result<(), TestError> {
+    let page = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/docs/output-formats.md"
+    ))?;
+    let start = page
+        .find("A message that carries SDP has")
+        .ok_or("output-formats.md has no paragraph on the (SDP) mark")?;
+    let end = page[start..].find("\n\n").map_or(page.len(), |e| start + e);
+    let paragraph = &page[start..end];
+    for case in [
+        "`application/sdp`",
+        "`multipart/*`",
+        "no `Content-Type`",
+        "`v=`",
+    ] {
+        assert!(
+            paragraph.contains(case),
+            "the paragraph on the (SDP) mark does not name {case}:\n{paragraph}"
+        );
+    }
+
+    let sdp: &[u8] = b"v=0\r\no=- 1 1 IN IP4 192.0.2.1\r\ns=-\r\nc=IN IP4 192.0.2.1\r\n\
+                       t=0 0\r\nm=audio 20000 RTP/AVP 0\r\n";
+    let mut multipart = b"--B\r\nContent-Type: application/sdp\r\n\r\n".to_vec();
+    multipart.extend_from_slice(sdp);
+    multipart.extend_from_slice(b"\r\n--B--\r\n");
+    for (content_type, body) in [
+        (Some("application/sdp"), sdp),
+        (Some("multipart/mixed;boundary=B"), &multipart[..]),
+        (None, sdp),
+    ] {
+        let msg = sdp_rule_invite(content_type, body)?;
+        assert_eq!(msg.label(), "INVITE (SDP)", "{content_type:?}");
+    }
+    // Negative control: a body declared as another type is that type.
+    assert_eq!(sdp_rule_invite(Some("text/plain"), sdp)?.label(), "INVITE");
+    Ok(())
+}
