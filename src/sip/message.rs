@@ -647,18 +647,47 @@ fn is_multipart_media_type(content_type: &str) -> bool {
         .is_some_and(|t| t.eq_ignore_ascii_case("multipart/"))
 }
 
+/// How many levels of `multipart` below a message's own the SDP rule
+/// follows. [RFC 5621 section 4.2](https://www.rfc-editor.org/rfc/rfc5621.html#section-4.2)
+/// requires parsing nested parts and sets no depth;
+/// [section 4.3](https://www.rfc-editor.org/rfc/rfc5621.html#section-4.3) asks a UA to
+/// "avoid unnecessarily nesting body parts", and the nested example in
+/// [section 4.1](https://www.rfc-editor.org/rfc/rfc5621.html#section-4.1) needs one level. Four is sipnab's
+/// bound: room for every shape those sections describe, and a limit on what a
+/// hostile body can make the reader do.
+pub(crate) const MAX_MULTIPART_DEPTH: usize = 4;
+
 /// The `application/sdp` parts of the multipart `body` under `content_type`,
-/// in body order, split by the same MIME reader the SIPREC metadata uses
+/// in body order, depth first through nested `multipart` parts to
+/// [`MAX_MULTIPART_DEPTH`] levels below this one, split by the same MIME
+/// reader the SIPREC metadata uses
 /// ([RFC 2046 section 5.1.1](https://www.rfc-editor.org/rfc/rfc2046.html#section-5.1.1)).
 /// Another part may be binary. Empty when the type carries no boundary.
 fn sdp_parts(content_type: &str, body: &[u8]) -> Vec<super::siprec::MimePart> {
+    let mut found = Vec::new();
+    collect_sdp_parts(content_type, body, 0, &mut found);
+    found
+}
+
+/// [`sdp_parts`] at `depth` levels below the message's own `multipart`.
+fn collect_sdp_parts(
+    content_type: &str,
+    body: &[u8],
+    depth: usize,
+    found: &mut Vec<super::siprec::MimePart>,
+) {
     let Some(boundary) = super::siprec::extract_boundary(content_type) else {
-        return Vec::new();
+        return;
     };
-    super::siprec::split_multipart(body, &boundary)
-        .into_iter()
-        .filter(|part| part.content_type.as_deref().is_some_and(is_sdp_media_type))
-        .collect()
+    for part in super::siprec::split_multipart(body, &boundary) {
+        match part.content_type.as_deref() {
+            Some(ct) if is_sdp_media_type(ct) => found.push(part),
+            Some(ct) if is_multipart_media_type(ct) && depth < MAX_MULTIPART_DEPTH => {
+                collect_sdp_parts(ct, &part.body, depth + 1, found);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// The session description of the multipart `body` under `content_type`: the
@@ -1586,6 +1615,100 @@ mod tests {
         let m = invite_with(Some("Multipart/Mixed; Boundary=B"), &sip_i(SDP_BODY))?;
         assert!(m.sdp().is_some(), "sdp() reads the part");
         assert!(m.carries_sdp(), "and the label rule agrees");
+        Ok(())
+    }
+
+    // ── MULTIPART-NESTED: an SDP part inside a nested multipart ────────
+
+    /// `body` wrapped `depth` times: each level is a `multipart/mixed` whose one
+    /// part is the level inside it, with boundaries `L1`, `L2`, ...; the
+    /// innermost level holds `inner_type` with `inner`. Returns the outermost
+    /// `Content-Type` and the body.
+    fn nested(depth: usize, inner_type: &str, inner: &[u8]) -> (String, Vec<u8>) {
+        let mut ct = inner_type.to_string();
+        let mut body = inner.to_vec();
+        for level in (1..=depth).rev() {
+            let boundary = format!("L{level}");
+            let mut outer = format!("--{boundary}\r\nContent-Type: {ct}\r\n\r\n").into_bytes();
+            outer.extend_from_slice(&body);
+            outer.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+            ct = format!("multipart/mixed; boundary={boundary}");
+            body = outer;
+        }
+        (ct, body)
+    }
+
+    /// [RFC 5621 section 4.2](https://www.rfc-editor.org/rfc/rfc5621.html#section-4.2):
+    /// "SIP UAs MUST support parsing 'multipart' MIME bodies, including
+    /// nested body parts", and section 4.1 shows a `multipart/alternative`
+    /// inside a `multipart/mixed`. The SDP in that inner part is the
+    /// message's SDP.
+    #[test]
+    fn sdp_reads_an_sdp_part_inside_a_nested_multipart() -> Result<(), TestError> {
+        let mut alternative = b"--ALT\r\nContent-Type: application/sdp\r\n\r\n".to_vec();
+        alternative.extend_from_slice(SDP_BODY);
+        alternative
+            .extend_from_slice(b"\r\n--ALT\r\nContent-Type: text/plain\r\n\r\nx\r\n--ALT--\r\n");
+        let mut body =
+            b"--OUT\r\nContent-Type: multipart/alternative; boundary=ALT\r\n\r\n".to_vec();
+        body.extend_from_slice(&alternative);
+        body.extend_from_slice(
+            b"\r\n--OUT\r\nContent-Type: application/ISUP; version=itu-t\r\n\r\n",
+        );
+        body.extend_from_slice(ISUP);
+        body.extend_from_slice(b"\r\n--OUT--\r\n");
+        let m = invite_with(Some("multipart/mixed; boundary=OUT"), &body)?;
+        let sdp = m.sdp().ok_or("the nested SDP part is read")?;
+        assert_eq!(sdp.media[0].port, 20000);
+        assert!(m.carries_sdp(), "and the label rule agrees");
+        Ok(())
+    }
+
+    /// The SDP is the first `application/sdp` part in body order, depth
+    /// first: an outer SDP part before a nested one wins, and a nested one
+    /// before an outer one wins.
+    #[test]
+    fn the_first_sdp_part_in_body_order_is_the_sdp() -> Result<(), TestError> {
+        let other = String::from_utf8(SDP_BODY.to_vec())?.replace("20000", "30000");
+        let (inner_ct, inner) = nested(1, "application/sdp", other.as_bytes());
+        let part = |ct: &str, b: &[u8]| {
+            let mut v = format!("--OUT\r\nContent-Type: {ct}\r\n\r\n").into_bytes();
+            v.extend_from_slice(b);
+            v.extend_from_slice(b"\r\n");
+            v
+        };
+        let mut outer_first = part("application/sdp", SDP_BODY);
+        outer_first.extend_from_slice(&part(&inner_ct, &inner));
+        outer_first.extend_from_slice(b"--OUT--\r\n");
+        let mut nested_first = part(&inner_ct, &inner);
+        nested_first.extend_from_slice(&part("application/sdp", SDP_BODY));
+        nested_first.extend_from_slice(b"--OUT--\r\n");
+        let ct = Some("multipart/mixed; boundary=OUT");
+        let port = |b: &[u8]| -> Result<u16, TestError> {
+            Ok(invite_with(ct, b)?.sdp().ok_or("an SDP part")?.media[0].port)
+        };
+        assert_eq!(port(&outer_first)?, 20000);
+        assert_eq!(port(&nested_first)?, 30000);
+        Ok(())
+    }
+
+    /// Nesting is followed to [`MAX_MULTIPART_DEPTH`] levels of `multipart`
+    /// below the message's own, and no further: a body nested deeper holds no
+    /// SDP that sipnab reads, and reading it ends rather than recursing
+    /// without bound.
+    #[test]
+    fn nesting_is_followed_to_a_bounded_depth() -> Result<(), TestError> {
+        for (depth, found) in [
+            (1, true),
+            (MAX_MULTIPART_DEPTH + 1, true),
+            (MAX_MULTIPART_DEPTH + 2, false),
+            (2_000, false),
+        ] {
+            let (ct, body) = nested(depth, "application/sdp", SDP_BODY);
+            let m = invite_with(Some(&ct), &body)?;
+            assert_eq!(m.sdp().is_some(), found, "{depth} levels of multipart");
+            assert_eq!(m.carries_sdp(), found, "{depth} levels, label");
+        }
         Ok(())
     }
 
