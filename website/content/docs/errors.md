@@ -35,26 +35,34 @@ Under each heading:
     each code.
   - An entry marked as a warning does not stop the run.
 
-sipnab prints most messages as log lines on stderr, in this form. stderr is
-the standard error stream. A shell shows it on the terminal unless you
-redirect it.
+sipnab prints its messages on stderr, the standard error stream. A shell
+shows it on the terminal unless you redirect it.
+
+sipnab prints a message that stops the run as it is, with no timestamp and
+no level. It decides the exit code, so it appears whatever the log level,
+including with `SIPNAB_LOG=off`. The vCon forwarder (`--vcon-forward`) is the
+exception: it reports why it stopped as an `ERROR` log line. A configuration
+file that does not exist:
 
 ```text
-2026-10-12T04:04:45.184315Z ERROR sipnab::app::bootstrap: config file not found: /nonexistent/x.toml
+config file not found: /nonexistent/x.toml
 ```
 
-- The part after the module name (`sipnab::app::bootstrap:`) is the message.
-- `ERROR` lines are errors and `WARN` lines are warnings.
+A warning is a log line, with a timestamp, a level and the module that wrote
+it:
+
+```text
+2026-10-26T13:02:16.605123Z  WARN sipnab::config: Unknown config key: capture.devise
+```
+
+- The part after the module name (`sipnab::config:`) is the message.
+- `WARN` lines are warnings, and `ERROR` lines are errors the run continues
+  past.
 - In the terminal UI, sipnab shows only `ERROR` lines, unless the `SIPNAB_LOG`
   environment variable sets a level. To see the warnings as well, do one of
   these:
   - run with `-N` (no terminal UI);
   - set `SIPNAB_LOG=info`.
-- sipnab writes a few messages to stderr without the timestamp and level.
-  These messages decide the exit code, so they must appear even when logging
-  is off. sipnab refuses a flag that needs a feature this build does not
-  include in this way, for example
-  `--tls-key requires the 'tls' feature (not compiled in)`.
 
 ## What this page covers
 
@@ -1103,7 +1111,7 @@ A path-valued key in the configuration file holds an empty string. `{key}` is th
 A string in the config file holds `${`, some text and `}`, and the text between the braces is not an environment-variable name. A config file `c.toml` with `node_name = "${HOME:-x}"` under `[capture]` stops the run with this line:
 
 ```text
-2026-10-18T15:29:43.704481Z ERROR sipnab::app::bootstrap: invalid config value: c.toml: capture.node_name: `${HOME:-x}` is not a variable name: expected an ASCII letter or `_` followed by letters, digits or `_`. Shell default-value syntax is not supported
+invalid config value: c.toml: capture.node_name: `${HOME:-x}` is not a variable name: expected an ASCII letter or `_` followed by letters, digits or `_`. Shell default-value syntax is not supported
 ```
 
 - `{name}` is the text between the braces.
@@ -1658,7 +1666,7 @@ A `[keybindings]` value in the config file is not a key the terminal UI can bind
 A string in the config file contains `${` with no closing `}`. `{input:?}` is the whole string as written. The full line names the file and the setting. A config file `a.toml` with `node_name = "${HOME"` under `[capture]` stops the run with this line:
 
 ```text
-2026-10-18T15:29:43.565059Z ERROR sipnab::app::bootstrap: invalid config value: a.toml: capture.node_name: unterminated `${` in "${HOME"
+invalid config value: a.toml: capture.node_name: unterminated `${` in "${HOME"
 ```
 
 **What to do:** Close the variable reference (`${NAME}`), or write `$$` where you mean a literal `$`.

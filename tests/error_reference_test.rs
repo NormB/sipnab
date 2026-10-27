@@ -738,7 +738,11 @@ fn lists() -> Result<Lists, TestError> {
 // 87 -> 86: src/app/bootstrap.rs `error!("{msg}")` 5 -> 4. launch's
 // missing-feature refusal is printed by `report_uncompiled`, whose message
 // comes from `uncompiled_when` literal sites, so it is resolved.
-const EXPECTED_UNRESOLVED: usize = 86;
+// 86 -> 83: src/main.rs's three refusals (archive passwords, run
+// provenance, Cli::validate) print through PlanError::usage(..).exit()
+// instead of their own `error!`, so the PlanError site carries them, and
+// SIPNAB_LOG=off no longer hides them (startup_refusal_stderr_test).
+const EXPECTED_UNRESOLVED: usize = 83;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.

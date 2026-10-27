@@ -20696,26 +20696,34 @@ Under each heading:
     each code.
   - An entry marked as a warning does not stop the run.
 
-sipnab prints most messages as log lines on stderr, in this form. stderr is
-the standard error stream. A shell shows it on the terminal unless you
-redirect it.
+sipnab prints its messages on stderr, the standard error stream. A shell
+shows it on the terminal unless you redirect it.
+
+sipnab prints a message that stops the run as it is, with no timestamp and
+no level. It decides the exit code, so it appears whatever the log level,
+including with `SIPNAB_LOG=off`. The vCon forwarder (`--vcon-forward`) is the
+exception: it reports why it stopped as an `ERROR` log line. A configuration
+file that does not exist:
 
 ```text
-2026-10-12T04:04:45.184315Z ERROR sipnab::app::bootstrap: config file not found: /nonexistent/x.toml
+config file not found: /nonexistent/x.toml
 ```
 
-- The part after the module name (`sipnab::app::bootstrap:`) is the message.
-- `ERROR` lines are errors and `WARN` lines are warnings.
+A warning is a log line, with a timestamp, a level and the module that wrote
+it:
+
+```text
+2026-10-26T13:02:16.605123Z  WARN sipnab::config: Unknown config key: capture.devise
+```
+
+- The part after the module name (`sipnab::config:`) is the message.
+- `WARN` lines are warnings, and `ERROR` lines are errors the run continues
+  past.
 - In the terminal UI, sipnab shows only `ERROR` lines, unless the `SIPNAB_LOG`
   environment variable sets a level. To see the warnings as well, do one of
   these:
   - run with `-N` (no terminal UI);
   - set `SIPNAB_LOG=info`.
-- sipnab writes a few messages to stderr without the timestamp and level.
-  These messages decide the exit code, so they must appear even when logging
-  is off. sipnab refuses a flag that needs a feature this build does not
-  include in this way, for example
-  `--tls-key requires the 'tls' feature (not compiled in)`.
 
 ## What this page covers
 
@@ -21764,7 +21772,7 @@ A path-valued key in the configuration file holds an empty string. `{key}` is th
 A string in the config file holds `${`, some text and `}`, and the text between the braces is not an environment-variable name. A config file `c.toml` with `node_name = "${HOME:-x}"` under `[capture]` stops the run with this line:
 
 ```text
-2026-10-18T15:29:43.704481Z ERROR sipnab::app::bootstrap: invalid config value: c.toml: capture.node_name: `${HOME:-x}` is not a variable name: expected an ASCII letter or `_` followed by letters, digits or `_`. Shell default-value syntax is not supported
+invalid config value: c.toml: capture.node_name: `${HOME:-x}` is not a variable name: expected an ASCII letter or `_` followed by letters, digits or `_`. Shell default-value syntax is not supported
 ```
 
 - `{name}` is the text between the braces.
@@ -22319,7 +22327,7 @@ A `[keybindings]` value in the config file is not a key the terminal UI can bind
 A string in the config file contains `${` with no closing `}`. `{input:?}` is the whole string as written. The full line names the file and the setting. A config file `a.toml` with `node_name = "${HOME"` under `[capture]` stops the run with this line:
 
 ```text
-2026-10-18T15:29:43.565059Z ERROR sipnab::app::bootstrap: invalid config value: a.toml: capture.node_name: unterminated `${` in "${HOME"
+invalid config value: a.toml: capture.node_name: unterminated `${` in "${HOME"
 ```
 
 **What to do:** Close the variable reference (`${NAME}`), or write `$$` where you mean a literal `$`.
@@ -27172,7 +27180,7 @@ sipnab -N -I capture.pcap --filter 'method == INVITE extra'
 ```
 
 ```text
-2026-10-18T15:41:33.049387Z ERROR sipnab::app::bootstrap: Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
+Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
   method == INVITE extra
             ^
 valid operators: ==, !=, <, <=, >, >=, =~ (regex)
@@ -27186,7 +27194,7 @@ sipnab -N -I capture.pcap --filter 'nosuch == 1'
 ```
 
 ```text
-2026-10-18T15:41:33.069669Z ERROR sipnab::app::bootstrap: Invalid --filter expression: unexpected input at position 0: 'nosuch'
+Invalid --filter expression: unexpected input at position 0: 'nosuch'
   nosuch == 1
   ^
 hint: unknown field 'nosuch'
@@ -29402,7 +29410,7 @@ and exit status, and prints nothing else. A run's checks of `[actions] tfps`,
 `[[vcon.rule]]` all apply. A port range written backwards:
 
 ```text
-ERROR sipnab::app::bootstrap: Invalid [capture] portrange: Port range start (9) > end (1)
+Invalid [capture] portrange: Port range start (9) > end (1)
 ```
 
 sipnab exits with status 1.
@@ -29859,7 +29867,7 @@ sipnab refuses a `reg_flood_window_secs` outside 1 to 3600 and a
   the range and the value:
 
   ```text
-  ERROR sipnab::app::bootstrap: invalid config value: [security] reg_flood_window_secs must be 1-3600 (seconds of capture time one failure count spans), got 3601
+  invalid config value: [security] reg_flood_window_secs must be 1-3600 (seconds of capture time one failure count spans), got 3601
   ```
 
 - The `--reg-flood-window` and `--reg-flood-transaction-timeout` flags refuse
@@ -29988,7 +29996,7 @@ Rules for the keys:
   the message names the key:
 
   ```text
-  ERROR sipnab::app::bootstrap: [action_limits] per_minute: action rate limits cannot be turned off: every limit must be at least 1
+  [action_limits] per_minute: action rate limits cannot be turned off: every limit must be at least 1
   ```
 - The limits survive a restart. sipnab rebuilds them from the journal, so
   crashing it does not reset them.
@@ -30297,7 +30305,7 @@ once.
 - The minimum is 1048576 (1 MiB). A smaller value stops the run with exit 1:
 
   ```text
-  ERROR sipnab::app::bootstrap: invalid config value: [limits] max_audio_bytes must be >= 1048576 (1 MiB), got 1048575; to keep no audio at all, leave --retain-audio off
+  invalid config value: [limits] max_audio_bytes must be >= 1048576 (1 MiB), got 1048575; to keep no audio at all, leave --retain-audio off
   ```
 
 - Set `max_audio_frames` to cap each stream as well. For example, 1500 frames
@@ -32025,10 +32033,7 @@ ok
 ```
 
 ```text
-ERROR sipnab::app::bootstrap: MCP HTTP refuses to start: --mcp-bind 0.0.0.0:8812
-is non-loopback but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN /
---mcp-signing-key / --mcp-signing-key-file / SIPNAB_MCP_SIGNING_KEY was
-supplied. Bind 127.0.0.1, or supply one of them.
+MCP HTTP refuses to start: --mcp-bind 0.0.0.0:8812 is non-loopback but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / --mcp-signing-key / --mcp-signing-key-file / SIPNAB_MCP_SIGNING_KEY was supplied. Bind 127.0.0.1, or supply one of them.
 ```
 
 Now run the script.
@@ -47067,7 +47072,7 @@ libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
 A binary without `vcon` refuses the export, with exit code 2:
 
 ```text
-2026-10-16T11:46:58.806503Z ERROR sipnab: --export-vcon needs the 'vcon' Cargo feature, which this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with
+--export-vcon needs the 'vcon' Cargo feature, which this build does not carry. Rebuild with --features vcon (or --features full); `sipnab --version` lists the features a binary was built with
 ```
 
 To build one that carries it from a source checkout:
@@ -47101,7 +47106,7 @@ Two refusals of the CLI pair, each with exit code 2:
   --export-vcon '1-1966@10.0.2.20' --vcon-out sip-rtp-g711.pcap` prints:
 
   ```text
-  2026-10-18T15:36:13.809790Z ERROR sipnab::app::bootstrap: --vcon-out 'sip-rtp-g711.pcap' would overwrite the capture being read ('/tmp/captures/sip-rtp-g711.pcap'). They are the same file. Writing it would destroy the input — choose a different output path.
+  --vcon-out 'sip-rtp-g711.pcap' would overwrite the capture being read ('/tmp/captures/sip-rtp-g711.pcap'). They are the same file. Writing it would destroy the input — choose a different output path.
   ```
 
   Choose another output path.
@@ -53478,7 +53483,7 @@ sipnab --mint-token --token-scope metrics --mcp-signing-key "$KEY"
 ```
 
 ```text
-2026-10-16T12:00:16.370935Z ERROR sipnab::app::bootstrap: --token-scope metrics applies to the REST API only; the MCP surface has no /metrics endpoint
+--token-scope metrics applies to the REST API only; the MCP surface has no /metrics endpoint
 ```
 
 It exits with status `2`.

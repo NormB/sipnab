@@ -1060,15 +1060,15 @@ pub fn start_servers(
 ///
 /// # Side effects
 ///
-/// Reads `path` from disk; on failure logs the error (naming the offending
-/// `flag`) and exits the process with code 2 — a misconfigured key file is
-/// always fatal.
+/// Reads `path` from disk; on failure prints the error on stderr (naming the
+/// offending `flag`) and exits the process with code 2 — a misconfigured key
+/// file is always fatal.
 #[cfg(any(feature = "api", feature = "mcp"))]
 fn read_signing_key_file(path: &str, flag: &str) -> Vec<u8> {
     match std::fs::read_to_string(path) {
         Ok(s) => s.trim().as_bytes().to_vec(),
         Err(e) => {
-            tracing::error!("{flag} '{path}': {e}");
+            stderr_line!("{flag} '{path}': {e}");
             std::process::exit(2);
         }
     }
@@ -1151,7 +1151,7 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
                 }
             }
             Err(e) => {
-                tracing::error!("--mcp-token-file '{path}': {e}");
+                stderr_line!("--mcp-token-file '{path}': {e}");
                 std::process::exit(2);
             }
         }

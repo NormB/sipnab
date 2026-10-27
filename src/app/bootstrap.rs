@@ -27,14 +27,20 @@ use crate::sip::{dsl::FilterExpr, matcher::SipMatcher};
 use super::batch::{CapturePolicy, audio_retention_wanted};
 
 /// A fatal configuration problem found while planning: the message main()
-/// should log and the process exit code (2 for argument errors, 1 for
+/// prints and the process exit code (2 for argument errors, 1 for
 /// environment errors and for a value the config file supplied — see
 /// [`crate::settings::Origin`]).
+///
+/// The message goes to stderr, never through `tracing`: it decides the exit
+/// code, and `SIPNAB_LOG=off` silences every log line, so a logged refusal
+/// exited 1 or 2 with nothing said. `tests/startup_refusal_stderr_test.rs`
+/// drives each refusal at both log levels and refuses a `tracing::error!`
+/// followed by an exit anywhere in `src/`.
 #[derive(Debug)]
 pub struct PlanError {
     /// Process exit code.
     pub exit_code: i32,
-    /// Human-readable error, logged by the caller.
+    /// Human-readable error, printed on stderr by [`exit`](Self::exit).
     pub message: String,
 }
 
@@ -61,10 +67,16 @@ impl PlanError {
         }
     }
 
-    /// Log the message via `tracing::error!` and terminate the process
-    /// with the planned exit code. Never returns.
+    /// An argument-level error (exit code 2), for `main`'s own refusals.
+    #[must_use]
+    pub fn usage(message: String) -> Self {
+        Self::arg(message)
+    }
+
+    /// Print the message on stderr and terminate the process with the
+    /// planned exit code. Never returns.
     pub fn exit(self) -> ! {
-        tracing::error!("{}", self.message);
+        stderr_line!("{}", self.message);
         crate::capture::archive::release_run_and_exit(self.exit_code);
     }
 
@@ -88,7 +100,7 @@ impl PlanError {
     /// refused rather than cut short.
     pub fn exit_after(self, cleanup: impl FnOnce()) -> ! {
         crate::capture::file::mark_refused_at_startup();
-        tracing::error!("{}", self.message);
+        stderr_line!("{}", self.message);
         cleanup();
         crate::capture::archive::release_run_and_exit(self.exit_code);
     }
@@ -1689,7 +1701,7 @@ pub fn prepare_cores_inputs(
 fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {
     let unsupported = cores_unsupported_flags(cli, config);
     if !unsupported.is_empty() {
-        tracing::error!(
+        stderr_line!(
             "--cores {} does not do what {} asks for: the parallel reader \
              rebuilds dialogs per shard and prints only whole-capture views, \
              so it would skip them and still exit 0. Drop --cores for these, \
@@ -1740,7 +1752,7 @@ fn cores_asks_for_a_view(cli: &Cli, has_export_rules: bool) -> bool {
 /// Exits the process with code 2 when refused.
 pub fn refuse_cores_without_a_view(cli: &Cli, has_export_rules: bool) {
     if !cores_asks_for_a_view(cli, has_export_rules) {
-        tracing::error!(
+        stderr_line!(
             "--cores {} asks for no view: the parallel reader prints no per-message \
              lines, so this run would read the capture, print nothing and still exit 0. \
              Ask for a whole-capture view (--report, --json-dialogs, --analyze, \
@@ -2837,8 +2849,8 @@ fn relay_startup_snapshot(cli: &Cli, source: Option<&CaptureSource>) -> RelayCon
 /// (setgroups/setgid/setuid); initializes syslog for `--syslog`; validates
 /// the remaining feature-gated flags and `--pcap-export-mode`; and
 /// disables core dumps when decryption keys are loaded. Every failure path
-/// logs and exits the process (code 1 for environment errors, 2 for
-/// argument/feature errors).
+/// prints the refusal on stderr and exits the process (code 1 for
+/// environment errors, 2 for argument/feature errors).
 pub fn launch(
     cli: &Cli,
     config: &Config,
@@ -4048,7 +4060,7 @@ pub fn run_startup_commands(cli: &Cli) -> Option<i32> {
         return Some(match privilege::setup_capabilities() {
             Ok(()) => 0,
             Err(e) => {
-                tracing::error!("{e}");
+                stderr_line!("{e}");
                 1
             }
         });
@@ -4104,7 +4116,7 @@ fn print_yang_module() -> i32 {
     {
         Ok(()) => 0,
         Err(e) => {
-            tracing::error!("--print-yang-module: {e}");
+            stderr_line!("--print-yang-module: {e}");
             1
         }
     }
@@ -4119,7 +4131,7 @@ fn notes_refusal(cli: &Cli) -> Option<i32> {
     // notes file. In any other run nothing would read it, and a flag that is
     // accepted and ignored reads as a note that was written.
     if cli.name_args.notes.is_some() && !runs_the_tui(cli) {
-        tracing::error!(
+        stderr_line!(
             "--notes names the notes for --write-annotated or the TUI's notes file, \
              and this run is neither: nothing would read them"
         );
@@ -4131,7 +4143,7 @@ fn notes_refusal(cli: &Cli) -> Option<i32> {
     if let Some(path) = cli.name_args.notes.as_deref()
         && let Some(refusal) = tui_notes_refusal(path)
     {
-        tracing::error!("--notes {path}: {refusal}");
+        stderr_line!("--notes {path}: {refusal}");
         return Some(2);
     }
     None
@@ -4410,7 +4422,7 @@ fn show_frame(pointer: &str) -> i32 {
     let parsed = match parse_pointer(pointer) {
         Ok(p) => p,
         Err(_) => {
-            tracing::error!(
+            stderr_line!(
                 "not a frame pointer: {pointer}\n\
                  expected <source>#<ordinal>, optionally #<ordinal>@<digest> — \
                  the form the `frame` field of --json-dialogs, --report, REST \
@@ -4528,7 +4540,7 @@ pub fn run_journal_command(cli: &Cli, config: &Config) -> Option<i32> {
     {
         let _ = config;
         (cli.security_args.journal_show || cli.security_args.revert_actions.is_some()).then(|| {
-            tracing::error!(
+            stderr_line!(
                 "--journal-show and --revert-actions need the 'api' or 'mcp' feature (not \
                  compiled in): no action can have been taken"
             );
@@ -4558,7 +4570,7 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
                 Some(0)
             }
             Err(msg) => {
-                tracing::error!("{msg}");
+                stderr_line!("{msg}");
                 Some(2)
             }
         }
@@ -4665,7 +4677,7 @@ pub fn run_vcon_spool_status(cli: &Cli) -> Option<i32> {
         let status = match snapshot(spool, SpoolPage::all(), chrono::Utc::now()) {
             Ok(status) => status,
             Err(e) => {
-                tracing::error!("--vcon-spool-status: {e}");
+                stderr_line!("--vcon-spool-status: {e}");
                 return Some(1);
             }
         };
@@ -4679,7 +4691,7 @@ pub fn run_vcon_spool_status(cli: &Cli) -> Option<i32> {
                 Some(0)
             }
             Err(e) => {
-                tracing::error!("--vcon-spool-status: {e}");
+                stderr_line!("--vcon-spool-status: {e}");
                 Some(1)
             }
         }
@@ -5309,7 +5321,7 @@ pub fn dump_config(loaded: &LoadedConfig) -> i32 {
             0
         }
         Err(e) => {
-            tracing::error!("Failed to dump config: {e}");
+            stderr_line!("Failed to dump config: {e}");
             1
         }
     }
