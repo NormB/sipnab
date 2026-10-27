@@ -63,3 +63,32 @@ still pins chromium-bidi 14.0.0. clients/typescript resolves zod 4.6.7, which \
 is fixed. Re-evaluate when @lhci/cli moves to lighthouse 13 (puppeteer-core \
 25, chromium-bidi on zod 4).\
 """
+
+[[IgnoredVulns]]
+id = "GHSA-qwgh-2vcv-g2f7"
+ignoreUntil = 2026-12-26
+reason = """
+block-buffer: a panic caught inside a compression callback corrupts the \
+buffer's inline cursor. block-buffer 0.10.4 is reached only through digest \
+0.10, which only rsa 0.9 needs (rsa's newest stable release; 0.10 is still a \
+release candidate), and through sha1 0.10, which sipnab keeps only as rsa's \
+OAEP hash. Cargo.lock also lists it under sha2 0.10, through ratatui's \
+optional termwiz backend (ratatui-termwiz -> termwiz), which records every \
+optional dependency and which sipnab never enables, so that copy is never \
+compiled (tests/digest_010_confinement_test.rs holds these facts). The \
+advisory's mechanism is absent from 0.10.4: its cursor is a separate `pos` \
+field (block-buffer 0.10.4 src/lib.rs:55-63), never written out of range, and \
+digest_blocks (src/lib.rs:138-180) leaves it unchanged when `compress` panics, \
+so get_pos (src/lib.rs:195-205) cannot reach its unreachable_unchecked; 0.10.4 \
+has no ReadBuffer. Independently, no digest 0.10 hasher of sipnab's can be \
+reused after a caught panic: the only ones are the two inside the OAEP padding \
+built by rsa::Oaep::new at src/output/vcon_jose.rs:563 and :670, held by \
+rsa 0.9.10 src/oaep.rs:40-45 and consumed with it by encrypt/decrypt \
+(src/oaep.rs:134, :150), so they are dropped when that call returns or \
+unwinds and never cross a catch_unwind boundary; their compression is sha1 \
+0.10.7's own (src/lib.rs:110-112) and runs no closure of sipnab's. PKCS#1 v1.5 \
+decryption and key decoding hash nothing. The test fails if another digest \
+0.10 user appears, and scripts/check-dependency-canaries.py (weekly in \
+.github/workflows/osv-scanner.yml) fails once a stable rsa 0.10 exists: then \
+move to it and remove this entry.\
+"""

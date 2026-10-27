@@ -3,8 +3,8 @@
   "@id": "https://github.com/NormB/sipnab/blob/main/vex/sipnab.openvex.json",
   "author": "sipnab maintainers <n.brandinger@gmail.com>",
   "role": "Project maintainer",
-  "timestamp": "2026-10-23T00:00:00Z",
-  "version": 3,
+  "timestamp": "2026-10-27T00:00:00Z",
+  "version": 4,
   "tooling": "Hand-written; held to deny.toml and osv-scanner.toml by tests/vex_document_test.rs",
   "statements": [
     {
@@ -63,6 +63,26 @@
       "status": "not_affected",
       "justification": "component_not_present",
       "impact_statement": "zod is not part of sipnab: no binary, package or crate the project ships contains it. The affected zod 3.25.76 appears only in e2e/package-lock.json, the dev tooling for the website's Lighthouse CI step (@lhci/cli -> lighthouse 12.6.1 -> puppeteer-core 24.43.1 -> chromium-bidi 14.0.0 -> zod 3.25.76), and that tooling never loads it: Lighthouse attaches to Chrome over CDP, and puppeteer-core loads chromium-bidi only for WebDriver BiDi. No zod 3 release is fixed (the fix is zod 4.6.6). clients/typescript resolves zod 4.6.7. Re-evaluate when @lhci/cli moves to lighthouse 13."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-qwgh-2vcv-g2f7",
+        "aliases": [],
+        "description": "block-buffer: a panic caught inside a compression callback corrupts the buffer's inline cursor"
+      },
+      "products": [
+        {
+          "@id": "pkg:cargo/sipnab",
+          "subcomponents": [
+            {
+              "@id": "pkg:cargo/block-buffer@0.10.4"
+            }
+          ]
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The advisory's mechanism is an inline cursor that a panicking callback leaves out of range. block-buffer 0.10.4 has none: it keeps its cursor in a separate field that digest_blocks leaves unchanged and in range when the compression callback panics, and it has no ReadBuffer. It reaches sipnab only through digest 0.10 under rsa 0.9 (the newest stable rsa) and sha1 0.10, which sipnab uses only as rsa's OAEP hash for JWE RSA-OAEP; the two hashers live inside the OAEP padding and are consumed by one encrypt or decrypt call, so none is reused after a caught panic. Cargo.lock also lists it under ratatui's optional termwiz backend, which sipnab never enables. tests/digest_010_confinement_test.rs holds these facts. Re-evaluate when a stable rsa 0.10 exists; move to it then."
     }
   ]
 }

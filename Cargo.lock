@@ -4467,6 +4467,7 @@ dependencies = [
  "serial_test",
  "sevenz-rust2",
  "sha1 0.10.7",
+ "sha1 0.11.0",
  "sha2 0.11.1",
  "sipnab-bpf-types",
  "sipnab-g729",

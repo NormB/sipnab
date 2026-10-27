@@ -6352,7 +6352,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `scripts/verify-site-advertises.sh`, the script the release flow runs
     // after the deploy. Measurement: with HEAD's cert-expiry.yml swapped back
     // in, the scan reads 205.
-    const EXPECTED_REFERENCES: usize = 206;
+    // 206 -> 207: the dependency-canary step in
+    // `.github/workflows/osv-scanner.yml` runs
+    // `scripts/check-dependency-canaries.py`. Measurement: with HEAD's
+    // osv-scanner.yml swapped back in, the scan reads 206.
+    const EXPECTED_REFERENCES: usize = 207;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

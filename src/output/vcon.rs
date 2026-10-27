@@ -4699,7 +4699,7 @@ impl UuidDomain {
     /// refuses the name.
     pub fn new(fqhn: &str) -> Result<Self, &'static str> {
         let name = crate::config::normalize_uuid_domain(fqhn)?;
-        let digest = <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(name.as_bytes());
+        let digest = <sha1::Sha1 as sha1::Digest>::digest(name.as_bytes());
         let mut top = [0u8; 8];
         top.copy_from_slice(&digest[..8]);
         Ok(Self {
@@ -10753,7 +10753,7 @@ mod tests {
     /// The high 62 bits of SHA-1 over `name`, computed here rather than by the
     /// exporter, as the 64-bit value of octets 8 to 15 with variant `10`.
     fn sha1_custom_c(name: &str) -> u64 {
-        let digest = <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(name.as_bytes());
+        let digest = <sha1::Sha1 as sha1::Digest>::digest(name.as_bytes());
         let mut top = [0u8; 8];
         top.copy_from_slice(&digest[..8]);
         (0b10_u64 << 62) | (u64::from_be_bytes(top) >> 2)
@@ -10797,10 +10797,10 @@ mod tests {
     fn a_domain_uuid_follows_the_section_4_1_2_layout() -> Result<(), TestError> {
         // The digest the test recomputes is SHA-1: RFC 3174's first vector.
         assert_eq!(
-            format!(
-                "{:x}",
-                <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(b"abc")
-            ),
+            <sha1::Sha1 as sha1::Digest>::digest(b"abc")
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
             "a9993e364706816aba3e25717850c26c9cd0d89d"
         );
         let domain = UuidDomain::new("pbx.example.com")?;
