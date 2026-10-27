@@ -38,7 +38,9 @@ const KNOWN_UNTESTED: &[&str] = &[
     // or your environment (root / syslogd / live NIC), not a sandbox test.
 
     // ── Crypto: need a TLS/SRTP/DTLS pcap + matching keys (M5/T5.1 fixtures) ──
-    "keylog-watch", // live keylog tailing — needs the same + a running source
+    // `keylog-watch` left this list on 2026-10-25: feature_gate_test runs a
+    // build without `tls` and asserts the refusal on stderr. Narrower than
+    // behavior coverage: no live keylog is tailed.
     // `tls-key` left this list on 2026-10-08: config_cli_defects_test runs
     // the binary with a missing key file and asserts the exit 1 refusal.
     // Narrower than behavior coverage: no RSA handshake is decrypted -- that

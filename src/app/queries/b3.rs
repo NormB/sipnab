@@ -193,7 +193,9 @@ fn vcon_validate(cli: &Cli) -> Option<i32> {
     #[cfg(not(feature = "vcon"))]
     {
         let _ = (path, SUCCESS, NON_CONFORMANT, FAILED);
-        stderr_line!("--vcon-validate requires the 'vcon' feature (not compiled in)");
-        Some(2)
+        Some(crate::app::bootstrap::report_uncompiled(
+            &mut std::io::stderr().lock(),
+            "--vcon-validate requires the 'vcon' feature (not compiled in)",
+        ))
     }
 }

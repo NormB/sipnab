@@ -216,6 +216,13 @@
     },
     {
       "file": "src/app/bootstrap.rs",
+      "call": "report_uncompiled(&mut std::io::stderr().lock(), msg)",
+      "count": 1,
+      "carries": [],
+      "why": "launch's missing-feature check prints uncompiled_flag's answer, which is one of that function's uncompiled_when(...) literal sites."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
       "call": "error!(\"{}\", relay_stats_fetch_failure(addr, &e))",
       "count": 1,
       "carries": [
@@ -480,7 +487,7 @@
       "call": "PlanError::arg(msg)",
       "count": 3,
       "carries": [],
-      "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the others are capture_source_capacity_refusal and post_drop_flag_refusal in bootstrap.rs."
+      "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the others are capture_source_capacity_refusal and pcap_export_mode_refusal in bootstrap.rs."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -527,9 +534,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "error!(\"{msg}\")",
-      "count": 5,
+      "count": 4,
       "carries": [],
-      "why": "uncompiled_source_flag and mint_token are in-file literals, but the vcon_forward ForwardPlan::resolve_refusal/into_settings and vcon_fetch::prepare occurrences carry format! text from another in-scope file without sites, plus out-of-scope error text (Endpoint parse, credential file reads)."
+      "why": "mint_token is an in-file literal, but the vcon_forward ForwardPlan::resolve_refusal/into_settings and vcon_fetch::prepare occurrences carry format! text from another in-scope file without sites, plus out-of-scope error text (Endpoint parse, credential file reads)."
     },
     {
       "file": "src/app/bootstrap.rs",

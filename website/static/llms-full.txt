@@ -20713,7 +20713,9 @@ redirect it.
   - set `SIPNAB_LOG=info`.
 - sipnab writes a few messages to stderr without the timestamp and level.
   These messages decide the exit code, so they must appear even when logging
-  is off.
+  is off. sipnab refuses a flag that needs a feature this build does not
+  include in this way, for example
+  `--tls-key requires the 'tls' feature (not compiled in)`.
 
 ## What this page covers
 
@@ -20979,6 +20981,22 @@ One entry in the comma-separated `--fraud-destination` list is not a destination
 sipnab could not resolve the HEP authentication secret. `{e}` names the source: a `--hep-auth-file '<path>'` that sipnab cannot read or that is empty, or an empty value in `--hep-auth` or the `SIPNAB_HEP_AUTH` environment variable. sipnab refuses an empty secret because it would authenticate any sender that presents an empty one.
 
 **What to do:** Put a non-empty secret in the file or the flag, or remove `--hep-auth`/`--hep-auth-file` and unset `SIPNAB_HEP_AUTH`.
+
+**Exit code:** 2.
+
+### `--hep-listen requires the 'hep' feature (not compiled in)`
+
+`--hep-listen` receives packets over HEP (Homer Encapsulation Protocol). This sipnab build does not include the `hep` feature, so it cannot listen for HEP. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `hep` feature, or capture with `-d` or `-I` instead.
+
+**Exit code:** 2.
+
+### `HEP support requires --features hep`
+
+The run asks for HEP, and this sipnab build does not include the `hep` feature. `--hep-send` (send captured packets to a HEP collector) and `--hep-parse` or `[capture] hep_parse = true` (decode HEP packets) both print this message. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `hep` feature. Or remove `--hep-send` and `--hep-parse`, and set `[capture] hep_parse = false` or pass `--no-hep-parse`.
 
 **Exit code:** 2.
 
@@ -23404,6 +23422,46 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 **Exit code:** 2.
 
+### `--mcp requires the 'mcp' feature (not compiled in)`
+
+`--mcp` runs sipnab as an MCP (Model Context Protocol) server. This sipnab build does not include the `mcp` feature, so it has no MCP server. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `mcp` feature, or remove `--mcp`.
+
+**Exit code:** 2.
+
+### `--api requires the 'api' feature (not compiled in)`
+
+`--api` starts the REST API server. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api`.
+
+**Exit code:** 2.
+
+### `--api-key requires the 'api' feature (not compiled in)`
+
+`--api-key` sets the key that the REST API server accepts. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api-key`.
+
+**Exit code:** 2.
+
+### `--api-tls-cert requires the 'api' feature (not compiled in)`
+
+`--api-tls-cert` names the certificate chain that the REST API server presents over HTTPS. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api-tls-cert`.
+
+**Exit code:** 2.
+
+### `--api-tls-key requires the 'api' feature (not compiled in)`
+
+`--api-tls-key` names the private key for `--api-tls-cert`. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api-tls-key`.
+
+**Exit code:** 2.
+
 ### `--mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags ({})`
 
 `--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp`. The list includes `--export-vcon` only when you did not give `--vcon-out`.
@@ -23954,9 +24012,49 @@ Alternatively, name a keylog file or FIFO with `--keylog`.
 
 ### `--keylog-fd requires the 'tls' feature (not compiled in)`
 
-`--keylog-fd` names an already-open file descriptor from which sipnab reads TLS key log lines (the secrets that let it decrypt TLS traffic). This sipnab build does not include TLS decryption support (the `tls` feature), so it cannot use the descriptor.
+`--keylog-fd` names an already-open file descriptor from which sipnab reads TLS key log lines (the secrets that let it decrypt TLS traffic). This sipnab build does not include TLS decryption support (the `tls` feature), so it cannot use the descriptor. sipnab refuses the run before it opens the capture.
 
 **What to do:** Use a sipnab build that includes the `tls` feature, or remove `--keylog-fd`.
+
+**Exit code:** 2.
+
+### `--tls-key requires the 'tls' feature (not compiled in)`
+
+`--tls-key` names a TLS private key that sipnab uses to decrypt TLS 1.2 sessions with RSA key exchange. This sipnab build does not include TLS decryption support (the `tls` feature). sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `tls` feature, or remove `--tls-key`.
+
+**Exit code:** 2.
+
+### `--keylog requires the 'tls' feature (not compiled in)`
+
+`--keylog` names a TLS key log file (the `SSLKEYLOGFILE` format) that sipnab uses to decrypt TLS sessions. This sipnab build does not include TLS decryption support (the `tls` feature). sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `tls` feature, or remove `--keylog`.
+
+**Exit code:** 2.
+
+### `--keylog-watch requires the 'tls' feature (not compiled in)`
+
+`--keylog-watch` makes sipnab read new lines from the TLS key log while the capture runs. This sipnab build does not include TLS decryption support (the `tls` feature). sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `tls` feature, or remove `--keylog-watch`.
+
+**Exit code:** 2.
+
+### `--srtp-keys requires the 'tls' feature (not compiled in)`
+
+`--srtp-keys` names a file of SRTP master keys that sipnab uses to decrypt media. This sipnab build does not include TLS decryption support (the `tls` feature). sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `tls` feature, or remove `--srtp-keys`.
+
+**Exit code:** 2.
+
+### `--dtls-keylog requires the 'tls' feature (not compiled in)`
+
+`--dtls-keylog` names a DTLS key log from which sipnab derives the SRTP keys of DTLS-SRTP calls. This sipnab build does not include TLS decryption support (the `tls` feature). sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `tls` feature, or remove `--dtls-keylog`.
 
 **Exit code:** 2.
 

@@ -2849,10 +2849,11 @@ pub fn launch(
     // 13a. Feature gates that must fail fast, BEFORE any capture device is
     // opened: without them the flag silently degrades (--mcp used to run a
     // plain batch capture with no server; --hep-listen used to error late at
-    // capture spawn with a generic failure and exit 1).
-    if let Some(msg) = uncompiled_source_flag(cli) {
-        tracing::error!("{msg}");
-        crate::capture::archive::release_run_and_exit(2);
+    // capture spawn with a generic failure and exit 1; the TLS and API flags
+    // were refused only after the capture had opened). See `uncompiled_flag`.
+    if let Some(msg) = uncompiled_flag(cli, config, Compiled::THIS_BUILD) {
+        let code = report_uncompiled(&mut std::io::stderr().lock(), msg);
+        crate::capture::archive::release_run_and_exit(code);
     }
 
     let source = source.unwrap_or_else(auto_detect_source);
@@ -2958,13 +2959,9 @@ fn confine_after_capture_start(
     // reads it through this source instead of opening the path itself, so each
     // secret still loads once. Left for after the drop, a keylog private to the
     // proxy that wrote it could not be read at all.
+    // Without the `tls` feature `--keylog-fd` was refused at 13a.
     #[cfg(feature = "tls")]
     let keylog_source = open_privileged_keylog_source(cli);
-    if !cfg!(feature = "tls") && cli.tls_args.keylog_fd.is_some() {
-        return Err(PlanError::arg(
-            "--keylog-fd requires the 'tls' feature (not compiled in)".to_string(),
-        ));
-    }
 
     // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
     let effective_user = effective_user(cli, config);
@@ -2982,9 +2979,9 @@ fn confine_after_capture_start(
         crate::security::alerting::init_syslog();
     }
 
-    // 16c-16f. Flags whose feature is not compiled in, and
-    // `--pcap-export-mode`. See `post_drop_flag_refusal`.
-    if let Some(msg) = post_drop_flag_refusal(cli, config) {
+    // 16e. `--pcap-export-mode`. The flags whose feature is not compiled in
+    // were refused at 13a, before the capture opened.
+    if let Some(msg) = pcap_export_mode_refusal(cli) {
         return Err(PlanError::arg(msg));
     }
 
@@ -3079,16 +3076,131 @@ fn apply_core_dump_policy(allow_coredump: bool) -> Result<(), PlanError> {
     Ok(())
 }
 
-/// The refusal for a capture-source flag whose feature is not compiled in,
-/// checked before any capture device is opened.
-fn uncompiled_source_flag(cli: &Cli) -> Option<&'static str> {
-    if !cfg!(feature = "mcp") && cli.mcp_args.mcp {
-        return Some("--mcp requires the 'mcp' feature (not compiled in)");
-    }
-    if !cfg!(feature = "hep") && cli.hep_args.hep_listen.is_some() {
-        return Some("--hep-listen requires the 'hep' feature (not compiled in)");
-    }
-    None
+/// Which optional subsystems a build carries, for [`uncompiled_flag`].
+#[derive(Debug, Clone, Copy)]
+struct Compiled {
+    /// The `mcp` feature: the MCP server.
+    mcp: bool,
+    /// The `hep` feature: HEP send, listen and parse.
+    hep: bool,
+    /// The `tls` feature: TLS and SRTP decryption.
+    tls: bool,
+    /// The `api` feature: the REST API server.
+    api: bool,
+}
+
+impl Compiled {
+    /// This build.
+    const THIS_BUILD: Self = Self {
+        mcp: cfg!(feature = "mcp"),
+        hep: cfg!(feature = "hep"),
+        tls: cfg!(feature = "tls"),
+        api: cfg!(feature = "api"),
+    };
+}
+
+/// One flag a build without its feature refuses: whether this run gave it,
+/// with the feature absent, and the refusal [`report_uncompiled`] prints.
+///
+/// A function rather than a bare tuple so `tests/error_reference_test.rs`
+/// reads each refusal off its call, as it reads an `error!`.
+const fn uncompiled_when(refused: bool, message: &'static str) -> (bool, &'static str) {
+    (refused, message)
+}
+
+/// The refusal for a flag whose feature `compiled` lacks, or `None`.
+///
+/// Every flag the run itself uses is checked here, once, before any capture
+/// device is opened: a refused flag must not first read the input, open a
+/// device, chroot or drop privileges. The first that applies is the one
+/// reported. The one-shot commands (`--mint-token`, the vCon commands) refuse
+/// in their own handlers, which run before any capture is planned.
+///
+/// # Arguments
+///
+/// * `compiled` — the features to judge against; [`Compiled::THIS_BUILD`]
+///   outside the tests.
+fn uncompiled_flag(cli: &Cli, config: &Config, compiled: Compiled) -> Option<&'static str> {
+    let (no_mcp, no_hep, no_tls, no_api) =
+        (!compiled.mcp, !compiled.hep, !compiled.tls, !compiled.api);
+    let tls = &cli.tls_args;
+    let listener = &cli.listener_args;
+    let gates: [(bool, &str); 14] = [
+        uncompiled_when(
+            no_mcp && cli.mcp_args.mcp,
+            "--mcp requires the 'mcp' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_hep && cli.hep_args.hep_listen.is_some(),
+            "--hep-listen requires the 'hep' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_tls && tls.keylog_fd.is_some(),
+            "--keylog-fd requires the 'tls' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_hep && cli.hep_args.hep_send.is_some(),
+            "HEP support requires --features hep",
+        ),
+        uncompiled_when(
+            no_hep && cli.hep_parse(config),
+            "HEP support requires --features hep",
+        ),
+        uncompiled_when(
+            no_tls && tls.tls_key.is_some(),
+            "--tls-key requires the 'tls' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_tls && tls.keylog.is_some(),
+            "--keylog requires the 'tls' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_tls && tls.keylog_watch,
+            "--keylog-watch requires the 'tls' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_tls && tls.srtp_keys.is_some(),
+            "--srtp-keys requires the 'tls' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_api && listener.api.is_some(),
+            "--api requires the 'api' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_api && listener.api_key.is_some(),
+            "--api-key requires the 'api' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_api && listener.api_tls_cert.is_some(),
+            "--api-tls-cert requires the 'api' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_api && listener.api_tls_key.is_some(),
+            "--api-tls-key requires the 'api' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_tls && tls.dtls_keylog.is_some(),
+            "--dtls-keylog requires the 'tls' feature (not compiled in)",
+        ),
+    ];
+    gates
+        .into_iter()
+        .find_map(|(refused, message)| refused.then_some(message))
+}
+
+/// Print the refusal of a flag whose feature this build lacks, and return
+/// its exit code, 2.
+///
+/// Every such refusal goes through here: the launch check
+/// ([`uncompiled_flag`]), the one-shot commands and `--vcon-validate`. The
+/// line goes to `out` (stderr, everywhere but the tests) and never through
+/// `tracing`: the refusal decides the exit code, so `SIPNAB_LOG=off` must not
+/// hide it, and a log line beside it would print it twice.
+pub(crate) fn report_uncompiled(out: &mut dyn std::io::Write, message: &str) -> i32 {
+    // As `stderr_line!`: a stderr that cannot be written leaves nothing else
+    // to tell, and the exit code still says the run was refused.
+    let _ = writeln!(out, "{message}");
+    2
 }
 
 /// Refuse, before the first packet, an output the run would create later and
@@ -3148,79 +3260,17 @@ fn unwritable_output_refusal(cli: &Cli) -> Result<(), PlanError> {
     Ok(())
 }
 
-/// The refusal for a flag checked after the privilege drop: one whose feature
-/// is not compiled in, or an unknown `--pcap-export-mode`.
-///
-/// Checked in this order, and the first that applies is the one reported.
-/// `--dtls-keylog`'s extractor is constructed later (alongside the SRTP
-/// context); here only its feature gate is enforced.
-fn post_drop_flag_refusal(cli: &Cli, config: &Config) -> Option<String> {
-    let no_hep = !cfg!(feature = "hep");
-    let no_tls = !cfg!(feature = "tls");
-    let no_api = !cfg!(feature = "api");
+/// The refusal for an unknown `--pcap-export-mode`, checked after the
+/// privilege drop.
+fn pcap_export_mode_refusal(cli: &Cli) -> Option<String> {
     let tls = &cli.tls_args;
-    let listener = &cli.listener_args;
-    let feature_gates: [(bool, &str); 10] = [
-        // 16c. --hep-send requires the hep feature.
-        (
-            no_hep && cli.hep_args.hep_send.is_some(),
-            "HEP support requires --features hep",
-        ),
-        // 16d. --hep-parse requires the hep feature.
-        (
-            no_hep && cli.hep_parse(config),
-            "HEP support requires --features hep",
-        ),
-        // 16d2. TLS flags require the tls feature.
-        (
-            no_tls && tls.tls_key.is_some(),
-            "--tls-key requires the 'tls' feature (not compiled in)",
-        ),
-        (
-            no_tls && tls.keylog.is_some(),
-            "--keylog requires the 'tls' feature (not compiled in)",
-        ),
-        (
-            no_tls && tls.keylog_watch,
-            "--keylog-watch requires the 'tls' feature (not compiled in)",
-        ),
-        (
-            no_tls && tls.srtp_keys.is_some(),
-            "--srtp-keys requires the 'tls' feature (not compiled in)",
-        ),
-        // 16d3. API flags require the api feature.
-        (
-            no_api && listener.api.is_some(),
-            "--api requires the 'api' feature (not compiled in)",
-        ),
-        (
-            no_api && listener.api_key.is_some(),
-            "--api-key requires the 'api' feature (not compiled in)",
-        ),
-        (
-            no_api && listener.api_tls_cert.is_some(),
-            "--api-tls-cert requires the 'api' feature (not compiled in)",
-        ),
-        (
-            no_api && listener.api_tls_key.is_some(),
-            "--api-tls-key requires the 'api' feature (not compiled in)",
-        ),
-    ];
-    if let Some((_, msg)) = feature_gates.iter().find(|(refused, _)| *refused) {
-        return Some((*msg).to_string());
-    }
     // 16e. Validate --pcap-export-mode
     match tls.pcap_export_mode.as_str() {
-        "decrypted" | "encrypted+dsb" | "raw" => {}
-        other => {
-            return Some(format!(
-                "Invalid --pcap-export-mode '{other}': must be 'decrypted', 'encrypted+dsb', or 'raw'"
-            ));
-        }
+        "decrypted" | "encrypted+dsb" | "raw" => None,
+        other => Some(format!(
+            "Invalid --pcap-export-mode '{other}': must be 'decrypted', 'encrypted+dsb', or 'raw'"
+        )),
     }
-    // 16f. --dtls-keylog requires the tls feature.
-    (no_tls && tls.dtls_keylog.is_some())
-        .then(|| "--dtls-keylog requires the 'tls' feature (not compiled in)".to_string())
 }
 
 /// Whether this run loads decryption keys into process memory.
@@ -4515,8 +4565,10 @@ pub fn run_mint_token(cli: &Cli) -> Option<i32> {
     }
     #[cfg(not(any(feature = "api", feature = "mcp")))]
     {
-        tracing::error!("--mint-token requires the 'api' or 'mcp' feature (not compiled in)");
-        Some(2)
+        Some(report_uncompiled(
+            &mut std::io::stderr().lock(),
+            "--mint-token requires the 'api' or 'mcp' feature (not compiled in)",
+        ))
     }
 }
 
@@ -4578,8 +4630,10 @@ pub fn run_vcon_forward(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Op
     #[cfg(not(feature = "vcon"))]
     {
         let _ = read;
-        tracing::error!("--vcon-forward requires the 'vcon' feature (not compiled in)");
-        Some(2)
+        Some(report_uncompiled(
+            &mut std::io::stderr().lock(),
+            "--vcon-forward requires the 'vcon' feature (not compiled in)",
+        ))
     }
 }
 
@@ -4633,8 +4687,10 @@ pub fn run_vcon_spool_status(cli: &Cli) -> Option<i32> {
     #[cfg(not(feature = "vcon"))]
     {
         let _ = spool;
-        tracing::error!("--vcon-spool-status requires the 'vcon' feature (not compiled in)");
-        Some(2)
+        Some(report_uncompiled(
+            &mut std::io::stderr().lock(),
+            "--vcon-spool-status requires the 'vcon' feature (not compiled in)",
+        ))
     }
 }
 
@@ -4687,8 +4743,10 @@ pub fn run_vcon_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opti
     #[cfg(not(feature = "vcon"))]
     {
         let _ = read;
-        tracing::error!("--vcon-fetch requires the 'vcon' feature (not compiled in)");
-        Some(2)
+        Some(report_uncompiled(
+            &mut std::io::stderr().lock(),
+            "--vcon-fetch requires the 'vcon' feature (not compiled in)",
+        ))
     }
 }
 
@@ -4719,8 +4777,10 @@ pub fn run_vcon_resign(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opt
     #[cfg(not(feature = "vcon"))]
     {
         let _ = read;
-        tracing::error!("--vcon-resign requires the 'vcon' feature (not compiled in)");
-        Some(2)
+        Some(report_uncompiled(
+            &mut std::io::stderr().lock(),
+            "--vcon-resign requires the 'vcon' feature (not compiled in)",
+        ))
     }
 }
 
@@ -4755,8 +4815,10 @@ pub fn run_vcon_audio_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -
     #[cfg(not(feature = "vcon"))]
     {
         let _ = read;
-        tracing::error!("--vcon-audio-fetch requires the 'vcon' feature (not compiled in)");
-        Some(2)
+        Some(report_uncompiled(
+            &mut std::io::stderr().lock(),
+            "--vcon-audio-fetch requires the 'vcon' feature (not compiled in)",
+        ))
     }
 }
 
@@ -7194,6 +7256,120 @@ mod tests {
                 "{m}"
             );
         }
+    }
+
+    /// A feature refusal decides the exit code, so it is written to the
+    /// given stream whatever the log filter says: with no subscriber at all
+    /// (`SIPNAB_LOG=off`), and exactly once, never also as a log line, when
+    /// logging is on.
+    #[test]
+    fn a_feature_refusal_is_written_once_whatever_the_log_level() {
+        const MSG: &str = "--tls-key requires the 'tls' feature (not compiled in)";
+        let mut out = Vec::new();
+        assert_eq!(report_uncompiled(&mut out, MSG), 2);
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            format!("{MSG}\n"),
+            "logging off"
+        );
+        for level in [tracing::Level::ERROR, tracing::Level::TRACE] {
+            let mut out = Vec::new();
+            let logged = crate::test_utils::capture_logs(level, || {
+                assert_eq!(report_uncompiled(&mut out, MSG), 2);
+            });
+            assert_eq!(
+                String::from_utf8_lossy(&out),
+                format!("{MSG}\n"),
+                "logging at {level}"
+            );
+            assert!(
+                !logged.contains(MSG),
+                "logging at {level} printed the refusal a second time: {logged}"
+            );
+        }
+    }
+
+    /// Every flag whose feature a build lacks is refused by one check, made
+    /// before the capture opens; a build with every feature refuses none.
+    #[test]
+    fn every_flag_whose_feature_is_absent_is_refused_before_the_capture() -> Result<(), TestError> {
+        use clap::Parser as _;
+        const NONE: Compiled = Compiled {
+            mcp: false,
+            hep: false,
+            tls: false,
+            api: false,
+        };
+        const ALL: Compiled = Compiled {
+            mcp: true,
+            hep: true,
+            tls: true,
+            api: true,
+        };
+        let config = Config::default();
+        let cases: [(&[&str], &str); 15] = [
+            (
+                &["--mcp"],
+                "--mcp requires the 'mcp' feature (not compiled in)",
+            ),
+            (
+                &["--hep-listen", "127.0.0.1:9060"],
+                "--hep-listen requires the 'hep' feature (not compiled in)",
+            ),
+            (
+                &["--hep-send", "127.0.0.1:9060"],
+                "HEP support requires --features hep",
+            ),
+            (&["--hep-parse"], "HEP support requires --features hep"),
+            (
+                &["--tls-key", "k.pem"],
+                "--tls-key requires the 'tls' feature (not compiled in)",
+            ),
+            (
+                &["--keylog", "k.log"],
+                "--keylog requires the 'tls' feature (not compiled in)",
+            ),
+            (
+                &["--keylog-watch"],
+                "--keylog-watch requires the 'tls' feature (not compiled in)",
+            ),
+            (
+                &["--keylog-fd", "3"],
+                "--keylog-fd requires the 'tls' feature (not compiled in)",
+            ),
+            (
+                &["--srtp-keys", "s.txt"],
+                "--srtp-keys requires the 'tls' feature (not compiled in)",
+            ),
+            (
+                &["--dtls-keylog", "d.log"],
+                "--dtls-keylog requires the 'tls' feature (not compiled in)",
+            ),
+            (
+                &["--api", "127.0.0.1:0"],
+                "--api requires the 'api' feature (not compiled in)",
+            ),
+            (
+                &["--api-key", "k"],
+                "--api-key requires the 'api' feature (not compiled in)",
+            ),
+            (
+                &["--api-tls-cert", "c.pem"],
+                "--api-tls-cert requires the 'api' feature (not compiled in)",
+            ),
+            (
+                &["--api-tls-key", "k.pem"],
+                "--api-tls-key requires the 'api' feature (not compiled in)",
+            ),
+            (&[], ""),
+        ];
+        for (flags, refusal) in cases {
+            let cli = Cli::try_parse_from(["sipnab", "-N"].iter().chain(flags))?;
+            let want = (!refusal.is_empty()).then_some(refusal);
+            assert_eq!(uncompiled_flag(&cli, &config, NONE), want, "{flags:?}");
+            assert_eq!(uncompiled_flag(&cli, &config, ALL), None, "{flags:?}");
+        }
+        Ok(())
     }
 
     /// The forwarder draws no TUI, so it logs at `info` by default like a
