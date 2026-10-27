@@ -1220,7 +1220,12 @@ fn bump(n: &mut u32) {
 }
 EOF
 ( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+# Colored, as CI's workflows set it: the lint's name must survive cargo's ANSI
+# codes, or the report shows only a location.
+CARGO_TERM_COLOR=always
+export CARGO_TERM_COLOR
 run_matrix_script
+unset CARGO_TERM_COLOR
 if [ "$MX_RC" -eq 2 ]; then
 	skip "check-feature-matrix.py blocks a lint that fires only in one combo -- NOT CHECKED on $(uname -s)"
 elif [ "$MX_RC" -ne 0 ] && grep -q 'needless_return\|unneeded `return`' "$TMP/out.log"; then

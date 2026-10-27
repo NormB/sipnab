@@ -100,6 +100,23 @@ def has_wasm_target() -> bool:
     return r.returncode == 0 and "wasm32-unknown-unknown" in r.stdout
 
 
+# An ANSI escape sequence: CSI codes such as `\x1b[1m`, which cargo writes
+# around every diagnostic when CARGO_TERM_COLOR=always, as CI's workflows set.
+ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def report_lines(out: str) -> list[str]:
+    """The lines of a failing combination's cargo output worth printing.
+
+    The color codes come off first. A colored `error: ...` line starts with
+    an escape, not with `error`, so matching the raw line kept only the
+    `-->` location and dropped the lint's name.
+    """
+    plain = (ANSI.sub("", line) for line in out.splitlines())
+    return [line for line in plain
+            if line.startswith(("error", "warning:")) or "-->" in line]
+
+
 def main() -> int:
     if subprocess.run(["cargo", "--version"], cwd=ROOT,
                       capture_output=True).returncode != 0:
@@ -148,9 +165,8 @@ def main() -> int:
     if failed:
         for f, out in failed:
             print(f"\n  --- --features {f} ---")
-            for line in out.splitlines():
-                if line.startswith(("error", "warning:")) or "-->" in line:
-                    print(f"  {line}")
+            for line in report_lines(out):
+                print(f"  {line}")
         print(f"\n{len(failed)} of {len(names)} feature combos failed.")
         return 1
     print(f"{len(names) - len(unchecked)} of {len(names)} combos checked, all clean.")
