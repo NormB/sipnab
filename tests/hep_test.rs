@@ -22,6 +22,8 @@ use std::process::{Child, Command, Stdio};
 mod pcap_build;
 #[path = "support/ports.rs"]
 mod ports;
+#[path = "support/socket_close.rs"]
+mod socket_close;
 #[path = "support/mod.rs"]
 mod support;
 use std::sync::mpsc;
@@ -1469,14 +1471,18 @@ fn accept_sender(listener: &std::net::TcpListener) -> Result<std::net::TcpStream
 /// Take the collector down: close the sender's connection and the listener,
 /// with the port held bound and NOT listening, so every redial is refused
 /// and no parallel test can take the number before [`collector_up`].
+///
+/// Both are shut down rather than only dropped: a child process another test
+/// is starting may hold copies of them, and a dropped listener would go on
+/// listening through that copy (see `support/socket_close.rs`).
 fn collector_down(
     listener: std::net::TcpListener,
     conn: std::net::TcpStream,
 ) -> Result<socket2::Socket, TestError> {
     let hold = reuse_port_socket()?;
     hold.bind(&listener.local_addr()?.into())?;
-    drop(conn);
-    drop(listener);
+    socket_close::close_stream(conn);
+    socket_close::close_listener(listener);
     Ok(hold)
 }
 
@@ -1485,6 +1491,55 @@ fn collector_up(hold: socket2::Socket) -> Result<std::net::TcpStream, TestError>
     hold.listen(16)?;
     let listener: std::net::TcpListener = hold.into();
     accept_sender(&listener)
+}
+
+/// **A collector taken down stays down while a child process still holds a
+/// copy of its sockets, and the one brought up gets every connection.**
+///
+/// A child that another test is starting holds a copy of every descriptor
+/// this process has open, from the moment it is created until it executes
+/// sipnab. Dropping a socket closes this process's descriptor, not the
+/// socket: the copy keeps the old listener listening. The new listener then
+/// shares the port with it, and the kernel hands about half of the
+/// connections to the old one, which nobody accepts.
+/// `hep_send_replays_to_a_collector_that_went_away` failed that way about
+/// once in a hundred runs beside the other tests: sipnab reported the
+/// collector reachable again 100 ms after the outage began, and the test
+/// never saw the connection.
+///
+/// `try_clone` makes the copy here, so the window is open on every run.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_collector_taken_down_stays_down_while_a_child_holds_its_sockets() -> Result<(), TestError> {
+    use std::io::Read;
+    let (listener, dest) = collector_listening()?;
+    let mut sender = std::net::TcpStream::connect(&dest)?;
+    let conn = accept_sender(&listener)?;
+    let child_copy = (listener.try_clone()?, conn.try_clone()?);
+    let hold = collector_down(listener, conn)?;
+
+    sender.set_read_timeout(Some(test_timeout(10)))?;
+    let mut byte = [0u8; 1];
+    let read = sender
+        .read(&mut byte)
+        .map_err(|e| format!("the sender never saw the collector close its connection: {e}"))?;
+    assert_eq!(read, 0, "the collector's close is an end of stream");
+    let addr: std::net::SocketAddr = dest.parse()?;
+    let probe = std::net::TcpStream::connect_timeout(&addr, test_timeout(10));
+    assert!(
+        matches!(&probe, Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused),
+        "a collector that is down must refuse a dial: {probe:?}"
+    );
+
+    hold.listen(16)?;
+    let listener: std::net::TcpListener = hold.into();
+    for i in 0..20 {
+        let _dial = std::net::TcpStream::connect(&dest)?;
+        accept_sender(&listener)
+            .map_err(|e| format!("dial {i} after the collector came up: {e}"))?;
+    }
+    drop(child_copy);
+    Ok(())
 }
 
 /// The SIP payloads of `want` HEP packets read off a TCP collector stream.

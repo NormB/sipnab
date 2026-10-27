@@ -5273,7 +5273,7 @@ mod tests {
             1,
             "the first packet arrives on the first connection"
         );
-        drop(first);
+        super::test_sockets::close_stream_now(first);
 
         // A write into a socket the peer has closed is buffered locally and
         // only fails once the RST comes back, so the packet that discovers the
@@ -5400,8 +5400,8 @@ mod tests {
         let hold = reuse_port_socket()?;
         hold.bind(&addr.into())
             .map_err(|e| format!("hold the port, not listening: {e:?}"))?;
-        drop(first);
-        drop(collector);
+        super::test_sockets::close_stream_now(first);
+        super::test_sockets::close_listener_now(collector);
 
         let intruder = std::net::TcpListener::bind(addr);
         assert!(
@@ -5638,7 +5638,7 @@ mod tests {
             .map_err(|e| format!("the first packet crosses the live connection: {e:?}"))?;
         let first = accept_within(collector.listener()?, "the first connection")?;
         collector.start_dropping()?;
-        drop(first);
+        super::test_sockets::close_stream_now(first);
 
         // The write that finds the dropped connection fails first, and the
         // link then redials. Stop at the second failure of ANY kind, so a
@@ -11317,6 +11317,62 @@ mod tests {
     }
 }
 
+/// Closing a test's sockets so that the peer sees the close at once, for the
+/// two test modules below.
+///
+/// Dropping a socket closes this process's descriptor, not the socket. A
+/// child process that another test is starting holds a copy of every
+/// descriptor this process has open until it executes its program, and
+/// through that copy a dropped listener keeps listening and a dropped
+/// connection stays open. `shutdown` acts on the socket whatever refers to
+/// it. `tests/support/socket_close.rs` states the same rule for the
+/// integration tests, which cannot reach this module.
+#[cfg(test)]
+mod test_sockets {
+    /// Close `stream` in both directions now, then drop it.
+    pub(super) fn close_stream_now(stream: std::net::TcpStream) {
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        drop(stream);
+    }
+
+    /// Stop `listener` listening now (Linux; elsewhere the call is refused
+    /// and only the drop happens), then drop it.
+    pub(super) fn close_listener_now(listener: std::net::TcpListener) {
+        let _ = socket2::SockRef::from(&listener).shutdown(std::net::Shutdown::Both);
+        drop(listener);
+    }
+
+    /// **A connection and a listener closed here are closed while a child
+    /// process still holds copies of them.** `try_clone` makes the copies, as
+    /// a child being started holds them, so the window is open on every run.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_close_reaches_the_peer_while_a_child_holds_a_copy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let addr = listener.local_addr()?;
+        let mut client = std::net::TcpStream::connect(addr)?;
+        let (server, _) = listener.accept()?;
+        let child_copy = (listener.try_clone()?, server.try_clone()?);
+        close_stream_now(server);
+        close_listener_now(listener);
+        client.set_read_timeout(Some(super::delivery_tests::MUST_HAPPEN))?;
+        let mut byte = [0u8; 1];
+        let read = client
+            .read(&mut byte)
+            .map_err(|e| format!("the client never saw the close: {e}"))?;
+        assert_eq!(read, 0, "the close is an end of stream");
+        let probe = std::net::TcpStream::connect(addr);
+        assert!(
+            matches!(&probe, Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused),
+            "a closed listener must refuse a dial: {probe:?}"
+        );
+        drop(child_copy);
+        Ok(())
+    }
+}
+
 /// The `--hep-send` delivery path against real sockets: a collector that
 /// reads nothing, one that goes away and comes back, and one that closes its
 /// connection. The queue's own rules (order, bound,
@@ -11333,7 +11389,7 @@ mod delivery_tests {
     /// How long a test waits for something that must happen before calling
     /// it a failure. A hang detector, not a speed claim: every wait polls a
     /// condition and returns the moment it holds.
-    const MUST_HAPPEN: Duration = Duration::from_secs(60);
+    pub(super) const MUST_HAPPEN: Duration = Duration::from_secs(60);
 
     /// A SIP-shaped HEP payload carrying its number, so order is checkable.
     fn numbered(i: usize) -> Vec<u8> {
@@ -11547,8 +11603,8 @@ mod delivery_tests {
         let first = accept(&collector)?;
         let hold = reuse_port_socket()?;
         hold.bind(&addr.into())?;
-        drop(first);
-        drop(collector);
+        super::test_sockets::close_stream_now(first);
+        super::test_sockets::close_listener_now(collector);
 
         for i in 0..N {
             offer(&sender, &numbered(i))?;
@@ -11599,7 +11655,7 @@ mod delivery_tests {
             assert!(Instant::now() < deadline, "the data never arrived");
         }
         assert!(!peer_closed(&client), "pending data is not a close");
-        drop(server);
+        super::test_sockets::close_stream_now(server);
         // The FIN follows the data; the check must see it once it lands.
         let mut buf = [0u8; 6];
         {
