@@ -486,6 +486,114 @@ fn the_feature_matrix_compiles_the_bpf_combo_with_its_tests() -> Result<(), Test
     Ok(())
 }
 
+/// The `features` job of ci.yml: its header up to the next top-level job.
+fn ci_features_job() -> Result<String, TestError> {
+    let ci = read(".github/workflows/ci.yml")?;
+    let body = ci
+        .split_once("\n  features:\n")
+        .ok_or("ci.yml has no top-level `features:` job")?
+        .1;
+    // The next job header is a two-space-indented `name:` line on its own.
+    let end = body
+        .lines()
+        .position(|l| {
+            l.len() > 2
+                && l.starts_with("  ")
+                && !l.starts_with("   ")
+                && l.trim_end().ends_with(':')
+                && !l.trim_start().starts_with('#')
+        })
+        .unwrap_or(body.lines().count());
+    Ok(body.lines().take(end).collect::<Vec<_>>().join("\n"))
+}
+
+/// Every leg of the feature matrix is LINTED, not only compiled.
+///
+/// The job ran `cargo check --tests` on each combination, and nothing linted a
+/// partial feature set: CI's clippy steps cover `--all-features` and the empty
+/// set only. A lint that fires only when some features are off then reaches
+/// main unread. The default build was one: without `g729`, a `#[cfg]` block in
+/// `run_pending_install` vanishes, the `return` before it becomes the
+/// function's tail, and `cargo clippy --all-targets -- -D warnings` with the
+/// default features failed on main while every gate passed. Clippy checks what
+/// `cargo check` checks, so the lint step replaces the compile step rather
+/// than sitting beside it.
+#[test]
+fn the_feature_matrix_lints_every_leg_with_its_tests() -> Result<(), TestError> {
+    let job = ci_features_job()?;
+    let runs: Vec<&str> = job
+        .lines()
+        .map(str::trim)
+        .filter_map(|l| l.strip_prefix("run: "))
+        .filter(|l| l.contains("${{ matrix.features }}"))
+        .collect();
+    assert!(
+        !runs.is_empty(),
+        "no `run:` line in ci.yml's features job names `${{{{ matrix.features }}}}`; \
+         the job scan went blind:\n{job}"
+    );
+    let want = r#"cargo clippy --no-default-features --features "${{ matrix.features }}" --tests -- -D warnings"#;
+    assert!(
+        runs.contains(&want),
+        "ci.yml's features job does not run `{want}`, so no leg of the matrix \
+         is linted and a lint that fires only on a partial feature set reaches \
+         main unread. It runs:\n{runs:#?}"
+    );
+    for run in &runs {
+        assert!(
+            !run.starts_with("cargo check"),
+            "ci.yml's features job still compiles a leg with `{run}`, which \
+             checks types and never lints; `{want}` covers it"
+        );
+    }
+    // The lint step must run on every native leg: only wasm is exempt, and it
+    // has its own wasm32 check.
+    let lines: Vec<&str> = job.lines().map(str::trim).collect();
+    let at = lines
+        .iter()
+        .position(|l| l.strip_prefix("run: ") == Some(want))
+        .ok_or("lint step vanished between scans")?;
+    let guard = lines[..at]
+        .iter()
+        .rev()
+        .take_while(|l| !l.starts_with("- "))
+        .find_map(|l| l.strip_prefix("if: "));
+    assert!(
+        matches!(guard, None | Some("matrix.features != 'wasm'")),
+        "the matrix lint step runs only `if: {}`, so most legs skip it",
+        guard.unwrap_or_default()
+    );
+    Ok(())
+}
+
+/// The feature matrix includes the crate's DEFAULT feature set.
+///
+/// `cargo build` with no flags is what most contributors run, and it was the
+/// one combination neither the clippy steps nor the matrix built. The set is
+/// read from Cargo.toml's `default = [...]`, so a change to the defaults that
+/// is not mirrored in ci.yml fails here.
+#[test]
+fn the_feature_matrix_includes_the_default_feature_set() -> Result<(), TestError> {
+    let table = feature_table()?;
+    let default = table
+        .get("default")
+        .ok_or("Cargo.toml [features] has no `default` entry")?;
+    assert!(
+        !default.is_empty(),
+        "Cargo.toml's `default` feature list parsed empty; the scan is wrong"
+    );
+    let want = expand(&default.join(","), &table);
+    let combos = ci_feature_combos()?;
+    assert!(
+        combos.iter().any(|c| expand(c, &table) == want),
+        "ci.yml's feature matrix has no leg equal to Cargo.toml's default \
+         features `{}`, so the build a bare `cargo build` produces is never \
+         linted with its tests. Legs: {combos:?}",
+        default.join(",")
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // UPR1: build.rs has two explicitly chosen modes, and a release picks the
 // strict one.

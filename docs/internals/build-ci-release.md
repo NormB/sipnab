@@ -392,12 +392,22 @@ Their contents are worth spelling out.
   - plus the `--ignored` PTY TUI end-to-end tests
   - On Linux it also compiles the Python clients under `clients/python/`.
     It runs `pytest` over their tests and `scripts/tests`.
-- **`features`**: `cargo check --no-default-features --features X --tests`
-  across fifteen feature sets.
+- **`features`**: `cargo clippy --no-default-features --features X --tests
+  -- -D warnings` across twenty-one feature sets.
   - The sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
-    `metrics`, then `tls,api`, `native,tui,audio`, `native,tui,tls,hep,api`,
-    `native,hep,api,mcp,mcp-http`, `bpf`, `vcon`, `audio`, `plugins`, and `wasm`
-    (lib-only).
+    `metrics`, then `tls,api`, `native,tui,audio`, the default features
+    `native,tui,audio,metrics`, `native,tui,tls,hep,api`,
+    `native,hep,api,mcp,mcp-http`, each of `bpf`, `vcon`, `opus`, `audio`,
+    `plugins`, `archive` and `g729`, the two reduced sets the release
+    publishes, and `wasm`.
+  - `wasm` is lib-only, and gets a `cargo check` of the library for the
+    `wasm32-unknown-unknown` target instead.
+  - Clippy, not `cargo check`: it compiles the same code and also denies
+    the lints that appear only in one combination.
+    Neither `--all-features` nor the no-features clippy step can see those.
+    A `return` left as a function's tail once a `#[cfg(feature = "g729")]`
+    block vanished failed clippy with the default features while every gate
+    passed.
   - `vcon` is in `full`, so `--all-features` already builds it.
     This leg is what proves it also builds without `tui`, `tls`, `api` or `mcp`.
   - The documented headless server recipe (`native,hep,api,mcp,mcp-http`) gets a full `cargo
@@ -414,7 +424,7 @@ Their contents are worth spelling out.
       `bpf-linker` on this runner).
     - The release job is where the kernel half is actually built, under `SIPNAB_BPF_REQUIRED=1`.
   - `--tests` is what makes any of these real.
-    Without it the check compiles no test file at all, and every leg
+    Without it the lint compiles no test file at all, and every leg
     goes green over nothing.
 - **`audit`**: `cargo-audit` and `cargo-deny`.
 - **`fuzz-check`**: the `fuzz/` workspace compiles.

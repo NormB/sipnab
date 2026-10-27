@@ -813,10 +813,14 @@ jobs:
       - name: Self-test (no root, no netns, no capture device)
         run: bash bench/live-capture.sh --self-test
 
-  # Reduced feature combinations must keep compiling (lib AND test code).
-  # --all-features alone let `#[cfg]`-gating rot: at one point 7 of 8
-  # reduced combos failed to build. `cargo check --tests` is enough to
-  # catch that class; the full test suite still runs under `check`.
+  # Reduced feature combinations must keep compiling AND lint-clean (lib and
+  # test code). --all-features alone let `#[cfg]`-gating rot: at one point 7
+  # of 8 reduced combos failed to build. Compiling was not enough either: a
+  # lint that fires only with some features off (a `return` left as the tail
+  # once a `#[cfg(feature = "g729")]` block vanished) failed `cargo clippy`
+  # with the default features while every gate here was green. So each leg
+  # runs clippy, which checks everything `cargo check` does; the full test
+  # suite still runs under `check`.
   features:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed: 7.2 min slowest combo.
@@ -845,6 +849,10 @@ jobs:
           - metrics
           - "tls,api"
           - "native,tui,audio"
+          # The crate's default features, what a bare `cargo build` produces.
+          # the_feature_matrix_includes_the_default_feature_set keeps this
+          # equal to Cargo.toml's `default = [...]`.
+          - "native,tui,audio,metrics"
           - "native,tui,tls,hep,api"
           # The documented headless server build (README "Headless capture host").
           - "native,hep,api,mcp,mcp-http"
@@ -955,9 +963,13 @@ jobs:
         if: matrix.features == 'wasm'
         run: cargo check --target wasm32-unknown-unknown --no-default-features --features wasm --lib
 
-      - name: Check (with tests)
+      # Clippy, not `cargo check`: it compiles the same code and also denies
+      # the lints that appear only in this feature combination, which neither
+      # `--all-features` nor the no-features clippy step can see.
+      # the_feature_matrix_lints_every_leg_with_its_tests requires it.
+      - name: Clippy (with tests)
         if: matrix.features != 'wasm'
-        run: cargo check --no-default-features --features "${{ matrix.features }}" --tests
+        run: cargo clippy --no-default-features --features "${{ matrix.features }}" --tests -- -D warnings
 
       # The headless recipe is the documented server build (README:
       # "Headless capture host with HEP listener + REST API + MCP HTTP").
@@ -969,7 +981,7 @@ jobs:
 
       # Tests that exist only where a feature is ABSENT. `--all-features` and
       # the pre-commit hook's `--features full` compile them out, and `cargo
-      # check --tests` above builds them without running them, so before
+      # clippy --tests` above builds them without running them, so before
       # these steps nothing executed them anywhere. Each runs in the leg whose
       # combo is the absence it tests.
       - name: Test (feature-gate refusals, no mcp and no hep)
