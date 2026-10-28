@@ -20,7 +20,7 @@
 
 - [ ] Tests added or updated, including one that fails without this change (and `cargo test` passes locally)
 - [ ] `cargo clippy` is clean (CI builds with `-Dwarnings`)
-- [ ] `cargo fmt` applied
+- [ ] `scripts/check-rustfmt.sh --fix` applied
 - [ ] Docs / README / website updated if behavior or flags changed
 - [ ] `CHANGELOG.md` has an entry under `## [Unreleased]` for a user-visible change
 - [ ] Security impact considered against the trust boundaries in [threat-model.md](../docs/threat-model.md)

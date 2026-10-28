@@ -22,10 +22,10 @@ fn tables() -> Option<&'static Tables> {
     T.get_or_init(|| {
         if let Some(dir) = std::env::var_os("G729_VECTORS") {
             let src = std::path::Path::new(&dir).join("itu-source");
-            if let Ok(file) = g729::import_from_itu(&src) {
-                if let Ok(t) = Tables::from_bytes(&file) {
-                    return Some(t);
-                }
+            if let Ok(file) = g729::import_from_itu(&src)
+                && let Ok(t) = Tables::from_bytes(&file)
+            {
+                return Some(t);
             }
         }
         pseudo_random_tables()

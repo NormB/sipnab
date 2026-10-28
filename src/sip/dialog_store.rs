@@ -4279,8 +4279,11 @@ mod tests {
             .iter()
             .find(|r| r.reason == CorrelationReason::SdpOrigin)
             .ok_or("the origin tuple in the multipart SDP must correlate the legs")?;
-        assert_eq!(hit.dialog.call_id, "sip-i-b@core");
-        assert_eq!(hit.score, 90);
+        assert_eq!(
+            hit.dialog.call_id, "sip-i-b@core",
+            "the SDP origin in the multipart body must point at the B leg"
+        );
+        assert_eq!(hit.score, 90, "an SDP origin match scores 90");
         Ok(())
     }
 

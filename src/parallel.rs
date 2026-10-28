@@ -4492,7 +4492,11 @@ mod tests {
         );
         let (a, b) = SIP_HOSTS;
         let invite = eth_packet(eth_udp_between(a, b, 5060, 5060, text.as_bytes()));
-        assert!(Fanout::of(&pcfg_default_range()).needs(&invite));
+        assert!(
+            Fanout::of(&pcfg_default_range()).needs(&invite),
+            "an INVITE whose body starts `v=` with no Content-Type is SDP by the label's \
+             rule, so every worker needs a copy"
+        );
     }
 
     /// With no stream store to inform (`--no-rtp`) or no SDP to learn

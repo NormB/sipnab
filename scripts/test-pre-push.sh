@@ -7,7 +7,7 @@
 # SCENARIO: format gate
 #   Given a throwaway crate containing UNFORMATTED Rust,
 #     when the pre-push hook runs, then it BLOCKS the push (exit != 0).
-#   Given the same crate after `cargo fmt --all` (FORMATTED Rust),
+#   Given the same crate after `scripts/check-rustfmt.sh --fix` (FORMATTED Rust),
 #     when the pre-push hook runs, then it ALLOWS the push (exit == 0).
 #   Given UNFORMATTED Rust but SKIP_FMT_HOOK=1,
 #     when the pre-push hook runs, then it ALLOWS the push (bypass).
@@ -121,10 +121,35 @@ if ! command -v cargo >/dev/null 2>&1; then
 	printf 'SKIP: cargo not on PATH; cannot exercise rustfmt gate.\n'
 	exit 0
 fi
+# The format gate runs the dated nightly rustfmt named in .rustfmt-toolchain.
+# Without it the gate exits 2 in every scenario, and each later gate would
+# read as "blocked, but not by that gate". Stop once, with the fix.
+PIN=$(tr -d '[:space:]' < "$REPO_ROOT/.rustfmt-toolchain")
+if ! rustfmt "+$PIN" --version >/dev/null 2>&1; then
+	bad "the format gate's rustfmt ($PIN) is not installed, so no scenario can run"
+	printf '    rustup toolchain install %s --profile minimal --component rustfmt\n' "$PIN"
+	exit 1
+fi
+
+# Format the fixture with the gate's own fixer. Exit 1 (a file rustfmt could
+# not rewrite) is the fixture's business; exit 2 means the fixer could not
+# run at all, and every verdict after it would be about the wrong gate.
+fmt_fixture() {
+	_rc=0
+	( cd "$CRATE" && "$REPO_ROOT/scripts/check-rustfmt.sh" --fix ) >"$TMP/fmt.log" 2>&1 || _rc=$?
+	if [ "$_rc" -eq 2 ]; then
+		bad "scripts/check-rustfmt.sh --fix could not run on the fixture"
+		sed 's/^/    /' "$TMP/fmt.log"
+		exit 1
+	fi
+}
 
 # -- Build an isolated minimal crate -----------------------------------------
 CRATE="$TMP/throwaway"
 mkdir -p "$CRATE/src"
+# A git work tree from the start: the format gate, scripts/check-rustfmt.sh,
+# takes its file list from git and refuses to run outside a work tree.
+( cd "$CRATE" && git init -q . )
 
 cat >"$CRATE/Cargo.toml" <<'EOF'
 [package]
@@ -260,11 +285,11 @@ else
 	ok "unformatted Rust is BLOCKED (non-zero exit)"
 fi
 
-# Confirm the message is actionable (mentions cargo fmt).
-if grep -q "cargo fmt" "$TMP/out.log"; then
-	ok "failure message points to 'cargo fmt'"
+# Confirm the message is actionable (names the fixer).
+if grep -q "scripts/check-rustfmt.sh --fix" "$TMP/out.log"; then
+	ok "failure message points to 'scripts/check-rustfmt.sh --fix'"
 else
-	bad "failure message does not mention 'cargo fmt'"
+	bad "failure message does not mention 'scripts/check-rustfmt.sh --fix'"
 fi
 
 # -- GIVEN unformatted Rust + SKIP_FMT_HOOK=1, THEN bypass -------------------
@@ -278,7 +303,7 @@ fi
 
 # -- GIVEN formatted Rust, THEN hook allows ----------------------------------
 write_unformatted
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 if run_hook ""; then
 	ok "formatted Rust is ALLOWED (zero exit)"
 else
@@ -304,7 +329,7 @@ fn main() {
     println!("hi");
 }
 EOF
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 if run_hook ""; then
 	bad "clippy gate did NOT block a -D warnings violation (the gate is unreachable from this fixture)"
 	sed 's/^/    /' "$TMP/out.log"
@@ -325,7 +350,7 @@ fn main() {
     documented();
 }
 EOF
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 if run_hook ""; then
 	bad "rustdoc gate did NOT block a broken intra-doc link"
 	sed 's/^/    /' "$TMP/out.log"
@@ -336,9 +361,9 @@ else
 	ok "rustdoc gate blocks a broken intra-doc link"
 fi
 
-# fuzz: the hook runs `cd fuzz && cargo check`. With no fuzz/ directory that
-# step cannot fail, which is why it was never exercised. Give the fixture one
-# that does not compile.
+# fuzz: the hook runs `cd fuzz && cargo clippy --all-targets -- -D warnings`.
+# With no fuzz/ directory that step cannot fail, which is why it was never
+# exercised. Give the fixture one that does not compile.
 mkdir -p "$CRATE/fuzz/src"
 cat >"$CRATE/fuzz/Cargo.toml" <<'EOF'
 [package]
@@ -358,11 +383,11 @@ fn main() {
     println!("hi");
 }
 EOF
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 if run_hook ""; then
 	bad "fuzz gate did NOT block a fuzz/ workspace that fails cargo check"
 	sed 's/^/    /' "$TMP/out.log"
-elif ! blocked_for "Push blocked: fuzz targets do not compile."; then
+elif ! blocked_for "Push blocked: fuzz targets do not compile or are not lint-clean."; then
 	bad "fuzz gate blocks a fuzz/ workspace that fails cargo check: blocked, but not by that gate"
 	sed 's/^/    /' "$TMP/out.log"
 else
@@ -406,7 +431,7 @@ fn uses_a_gated_module() {
     throwaway::gated::thing();
 }
 EOF
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 if run_hook ""; then
 	bad "reduced-combo gate did NOT block a test that needs a feature-gated module"
 	sed 's/^/    /' "$TMP/out.log"
@@ -423,7 +448,7 @@ fn uses_a_gated_module() {
     throwaway::gated::thing();
 }
 EOF
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 if run_hook ""; then
 	ok "reduced-combo gate passes once the item itself is gated"
 else
@@ -475,7 +500,7 @@ mod platform_tests {
     }
 }
 EOF
-	( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+	fmt_fixture
 }
 
 # The blocking scenarios assert the gate's OWN message, not merely a non-zero
@@ -528,7 +553,7 @@ fn main() {
     let _ = join(None);
 }
 EOF
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 NL_RC=0
 run_hook "" || NL_RC=$?
 NL_V=$(nonlinux_gate_verdict)
@@ -549,7 +574,7 @@ pub mod gated {
     pub fn thing() {}
 }
 EOF
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 
 # non-Linux cfg gate and a checkout nested inside the tree.
 #
@@ -606,7 +631,7 @@ pub mod gated {
     pub fn thing() {}
 }
 EOF
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 
 # v* tag gate: a tag must point at a commit whose CI is green.
 #
@@ -911,7 +936,7 @@ fn beta_finds_a_regression_on_every_capture() {
 }
 EOF
 	fi
-	( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+	fmt_fixture
 }
 
 # GIVEN no corpus targets at all, THEN the gate skips rather than fails closed.
@@ -1061,7 +1086,7 @@ if run_hook ""; then
 else
 	ok "SKIP_CORPUS_HOOK=1 leaves the other gates standing"
 fi
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 HOOK_CORPUS_DIR=
 HOOK_CORPUS_SKIP=
 
@@ -1154,7 +1179,7 @@ fn uses_helper() -> u32 {
     helper()
 }
 EOF
-	( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+	fmt_fixture
 }
 
 # run_matrix_script: run the script by hand in the fixture, as a developer
@@ -1224,7 +1249,7 @@ fn bump(n: &mut u32) {
     }
 }
 EOF
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 # Colored, as CI's workflows set it: the lint's name must survive cargo's ANSI
 # codes, or the report shows only a location.
 CARGO_TERM_COLOR=always
@@ -1256,7 +1281,7 @@ path = "src/main.rs"
 EOF
 rm -f "$CRATE/src/lib.rs"
 write_unformatted
-( cd "$CRATE" && cargo fmt --all ) >/dev/null 2>&1 || true
+fmt_fixture
 
 # -- Summary ------------------------------------------------------------------
 # -- GIVEN a hook from ANOTHER checkout, THEN it refuses to gate this one ---

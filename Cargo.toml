@@ -22,6 +22,16 @@ resolver = "2"
 [workspace.lints.clippy]
 # Every `unsafe` block needs an adjacent `// SAFETY:` justification.
 undocumented_unsafe_blocks = "warn"
+# The lints the Google Rust Style Guide names, denied outright. Each passes
+# today; deny keeps it so whatever RUSTFLAGS a build uses. tests/rust_style_test.rs
+# enforces the guide's rules that no lint sees.
+borrowed_box = "deny"
+ptr_arg = "deny"
+should_implement_trait = "deny"
+wrong_self_convention = "deny"
+new_without_default = "deny"
+len_without_is_empty = "deny"
+missing_safety_doc = "deny"
 # A parking_lot guard held across .await deadlocks the runtime.
 await_holding_lock = "deny"
 # A glob import hides where each name comes from and lets a new export in the

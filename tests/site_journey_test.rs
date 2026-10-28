@@ -6366,7 +6366,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // that the job runs on the x86_64 self-hosted runner. The Check leg's
     // comment still names `tests/ci_runner_target_test.rs` once. Measurement:
     // with the merge base's ci.yml swapped back in, the scan reads 208.
-    const EXPECTED_REFERENCES: usize = 209;
+    // 209 -> 210: .github/workflows/ci.yml's Format step runs
+    // scripts/check-rustfmt.sh in place of `cargo fmt --manifest-path
+    // bpf/Cargo.toml`, and the new "Clippy the BPF program" step names
+    // bpf/rust-toolchain.toml (+2 -1). Measurement: with main's ci.yml
+    // swapped back in, the scan reads 209.
+    const EXPECTED_REFERENCES: usize = 210;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

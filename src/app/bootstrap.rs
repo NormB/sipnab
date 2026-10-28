@@ -7413,12 +7413,21 @@ mod tests {
             Some(
                 "--mcp-transport http requires the mcp-http feature; rebuild with \
                  --features mcp-http (or full)."
-            )
+            ),
+            "a build without mcp-http must refuse --mcp-transport http and name the feature"
         );
-        assert_eq!(uncompiled_flag(&http, &config, ALL), None);
+        assert_eq!(
+            uncompiled_flag(&http, &config, ALL),
+            None,
+            "a build with mcp-http compiled in must accept --mcp-transport http"
+        );
         // stdio, the default transport, needs only `mcp`.
         let stdio = Cli::try_parse_from(["sipnab", "-N", "--mcp"])?;
-        assert_eq!(uncompiled_flag(&stdio, &config, NO_HTTP), None);
+        assert_eq!(
+            uncompiled_flag(&stdio, &config, NO_HTTP),
+            None,
+            "the stdio transport needs only mcp, so a build without mcp-http must accept it"
+        );
         Ok(())
     }
 

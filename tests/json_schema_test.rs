@@ -189,7 +189,11 @@ fn an_empty_sdp_body_is_flagged_nowhere() -> Result<(), TestError> {
         !json.contains(&true),
         "no message of the call carries SDP: {json:?}"
     );
-    assert_eq!(json, human_sdp_labels(&human));
+    assert_eq!(
+        json,
+        human_sdp_labels(&human),
+        "the JSON has_sdp flags must match the (SDP) marks in the human output"
+    );
     Ok(())
 }
 
