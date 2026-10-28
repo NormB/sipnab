@@ -258,7 +258,36 @@ jobs:
       # runs them, with their output checked against the ITU-T test vectors.
       # The Test step below covers the root package only.
       - name: Run and check the G.729 examples
+        if: runner.os != 'macOS'
         run: cargo test -p sipnab-g729 --features std --test examples
+
+      # TEMPORARY, removed before landing: reproduces G729-EXAMPLE-EXEC-RACE
+      # ("could not execute process target/debug/examples/<name> (never
+      # executed)" on macOS). 30 runs, each from an unbuilt crate as a fresh
+      # runner has it, listing the example binaries with their inodes before
+      # and after a failed run.
+      - name: Run and check the G.729 examples, 30 times (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -u
+          fails=0
+          list() { ls -li "${CARGO_TARGET_DIR:-target}/debug/examples/" 2>/dev/null | grep -E ' (import_tables|decode_bitstream|decode_rtp_payloads)$' || echo "(none)"; }
+          for i in $(seq 1 30); do
+            cargo clean -p sipnab-g729 >/dev/null 2>&1
+            before=$(list)
+            if cargo test -p sipnab-g729 --features std --test examples > "g729-run-$i.txt" 2>&1; then
+              echo "run $i: ok"
+            else
+              fails=$((fails + 1))
+              echo "::group::run $i FAILED"
+              grep -E 'FAILED|could not execute|never executed|No such file' "g729-run-$i.txt" | head -20
+              echo "-- examples before:"; printf '%s\n' "$before"
+              echo "-- examples after:"; list
+              echo "::endgroup::"
+            fi
+          done
+          echo "failed $fails of 30"
+          [ "$fails" -eq 0 ]
 
       - name: Test
         env:
