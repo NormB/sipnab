@@ -8565,7 +8565,7 @@ fn sdp_rule_invite(
 /// paragraph names every case `SipMessage::carries_sdp` accepts, and each case
 /// it names is one the code accepts: an `application/sdp` body, a
 /// `multipart/*` body with an `application/sdp` part, and a body with no
-/// `Content-Type` that starts `v=`.
+/// `Content-Type` that starts `v=`; and that an empty or blank body is none.
 #[test]
 fn output_formats_names_every_case_of_the_sdp_rule() -> Result<(), TestError> {
     let page = std::fs::read_to_string(concat!(
@@ -8582,6 +8582,7 @@ fn output_formats_names_every_case_of_the_sdp_rule() -> Result<(), TestError> {
         "`multipart/*`",
         "no `Content-Type`",
         "`v=`",
+        "empty or blank body",
     ] {
         assert!(
             paragraph.contains(case),
@@ -8604,5 +8605,14 @@ fn output_formats_names_every_case_of_the_sdp_rule() -> Result<(), TestError> {
     }
     // Negative control: a body declared as another type is that type.
     assert_eq!(sdp_rule_invite(Some("text/plain"), sdp)?.label(), "INVITE");
+    // An empty or blank body is no session description, whatever its type.
+    assert_eq!(
+        sdp_rule_invite(Some("application/sdp"), b"")?.label(),
+        "INVITE"
+    );
+    assert_eq!(
+        sdp_rule_invite(Some("application/sdp"), b"\r\n")?.label(),
+        "INVITE"
+    );
     Ok(())
 }

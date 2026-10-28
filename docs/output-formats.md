@@ -157,7 +157,8 @@ not. Every message carries it.
 - It uses the rule that marks a message `(SDP)` in the per-message lines, the
   ladders and the reports: a `Content-Type` of `application/sdp` in any case, a
   `multipart/*` body with an `application/sdp` part, or a body with no
-  `Content-Type` that starts `v=`.
+  `Content-Type` that starts `v=`. An empty or blank body is `false`, whatever
+  its type.
 - A `multipart/*` body, such as a SIPREC INVITE, has `has_sdp: true` and no
   `sdp` field, because `sdp` holds only a whole `application/sdp` body.
 
@@ -244,8 +245,10 @@ title, `--call-report`, the Mermaid ladder, `analyze_vcon` and the browser
 analyzer all use the same label. A message counts as carrying SDP when its
 `Content-Type` is `application/sdp` in any case, when it is `multipart/*` with
 an `application/sdp` part, or when it has no `Content-Type` and its body
-starts `v=`. A body declared as another type is that type, whatever its first
-bytes:
+starts `v=`. An empty or blank body is no session description, so a message
+that declares `application/sdp` and sends no body, such as an INVITE with a
+delayed offer, has no mark. A body declared as another type is that type,
+whatever its first bytes:
 
 ```text
 14:52:59.666 10.0.2.20:5060 -> 10.0.2.15:5060 INVITE (SDP) UDP

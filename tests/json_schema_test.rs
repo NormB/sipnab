@@ -170,6 +170,29 @@ fn ndjson_has_sdp_flags_the_offer_and_the_answer() -> Result<(), TestError> {
     Ok(())
 }
 
+/// The INVITE of `tests/fixtures/sip_call.pcap` declares `application/sdp`
+/// and sends `Content-Length: 0`: a delayed offer. Its per-message line reads
+/// `INVITE`, not `INVITE (SDP)`, and its JSON says `has_sdp: false`; the 200 OK
+/// of the same call carries no body either, so nothing in it is flagged.
+#[test]
+fn an_empty_sdp_body_is_flagged_nowhere() -> Result<(), TestError> {
+    let fixture = "tests/fixtures/sip_call.pcap";
+    let human = run_sipnab(&["-N", "-I", fixture])?;
+    let first = human
+        .lines()
+        .find(|l| l.contains(" -> "))
+        .ok_or("a per-message line")?;
+    assert!(first.ends_with(" INVITE UDP"), "{first}");
+    let json = ndjson_has_sdp(&run_sipnab(&["-N", "-I", fixture, "--json"])?)?;
+    assert_eq!(json.first(), Some(&false), "{json:?}");
+    assert!(
+        !json.contains(&true),
+        "no message of the call carries SDP: {json:?}"
+    );
+    assert_eq!(json, human_sdp_labels(&human));
+    Ok(())
+}
+
 /// `has_sdp` is required and boolean: a line without it, or with it as a
 /// string, fails `message.schema.json`.
 #[test]

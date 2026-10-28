@@ -212,16 +212,23 @@ impl SipMessage {
     /// Whether this message carries an SDP body: the one rule every label and
     /// flag that says "(SDP)" reads.
     ///
-    /// - `application/sdp` in any case, with any parameters.
-    /// - A `multipart/*` body (SIPREC, SIP-I) with an `application/sdp` part.
+    /// - `application/sdp` in any case, with any parameters, and a body.
+    /// - A `multipart/*` body (SIPREC, SIP-I) with an `application/sdp` part
+    ///   that has a body.
     /// - A body with no `Content-Type` at all that starts `v=`. RFC 3261
     ///   section 20.15 requires the header on a body; a peer that omits it on
     ///   SDP is still labeled. A body declared as another type is that type.
+    ///
+    /// An empty or blank body is no session description, whatever its type:
+    /// an INVITE that declares `application/sdp` and sends none is a delayed
+    /// offer ([RFC 3261 section 13.2.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.1)).
     #[must_use]
     pub fn carries_sdp(&self) -> bool {
         match self.content_type() {
-            Some(ct) if is_sdp_media_type(ct) => true,
-            Some(ct) if is_multipart_media_type(ct) => !sdp_parts(ct, &self.body).is_empty(),
+            Some(ct) if is_sdp_media_type(ct) => holds_content(&self.body),
+            Some(ct) if is_multipart_media_type(ct) => sdp_parts(ct, &self.body)
+                .iter()
+                .any(|part| holds_content(&part.body)),
             Some(_) => false,
             None => self.body.starts_with(b"v="),
         }
@@ -643,6 +650,12 @@ fn media_type(content_type: &str) -> &str {
 #[must_use]
 pub fn is_sdp_media_type(content_type: &str) -> bool {
     media_type(content_type).eq_ignore_ascii_case("application/sdp")
+}
+
+/// Whether `body` holds anything but ASCII whitespace. An empty or blank
+/// body carries no session description, so it is not SDP.
+fn holds_content(body: &[u8]) -> bool {
+    body.iter().any(|b| !b.is_ascii_whitespace())
 }
 
 /// Whether a `Content-Type` value names a `multipart/*` type, in any case
@@ -1799,6 +1812,67 @@ mod tests {
         let m = invite_with(Some("multipart/mixed;boundary=B"), &body)?;
         assert!(m.sdp().is_none(), "only the preamble and epilogue hold SDP");
         assert!(!m.carries_sdp(), "and the label rule agrees");
+        Ok(())
+    }
+
+    // ── An empty body carries no offer ────────────────────────────────
+
+    /// An INVITE that declares `application/sdp` and sends no body is a
+    /// delayed offer, not an SDP offer
+    /// ([RFC 3261 section 13.2.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.1)): the offer
+    /// comes in the 2xx and the answer in the ACK. Its label says so.
+    #[test]
+    fn an_empty_application_sdp_body_carries_no_sdp() -> Result<(), TestError> {
+        let m = invite_with(Some("application/sdp"), b"")?;
+        assert!(!m.carries_sdp());
+        assert_eq!(m.label(), "INVITE");
+        Ok(())
+    }
+
+    /// Line endings and spaces alone are no session description either.
+    #[test]
+    fn a_blank_application_sdp_body_carries_no_sdp() -> Result<(), TestError> {
+        for blank in [&b"\r\n"[..], b"\r\n\r\n", b" \t\r\n"] {
+            let m = invite_with(Some("application/sdp"), blank)?;
+            assert!(!m.carries_sdp(), "{blank:?}");
+        }
+        Ok(())
+    }
+
+    /// The same for a response: a 200 OK that declares SDP and sends none.
+    #[test]
+    fn a_200_ok_with_an_empty_sdp_body_is_labeled_without_sdp() -> Result<(), TestError> {
+        let m = response_with("SIP/2.0 200 OK", Some("application/sdp"), b"")?;
+        assert_eq!(m.label(), "200 OK");
+        Ok(())
+    }
+
+    /// A multipart body whose `application/sdp` part is empty carries no SDP;
+    /// one whose part holds a session description does.
+    #[test]
+    fn an_empty_sdp_part_of_a_multipart_body_carries_no_sdp() -> Result<(), TestError> {
+        let ct = Some("multipart/mixed;boundary=B");
+        let mut empty = Vec::new();
+        empty
+            .extend_from_slice(b"--B\r\nContent-Type: application/rs-metadata+xml\r\n\r\n<x/>\r\n");
+        empty.extend_from_slice(b"--B\r\nContent-Type: application/sdp\r\n\r\n\r\n--B--\r\n");
+        assert!(!invite_with(ct, &empty)?.carries_sdp());
+        assert!(
+            invite_with(ct, &multipart("application/sdp"))?.carries_sdp(),
+            "a real SDP part still counts"
+        );
+        Ok(())
+    }
+
+    /// Negative control: a body with a session description is still SDP, with
+    /// or without a declared type, and with a leading blank line.
+    #[test]
+    fn a_body_holding_a_session_description_still_carries_sdp() -> Result<(), TestError> {
+        assert!(invite_with(Some("application/sdp"), SDP_BODY)?.carries_sdp());
+        assert!(invite_with(None, SDP_BODY)?.carries_sdp());
+        let mut padded = b"\r\n".to_vec();
+        padded.extend_from_slice(SDP_BODY);
+        assert!(invite_with(Some("application/sdp"), &padded)?.carries_sdp());
         Ok(())
     }
 
