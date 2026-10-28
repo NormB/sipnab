@@ -13,7 +13,7 @@
 //!
 //! The corpus-backed tests read `SIPNAB_CORPUS` and skip when it is unset, in
 //! the same shape as
-//! `capture::input_set::corpus_directory_resolves_in_timestamp_order`. They
+//! `input_set_accounting_test::corpus_directory_resolves_in_timestamp_order`. They
 //! assert properties, never values from any particular capture — nothing here
 //! records an address, a port, a Call-ID or an SSRC from real traffic.
 #![cfg(feature = "native")]

@@ -524,6 +524,9 @@ starting at 0, in order:
   [`scripts/parallel-tests.py`](https://github.com/NormB/sipnab/blob/main/scripts/parallel-tests.py)
   - `SIPNAB_TEST_JOBS` sets how many.
   - `1` runs them one at a time.
+  - It runs with `SIPNAB_CORPUS` and `SIPNAB_VCON_DATASETS` unset, so every corpus binary skips and prints its `NOTICE`.
+    The corpus runs in the pre-push corpus gate instead, under an optimized profile.
+    In a debug build at commit time it cost 1,158.7 s of a 1,882.7 s suite (the 2026-10-23 log).
 - the `sipnab-bpf-types` crate's own tests and doctests (gate 2b)
   - The suite leaves them out because it tests the sipnab package only.
 - no `unwrap()`, `expect()` or abort macro (`panic!`,
@@ -1139,11 +1142,19 @@ CI cannot close that gap.
 
 **What runs.** One `cargo test` invocation, all features, under the `corpus` profile.
 
-- It covers every top-level `tests/*.rs` that names `SIPNAB_CORPUS`.
-  That is twenty-one targets today.
+- It covers every top-level `tests/*.rs` that reads the corpus:
+  - one that names `SIPNAB_CORPUS` or `SIPNAB_VCON_DATASETS`
+  - one that mounts a `tests/support/` file that names either
 - The ones with `corpus` in the name are not all of them.
   `input_set_accounting_test`, `rtp_quality_provenance_test` and
   `vacuous_success_test` read the corpus too.
+- It is the only place the corpus runs.
+  - The pre-commit test pool runs with both variables unset.
+  - CI holds neither.
+  - So a test that reads the corpus belongs in a `tests/*.rs` binary, never in a unit test under `src/`.
+    The gate names test binaries to `cargo test`, and a unit test is not one.
+  - [`corpus_push_gate_test`](https://github.com/NormB/sipnab/blob/main/tests/corpus_push_gate_test.rs) works out the readers from the whole tree, `src/` included.
+    It fails when the gate misses one.
 
 The hook greps the tree for that list instead of carrying its own copy.
 
@@ -1173,7 +1184,7 @@ Each prints its own line:
 - **`SIPNAB_CORPUS` set to anything other than a readable directory.**
   - Push allowed.
   - The gate prints `corpus: NOT VALIDATED -- SIPNAB_CORPUS is not a readable directory`.
-- **No `tests/*.rs` names `SIPNAB_CORPUS`.**
+- **No `tests/*.rs` reads the corpus.**
   - Push allowed.
   - The gate prints `corpus: NOT VALIDATED -- no corpus test targets in this crate`.
 - **`SKIP_CORPUS_HOOK=1`.**

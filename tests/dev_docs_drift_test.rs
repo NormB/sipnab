@@ -907,7 +907,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 737 -> 735: the channel-fed `run_offline_parallel` is removed, and with it
     // its link in docs/internals/subsystem-guide.md and its row in
     // docs/internals/threading.md. Fewer by design, not an extractor miss.
-    const EXPECTED_CODE_LINKS: usize = 735;
+    // 735 -> 736: docs/internals/build-ci-release.md +1,
+    // tests/corpus_push_gate_test.rs, for the pre-push gate being the only
+    // place the corpus runs.
+    const EXPECTED_CODE_LINKS: usize = 736;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

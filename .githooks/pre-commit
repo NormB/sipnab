@@ -296,9 +296,21 @@ set +e
 #
 # The binaries are the pool's children, not this shell's, so the watchdog
 # below walks every descendant rather than direct children only.
+#
+# The pool runs WITHOUT the private corpus: SIPNAB_CORPUS and
+# SIPNAB_VCON_DATASETS are unset for it, so every corpus binary takes its
+# skip path and prints its NOTICE. With the shell's SIPNAB_CORPUS inherited,
+# every corpus binary replayed the real captures in this DEBUG build on every
+# commit: in the 2026-10-23 log the 15 slowest corpus binaries took 1,158.7 s
+# of the suite's 1,882.7 s. .githooks/pre-push drives every binary that
+# reads either variable, against the corpus, under the optimized `corpus`
+# profile, so the corpus runs once per push instead (decided 2026-10-27).
+# `env -u` rather than `VAR=`: an empty SIPNAB_CORPUS is a corpus at "" to
+# tests/support/corpus.rs, not an unset one. scripts/test-pre-commit.sh
+# (Scenario 1c) reads the environment the suite was handed.
 TEST_LIVE="$LOG_DIR/sipnab-pre-commit-tests.live"
 : >"$TEST_LIVE"
-python3 scripts/parallel-tests.py ${SIPNAB_TEST_JOBS:+--jobs "$SIPNAB_TEST_JOBS"} \
+env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/parallel-tests.py ${SIPNAB_TEST_JOBS:+--jobs "$SIPNAB_TEST_JOBS"} \
 	-- --features full --color never >"$TEST_LIVE" 2>&1 &
 TEST_PID=$!
 descendants() { # every process below $1, depth first

@@ -224,9 +224,17 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	# scripts/parallel-tests.py, which also asks `cargo metadata` for the
 	# target directory). The stub runs no runner, so every result comes from
 	# cargo itself -- the shape parallel-tests.py passes straight through.
+	#
+	# The suite's own invocation (the one carrying the recording runner) also
+	# writes the SIPNAB_* variables it can see to pool-env: the pool and every
+	# test binary inherit exactly that environment, so Scenario 1c reads
+	# from it what the suite was given.
 	cat > "$_d/bin/cargo" <<-EOF
 		#!/bin/sh
 		echo "\$*" >> "$_d/cargo-invocations"
+		case "\$*" in
+		  *record-test-binary*) env | grep '^SIPNAB_' | sort > "$_d/pool-env" ;;
+		esac
 		for _a in "\$@"; do
 		  case "\$_a" in
 		    test) cat "$_d/canned-test-output"; exit 0 ;;
@@ -325,6 +333,62 @@ if grep -q 'record-test-binary.sh' "$D/cargo-invocations"; then
 else
 	bad "hook ran the suite without scripts/parallel-tests.py: $(cat "$D/cargo-invocations")"
 fi
+
+# ── Scenario 1c: the suite runs without the private capture corpus ────────
+# The pool used to inherit the shell's SIPNAB_CORPUS, so every corpus binary
+# replayed the real captures in a DEBUG build on every commit: in the
+# 2026-10-23 log the 15 slowest corpus binaries took 1,158.7 s of the
+# suite's 1,882.7 s. pre-push runs the same binaries against the corpus under
+# the optimized `corpus` profile, so the pool is started without
+# SIPNAB_CORPUS and SIPNAB_VCON_DATASETS. Read from what the suite's cargo
+# was handed, not from the hook's text.
+#
+# pool_env <sandbox> <SIPNAB_CORPUS value> <SIPNAB_VCON_DATASETS value>
+# Runs the hook with both variables set (to the given values, empty allowed)
+# plus a probe variable the hook has no reason to touch.
+pool_env() {
+	rm -f "$1/pool-env"
+	set +e
+	HOOK_OUT=$(cd "$1" && PATH="$1/bin:$PATH" SIPNAB_HOOK_ANY_TREE=1 \
+		SIPNAB_CORPUS="$2" SIPNAB_VCON_DATASETS="$3" SIPNAB_HOOK_ENV_PROBE=kept \
+		bash "$HOOK" 2>&1)
+	HOOK_RC=$?
+	set -e
+}
+# Its own sandbox: Scenario 2 below reuses Scenario 1's $D.
+E=$(sandbox 1)
+mkdir -p "$E/corpus" "$E/vcon"
+pool_env "$E" "$E/corpus" "$E/vcon"
+if [ ! -f "$E/pool-env" ]; then
+	bad "the suite never ran, so its environment could not be read (rc=$HOOK_RC): $HOOK_OUT"
+elif ! grep -qx 'SIPNAB_HOOK_ENV_PROBE=kept' "$E/pool-env"; then
+	# Negative control: without it, an empty pool-env (a stub that recorded
+	# nothing) would pass the two checks below.
+	bad "the suite did not see a variable the hook leaves alone, so pool-env proves nothing: $(cat "$E/pool-env")"
+else
+	ok "the suite inherits the hook's environment (probe variable seen)"
+fi
+if [ -f "$E/pool-env" ] && ! grep -q '^SIPNAB_CORPUS=' "$E/pool-env"; then
+	ok "the suite runs without SIPNAB_CORPUS"
+else
+	bad "the suite was handed SIPNAB_CORPUS, so every corpus binary replays it in a debug build: $(cat "$E/pool-env" 2>/dev/null)"
+fi
+if [ -f "$E/pool-env" ] && ! grep -q '^SIPNAB_VCON_DATASETS=' "$E/pool-env"; then
+	ok "the suite runs without SIPNAB_VCON_DATASETS"
+else
+	bad "the suite was handed SIPNAB_VCON_DATASETS: $(cat "$E/pool-env" 2>/dev/null)"
+fi
+# Edge: set but EMPTY. tests/support/corpus.rs reads an empty SIPNAB_CORPUS as
+# a corpus at "" (Some), not as unset, so blanking the variable is not
+# removing it; only unsetting it is.
+pool_env "$E" "" ""
+if [ -f "$E/pool-env" ] && grep -qx 'SIPNAB_HOOK_ENV_PROBE=kept' "$E/pool-env" \
+	&& ! grep -qE '^SIPNAB_(CORPUS|VCON_DATASETS)=' "$E/pool-env"; then
+	ok "an empty SIPNAB_CORPUS or SIPNAB_VCON_DATASETS is removed, not passed on blank"
+else
+	bad "an empty corpus variable reached the suite (rc=$HOOK_RC): $(cat "$E/pool-env" 2>/dev/null)"
+fi
+rm -rf "$E"
 
 # ── Scenario 2: the hook's count gate, exercised end to end ────────────────
 # 264 + 1600 + 974 = 2838. The gate runs scripts/published-test-count.py, the
