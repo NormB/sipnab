@@ -261,12 +261,18 @@ impl SipMessage {
     /// or a SIPREC one, whose SDP sits beside the recording metadata
     /// ([RFC 7866 section 9.1](https://www.rfc-editor.org/rfc/rfc7866.html#section-9.1)).
     ///
+    /// A body with no `Content-Type` that starts `v=` is read as SDP, by the
+    /// rule [`Self::carries_sdp`] labels it with, so a message labeled `(SDP)`
+    /// is never one whose media is ignored.
+    ///
     /// Returns `None` if the body holds no SDP or if parsing fails.
     pub fn sdp(&self) -> Option<SdpSession> {
         match self.content_type() {
             Some(ct) if is_sdp_media_type(ct) => sdp::parse_sdp(&self.body).ok(),
             Some(ct) if is_multipart_media_type(ct) => multipart_sdp(ct, &self.body),
-            _ => None,
+            Some(_) => None,
+            None if self.body.starts_with(b"v=") => sdp::parse_sdp(&self.body).ok(),
+            None => None,
         }
     }
 
@@ -1527,6 +1533,39 @@ mod tests {
     fn an_undeclared_body_that_starts_like_sdp_carries_sdp() -> Result<(), TestError> {
         assert!(invite_with(None, SDP_BODY)?.carries_sdp());
         assert!(!invite_with(None, b"")?.carries_sdp(), "no body, no SDP");
+        Ok(())
+    }
+
+    /// `sdp()` and `carries_sdp()` are one rule: every body the label calls
+    /// SDP is read as SDP, and no other. A body with no `Content-Type` that
+    /// starts `v=` is both; one declared as another type, or empty, is
+    /// neither.
+    #[test]
+    fn sdp_reads_exactly_the_bodies_the_label_calls_sdp() -> Result<(), TestError> {
+        let multipart_sdp = multipart("application/sdp");
+        let multipart_isup = multipart("application/isup");
+        let cases: [(Option<&str>, &[u8]); 7] = [
+            (None, SDP_BODY),
+            (None, b""),
+            (None, b"hello"),
+            (Some("application/sdp"), SDP_BODY),
+            (Some("text/plain"), SDP_BODY),
+            (Some("multipart/mixed;boundary=B"), &multipart_sdp),
+            (Some("multipart/mixed;boundary=B"), &multipart_isup),
+        ];
+        for (ct, body) in cases {
+            let m = invite_with(ct, body)?;
+            assert_eq!(
+                m.sdp().is_some(),
+                m.carries_sdp(),
+                "{ct:?} with {} body bytes",
+                body.len()
+            );
+        }
+        assert!(
+            invite_with(None, SDP_BODY)?.sdp().is_some(),
+            "no Content-Type, starts v="
+        );
         Ok(())
     }
 
