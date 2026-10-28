@@ -128,6 +128,15 @@ fn runs_self_hosted(body: &str) -> bool {
         .any(|l| l.trim_start().starts_with("runs-on:") && l.contains("self-hosted"))
 }
 
+/// The job runs on a self-hosted runner, or is written to: it carries the
+/// runner-target step, which applies on a self-hosted runner only. Check's
+/// Linux leg, the feature matrix and Coverage ran on the self-hosted runners
+/// from 2026-10-09 to 2026-10-27 and keep that shape, so routing one back is
+/// a change to its `runs-on:` alone, and the rules below hold it either way.
+fn can_run_self_hosted(body: &str) -> bool {
+    runs_self_hosted(body) || body.contains(ACTION_USE)
+}
+
 /// Lines that run cargo: a `run:` value or a line of a `run: |` block that
 /// invokes `cargo`, or one of the repository's `scripts/*-build.sh` wrappers
 /// that invoke it, comments excluded.
@@ -316,29 +325,33 @@ fn the_shared_action_is_self_hosted_only_and_caps_first() -> Result<(), TestErro
 /// one-condition expression `${{ matrix.os == 'X' && A || B }}`, where `A`
 /// and `B` are a quoted label or `fromJSON('[...]')`. Anything else is an
 /// error, so a new shape fails here instead of being read as no labels.
+/// A literal label list, `[a, b]` or `["a","b"]`.
+fn list(text: &str) -> Vec<String> {
+    text.trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|l| l.trim().trim_matches('"').trim_matches('\'').to_string())
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// One value of a `runs-on:` expression: a quoted label or `fromJSON('[...]')`.
+fn operand(text: &str) -> Result<Vec<String>, TestError> {
+    let t = text.trim();
+    if let Some(inner) = t
+        .strip_prefix("fromJSON('")
+        .and_then(|r| r.strip_suffix("')"))
+    {
+        return Ok(list(inner));
+    }
+    if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
+        return Ok(vec![t.trim_matches('\'').to_string()]);
+    }
+    Err(format!("unrecognized runs-on operand `{t}`").into())
+}
+
 fn runner_labels(runs_on: &str, os: &str) -> Result<Vec<String>, TestError> {
-    fn list(text: &str) -> Vec<String> {
-        text.trim()
-            .trim_start_matches('[')
-            .trim_end_matches(']')
-            .split(',')
-            .map(|l| l.trim().trim_matches('"').trim_matches('\'').to_string())
-            .filter(|l| !l.is_empty())
-            .collect()
-    }
-    fn operand(text: &str) -> Result<Vec<String>, TestError> {
-        let t = text.trim();
-        if let Some(inner) = t
-            .strip_prefix("fromJSON('")
-            .and_then(|r| r.strip_suffix("')"))
-        {
-            return Ok(list(inner));
-        }
-        if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
-            return Ok(vec![t.trim_matches('\'').to_string()]);
-        }
-        Err(format!("unrecognized runs-on operand `{t}`").into())
-    }
     let value = runs_on.trim();
     let Some(expr) = value.strip_prefix("${{").and_then(|r| r.strip_suffix("}}")) else {
         return Ok(if value.starts_with('[') {
@@ -380,38 +393,456 @@ fn job<'a>(jobs: &'a [Job], workflow: &str, id: &str) -> Result<&'a Job, TestErr
         .ok_or_else(|| format!("{workflow} has no job `{id}`").into())
 }
 
-/// The two slowest Linux jobs of a pull request run on the self-hosted
-/// runners, with their builds kept between runs; macOS stays on GitHub.
+/// The jobs every push runs take GitHub's runners, not the self-hosted ones.
 ///
-/// Measured on two pull requests on 2026-10-09 (#410, #411): the Linux leg
-/// of Check took 22.1 and 20.2 minutes on GitHub's `ubuntu-24.04-arm`, of
-/// which the Test step alone was 10.9, and Coverage took 21.2 and 15.3, each
-/// rebuilding from a restored cache on a four-core runner. Both were among
-/// the three jobs that set the length of the run.
+/// Until 2026-10-27 the Linux leg of Check, the feature matrix and Coverage ran
+/// on the four aarch64 self-hosted runners. Those share one machine's 14
+/// cores with the local gates' build queue, and on 2026-10-27 that queue held
+/// about 20 entries with a wait of about two hours while the runners' test
+/// jobs were among the busiest processes on the machine. The repository is
+/// public, so GitHub's runners cost nothing; Norm moved the three back on
+/// 2026-10-27. `ubuntu-24.04-arm` keeps the aarch64 builds these jobs had.
 #[test]
-fn the_linux_check_leg_and_coverage_run_on_the_self_hosted_runners() -> Result<(), TestError> {
+fn the_per_push_jobs_run_on_github_hosted_runners() -> Result<(), TestError> {
     let jobs = all_jobs()?;
-    let self_hosted = vec!["self-hosted".to_string(), "jetson".to_string()];
+    let arm = vec!["ubuntu-24.04-arm".to_string()];
 
     let check = runs_on(job(&jobs, "ci.yml", "check")?)?;
     assert_eq!(
         runner_labels(check, "ubuntu-latest")?,
-        self_hosted,
-        "ci.yml check: the Linux leg must run on [self-hosted, jetson] (runs-on: {check})"
+        arm,
+        "ci.yml check: the Linux leg must run on ubuntu-24.04-arm (runs-on: {check})"
     );
     assert_eq!(
         runner_labels(check, "macos-latest")?,
         vec!["macos-latest".to_string()],
-        "ci.yml check: the macOS leg must stay on macos-latest; no self-hosted \
-         runner is a Mac (runs-on: {check})"
+        "ci.yml check: the macOS leg must stay on macos-latest (runs-on: {check})"
     );
+    for (workflow, id) in [("ci.yml", "features"), ("quality.yml", "coverage")] {
+        let value = runs_on(job(&jobs, workflow, id)?)?;
+        assert_eq!(
+            runner_labels(value, "")?,
+            arm,
+            "{workflow} {id} must run on ubuntu-24.04-arm (runs-on: {value})"
+        );
+    }
+    Ok(())
+}
 
-    let coverage = runs_on(job(&jobs, "quality.yml", "coverage")?)?;
+/// One light x86_64 job runs on the x86_64 self-hosted runner.
+///
+/// That runner is a four-core VM with 6 GB of memory, registered for this
+/// repository only, and one Rust build at a time is all it holds. The RPM
+/// packaging job builds no Rust: it runs `rpmbuild` over stub ELFs, and the
+/// runner already has every package it names, so it installs nothing there.
+#[test]
+fn the_rpm_packaging_job_runs_on_the_x86_64_self_hosted_runner() -> Result<(), TestError> {
+    let jobs = all_jobs()?;
+    let value = runs_on(job(&jobs, "ci.yml", "rpm-packaging")?)?;
     assert_eq!(
-        runner_labels(coverage, "")?,
-        self_hosted,
-        "quality.yml coverage must run on [self-hosted, jetson] (runs-on: {coverage})"
+        runner_labels(value, "")?,
+        vec!["self-hosted".to_string(), "X64".to_string()],
+        "ci.yml rpm-packaging must run on [self-hosted, X64] (runs-on: {value})"
     );
+    Ok(())
+}
+
+/// GitHub-hosted images a job may name.
+const HOSTED_IMAGES: &[&str] = &[
+    "ubuntu-latest",
+    "ubuntu-24.04",
+    "ubuntu-24.04-arm",
+    "macos-latest",
+];
+
+/// The self-hosted pools, each by a hardware label: `jetson` is the four
+/// aarch64 runners, `X64` the one x86_64 runner. A hardware label, never a
+/// machine's name: tests/private_identity_test.rs B6 says why.
+const SELF_HOSTED_POOLS: &[&str] = &["jetson", "X64"];
+
+/// The comment a self-hosted job carries to say why it is not on GitHub's
+/// runners.
+const SELF_HOSTED_REASON: &str = "# Self-hosted because:";
+
+/// Why the labels `labels` are not an allowed runner selection, if they are
+/// not one.
+///
+/// A selection is one GitHub-hosted image, or `self-hosted` with exactly one
+/// pool label. `self-hosted` alone takes any self-hosted runner the
+/// repository has, an aarch64 one or the x86_64 one, so the job's
+/// architecture would depend on which was idle.
+fn runner_defect(labels: &[String]) -> Option<String> {
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    match refs.as_slice() {
+        [image] if HOSTED_IMAGES.contains(image) => None,
+        ["self-hosted"] => Some(
+            "the bare `self-hosted` label takes any self-hosted runner; name its pool \
+             (one of jetson, X64)"
+                .to_string(),
+        ),
+        ["self-hosted", pool] if SELF_HOSTED_POOLS.contains(pool) => None,
+        ["self-hosted", other] => Some(format!(
+            "`{other}` is not a self-hosted pool label (one of jetson, X64)"
+        )),
+        _ => Some(format!(
+            "{labels:?} is neither one GitHub-hosted image ({HOSTED_IMAGES:?}) nor \
+             [self-hosted, <pool>]"
+        )),
+    }
+}
+
+/// The values a job's matrix gives `os`.
+fn matrix_os_values(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let t = line.trim_start();
+        let t = t.strip_prefix("- ").unwrap_or(t);
+        let Some(v) = t.strip_prefix("os:") else {
+            continue;
+        };
+        let v = v.trim();
+        if v.starts_with('[') {
+            out.extend(
+                v.trim_matches(|c| c == '[' || c == ']')
+                    .split(',')
+                    .map(|s| s.trim().to_string()),
+            );
+        } else {
+            out.push(v.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Every label set a job's `runs-on:` can select. `None` for a job that calls
+/// a reusable workflow, which chooses its own runner.
+fn selections(job: &Job) -> Result<Option<Vec<Vec<String>>>, TestError> {
+    let Ok(value) = runs_on(job) else {
+        let calls = job.body.lines().any(|l| l.starts_with("    uses:"));
+        return if calls {
+            Ok(None)
+        } else {
+            Err(format!("{}:{} has no runs-on", job.workflow, job.id).into())
+        };
+    };
+    let Some(expr) = value.strip_prefix("${{").and_then(|r| r.strip_suffix("}}")) else {
+        return Ok(Some(vec![runner_labels(value, "")?]));
+    };
+    if expr.trim() == "matrix.os" {
+        let values = matrix_os_values(&job.body);
+        if values.is_empty() {
+            return Err(format!(
+                "{}:{}: runs-on is matrix.os with no os values",
+                job.workflow, job.id
+            )
+            .into());
+        }
+        return Ok(Some(values.into_iter().map(|v| vec![v]).collect()));
+    }
+    // A conditional: every operand that is not a comparison is a value.
+    let mut out = Vec::new();
+    for part in expr.split("||").flat_map(|p| p.split("&&")) {
+        let t = strip_grouping(part);
+        if t.contains("==") || t.contains("!=") {
+            continue;
+        }
+        out.push(operand(t)?);
+    }
+    if out.is_empty() {
+        return Err(format!("{}:{}: no runner in `{value}`", job.workflow, job.id).into());
+    }
+    Ok(Some(out))
+}
+
+/// One operand of `a && b || c` without the grouping parentheses around
+/// it. A `)` is removed only while the operand has more `)` than `(`, so
+/// `fromJSON('[...]')` keeps its own.
+fn strip_grouping(part: &str) -> &str {
+    let mut t = part.trim().trim_start_matches('(').trim();
+    while t.ends_with(')') && t.matches(')').count() > t.matches('(').count() {
+        t = t[..t.len() - 1].trim_end();
+    }
+    t
+}
+
+/// The reason a self-hosted job gives, if it gives one.
+fn self_hosted_reason(body: &str) -> Option<&str> {
+    body.lines()
+        .find_map(|l| l.trim_start().strip_prefix(SELF_HOSTED_REASON))
+        .map(str::trim)
+        .filter(|r| r.split_whitespace().count() >= 4)
+}
+
+/// Every job runs on a GitHub-hosted image, or on a named self-hosted pool
+/// with a written reason.
+///
+/// The self-hosted runners share their machines with other work, so a job
+/// goes there only for something those machines have: hardware a measurement
+/// depends on, a tool installed there, or relief for the hosted queue. The
+/// reason is written on the job, beside its `runs-on:`, where whoever moves
+/// it next reads it.
+#[test]
+fn every_job_runs_on_a_hosted_image_or_a_self_hosted_pool_with_a_reason() -> Result<(), TestError> {
+    let mut defects = Vec::new();
+    let mut self_hosted = 0;
+    let mut hosted = 0;
+    for job in all_jobs()? {
+        let label = format!("{}:{}", job.workflow, job.id);
+        let Some(sels) = selections(&job)? else {
+            continue;
+        };
+        for sel in &sels {
+            if let Some(why) = runner_defect(sel) {
+                defects.push(format!("{label}: {why}"));
+            }
+        }
+        if sels.iter().any(|s| s.iter().any(|l| l == "self-hosted")) {
+            self_hosted += 1;
+            if self_hosted_reason(&job.body).is_none() {
+                defects.push(format!(
+                    "{label}: runs on a self-hosted runner and gives no reason; add a \
+                     `{SELF_HOSTED_REASON} ...` comment to the job"
+                ));
+            }
+        } else {
+            hosted += 1;
+        }
+    }
+    assert!(
+        self_hosted >= 5 && hosted >= 30,
+        "found {self_hosted} self-hosted and {hosted} hosted job(s); the job scan is wrong"
+    );
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
+    Ok(())
+}
+
+/// The runner rule refuses what it exists to refuse, and admits the
+/// selections the workflows use.
+#[test]
+fn the_runner_rule_refuses_a_bare_or_unknown_self_hosted_label() {
+    let v = |s: &[&str]| s.iter().map(|l| (*l).to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        strip_grouping(" (matrix.language == 'swift'"),
+        "matrix.language == 'swift'",
+        "a leading grouping parenthesis must be removed"
+    );
+    assert_eq!(
+        strip_grouping(" 'macos-latest') "),
+        "'macos-latest'",
+        "a trailing grouping parenthesis must be removed"
+    );
+    assert_eq!(
+        strip_grouping(r#" fromJSON('["self-hosted","jetson"]') "#),
+        r#"fromJSON('["self-hosted","jetson"]')"#,
+        "fromJSON must keep its own closing parenthesis"
+    );
+    assert!(
+        runner_defect(&v(&["self-hosted"])).is_some(),
+        "`self-hosted` must be refused"
+    );
+    assert!(
+        runner_defect(&v(&["self-hosted", "build-host"])).is_some(),
+        "`self-hosted, build-host` must be refused"
+    );
+    assert!(
+        runner_defect(&v(&["self-hosted", "jetson", "X64"])).is_some(),
+        "`self-hosted, jetson, X64` must be refused"
+    );
+    assert!(
+        runner_defect(&v(&["jetson"])).is_some(),
+        "`jetson` must be refused"
+    );
+    assert!(
+        runner_defect(&v(&["ubuntu-24.04-arm", "self-hosted"])).is_some(),
+        "`ubuntu-24.04-arm, self-hosted` must be refused"
+    );
+    assert!(
+        runner_defect(&v(&["self-hosted", "jetson"])).is_none(),
+        "`self-hosted, jetson` must be admitted"
+    );
+    assert!(
+        runner_defect(&v(&["self-hosted", "X64"])).is_none(),
+        "`self-hosted, X64` must be admitted"
+    );
+    assert!(
+        runner_defect(&v(&["ubuntu-24.04-arm"])).is_none(),
+        "`ubuntu-24.04-arm` must be admitted"
+    );
+    assert!(
+        runner_defect(&v(&["macos-latest"])).is_none(),
+        "`macos-latest` must be admitted"
+    );
+    assert!(
+        self_hosted_reason("    # Self-hosted because: valgrind is installed there\n").is_some(),
+        "`# Self-hosted because: valgrind is installed theren` must be accepted as a reason"
+    );
+    assert!(
+        self_hosted_reason("    # Self-hosted because: yes\n").is_none(),
+        "`# Self-hosted because: yesn` must be refused as a reason"
+    );
+    assert!(
+        self_hosted_reason("    # self-hosted on purpose\n").is_none(),
+        "`# self-hosted on purposen` must be refused as a reason"
+    );
+}
+
+/// Whether some selection of the job is a GitHub-hosted Linux image.
+fn has_hosted_linux_leg(job: &Job) -> Result<bool, TestError> {
+    Ok(selections(job)?.is_some_and(|sels| {
+        sels.iter()
+            .any(|s| s.len() == 1 && s[0].starts_with("ubuntu-"))
+    }))
+}
+
+/// A job written to run on either kind of runner: it carries the
+/// runner-target step, which applies on a self-hosted runner only.
+fn written_for_both(job: &Job) -> bool {
+    job.body.contains(ACTION_USE)
+}
+
+/// Jobs that run on GitHub's runners with no cargo cache, and why.
+const UNCACHED: &[(&str, &str, &str)] = &[(
+    "quality.yml",
+    "coverage",
+    "its 5.0 GB instrumented entry cost what its hit saved (tests/ci_cache_policy_test.rs)",
+)];
+
+/// A job written for both kinds of runner, on a hosted Linux leg, gets back
+/// what a disposable VM needs: disk freed before the build, and its cargo
+/// build restored from the cache.
+///
+/// On the self-hosted runners these steps are skipped, so a job that ran
+/// there for a while can lose them without any run noticing. Then a hosted
+/// build of `--all-features --all-targets` runs out of disk, or rebuilds
+/// every crate on every run.
+#[test]
+fn a_hosted_leg_frees_disk_and_restores_its_cargo_cache() -> Result<(), TestError> {
+    let mut checked = 0;
+    let mut defects = Vec::new();
+    for job in all_jobs()? {
+        if !written_for_both(&job) || !has_hosted_linux_leg(&job)? {
+            continue;
+        }
+        checked += 1;
+        let label = format!("{}:{}", job.workflow, job.id);
+        let steps = steps_of(&job.body);
+        let first_cargo = steps.iter().position(|s| !cargo_lines(s).is_empty());
+        let free_disk = steps
+            .iter()
+            .position(|s| s.contains("uses: ./.github/actions/free-disk") && hosted_only(s));
+        match (free_disk, first_cargo) {
+            (None, _) => defects.push(format!(
+                "{label}: no `free-disk` step guarded by `if: {HOSTED_ONLY}`"
+            )),
+            (Some(f), Some(c)) if f > c => {
+                defects.push(format!("{label}: frees disk after the first cargo command"))
+            }
+            _ => {}
+        }
+        let uncached = UNCACHED
+            .iter()
+            .any(|(w, j, _)| *w == job.workflow && *j == job.id);
+        let restores = steps
+            .iter()
+            .any(|s| s.contains("uses: actions/cache/restore@") && hosted_only(s));
+        if !uncached && !restores {
+            defects.push(format!(
+                "{label}: no cargo cache restore guarded by `if: {HOSTED_ONLY}`"
+            ));
+        }
+        if uncached && restores {
+            defects.push(format!(
+                "{label}: restores a cargo cache it is listed without"
+            ));
+        }
+    }
+    assert!(
+        checked >= 3,
+        "only {checked} job(s) written for both kinds of runner have a hosted Linux leg; \
+         the job scan is wrong"
+    );
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
+    Ok(())
+}
+
+/// What a job's steps run that a hosted image need not have, and the Ubuntu
+/// package that provides it.
+///
+/// The self-hosted machine has all of these installed, so a job that ran
+/// there could drop its install and stay green until it ran on a fresh VM.
+/// `ubuntu-24.04` packages yanglint as `libyang2-tools`; there is no
+/// `libyang3-tools` in that release.
+const NEEDS: &[(&str, &str)] = &[
+    ("check-yang.py", "libyang2-tools"),
+    ("tui_e2e_test", "tmux"),
+    ("smoke-clients.sh", "tshark"),
+    // libopus, which the `opus` feature builds with cmake (opusic-sys).
+    ("--all-features", "cmake"),
+    ("- opus", "cmake"),
+    ("--all-features", "libpcap-dev"),
+    ("--all-features", "libasound2-dev"),
+];
+
+/// Whether a trimmed line of a job runs `trigger`. A trigger written as a
+/// list item (`- opus`) is a matrix entry and matches the whole line.
+fn runs(line: &str, trigger: &str) -> bool {
+    if trigger.starts_with("- ") {
+        line == trigger
+    } else {
+        line.contains(trigger)
+    }
+}
+
+/// The packages a job's Linux `system-deps` steps install.
+fn linux_packages(job: &Job) -> Vec<String> {
+    steps_of(&job.body)
+        .iter()
+        .filter(|s| s.contains("uses: ./.github/actions/system-deps"))
+        .filter(|s| step_if(s).is_none_or(|c| !c.contains("macOS")))
+        .flat_map(|s| {
+            s.lines()
+                .filter_map(|l| l.trim_start().strip_prefix("packages:"))
+                .flat_map(|v| v.split_whitespace().map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// A job written for both kinds of runner installs, on its hosted Linux leg,
+/// every package its steps need.
+#[test]
+fn a_hosted_leg_installs_what_its_steps_need() -> Result<(), TestError> {
+    let mut checked = 0;
+    let mut defects = Vec::new();
+    for job in all_jobs()? {
+        if !written_for_both(&job) || !has_hosted_linux_leg(&job)? {
+            continue;
+        }
+        checked += 1;
+        let installed = linux_packages(&job);
+        let text: String = job
+            .body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .map(|l| format!("{}\n", l.trim()))
+            .collect();
+        for (trigger, package) in NEEDS {
+            let needed = text.lines().any(|l| runs(l, trigger));
+            if needed && !installed.iter().any(|p| p == package) {
+                defects.push(format!(
+                    "{}:{}: runs `{trigger}` and installs no `{package}`",
+                    job.workflow, job.id
+                ));
+            }
+        }
+    }
+    assert!(
+        checked >= 3,
+        "only {checked} job(s) checked; the job scan is wrong"
+    );
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
     Ok(())
 }
 
@@ -460,7 +891,7 @@ fn hosted_only_steps_are_skipped_on_self_hosted_runners() -> Result<(), TestErro
     let mut seen = 0;
     let mut defects = Vec::new();
     for job in all_jobs()? {
-        if !runs_self_hosted(&job.body) {
+        if !can_run_self_hosted(&job.body) {
             continue;
         }
         for step in steps_of(&job.body) {
@@ -502,7 +933,7 @@ fn self_hosted_jobs_change_packages_only_through_system_deps() -> Result<(), Tes
     let mut scanned = 0;
     let mut defects = Vec::new();
     for job in all_jobs()? {
-        if !runs_self_hosted(&job.body) {
+        if !can_run_self_hosted(&job.body) {
             continue;
         }
         scanned += 1;
@@ -551,7 +982,7 @@ fn names_workspace_target(line: &str) -> bool {
 fn self_hosted_jobs_read_their_build_from_cargo_target_dir() -> Result<(), TestError> {
     let mut defects = Vec::new();
     for job in all_jobs()? {
-        if !runs_self_hosted(&job.body) || !job.body.contains(ACTION_USE) {
+        if !job.body.contains(ACTION_USE) {
             continue;
         }
         for step in steps_of(&job.body) {
@@ -620,7 +1051,7 @@ fn an_instrumented_build_has_its_own_target_directory() -> Result<(), TestError>
     let mut instrumented = 0;
     let mut defects = Vec::new();
     for job in all_jobs()? {
-        if !runs_self_hosted(&job.body) || !job.body.contains(ACTION_USE) {
+        if !job.body.contains(ACTION_USE) {
             continue;
         }
         let covers = cargo_lines(&job.body).iter().any(|&i| {
@@ -650,7 +1081,7 @@ fn an_instrumented_build_has_its_own_target_directory() -> Result<(), TestError>
     }
     assert!(
         instrumented >= 1,
-        "no self-hosted job runs cargo llvm-cov; this gate is reading the wrong jobs"
+        "no job carrying the runner-target step runs cargo llvm-cov; this gate is reading the wrong jobs"
     );
     assert!(defects.is_empty(), "{}", defects.join("\n"));
     Ok(())
@@ -815,13 +1246,18 @@ fn bad_arguments_exit_2() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The minutes a job's `Slowest run measured on the self-hosted runners: N
-/// min` comment records, if it has one.
+/// The comments that record a job's slowest measured run, one per kind of
+/// runner, each followed by `N min`.
+const MEASURED: &[&str] = &[
+    "# Slowest run measured on the self-hosted runners:",
+    "# Slowest run measured on GitHub's runners:",
+];
+
+/// The minutes a job's slowest-measured-run comment records, if it has one.
 fn measured_minutes(body: &str) -> Option<f64> {
     body.lines().find_map(|l| {
-        let rest = l
-            .trim()
-            .strip_prefix("# Slowest run measured on the self-hosted runners:")?;
+        let t = l.trim();
+        let rest = MEASURED.iter().find_map(|m| t.strip_prefix(m))?;
         rest.trim().strip_suffix("min")?.trim().parse().ok()
     })
 }
@@ -833,8 +1269,8 @@ fn timeout_minutes(body: &str) -> Option<f64> {
         .and_then(|v| v.trim().parse().ok())
 }
 
-/// A self-hosted job's timeout bounds a WEDGED job, not a slow one: it must
-/// clear the slowest successful run measured on those runners by half again.
+/// A job's timeout bounds a WEDGED job, not a slow one: it must clear the
+/// slowest successful run measured on its runners by half again.
 ///
 /// Coverage moved to the self-hosted runners with the 40-minute timeout it had
 /// on GitHub's, where it took 15 to 21 minutes. On the self-hosted runners it
@@ -842,9 +1278,9 @@ fn timeout_minutes(body: &str) -> Option<f64> {
 /// 40: the timeout canceled healthy runs, and a canceled run on a tagged
 /// commit holds the release (2026-10-18 and 19).
 #[test]
-fn a_self_hosted_timeout_clears_its_slowest_measured_run() -> Result<(), TestError> {
+fn a_timeout_clears_its_slowest_measured_run() -> Result<(), TestError> {
     let mut checked = 0;
-    for job in all_jobs()?.iter().filter(|j| runs_self_hosted(&j.body)) {
+    for job in &all_jobs()? {
         let Some(measured) = measured_minutes(&job.body) else {
             continue;
         };
@@ -860,9 +1296,11 @@ fn a_self_hosted_timeout_clears_its_slowest_measured_run() -> Result<(), TestErr
         );
         checked += 1;
     }
+    // Check, the feature matrix, Coverage and the RPM packaging job.
     assert!(
-        checked >= 1,
-        "no self-hosted job records its slowest measured run, so this gate checks nothing"
+        checked >= 4,
+        "only {checked} job(s) record their slowest measured run; the jobs \
+         moved on 2026-10-27 must each record theirs"
     );
     Ok(())
 }

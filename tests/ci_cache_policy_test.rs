@@ -61,8 +61,10 @@ const SAVE_ON_MISS: &str = "cache-hit != 'true'";
 /// - `cargo-check`: Linux aarch64 4.4 GB, macOS 1.8 GB. Check is the
 ///   slowest required job.
 /// - `cargo-symbol-split`: 0.27 GB and 0.20 GB.
-/// - `cargo-features`: self-hosted only, where the step is skipped, so no
-///   entry exists.
+/// - `cargo-features`: no entry on 2026-10-09, when the feature matrix ran
+///   on the self-hosted runners and skipped the step. It runs on GitHub's
+///   runners again since 2026-10-27; its eighteen legs share one key, and
+///   main's first save after a miss is the entry they restore.
 /// - `cargo-bench`: 0.87 GB.
 /// - `cargo-clippy-sarif`: 0.35 GB; a median of 3.7 minutes over 5 runs with
 ///   a hit, 5.5 over 7 with a miss.

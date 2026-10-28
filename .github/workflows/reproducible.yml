@@ -51,6 +51,7 @@ env:
 jobs:
   reproducible:
     name: Reproducible build (aarch64-unknown-linux-gnu, full,bpf)
+    # Self-hosted because: two LTO release builds need the eBPF toolchain's bpf-linker, which is installed there.
     # The aarch64 self-hosted runners: two LTO release builds are the heavy,
     # repeatable kind of job they exist for, and they already carry the eBPF
     # toolchain's bpf-linker. Safe on pull_request for the reason ci.yml's

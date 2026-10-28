@@ -147,22 +147,22 @@ jobs:
   coverage:
     if: github.event_name != 'schedule'
     # Bounds a wedged job: an unbounded one holds its concurrency group
-    # indefinitely. It runs on the self-hosted runners, where it measured 27
-    # to 35 min in the six runs that succeeded (2026-10-18 and 19), and two
-    # runs were canceled at 40: a runner's first, cold build, and one while
-    # the host carried other builds. The timeout clears the slowest
-    # successful run by half again, so only a wedged job reaches it
-    # (`a_self_hosted_timeout_clears_its_slowest_measured_run`).
-    # Slowest run measured on the self-hosted runners: 35 min
+    # indefinitely. The timeout clears the slowest successful run by half
+    # again, so only a wedged job reaches it
+    # (`a_timeout_clears_its_slowest_measured_run`). On GitHub's x86_64
+    # runner it took 15.3 to 21.2 min (2026-10-09). On the aarch64
+    # self-hosted runners it took 27 to 35 min in the six runs that
+    # succeeded on 2026-10-18 and 19, and 37.2 to 44.9 min on main's last
+    # three pushes before 2026-10-27.
+    # Slowest run measured on GitHub's runners: 21.2 min
     timeout-minutes: 60
     name: Coverage
-    # The aarch64 self-hosted runners, beside ci.yml's Check (Linux) and
-    # feature matrix: on GitHub's runner this job was one of the three that
-    # set the length of a pull request's run. Safe on pull_request for the
-    # reason ci.yml's `features` job gives (external contributors' runs need
-    # approval). The build has its own per-runner directory, apart from the
-    # plain builds: see `dir:` below.
-    runs-on: [self-hosted, jetson]
+    # GitHub's ubuntu-24.04-arm, beside ci.yml's Check (Linux) and feature
+    # matrix, for the reason ci.yml's check job gives. The job keeps the
+    # shape that let it run on the self-hosted runners: on one of those the
+    # build has its own per-runner directory, apart from the plain builds
+    # (see `dir:` below), and on GitHub's runners that step does nothing.
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
     env:
@@ -198,7 +198,9 @@ jobs:
       - name: Install system deps
         uses: ./.github/actions/system-deps
         with:
-          packages: libpcap-dev libasound2-dev
+          # cmake builds libopus for the `opus` feature, which
+          # --all-features compiles.
+          packages: libpcap-dev libasound2-dev cmake
 
       - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
         with:
