@@ -37,6 +37,7 @@ entry that carries them.
 - **Dependabot watches every dependency file the repository tracks.**
   - The npm lockfiles (`e2e/`, `clients/typescript/`), the hash-pinned Python requirements (`clients/python/`, `scripts/`), the eBPF cargo workspace (`bpf/`) and the local composite actions (`.github/actions/*`) had no entry, so they raised no alerts and got no updates.
   - `tests/dependabot_coverage_test.rs` fails when a dependency file has no entry of its ecosystem and directory.
+- **The git hooks refuse a fresh worktree in seconds, naming the command for each missing input.** `.githooks/pre-commit` reached its suite in a new worktree and failed there about 25 minutes in, on 52 G.729 tests: `crates/g729/test-vectors/` is gitignored and only `python3 scripts/fetch-g729-vectors.py` fills it. `.githooks/pre-push` died the same way at its prose gate on the missing `.vale/styles/Google`, which only `vale sync` writes. Both hooks now run `scripts/check-hook-prerequisites.py` before any gate. It prints each missing input with its command and stops. The G.729 check is `fetch-g729-vectors.py --check`, which reads the same pins a fetch writes and downloads nothing.
 
 ## [0.5.231] - 2026-10-27
 
