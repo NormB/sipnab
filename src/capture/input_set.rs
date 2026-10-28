@@ -1876,68 +1876,6 @@ mod tests {
         Ok(())
     }
 
-    /// Resolve a real capture directory named by `SIPNAB_CORPUS`.
-    ///
-    /// Skipped unless the variable is set, because the corpus this was built
-    /// against is ~921 MB of real traffic that cannot live in the repository.
-    /// It is kept as a test rather than a one-off script because the case it
-    /// covers is the one no synthetic fixture reproduces convincingly: a
-    /// `tcpdump -C 100 -W 10` ring buffer that has **wrapped**, where
-    /// `tg.pcap7` holds older packets than `tg.pcap0`.
-    ///
-    /// Run with:
-    /// `SIPNAB_CORPUS=/path/to/pcaps cargo test --features full corpus`
-    #[test]
-    fn corpus_directory_resolves_in_timestamp_order() -> Result<(), TestError> {
-        let Ok(dir) = std::env::var("SIPNAB_CORPUS") else {
-            stderr_line!("SIPNAB_CORPUS not set — skipping");
-            return Ok(());
-        };
-        let out = resolve(std::slice::from_ref(&dir), &ResolveOptions::default())
-            .map_err(|e| format!("resolve '{dir}': {e:#}"))?;
-        assert!(
-            out.len() > 1,
-            "corpus needs several files, got {}",
-            out.len()
-        );
-
-        // The ordering contract, stated as the property rather than a fixed
-        // sequence: every file starts at or after the one before it.
-        for pair in out.windows(2) {
-            let (a, b) = (&pair[0], &pair[1]);
-            if let (Some(ta), Some(tb)) = (a.first_packet, b.first_packet) {
-                assert!(
-                    ta <= tb,
-                    "out of order: '{}' starts at {ta} but follows '{}' at {tb}",
-                    b.path.display(),
-                    a.path.display()
-                );
-            }
-        }
-
-        // And the reason it matters: if the set were ordered by name it would
-        // be wrong. Report that rather than silently passing on a tidy corpus.
-        let by_name: Vec<_> = {
-            let mut v = out.clone();
-            v.sort_by(|a, b| a.path.cmp(&b.path));
-            v
-        };
-        let name_order_differs = by_name
-            .iter()
-            .zip(out.iter())
-            .any(|(a, b)| a.path != b.path);
-        stderr_line!(
-            "corpus: {} files, filename order {} chronological order",
-            out.len(),
-            if name_order_differs {
-                "DIFFERS from"
-            } else {
-                "matches"
-            }
-        );
-        Ok(())
-    }
-
     /// A capture reached through a symlink inside a directory must be read.
     ///
     /// Capture directories commonly symlink to storage. `follow_links(false)`

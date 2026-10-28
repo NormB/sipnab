@@ -219,3 +219,65 @@ fn corpus_directory_reports_what_it_did_not_enter() -> Result<(), TestError> {
     eprintln!("corpus: {subdirs} subdirectory(ies) reported as not descended");
     Ok(())
 }
+
+/// Resolve the real capture directory in timestamp order.
+///
+/// The case no synthetic fixture reproduces convincingly: a
+/// `tcpdump -C 100 -W 10` ring buffer that has **wrapped**, where `tg.pcap7`
+/// holds older packets than `tg.pcap0`.
+///
+/// This was a unit test in `src/capture/input_set.rs`. The pre-commit test
+/// pool runs without `SIPNAB_CORPUS`, and the pre-push corpus gate drives
+/// `--test` binaries only, so a unit test reading the corpus ran nowhere. It
+/// lives in this binary so that gate runs it. Its skip now prints the
+/// binary's NOTICE through `corpus_support::root`.
+#[cfg(feature = "native")]
+#[test]
+fn corpus_directory_resolves_in_timestamp_order() -> Result<(), TestError> {
+    use sipnab::capture::input_set::{ResolveOptions, resolve};
+
+    let Some(root) = corpus_support::root() else {
+        return Ok(());
+    };
+    let dir = root.to_string_lossy().into_owned();
+    let out = resolve(std::slice::from_ref(&dir), &ResolveOptions::default())
+        .map_err(|e| format!("resolve '{dir}': {e:#}"))?;
+    assert!(
+        out.len() > 1,
+        "corpus needs several files, got {}",
+        out.len()
+    );
+
+    // The ordering contract, stated as the property rather than a fixed
+    // sequence: every file starts at or after the one before it.
+    for pair in out.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        if let (Some(ta), Some(tb)) = (a.first_packet, b.first_packet) {
+            assert!(
+                ta <= tb,
+                "out of order: '{}' starts at {ta} but follows '{}' at {tb}",
+                b.path.display(),
+                a.path.display()
+            );
+        }
+    }
+
+    // And the reason it matters: if the set were ordered by name it would
+    // be wrong. Report that rather than silently passing on a tidy corpus.
+    let mut by_name = out.clone();
+    by_name.sort_by(|a, b| a.path.cmp(&b.path));
+    let name_order_differs = by_name
+        .iter()
+        .zip(out.iter())
+        .any(|(a, b)| a.path != b.path);
+    eprintln!(
+        "corpus: {} files, filename order {} chronological order",
+        out.len(),
+        if name_order_differs {
+            "DIFFERS from"
+        } else {
+            "matches"
+        }
+    );
+    Ok(())
+}

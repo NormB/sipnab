@@ -114,8 +114,8 @@ Two tests read them.
     filled.
   - Without it, the binary prints one `NOTICE` line saying its gates did
     not run, as the capture corpus does.
-  - The pre-push corpus gate does not run it.
-    That gate selects tests by the name `SIPNAB_CORPUS`.
+  - The pre-push corpus gate runs it, with the shell's `SIPNAB_VCON_DATASETS`, whenever that gate runs.
+    The pre-commit test pool runs with the variable unset.
 
 Fetch the datasets and run the corpus test:
 

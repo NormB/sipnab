@@ -13,6 +13,7 @@ entry that carries them.
 ### Changed
 
 - **`--pcap-export-mode` takes its three modes from one list.** The mode names were written in five places: the flag's accepted values, a startup check, the parser, the `-O` log line and a check in argument validation. The flag now holds the mode itself, so a name the writer does not know cannot reach a run, and the startup check, which no command line could reach, is removed. The accepted values, their order, the refusal of any other value and `--help` are unchanged.
+- **The pre-commit hook no longer replays the private capture corpus.** Its test pool runs with `SIPNAB_CORPUS` and `SIPNAB_VCON_DATASETS` unset, so each corpus binary skips and says so. In a debug build the corpus took 1,158.7 s of a 1,882.7 s suite (the 2026-10-23 log). The pre-push corpus gate still runs it, under the optimized `corpus` profile, and now drives every binary that reads either variable, directly or through a `tests/support/` file. That adds `vcon_dataset_corpus_test`, and it moves the one unit test that read the corpus, the ring-buffer timestamp-order check, into `input_set_accounting_test`, because the gate can name only test binaries to `cargo test`. `corpus_push_gate_test` works out the readers from the whole tree, `src/` included, and fails when the gate misses one.
 
 ## [0.5.231] - 2026-10-27
 

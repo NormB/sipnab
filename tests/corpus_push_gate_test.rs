@@ -329,27 +329,262 @@ fn the_gate_reports_the_number_of_binaries_it_drives() -> Result<(), TestError> 
     Ok(())
 }
 
-/// Every `tests/*.rs` that reads the corpus variable — the set the hook derives.
-fn corpus_binaries() -> Result<Vec<String>, TestError> {
-    let dir = repo_root().join("tests");
-    let mut out: Vec<String> = std::fs::read_dir(&dir)?
-        .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .filter(|p| {
-            std::fs::read_to_string(p)
-                .unwrap_or_default()
-                .contains("SIPNAB_CORPUS")
+/// The two variables that point a test at private data the repository does
+/// not hold: the capture corpus and the vCon dataset cache.
+const CORPUS_VARS: [&str; 2] = ["SIPNAB_CORPUS", "SIPNAB_VCON_DATASETS"];
+
+/// Whether `text` names one of [`CORPUS_VARS`] as a whole word, so a longer
+/// name that merely starts with one does not count.
+fn names_a_corpus_var(text: &str) -> bool {
+    CORPUS_VARS.iter().any(|var| {
+        text.match_indices(var).any(|(at, _)| {
+            let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            let before = text[..at].chars().next_back().is_none_or(|c| !word(c));
+            let after = text[at + var.len()..]
+                .chars()
+                .next()
+                .is_none_or(|c| !word(c));
+            before && after
         })
-        .map(|p| {
-            p.file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .ok_or_else(|| format!("{} has no file stem", p.display()))
-        })
-        .collect::<Result<_, _>>()?;
+    })
+}
+
+/// Every `.rs` file under `dir`, recursively, sorted.
+fn rust_files(dir: &Path) -> Result<Vec<PathBuf>, TestError> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).map_err(|e| format!("read {}: {e}", d.display()))? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                out.push(path);
+            }
+        }
+    }
     out.sort();
     Ok(out)
+}
+
+/// What reads the corpus in `root`, worked out independently of the hook.
+///
+/// A test binary reads the corpus when its own source names one of
+/// [`CORPUS_VARS`], or when it mounts (`#[path = "support/x.rs"]`) a support
+/// file that does. `binaries` holds those binaries. `undrivable` holds every
+/// other source file that names a variable: a lib or bin unit test, or a file
+/// under `tests/` no binary mounts. `cargo test --test <name>` cannot reach
+/// any of them, so the corpus gate never runs them.
+struct CorpusReaders {
+    binaries: Vec<String>,
+    undrivable: Vec<PathBuf>,
+}
+
+fn corpus_readers(root: &Path) -> Result<CorpusReaders, TestError> {
+    let tests = root.join("tests");
+    let mut binaries = std::collections::BTreeSet::new();
+    let mut undrivable = Vec::new();
+    // Top-level tests/*.rs: each one is a cargo test target.
+    let mut targets = Vec::new();
+    for entry in std::fs::read_dir(&tests)? {
+        let path = entry?.path();
+        if path.is_file() && path.extension().is_some_and(|x| x == "rs") {
+            let stem = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .ok_or_else(|| format!("{} has no file stem", path.display()))?;
+            targets.push((stem, std::fs::read_to_string(&path)?));
+        }
+    }
+    let mut readers = Vec::new();
+    for dir in ["src", "tests", "benches", "examples"] {
+        let dir = root.join(dir);
+        if dir.is_dir() {
+            readers.extend(rust_files(&dir)?);
+        }
+    }
+    for path in readers {
+        if !names_a_corpus_var(&std::fs::read_to_string(&path)?) {
+            continue;
+        }
+        let Ok(rel) = path.strip_prefix(&tests) else {
+            undrivable.push(path);
+            continue;
+        };
+        if rel.components().count() == 1 {
+            let stem = rel.file_stem().map(|s| s.to_string_lossy().into_owned());
+            binaries.extend(stem);
+            continue;
+        }
+        // A support file: driven through every binary that mounts it.
+        let mount = format!("\"{}\"", rel.to_string_lossy());
+        let mounted_by: Vec<&String> = targets
+            .iter()
+            .filter(|(_, text)| text.contains(&mount))
+            .map(|(stem, _)| stem)
+            .collect();
+        if mounted_by.is_empty() {
+            undrivable.push(path);
+        }
+        binaries.extend(mounted_by.into_iter().cloned());
+    }
+    Ok(CorpusReaders {
+        binaries: binaries.into_iter().collect(),
+        undrivable,
+    })
+}
+
+/// Every test binary that reads the corpus — the set the hook must derive.
+fn corpus_binaries() -> Result<Vec<String>, TestError> {
+    Ok(corpus_readers(&repo_root())?.binaries)
+}
+
+/// The `--test` targets the gate hands `cargo` when run with `tree` as its
+/// working directory: the gate runs with a stub `cargo` that records its
+/// arguments, so this is what the gate DID, not what its text says.
+fn gate_targets(tree: &Path) -> Result<Vec<String>, TestError> {
+    let tmp = tempfile::tempdir()?;
+    let bindir = tmp.path().join("bin");
+    let corpus = tmp.path().join("corpus");
+    let gitdir = tmp.path().join("gitdir");
+    let args = tmp.path().join("cargo-args");
+    std::fs::create_dir_all(&bindir)?;
+    std::fs::create_dir_all(&corpus)?;
+    executable::write_executable(
+        &bindir.join("cargo"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > {}\n\
+             printf '%s\\n' 'test result: ok. 1 passed; 0 failed; 0 ignored'\n",
+            shell_quote(&args.to_string_lossy())
+        ),
+    )?;
+    let init = Command::new("git")
+        .args(["init", "--bare", "-q"])
+        .arg(&gitdir)
+        .output()?;
+    assert!(
+        init.status.success(),
+        "could not initialize a throwaway gitdir: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let script = tmp.path().join("gate.sh");
+    std::fs::write(&script, runnable_gate()?)?;
+    let out = Command::new("sh")
+        .arg(&script)
+        .current_dir(tree)
+        .env("GIT_DIR", &gitdir)
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bindir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("SIPNAB_CORPUS", &corpus)
+        .env_remove("SKIP_CORPUS_HOOK")
+        .output()?;
+    let recorded = std::fs::read_to_string(&args).map_err(|e| {
+        format!(
+            "the gate never ran cargo ({e}); its output was:\n{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        )
+    })?;
+    let words: Vec<&str> = recorded.lines().collect();
+    let mut targets: Vec<String> = words
+        .windows(2)
+        .filter(|w| w[0] == "--test")
+        .map(|w| w[1].to_owned())
+        .collect();
+    targets.sort();
+    Ok(targets)
+}
+
+/// pre-push drives every test binary in the tree that reads the corpus.
+///
+/// It is the only place the corpus runs: the pre-commit test pool runs
+/// without `SIPNAB_CORPUS` and `SIPNAB_VCON_DATASETS`
+/// (`scripts/test-pre-commit.sh`, Scenario 1c), and CI never holds the
+/// captures. So a reader this gate does not drive is a reader nothing runs.
+/// The set is worked out here from the whole tree, `src/` included, and
+/// compared with the `--test` targets the gate actually handed `cargo`.
+#[test]
+fn the_gate_drives_every_corpus_reader_in_the_tree() -> Result<(), TestError> {
+    let readers = corpus_readers(&repo_root())?;
+    assert!(
+        readers.undrivable.is_empty(),
+        "these files read the corpus, but no `cargo test --test` target holds them, so \
+         the pre-push corpus gate cannot run them and nothing else does. Move each \
+         one into a tests/*.rs binary: {:?}",
+        readers.undrivable
+    );
+    let driven = gate_targets(&repo_root())?;
+    let missing: Vec<&String> = readers
+        .binaries
+        .iter()
+        .filter(|b| !driven.contains(b))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these test binaries read the corpus but the pre-push gate does not drive \
+         them: {missing:?}. The gate drove: {driven:?}"
+    );
+    Ok(())
+}
+
+/// A synthetic tree pins the rule at its edges.
+///
+/// * A binary that reads the corpus only through a mounted support file is
+///   driven, as is one that names only `SIPNAB_VCON_DATASETS`.
+/// * Negative control: a binary that reads nothing is not driven, so the
+///   gate is not passing by driving every target.
+/// * Edge: a binary that only mentions the support file's name in a comment,
+///   without mounting it, is not driven either.
+#[test]
+fn the_gate_finds_readers_by_variable_and_by_mounted_support() -> Result<(), TestError> {
+    let tree = tempfile::tempdir()?;
+    let tests = tree.path().join("tests");
+    std::fs::create_dir_all(tests.join("support"))?;
+    let write = |name: &str, body: &str| std::fs::write(tests.join(name), body);
+    write(
+        "support/corpus.rs",
+        "pub fn root() -> Option<String> { std::env::var(\"SIPNAB_CORPUS\").ok() }\n",
+    )?;
+    write(
+        "names_corpus_test.rs",
+        "fn f() { std::env::var(\"SIPNAB_CORPUS\"); }\n",
+    )?;
+    write(
+        "names_datasets_test.rs",
+        "fn f() { std::env::var(\"SIPNAB_VCON_DATASETS\"); }\n",
+    )?;
+    write(
+        "mounts_support_test.rs",
+        "#[path = \"support/corpus.rs\"]\nmod corpus_support;\n",
+    )?;
+    write(
+        "mentions_support_test.rs",
+        "// see tests/support/corpus.rs for how the corpus is found\n",
+    )?;
+    write("reads_nothing_test.rs", "fn f() {}\n")?;
+
+    let driven = gate_targets(tree.path())?;
+    assert_eq!(
+        driven,
+        [
+            "mounts_support_test",
+            "names_corpus_test",
+            "names_datasets_test"
+        ],
+        "the gate must drive exactly the binaries that read the corpus"
+    );
+    assert_eq!(
+        corpus_readers(tree.path())?.binaries,
+        driven,
+        "this file's own rule and the gate disagree about the synthetic tree"
+    );
+    Ok(())
 }
 
 /// The target list is DERIVED from the tree, never hand-listed.

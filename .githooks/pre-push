@@ -27,7 +27,11 @@
 # corpus named by SIPNAB_CORPUS. It runs only when that variable resolves to a
 # readable directory, and says so in one line when it does not. Unlike the five
 # above, CI can never take this one over -- the captures carry PII and do not
-# leave the machine that recorded them.
+# leave the machine that recorded them. It is also the only place the corpus
+# runs at all: pre-commit runs its test pool with SIPNAB_CORPUS and
+# SIPNAB_VCON_DATASETS unset (a debug build replaying the corpus cost 1,158.7 s
+# of a 1,882.7 s suite on 2026-10-23), so this gate drives every binary that
+# reads either variable.
 #
 # Bypass for emergencies (use sparingly):
 #   SKIP_FMT_HOOK=1    git push ...   # skips ALL gates, corpus included
@@ -913,8 +917,8 @@ done
 # not the variable anyone already has in their shell history.
 
 # DERIVED from the tree, never hand-listed. Every top-level tests/*.rs is a
-# cargo test target, so "the corpus suite" is exactly those that name the
-# variable. The hand-kept alternative is the defect `.githooks/pre-commit`
+# cargo test target, so "the corpus suite" is exactly those that read the
+# corpus (the rule is stated beside CORPUS_VARS below). The hand-kept alternative is the defect `.githooks/pre-commit`
 # already records against its WASM export list: a fixed list cannot catch a NEW
 # member, which is the one thing the guard is for. The first draft DID hand-list
 # them, and it went stale within the hour -- a twelfth corpus binary landed in
@@ -928,8 +932,23 @@ done
 # decoration: move or delete them and that test fails rather than going quiet.
 # The block may rely on GREEN/RED/YELLOW/NC, `git`, `cargo` and a cwd at the
 # repo root, and on nothing else this hook defines above it.
-CORPUS_TESTS=$(grep -lE '\bSIPNAB_CORPUS\b' tests/*.rs 2>/dev/null \
-	| sed -e 's|^tests/||' -e 's|\.rs$||' | sort || true)
+#
+# A binary reads the corpus when its source names SIPNAB_CORPUS or
+# SIPNAB_VCON_DATASETS, or when it mounts (`#[path = "support/x.rs"]`) a
+# support file that names one. Both variables, because this gate is the only
+# place either runs: the pre-commit test pool unsets them both, and CI holds
+# neither. The mount rule, because a binary that reaches the corpus only
+# through `corpus_support::root()` never writes the name itself.
+# tests/corpus_push_gate_test.rs works the set out independently, `src/`
+# included, and fails when this list misses a reader.
+CORPUS_VARS='\bSIPNAB_(CORPUS|VCON_DATASETS)\b'
+CORPUS_TESTS=$(
+	{
+		grep -lE "$CORPUS_VARS" tests/*.rs 2>/dev/null
+		for corpus_support in $(grep -lE "$CORPUS_VARS" tests/support/*.rs 2>/dev/null); do
+			grep -lF "\"${corpus_support#tests/}\"" tests/*.rs 2>/dev/null
+		done
+	} | sed -e 's|^tests/||' -e 's|\.rs$||' | sort -u || true)
 
 # ---- Naming what failed -----------------------------------------------------
 # This gate has to capture cargo's output rather than let it stream: it drives

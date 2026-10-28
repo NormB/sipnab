@@ -541,10 +541,6 @@ const TEST_ONLY_ENV: &[(&str, &str)] = &[
         "the interface an ignored capture test opens",
     ),
     (
-        "SIPNAB_CORPUS",
-        "the external corpus directory a skipped test reads",
-    ),
-    (
         "SIPNAB_SETTINGS_APPLY",
         "the settings table fixer, run as a test",
     ),
