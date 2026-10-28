@@ -485,9 +485,9 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError::arg(msg)",
-      "count": 3,
+      "count": 2,
       "carries": [],
-      "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the others are capture_source_capacity_refusal and pcap_export_mode_refusal in bootstrap.rs."
+      "why": "One occurrence is src/capture/bpf_filter.rs::forgot_input_flag (out of scope); the other is capture_source_capacity_refusal in bootstrap.rs."
     },
     {
       "file": "src/app/bootstrap.rs",

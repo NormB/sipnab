@@ -2979,11 +2979,9 @@ fn confine_after_capture_start(
         crate::security::alerting::init_syslog();
     }
 
-    // 16e. `--pcap-export-mode`. The flags whose feature is not compiled in
-    // were refused at 13a, before the capture opened.
-    if let Some(msg) = pcap_export_mode_refusal(cli) {
-        return Err(PlanError::arg(msg));
-    }
+    // 16e. `--pcap-export-mode` needs no check: its type is
+    // `PcapExportMode`, so clap refused any other value at parse time. The
+    // flags whose feature is not compiled in were refused at 13a.
 
     // 16g. --api-tls-cert/--api-tls-key consistency is checked with the
     // config file, in `load_config` (`Cli::tls_settings_problem`), because
@@ -3258,19 +3256,6 @@ fn unwritable_output_refusal(cli: &Cli) -> Result<(), PlanError> {
         }
     }
     Ok(())
-}
-
-/// The refusal for an unknown `--pcap-export-mode`, checked after the
-/// privilege drop.
-fn pcap_export_mode_refusal(cli: &Cli) -> Option<String> {
-    let tls = &cli.tls_args;
-    // 16e. Validate --pcap-export-mode
-    match tls.pcap_export_mode.as_str() {
-        "decrypted" | "encrypted+dsb" | "raw" => None,
-        other => Some(format!(
-            "Invalid --pcap-export-mode '{other}': must be 'decrypted', 'encrypted+dsb', or 'raw'"
-        )),
-    }
 }
 
 /// Whether this run loads decryption keys into process memory.

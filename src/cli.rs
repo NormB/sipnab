@@ -4506,6 +4506,20 @@ pub struct HepArgs {
     pub hep_rate_limit_per_peer: PerPeerLimit,
 }
 
+/// `--pcap-export-mode` reads its values from [`PcapExportMode::ALL`], so the
+/// flag accepts exactly the modes the writer knows.
+///
+/// [`PcapExportMode::ALL`]: crate::capture::PcapExportMode::ALL
+impl clap::ValueEnum for crate::capture::PcapExportMode {
+    fn value_variants<'a>() -> &'a [Self] {
+        &Self::ALL
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(clap::builder::PossibleValue::new(self.name()))
+    }
+}
+
 /// `TLS / Decryption` flags.
 ///
 /// Split out of [`Cli`] so clap's generated parser builds this group in its
@@ -4584,10 +4598,9 @@ pub struct TlsArgs {
         long,
         value_name = "MODE",
         default_value = "raw",
-        value_parser =
-            clap::builder::PossibleValuesParser::new(["decrypted", "encrypted+dsb", "raw"])
+        value_enum
     )]
-    pub pcap_export_mode: String,
+    pub pcap_export_mode: crate::capture::PcapExportMode,
 
     /// Allow core dumps (do not call prctl to disable).
     #[arg(help_heading = "TLS / Decryption", long)]
@@ -8330,7 +8343,7 @@ impl Cli {
 
         // Decrypted export needs the decryption it writes out (PCAPX-DEC).
         #[cfg(not(feature = "tls"))]
-        if self.tls_args.pcap_export_mode == "decrypted" {
+        if self.tls_args.pcap_export_mode == crate::capture::PcapExportMode::Decrypted {
             return Err(crate::Error::CliValidation(
                 "--pcap-export-mode decrypted requires the 'tls' feature (not compiled in): \
                  use raw for original packets without keys"
@@ -10057,7 +10070,14 @@ mod tests {
             .iter()
             .map(|pv| pv.get_name().to_string())
             .collect();
-        assert_eq!(vals, vec!["decrypted", "encrypted+dsb", "raw"]);
+        let modes: Vec<&str> = crate::capture::PcapExportMode::ALL
+            .iter()
+            .map(|m| m.name())
+            .collect();
+        assert_eq!(
+            vals, modes,
+            "the flag accepts exactly the modes the writer knows"
+        );
         Ok(())
     }
 
@@ -10814,7 +10834,10 @@ mod tests {
         assert_eq!(cli.mcp_args.mcp_rate_limit_per_peer, 100);
         assert_eq!(cli.hep_args.hep_rate_limit, None);
         assert_eq!(cli.hep_rate_limit_resolved(&cfg), 50_000);
-        assert_eq!(cli.tls_args.pcap_export_mode, "raw");
+        assert_eq!(
+            cli.tls_args.pcap_export_mode,
+            crate::capture::PcapExportMode::Raw
+        );
         assert_eq!(cli.limits_args.max_reassembly, None);
         assert_eq!(cli.max_reassembly_limit(&cfg), 10_000);
         assert_eq!(cli.limits_args.cores, 1, "single-threaded by default");

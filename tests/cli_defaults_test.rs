@@ -1049,12 +1049,13 @@ fn default_srtp_keys_is_none() -> Result<(), TestError> {
     Ok(())
 }
 
-/// `pcap_export_mode` defaults to the string `raw`.
+/// `pcap_export_mode` defaults to `raw`.
 #[test]
 fn default_pcap_export_mode() -> Result<(), TestError> {
     let cli = defaults()?;
     assert_eq!(
-        cli.tls_args.pcap_export_mode, "raw",
+        cli.tls_args.pcap_export_mode,
+        sipnab::capture::PcapExportMode::Raw,
         "default pcap_export_mode should be raw"
     );
     Ok(())
