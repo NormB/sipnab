@@ -10148,6 +10148,25 @@ mod tests {
             .map_err(|e| format!("five seconds fits: {e:?}"))?)
     }
 
+    /// The time of a live sweep that finds every dialog in `store` settled:
+    /// one sweep interval and a second after its newest message.
+    ///
+    /// Read off the store rather than the clock. The dialogs are stamped with
+    /// the time they were built, so a sweep time taken from `Utc::now()`
+    /// before them, or on a thread that stalls between the two, can land
+    /// before they settle, and the sweep then writes nothing. Under the full
+    /// suite on a loaded host `a_live_sweep_writes_a_call_once_per_rule` did
+    /// exactly that.
+    #[cfg(feature = "vcon")]
+    fn swept_after(store: &DialogStore) -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        let newest = store
+            .iter()
+            .map(|d| d.updated_at)
+            .max()
+            .ok_or("the store holds a dialog")?;
+        Ok(newest + settle()? + chrono::TimeDelta::seconds(1))
+    }
+
     /// A resolved rule over `expr`, writing to `dir` with `audio`.
     #[cfg(feature = "vcon")]
     fn test_rule(
@@ -10203,12 +10222,13 @@ mod tests {
         ];
         let mut trackers: Vec<LiveVconTracker> =
             (0..3).map(|_| LiveVconTracker::default()).collect();
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let dialogs = two_dialogs_one_failed()?;
+        let later = swept_after(&dialogs)?;
         let n = live_rules_sweep(
             &Cli::parse_from_args(["sipnab"]),
             &rules,
             CaptureRead {
-                dialogs: &two_dialogs_one_failed()?,
+                dialogs: &dialogs,
                 streams: &StreamStore::new(16),
                 frames_read: 4,
             },
@@ -10252,7 +10272,7 @@ mod tests {
         let mut trackers = vec![LiveVconTracker::default()];
         let files = || std::fs::read_dir(&dir).map(|d| d.count()).unwrap_or(0);
 
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let later = swept_after(&store)?;
         let read = CaptureRead {
             dialogs: &store,
             streams: &streams,
@@ -10263,7 +10283,7 @@ mod tests {
         assert_eq!(files(), 0);
 
         store.process_message(response_msg("b-leg@example.com", 486, "Busy Here")?);
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let later = swept_after(&store)?;
         let read = CaptureRead {
             dialogs: &store,
             streams: &streams,
@@ -10333,7 +10353,7 @@ mod tests {
         let store = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut trackers = vec![LiveVconTracker::default()];
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let later = swept_after(&store)?;
         let read = CaptureRead {
             dialogs: &store,
             streams: &streams,
@@ -11167,8 +11187,8 @@ mod tests {
         ];
         let mut trackers: Vec<LiveVconTracker> =
             (0..2).map(|_| LiveVconTracker::default()).collect();
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
         let read_store = two_dialogs_one_failed()?;
+        let later = swept_after(&read_store)?;
         let streams = StreamStore::new(16);
         let read = CaptureRead {
             dialogs: &read_store,
@@ -11418,7 +11438,7 @@ mod tests {
         let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut tracker = LiveVconTracker::default();
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let later = swept_after(&dialogs)?;
 
         let n = live_vcon_sweep(
             &cli,
@@ -11506,7 +11526,7 @@ mod tests {
         streams.link_to_dialog(caller, 40010, "failed-call@example.com");
         streams.link_to_dialog(caller, 40011, "ok-call@example.com");
         let mut tracker = LiveVconTracker::default();
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let later = swept_after(&dialogs)?;
 
         let written = live_vcon_sweep(
             &cli,
@@ -11561,7 +11581,7 @@ mod tests {
         let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut tracker = LiveVconTracker::default();
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let later = swept_after(&dialogs)?;
 
         let n = live_vcon_sweep(
             &cli,
@@ -11598,7 +11618,7 @@ mod tests {
         let dialogs = two_dialogs_one_failed()?;
         let streams = StreamStore::new(16);
         let mut tracker = LiveVconTracker::default();
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let later = swept_after(&dialogs)?;
         let gate = crate::output::persistence::PersistenceGate::new(false);
 
         let n = live_vcon_sweep(
@@ -11667,7 +11687,7 @@ mod tests {
         )?);
         store.process_message(response_msg("denied@example.com", 486, "Busy Here")?);
         let mut tracker = LiveVconTracker::default();
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let later = swept_after(&store)?;
         let n = live_vcon_sweep(
             &cli,
             None,
@@ -11919,7 +11939,7 @@ mod tests {
         assert_eq!(early, 0, "inside the settle period nothing is due");
         assert!(!out.exists(), "a call that has not settled is not written");
 
-        let later = chrono::Utc::now() + settle()? + chrono::TimeDelta::seconds(1);
+        let later = swept_after(&dialogs)?;
         let n = live_vcon_sweep(
             &cli,
             None,
