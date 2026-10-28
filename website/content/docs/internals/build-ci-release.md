@@ -396,7 +396,7 @@ Their contents are worth spelling out.
   - `cargo test
     --all-features`
   - `cargo clippy --workspace --all-features --all-targets -D warnings`
-  - `cargo fmt --check`
+  - [`scripts/check-rustfmt.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-rustfmt.sh) (the pinned nightly rustfmt)
   - `cargo doc --no-deps --all-features --workspace`
   - plus the `--ignored` PTY TUI end-to-end tests
   - On Linux it also compiles the Python clients under `clients/python/`.
@@ -517,7 +517,7 @@ Activate once per clone: `git config core.hooksPath .githooks`.
 [`pre-commit`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-commit) runs thirteen numbered gates,
 starting at 0, in order:
 
-- `cargo fmt --all -- --check`
+- [`scripts/check-rustfmt.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-rustfmt.sh), the pinned nightly rustfmt over every `.rs` file
 - vale and codespell over the paths CI gives them
 - clippy (`--workspace --all-features --all-targets`, `-D warnings`)
 - the full test suite, its binaries run side by side by
@@ -887,16 +887,17 @@ Four places pulled from it, and each now does something else:
 - no Docker Hub image in what `cross` builds in
 - one codespell pin that CI and the hooks share
 
-[`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) adds fourteen hard gates that `cargo test`
+[`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) adds fifteen hard gates that `cargo test`
 does not cover:
 
 - a check that every pushed commit carries a good signature
-- `cargo fmt --check`
+- [`scripts/check-rustfmt.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-rustfmt.sh)
 - `cargo clippy --workspace --all-features --all-targets
   -D warnings`
 - `cargo doc` with `RUSTDOCFLAGS=-D warnings`
-- `cd fuzz &&
-  cargo check`
+- `cd fuzz && cargo clippy --all-targets -- -D warnings`
+- `cd bpf && cargo clippy -- -D warnings`, on the nightly in
+  [`bpf/rust-toolchain.toml`](https://github.com/NormB/sipnab/blob/main/bpf/rust-toolchain.toml)
 - the release-delivery tests
 - a check of the reduced feature combinations `tls`, `api` and `wasm`
 - the full fifteen-combination matrix with CI's flags
@@ -1163,7 +1164,7 @@ The hook greps the tree for that list instead of carrying its own copy.
 - The first draft did hand-keep the list.
   It went stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the fourteen hard gates.
+**When it runs.** Last, after the fifteen hard gates.
 
 - Each of those fails in seconds.
 - Spending a minute on the corpus only to hear that the tree does not

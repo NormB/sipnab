@@ -6356,7 +6356,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `.github/workflows/osv-scanner.yml` runs
     // `scripts/check-dependency-canaries.py`. Measurement: with HEAD's
     // osv-scanner.yml swapped back in, the scan reads 206.
-    const EXPECTED_REFERENCES: usize = 207;
+    // 207 -> 208: .github/workflows/ci.yml's Format step runs
+    // scripts/check-rustfmt.sh in place of `cargo fmt --manifest-path
+    // bpf/Cargo.toml`, and the new "Clippy the BPF program" step names
+    // bpf/rust-toolchain.toml (+2 -1). Measurement: with main's ci.yml
+    // swapped back in, the scan reads 207.
+    const EXPECTED_REFERENCES: usize = 208;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

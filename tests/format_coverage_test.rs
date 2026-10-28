@@ -12,16 +12,19 @@
 //! excludes both.
 //!
 //! Every formatting gate in this repository — the two hooks, CI, the preflight
-//! script and the prepare-commit helper — runs `cargo fmt --all`, and `--all`
-//! means every member of THIS workspace. An excluded package is not a member.
-//! So `bpf/src/main.rs` went unformatted with five gates green, and the only
-//! thing that ever noticed was a per-file check run by hand.
+//! script and the prepare-commit helper — used to run `cargo fmt --all`, and
+//! `--all` means every member of THIS workspace. An excluded package is not a
+//! member. So `bpf/src/main.rs` went unformatted with five gates green, and the
+//! only thing that ever noticed was a per-file check run by hand.
 //!
+//! Now every gate runs scripts/check-rustfmt.sh, which formats every `.rs`
+//! file git knows of with the pinned nightly rustfmt (the Google Rust Style
+//! Guide's rustfmt options are unstable, and a stable rustfmt ignores them).
 //! The rule these tests hold is that formatting coverage is derived from the
-//! packages that exist, not from the ones somebody remembered.
+//! files that exist, not from the packages somebody remembered.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 /// The error a test returns: any error, boxed, so `?` works on I/O,
@@ -67,23 +70,7 @@ fn package_dirs() -> Result<BTreeSet<String>, TestError> {
     Ok(dirs)
 }
 
-/// The workspace members `cargo fmt --all` covers, from the root manifest's
-/// `members` list.
-fn workspace_members() -> Result<BTreeSet<String>, TestError> {
-    let root = read("Cargo.toml")?;
-    let list = root
-        .split_once("members = [")
-        .and_then(|(_, rest)| rest.split_once(']'))
-        .map(|(v, _)| v.to_string())
-        .ok_or("the root manifest must list its members")?;
-    Ok(list
-        .split(',')
-        .map(|s| s.trim().trim_matches('"').to_string())
-        .filter(|s| !s.is_empty())
-        .collect())
-}
-
-/// The scripts and workflows that check formatting.
+/// The scripts and workflows that check or apply formatting.
 const FMT_GATES: [&str; 5] = [
     ".githooks/pre-commit",
     ".githooks/pre-push",
@@ -92,39 +79,76 @@ const FMT_GATES: [&str; 5] = [
     "scripts/prepare-commit.sh",
 ];
 
-/// Every package outside the workspace is named by every formatting gate.
-///
-/// `--all` cannot reach them, so each gate has to say so explicitly. Deriving
-/// the list here means a third excluded package fails this test on the day it
-/// is added rather than going unformatted until somebody runs a per-file check
-/// by hand.
-#[test]
-fn every_package_outside_the_workspace_is_checked_by_every_format_gate() -> Result<(), TestError> {
-    let members = workspace_members()?;
-    let outside: Vec<String> = package_dirs()?
-        .into_iter()
-        .filter(|d| !members.contains(d))
-        .collect();
-    assert!(
-        !outside.is_empty(),
-        "no package sits outside the workspace, which contradicts the root \
-         manifest's `exclude` list — the member scan has stopped matching"
-    );
+/// The one formatting command every gate runs.
+const FMT_SCRIPT: &str = "scripts/check-rustfmt.sh";
 
-    let mut missing = Vec::new();
+/// Every formatting gate runs scripts/check-rustfmt.sh, and none runs
+/// `cargo fmt` itself.
+///
+/// The script lists the files from git, so it reaches the packages the
+/// workspace excludes without naming them, and it runs the pinned nightly
+/// rustfmt, the only one that applies every option in rustfmt.toml. A gate
+/// that ran `cargo fmt` instead would check fewer files with a rustfmt that
+/// ignores the Google style options, and pass what the others refuse.
+#[test]
+fn every_format_gate_runs_the_one_script() -> Result<(), TestError> {
+    let mut wrong = Vec::new();
     for gate in FMT_GATES {
         let body = read(gate)?;
-        for dir in &outside {
-            if !body.contains(&format!("--manifest-path {dir}/Cargo.toml")) {
-                missing.push(format!("{gate} does not format {dir}/"));
+        if !body.contains(FMT_SCRIPT) {
+            wrong.push(format!("{gate} does not run {FMT_SCRIPT}"));
+        }
+        for (n, line) in body.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with('#') {
+                continue;
+            }
+            if code.contains("cargo fmt") || code.contains("cargo +nightly fmt") {
+                wrong.push(format!("{gate}:{}: runs cargo fmt: {}", n + 1, code));
             }
         }
     }
     assert!(
-        missing.is_empty(),
-        "these formatting gates run `cargo fmt --all`, which cannot reach a \
-         package the workspace excludes:\n  {}",
-        missing.join("\n  ")
+        wrong.is_empty(),
+        "every formatting gate must run {FMT_SCRIPT}, and only it:\n  {}",
+        wrong.join("\n  ")
+    );
+    Ok(())
+}
+
+/// The script's file list reaches every package, including the ones outside
+/// the workspace.
+///
+/// Derived from the packages that exist, so a third excluded package is
+/// covered, or fails here, on the day it is added.
+#[test]
+fn the_format_file_list_reaches_every_package() -> Result<(), TestError> {
+    let script = read(FMT_SCRIPT)?;
+    assert!(
+        script.contains("git ls-files -z --cached --others --exclude-standard -- '*.rs'"),
+        "{FMT_SCRIPT} must take its file list from git, tracked and new files alike"
+    );
+    let out = Command::new("git")
+        .args(["ls-files", "--", "*.rs"])
+        .current_dir(repo())
+        .output()?;
+    assert!(out.status.success(), "git ls-files failed: {out:?}");
+    let files = String::from_utf8(out.stdout)?;
+    let mut unreached = Vec::new();
+    for dir in package_dirs()? {
+        let prefix = if dir == "." {
+            String::new()
+        } else {
+            format!("{dir}/")
+        };
+        if !files.lines().any(|f| f.starts_with(&prefix)) {
+            unreached.push(dir);
+        }
+    }
+    assert!(
+        unreached.is_empty(),
+        "no tracked .rs file under these packages, so the format list cannot \
+         reach them: {unreached:?}"
     );
     Ok(())
 }
@@ -187,62 +211,46 @@ fn a_diff_is_still_reported_as_unformatted() -> Result<(), TestError> {
     Ok(())
 }
 
-/// And the packages themselves are actually formatted.
+/// And the tree itself is formatted.
 ///
-/// The test above proves the plumbing exists. This proves the result, which is
-/// the thing that was wrong: `bpf/src/main.rs` had an unformatted array with
-/// every gate green, because no gate was looking. Running it here means
-/// `cargo test` alone catches a regression, without waiting for a hook.
+/// The tests above prove the plumbing. This proves the result, so `cargo test`
+/// alone catches a regression without waiting for a hook: `bpf/src/main.rs`
+/// once had an unformatted array with every gate green, because no gate was
+/// looking.
 ///
-/// Where rustfmt is absent this says so and declines to judge, rather than
-/// reporting every package as unformatted. CI's Format step has rustfmt and
-/// names both packages — `every_package_outside_the_workspace_is_checked_by_every_format_gate`
-/// is what guarantees that — so the check is enforced there whatever this run
-/// could see.
+/// The script exits 2 when the pinned rustfmt is not installed. That says so
+/// and declines to judge, rather than reporting the tree as unformatted. CI's
+/// Format step installs the pinned rustfmt and runs the script, and
+/// `every_format_gate_runs_the_one_script` guarantees that, so the check is
+/// enforced there whatever this run could see.
 #[test]
-fn every_package_outside_the_workspace_is_formatted() -> Result<(), TestError> {
-    let members = workspace_members()?;
-    let mut unformatted = Vec::new();
-    let mut unavailable = Vec::new();
-    let mut checked = 0usize;
-    for dir in package_dirs()? {
-        if members.contains(&dir) {
-            continue;
+fn the_tree_is_formatted() -> Result<(), TestError> {
+    let out = Command::new("bash")
+        .arg(repo().join(FMT_SCRIPT))
+        .current_dir(repo())
+        .output()?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let verdict = if out.status.code() == Some(2) {
+        FormatCheck::CouldNotRun
+    } else {
+        classify_format_check(out.status.success(), &stdout, &stderr)
+    };
+    match verdict {
+        FormatCheck::Clean => {}
+        FormatCheck::CouldNotRun => {
+            eprintln!(
+                "SKIP: {FMT_SCRIPT} could not run here, so nothing was established: {}",
+                stderr.trim()
+            );
         }
-        let manifest: PathBuf = repo().join(&dir).join("Cargo.toml");
-        let out = Command::new(env!("CARGO"))
-            .args(["fmt", "--manifest-path"])
-            .arg(&manifest)
-            .args(["--", "--check"])
-            .current_dir(repo())
-            .output()?;
-        checked += 1;
-        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-        match classify_format_check(out.status.success(), &stdout, &stderr) {
-            FormatCheck::Clean => {}
-            FormatCheck::Unformatted => {
-                unformatted.push(format!("{dir}/:\n{}", stdout.trim()));
-            }
-            FormatCheck::CouldNotRun => unavailable.push(format!("{dir}/: {}", stderr.trim())),
+        FormatCheck::Unformatted => {
+            return Err(format!(
+                "the tree is not formatted; run `{FMT_SCRIPT} --fix`:\n\n{}",
+                stdout.trim()
+            )
+            .into());
         }
     }
-    assert!(
-        checked > 0,
-        "checked no packages; this gate is passing over an empty list"
-    );
-    if !unavailable.is_empty() {
-        eprintln!(
-            "SKIP: rustfmt could not run here, so nothing was established about \
-             these packages:\n  {}",
-            unavailable.join("\n  ")
-        );
-    }
-    assert!(
-        unformatted.is_empty(),
-        "these packages are outside the workspace and unformatted. \
-         `cargo fmt --all` does not reach them:\n\n{}",
-        unformatted.join("\n\n")
-    );
     Ok(())
 }

@@ -349,15 +349,14 @@ rm -f /tmp/.sipnab-preflight-gates.$$
 # 6. Formatting, which is a pre-PUSH gate rather than pre-commit -- so it bites
 #    after the suite has already passed, which is the worst possible moment.
 # ---------------------------------------------------------------------------
-step "cargo fmt"
-# `fuzz/` and `bpf/` are outside the workspace, so `--all` cannot see them.
-if cargo fmt --all -- --check >/dev/null 2>&1 \
-    && cargo fmt --manifest-path fuzz/Cargo.toml -- --check >/dev/null 2>&1 \
-    && cargo fmt --manifest-path bpf/Cargo.toml -- --check >/dev/null 2>&1; then
+step "rustfmt (scripts/check-rustfmt.sh)"
+# The hooks' own check: the pinned nightly rustfmt over every tracked `.rs`
+# file, `fuzz/` and `bpf/` included.
+if scripts/check-rustfmt.sh >/dev/null 2>&1; then
     ok
 else
     bad
-    note "run: cargo fmt --all; cargo fmt --manifest-path fuzz/Cargo.toml; cargo fmt --manifest-path bpf/Cargo.toml"
+    note "run: scripts/check-rustfmt.sh --fix"
 fi
 
 # >>> BEGIN summary

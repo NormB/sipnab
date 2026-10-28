@@ -86,21 +86,16 @@ emit_capped() { # emit_capped <max-lines> <log-path>   (reads stdin)
 # fix, and re-checked where it matters that it is true.
 echo -n "  Formatting... "
 set +e
-# `--all` is every member of THIS workspace, and `fuzz/` and `bpf/` are
-# deliberately not members -- the root manifest excludes them so a stock build
-# never demands cargo-fuzz or a nightly with bpf-linker. Naming them is the
-# only way a gate reaches them: `bpf/src/main.rs` sat unformatted with five
-# fmt gates green, and the only thing that ever noticed was a per-file check
-# run by hand.
-#
-# Each status is captured rather than the last one taken, because a command
-# substitution returns only the exit of its final command -- a failing
-# `--all` followed by a clean `bpf/` would have read as a pass.
+# scripts/check-rustfmt.sh formats every tracked `.rs` file with the dated
+# nightly rustfmt in .rustfmt-toolchain, the one rustfmt that applies all of
+# rustfmt.toml (the Google Rust Style Guide's options are unstable). Listing
+# the files from git reaches `fuzz/` and `bpf/`, which are not workspace
+# members: `cargo fmt --all` never saw them, and `bpf/src/main.rs` once sat
+# unformatted with five fmt gates green. The script's exit status is the
+# signal; its output is the diff.
 FMT_OUTPUT=$(
     rc=0
-    cargo fmt --all -- --check 2>&1 || rc=1
-    cargo fmt --manifest-path fuzz/Cargo.toml -- --check 2>&1 || rc=1
-    cargo fmt --manifest-path bpf/Cargo.toml -- --check 2>&1 || rc=1
+    "$(dirname "$0")/../scripts/check-rustfmt.sh" 2>&1 || rc=1
     exit $rc
 )
 FMT_RC=$?
@@ -112,7 +107,7 @@ if [ "$FMT_RC" -ne 0 ]; then
     # The diff names the file and line; show a capped slice rather than a
     # whole reformat of a large file.
     printf '%s\n' "$FMT_OUTPUT" | emit_capped 20 "$FMT_LOG"
-    echo "  Fix: cargo fmt --all && cargo fmt --manifest-path fuzz/Cargo.toml && cargo fmt --manifest-path bpf/Cargo.toml"
+    echo "  Fix: scripts/check-rustfmt.sh --fix"
     echo "  Full output: $FMT_LOG"
     exit 1
 fi

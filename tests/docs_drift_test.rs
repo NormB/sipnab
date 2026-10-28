@@ -592,7 +592,16 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/postmortems.md",
             "website/content/docs/internals/postmortems.md",
+            // `scripts/check-rustfmt.sh --fix`, the formatter's apply mode.
+            "CONTRIBUTING.md",
+            "website/content/docs/contributing.md",
         ],
+    ),
+    // `rustup toolchain install ... --component rustfmt`, the command that
+    // installs the pinned rustfmt the format gate runs.
+    (
+        "component",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
     // `--features` and `--test` are cargo's in the contributor walkthroughs
     // too: `SIPNAB_BLESS_YANG=1 cargo test --features full --test
@@ -7239,6 +7248,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         13 => "thirteen",
         14 => "fourteen",
         15 => "fifteen",
+        16 => "sixteen",
         n => {
             return Err(format!(
                 "no spelling for {n} gates; add one rather than dropping the check"
@@ -7262,7 +7272,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         // spelled number next to "hard gate" is the drift this catches.
         for wrong in [
             "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
-            "fourteen",
+            "fourteen", "fifteen",
         ] {
             if wrong == spelled {
                 continue;
@@ -8184,6 +8194,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() -> Result<(), Test
         (13, "thirteen"),
         (14, "fourteen"),
         (15, "fifteen"),
+        (16, "sixteen"),
     ];
     let want = spellings
         .iter()

@@ -163,7 +163,8 @@ git config core.hooksPath .githooks
 
 **`pre-commit`** runs nine numbered gates, starting at 0:
 
-- `cargo fmt --all -- --check`,
+- `scripts/check-rustfmt.sh` (the pinned nightly rustfmt over every `.rs`
+  file),
 - clippy (`--workspace --all-features --all-targets`, `-D warnings`),
 - the full `cargo test --features full` suite,
 - no `unwrap()`/`expect()` or abort macro (`panic!`, `unreachable!`, `todo!`,
@@ -244,16 +245,17 @@ The workflow runs on `pull_request_target`.
 - A change you make to any of those three files takes effect only after it
   reaches `main`.
 
-**`pre-push`** adds fourteen hard gates. All of them mirror CI exactly. Any of
+**`pre-push`** adds fifteen hard gates. All of them mirror CI exactly. Any of
 them blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
 |---|---|
 | `scripts/preflight.sh` | **Run this first.** About a minute, and it checks only the things that actually bounce a commit — Vale and codespell at CI's pinned versions, both site-mirror generators, the and the documentation ratchets. On 2026-08-08 four commits bounced on exactly these at ~25 minutes each; none needed the suite to find. It does NOT run the suite, clippy, the corpus gate or the feature matrix, so a green preflight means the paperwork is right, not that the change is. A tool it cannot find — no `vale`, no `codespell`, no `python3` — warns at an interactive terminal and FAILS anywhere else: under `CI`, with output redirected, or with `PREFLIGHT_STRICT=1`. `PREFLIGHT_STRICT=0` keeps the warning everywhere. Automation reading "Preflight clean" from a gate that never ran is how two Vale errors reached CI on 2026-08-10. |
-| `cargo fmt --all -- --check` | Formatting is never checked by a build. |
+| `scripts/check-rustfmt.sh` | Formatting is never checked by a build. |
 | `cargo clippy --workspace --all-features --all-targets -- -D warnings` | The same command as pre-commit's clippy gate and CI's, run again before the push. It lints tests, benches, examples, every workspace crate and every feature-gated path. |
 | `RUSTDOCFLAGS=-D warnings cargo doc --no-deps --all-features --workspace` | Rustdoc lints (e.g. private intra-doc links) build independently of the test build. |
-| `cd fuzz && cargo check` | `fuzz/` is a separate workspace nothing else compiles. |
+| `cd fuzz && cargo clippy --all-targets -- -D warnings` | `fuzz/` is a separate workspace that nothing else compiles or lints. |
+| `cd bpf && cargo clippy -- -D warnings` | `bpf/` is a separate workspace on the dated nightly in `bpf/rust-toolchain.toml`, which nothing else lints. |
 | `cargo check --no-default-features --features <combo> --tests` over the reduced combinations | `--all-features` never builds a tree without `native`, so `#[cfg]` rot is invisible to it. The `--tests` part matters: without it no test file compiles and the gate passes over nothing. |
 | `sh scripts/check-non-linux.sh` | Re-checks a copy of the tree with the `target_os` values swapped, so the macOS arm of every platform split compiles here. CI is the only non-Linux build in this project, and two macOS breaks reached it on 2026-08-07 with every other gate green. Runs on Linux hosts only — on macOS or a BSD your ordinary `cargo clippy` already is that build, and the gate says `NOT CHECKED` rather than pretending. |
 | `python3 scripts/check-yang.py` | A generator writes the `sipnab-diagnosis` YANG module from the analysis's tables, and a Rust test proves the committed file matches them; only a YANG implementation can say it is valid YANG. `pyang --lint` and `yanglint` compile it, `pyang --check-update-from` holds a new revision to the last, and `yanglint -t data` validates the [RFC 7951](https://www.rfc-editor.org/rfc/rfc7951.html) export every door writes. `NOT CHECKED` on a host with neither tool; CI installs both and fails without them. |
@@ -285,7 +287,25 @@ CI's full feature matrix is not in the hook. That matrix is every combination
 
 This project enforces consistent style through tooling and convention:
 
-- **Format:** `cargo fmt` before every commit. The project uses a `rustfmt.toml` config.
+- **Style:** all Rust follows the
+  [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html),
+  the [Rust Style Guide](https://doc.rust-lang.org/nightly/style-guide/) and
+  the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/), read
+  together. The Google guide defers to the other two except where it says
+  otherwise.
+- **Format:** `scripts/check-rustfmt.sh --fix` before every commit.
+  - It runs rustfmt with `rustfmt.toml` over every `.rs` file git knows of,
+    `fuzz/` and `bpf/` included.
+  - The rustfmt is the dated nightly named in `.rustfmt-toolchain`, because
+    the guide's rustfmt options are unstable and a stable rustfmt ignores
+    them. Install it once with
+    `rustup toolchain install "$(cat .rustfmt-toolchain)" --profile minimal --component rustfmt`.
+  - Only rustfmt runs on that nightly. sipnab builds and tests on stable,
+    with no unstable language features.
+- **Rules no lint sees:** `tests/rust_style_test.rs` enforces them. It covers
+  glob imports, `SAFETY:` comments on `unsafe` code, `# Safety` sections on
+  `unsafe fn`, a reason on every `#[rustfmt::skip]` and `catch_unwind`, no
+  reaching into a poisoned lock, and no code before `main`.
 - **Lint:** `cargo clippy -- -D warnings` must pass with zero warnings.
 - **No `.unwrap()` on external input.**
   - The library surface returns typed `thiserror` errors (`Error`,
@@ -705,7 +725,7 @@ tests/openssf_badge_test.rs holds the quote to this line, so its wording stays. 
 
 - Fork the repository and create a feature branch from `main`.
 - Keep changes focused -- one logical change per PR.
-- Ensure the CI gate passes locally. Beyond `cargo fmt` and
+- Ensure the CI gate passes locally. Beyond `scripts/check-rustfmt.sh` and
   `cargo test --all-features`, CI enforces:
   - `cargo clippy --workspace --all-features --all-targets -- -D warnings`
   - a reduced-feature matrix that must pass

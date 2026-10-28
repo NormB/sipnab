@@ -44,11 +44,9 @@ run() {  # run <label> <command...>
 }
 
 echo "Running fixers..."
-run "formatting"        cargo fmt --all
-# The two packages the workspace excludes. A fixer that leaves them
-# unformatted hands the gate a failure it just told you it fixed.
-run "formatting (fuzz)" cargo fmt --manifest-path fuzz/Cargo.toml
-run "formatting (bpf)"  cargo fmt --manifest-path bpf/Cargo.toml
+# The gate's own script, so the fixer and the gate apply one rustfmt to the
+# same files, `fuzz/` and `bpf/` included.
+run "formatting"        scripts/check-rustfmt.sh --fix
 run "line citations"    python3 scripts/check-line-drift.py --apply
 run "repo path links"   python3 scripts/link-repo-paths.py --apply
 run "site pages"        python3 scripts/build-site-pages.py

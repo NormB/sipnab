@@ -244,6 +244,13 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		exit 0
 	EOF
 	chmod +x "$_d/bin/cargo"
+	# The rustfmt stub, for the same reason: the format gate
+	# (scripts/check-rustfmt.sh) calls rustfmt directly, not through cargo,
+	# and these scenarios are about the gates after it. The format gate's own
+	# verdicts are tested by tests/format_coverage_test.rs and
+	# scripts/test-pre-push.sh, which run the real rustfmt.
+	printf '#!/bin/sh\necho "rustfmt $*" >> "%s/cargo-invocations"\nexit 0\n' "$_d" > "$_d/bin/rustfmt"
+	chmod +x "$_d/bin/rustfmt"
 	: > "$_d/cargo-invocations"
 	: > "$_d/canned-test-output"
 	_total=0

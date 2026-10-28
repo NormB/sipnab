@@ -7,8 +7,9 @@
 # Hard gate: refuse to push code that fails any of
 #   * scripts/commit-signature-check.sh: every pushed commit carries a good
 #     signature (first, since it needs no build),
-#   * `cargo fmt --all -- --check`, plus the two packages the workspace
-#     excludes (`fuzz/`, `bpf/`),
+#   * scripts/check-rustfmt.sh: the pinned nightly rustfmt over every tracked
+#     `.rs` file, the two packages the workspace excludes (`fuzz/`, `bpf/`)
+#     included,
 #   * `cargo clippy --workspace --all-features --all-targets -- -D warnings`,
 #   * `cargo doc --no-deps --all-features --workspace` (RUSTDOCFLAGS -D warnings),
 #   * `cd fuzz && cargo check`,
@@ -115,22 +116,19 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 # -- Hard gate: rustfmt -------------------------------------------------------
-# `--all` reaches workspace members only, and `fuzz/` and `bpf/` are excluded
-# on purpose. Named explicitly, because a gate that cannot see a package
-# reports the same green as one that saw it and found nothing.
-printf '  cargo fmt --all -- --check ... '
-if cargo fmt --all -- --check \
-	&& cargo fmt --manifest-path fuzz/Cargo.toml -- --check \
-	&& cargo fmt --manifest-path bpf/Cargo.toml -- --check; then
+# scripts/check-rustfmt.sh: the dated nightly rustfmt in .rustfmt-toolchain
+# over every tracked `.rs` file, `fuzz/` and `bpf/` included, which are not
+# workspace members. A gate that cannot see a package reports the same green
+# as one that saw it and found nothing.
+printf '  scripts/check-rustfmt.sh ... '
+if "$(dirname "$0")/../scripts/check-rustfmt.sh"; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
 else
 	printf '%bFAIL%b\n' "$RED" "$NC"
 	printf '\n'
 	printf '%bPush blocked: code is not formatted.%b\n' "$RED" "$NC"
 	printf 'Fix it with:\n'
-	printf '    cargo fmt --all\n'
-	printf '    cargo fmt --manifest-path fuzz/Cargo.toml\n'
-	printf '    cargo fmt --manifest-path bpf/Cargo.toml\n'
+	printf '    scripts/check-rustfmt.sh --fix\n'
 	printf 'then stage, commit, and push again.\n'
 	printf '\n'
 	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
@@ -185,21 +183,47 @@ else
 fi
 
 # -- Hard gate: fuzz targets --------------------------------------------------
-# Mirrors CI's fuzz-check (`cd fuzz && cargo check`). The fuzz crate is a
-# separate workspace that `cargo test` / `clippy --all-targets` never build, so
-# a struct or signature change can compile everywhere else yet break a fuzz
-# target. Skipped if the fuzz/ directory is absent (matches CI).
+# Mirrors CI's "Clippy the fuzz targets" step. The fuzz crate is a separate
+# workspace that `cargo test` / `clippy --workspace` never build, so a struct
+# or signature change can compile everywhere else yet break a fuzz target, and
+# a lint there went unread while it was only compiled (a collapsible `if` in
+# fuzz_targets/g729_decode.rs, 2026-10-27). Clippy compiles everything
+# `cargo check` does. Skipped if the fuzz/ directory is absent (matches CI).
 if [ -d fuzz ]; then
-	printf '  (cd fuzz && cargo check) ... '
-	if ( cd fuzz && cargo check ); then
+	printf '  (cd fuzz && cargo clippy --all-targets -- -D warnings) ... '
+	if ( cd fuzz && cargo clippy --all-targets -- -D warnings ); then
 		printf '%bOK%b\n' "$GREEN" "$NC"
 	else
 		printf '%bFAIL%b\n' "$RED" "$NC"
 		printf '\n'
-		printf '%bPush blocked: fuzz targets do not compile.%b\n' "$RED" "$NC"
+		printf '%bPush blocked: fuzz targets do not compile or are not lint-clean.%b\n' "$RED" "$NC"
 		printf 'Reproduce with:\n'
-		printf '    cd fuzz && cargo check\n'
+		printf '    cd fuzz && cargo clippy --all-targets -- -D warnings\n'
 		printf 'fix the fuzz targets, then commit and push again.\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
+fi
+
+# -- Hard gate: the kernel half (bpf/) ----------------------------------------
+# Mirrors CI's "Clippy the BPF program" step. bpf/ is its own workspace on the
+# dated nightly in bpf/rust-toolchain.toml (it builds `core` for
+# bpfel-unknown-none), so no other clippy run reads it. The binary target only:
+# a `no_std` program has no test harness, so `--all-targets` cannot build.
+# Skipped if the bpf/ directory is absent (matches the fuzz gate).
+if [ -d bpf ]; then
+	printf '  (cd bpf && cargo clippy -- -D warnings) ... '
+	if ( cd bpf && cargo clippy -- -D warnings ); then
+		printf '%bOK%b\n' "$GREEN" "$NC"
+	else
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		printf '\n'
+		printf '%bPush blocked: the BPF program does not compile or is not lint-clean.%b\n' "$RED" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    cd bpf && cargo clippy -- -D warnings\n'
+		printf 'It needs the nightly bpf/rust-toolchain.toml names, with clippy:\n'
+		printf '    (cd bpf && rustup toolchain install && rustup component add clippy)\n'
 		printf '\n'
 		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
 		exit 1
