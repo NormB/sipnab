@@ -25,6 +25,12 @@ entry that carries them.
 - **An SDP part inside a nested multipart body is read.** [RFC 5621 section 4.2](https://www.rfc-editor.org/rfc/rfc5621.html#section-4.2) requires parsing nested body parts, and section 4.1 shows a `multipart/alternative` inside a `multipart/mixed`. sipnab read the top level only, so SDP inside a nested part linked no media and the message was not labeled `(SDP)`. The first `application/sdp` part in body order, depth first, is now the message's SDP, to four levels of nesting below the message's own `multipart`.
 - **An SDP body sent with no `Content-Type` links its media.** sipnab labeled such a message `(SDP)` when its body starts `v=` ([RFC 3261 section 20.15](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.15) requires the header, and some peers omit it), but did not read the body as SDP, so its RTP was not bound to the call. The SDP reader and the label now apply one rule: a body declared as another type is still that type and links nothing.
 - **Calls correlate by the SDP origin of a multipart body.** The SDP-origin strategy (score 90) parsed every message body as SDP whatever its type, so the SDP part of a `multipart/mixed` body (SIP-I, SIPREC) never yielded an origin, and a body declared as another type that happened to start `v=` did. It now reads each message's SDP by the rule the media links use.
+- **Breaking: `--expect` exits 3 when a rule fails, not 1, and the MCP `evaluate_expectations` report gives a failed suite `exit_code` 3 with `schema_version` 2.**
+  - 0.5.231 exited `1` for a failed rule, the same code as a run that failed (a capture not read in full, an I/O error), so a CI step reading only `$?` could not tell the two apart.
+  - `3` is the code sipnab exits with when the input fails a check you asked for, as `--lint-fail-on` and `--vcon-validate` already do.
+  - `0` for a suite that passed and `2` for one that judged nothing, or one sipnab cannot read, are unchanged, and so is `verdict`.
+  - A pipeline that tests for exit `1` after `--expect` must test for `3` instead.
+- **Every exit code is documented.** The exit-code table of the CLI reference, the man page and the error reference now list `101` (sipnab panicked) and `130` (Ctrl-C at the archive password prompt, which no table named), and `3` names every check that exits with it.
 
 ## [0.5.231] - 2026-10-27
 

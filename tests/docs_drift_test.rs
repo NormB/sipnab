@@ -5611,7 +5611,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1278 -> 1280: docs/mcp-tools-relay.md +1, the `query_relay` table of
     // the three failure classes, and its site mirror
     // website/content/docs/mcp-tools-relay.md +1.
-    const EXPECTED_TABLES: usize = 1280;
+    // 1280 -> 1282: docs/errors.md +1, the `## Exit codes` list, and its site
+    // mirror website/content/docs/errors.md +1. Attributed per file against
+    // HEAD: no other changed page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1282;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

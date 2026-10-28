@@ -1527,7 +1527,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // linking its how-to "Ask the relay which calls it holds".
     // 1988 -> 1989: docs/mcp-tools-relay.md +1, the `relay_stats` note
     // linking the `query_relay` failure classes.
-    const EXPECTED_WIKI_LINKS: usize = 1989;
+    // 1989 -> 1990: docs/errors.md +1, the `## Exit codes` list linking the
+    // exit-code table of cli-reference.md. Attributed per changed page
+    // against HEAD: cli-reference.md and mcp-tools-security.md held theirs.
+    const EXPECTED_WIKI_LINKS: usize = 1990;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

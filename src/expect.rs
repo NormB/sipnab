@@ -59,7 +59,11 @@ use crate::sip::method::SipMethod;
 
 /// Version stamped on every [`Report`], so a consumer can tell an older
 /// answer's shape from a newer one without guessing from the fields present.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// 2: a failed suite's `exit_code` is `3`, sipnab's code for an input that
+/// failed a check, where version 1 carried `1`, the code for a runtime
+/// failure.
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Every metric name a rule may ask for, in the spelling the file uses.
 ///
@@ -486,15 +490,17 @@ pub struct Report {
 impl Report {
     /// The exit status a command line reports.
     ///
-    /// `0` every rule that ran passed, `1` at least one failed, `2` nothing
-    /// ran. The third code exists because CI must be able to tell a green run
-    /// from a run that judged nothing, and a shell script comparing against `0`
-    /// cannot.
+    /// `0` every rule that ran passed, `3` at least one failed, `2` nothing
+    /// ran. `3` is the code every sipnab check exits with when the input
+    /// fails it (`--lint-fail-on` too), so a failed rule is never read as the
+    /// runtime failure `1` means. `2` exists because CI must be able to tell a
+    /// green run from a run that judged nothing, and a shell script comparing
+    /// against `0` cannot.
     #[must_use]
     pub fn exit_code(&self) -> i32 {
         match self.verdict {
             SuiteVerdict::Pass => 0,
-            SuiteVerdict::Fail => 1,
+            SuiteVerdict::Fail => 3,
             SuiteVerdict::NotEvaluated => 2,
         }
     }
@@ -1274,7 +1280,11 @@ mod tests {
         };
         assert_eq!(report.exit_code(), 0);
         report.verdict = SuiteVerdict::Fail;
-        assert_eq!(report.exit_code(), 1);
+        assert_eq!(
+            report.exit_code(),
+            3,
+            "a failed rule is sipnab's gate code, not the runtime failure 1 means"
+        );
         report.verdict = SuiteVerdict::NotEvaluated;
         assert_eq!(
             report.exit_code(),
@@ -1449,7 +1459,7 @@ mod tests {
 
         let bad = run(&calls, std::slice::from_ref(&r))?;
         assert_eq!(bad.verdict, SuiteVerdict::Fail, "{:?}", bad.results);
-        assert_eq!(bad.exit_code, 1);
+        assert_eq!(bad.exit_code, 3);
         assert_eq!(bad.results[0].verdict, Verdict::Fail);
         assert_eq!(bad.results[0].observed, Some(1.0), "one call was rejected");
         assert_eq!(bad.results[0].sample, 3, "judged against the whole capture");
@@ -1511,7 +1521,7 @@ mod tests {
             o.reason
         );
         assert_eq!(report.verdict, SuiteVerdict::Fail);
-        assert_eq!(report.exit_code, 1);
+        assert_eq!(report.exit_code, 3);
         Ok(())
     }
 

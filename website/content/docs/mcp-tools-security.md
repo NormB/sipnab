@@ -529,7 +529,7 @@ an expectation suite must contain at least one rule; an empty suite passes every
 //   { "name": "audio floor", "metric": "mos_p10", "op": ">=", "value": 4.0 },
 //   { "name": "answer rate", "metric": "asr", "op": ">=", "value": 99, "min_sample": 50 } ] }
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "verdict": "pass",
   "exit_code": 0,
   "rules_total": 3, "evaluated": 2, "passed": 2, "failed": 0, "skipped": 1,
@@ -591,7 +591,7 @@ To accept an empty population, declare `min_sample` of 1 or more on the rule.
   },
   "dialogs_in_capture": 1,
   "evaluated": 1,
-  "exit_code": 1,
+  "exit_code": 3,
   "failed": 1,
   "passed": 0,
   "results": [
@@ -608,7 +608,7 @@ To accept an empty population, declare `min_sample` of 1 or more on the rule.
     }
   ],
   "rules_total": 1,
-  "schema_version": 1,
+  "schema_version": 2,
   "skipped": 0,
   "source_exhausted": true,
   "source_stopped_early": false,
@@ -621,8 +621,11 @@ To accept an empty population, declare `min_sample` of 1 or more on the rule.
 The verdict tests the size of the SAMPLE, not whether a value came back, so
 `count == 0` fails on a capture holding no dialogs at all.
 
-`exit_code` follows command-line convention: `0` every rule that ran passed,
-`1` at least one failed, `2` nothing ran.
+`exit_code` is the exit status `--expect` gives the same suite: `0` every rule
+that ran passed, `3` at least one failed, `2` nothing ran. Reports before
+`schema_version` 2 carried `1` for a failed suite. It moved to `3`, sipnab's
+code for an input that failed a check, so it is never mistaken for a runtime
+failure.
 
 Three more fields describe what the verdict rests on. `sample` names how many observations
 each figure rests on. `ungrounded_excluded` appears on MOS rules and counts the
