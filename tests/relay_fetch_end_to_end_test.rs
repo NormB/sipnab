@@ -36,6 +36,7 @@ use std::time::{Duration, Instant};
 
 include!("support/timeout.rs");
 include!("support/teardown.rs");
+include!("support/drain.rs");
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -285,12 +286,10 @@ impl Run {
         let code = terminate_within(&mut self.child, WAIT)
             .ok()
             .and_then(|status| status.code());
-        while let Ok(line) = self.stdout.recv_timeout(Duration::from_millis(300)) {
-            self.out.push(line);
-        }
-        while let Ok(line) = self.stderr.recv_timeout(Duration::from_millis(300)) {
-            self.err.push(line);
-        }
+        self.out
+            .extend(drain_closed(&self.stdout, test_timeout(10)));
+        self.err
+            .extend(drain_closed(&self.stderr, test_timeout(10)));
         Finished {
             code,
             stdout: self.out.join("\n"),
@@ -784,13 +783,8 @@ fn run_to_exit(args: &[&str]) -> Result<Finished, TestError> {
         }
         std::thread::sleep(Duration::from_millis(50));
     };
-    let drain = |rx: mpsc::Receiver<String>| -> String {
-        let mut lines = Vec::new();
-        while let Ok(line) = rx.recv_timeout(Duration::from_millis(300)) {
-            lines.push(line);
-        }
-        lines.join("\n")
-    };
+    let drain =
+        |rx: mpsc::Receiver<String>| -> String { drain_closed(&rx, test_timeout(10)).join("\n") };
     Ok(Finished {
         code,
         stdout: drain(stdout),

@@ -195,6 +195,7 @@ fn multiple_tokens_on_one_line() -> Result<(), TestError> {
 }
 
 include!("support/timeout.rs");
+include!("support/drain.rs");
 
 /// `test_timeout` scales deadlines, and refuses a scale that would zero them.
 ///
@@ -451,4 +452,75 @@ fn a_refused_port_is_released_when_the_guard_drops() -> Result<(), TestError> {
     let again = std::net::TcpListener::bind(addr)?;
     assert_eq!(again.local_addr()?, addr);
     Ok(())
+}
+
+// ── drain_closed ─────────────────────────────────────────────────────
+
+/// A reader thread that forwards its lines late, then hangs up: the shape of a
+/// child's output read back on a loaded host after the child has exited.
+fn late_reader(delay: std::time::Duration) -> std::sync::mpsc::Receiver<String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        for line in ["first", "second"] {
+            if tx.send(line.to_string()).is_err() {
+                return;
+            }
+        }
+    });
+    rx
+}
+
+/// Lines that reach the channel after a quiet gap are still read, because the
+/// drain waits for the reader to hang up rather than for a pause.
+///
+/// The defect this pays for: four harnesses stopped at the first 200 or 300 ms
+/// with no line, so a reader thread that had not yet forwarded the output of a
+/// child that had already exited read as no output at all. Under host load the
+/// `--relay-holdings` end-to-end tests failed that way with "no stdout".
+#[test]
+fn drain_closed_reads_lines_that_arrive_after_a_quiet_gap() {
+    let rx = late_reader(std::time::Duration::from_millis(800));
+    assert_eq!(
+        drain_closed(&rx, test_timeout(10)),
+        ["first", "second"],
+        "the lines that arrived after the quiet gap are read"
+    );
+}
+
+/// A sender that never hangs up does not hold the drain past its bound.
+#[test]
+fn drain_closed_returns_by_its_bound_when_the_sender_stays_open() {
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let started = std::time::Instant::now();
+    assert!(
+        drain_closed(&rx, std::time::Duration::from_millis(400)).is_empty(),
+        "a sender that sent nothing yields nothing"
+    );
+    let took = started.elapsed();
+    drop(tx);
+    assert!(
+        took >= std::time::Duration::from_millis(400) && took < test_timeout(5),
+        "returned after {took:?}"
+    );
+}
+
+/// A sender that has already hung up is read at once: what it sent, and no
+/// wait.
+#[test]
+fn drain_closed_returns_at_once_when_the_sender_has_hung_up() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    tx.send("only".to_string()).unwrap_or_default();
+    drop(tx);
+    let started = std::time::Instant::now();
+    assert_eq!(
+        drain_closed(&rx, test_timeout(10)),
+        ["only"],
+        "what the sender sent before hanging up is read"
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(1),
+        "a hung-up sender is read at once, not after the bound: {:?}",
+        started.elapsed()
+    );
 }

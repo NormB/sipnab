@@ -39,6 +39,7 @@ use std::time::{Duration, Instant};
 mod executable;
 
 include!("support/timeout.rs");
+include!("support/drain.rs");
 
 /// A long, deterministic signing key shared between the spawned server and
 /// in-test minting.
@@ -378,12 +379,10 @@ fn a_read_token_reaches_read_only_tools_and_nothing_else() -> Result<(), TestErr
     // ── The audit trail names the scope refusal. ─────────────────────
     // Tear down first so stderr is complete.
     mcp::shutdown(child);
-    let mut audit = Vec::new();
-    while let Ok(line) = stderr_rx.recv_timeout(Duration::from_millis(200)) {
-        if line.contains("mcp_audit") {
-            audit.push(line);
-        }
-    }
+    let audit: Vec<String> = drain_closed(&stderr_rx, test_timeout(10))
+        .into_iter()
+        .filter(|line| line.contains("mcp_audit"))
+        .collect();
     let scope_refusals: Vec<&String> = audit
         .iter()
         .filter(|l| {
@@ -449,12 +448,10 @@ fn the_audit_line_names_the_token_that_made_the_call() -> Result<(), TestError> 
 
     // Tear down first so stderr is complete.
     mcp::shutdown(child);
-    let mut audit = Vec::new();
-    while let Ok(line) = stderr_rx.recv_timeout(Duration::from_millis(200)) {
-        if line.contains("mcp_audit") {
-            audit.push(line);
-        }
-    }
+    let audit: Vec<String> = drain_closed(&stderr_rx, test_timeout(10))
+        .into_iter()
+        .filter(|line| line.contains("mcp_audit"))
+        .collect();
     let calls: Vec<&String> = audit
         .iter()
         .filter(|l| l.contains("tool=capture_status "))

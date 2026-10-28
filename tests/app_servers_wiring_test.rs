@@ -31,6 +31,7 @@ use sipnab::sip::dialog_store::DialogStore;
 
 include!("support/timeout.rs");
 include!("support/teardown.rs");
+include!("support/drain.rs");
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
@@ -230,9 +231,8 @@ impl Spawned {
         let code = terminate(&mut self.child)
             .ok()
             .and_then(|status| status.code());
-        while let Ok(line) = self.stderr.recv_timeout(Duration::from_millis(200)) {
-            self.seen.push(line);
-        }
+        self.seen
+            .extend(drain_closed(&self.stderr, test_timeout(10)));
         (code, self.seen.join("\n"))
     }
 }
