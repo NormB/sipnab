@@ -36,41 +36,28 @@ jobs:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed on GitHub's runners: 20.2 and
     # 22.1 min ubuntu-24.04-arm, 20.8 and 24.3 min macos (2026-10-09).
+    # Slowest run measured on GitHub's runners: 24.3 min
     timeout-minutes: 40
     name: Check (${{ matrix.os }})
-    # The Linux leg runs on the aarch64 self-hosted runners, as the feature
-    # matrix does. On GitHub's ubuntu-24.04-arm it was one of the three jobs
-    # that set the length of a pull request's run: 20.2 and 22.1 minutes on
-    # 2026-10-09, 10.9 of them in the Test step, each run rebuilding from a
-    # restored cache on four cores.
+    # GitHub's runners: the Linux leg on ubuntu-24.04-arm, which keeps the
+    # aarch64 build it has had since 2026-08-10, and macOS on macos-latest. The
+    # repository is public, so they cost nothing.
     #
-    # It ran on the self-hosted runner once before and was moved off for two
-    # reasons, and each is now handled:
-    # - One runner instance runs one job, and with one instance 21 jobs queued
-    #   single-file. There are four instances now, and the self-hosted jobs of
-    #   a pull request (eighteen feature legs, this leg and Coverage) are
-    #   counted against them in docs/internals/build-ci-release.md.
-    # - Concurrent `apt-get install` raced for the machine-wide dpkg lock.
-    #   Every package step here goes through ./.github/actions/system-deps,
-    #   which installs only what `dpkg -s` reports missing (on that machine,
-    #   nothing) and serializes an install that is needed.
-    #   tests/ci_runner_target_test.rs refuses a bare apt-get, dpkg -i or
-    #   debconf-set-selections in a self-hosted job.
+    # From 2026-10-18 to 2026-10-27 the Linux leg ran on the four aarch64
+    # self-hosted runners, beside the feature matrix and Coverage. Those
+    # runners share one machine's 14 cores with the local gates' build queue,
+    # and on 2026-10-27 that queue held about 20 entries with a wait of about
+    # two hours while these jobs were among the busiest processes on the
+    # machine; Norm moved the three back that day. The job keeps the shape
+    # that let it run there: the runner-target step and the guards on the
+    # steps written for a disposable VM (free-disk, the cargo cache) mean
+    # routing it back is a change to the line below alone, and
+    # tests/ci_runner_target_test.rs holds both halves.
     #
-    # Steps written for a disposable GitHub VM (free-disk, actions/cache of
-    # target) are skipped on a self-hosted runner, and the build lives in the
-    # per-runner directory ./.github/actions/runner-target selects.
-    #
-    # The self-hosted runners also run this file's feature matrix (`features`,
-    # moved there by Norm on 2026-09-29), quality.yml's Coverage, bench.yml
-    # (its throughput baseline is a property of that hardware),
-    # reproducible.yml (two release builds) and self-hosted-smoke.yml (which
-    # exists to prove the box works).
-    #
-    # macOS cannot run on arm64 Linux, so it stays macos-latest. `matrix.os`
-    # keeps its ubuntu-latest / macos-latest values so the step conditionals
-    # below (e.g. the published-test-count gate, ubuntu-only) are unchanged.
-    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON('["self-hosted","jetson"]') || 'macos-latest' }}
+    # `matrix.os` keeps its ubuntu-latest / macos-latest values so the step
+    # conditionals below (e.g. the published-test-count gate, ubuntu-only)
+    # are unchanged.
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
@@ -91,8 +78,7 @@ jobs:
           fetch-tags: true
           fetch-depth: 0
       # GitHub-hosted only: on the self-hosted machine this would delete
-      # software other work uses. The Linux leg is self-hosted today; the
-      # step stays for a hosted Linux leg.
+      # software other work uses.
       - name: Free disk space (Linux)
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         uses: ./.github/actions/free-disk
@@ -102,7 +88,13 @@ jobs:
         uses: ./.github/actions/system-deps
         with:
           # libyang2-tools is yanglint, for the YANG validation step below.
-          packages: libpcap-dev libasound2-dev libyang2-tools
+          # Ubuntu 24.04 has no libyang3-tools; that is the Debian 13 name.
+          # tmux drives the PTY tests below. cmake builds libopus for the
+          # `opus` feature, which --all-features compiles. The self-hosted
+          # machine has all of these, so a job that ran there can drop one
+          # and stay green until it runs here:
+          # a_hosted_leg_installs_what_its_steps_need holds the list.
+          packages: libpcap-dev libasound2-dev libyang2-tools tmux cmake
 
       - id: toolchain
         uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
@@ -639,12 +631,21 @@ jobs:
   rpm-packaging:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes.
-    timeout-minutes: 15
+    # Slowest run measured on GitHub's runners: 0.2 min
+    timeout-minutes: 10
     name: RPM packaging (build-rpm.sh)
-    runs-on: ubuntu-latest
-    # GitHub-hosted on purpose: packaging script, arch-independent.
-    # The self-hosted runner is ONE machine and runs one job at a time, so every job
-    # pinned there that does not need it delays every job that does.
+    # Self-hosted because: Norm approved one light x86_64 job for the x86_64 self-hosted runner on 2026-10-27, and this is the lightest that runs there unchanged.
+    # That runner is a four-core VM with 6 GB of memory, registered for this
+    # repository only, and holds one Rust build at a time. This job builds no
+    # Rust: rpmbuild over stub ELFs. Every package it names (rpm, patchelf,
+    # gcc) and every tool its harness checks for is installed there, so
+    # system-deps installs nothing and the job changes nothing on the machine.
+    # It selects the runner by GitHub's architecture label `X64`, not by name:
+    # tests/private_identity_test.rs B6 says why. Safe on pull_request for
+    # the reason the feature matrix was: an external contributor's workflow
+    # runs only after approval (fork-pr-contributor-approval =
+    # all_external_contributors).
+    runs-on: [self-hosted, X64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -824,18 +825,16 @@ jobs:
   features:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed: 7.2 min slowest combo.
+    # Slowest run measured on GitHub's runners: 7.2 min
     timeout-minutes: 30
     name: Features (${{ matrix.features }})
-    # The aarch64 self-hosted runners (four of them), not the hosted queue:
-    # every push builds these legs, and the pre-push hook no
-    # longer repeats them locally (Norm, 2026-09-29). This workflow also runs
-    # on pull_request, which is safe on a self-hosted runner only because the
-    # repository requires approval before an external contributor's workflow
-    # runs (fork-pr-contributor-approval = all_external_contributors). The steps
-    # below that assume a disposable hosted VM are skipped here: they would
-    # delete software and docker images from a real machine, and upload its
-    # cargo registry.
-    runs-on: [self-hosted, jetson]
+    # GitHub's ubuntu-24.04-arm, which keeps the aarch64 builds these legs had.
+    # Every push builds them, and the pre-push hook does not repeat them
+    # locally (Norm, 2026-09-29). From 2026-09-29 to 2026-10-27 they ran on the
+    # four aarch64 self-hosted runners; they moved back for the reason the
+    # check job above gives, and keep the shape that let them run there, so
+    # routing them back is a change to `runs-on:` alone.
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
@@ -916,7 +915,8 @@ jobs:
       - name: Install system deps
         uses: ./.github/actions/system-deps
         with:
-          packages: libpcap-dev libasound2-dev
+          # cmake builds libopus for the `opus` leg.
+          packages: libpcap-dev libasound2-dev cmake
 
       - id: toolchain
         uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0

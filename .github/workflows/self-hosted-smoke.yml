@@ -15,7 +15,8 @@ concurrency:
 
 jobs:
   smoke:
-    # Both labels required: a runner must be self-hosted AND carry the host label.
+    # Self-hosted because: this workflow exists to prove the aarch64 self-hosted runner can build sipnab.
+    # Both labels required: a runner must be self-hosted AND carry the hardware label.
     runs-on: [self-hosted, jetson]
     # Bounds how long a wedged job holds the runner (the #192 lesson applied to
     # a single-runner pool, where a hang starves everything behind it).
