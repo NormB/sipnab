@@ -1457,13 +1457,13 @@ impl DialogStore {
             .collect();
 
         // Strategy 1.5 data: RFC 8866 SDP origin tuples the source dialog
-        // carried. Collected once; the candidate side is parsed per candidate
+        // carried, read from each message's SDP by `SipMessage::sdp`, so a
+        // multipart body's SDP part counts and a body of another type does not. Collected once; the candidate side is parsed per candidate
         // because most candidates never reach this strategy.
         let src_origins: std::collections::HashSet<crate::sip::sdp::SdpOriginKey> = dialog
             .messages
             .iter()
-            .filter(|m| !m.body.is_empty())
-            .filter_map(|m| crate::sip::sdp::parse_sdp(&m.body).ok())
+            .filter_map(SipMessage::sdp)
             .filter_map(|s| s.origin)
             .filter_map(|o| crate::sip::sdp::SdpOriginKey::parse(&o))
             .collect();
@@ -1572,8 +1572,7 @@ impl DialogStore {
                 let origin_match = candidate
                     .messages
                     .iter()
-                    .filter(|m| !m.body.is_empty())
-                    .filter_map(|m| crate::sip::sdp::parse_sdp(&m.body).ok())
+                    .filter_map(SipMessage::sdp)
                     .filter_map(|s| s.origin)
                     .filter_map(|o| crate::sip::sdp::SdpOriginKey::parse(&o))
                     .any(|k| src_origins.contains(&k));
@@ -4203,6 +4202,113 @@ mod tests {
             .ok_or("the origin tuple must correlate the legs")?;
         assert_eq!(hit.dialog.call_id, "leg-b@core");
         assert_eq!(hit.score, 90);
+        Ok(())
+    }
+
+    /// [`make_invite_with_origin`] with the SDP carried as `content_type` and
+    /// `body_of(sdp)`, for the multipart and the mistyped cases.
+    fn make_invite_with_origin_as(
+        call_id: &str,
+        origin: &str,
+        content_type: Option<&str>,
+        body_of: impl Fn(&str) -> Vec<u8>,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
+        let sdp = format!(
+            "v=0\r\no={origin}\r\ns=-\r\nc=IN IP4 198.51.100.7\r\nt=0 0\r\n\
+             m=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        );
+        let body = body_of(&sdp);
+        let via = format!("Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bK{call_id}");
+        let cid = format!("Call-ID: {call_id}");
+        let ct = content_type.map(|ct| format!("Content-Type: {ct}"));
+        let len = format!("Content-Length: {}", body.len());
+        let mut headers = vec![
+            via.as_str(),
+            "From: <sip:alice@example.com>;tag=t1",
+            "To: <sip:bob@example.com>",
+            cid.as_str(),
+            "CSeq: 1 INVITE",
+        ];
+        if let Some(ct) = ct.as_deref() {
+            headers.push(ct);
+        }
+        headers.push(&len);
+        let raw = build_sip("INVITE sip:bob@example.com SIP/2.0", &headers, &body);
+        Ok(parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("should parse INVITE: {e:?}"))?)
+    }
+
+    /// A SIP-I body: the SDP, then a binary ISUP part
+    /// ([RFC 3204 section 4.1](https://www.rfc-editor.org/rfc/rfc3204.html#section-4.1)).
+    fn sip_i_body(sdp: &str) -> Vec<u8> {
+        let mut b = format!("--B\r\nContent-Type: application/sdp\r\n\r\n{sdp}\r\n").into_bytes();
+        b.extend_from_slice(b"--B\r\nContent-Type: application/ISUP; version=itu-t\r\n\r\n");
+        b.extend_from_slice(&[0x01, 0x00, 0xff, 0xc3, 0x28]);
+        b.extend_from_slice(b"\r\n--B--\r\n");
+        b
+    }
+
+    /// Two SIP-I legs whose multipart offers carry one SDP origin tuple
+    /// correlate by it, as two `application/sdp` legs do: the origin is read
+    /// from the message's SDP by the rule `SipMessage::sdp` keeps.
+    #[test]
+    fn the_sdp_origin_tuple_correlates_sip_i_legs() -> Result<(), TestError> {
+        const ORIGIN: &str = "gw 2890844526 2890842807 IN IP4 198.51.100.7";
+        let ts = Utc::now();
+        let mut store = DialogStore::new(100, false);
+        for leg in ["sip-i-a@access", "sip-i-b@core"] {
+            store.process_message(make_invite_with_origin_as(
+                leg,
+                ORIGIN,
+                Some("multipart/mixed; boundary=B"),
+                sip_i_body,
+                ts,
+            )?);
+        }
+        let found = store.find_correlated_scored("sip-i-a@access");
+        let hit = found
+            .iter()
+            .find(|r| r.reason == CorrelationReason::SdpOrigin)
+            .ok_or("the origin tuple in the multipart SDP must correlate the legs")?;
+        assert_eq!(hit.dialog.call_id, "sip-i-b@core");
+        assert_eq!(hit.score, 90);
+        Ok(())
+    }
+
+    /// An SDP body with no `Content-Type` still correlates, as it did and as
+    /// `SipMessage::sdp` reads it; one declared as another type is that type
+    /// and does not ([RFC 3261 section 20.15](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.15)
+    /// requires the header on a body).
+    #[test]
+    fn the_origin_is_read_from_the_bodies_sdp_reads_and_no_others() -> Result<(), TestError> {
+        const ORIGIN: &str = "gw 2890844526 2890842807 IN IP4 198.51.100.7";
+        let plain = |sdp: &str| sdp.as_bytes().to_vec();
+        for (ct, correlates) in [(None, true), (Some("text/plain"), false)] {
+            let ts = Utc::now();
+            let mut store = DialogStore::new(100, false);
+            store.process_message(make_invite_with_origin("typed@access", ORIGIN, ts)?);
+            store.process_message(make_invite_with_origin_as(
+                "other@core",
+                ORIGIN,
+                ct,
+                plain,
+                ts,
+            )?);
+            let by_origin = store
+                .find_correlated_scored("typed@access")
+                .iter()
+                .any(|r| r.reason == CorrelationReason::SdpOrigin);
+            assert_eq!(by_origin, correlates, "the other leg's body typed {ct:?}");
+        }
         Ok(())
     }
 
