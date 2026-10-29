@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // SPDX-FileCopyrightText: The sipnab contributors
 
-//! The three examples, run as a user runs them (`cargo run --example`), with
-//! their output checked:
+//! The three examples, built once with `cargo build --examples` as a user
+//! builds them, then run as programs, with their output checked:
 //!
 //! - `import_tables` builds the same table file from the package zip and from
 //!   a directory extracted from it, and that file is the one
@@ -13,30 +13,84 @@
 //!   packets as the decoder does frame by frame, and gives the committed
 //!   sample file's expected length.
 //!
+//! They are built once for the whole test binary, not with one
+//! `cargo run --example` per test: the tests run in parallel, and on macOS a
+//! test failed with "could not execute process target/debug/examples/<name>
+//! (never executed)" while another test's cargo was building the same
+//! examples (G729-EXAMPLE-EXEC-RACE).
+//!
 //! The examples need the fetched ITU-T package, as the conformance tests do;
 //! a missing one fails the test, naming the fetch command. CI runs this file
 //! in its own step after fetching the package (.github/workflows/ci.yml).
 
 pub mod common;
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use g729::FRAME_SAMPLES;
 
 const MANIFEST_DIR: &str = env!("CARGO_MANIFEST_DIR");
 
-/// Run `cargo run --example NAME -- ARGS` for this crate; its stdout, or an
-/// error holding its stderr.
-fn run_example(name: &str, args: &[&OsStr]) -> Result<String, String> {
+/// This crate's examples, built once for the whole test binary, by name.
+fn built_examples() -> Result<&'static HashMap<String, PathBuf>, String> {
+    static BUILT: OnceLock<Result<HashMap<String, PathBuf>, String>> = OnceLock::new();
+    BUILT
+        .get_or_init(build_examples)
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+/// Run `cargo build --examples` for this crate once, and read each example's
+/// executable path from cargo's JSON messages.
+fn build_examples() -> Result<HashMap<String, PathBuf>, String> {
     let output = Command::new(env!("CARGO"))
         .current_dir(MANIFEST_DIR)
-        .args(["run", "--quiet", "-p", "sipnab-g729", "--features", "std"])
-        .args(["--example", name, "--"])
-        .args(args)
+        .args(["build", "--quiet", "-p", "sipnab-g729", "--features", "std"])
+        .args(["--examples", "--message-format=json"])
         .output()
         .map_err(|e| format!("cannot run cargo: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo build --examples exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let mut built = HashMap::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let target = &message["target"];
+        let is_example = target["kind"]
+            .as_array()
+            .is_some_and(|kinds| kinds.iter().any(|k| k == "example"));
+        if let (true, Some(name), Some(executable)) = (
+            is_example,
+            target["name"].as_str(),
+            message["executable"].as_str(),
+        ) {
+            built.insert(name.to_string(), PathBuf::from(executable));
+        }
+    }
+    Ok(built)
+}
+
+/// Run the built example NAME with ARGS from this crate's directory; its
+/// stdout, or an error holding its stderr.
+fn run_example(name: &str, args: &[&OsStr]) -> Result<String, String> {
+    let executable = built_examples()?
+        .get(name)
+        .ok_or_else(|| format!("cargo build --examples built no example named {name}"))?;
+    let output = Command::new(executable)
+        .current_dir(MANIFEST_DIR)
+        .args(args)
+        .output()
+        .map_err(|e| format!("cannot run {}: {e}", executable.display()))?;
     if !output.status.success() {
         return Err(format!(
             "example {name} exited with {}: {}",

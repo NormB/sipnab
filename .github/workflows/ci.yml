@@ -254,8 +254,9 @@ jobs:
       - uses: ./.github/actions/g729-vectors
 
       # The sipnab-g729 crate's three examples (import_tables,
-      # decode_bitstream, decode_rtp_payloads), run with `cargo run` as a user
-      # runs them, with their output checked against the ITU-T test vectors.
+      # decode_bitstream, decode_rtp_payloads), built once with `cargo build
+      # --examples` as a user builds them and run as programs, with their
+      # output checked against the ITU-T test vectors.
       # The Test step below covers the root package only.
       - name: Run and check the G.729 examples
         if: runner.os != 'macOS'
