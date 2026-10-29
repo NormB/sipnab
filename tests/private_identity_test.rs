@@ -42,7 +42,14 @@
 //! <host>]`, and that label was allowlisted as functional. The runner also
 //! carries a hardware label, `jetson`, so since 2026-10-07 the workflows use
 //! that and the host label is scanned like every other line. B6 holds the
-//! self-hosted jobs to the hardware label.
+//! self-hosted jobs to a hardware label.
+//!
+//! The x86_64 self-hosted runner added on 2026-10-27 is registered with the
+//! name of the host under it as a label, and with GitHub's default
+//! architecture label `X64`. It is this repository's only x86_64 self-hosted
+//! runner, so `X64` selects it without publishing the host's name, and B6
+//! admits `X64` beside `jetson` and nothing else. A bare `[self-hosted]`
+//! names no pool and stays refused.
 
 use std::collections::BTreeSet;
 use std::net::Ipv6Addr;
@@ -1587,7 +1594,19 @@ fn b5_the_machine_rule_spares_the_software_it_names() -> Result<(), TestError> {
     Ok(())
 }
 
-/// B6. Every self-hosted job reaches the runner by its hardware label, and
+/// The hardware labels a self-hosted job may select its runner by: the four
+/// aarch64 runners' `jetson` and the x86_64 runner's `X64`.
+const HARDWARE_LABELS: &[&str] = &["jetson", "X64"];
+
+/// Whether a runner-label line selects its runner by a hardware label and
+/// names no machine.
+fn runner_label_is_hardware(line: &str) -> bool {
+    HARDWARE_LABELS.iter().any(|l| word(line, l))
+        && !rule::lab_host(line)
+        && !rule::lab_machine(line)
+}
+
+/// B6. Every self-hosted job reaches the runner by a hardware label, and
 /// at least one does, so the check is not vacuous.
 #[test]
 fn b6_self_hosted_jobs_reach_the_runner_by_hardware_label() -> Result<(), TestError> {
@@ -1601,7 +1620,7 @@ fn b6_self_hosted_jobs_reach_the_runner_by_hardware_label() -> Result<(), TestEr
         for (i, line) in text.lines().enumerate() {
             if is_runner_label(line) {
                 labels.push(format!("{rel}:{}", i + 1));
-                if !word(line, "jetson") || rule::lab_host(line) || rule::lab_machine(line) {
+                if !runner_label_is_hardware(line) {
                     named.push(format!("{rel}:{}: {}", i + 1, line.trim()));
                 }
             }
@@ -1613,10 +1632,50 @@ fn b6_self_hosted_jobs_reach_the_runner_by_hardware_label() -> Result<(), TestEr
     );
     assert!(
         named.is_empty(),
-        "a self-hosted job does not use the hardware label `jetson`, or names a machine:\n{}",
+        "a self-hosted job does not use a hardware label ({HARDWARE_LABELS:?}), or names a machine:\n{}",
         named.join("\n")
     );
     Ok(())
+}
+
+/// B7. The hardware-label rule admits the two pools and refuses a bare
+/// `self-hosted`, a host's name, and a hardware label beside a host's name.
+#[test]
+fn b7_the_hardware_label_rule_refuses_a_bare_or_named_runner() {
+    assert!(
+        runner_label_is_hardware("    runs-on: [self-hosted, jetson]"),
+        "`runs-on: [self-hosted, jetson]` must be admitted"
+    );
+    assert!(
+        runner_label_is_hardware("    runs-on: [self-hosted, X64]"),
+        "`runs-on: [self-hosted, X64]` must be admitted"
+    );
+    assert!(
+        runner_label_is_hardware(
+            r#"    runs-on: ${{ matrix.os == 'ubuntu-latest' && fromJSON('["self-hosted","jetson"]') || 'macos-latest' }}"#
+        ),
+        "a conditional runs-on that selects [self-hosted, jetson] must be admitted"
+    );
+    assert!(
+        !runner_label_is_hardware("    runs-on: [self-hosted]"),
+        "`runs-on: [self-hosted]` must be refused"
+    );
+    assert!(
+        !runner_label_is_hardware("    runs-on: self-hosted"),
+        "`runs-on: self-hosted` must be refused"
+    );
+    assert!(
+        !runner_label_is_hardware("    runs-on: [self-hosted, thor-02]"),
+        "`runs-on: [self-hosted, thor-02]` must be refused"
+    );
+    assert!(
+        !runner_label_is_hardware("    runs-on: [self-hosted, jetson, thor-02]"),
+        "`runs-on: [self-hosted, jetson, thor-02]` must be refused"
+    );
+    assert!(
+        !runner_label_is_hardware("    runs-on: [self-hosted, x64]"),
+        "`runs-on: [self-hosted, x64]` must be refused"
+    );
 }
 
 /// B8. The exception is recognized by shape, not by the hostname it carries.

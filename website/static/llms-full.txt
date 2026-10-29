@@ -68903,9 +68903,9 @@ The matrix has moved twice.
 - [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py) then ran all of them in the hook.
   - It reads both the combo list and `RUSTFLAGS` out of
     [`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), so the two cannot drift.
-- Since 2026-09-29 the Features job runs on the project's aarch64 self-hosted runners.
-  - So the wait is minutes rather than a hosted queue.
-  - The hook no longer repeats it on every push.
+- From 2026-09-29 to 2026-10-27 the Features job ran on the project's aarch64 self-hosted runners.
+  - The hook stopped repeating it on every push then, and still does not.
+- Since 2026-10-27 it runs on GitHub's `ubuntu-24.04-arm`, as described below.
 - The script still runs it by hand.
 - Pre-push keeps the reduced combinations.
 - Pre-push and CI also run clippy on the library with no features:
@@ -68928,8 +68928,10 @@ The self-hosted jobs keep their builds between runs.
 - Before each build, [`scripts/ci-target-cap.sh`](../../scripts/ci-target-cap.sh) removes that
   directory when it is over 64 GiB.
   - The action's header gives the measurements behind the number.
-- The Features job, the Linux leg of the Check job, the Coverage job, `bench.yml` and
-  `self-hosted-smoke.yml` use it.
+- `memcheck.yml`, `bench.yml` and `self-hosted-smoke.yml` use it on the self-hosted runners.
+- The Features job, the Linux leg of the Check job and the Coverage job carry it too.
+  On GitHub's runners it does nothing.
+  It stays so that moving one of them back is a change to its `runs-on:` alone.
 - Coverage passes `dir: coverage-target`.
   - `cargo llvm-cov` compiles every crate with `-C instrument-coverage`.
   - So its build has its own capped directory beside `target`, and does not invalidate the plain builds.
@@ -68938,35 +68940,50 @@ The self-hosted jobs keep their builds between runs.
 - [`tests/ci_runner_target_test.rs`](../../tests/ci_runner_target_test.rs) holds
   both the use and that exemption, and drives the cap script.
 
-The Linux leg of the Check job and the `Quality` workflow's Coverage job run on the self-hosted runners.
+The workflow-shape test holds each job's runner.
 
-- On GitHub's runners they were two of the three jobs that set the length of a pull request's run.
-  - On pull requests #411 and #410 the Linux Check took 20.2 and 22.1 minutes.
-  - Coverage took 15.3 and 21.2 minutes.
-- The Linux leg ran on the self-hosted runner once before, and left it on 2026-08-10 for two reasons.
-  Each is now handled.
-- **One job per runner instance.**
-  - With one instance, 21 jobs queued one after another.
-  - There are four instances now.
-  - A pull request gives them the eighteen feature legs, the Linux Check and Coverage.
-  - Measured on three pull requests on 2026-10-09, the feature legs took 25.4 to 27.4 runner-minutes in total.
-    The longest leg took 7.7 to 10.2 minutes.
-  - With Check and Coverage on one runner each, the feature legs on the other two need about 14 minutes (27.4 / 2).
-- **Concurrent `apt-get install` raced for the machine-wide `dpkg` lock.**
-  - Every package step goes through `.github/actions/system-deps`, described below.
-  - It installs nothing on the self-hosted machine, and serializes any install it must run.
-  - The workflow-shape test refuses a bare `apt-get`, `dpkg -i` or `debconf-set-selections` in a self-hosted job.
-- A self-hosted runner skips the steps written for a disposable GitHub VM.
-  - `free-disk` deletes preinstalled software, which on the self-hosted machine other work uses.
-  - The cargo cache restore and save run on hosted runners only.
-  - Steps that read the build read it from `CARGO_TARGET_DIR`.
+- Every job runs on one GitHub-hosted image, or on `self-hosted` with exactly one pool label.
+  - `jetson` is the four aarch64 runners.
+  - `X64` is the one x86_64 runner, a four-core VM with 6 GB of memory, registered for this repository only.
+  - The test refuses a bare `self-hosted`: it takes either pool, so the job's architecture would depend on which was idle.
+  - A hardware label names each pool, never a machine's name.
+- A self-hosted job says why in a `# Self-hosted because:` comment beside its `runs-on:`.
+- On the aarch64 runners: `memcheck.yml` (those runners have valgrind), `bench.yml` (its baseline is a property of that hardware),
+  `reproducible.yml` (those runners have bpf-linker) and `self-hosted-smoke.yml` (it exists to prove that runner works).
+- On the x86_64 runner: the RPM packaging job.
+  It builds no Rust, and the runner has every package it names, so it installs nothing there.
+- Everything else runs on GitHub's runners. The repository is public, so they cost nothing.
+
+The Linux leg of the Check job, the Features job and the `Quality` workflow's Coverage job run on GitHub's `ubuntu-24.04-arm`.
+
+- From 2026-10-18 to 2026-10-27 they ran on the aarch64 self-hosted runners.
+  - On GitHub's runners they had been among the jobs that set the length of a pull request's run.
+  - On pull requests #411 and #410 the Linux Check took 20.2 and 22.1 minutes, and Coverage 15.3 and 21.2.
+- The four self-hosted runners share one machine's 14 cores with the local gates' build queue.
+  - On 2026-10-27 that queue held about 20 entries with a wait of about two hours.
+  - The runners' test jobs were among the busiest processes on the machine.
+  - Norm moved the three jobs back to GitHub's runners that day.
 - Measured on the self-hosted machine on 2026-10-09, with a load average of 20 to 35 on its 14 cores from other work:
   - The Check job's Test step (`cargo test --all-features`) took 9.9 and 11.9 minutes with a warm build directory.
     It used 30 CPU-minutes and 16.4 GiB peak resident memory.
   - Coverage's collection step took 8.6 minutes warm and 16.0 cold.
   - The directories it left were 31 GiB for the plain builds and 35 GiB for the coverage build.
-- The macOS leg of Check stays on GitHub.
-  It took 20.8 and 24.3 minutes on those two pull requests, so it now bounds the run.
+- `ubuntu-24.04-arm` keeps the aarch64 builds these jobs had.
+- Each job keeps the shape that let it run on a self-hosted runner.
+  - Steps written for a disposable GitHub VM run only on a hosted runner.
+    `free-disk` deletes preinstalled software, which on the self-hosted machine other work uses.
+    The cargo cache restore and save would upload that machine's registry.
+  - Steps that read the build read it from `CARGO_TARGET_DIR`.
+  - Packages change only through `.github/actions/system-deps`, described below.
+    The workflow-shape test refuses a bare `apt-get`, `dpkg -i` or `debconf-set-selections` in such a job.
+- On a hosted Linux leg the workflow-shape test holds what a fresh VM needs.
+  - `free-disk` runs before the first cargo command.
+  - The job restores its cargo cache, except Coverage, which keeps none.
+  - The job installs each tool a step runs: `yanglint` (`libyang2-tools`; Ubuntu 24.04 has no `libyang3-tools`), `tmux`, `tshark`,
+    and `cmake`, which builds libopus for the `opus` feature.
+  - Its toolchain step asks for each `rustup` component a step runs: `clippy`, `rustfmt` and `llvm-tools-preview`.
+    The minimal profile has none of them, and the self-hosted machine has all three.
+- The macOS leg of Check stays on GitHub's `macos-latest`.
 
 System packages come from `.github/actions/system-deps`.
 

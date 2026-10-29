@@ -29,8 +29,9 @@ env:
 jobs:
   memcheck:
     name: Valgrind memcheck
-    # A heavy, repeatable check: on the local runners, where valgrind, zip
-    # and libpcap are installed, rather than in GitHub's hosted queue.
+    # Self-hosted because: valgrind, zip and libpcap are installed on the aarch64 self-hosted runners.
+    # A heavy, repeatable check that runs on a push touching its own files,
+    # on a schedule or by hand, never per pull request.
     runs-on: [self-hosted, jetson]
     timeout-minutes: 120
     steps:
