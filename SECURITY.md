@@ -152,6 +152,41 @@ OpenVEX form.
   configure the same exceptions with the same reasons.
 - A test holds all three to one list.
 
+## Verifying a release
+
+Releases after v0.5.231 attach two files that prove where the release came
+from. The `release` job in `release.yml` makes both from its own short-lived
+OpenID Connect identity. No signing key is stored anywhere.
+
+| File | What it is |
+|---|---|
+| `SHA256SUMS.txt.sigstore.json` | A Sigstore signature over `SHA256SUMS.txt`, made without a stored key |
+| `sipnab-<version>.intoto.jsonl` | The SLSA build provenance for every artifact, as a Sigstore bundle |
+
+Check the signature with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/),
+then check your download against the signed list:
+
+```bash
+# Run all of these, in order.
+cosign verify-blob SHA256SUMS.txt \
+    --bundle SHA256SUMS.txt.sigstore.json \
+    --certificate-identity-regexp '^https://github\.com/NormB/sipnab/\.github/workflows/release\.yml@refs/tags/v' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum -c SHA256SUMS.txt --ignore-missing
+```
+
+Check the provenance of one artifact against the attached file:
+
+```bash
+gh attestation verify "sipnab-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
+    --bundle "sipnab-$VERSION.intoto.jsonl" --repo NormB/sipnab
+```
+
+The release job runs both checks before it creates the release, so a release
+whose files do not verify is never published.
+[docs/install.md](docs/install.md#verify-a-download-is-genuine) has the full
+procedure.
+
 ## Credit
 
 Reporters who follow responsible disclosure will be credited in the release notes unless they request otherwise.

@@ -910,7 +910,12 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 735 -> 736: docs/internals/build-ci-release.md +1,
     // tests/corpus_push_gate_test.rs, for the pre-push gate being the only
     // place the corpus runs.
-    const EXPECTED_CODE_LINKS: usize = 736;
+    // 736 -> 737: docs/internals/build-ci-release.md +1,
+    // tests/release_signature_assets_test.rs, the test that holds the
+    // release job to attaching a signature and a provenance file.
+    // Measurement: with origin/main's build-ci-release.md swapped back in,
+    // the extractor reads 736.
+    const EXPECTED_CODE_LINKS: usize = 737;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -2016,10 +2021,11 @@ fn release_artifact_counts_match_the_build_matrix() -> Result<(), TestError> {
     );
     let symbol_files = builds;
 
-    // Every tarball carries a sibling .sha256; then SHA256SUMS.txt, 2 SBOMs,
+    // Every tarball carries a sibling .sha256; then SHA256SUMS.txt, its
+    // .sigstore.json signature, 2 SBOMs, the .intoto.jsonl provenance file,
     // and the symbol files.
     let installable = tarballs + packages * 2;
-    let assets = tarballs * 2 + packages * 2 + 1 + 2 + symbol_files;
+    let assets = tarballs * 2 + packages * 2 + 1 + 1 + 2 + 1 + symbol_files;
 
     // Normalize: the prose is hard-wrapped, so every claim spans line breaks.
     // Lowercased too — these counts appear mid-sentence and at sentence starts,

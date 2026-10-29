@@ -6356,7 +6356,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `.github/workflows/osv-scanner.yml` runs
     // `scripts/check-dependency-canaries.py`. Measurement: with HEAD's
     // osv-scanner.yml swapped back in, the scan reads 206.
-    const EXPECTED_REFERENCES: usize = 207;
+    // 207 -> 208: the signing steps' comment in
+    // `.github/workflows/release.yml` names
+    // `tests/release_signature_assets_test.rs`, the test that holds them in
+    // place. Measurement: with origin/main's release.yml swapped back in,
+    // the scan reads 207.
+    const EXPECTED_REFERENCES: usize = 208;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
