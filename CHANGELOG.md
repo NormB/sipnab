@@ -28,6 +28,16 @@ entry that carries them.
 - **An SDP body sent with no `Content-Type` links its media.** sipnab labeled such a message `(SDP)` when its body starts `v=` ([RFC 3261 section 20.15](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.15) requires the header, and some peers omit it), but did not read the body as SDP, so its RTP was not bound to the call. The SDP reader and the label now apply one rule: a body declared as another type is still that type and links nothing.
 - **Calls correlate by the SDP origin of a multipart body.** The SDP-origin strategy (score 90) parsed every message body as SDP whatever its type, so the SDP part of a `multipart/mixed` body (SIP-I, SIPREC) never yielded an origin, and a body declared as another type that happened to start `v=` did. It now reads each message's SDP by the rule the media links use.
 
+### Security
+
+- **The site test tooling takes `zod` 4.6.7, past [GHSA-mrhx-c7xc-m3w5](https://osv.dev/vulnerability/GHSA-mrhx-c7xc-m3w5).**
+  - `e2e/package-lock.json` resolved zod 3.25.76 through `@lhci/cli` → `lighthouse` 12.6.1 → `puppeteer-core` 24.43.1 → `chromium-bidi` 14.0.0, which no zod 3 release fixes.
+  - An `overrides` entry in `e2e/package.json` now holds zod at `^4.6.6`. The browser journeys and the Lighthouse budgets pass with it.
+  - The accepted-advisory entry for it is removed from `osv-scanner.toml` and from the VEX document.
+- **Dependabot watches every dependency file the repository tracks.**
+  - The npm lockfiles (`e2e/`, `clients/typescript/`), the hash-pinned Python requirements (`clients/python/`, `scripts/`), the eBPF cargo workspace (`bpf/`) and the local composite actions (`.github/actions/*`) had no entry, so they raised no alerts and got no updates.
+  - `tests/dependabot_coverage_test.rs` fails when a dependency file has no entry of its ecosystem and directory.
+
 ## [0.5.231] - 2026-10-27
 
 ### Security
