@@ -153,8 +153,9 @@ jobs:
     # runner it took 15.3 to 21.2 min (2026-10-09). On the aarch64
     # self-hosted runners it took 27 to 35 min in the six runs that
     # succeeded on 2026-10-18 and 19, and 37.2 to 44.9 min on main's last
-    # three pushes before 2026-10-27.
-    # Slowest run measured on GitHub's runners: 21.2 min
+    # three pushes before 2026-10-27. On ubuntu-24.04-arm it took 29.8 min
+    # (pull request #601, 2026-10-28, run 40735575809).
+    # Slowest run measured on GitHub's runners: 29.8 min
     timeout-minutes: 60
     name: Coverage
     # GitHub's ubuntu-24.04-arm, beside ci.yml's Check (Linux) and feature

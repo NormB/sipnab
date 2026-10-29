@@ -796,6 +796,8 @@ The Linux leg of the Check job, the Features job and the `Quality` workflow's Co
   - The job restores its cargo cache, except Coverage, which keeps none.
   - The job installs each tool a step runs: `yanglint` (`libyang2-tools`; Ubuntu 24.04 has no `libyang3-tools`), `tmux`, `tshark`,
     and `cmake`, which builds libopus for the `opus` feature.
+  - Its toolchain step asks for each `rustup` component a step runs: `clippy`, `rustfmt` and `llvm-tools-preview`.
+    The minimal profile has none of them, and the self-hosted machine has all three.
 - The macOS leg of Check stays on GitHub's `macos-latest`.
 
 System packages come from `.github/actions/system-deps`.

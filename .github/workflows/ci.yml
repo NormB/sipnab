@@ -35,9 +35,12 @@ jobs:
   check:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed on GitHub's runners: 20.2 and
-    # 22.1 min ubuntu-24.04-arm, 20.8 and 24.3 min macos (2026-10-09).
-    # Slowest run measured on GitHub's runners: 24.3 min
-    timeout-minutes: 40
+    # 22.1 min ubuntu-24.04-arm, 20.8 and 24.3 min macos (2026-10-09); 23.4
+    # min ubuntu-24.04-arm with no cargo cache to restore and 27.7 min macos
+    # on pull request #601 (2026-10-28, run 40735575581). The timeout clears
+    # the slowest by half again.
+    # Slowest run measured on GitHub's runners: 27.7 min
+    timeout-minutes: 45
     name: Check (${{ matrix.os }})
     # GitHub's runners: the Linux leg on ubuntu-24.04-arm, which keeps the
     # aarch64 build it has had since 2026-08-10, and macOS on macos-latest. The
@@ -631,7 +634,9 @@ jobs:
   rpm-packaging:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes.
-    # Slowest run measured on GitHub's runners: 0.2 min
+    # 0.1 to 0.2 min on GitHub's runners; 0.4 min on the x86_64 self-hosted
+    # runner (pull request #601, run 40735575581).
+    # Slowest run measured on the self-hosted runners: 0.4 min
     timeout-minutes: 10
     name: RPM packaging (build-rpm.sh)
     # Self-hosted because: Norm approved one light x86_64 job for the x86_64 self-hosted runner on 2026-10-27, and this is the lightest that runs there unchanged.
@@ -920,6 +925,13 @@ jobs:
 
       - id: toolchain
         uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+        with:
+          # The legs lint with clippy, which the minimal profile leaves out.
+          # The self-hosted machine has it installed, so the legs never asked
+          # for it there; on GitHub's runner every leg but wasm failed without
+          # it (2026-10-28). a_hosted_leg_installs_the_toolchain_components_its_steps_run
+          # holds it.
+          components: clippy
       # checkout's clean (`git clean -ffdx`) deletes an in-workspace `target`
       # at the start of every job, on a self-hosted runner too. So on a
       # self-hosted runner the build directory lives outside the workspace,
