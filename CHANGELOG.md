@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+**Held:** the next release waits for signed release assets (#605) and the fixes that return `main` CI to green, so that it is the first release to carry a signature and a provenance file.
+
 ### Added
 
 - **A test holds every `actions/checkout` to `persist-credentials: false`.** All 42 checkouts already set it, but nothing kept a new or edited workflow from dropping it, and checkout otherwise leaves `GITHUB_TOKEN` in `.git/config`, where any later step or third-party action in the job can read it. `tests/ci_checkout_credentials_test.rs` reads every workflow and composite action and fails on a checkout that neither sets `persist-credentials: false` nor sets it to `true` with a `# keeps the token: <reason>` comment in the step, in both the `- uses:` and the `- name:` then `uses:` step forms.
