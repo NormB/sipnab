@@ -810,6 +810,71 @@ fn linux_packages(job: &Job) -> Vec<String> {
         .collect()
 }
 
+/// What a job's steps run that the pinned toolchain installs only when asked,
+/// and the rustup component that provides it.
+///
+/// `dtolnay/rust-toolchain` installs the minimal profile, which has neither
+/// clippy nor rustfmt. The self-hosted machine has both installed for its
+/// own use, so the feature matrix ran `cargo clippy` there for a month
+/// without asking for the component, and every leg but wasm failed on its
+/// first hosted run (2026-10-28, "'cargo-clippy' is not installed for the
+/// toolchain").
+const COMPONENT_NEEDS: &[(&str, &str)] = &[
+    ("cargo clippy", "clippy"),
+    ("cargo fmt", "rustfmt"),
+    ("cargo llvm-cov", "llvm-tools-preview"),
+];
+
+/// The rustup components a job's toolchain steps ask for.
+fn toolchain_components(job: &Job) -> Vec<String> {
+    steps_of(&job.body)
+        .iter()
+        .filter(|s| s.contains("uses: dtolnay/rust-toolchain@"))
+        .flat_map(|s| {
+            s.lines()
+                .filter_map(|l| l.trim_start().strip_prefix("components:"))
+                .flat_map(|v| v.split(',').map(|c| c.trim().to_string()))
+                .collect::<Vec<_>>()
+        })
+        .filter(|c| !c.is_empty())
+        .collect()
+}
+
+/// A job written for both kinds of runner asks its toolchain step for every
+/// component its steps run.
+#[test]
+fn a_hosted_leg_installs_the_toolchain_components_its_steps_run() -> Result<(), TestError> {
+    let mut checked = 0;
+    let mut defects = Vec::new();
+    for job in all_jobs()? {
+        if !written_for_both(&job) || !has_hosted_linux_leg(&job)? {
+            continue;
+        }
+        checked += 1;
+        let components = toolchain_components(&job);
+        let runs_line = |trigger: &str| {
+            job.body
+                .lines()
+                .map(str::trim)
+                .any(|l| !l.starts_with('#') && l.contains(trigger))
+        };
+        for (trigger, component) in COMPONENT_NEEDS {
+            if runs_line(trigger) && !components.iter().any(|c| c == component) {
+                defects.push(format!(
+                    "{}:{}: runs `{trigger}` and its toolchain step asks for no `{component}`",
+                    job.workflow, job.id
+                ));
+            }
+        }
+    }
+    assert!(
+        checked >= 3,
+        "only {checked} job(s) checked; the job scan is wrong"
+    );
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
+    Ok(())
+}
+
 /// A job written for both kinds of runner installs, on its hosted Linux leg,
 /// every package its steps need.
 #[test]
