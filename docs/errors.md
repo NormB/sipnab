@@ -48,6 +48,21 @@ redirect it.
   include in this way, for example
   `--tls-key requires the 'tls' feature (not compiled in)`.
 
+## Exit codes
+
+The number sipnab returns to the shell says how the run ended. The
+[exit-code table](cli-reference.md#exit-codes) of the CLI reference says what
+each one covers in full.
+
+| Code | Means |
+|------|-------|
+| `0` | The run did what you asked. |
+| `1` | The run failed: a capture or I/O error, a capture not read in full, a report sipnab could not produce, or a configuration file sipnab refused. |
+| `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. |
+| `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
+| `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
+| `130` | You pressed Ctrl-C at the archive password prompt. |
+
 ## What this page covers
 
 The page lists the messages that the startup and exit path of the `sipnab`

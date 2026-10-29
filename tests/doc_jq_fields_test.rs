@@ -239,9 +239,9 @@ fn shell_words(line: &str) -> Vec<String> {
 }
 
 /// Gate flags whose exit status is their verdict, with the codes that still
-/// mean "answered": `--expect` exits 1 when a rule failed, which is the
+/// mean "answered": `--expect` exits 3 when a rule failed, which is the
 /// answer a recipe that shows a failing suite documents, not a failed run.
-const GATE_VERDICT_EXITS: &[(&str, &[i32])] = &[("--expect", &[1])];
+const GATE_VERDICT_EXITS: &[(&str, &[i32])] = &[("--expect", &[3])];
 
 /// Whether a documented command's exit `code` means it answered: 0, or a
 /// verdict code of a gate flag the command uses.
