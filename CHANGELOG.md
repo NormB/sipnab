@@ -16,6 +16,13 @@ entry that carries them.
 
 ### Changed
 
+- **sipnab's Rust follows the Google Rust Style Guide, the Rust Style Guide and the Rust API Guidelines, and the gates enforce it.**
+  - `scripts/check-rustfmt.sh` formats every `.rs` file that git knows of, `fuzz/` and `bpf/` included, with the dated nightly rustfmt named in `.rustfmt-toolchain`. The guide's rustfmt options are unstable, and a stable rustfmt ignores them.
+  - Both hooks, CI's Format step, `scripts/preflight.sh` and `scripts/prepare-commit.sh` run this one script instead of `cargo fmt`. Only rustfmt runs on the nightly; sipnab still builds and tests on stable.
+  - `tests/rust_style_test.rs` enforces the rules no lint sees, in tests and inline test modules as well as production code. It covers glob imports, `SAFETY:` comments on `unsafe` blocks, impls and extern blocks, `# Safety` sections on `unsafe fn`, a stated reason on every `#[rustfmt::skip]` and `catch_unwind`, reaching into a poisoned lock, code that runs before `main`, `#![feature]`, and assertions without a message.
+  - The sites that predate the gate are listed per file in `tests/rust_style_known.tsv`. A count there may only fall.
+  - The clippy lints the guide names are denied in `[workspace.lints.clippy]`.
+  - The fuzz targets are now linted with clippy, in the pre-push hook and in CI, where before they were only compiled. The one lint that was firing there, a nested `if let`, is fixed.
 - **`--pcap-export-mode` takes its three modes from one list.** The mode names were written in five places: the flag's accepted values, a startup check, the parser, the `-O` log line and a check in argument validation. The flag now holds the mode itself, so a name the writer does not know cannot reach a run, and the startup check, which no command line could reach, is removed. The accepted values, their order, the refusal of any other value and `--help` are unchanged.
 - **The pre-commit hook no longer replays the private capture corpus.** Its test pool runs with `SIPNAB_CORPUS` and `SIPNAB_VCON_DATASETS` unset, so each corpus binary skips and says so. In a debug build the corpus took 1,158.7 s of a 1,882.7 s suite (the 2026-10-23 log). The pre-push corpus gate still runs it, under the optimized `corpus` profile, and now drives every binary that reads either variable, directly or through a `tests/support/` file. That adds `vcon_dataset_corpus_test`, and it moves the one unit test that read the corpus, the ring-buffer timestamp-order check, into `input_set_accounting_test`, because the gate can name only test binaries to `cargo test`. `corpus_push_gate_test` works out the readers from the whole tree, `src/` included, and fails when the gate misses one.
 

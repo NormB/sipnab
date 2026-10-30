@@ -910,7 +910,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 735 -> 736: docs/internals/build-ci-release.md +1,
     // tests/corpus_push_gate_test.rs, for the pre-push gate being the only
     // place the corpus runs.
-    const EXPECTED_CODE_LINKS: usize = 736;
+    // 736 -> 740: docs/internals/build-ci-release.md links
+    // scripts/check-rustfmt.sh three times (the format gate in CI's check
+    // job, in pre-commit and in pre-push) and bpf/rust-toolchain.toml once
+    // (the pre-push bpf clippy gate).
+    const EXPECTED_CODE_LINKS: usize = 740;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

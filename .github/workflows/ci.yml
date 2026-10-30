@@ -372,14 +372,35 @@ jobs:
         # pre-push copy.
         run: cargo clippy --no-default-features --lib -- -D warnings
 
-      - name: Format
-        # `--check` alone covers this workspace. `fuzz/` and `bpf/` are
-        # excluded from it deliberately, so they need naming: bpf/src/main.rs
-        # sat unformatted with every fmt gate in the repository green.
+      - name: Clippy the fuzz targets
+        # fuzz/ is its own workspace, so `--workspace` above never lints it,
+        # and the fuzz-check job only compiles it. The pre-push hook runs the
+        # same command.
+        if: runner.os == 'Linux'
+        run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+
+      - name: Clippy the BPF program
+        # bpf/ is its own workspace on the dated nightly in
+        # bpf/rust-toolchain.toml, so no other clippy run reads it. The binary
+        # target only: a `no_std` program has no test harness. The pre-push
+        # hook runs the same command.
+        if: runner.os == 'Linux'
+        working-directory: bpf
         run: |
-          cargo fmt --check
-          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
-          cargo fmt --manifest-path bpf/Cargo.toml -- --check
+          rustup toolchain install
+          rustup component add clippy
+          cargo clippy -- -D warnings
+
+      - name: Format
+        # The dated nightly rustfmt in .rustfmt-toolchain, the only rustfmt
+        # that applies every option in rustfmt.toml, over every tracked `.rs`
+        # file: `fuzz/` and `bpf/` are not workspace members, and bpf/src/main.rs
+        # once sat unformatted with every fmt gate in the repository green.
+        # Only rustfmt runs on the nightly; the build stays on stable. The
+        # hooks run the same script.
+        run: |
+          rustup toolchain install "$(cat .rustfmt-toolchain)" --profile minimal --component rustfmt
+          scripts/check-rustfmt.sh
 
       - name: Docs
         # rustdoc-only lints (broken intra-doc links, private-item links)
