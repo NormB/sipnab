@@ -105,6 +105,12 @@ const RELEASE_ONLY_GATES: &[(&str, &str)] = &[
         "Verify the attestation we just created",
         "nothing can verify an attestation before the attestation exists.",
     ),
+    (
+        "Verify the signature and the provenance file",
+        "the signature and the provenance bundle are made in this job from the \
+         tag run's OIDC identity, and the check pins that exact identity, so \
+         neither exists before the tag.",
+    ),
 ];
 
 /// Every release-blocking gate is named, with a reason it cannot run earlier.

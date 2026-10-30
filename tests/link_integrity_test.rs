@@ -1527,7 +1527,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // linking its how-to "Ask the relay which calls it holds".
     // 1988 -> 1989: docs/mcp-tools-relay.md +1, the `relay_stats` note
     // linking the `query_relay` failure classes.
-    const EXPECTED_WIKI_LINKS: usize = 1989;
+    // 1989 -> 1990: docs/internals/build-ci-release.md +1, from its new
+    // section on the release signature and provenance files. Measurement:
+    // with origin/main's build-ci-release.md swapped back in, the extractor
+    // reads 1989.
+    const EXPECTED_WIKI_LINKS: usize = 1990;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1666,7 +1670,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // docs/freeswitch-sipnab.md.
     // 140 -> 141: README.md's tunnels bullet links docs/encapsulations.md.
     // 141 -> 142: README.md's `g729` feature row links docs/g729.md.
-    const EXPECTED_COMMUNITY_LINKS: usize = 142;
+    // 142 -> 143: SECURITY.md's "Verifying a release" links
+    // docs/install.md's download-verification section.
+    const EXPECTED_COMMUNITY_LINKS: usize = 143;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

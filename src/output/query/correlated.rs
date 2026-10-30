@@ -5,35 +5,58 @@
 //!
 //! One answer, [`Correlated`], built by [`correlated`]:
 //! `GET /v1/dialogs/{call_id}/correlated` serializes it, `--correlate`
-//! prints it, and the MCP `find_correlated` tool copies its legs into its own
-//! response, so all three decide "unknown Call-ID" in one place. The matching
+//! prints it, and the MCP `find_correlated` tool returns its legs in its own
+//! response, so all three decide "unknown Call-ID" in one place and describe
+//! each leg with one type, [`CorrelatedLeg`]. The matching
 //! is [`DialogStore::find_correlated_scored`] and the vocabulary
 //! [`crate::sip::dialog_store::CorrelationResult::strategy_and_gap`].
 
 use crate::output::ReportFormat;
 use crate::sip::dialog_store::DialogStore;
 
-/// One other leg of a call, and the strategy that matched it. The fields
-/// mirror the MCP `find_correlated` tool's `CorrelatedLeg`, built from the
-/// one `CorrelationResult::strategy_and_gap` rule so the two surfaces cannot
-/// disagree about whether a strategy is an identifier match.
+/// One other leg of a call, and the strategy that matched it.
+///
+/// One type for every surface: `GET /v1/dialogs/{call_id}/correlated`,
+/// `--correlate --json` and the MCP `find_correlated` tool all return it, so
+/// an agent and a REST client read the same description of each field. The
+/// strategy vocabulary comes from the one
+/// `CorrelationResult::strategy_and_gap` rule.
 #[derive(Debug, Clone, serde::Serialize)]
 #[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct CorrelatedLeg {
-    /// Call-ID of the correlated dialog. Feed it to `/v1/dialogs/{call_id}`.
+    /// Call-ID of the correlated dialog. Pass it to `/v1/dialogs/{call_id}`
+    /// on REST, or to the `get_dialog` tool on MCP, for its detail.
     pub call_id: String,
     /// Confidence, 0-100.
     #[cfg_attr(feature = "api", schema(minimum = 0, maximum = 100))]
     pub score: u8,
     /// Which strategy matched, by name: `session_id`, `x_call_id`,
     /// `sdp_origin`, `charging_vector_related_icid`, `charging_vector_icid`,
-    /// `via_branch` or `timing_heuristic`.
+    /// `via_branch` or `timing_heuristic`. The decisive field.
+    ///
+    /// `session_id` and `x_call_id` both score 100 and are not the same claim:
+    /// one is an RFC 7989 identifier designed to cross a B2BUA, the other a
+    /// vendor header someone configured. `charging_vector_related_icid` and
+    /// `charging_vector_icid` come out of ONE header and are likewise not the
+    /// same claim: RFC 7315's `related-icid` is an intermediary declaring the
+    /// link across a B2BUA, while plain `icid-value` equality is silent across
+    /// a conformant one, because an ICID identifies a dialog and a B2BUA is
+    /// two. `timing_heuristic` is not an identifier at all.
     pub strategy: String,
     /// True when the strategy compared identifiers, false for a guess.
+    ///
+    /// Present so a caller can filter on the distinction without having to
+    /// know which strategy names mean what.
     pub identifier_match: bool,
     /// For `timing_heuristic` only: the observed gap between the two
     /// dialogs' creation, in milliseconds. Null for an identifier match,
     /// where it would be a number with no bearing on why they matched.
+    ///
+    /// The evidence behind the guess, so a reader can judge it. A 15 ms gap on
+    /// a quiet box and a 1,900 ms gap on a busy SBC score identically and mean
+    /// very different things.
     pub observed_gap_ms: Option<i64>,
 }
 

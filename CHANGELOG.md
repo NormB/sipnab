@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+**Held:** the next release waits for signed release assets (#605) and the fixes that return `main` CI to green, so that it is the first release to carry a signature and a provenance file.
+
 ### Added
 
 - **A test holds every `actions/checkout` to `persist-credentials: false`.** All 42 checkouts already set it, but nothing kept a new or edited workflow from dropping it, and checkout otherwise leaves `GITHUB_TOKEN` in `.git/config`, where any later step or third-party action in the job can read it. `tests/ci_checkout_credentials_test.rs` reads every workflow and composite action and fails on a checkout that neither sets `persist-credentials: false` nor sets it to `true` with a `# keeps the token: <reason>` comment in the step, in both the `- uses:` and the `- name:` then `uses:` step forms.
@@ -21,10 +23,22 @@ entry that carries them.
 
 ### Fixed
 
+- **The MCP `find_correlated` output schema and the REST `CorrelatedLeg` schema describe a leg with the same text.** The tool kept its own copy of the leg type, so the two schemas described `call_id`, `strategy`, `identifier_match` and `observed_gap_ms` differently: only REST listed the strategy names and said the gap is null for an identifier match, and only MCP said which strategies are not the same claim. Both now come from one type, and the answer each returns is unchanged.
 - **A message that declares `application/sdp` and sends no body is no longer marked `(SDP)`.** An empty or blank body, or an empty `application/sdp` part of a `multipart/*` body, is no session description: an INVITE with `Content-Length: 0` is a delayed offer ([RFC 3261 section 13.2.1](https://www.rfc-editor.org/rfc/rfc3261.html#section-13.2.1)). Its label now reads `INVITE` on every surface, and its JSON says `has_sdp: false`.
 - **An SDP part inside a nested multipart body is read.** [RFC 5621 section 4.2](https://www.rfc-editor.org/rfc/rfc5621.html#section-4.2) requires parsing nested body parts, and section 4.1 shows a `multipart/alternative` inside a `multipart/mixed`. sipnab read the top level only, so SDP inside a nested part linked no media and the message was not labeled `(SDP)`. The first `application/sdp` part in body order, depth first, is now the message's SDP, to four levels of nesting below the message's own `multipart`.
 - **An SDP body sent with no `Content-Type` links its media.** sipnab labeled such a message `(SDP)` when its body starts `v=` ([RFC 3261 section 20.15](https://www.rfc-editor.org/rfc/rfc3261.html#section-20.15) requires the header, and some peers omit it), but did not read the body as SDP, so its RTP was not bound to the call. The SDP reader and the label now apply one rule: a body declared as another type is still that type and links nothing.
 - **Calls correlate by the SDP origin of a multipart body.** The SDP-origin strategy (score 90) parsed every message body as SDP whatever its type, so the SDP part of a `multipart/mixed` body (SIP-I, SIPREC) never yielded an origin, and a body declared as another type that happened to start `v=` did. It now reads each message's SDP by the rule the media links use.
+
+### Security
+
+- **The site test tooling takes `zod` 4.6.7, past [GHSA-mrhx-c7xc-m3w5](https://osv.dev/vulnerability/GHSA-mrhx-c7xc-m3w5).**
+  - `e2e/package-lock.json` resolved zod 3.25.76 through `@lhci/cli` → `lighthouse` 12.6.1 → `puppeteer-core` 24.43.1 → `chromium-bidi` 14.0.0, which no zod 3 release fixes.
+  - An `overrides` entry in `e2e/package.json` now holds zod at `^4.6.6`. The browser journeys and the Lighthouse budgets pass with it.
+  - The accepted-advisory entry for it is removed from `osv-scanner.toml` and from the VEX document.
+- **Dependabot watches every dependency file the repository tracks.**
+  - The npm lockfiles (`e2e/`, `clients/typescript/`), the hash-pinned Python requirements (`clients/python/`, `scripts/`), the eBPF cargo workspace (`bpf/`) and the local composite actions (`.github/actions/*`) had no entry, so they raised no alerts and got no updates.
+  - `tests/dependabot_coverage_test.rs` fails when a dependency file has no entry of its ecosystem and directory.
+- **The git hooks refuse a fresh worktree in seconds, naming the command for each missing input.** `.githooks/pre-commit` reached its suite in a new worktree and failed there about 25 minutes in, on 52 G.729 tests: `crates/g729/test-vectors/` is gitignored and only `python3 scripts/fetch-g729-vectors.py` fills it. `.githooks/pre-push` died the same way at its prose gate on the missing `.vale/styles/Google`, which only `vale sync` writes. Both hooks now run `scripts/check-hook-prerequisites.py` before any gate. It prints each missing input with its command and stops. The G.729 check is `fetch-g729-vectors.py --check`, which reads the same pins a fetch writes and downloads nothing.
 
 ## [0.5.231] - 2026-10-27
 

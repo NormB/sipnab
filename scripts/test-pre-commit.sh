@@ -1008,6 +1008,110 @@ else
 fi
 rm -rf "$D"
 
+# ── Scenario P: the gitignored inputs are checked before anything runs ────
+# A fresh worktree has none of them. The G.729 test vectors
+# (crates/g729/test-vectors) are filled only by
+# `python3 scripts/fetch-g729-vectors.py`, and the hook used to discover them
+# missing 25 minutes into the suite, on 52 failing tests. Vale's style
+# package is written only by `vale sync`. The hook now refuses at once,
+# naming the command for each missing input, before any gate runs: the stub
+# cargo logs every call, and it must not have been called.
+prereq_sandbox() { # echoes a sandbox holding every prerequisite
+	_p=$(sandbox 1)
+	mkdir -p "$_p/crates/g729" "$_p/.vale/styles/Google"
+	printf '[package]\nname = "sipnab-g729"\n' > "$_p/crates/g729/Cargo.toml"
+	cp "$REPO_ROOT/.vale.ini" "$_p/.vale.ini"
+	printf '#!/bin/sh\nexit 0\n' > "$_p/bin/vale"
+	chmod +x "$_p/bin/vale"
+	# A placeholder at every path the fetcher writes, read from its own pins.
+	python3 -I -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("fetch", sys.argv[1])
+fetch = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fetch)
+for entry in {**fetch.ALL_PINS, **fetch.G7291_PINS}:
+    path = fetch.destination(sys.argv[2], entry)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x")
+' "$REPO_ROOT/scripts/fetch-g729-vectors.py" "$_p/crates/g729/test-vectors"
+	echo "$_p"
+}
+
+# refused_at_once <case> <command...>: after run_hook, the hook must have
+# refused, printed each command, run no gate and called no cargo, in seconds.
+refused_at_once() {
+	_case=$1
+	shift
+	_why=""
+	[ "$HOOK_RC" -ne 0 ] || _why="$_why exit 0;"
+	for _cmd in "$@"; do
+		printf '%s' "$HOOK_OUT" | grep -qF "run: $_cmd" || _why="$_why no 'run: $_cmd';"
+	done
+	! printf '%s' "$HOOK_OUT" | grep -qF 'Formatting' || _why="$_why a gate ran;"
+	[ ! -s "$D/cargo-invocations" ] || _why="$_why cargo ran;"
+	[ "$PREREQ_SECONDS" -le 10 ] || _why="$_why took ${PREREQ_SECONDS}s;"
+	if [ -z "$_why" ]; then
+		ok "$_case: refused at once with the command that fixes it"
+	else
+		bad "$_case:$_why out: $HOOK_OUT"
+	fi
+}
+
+timed_hook() {
+	: > "$D/cargo-invocations"
+	_t0=$(date +%s)
+	run_hook "$D"
+	PREREQ_SECONDS=$(( $(date +%s) - _t0 ))
+}
+
+D=$(prereq_sandbox)
+timed_hook
+if [ "$HOOK_RC" -eq 0 ] && printf '%s' "$HOOK_OUT" | grep -qF 'Prerequisites... OK' \
+	&& [ -s "$D/cargo-invocations" ]; then
+	ok "with every prerequisite in place the hook checks them and goes on to the gates"
+else
+	bad "a provisioned tree must pass the prerequisite check and run the gates (rc=$HOOK_RC): $HOOK_OUT"
+fi
+rm -rf "$D"
+
+D=$(prereq_sandbox)
+rm -rf "$D/crates/g729/test-vectors"
+timed_hook
+refused_at_once "the G.729 vectors never fetched" "python3 scripts/fetch-g729-vectors.py"
+rm -rf "$D"
+
+D=$(prereq_sandbox)
+rm -f "$D/crates/g729/test-vectors/annex-b/"*
+timed_hook
+refused_at_once "one directory of G.729 vectors gone" "python3 scripts/fetch-g729-vectors.py"
+rm -rf "$D"
+
+D=$(prereq_sandbox)
+rm -rf "$D/.vale/styles/Google"
+timed_hook
+refused_at_once "the Vale style package never synced" "vale sync"
+rm -rf "$D"
+
+D=$(prereq_sandbox)
+rm -rf "$D/crates/g729/test-vectors" "$D/.vale/styles/Google"
+timed_hook
+refused_at_once "both missing, both named" "python3 scripts/fetch-g729-vectors.py" "vale sync"
+rm -rf "$D"
+
+# A tree from before the check (no scripts/check-hook-prerequisites.py) is
+# not refused for lacking it: the hook says it did not check, the way the
+# prose gate does for a missing scripts/prose-gates.sh, and runs its gates.
+D=$(sandbox 1)
+rm -f "$D/scripts/check-hook-prerequisites.py"
+timed_hook
+if printf '%s' "$HOOK_OUT" | grep -qF 'Prerequisites... NOT CHECKED' \
+	&& [ -s "$D/cargo-invocations" ]; then
+	ok "a tree without the checker is told it was not checked, and its gates run"
+else
+	bad "a tree without the checker must be NOT CHECKED, not refused (rc=$HOOK_RC): $HOOK_OUT"
+fi
+rm -rf "$D"
+
 printf '\n%d passed, %d failed, %d skipped (host: %s)\n' \
 	"$PASS" "$FAIL" "$SKIP" "$(uname -s)"
 if [ "$SKIP" -ne 0 ]; then

@@ -37,18 +37,14 @@ fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn bin() -> Result<PathBuf, TestError> {
-    let mut p = std::env::current_exe()?;
-    p.pop();
-    if p.ends_with("deps") {
-        p.pop();
-    }
-    Ok(p.join("sipnab"))
+/// The `sipnab` cargo built for this test, wherever the layout puts it.
+fn bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_sipnab"))
 }
 
 /// Run sipnab and return (exit code, stderr).
 fn run(args: &[&str]) -> Result<(i32, String), TestError> {
-    let out = Command::new(bin()?)
+    let out = Command::new(bin())
         .args(args)
         .current_dir(repo())
         .output()?;
@@ -321,7 +317,7 @@ fn both_surfaces_select_the_same_dialogs_for_one_alias() -> Result<(), TestError
 
     // `--filter` reports rows; `--export-vcon-when` writes one container per
     // selected dialog. The COUNTS must agree.
-    let out = Command::new(bin()?)
+    let out = Command::new(bin())
         .args([
             "-N",
             "-I",

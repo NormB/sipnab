@@ -1116,11 +1116,48 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // download-verification recipes.
     (
         "ignore-missing",
-        &["docs/install.md", "website/content/docs/install.md"],
+        &[
+            "SECURITY.md",
+            "docs/install.md",
+            "website/content/docs/install.md",
+        ],
     ),
     (
         "repo",
-        &["docs/install.md", "website/content/docs/install.md"],
+        &[
+            "SECURITY.md",
+            "docs/install.md",
+            "website/content/docs/install.md",
+        ],
+    ),
+    // `cosign verify-blob --bundle --certificate-identity-regexp
+    // --certificate-oidc-issuer` and `gh attestation verify --bundle`, which
+    // check the release's signature and provenance files.
+    (
+        "bundle",
+        &[
+            "SECURITY.md",
+            "docs/install.md",
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/install.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "certificate-identity-regexp",
+        &[
+            "SECURITY.md",
+            "docs/install.md",
+            "website/content/docs/install.md",
+        ],
+    ),
+    (
+        "certificate-oidc-issuer",
+        &[
+            "SECURITY.md",
+            "docs/install.md",
+            "website/content/docs/install.md",
+        ],
     ),
     // Alpine's package manager, in the musl/Alpine build recipes.
     ("no-cache", &["website/content/docs/build.md"]),
@@ -5611,7 +5648,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1278 -> 1280: docs/mcp-tools-relay.md +1, the `query_relay` table of
     // the three failure classes, and its site mirror
     // website/content/docs/mcp-tools-relay.md +1.
-    const EXPECTED_TABLES: usize = 1280;
+    // 1280 -> 1283: the release signature and provenance files. SECURITY.md
+    // +1, docs/install.md +1 and its site mirror
+    // website/content/docs/install.md +1, each a table of the two files.
+    // Measurement: with any one of the three swapped back to origin/main,
+    // the walk reads 1282.
+    const EXPECTED_TABLES: usize = 1283;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
