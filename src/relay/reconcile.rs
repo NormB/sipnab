@@ -1029,6 +1029,7 @@ mod tests {
                         .map_or(RELAY_IP, String::as_str)
                         .to_owned();
                     Ok(ControlReply::Call(CallView {
+                        incarnation: None,
                         call_id: call_id.to_owned(),
                         tags: vec![RelayTag {
                             tag: "from-tag".to_owned(),
@@ -1038,6 +1039,7 @@ mod tests {
                             streams: ports
                                 .iter()
                                 .map(|p| RelayStream {
+                                    counters: crate::relay::types::StreamCounters::default(),
                                     local_address: addr.clone(),
                                     local_port: *p,
                                     endpoint: None,
@@ -1085,6 +1087,7 @@ mod tests {
 
         fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
             let stream = |port: u16| RelayStream {
+                counters: crate::relay::types::StreamCounters::default(),
                 local_address: RELAY_IP.to_owned(),
                 local_port: port,
                 endpoint: None,
@@ -1093,6 +1096,7 @@ mod tests {
                 ssrcs: Vec::new(),
             };
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: call_id.to_owned(),
                 tags: vec![
                     RelayTag {
@@ -1579,6 +1583,7 @@ mod tests {
                 .ports
                 .iter()
                 .map(|port| RelayStream {
+                    counters: crate::relay::types::StreamCounters::default(),
                     local_address: RELAY_IP.to_owned(),
                     local_port: *port,
                     endpoint: None,
@@ -1589,6 +1594,7 @@ mod tests {
                 .collect();
             if self.muxed {
                 streams.push(RelayStream {
+                    counters: crate::relay::types::StreamCounters::default(),
                     local_address: RELAY_IP.to_owned(),
                     local_port: self.ports[0],
                     endpoint: None,
@@ -1598,6 +1604,7 @@ mod tests {
                 });
             }
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: call_id.to_owned(),
                 tags: vec![RelayTag {
                     tag: format!("tag-of-{call_id}"),
@@ -1992,6 +1999,7 @@ mod tests {
                 .position(|c| c == call_id)
                 .ok_or_else(|| anyhow::anyhow!("no such call"))?;
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: call_id.to_owned(),
                 tags: vec![RelayTag {
                     tag: format!("tag-of-{call_id}"),
@@ -1999,6 +2007,7 @@ mod tests {
                     media_subscriptions: Vec::new(),
                     codec: Some("PCMU".to_owned()),
                     streams: vec![RelayStream {
+                        counters: crate::relay::types::StreamCounters::default(),
                         local_address: RELAY_IP.to_owned(),
                         local_port: 30000
                             + u16::try_from(index)

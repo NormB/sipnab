@@ -380,6 +380,21 @@ pub fn parse_statistics_reply(body: &[u8]) -> anyhow::Result<ControlReply> {
     Ok(ControlReply::Statistics(pairs))
 }
 
+/// One stream's `stats` or `stats_out` dictionary, read structurally.
+///
+/// `None` when the dictionary is absent, or when any of `packets`, `bytes`
+/// and `errors` is missing or negative: a counter this relay version did not
+/// report is "not reported", never zero.
+fn counters_from(value: Option<&Value<'_>>) -> Option<crate::relay::types::Counters> {
+    let dict = value?;
+    let field = |name: &[u8]| dict.get_int(name).and_then(|n| u64::try_from(n).ok());
+    Some(crate::relay::types::Counters {
+        packets: field(b"packets")?,
+        bytes: field(b"bytes")?,
+        errors: field(b"errors")?,
+    })
+}
+
 /// refused is not an error: see [`ControlReply::Refused`].
 pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlReply> {
     use anyhow::{Context, bail};
@@ -474,6 +489,10 @@ pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlRe
                         ssrcs_from(s.get(b"ingress SSRCs"), &mut ssrcs);
                         ssrcs_from(s.get(b"egress SSRCs"), &mut ssrcs);
                         streams.push(RelayStream {
+                            counters: crate::relay::types::StreamCounters {
+                                ingress: counters_from(s.get(b"stats")),
+                                egress: counters_from(s.get(b"stats_out")),
+                            },
                             local_address,
                             local_port,
                             endpoint: endpoint_str(s.get(b"endpoint")),
@@ -499,7 +518,18 @@ pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlRe
     // same report and a diff of two reports means something changed.
     crate::sort::sort_by_dyn(&mut tags, &mut |a, b| a.tag.cmp(&b.tag));
 
+    // `created` is whole seconds and `created_us` the microsecond part of
+    // the same instant. Without `created` there is no identity to compare,
+    // which is "unknown", never a call created at the epoch.
+    let incarnation = v
+        .get_int(b"created")
+        .map(|created_s| crate::relay::types::Incarnation {
+            created_s,
+            created_us: v.get_int(b"created_us"),
+        });
+
     Ok(ControlReply::Call(CallView {
+        incarnation,
         call_id: call_id.to_owned(),
         tags,
     }))
@@ -1752,6 +1782,142 @@ mod query_reply_tests {
         let mut rtcp = rtcp;
         rtcp.sort_unstable();
         assert_eq!(rtcp, [30001, 30003], "the odd ports carry RTCP");
+        Ok(())
+    }
+
+    // ── Per-stream counters and the call's incarnation ─────────────────
+
+    /// The stream on `port` in `call`.
+    fn stream_on(call: &CallView, port: u16) -> Result<&RelayStream, TestError> {
+        Ok(call
+            .tags
+            .iter()
+            .flat_map(|t| &t.streams)
+            .find(|s| s.local_port == port)
+            .ok_or_else(|| format!("port {port} is in the reply"))?)
+    }
+
+    /// Counters with the given packets and bytes and no errors.
+    fn counted(packets: u64, bytes: u64) -> Option<crate::relay::types::Counters> {
+        Some(crate::relay::types::Counters {
+            packets,
+            bytes,
+            errors: 0,
+        })
+    }
+
+    /// `value` with every dictionary entry named `name` removed, at any depth.
+    fn without_field<'a>(value: &Value<'a>, name: &[u8]) -> Value<'a> {
+        match value {
+            Value::Dict(entries) => Value::Dict(
+                entries
+                    .iter()
+                    .filter(|(k, _)| *k != name)
+                    .map(|(k, v)| (*k, without_field(v, name)))
+                    .collect(),
+            ),
+            Value::List(items) => {
+                Value::List(items.iter().map(|v| without_field(v, name)).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
+    /// The real reply re-encoded without the field `name` anywhere in it.
+    fn real_query_without(name: &[u8]) -> Result<Vec<u8>, TestError> {
+        let decoded = super::super::bencode::decode(REAL_QUERY)?;
+        let mut out = Vec::new();
+        super::super::bencode::encode(&without_field(&decoded, name), &mut out);
+        Ok(out)
+    }
+
+    /// `stats` is what the relay RECEIVED on a port and `stats_out` what it
+    /// SENT. The fixture is a one-way call: the caller-facing port 30002
+    /// received 1906 packets and sent none, the callee-facing port 30000 sent
+    /// 1905 and received none. The same reply's per-SSRC counters say 3812
+    /// for port 30002, twice the per-stream figure, so they are not read.
+    #[test]
+    fn real_reply_reads_each_ports_counters_from_stats_and_stats_out() -> Result<(), TestError> {
+        let call = parsed()?;
+        let caller_side = stream_on(&call, 30002)?;
+        assert_eq!(caller_side.counters.ingress, counted(1906, 327_832));
+        assert_eq!(caller_side.counters.egress, counted(0, 0));
+        let callee_side = stream_on(&call, 30000)?;
+        assert_eq!(callee_side.counters.ingress, counted(0, 0));
+        assert_eq!(callee_side.counters.egress, counted(1905, 327_660));
+        Ok(())
+    }
+
+    /// The call's creation time is read with its microsecond part: the
+    /// identity that tells this call from a later one reusing its Call-ID.
+    #[test]
+    fn real_reply_yields_the_calls_incarnation() -> Result<(), TestError> {
+        assert_eq!(
+            parsed()?.incarnation,
+            Some(crate::relay::types::Incarnation {
+                created_s: 1_787_517_788,
+                created_us: Some(160_191),
+            })
+        );
+        Ok(())
+    }
+
+    /// A SIP tag may contain a dot, and the counters stay with their stream:
+    /// they are read from the reply's structure, not from flattened names.
+    #[test]
+    fn a_tag_containing_a_dot_keeps_its_counters() -> Result<(), TestError> {
+        let renamed = REAL_QUERY
+            .windows(17)
+            .filter(|w| *w == b"14:9582SIPpTag091")
+            .count();
+        assert!(renamed >= 2, "the tag appears as a key and as a value");
+        let mut body = Vec::with_capacity(REAL_QUERY.len());
+        let mut rest = REAL_QUERY;
+        while let Some(at) = rest.windows(17).position(|w| w == b"14:9582SIPpTag091") {
+            body.extend_from_slice(&rest[..at]);
+            body.extend_from_slice(b"3:a.b");
+            rest = &rest[at + 17..];
+        }
+        body.extend_from_slice(rest);
+        let ControlReply::Call(call) = parse_query_reply(&body, "dotted@example.invalid")? else {
+            return Err("the renamed reply still parses as a call".into());
+        };
+        let tag = call
+            .tags
+            .iter()
+            .find(|t| t.tag == "a.b")
+            .ok_or("the dotted tag is read")?;
+        let s = tag
+            .streams
+            .iter()
+            .find(|s| s.local_port == 30002)
+            .ok_or("its port 30002")?;
+        assert_eq!(s.counters.ingress, counted(1906, 327_832));
+        Ok(())
+    }
+
+    /// A reply without `stats` reports no ingress counters, never zero.
+    #[test]
+    fn a_stream_without_stats_reports_no_ingress_rather_than_zero() -> Result<(), TestError> {
+        let body = real_query_without(b"stats")?;
+        let ControlReply::Call(call) = parse_query_reply(&body, "no-stats@example.invalid")? else {
+            return Err("the reply still parses as a call".into());
+        };
+        let s = stream_on(&call, 30000)?;
+        assert_eq!(s.counters.ingress, None);
+        assert_eq!(s.counters.egress, counted(1905, 327_660));
+        Ok(())
+    }
+
+    /// A reply without `created` has no incarnation, not a zero one.
+    #[test]
+    fn a_reply_without_created_has_no_incarnation() -> Result<(), TestError> {
+        let body = real_query_without(b"created")?;
+        let ControlReply::Call(call) = parse_query_reply(&body, "no-created@example.invalid")?
+        else {
+            return Err("the reply still parses as a call".into());
+        };
+        assert_eq!(call.incarnation, None);
         Ok(())
     }
 

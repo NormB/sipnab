@@ -1957,6 +1957,7 @@ mod query_relay_view_tests {
     /// exercises the real conversion rather than a restatement of it.
     fn view_of(tags: Vec<RelayTag>) -> Result<Vec<RelayTagView>, TestError> {
         let reply = ControlReply::Call(CallView {
+            incarnation: None,
             call_id: "call-1@192.0.2.10".to_string(),
             tags,
         });
@@ -2092,6 +2093,7 @@ mod query_relay_view_tests {
             media_subscriptions: vec!["from-tag-a".to_string()],
             codec: None,
             streams: vec![RelayStream {
+                counters: crate::relay::types::StreamCounters::default(),
                 local_address: "192.0.2.10".to_string(),
                 local_port: 30000,
                 endpoint: None,
@@ -2204,6 +2206,7 @@ mod query_relay_view_tests {
             streams: Vec::new(),
         };
         let reply = ControlReply::Call(CallView {
+            incarnation: None,
             call_id: "call-1@192.0.2.10".to_string(),
             tags: vec![leg, recorder],
         });
@@ -3643,6 +3646,7 @@ mod relay_handler_tests {
     async fn querying_with_a_call_id_asks_about_that_call() -> Result<(), TestError> {
         let relay = Arc::new(RelayDouble {
             query: Some(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: "c1@example.invalid".to_string(),
                 tags: vec![RelayTag {
                     tag: "from-tag-a".to_string(),

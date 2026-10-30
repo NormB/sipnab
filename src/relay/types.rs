@@ -145,6 +145,44 @@ pub struct RelayStream {
     /// from the relay: an SSRC follows the media even when the addresses do
     /// not survive the path.
     pub ssrcs: Vec<u32>,
+    /// What the relay counted on this port: received (`ingress`) and sent
+    /// (`egress`). Read from the relay's per-stream counters, never from its
+    /// per-SSRC ones, which can count a transcoded packet twice.
+    pub counters: StreamCounters,
+}
+
+/// Packet, byte and error counts the relay reported for one direction of one
+/// port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Counters {
+    /// Packets counted.
+    pub packets: u64,
+    /// Bytes counted.
+    pub bytes: u64,
+    /// Packets the relay counted as errors.
+    pub errors: u64,
+}
+
+/// The relay's counters for one port, each direction on its own.
+///
+/// `None` means the relay did not report that direction, which a relay
+/// version may not: it is never read as zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct StreamCounters {
+    /// What the relay received on this port.
+    pub ingress: Option<Counters>,
+    /// What the relay sent from this port.
+    pub egress: Option<Counters>,
+}
+
+/// When the relay created a call: the identity that tells one call from a
+/// later call reusing its Call-ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Incarnation {
+    /// The creation time, in whole seconds, as the relay reported it.
+    pub created_s: i64,
+    /// The microsecond part, where the relay reported one.
+    pub created_us: Option<i64>,
 }
 /// One side of a call, as the relay holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -202,4 +240,6 @@ pub struct CallView {
     pub call_id: String,
     /// Each side of the call.
     pub tags: Vec<RelayTag>,
+    /// When the relay created the call, where it said.
+    pub incarnation: Option<Incarnation>,
 }

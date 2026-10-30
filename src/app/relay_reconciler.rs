@@ -140,6 +140,7 @@ mod tests {
 
         fn query(&self, _permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
             Ok(ControlReply::Call(CallView {
+                incarnation: None,
                 call_id: call_id.to_owned(),
                 tags: vec![RelayTag {
                     tag: "from-tag".to_owned(),
@@ -147,6 +148,7 @@ mod tests {
                     media_subscriptions: Vec::new(),
                     codec: Some("PCMU".to_owned()),
                     streams: vec![RelayStream {
+                        counters: crate::relay::types::StreamCounters::default(),
                         local_address: "10.0.0.2".to_owned(),
                         local_port: 30000,
                         endpoint: None,

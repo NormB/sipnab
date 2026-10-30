@@ -29,6 +29,7 @@
 //! Adding one means adding a trait method -- a visible act in a diff rather
 //! than an oversight at a call site.
 
+pub mod rate;
 pub mod reconcile;
 pub mod rtpproxy;
 pub mod types;

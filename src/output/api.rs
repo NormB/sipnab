@@ -9908,6 +9908,7 @@ mod tests {
             c: &str,
         ) -> anyhow::Result<ControlReply> {
             Ok(ControlReply::Call(crate::relay::types::CallView {
+                incarnation: None,
                 call_id: c.to_string(),
                 tags: vec![crate::relay::types::RelayTag {
                     tag: "from-tag".into(),
@@ -9915,6 +9916,7 @@ mod tests {
                     media_subscriptions: vec![],
                     codec: Some("PCMU".into()),
                     streams: vec![crate::relay::types::RelayStream {
+                        counters: crate::relay::types::StreamCounters::default(),
                         local_address: "203.0.113.9".into(),
                         local_port: 30000,
                         endpoint: Some("198.51.100.1:40000".into()),
