@@ -225,3 +225,83 @@ fn an_identifier_match_is_not_called_a_guess() -> Result<(), TestError> {
     assert!(!run.stdout.contains("timing guess"), "{}", run.stdout);
     Ok(())
 }
+
+/// The `description` of every property of `schema`, keyed by property name,
+/// with each description's whitespace runs collapsed to one space: rustdoc
+/// line breaks are not part of what a reader is told.
+fn property_descriptions(
+    schema: &serde_json::Value,
+) -> Result<std::collections::BTreeMap<String, String>, TestError> {
+    let props = schema["properties"]
+        .as_object()
+        .ok_or_else(|| format!("no properties in {schema}"))?;
+    Ok(props
+        .iter()
+        .map(|(name, p)| {
+            let text = p["description"].as_str().unwrap_or("");
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            (name.clone(), text)
+        })
+        .collect())
+}
+
+/// Resolve a local `$ref` (`#/$defs/X` or `#/components/schemas/X`) against
+/// `root`, or return `node` itself when it is not a reference.
+fn resolve<'a>(root: &'a serde_json::Value, node: &'a serde_json::Value) -> &'a serde_json::Value {
+    match node["$ref"].as_str().and_then(|r| r.strip_prefix('#')) {
+        Some(pointer) => root.pointer(pointer).unwrap_or(node),
+        None => node,
+    }
+}
+
+/// A leg is described once: the MCP `find_correlated` output schema and the
+/// REST `CorrelatedLeg` component carry the same fields and say the same thing
+/// about each.
+///
+/// The two answers are built by one function, so their VALUES agree (the test
+/// above). Their descriptions came from two copies of the type, so an agent and
+/// a REST client were told different things about the same field: REST lists
+/// the strategy names, MCP says which of them are the same claim, and only REST
+/// says the gap is null for an identifier match.
+#[test]
+fn a_leg_is_described_the_same_to_an_agent_and_to_a_rest_client() -> Result<(), TestError> {
+    let mcp =
+        serde_json::Value::Object(
+            rmcp::handler::server::tool::schema_for_output::<
+                sipnab::mcp::server::FindCorrelatedResponse,
+            >()
+            .as_ref()
+            .clone(),
+        );
+    let mcp_leg = resolve(&mcp, &mcp["properties"]["legs"]["items"]);
+
+    let rest: serde_json::Value = serde_json::from_str(&sipnab::output::api::openapi_json())?;
+    let rest_leg = &rest["components"]["schemas"]["CorrelatedLeg"];
+
+    let mcp_desc = property_descriptions(mcp_leg)?;
+    let rest_desc = property_descriptions(rest_leg)?;
+    assert_eq!(
+        mcp_desc.keys().collect::<Vec<_>>(),
+        rest_desc.keys().collect::<Vec<_>>(),
+        "the two surfaces describe different leg fields"
+    );
+    let differ: Vec<String> = mcp_desc
+        .iter()
+        .filter(|(name, text)| rest_desc.get(*name) != Some(text))
+        .map(|(name, text)| {
+            format!(
+                "{name}:\n  MCP:  {text}\n  REST: {}",
+                rest_desc.get(name).map_or("", String::as_str)
+            )
+        })
+        .collect();
+    assert!(
+        differ.is_empty(),
+        "a leg field is described differently on MCP and REST:\n{}",
+        differ.join("\n")
+    );
+    for (name, text) in &mcp_desc {
+        assert!(!text.is_empty(), "leg field {name} has no description");
+    }
+    Ok(())
+}

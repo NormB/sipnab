@@ -122,6 +122,8 @@ const ACTIONS: &[(&str, Runs)] = &[
         Runs::Container("ghcr.io/ossf/scorecard-action:v2.4.4"),
     ),
     ("rust-lang/crates-io-auth-action", Runs::Node),
+    // Read at v4.1.2 (6f9f1778), 2026-10-28.
+    ("sigstore/cosign-installer", Runs::Composite),
     ("softprops/action-gh-release", Runs::Node),
     ("taiki-e/install-action", Runs::Composite),
 ];

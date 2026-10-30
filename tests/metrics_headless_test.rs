@@ -40,13 +40,9 @@ type TestError = Box<dyn std::error::Error>;
 /// laptop, and the wait ends the moment the line arrives.
 const SPAWN_BUDGET: Duration = Duration::from_secs(30);
 
-fn sipnab_bin() -> Result<std::path::PathBuf, TestError> {
-    let mut p = std::env::current_exe()?;
-    p.pop();
-    if p.ends_with("deps") {
-        p.pop();
-    }
-    Ok(p.join("sipnab"))
+/// The `sipnab` cargo built for this test, wherever the layout puts it.
+fn sipnab_bin() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_BIN_EXE_sipnab"))
 }
 
 /// The whole point: headless, and the endpoint actually answers.
@@ -60,7 +56,7 @@ fn sipnab_bin() -> Result<std::path::PathBuf, TestError> {
 #[test]
 fn metrics_binds_and_answers_in_headless_mode() -> Result<(), TestError> {
     let run =
-        HeadlessMetrics::spawn(&sipnab_bin()?, &[], SPAWN_BUDGET).map_err(|e| e.to_string())?;
+        HeadlessMetrics::spawn(&sipnab_bin(), &[], SPAWN_BUDGET).map_err(|e| e.to_string())?;
     let addr = run.addr.clone();
     let mut child = run.child;
 
@@ -133,7 +129,7 @@ fn metrics_binds_and_answers_in_headless_mode() -> Result<(), TestError> {
 /// its own, which is what makes the refusal observable in a collected stderr.
 #[test]
 fn a_non_loopback_bind_without_auth_is_still_refused_headless() -> Result<(), TestError> {
-    let out = Command::new(sipnab_bin()?)
+    let out = Command::new(sipnab_bin())
         .args([
             "-N",
             "-I",
@@ -183,7 +179,7 @@ fn scrape_with(extra: &[&str]) -> Result<String, TestError> {
     // the kernel's choice and sipnab's from the start, so that last cause is
     // gone rather than merely reported.
     let mut run =
-        HeadlessMetrics::spawn(&sipnab_bin()?, &args, SPAWN_BUDGET).map_err(|e| e.to_string())?;
+        HeadlessMetrics::spawn(&sipnab_bin(), &args, SPAWN_BUDGET).map_err(|e| e.to_string())?;
     let addr = run.addr.clone();
 
     // Thirty seconds, not six. A cold CI runner spawning a freshly linked
@@ -288,7 +284,7 @@ fn a_failed_scrape_says_whether_the_process_died() -> Result<(), TestError> {
         "a slow start must not read as a crash: {alive}"
     );
 
-    let bin = sipnab_bin()?;
+    let bin = sipnab_bin();
     let status = Command::new(bin)
         .arg("--this-flag-does-not-exist")
         .stdout(Stdio::null())

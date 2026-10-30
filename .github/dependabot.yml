@@ -38,6 +38,58 @@ updates:
     commit-message:
       prefix: "deps(fuzz)"
 
+  # The eBPF programs are a third separate workspace, with their own Cargo.lock
+  # that neither entry above reaches: `directory` is not recursive.
+  - package-ecosystem: "cargo"
+    directory: "/bpf"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      bpf-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "deps(bpf)"
+
+  # npm lockfiles: the site's browser and Lighthouse tests (e2e/) and the
+  # TypeScript client. There was no npm entry at all, so neither lockfile
+  # raised an alert or got an update: e2e/ carried a zod 3 with a published
+  # advisory (GHSA-mrhx-c7xc-m3w5) that only OpenSSF Scorecard reported.
+  # tests/dependabot_coverage_test.rs fails when a dependency file has no entry.
+  - package-ecosystem: "npm"
+    directories:
+      - "/e2e"
+      - "/clients/typescript"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "deps(npm)"
+
+  # Hash-pinned Python requirements: the Python client's test, MCP and example
+  # requirements, and the pinned codespell and YANG tools in scripts/.
+  - package-ecosystem: "pip"
+    directories:
+      - "/clients/python"
+      - "/scripts"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    groups:
+      pip-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    commit-message:
+      prefix: "deps(pip)"
+
   # Base images. The runtime image ships to users via GHCR; a CVE in it was
   # previously surfaced by nothing at all.
   - package-ecosystem: "docker"
@@ -61,9 +113,27 @@ updates:
       # dtolnay/rust-toolchain ignore below. Bump it with the toolchain.
       - dependency-name: "rust"
 
+  # Compose files. The docker entry does not read them: its fetcher takes
+  # files whose name holds "dockerfile" or "containerfile", and YAML only when
+  # it is a Kubernetes resource (apiVersion and kind), which a compose file is
+  # not. The compose fetcher reads each directory it is given, so the same glob.
+  - package-ecosystem: "docker-compose"
+    directories:
+      - "/**"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: "deps(compose)"
+
   # GitHub Actions used by the workflows in .github/workflows
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # "/" reads the workflows only. The local composite actions under
+    # .github/actions/ pin actions of their own and need their directories
+    # named, or their pins have no update path.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
     # Two, not five. Each open PR is a BRANCH, and every branch triggers a full
