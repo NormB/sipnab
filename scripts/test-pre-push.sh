@@ -200,6 +200,11 @@ ensure_repo_shape() {
 	# The tag gate's first check is the signature rule itself, copied rather
 	# than stubbed so these scenarios exercise the script the hook ships with.
 	cp "$REPO_ROOT/scripts/tag-signature-check.sh" "$CRATE/scripts/"
+	# The first thing the hook runs: its gitignored prerequisites. The crate
+	# has neither the g729 crate nor a .vale.ini, so it needs none of them
+	# unless a scenario below adds one.
+	cp "$REPO_ROOT/scripts/check-hook-prerequisites.py" \
+		"$REPO_ROOT/scripts/fetch-g729-vectors.py" "$CRATE/scripts/" 2>/dev/null || true
 	mkdir -p "$CRATE/tests"
 	for target in release_delivery_test tui_e2e_test; do
 		[ -f "$CRATE/tests/$target.rs" ] && continue
@@ -1282,6 +1287,44 @@ else
 	bad "the tree's own hook was refused as foreign: $(cat "$TMP/out.log")"
 fi
 rm -rf "$CRATE/.githooks"
+
+# -- Prerequisites: checked before any gate --------------------------------
+# A fresh worktree has no .vale/styles/Google: only `vale sync` writes it,
+# and the hook used to die on it at the prose gate, after the build gates.
+# It now refuses before its first gate, naming the command. The G.729 test
+# vectors are a pre-commit prerequisite only: no test pre-push runs reads
+# them, so their absence must not block a push.
+printf '#!/bin/sh\nexit 0\n' >"$TMP/vale-stub"
+chmod +x "$TMP/vale-stub"
+cp "$REPO_ROOT/.vale.ini" "$CRATE/.vale.ini"
+rm -rf "$CRATE/.vale"
+t0=$(date +%s)
+VALE_BIN="$TMP/vale-stub"
+export VALE_BIN
+run_hook "" || true
+secs=$(( $(date +%s) - t0 ))
+why=""
+grep -qF 'run: vale sync' "$TMP/out.log" || why="$why no 'run: vale sync';"
+grep -qF 'every pushed commit is signed' "$TMP/out.log" && why="$why a gate ran;"
+grep -qF 'cargo fmt --all -- --check' "$TMP/out.log" && why="$why the fmt gate ran;"
+[ "$secs" -le 10 ] || why="$why took ${secs}s;"
+if [ -z "$why" ]; then
+	ok "a tree without Vale's style package is refused before any gate, with 'vale sync'"
+else
+	bad "missing Vale styles:$why out: $(cat "$TMP/out.log")"
+fi
+
+mkdir -p "$CRATE/.vale/styles/Google" "$CRATE/crates/g729"
+printf '[package]\nname = "sipnab-g729"\n' >"$CRATE/crates/g729/Cargo.toml"
+run_hook 1 || true
+unset VALE_BIN
+if grep -qF 'Prerequisites... OK' "$TMP/out.log" \
+	&& ! grep -qF 'fetch-g729-vectors' "$TMP/out.log"; then
+	ok "with the styles synced, a push goes on to the gates, and needs no G.729 vectors"
+else
+	bad "a synced tree must pass the prerequisite check without the G.729 vectors: $(cat "$TMP/out.log")"
+fi
+rm -rf "$CRATE/.vale" "$CRATE/.vale.ini" "$CRATE/crates"
 
 printf '\n--- test-pre-push summary: %d passed, %d failed, %d skipped (host: %s) ---\n' \
 	"$PASS" "$FAIL" "$SKIP" "$(uname -s)"

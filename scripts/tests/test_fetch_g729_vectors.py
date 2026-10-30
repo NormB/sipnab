@@ -242,3 +242,55 @@ def test_download_retries_a_404_the_itu_server_returns_transiently(tmp_path):
                           opener=opener, sleep=lambda _s: None)
     assert path.read_bytes() == b"package bytes"
     assert opener.calls == 2
+
+
+# -- --check: are the fetched files in place? --------------------------------
+#
+# The hooks ask this before they run anything, so a fresh worktree is refused
+# in seconds with the command that fixes it, instead of 25 minutes into the
+# suite. It reads the same pins and destinations a fetch writes, and it never
+# touches the network.
+
+
+def _every_destination(dest):
+    pins = {**fetch.ALL_PINS, **fetch.G7291_PINS}
+    return sorted(fetch.destination(dest, entry) for entry in pins)
+
+
+def _provision(dest):
+    for path in _every_destination(dest):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+
+
+def test_missing_names_every_pinned_file_of_an_empty_destination(tmp_path):
+    assert sorted(fetch.missing(tmp_path)) == _every_destination(tmp_path)
+
+
+def test_missing_is_empty_once_every_pinned_file_is_in_place(tmp_path):
+    _provision(tmp_path)
+    assert fetch.missing(tmp_path) == []
+
+
+def test_missing_names_the_one_file_that_was_removed(tmp_path):
+    _provision(tmp_path)
+    gone = _every_destination(tmp_path)[0]
+    gone.unlink()
+    assert fetch.missing(tmp_path) == [gone]
+
+
+def test_check_exits_1_with_the_fetch_command_then_0_once_fetched(tmp_path):
+    out = _run("--check", str(tmp_path))
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "python3 scripts/fetch-g729-vectors.py" in out.stderr
+    assert f"{len(_every_destination(tmp_path))} of" in out.stderr
+    _provision(tmp_path)
+    out = _run("--check", str(tmp_path))
+    assert out.returncode == 0, out.stdout + out.stderr
+
+
+def test_check_writes_nothing_and_downloads_nothing(tmp_path):
+    dest = tmp_path / "vectors"
+    out = _run("--check", str(dest))
+    assert out.returncode == 1
+    assert not dest.exists(), "--check created the destination"

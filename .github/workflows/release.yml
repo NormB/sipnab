@@ -860,9 +860,9 @@ jobs:
     needs: build
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    # id-token + attestations power the sigstore provenance step below;
-    # contents must be restated because a job-level block replaces the
-    # workflow-level grant.
+    # id-token + attestations power the sigstore provenance and signing
+    # steps below; contents must be restated because a job-level block
+    # replaces the workflow-level grant.
     permissions:
       contents: write
       id-token: write
@@ -988,6 +988,7 @@ jobs:
       # copy is detectable. Anyone can check a download with
       #   gh attestation verify <file> --repo NormB/sipnab
       - name: Attest build provenance
+        id: provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-path: |
@@ -1043,6 +1044,60 @@ jobs:
             || printf '%s\n' "$out" | head -20
           echo "-------------------------"
 
+      # The attestation above lives in GitHub's attestation API, where
+      # OpenSSF Scorecard's Signed-Releases check cannot see it: that check
+      # reads only the asset NAMES of the last five releases, wanting a
+      # signature (*.sigstore.json among others) and provenance
+      # (*.intoto.jsonl). It scored 0 through v0.5.231 for that reason. So the
+      # release also carries both as files, made from this job's OIDC
+      # identity with no stored key:
+      #   - the bundle attest-build-provenance already wrote (one attestation
+      #     whose subjects are every artifact), copied to a .intoto.jsonl name;
+      #   - a keyless cosign signature over SHA256SUMS.txt, which names every
+      #     artifact, as SHA256SUMS.txt.sigstore.json.
+      # tests/release_signature_assets_test.rs holds this wiring in place.
+      - name: Keep the provenance bundle as a release asset
+        env:
+          PROVENANCE_BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          cp "$PROVENANCE_BUNDLE" "artifacts/sipnab-${version}.intoto.jsonl"
+
+      # The installer checks the cosign binary's digest against one pinned in
+      # the action itself; v3.0.6 is the version that digest names.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.0.6
+
+      - name: Sign the checksum list
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle artifacts/SHA256SUMS.txt.sigstore.json \
+            artifacts/SHA256SUMS.txt
+
+      # The commands SECURITY.md gives downloaders, run before the release
+      # exists, so a file that does not verify fails the release instead of
+      # being published. The identity is this workflow at this tag, exactly.
+      - name: Verify the signature and the provenance file
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNER: https://github.com/${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          cosign verify-blob \
+            --bundle artifacts/SHA256SUMS.txt.sigstore.json \
+            --certificate-identity "$SIGNER" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            artifacts/SHA256SUMS.txt
+          gh attestation verify artifacts/SHA256SUMS.txt \
+            --bundle "artifacts/sipnab-${version}.intoto.jsonl" \
+            --repo "$GITHUB_REPOSITORY" \
+            --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml"
+
       # The download table, derived from the artifacts that actually built. A
       # release page lists twenty-odd files whose Linux names carry
       # `unknown-linux-gnu` — the vendor field of the Rust target triple, not a
@@ -1066,6 +1121,8 @@ jobs:
             artifacts/*.debug
             artifacts/*.dSYM.zip
             artifacts/SHA256SUMS.txt
+            artifacts/SHA256SUMS.txt.sigstore.json
+            artifacts/*.intoto.jsonl
 
   crates-io:
     # Bounds a wedged job: an unbounded one holds its concurrency group

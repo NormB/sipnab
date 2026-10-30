@@ -460,14 +460,9 @@ fn the_query_agrees_with_the_kernels_own_lsm_list() -> Result<(), TestError> {
 
 // ── The flag, driven through the real binary ────────────────────────────────
 
-/// The compiled `sipnab` beside this test binary.
-fn sipnab_bin() -> Result<PathBuf, TestError> {
-    let mut p = std::env::current_exe()?;
-    p.pop();
-    if p.ends_with("deps") {
-        p.pop();
-    }
-    Ok(p.join("sipnab"))
+/// The `sipnab` cargo built for this test, wherever the layout puts it.
+fn sipnab_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_sipnab"))
 }
 
 /// A fixture capture every one of these can read.
@@ -477,10 +472,11 @@ fn fixture_capture() -> PathBuf {
 
 /// Run the binary over the fixture with the given sandbox argument.
 fn run_sipnab(args: &[&str]) -> Result<(bool, String), TestError> {
-    let bin = sipnab_bin()?;
-    if !bin.is_file() {
-        return Ok((true, String::from("BINARY-ABSENT")));
-    }
+    run_sipnab_with(&sipnab_bin(), args)
+}
+
+/// [`run_sipnab`] with the binary named, so a missing one can be driven.
+fn run_sipnab_with(bin: &std::path::Path, args: &[&str]) -> Result<(bool, String), TestError> {
     let capture = fixture_capture();
     let mut cmd = Command::new(bin);
     cmd.args(["-N", "-I"]).arg(&capture).args(args);
@@ -490,6 +486,23 @@ fn run_sipnab(args: &[&str]) -> Result<(bool, String), TestError> {
     Ok((out.status.success(), text))
 }
 
+/// A binary that is not there fails the test that needed it.
+///
+/// These tests used to report a missing binary as a skip and pass. The path
+/// they looked in held only for the `target/<profile>/deps/` layout, so under
+/// the nightly coverage layout all four passed without running sipnab once.
+#[test]
+fn a_missing_binary_is_an_error_not_a_skip() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let absent = dir.path().join("sipnab");
+    let got = run_sipnab_with(&absent, &[]);
+    assert!(
+        got.is_err(),
+        "running a binary that does not exist must fail, not skip: {got:?}"
+    );
+    Ok(())
+}
+
 /// Without the flag, nothing is installed and nothing is said about it.
 ///
 /// The default must not change any existing run. A line on every capture
@@ -497,13 +510,6 @@ fn run_sipnab(args: &[&str]) -> Result<(bool, String), TestError> {
 #[test]
 fn the_default_run_installs_nothing_and_reports_nothing() -> Result<(), TestError> {
     let (ok, log) = run_sipnab(&[])?;
-    if log == "BINARY-ABSENT" {
-        announce_skip(
-            "the_default_run_installs_nothing_and_reports_nothing",
-            "the sipnab binary is not built beside this test",
-        );
-        return Ok(());
-    }
     assert!(ok, "the default run must succeed:\n{log}");
     assert!(
         !log.contains("path sandbox"),
@@ -521,13 +527,6 @@ fn the_default_run_installs_nothing_and_reports_nothing() -> Result<(), TestErro
 #[test]
 fn best_effort_captures_and_reports_either_way() -> Result<(), TestError> {
     let (ok, log) = run_sipnab(&["--sandbox", "best-effort"])?;
-    if log == "BINARY-ABSENT" {
-        announce_skip(
-            "best_effort_captures_and_reports_either_way",
-            "the sipnab binary is not built beside this test",
-        );
-        return Ok(());
-    }
     assert!(ok, "best-effort must never stop a capture:\n{log}");
     assert!(
         log.contains("packets captured"),
@@ -560,13 +559,6 @@ fn best_effort_captures_and_reports_either_way() -> Result<(), TestError> {
 #[test]
 fn required_refuses_only_when_no_sandbox_is_in_force() -> Result<(), TestError> {
     let (ok, log) = run_sipnab(&["--sandbox", "required"])?;
-    if log == "BINARY-ABSENT" {
-        announce_skip(
-            "required_refuses_only_when_no_sandbox_is_in_force",
-            "the sipnab binary is not built beside this test",
-        );
-        return Ok(());
-    }
     if landlock_available() {
         assert!(ok, "a kernel that can sandbox must still capture:\n{log}");
         assert!(log.contains("packets captured"), "{log}");
@@ -593,14 +585,7 @@ fn required_refuses_only_when_no_sandbox_is_in_force() -> Result<(), TestError> 
 /// does `--sandbox required` without a sandbox).
 #[test]
 fn seccomp_enforce_without_an_allowlist_refuses_to_capture() -> Result<(), TestError> {
-    let bin = sipnab_bin()?;
-    if !bin.is_file() {
-        announce_skip(
-            "seccomp_enforce_without_an_allowlist_refuses_to_capture",
-            "the sipnab binary is not built beside this test",
-        );
-        return Ok(());
-    }
+    let bin = sipnab_bin();
     let run = |mode: &str| -> Result<(bool, String), TestError> {
         let out = Command::new(&bin)
             .args(["-N", "-I"])
