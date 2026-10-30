@@ -849,8 +849,65 @@ mod hep_keys {
                 }
                 std::thread::sleep(Duration::from_millis(50));
             };
-            (code, self.stdout.try_iter().collect())
+            (
+                code,
+                drain_until_closed(&self.stdout, Instant::now() + test_timeout(5)),
+            )
         }
+    }
+
+    /// Every line the reader thread forwards, up to the moment it closes.
+    ///
+    /// The lines arrive through a thread that reads the child's stdout, so
+    /// the child's exit does not mean they are all in `rx`: the thread may
+    /// still hold the last line. Taking what `rx` holds at that moment
+    /// returned nothing on CI run 40667892510 although the collector had
+    /// printed its packet. The thread drops its sender at EOF, so waiting for
+    /// the disconnect is waiting for the whole of stdout; `by` bounds it for a
+    /// pipe something else holds open.
+    fn drain_until_closed(rx: &std::sync::mpsc::Receiver<String>, by: Instant) -> Vec<String> {
+        let mut lines = Vec::new();
+        loop {
+            let left = by.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(line) => lines.push(line),
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return lines,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    lines.extend(rx.try_iter());
+                    return lines;
+                }
+            }
+        }
+    }
+
+    /// A line the reader forwards after the child is gone is still collected.
+    #[test]
+    fn a_line_forwarded_after_the_exit_is_collected() -> Result<(), TestError> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            let _ = tx.send("the packet".to_string());
+        });
+        let lines = drain_until_closed(&rx, Instant::now() + test_timeout(10));
+        late.join().map_err(|_| "the late sender panicked")?;
+        assert_eq!(lines, ["the packet"], "the late line is part of stdout");
+        Ok(())
+    }
+
+    /// A reader that never closes does not hold the run past `by`.
+    #[test]
+    fn a_reader_that_never_closes_is_left_at_the_deadline() -> Result<(), TestError> {
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        let started = Instant::now();
+        let lines = drain_until_closed(&rx, started + Duration::from_millis(300));
+        assert!(lines.is_empty(), "nothing was sent: {lines:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the drain returned at its deadline, not later: {:?}",
+            started.elapsed()
+        );
+        drop(tx);
+        Ok(())
     }
 
     fn config_file(pki: &TestPki, name: &str, body: &str) -> Result<String, TestError> {
@@ -1007,7 +1064,7 @@ mod hep_keys {
         let _ = collector.child.kill();
         let _ = collector.child.wait();
         assert!(
-            collector.stdout.try_iter().next().is_none(),
+            drain_until_closed(&collector.stdout, Instant::now() + test_timeout(5)).is_empty(),
             "the refused sender delivered nothing"
         );
         Ok(())

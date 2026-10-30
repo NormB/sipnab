@@ -6356,7 +6356,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `.github/workflows/osv-scanner.yml` runs
     // `scripts/check-dependency-canaries.py`. Measurement: with HEAD's
     // osv-scanner.yml swapped back in, the scan reads 206.
-    const EXPECTED_REFERENCES: usize = 207;
+    // 207 -> 208: the signing steps' comment in
+    // `.github/workflows/release.yml` names
+    // `tests/release_signature_assets_test.rs`, the test that holds them in
+    // place. Measurement: with origin/main's release.yml swapped back in,
+    // the scan reads 207.
+    const EXPECTED_REFERENCES: usize = 208;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -6527,7 +6532,9 @@ fn vale_style_package_is_pinned_to_a_release() -> Result<(), TestError> {
 /// version tag rather than digest. That is a judgement, not an oversight: the
 /// stack is a local example, is never built in CI and never shipped, a version
 /// tag is far more stable than the floating tags this gate exists to catch,
-/// and `directories: ["/**"]` now brings compose files under Dependabot.
+/// and the `docker-compose` entry of `.github/dependabot.yml` brings compose
+/// files under Dependabot (the `docker` entry does not read them;
+/// tests/dependabot_coverage_test.rs says why).
 /// Digest-freezing a dev stack nobody regenerates would trade a small risk for
 /// the larger one of an unmaintained pin.
 ///

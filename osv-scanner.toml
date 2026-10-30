@@ -46,25 +46,6 @@ to take. Re-evaluate when sprintf-js publishes a fix or @lhci drops js-yaml 3.\
 """
 
 [[IgnoredVulns]]
-id = "GHSA-mrhx-c7xc-m3w5"
-# Also filed as CVE-2023-54404.
-reason = """
-zod memory exhaustion while validating an oversized constrained collection. \
-The zod 3 copy is reached only from e2e/package-lock.json, the dev tooling for \
-the site's Lighthouse CI step (@lhci/cli -> lighthouse 12.6.1 -> \
-puppeteer-core 24.43.1 -> chromium-bidi 14.0.0 -> zod 3.25.76). Lighthouse \
-attaches to Chrome with puppeteer.connect({browserURL}), which speaks CDP; \
-puppeteer-core loads chromium-bidi only for WebDriver BiDi, its default for \
-Firefox alone, and @lhci/cli launches its own browser only for a \
-puppeteerScript, which e2e/lighthouserc.json does not set. Nothing in e2e/ \
-ships with sipnab or runs outside CI. The fix is zod 4.6.6, and no zod 3 \
-release carries it; puppeteer-core 24.43.1, the newest lighthouse 12 accepts, \
-still pins chromium-bidi 14.0.0. clients/typescript resolves zod 4.6.7, which \
-is fixed. Re-evaluate when @lhci/cli moves to lighthouse 13 (puppeteer-core \
-25, chromium-bidi on zod 4).\
-"""
-
-[[IgnoredVulns]]
 id = "GHSA-qwgh-2vcv-g2f7"
 ignoreUntil = 2026-12-26
 reason = """

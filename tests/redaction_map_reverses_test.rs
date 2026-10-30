@@ -46,14 +46,9 @@ fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn bin() -> Result<PathBuf, TestError> {
-    // The test binary lives beside the built `sipnab`.
-    let mut p = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
-    p.pop();
-    if p.ends_with("deps") {
-        p.pop();
-    }
-    Ok(p.join("sipnab"))
+/// The `sipnab` cargo built for this test, wherever the layout puts it.
+fn bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_sipnab"))
 }
 
 /// One redacted export: the containers, and the map that should reverse them.
@@ -79,7 +74,7 @@ impl Export {
         std::fs::write(&key, key_bytes).map_err(|e| format!("write key: {e}"))?;
 
         let map = dir.join("map.tsv");
-        let out = Command::new(bin()?)
+        let out = Command::new(bin())
             .args([
                 "-N",
                 "-I",

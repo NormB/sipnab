@@ -161,6 +161,19 @@ This repo ships hooks in `.githooks/`. Enable them once per clone:
 git config core.hooksPath .githooks
 ```
 
+In each new clone or worktree, also fetch the inputs the hooks read that git
+does not carry:
+
+```bash
+# Run all of these, in order.
+python3 scripts/fetch-g729-vectors.py   # the G.729 test vectors the suite reads
+vale sync                               # the Vale style package the prose gates read
+```
+
+Both hooks check these before anything else. A missing one stops the hook
+within seconds, with the command that fixes it, rather than failing the
+suite or the prose gate later in the run.
+
 **`pre-commit`** runs nine numbered gates, starting at 0:
 
 - `cargo fmt --all -- --check`,

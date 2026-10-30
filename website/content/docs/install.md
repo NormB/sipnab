@@ -629,6 +629,36 @@ matching checksum file.
 - Install a current `gh` from <https://github.com/cli/cli/releases> rather
   than trusting a silent pass.
 
+**Signature and provenance files.** Releases after v0.5.231 attach two more
+files. The release workflow makes both from its own short-lived GitHub
+identity, with no stored signing key:
+
+| File | What it is |
+|------|------------|
+| `SHA256SUMS.txt.sigstore.json` | a Sigstore signature over `SHA256SUMS.txt` |
+| `sipnab-<version>.intoto.jsonl` | the build provenance above, as a file you can keep |
+
+The signature proves the checksum list itself came from sipnab's release
+workflow. Check it with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+before you trust the list:
+
+```bash
+cosign verify-blob SHA256SUMS.txt \
+    --bundle SHA256SUMS.txt.sigstore.json \
+    --certificate-identity-regexp '^https://github\.com/NormB/sipnab/\.github/workflows/release\.yml@refs/tags/v' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+`Verified OK` means the list is genuine, and `sha256sum -c` above then
+extends that to your download. With `--bundle`, `gh` reads the provenance
+from the file instead of from GitHub's attestation API, so you can check a
+copy of the release kept anywhere:
+
+```bash
+gh attestation verify "sipnab-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
+    --bundle "sipnab-$VERSION.intoto.jsonl" --repo NormB/sipnab
+```
+
 **Dependencies.** Two CycloneDX SBOMs ship with each release:
 
 | File | Covers |

@@ -38,6 +38,7 @@ What a fetch guarantees:
 
 Usage:
     fetch-g729-vectors.py [--zip FILE] [--g7291-zip FILE] [--g7291-only] [DEST]
+    fetch-g729-vectors.py --check [DEST]
 
 DEST defaults to $G729_VECTORS, else crates/g729/test-vectors (gitignored).
 The Annex A vectors land in DEST/annex-a, the Annex B ones in DEST/annex-b,
@@ -46,6 +47,12 @@ G.729.1 vectors in DEST/g7291. With --zip or --g7291-zip, a local copy of
 that package is used instead of downloading, and it is left in place. With
 --g7291-only, only the G.729.1 package is fetched. Exit codes: 0 fetched and
 verified, 1 failed.
+
+With --check, nothing is downloaded or written: it exits 0 when every pinned
+file is in place under DEST and 1, naming the command that fetches them,
+when any is missing. The git hooks run it before anything else, so a fresh
+worktree is refused in seconds instead of failing the suite. It checks that
+each file is there, not its hash; a fetch verifies the hashes.
 """
 
 import argparse
@@ -67,6 +74,8 @@ PACKAGE_SHA256 = "979680ff3b52b13a5701453178efd32b53e340114638fd330fdb6669eec866
 
 ENV_VAR = "G729_VECTORS"
 DEFAULT_DEST = pathlib.Path(__file__).resolve().parent.parent / "crates/g729/test-vectors"
+# What a person runs to fill DEST, as the hooks and --check print it.
+FETCH_COMMAND = "python3 scripts/fetch-g729-vectors.py"
 
 A = "Software/G729_Release3/g729AnnexA/test_vectors/"
 B = "Software/G729_Release3/g729AnnexB/test_vectors/"
@@ -218,6 +227,13 @@ def destination(dest, entry):
     raise FetchError(f"not a test-vector or pinned source entry: {entry}")
 
 
+def missing(dest):
+    """The pinned files a fetch would write under `dest` that are not there."""
+    pins = {**ALL_PINS, **G7291_PINS}
+    paths = sorted(destination(dest, entry) for entry in pins)
+    return [path for path in paths if not path.is_file()]
+
+
 def extract(package, dest, pins=None):
     """Extract the pinned test-vector and source entries of `package` into `dest`.
 
@@ -296,9 +312,26 @@ def main(argv=None):
     parser.add_argument(
         "--g7291-only", action="store_true", help="fetch only the G.729.1 package"
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="download nothing; exit 1 if any pinned file is missing from DEST",
+    )
     parser.add_argument("dest", nargs="?", type=pathlib.Path)
     args = parser.parse_args(argv)
     dest = args.dest or pathlib.Path(os.environ.get(ENV_VAR) or DEFAULT_DEST)
+
+    if args.check:
+        gone = missing(dest)
+        if gone:
+            total = len({**ALL_PINS, **G7291_PINS})
+            print(
+                f"fetch-g729-vectors: {len(gone)} of {total} pinned files are missing "
+                f"under {dest}: run `{FETCH_COMMAND}`",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
 
     packages = [
         (args.g7291_zip, G7291_PACKAGE_URL, G7291_PACKAGE_SIZE, G7291_PACKAGE_SHA256, G7291_PINS)
