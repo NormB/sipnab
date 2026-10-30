@@ -83,7 +83,13 @@ skip = */target/*,*/.git/*,*.lock,website/public/*,*/website/public/*,*/js/*,*.m
 #                starts `exten =>`, and docs/asterisk.md writes the file the
 #                reader's Asterisk reads. codespell wants "extend"; Asterisk
 #                accepts no other spelling.
-ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias,nam,sme,thirdparty,yse,FO,parm,exten
+#   intoto       the in-toto attestation format's file suffix. OpenSSF
+#                Scorecard counts a release asset as provenance only when its
+#                name ends `.intoto.jsonl`, and the release attaches one
+#                (docs/install.md, release.yml). codespell wants "into"; the
+#                suffix is the name Scorecard matches, so no other spelling
+#                is the same file.
+ignore-words-list = ratatui,unparseable,statics,ans,hel,nd,caf,requestor,Sourc,medias,nam,sme,thirdparty,yse,FO,parm,exten,intoto
 #
 # Deliberately NOT ignored: "cappable", which codespell wanted to make "capable".
 # It appeared in "both are small, and both are cappable", where the meaning is

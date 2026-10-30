@@ -12492,6 +12492,36 @@ matching checksum file.
 - Install a current `gh` from <https://github.com/cli/cli/releases> rather
   than trusting a silent pass.
 
+**Signature and provenance files.** Releases after v0.5.231 attach two more
+files. The release workflow makes both from its own short-lived GitHub
+identity, with no stored signing key:
+
+| File | What it is |
+|------|------------|
+| `SHA256SUMS.txt.sigstore.json` | a Sigstore signature over `SHA256SUMS.txt` |
+| `sipnab-<version>.intoto.jsonl` | the build provenance above, as a file you can keep |
+
+The signature proves the checksum list itself came from sipnab's release
+workflow. Check it with [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+before you trust the list:
+
+```bash
+cosign verify-blob SHA256SUMS.txt \
+    --bundle SHA256SUMS.txt.sigstore.json \
+    --certificate-identity-regexp '^https://github\.com/NormB/sipnab/\.github/workflows/release\.yml@refs/tags/v' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+`Verified OK` means the list is genuine, and `sha256sum -c` above then
+extends that to your download. With `--bundle`, `gh` reads the provenance
+from the file instead of from GitHub's attestation API, so you can check a
+copy of the release kept anywhere:
+
+```bash
+gh attestation verify "sipnab-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
+    --bundle "sipnab-$VERSION.intoto.jsonl" --repo NormB/sipnab
+```
+
 **Dependencies.** Two CycloneDX SBOMs ship with each release:
 
 | File | Covers |
@@ -69587,12 +69617,13 @@ It publishes immediately and irreversibly, whatever that commit contains:
 - a `.sha256` beside each tarball
 - eight symbol files (one per build, see [Symbol files](#symbol-files))
 - a combined `SHA256SUMS.txt`
+- `SHA256SUMS.txt.sigstore.json`, a Sigstore signature over it
 - two SBOMs
-- a provenance attestation
+- a provenance attestation, also attached as `sipnab-<version>.intoto.jsonl`
 - a GHCR image
 - a Homebrew formula
 
-That is thirty-one release assets in all.
+That is thirty-three release assets in all.
 The order is therefore:
 
 - Land the release commit.
@@ -69798,6 +69829,29 @@ Every gnu binary then passes a `readelf -V` gate.
 
 Artifacts are checksummed into `SHA256SUMS.txt` and attested with `actions/attest-build-provenance`.
 So a downloader can run `gh attestation verify <file> --repo NormB/sipnab`.
+
+The attestation lives in GitHub's attestation API, and OpenSSF Scorecard
+cannot see it there. Its Signed-Releases check reads only the asset names of
+the last five releases, and scored 0 through v0.5.231. So the `release` job
+also attaches two files, both made from the job's own OIDC identity with no
+stored key:
+
+- `SHA256SUMS.txt.sigstore.json`, from `cosign sign-blob` over the checksum
+  list. `sigstore/cosign-installer` installs cosign and checks its digest.
+- `sipnab-<version>.intoto.jsonl`, a copy of the bundle that
+  `attest-build-provenance` writes to its `bundle-path` output.
+
+Before the release exists, the job checks both with the commands
+[SECURITY.md](../../SECURITY.md#verifying-a-release) gives users:
+`cosign verify-blob` pinned to this workflow's identity and the Actions OIDC
+issuer, and `gh attestation verify --bundle`. A file that does not verify
+fails the release instead of publishing.
+[`tests/release_signature_assets_test.rs`](../../tests/release_signature_assets_test.rs) holds the job to this: it fails if a
+step stops signing, verifying or uploading either file, or names one with a
+suffix Scorecard does not count.
+
+There is no dry run. The tag-push `release` job is the only one with an OIDC
+identity that can sign, so the first end-to-end run is the next real release.
 
 The macOS builds carry the same kind of floor, arrived at the other way round.
 

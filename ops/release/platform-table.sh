@@ -87,4 +87,7 @@ name, not a failed detection.</sub>
 
 Verify a download against `SHA256SUMS.txt`, or with
 `gh attestation verify <file> --repo NormB/sipnab`.
+`SHA256SUMS.txt.sigstore.json` is a Sigstore signature over the
+checksum list, and `sipnab-<version>.intoto.jsonl` is the build provenance as
+a file. SECURITY.md gives the commands that check both.
 FOOTER

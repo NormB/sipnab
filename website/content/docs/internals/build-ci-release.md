@@ -1411,12 +1411,13 @@ It publishes immediately and irreversibly, whatever that commit contains:
 - a `.sha256` beside each tarball
 - eight symbol files (one per build, see [Symbol files](#symbol-files))
 - a combined `SHA256SUMS.txt`
+- `SHA256SUMS.txt.sigstore.json`, a Sigstore signature over it
 - two SBOMs
-- a provenance attestation
+- a provenance attestation, also attached as `sipnab-<version>.intoto.jsonl`
 - a GHCR image
 - a Homebrew formula
 
-That is thirty-one release assets in all.
+That is thirty-three release assets in all.
 The order is therefore:
 
 - Land the release commit.
@@ -1622,6 +1623,29 @@ Every gnu binary then passes a `readelf -V` gate.
 
 Artifacts are checksummed into `SHA256SUMS.txt` and attested with `actions/attest-build-provenance`.
 So a downloader can run `gh attestation verify <file> --repo NormB/sipnab`.
+
+The attestation lives in GitHub's attestation API, and OpenSSF Scorecard
+cannot see it there. Its Signed-Releases check reads only the asset names of
+the last five releases, and scored 0 through v0.5.231. So the `release` job
+also attaches two files, both made from the job's own OIDC identity with no
+stored key:
+
+- `SHA256SUMS.txt.sigstore.json`, from `cosign sign-blob` over the checksum
+  list. `sigstore/cosign-installer` installs cosign and checks its digest.
+- `sipnab-<version>.intoto.jsonl`, a copy of the bundle that
+  `attest-build-provenance` writes to its `bundle-path` output.
+
+Before the release exists, the job checks both with the commands
+[SECURITY.md](https://github.com/NormB/sipnab/blob/main/SECURITY.md#verifying-a-release) gives users:
+`cosign verify-blob` pinned to this workflow's identity and the Actions OIDC
+issuer, and `gh attestation verify --bundle`. A file that does not verify
+fails the release instead of publishing.
+[`tests/release_signature_assets_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/release_signature_assets_test.rs) holds the job to this: it fails if a
+step stops signing, verifying or uploading either file, or names one with a
+suffix Scorecard does not count.
+
+There is no dry run. The tag-push `release` job is the only one with an OIDC
+identity that can sign, so the first end-to-end run is the next real release.
 
 The macOS builds carry the same kind of floor, arrived at the other way round.
 
