@@ -16,7 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "22.20.4",
-    "typescript": "6.0.3"
+    "typescript": "7.0.2"
   },
   "overrides": {
     "@hono/node-server": "^2.1.3"
