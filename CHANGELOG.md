@@ -54,6 +54,7 @@ entry that carries them.
 ### Dependencies
 
 - Fuzz targets: `smallvec` 1.16.3 → 1.16.4 and `zip` 9.0.5 → 9.1.3 (with `typed-path` 0.12 → 0.13), the `zip` the main crate builds. From Dependabot #611, which proposed `zip` 9.1.2.
+- `rmcp` 3.6.0 → 3.8.0, `jsonschema` 0.60.0 → 0.60.2, `zip` 9.0.5 → 9.1.3, and patch releases of `smallvec` and `unicode-width`. `THIRD-PARTY-NOTICES.md` is regenerated for them. From Dependabot #616.
 
 ## [0.5.231] - 2026-10-27
 

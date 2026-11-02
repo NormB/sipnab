@@ -327,8 +327,8 @@ Files copied into the repository unmodified from another project's release. None
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.6.0 | Apache-2.0 |
-| rmcp-macros | 3.7.0 | Apache-2.0 |
+| rmcp | 3.8.0 | Apache-2.0 |
+| rmcp-macros | 3.8.0 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
@@ -367,7 +367,7 @@ Files copied into the repository unmodified from another project's release. None
 | simd-adler32 | 0.3.9 | MIT |
 | siphasher | 1.0.2 | MIT/Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.16.3 | MIT OR Apache-2.0 |
+| smallvec | 1.16.4 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spin | 0.9.9 | MIT |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
@@ -416,14 +416,14 @@ Files copied into the repository unmodified from another project's release. None
 | tracing-log | 0.2.0 | MIT |
 | tracing-subscriber | 0.3.23 | MIT |
 | try-lock | 0.2.5 | MIT |
-| typed-path | 0.12.3 | MIT OR Apache-2.0 |
+| typed-path | 0.13.0 | MIT OR Apache-2.0 |
 | typenum | 1.20.1 | MIT OR Apache-2.0 |
 | ucd-trie | 0.1.7 | MIT OR Apache-2.0 |
 | unicode-ident | 1.0.24 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-normalization | 0.1.26 | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | unicode-segmentation | 1.13.2 | MIT OR Apache-2.0 |
 | unicode-truncate | 2.0.1 | MIT OR Apache-2.0 |
-| unicode-width | 0.2.2 | MIT OR Apache-2.0 |
+| unicode-width | 0.2.3 | MIT OR Apache-2.0 |
 | untrusted | 0.9.0 | ISC |
 | utf8parse | 0.2.2 | Apache-2.0 OR MIT |
 | utoipa | 6.0.0 | MIT OR Apache-2.0 |
@@ -489,6 +489,6 @@ Files copied into the repository unmodified from another project's release. None
 | zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zeroize | 1.9.1 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
-| zip | 9.0.5 | MIT |
+| zip | 9.1.3 | MIT |
 | zlib-rs | 0.6.7 | Zlib |
 | zmij | 1.0.23 | MIT |
