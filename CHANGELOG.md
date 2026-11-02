@@ -35,6 +35,10 @@ entry that carries them.
   - `e2e/package-lock.json` resolved zod 3.25.76 through `@lhci/cli` → `lighthouse` 12.6.1 → `puppeteer-core` 24.43.1 → `chromium-bidi` 14.0.0, which no zod 3 release fixes.
   - An `overrides` entry in `e2e/package.json` now holds zod at `^4.6.6`. The browser journeys and the Lighthouse budgets pass with it.
   - The accepted-advisory entry for it is removed from `osv-scanner.toml` and from the VEX document.
+- **The site test tooling's `minimatch` 3.1.5 is recorded as not affected by [GHSA-g3hv-75wg-m249](https://osv.dev/vulnerability/GHSA-g3hv-75wg-m249) (CVE-2026-118764).**
+  - osv.dev lists every `minimatch` before 11.0.1 for a pattern amplification in `firstPhasePreProcess()`, which runs when `optimizationLevel` is 2 or more. The advisory, published 2026-10-30, turned "Code scanning has no open alerts" red on every pull request.
+  - The published minimatch 3.1.5 package contains neither function: `grep -rlE 'firstPhasePreProcess|optimizationLevel'` matches no file in it and seven in 11.0.1. It reaches the repository only through `e2e/package-lock.json` (`@lhci/cli` → `chrome-launcher` 0.13.4 → `rimraf` 3 → `glob` 7), and no minimatch 3 release follows it.
+  - `osv-scanner.toml` carries the exception until 2027-01-31, the VEX document states it, and `tests/minimatch_confinement_test.rs` fails if another `minimatch` version is locked, if one appears outside `e2e/`, or once `e2e/` stops locking minimatch 3.
 - **Dependabot watches every dependency file the repository tracks.**
   - The npm lockfiles (`e2e/`, `clients/typescript/`), the hash-pinned Python requirements (`clients/python/`, `scripts/`), the eBPF cargo workspace (`bpf/`) and the local composite actions (`.github/actions/*`) had no entry, so they raised no alerts and got no updates.
   - `tests/dependabot_coverage_test.rs` fails when a dependency file has no entry of its ecosystem and directory.

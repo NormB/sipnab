@@ -73,3 +73,29 @@ decryption and key decoding hash nothing. The test fails if another digest \
 .github/workflows/osv-scanner.yml) fails once a stable rsa 0.10 exists: then \
 move to it and remove this entry.\
 """
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+# Also filed as CVE-2026-118764.
+ignoreUntil = 2027-01-31
+reason = """
+minimatch pattern amplification: firstPhasePreProcess() grows the glob \
+parts list when optimizationLevel >= 2, then compares them pairwise. \
+osv.dev gives the affected range as introduced 0, fixed 11.0.1, which \
+covers 3.1.5 by number, the only minimatch in the repository \
+(e2e/package-lock.json). The mechanism is not in it: in the published \
+minimatch-3.1.5.tgz (LICENSE, README.md, minimatch.js, package.json), \
+`grep -rlE 'firstPhasePreProcess|optimizationLevel'` matches no file, \
+while the same grep over minimatch-11.0.1.tgz matches seven, among them \
+dist/commonjs/index.js and dist/esm/index.js. It is reached only through \
+the site's Lighthouse CI tooling (@lhci/cli 0.15.1 -> chrome-launcher \
+0.13.4 -> rimraf 3.0.2 -> glob 7.2.3 -> minimatch 3.1.5). chrome-launcher \
+calls rimraf only on the browser profile directory it removes on exit, \
+and rimraf 3 reaches glob, and so minimatch, only for a path with glob \
+magic in it, so no pattern an attacker writes is ever matched; nothing \
+in e2e/ ships with sipnab or runs outside CI. No minimatch 3 release \
+follows 3.1.5. tests/minimatch_confinement_test.rs fails if another \
+minimatch version is locked, if one appears outside e2e/, or once e2e/ \
+stops locking minimatch 3: then remove this entry. Re-evaluate when \
+@lhci/cli drops chrome-launcher 0.13.\
+"""
