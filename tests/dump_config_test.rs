@@ -126,7 +126,7 @@ fn dump_config_refuses_what_a_run_refuses() -> Result<(), TestError> {
             "{label}: the refusal must name {names:?}:\n{stderr}"
         );
         let refused =
-            refusal(&stderr).ok_or_else(|| format!("{label}: no ERROR line:\n{stderr}"))?;
+            refusal(&stderr).ok_or_else(|| format!("{label}: no refusal line:\n{stderr}"))?;
 
         let ran = run(&[
             "-N".as_ref(),
@@ -149,16 +149,28 @@ fn dump_config_refuses_what_a_run_refuses() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The message of the first `ERROR` line in `stderr`, without the timestamp,
-/// the level and the module path the log adds.
+/// The refusal in `stderr`: its first line that is not a log line.
+///
+/// A refusal is printed on stderr as it is, never through the log, so that
+/// `SIPNAB_LOG=off` cannot hide it (`tests/startup_refusal_stderr_test.rs`).
+/// The log lines around it start with an RFC 3339 timestamp and a level.
 fn refusal(stderr: &str) -> Option<String> {
-    let line = stderr.lines().find(|l| l.contains(" ERROR "))?;
-    let (_, after) = line.split_once(" ERROR ")?;
-    let message = after
-        .trim_start()
-        .split_once(": ")
-        .map_or(after, |(_, m)| m);
-    Some(message.to_string())
+    stderr
+        .lines()
+        .find(|l| !l.trim().is_empty() && !is_log_line(l))
+        .map(str::to_string)
+}
+
+/// Whether `line` is one the log wrote: a timestamp, then a level.
+fn is_log_line(line: &str) -> bool {
+    let mut words = line.split_whitespace();
+    let stamped = words
+        .next()
+        .is_some_and(|t| t.len() > 20 && t.as_bytes()[4] == b'-' && t.ends_with('Z'));
+    stamped
+        && words
+            .next()
+            .is_some_and(|level| ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"].contains(&level))
 }
 
 /// `-D` shows `[security] kill_scanner_detect_only` as the file set it, so an

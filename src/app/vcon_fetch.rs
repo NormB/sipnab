@@ -1501,7 +1501,7 @@ pub fn run(settings: FetchSettings, uuids: &[String]) -> i32 {
     let fetcher = match Fetcher::new(settings) {
         Ok(f) => f,
         Err(e) => {
-            tracing::error!("{e}");
+            stderr_line!("{e}");
             return 2;
         }
     };

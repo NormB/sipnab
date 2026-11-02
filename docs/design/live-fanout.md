@@ -79,7 +79,7 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:6767`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6767)),
+- `cores_ignored_warning` ([`bootstrap.rs:6783`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6783)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
@@ -135,7 +135,7 @@ that is a log line and a help-text sentence, not a second noun.
 
 `RunMode` gains nothing. Fanout is not a run mode — it is how the `Live` arm of
 `start_capture` constructs its thread. `RunMode::CoresFile`
-([`bootstrap.rs:89`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L89)) stays exactly as it is, still
+([`bootstrap.rs:110`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L110)) stays exactly as it is, still
 requiring `-I`, because it selects the *offline parallel engine*, which live
 capture is not getting.
 

@@ -34,6 +34,7 @@ entry that carries them.
   - `0` for a suite that passed and `2` for one that judged nothing, or one sipnab cannot read, are unchanged, and so is `verdict`.
   - A pipeline that tests for exit `1` after `--expect` must test for `3` instead.
 - **Every exit code is documented.** The exit-code table of the CLI reference, the man page and the error reference now list `101` (sipnab panicked) and `130` (Ctrl-C at the archive password prompt, which no table named), and `3` names every check that exits with it.
+- **A message that stops a run is printed even with `SIPNAB_LOG=off`.** 34 of them went out only as `ERROR` log lines, so with logging off the run exited 1 or 2 and said nothing: a rejected flag combination, a config value sipnab refuses, an input that does not exist, an archive password or run provenance file it cannot use, a signing key or token file it cannot read, a certificate the REST or MCP server cannot load, `--vcon-spool-status` on a path it cannot read, and standard output or an `-O` file that cannot be written. Each is now printed on stderr as it is, without the timestamp and level, once, at every log level. A script that read the `ERROR` level and the module name off these lines no longer finds them.
 
 ### Security
 

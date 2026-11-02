@@ -776,10 +776,7 @@ ok
 ```
 
 ```text
-ERROR sipnab::app::bootstrap: MCP HTTP refuses to start: --mcp-bind 0.0.0.0:8812
-is non-loopback but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN /
---mcp-signing-key / --mcp-signing-key-file / SIPNAB_MCP_SIGNING_KEY was
-supplied. Bind 127.0.0.1, or supply one of them.
+MCP HTTP refuses to start: --mcp-bind 0.0.0.0:8812 is non-loopback but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / --mcp-signing-key / --mcp-signing-key-file / SIPNAB_MCP_SIGNING_KEY was supplied. Bind 127.0.0.1, or supply one of them.
 ```
 
 Now run the script.

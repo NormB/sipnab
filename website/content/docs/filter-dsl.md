@@ -894,7 +894,7 @@ sipnab -N -I capture.pcap --filter 'method == INVITE extra'
 ```
 
 ```text
-2026-10-18T15:41:33.049387Z ERROR sipnab::app::bootstrap: Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
+Invalid --filter expression: a value containing whitespace must be quoted, or AND/OR is missing at position 10: 'INVITE'
   method == INVITE extra
             ^
 valid operators: ==, !=, <, <=, >, >=, =~ (regex)
@@ -908,7 +908,7 @@ sipnab -N -I capture.pcap --filter 'nosuch == 1'
 ```
 
 ```text
-2026-10-18T15:41:33.069669Z ERROR sipnab::app::bootstrap: Invalid --filter expression: unexpected input at position 0: 'nosuch'
+Invalid --filter expression: unexpected input at position 0: 'nosuch'
   nosuch == 1
   ^
 hint: unknown field 'nosuch'
