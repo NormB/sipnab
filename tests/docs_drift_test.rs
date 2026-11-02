@@ -5653,7 +5653,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // website/content/docs/install.md +1, each a table of the two files.
     // Measurement: with any one of the three swapped back to origin/main,
     // the walk reads 1282.
-    const EXPECTED_TABLES: usize = 1283;
+    // 1283 -> 1285: docs/errors.md +1, the `## Exit codes` list, and its site
+    // mirror website/content/docs/errors.md +1. Attributed per file against
+    // HEAD: no other changed page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1285;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

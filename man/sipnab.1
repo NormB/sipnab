@@ -1296,7 +1296,7 @@ The dimensions \fB\-\-compare\-captures\fR diffs, comma\-separated: any of \fBst
 Find which of several capture files hold the dialogs the run's filter selects: \fB\-\-filter\fR, a diagnostic alias such as \fB\-\-problems\fR, and \fB\-\-since\fR/\fB\-\-until\fR.
 .TP
 \fB\-\-expect\fR \fIFILE\fR
-Judge the capture against the expectations in a suite file (\fBsipnab.expect.toml\fR), print each rule's verdict, and exit with the suite's: 0 when every rule that ran passed, 1 when one failed, 2 when no rule ran.
+Judge the capture against the expectations in a suite file (\fBsipnab.expect.toml\fR), print each rule's verdict, and exit with the suite's: 0 when every rule that ran passed, 3 when one failed, 2 when no rule ran.
 .TP
 \fB\-\-relay\-holdings\fR
 Ask the relay named by \fB\-\-rtpengine\-control\fR which calls it is holding right now, print their Call\-IDs, and exit.
@@ -1460,7 +1460,13 @@ Runtime failure \(em capture error, I/O error, a capture file that was not read 
 Invalid usage \(em bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code.
 .TP
 .B 3
-Lint gate tripped \(em \fB\-\-lint \-\-lint\-fail\-on <severity>\fR found a conformance finding at or above that severity. Distinct from \fB1\fR on purpose: the tool worked, the CAPTURE is non\-conformant. Also an invalid vCon container under \fB\-\-vcon\-validate\fR, and the vCon forwarder stopping because the store answered \fB401\fR or \fB403\fR (\fB\-\-vcon\-forward\fR).
+A check failed \(em the tool worked and the input failed a check you asked for. \fB\-\-lint \-\-lint\-fail\-on <severity>\fR found a conformance finding at or above that severity, an \fB\-\-expect\fR rule failed, \fB\-\-vcon\-validate\fR found the container invalid, or the vCon forwarder stopped because the store answered \fB401\fR or \fB403\fR (\fB\-\-vcon\-forward\fR). Distinct from \fB1\fR on purpose: \fB1\fR means the tool failed, \fB3\fR means the input did.
+.TP
+.B 101
+Internal failure \(em sipnab panicked. Its panic hook writes a crash report and ends the process with \fB101\fR. With \fB[crash] core = true\fR it aborts instead, so the kernel can write a core dump, and the shell reports the signal (\fB134\fR for \fBSIGABRT\fR).
+.TP
+.B 130
+Interrupted \(em Ctrl\-C at the archive password prompt (an encrypted \fB.zip\fR or \fB.7z\fR input read on a terminal). sipnab reads nothing more and exits.
 .\" END GENERATED EXIT STATUS
 .SH LICENSE
 MIT OR Apache-2.0. Copyright 2024-2026 Norm Brandinger.

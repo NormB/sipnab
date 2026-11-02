@@ -6,9 +6,11 @@
 //!
 //! The same judgement the MCP `evaluate_expectations` tool returns:
 //! `expect::evaluate`. Its report names the exit status a command line
-//! carries (`exit_code`): 0 when every rule that ran passed, 1 when one
+//! carries (`exit_code`): 0 when every rule that ran passed, 3 when one
 //! failed, 2 when no rule ran. `--expect` exits with it, so a suite in a
-//! repository can fail a build.
+//! repository can fail a build. 3 is the code every sipnab gate uses for "the
+//! tool worked and the input failed a check", so a failed rule is never read
+//! as the runtime failure that 1 means.
 //!
 //! The capture is `tests/pcap-samples/sip-problem-call.pcap`: five INVITE
 //! dialogs, one answered.
@@ -63,18 +65,22 @@ value = 90
 min_sample = 100
 "#;
 
-/// A failing suite exits 1, and its JSON is the MCP tool's report for the
+/// A failing suite exits 3, and its JSON is the MCP tool's report for the
 /// same rules.
 #[test]
-fn a_failing_suite_exits_1_and_matches_mcp() -> Result<(), TestError> {
+fn a_failing_suite_exits_3_and_matches_mcp() -> Result<(), TestError> {
     let (_dir, path) = suite(FAILING)?;
     let mut surfaces = Surfaces::start(PCAP)?;
 
     let run = surfaces.cli(&["--expect", &path, "--json", "--no-cli-print", "--quiet"])?;
-    assert_eq!(run.code, Some(1), "stderr:\n{}", run.stderr);
+    assert_eq!(run.code, Some(3), "stderr:\n{}", run.stderr);
     let mut cli = run.last_json()?;
     assert_eq!(cli["verdict"], "fail", "{cli}");
-    assert_eq!(cli["exit_code"], 1, "{cli}");
+    assert_eq!(cli["exit_code"], 3, "{cli}");
+    assert_eq!(
+        cli["schema_version"], 2,
+        "the exit_code values changed, so the report's shape version did: {cli}"
+    );
     assert_eq!(cli["passed"], 1, "{cli}");
     assert_eq!(cli["failed"], 1, "{cli}");
     assert_eq!(cli["results"][1]["name"], "answered", "{cli}");
@@ -178,7 +184,44 @@ fn the_gate_holds_under_cores() -> Result<(), TestError> {
             "2",
         ],
     )?;
-    assert_eq!(run.code, Some(1), "stderr:\n{}", run.stderr);
+    assert_eq!(run.code, Some(3), "stderr:\n{}", run.stderr);
     assert_eq!(run.last_json()?["failed"], 1);
+    Ok(())
+}
+
+/// A rule that failed and a run that failed exit differently, so a CI step
+/// reading only `$?` can tell "the capture broke the rules" (3) from "sipnab
+/// could not read the capture" (1).
+///
+/// The failed run is the same capture cut short in the middle of a packet,
+/// judged by a suite that passes on the whole file, so only the read differs.
+#[test]
+fn a_failed_rule_and_a_failed_run_exit_differently() -> Result<(), TestError> {
+    let (_failing_dir, failing) = suite(FAILING)?;
+    let failed_rule = run_cli(PCAP, &["--expect", &failing, "--no-cli-print", "--quiet"])?;
+
+    let whole = std::fs::read(PCAP)?;
+    let cut = tempfile::tempdir()?;
+    let truncated = cut.path().join("truncated.pcap");
+    std::fs::write(&truncated, &whole[..whole.len() - 7])?;
+    let truncated = truncated.to_str().ok_or("a UTF-8 temp path")?.to_string();
+    let (_passing_dir, passing) = suite(PASSING)?;
+    let failed_run = run_cli(
+        &truncated,
+        &["--expect", &passing, "--no-cli-print", "--quiet"],
+    )?;
+
+    assert_eq!(
+        failed_run.code,
+        Some(1),
+        "control: a capture not read in full is a runtime failure, exit 1\nstderr:\n{}",
+        failed_run.stderr
+    );
+    assert_eq!(
+        failed_rule.code,
+        Some(3),
+        "a failed rule must not share exit 1 with a failed run\nstderr:\n{}",
+        failed_rule.stderr
+    );
     Ok(())
 }

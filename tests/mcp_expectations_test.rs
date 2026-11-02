@@ -75,7 +75,7 @@ fn the_gate_goes_red_on_the_capture_that_violates_it() -> Result<(), TestError> 
         })),
     )?;
     assert_eq!(red["verdict"], "fail", "{red}");
-    assert_eq!(red["exit_code"], 1, "{red}");
+    assert_eq!(red["exit_code"], 3, "{red}");
     assert_eq!(red["results"][0]["observed"], 1.0, "{red}");
     assert_eq!(
         red["results"][0]["sample"], 4,
@@ -114,7 +114,7 @@ fn an_asr_gate_with_nothing_to_judge_fails_rather_than_reporting_green() -> Resu
         "1334 dialogs and no INVITE among them: the threshold rests on nothing, \
          and must not pass: {unevaluable}"
     );
-    assert_eq!(unevaluable["exit_code"], 1);
+    assert_eq!(unevaluable["exit_code"], 3);
     assert_eq!(unevaluable["results"][0]["sample"], 0);
     assert!(
         unevaluable["results"][0]["reason"]

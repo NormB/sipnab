@@ -19,7 +19,7 @@ use super::one_shot::OneShot;
 pub struct GateArgs {
     /// Judge the capture against the expectations in a suite file
     /// (`sipnab.expect.toml`), print each rule's verdict, and exit with the
-    /// suite's: 0 when every rule that ran passed, 1 when one failed, 2 when
+    /// suite's: 0 when every rule that ran passed, 3 when one failed, 2 when
     /// no rule ran.
     ///
     /// Each rule names a metric (`count`, `asr`, `lint_errors`, `mos_p<N>`),

@@ -1580,7 +1580,7 @@ mod tests {
                 .map_err(|e| format!("the suite evaluates: {e:?}"))?,
         )?;
         assert_eq!(v["verdict"], "fail", "{v}");
-        assert_eq!(v["exit_code"], 1);
+        assert_eq!(v["exit_code"], 3);
         assert_eq!(v["results"][0]["observed"], 1.0);
         assert_eq!(v["results"][0]["name"], "no codec rejections");
         assert!(

@@ -1174,7 +1174,7 @@ out the end-of-run summary on stderr.
 | `--compare-captures` | `<A> <B>` | | 0.5.231 | Compare two capture files: for each dimension, the dialogs per value in A (the baseline) and B, and the change, largest movement first. Needs no `-I`. `--json` prints the shape of `GET /v1/captures/compare`. The same file twice exits 2; a file that yields no dialogs exits 1 |
 | `--compare-dimensions` | `<DIMENSIONS>` | `state,response_code` | 0.5.231 | The dimensions `--compare-captures` diffs, comma-separated, from the `--count-by` set. Any other exits 2. Needs `--compare-captures` |
 | `--find-in-files` | `<PATH>...` | | 0.5.231 | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
-| `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `1` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns |
+| `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns |
 | `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native` |
 | `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Needs `--relay-holdings`; `0` exits 2 |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
@@ -1887,7 +1887,9 @@ no busy answers: 1 is NOT == 0 over 5 dialog(s)
 The run exits with the suite's verdict:
 
 - `0`: every rule that ran passed.
-- `1`: at least one rule failed, as here.
+- `3`: at least one rule failed, as here. `3` is the code every sipnab check
+  exits with when the input fails it, so a pipeline can tell a failed rule
+  from a run that failed (`1`).
 - `2`: no rule ran, because every rule's population was below the
   `min_sample` it declared. A suite that checked nothing does not pass.
 
@@ -1904,7 +1906,7 @@ sipnab -I tests/pcap-samples/sip-problem-call.pcap --expect tests/fixtures/expec
 ```
 
 ```json
-{"verdict":"fail","exit_code":1,"failed":["answer-seizure ratio","no busy answers"]}
+{"verdict":"fail","exit_code":3,"failed":["answer-seizure ratio","no busy answers"]}
 ```
 
 ### Ask the relay which calls it holds
@@ -3127,12 +3129,14 @@ Scripts can rely on these:
 | `0` | Success |
 | `1` | Runtime failure — capture error, I/O error, a capture file that was not read in full (a truncated pcap, a member that would not open, a BPF filter that would not compile against one), a `--plugin` that would not load, or sipnab could not produce a requested report (e.g. `--call-report` Call-ID not found). Also a refused configuration: a config file sipnab cannot read, or a value in it sipnab refuses, whichever startup step refuses it |
 | `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code |
-| `3` | Lint gate tripped — `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity. Distinct from `1` on purpose: the tool worked, the CAPTURE is non-conformant. Also an invalid vCon container under `--vcon-validate`, and the vCon forwarder stopping because the store answered `401` or `403` (`--vcon-forward`) |
+| `3` | A check failed — the tool worked and the input failed a check you asked for. `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity, an `--expect` rule failed, `--vcon-validate` found the container invalid, or the vCon forwarder stopped because the store answered `401` or `403` (`--vcon-forward`). Distinct from `1` on purpose: `1` means the tool failed, `3` means the input did |
+| `101` | Internal failure — sipnab panicked. Its panic hook writes a crash report and ends the process with `101`. With `[crash] core = true` it aborts instead, so the kernel can write a core dump, and the shell reports the signal (`134` for `SIGABRT`) |
+| `130` | Interrupted — Ctrl-C at the archive password prompt (an encrypted `.zip` or `.7z` input read on a terminal). sipnab reads nothing more and exits |
 
-`--expect` exits with its suite's verdict instead, the `exit_code` its report
-carries: `0` every rule that ran passed, `1` a rule failed, `2` no rule ran or
-the suite itself is at fault. A run that fails for another reason exits `1`
-first, and a tripped `--lint-fail-on` gate exits `3` before the suite's code.
+`--expect` exits with its suite's verdict, the `exit_code` its report
+carries: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran
+(no verdict) or the suite itself is at fault. A run that fails for another
+reason exits `1` first, so `1` never means a failed rule.
 
 [Error messages](@/docs/errors.md) lists the message sipnab prints with a non-zero
 exit code, what it means, and what to do.
