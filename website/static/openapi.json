@@ -2288,18 +2288,18 @@
         "type": "object"
       },
       "CorrelatedLeg": {
-        "description": "One other leg of a call, and the strategy that matched it. The fields\nmirror the MCP `find_correlated` tool's `CorrelatedLeg`, built from the\none `CorrelationResult::strategy_and_gap` rule so the two surfaces cannot\ndisagree about whether a strategy is an identifier match.",
+        "description": "One other leg of a call, and the strategy that matched it.\n\nOne type for every surface: `GET /v1/dialogs/{call_id}/correlated`,\n`--correlate --json` and the MCP `find_correlated` tool all return it, so\nan agent and a REST client read the same description of each field. The\nstrategy vocabulary comes from the one\n`CorrelationResult::strategy_and_gap` rule.",
         "properties": {
           "call_id": {
-            "description": "Call-ID of the correlated dialog. Feed it to `/v1/dialogs/{call_id}`.",
+            "description": "Call-ID of the correlated dialog. Pass it to `/v1/dialogs/{call_id}`\non REST, or to the `get_dialog` tool on MCP, for its detail.",
             "type": "string"
           },
           "identifier_match": {
-            "description": "True when the strategy compared identifiers, false for a guess.",
+            "description": "True when the strategy compared identifiers, false for a guess.\n\nPresent so a caller can filter on the distinction without having to\nknow which strategy names mean what.",
             "type": "boolean"
           },
           "observed_gap_ms": {
-            "description": "For `timing_heuristic` only: the observed gap between the two\ndialogs' creation, in milliseconds. Null for an identifier match,\nwhere it would be a number with no bearing on why they matched.",
+            "description": "For `timing_heuristic` only: the observed gap between the two\ndialogs' creation, in milliseconds. Null for an identifier match,\nwhere it would be a number with no bearing on why they matched.\n\nThe evidence behind the guess, so a reader can judge it. A 15 ms gap on\na quiet box and a 1,900 ms gap on a busy SBC score identically and mean\nvery different things.",
             "format": "int64",
             "type": [
               "integer",
@@ -2314,7 +2314,7 @@
             "type": "integer"
           },
           "strategy": {
-            "description": "Which strategy matched, by name: `session_id`, `x_call_id`,\n`sdp_origin`, `charging_vector_related_icid`, `charging_vector_icid`,\n`via_branch` or `timing_heuristic`.",
+            "description": "Which strategy matched, by name: `session_id`, `x_call_id`,\n`sdp_origin`, `charging_vector_related_icid`, `charging_vector_icid`,\n`via_branch` or `timing_heuristic`. The decisive field.\n\n`session_id` and `x_call_id` both score 100 and are not the same claim:\none is an RFC 7989 identifier designed to cross a B2BUA, the other a\nvendor header someone configured. `charging_vector_related_icid` and\n`charging_vector_icid` come out of ONE header and are likewise not the\nsame claim: RFC 7315's `related-icid` is an intermediary declaring the\nlink across a B2BUA, while plain `icid-value` equality is silent across\na conformant one, because an ICID identifies a dialog and a B2BUA is\ntwo. `timing_heuristic` is not an identifier at all.",
             "type": "string"
           }
         },

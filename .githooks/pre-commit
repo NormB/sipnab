@@ -37,6 +37,26 @@ elif [ -n "$HOOK_TREE" ] && [ "$HOOK_OWN_DIR" != "$(CDPATH='' cd -- "$HOOK_TREE"
 	exit 1
 fi
 
+# ── Prerequisites: the gitignored inputs the gates read ─────────────
+# git carries none of them, so a fresh worktree has none. This hook used to
+# find them missing deep into its run: pre-commit 25 minutes into the suite
+# (52 G.729 tests, crates/g729/test-vectors empty), pre-push at its prose
+# gate (no .vale/styles/Google). They are checked first, and each missing one
+# is printed with the command that fixes it. The rule is
+# scripts/check-hook-prerequisites.py; its G.729 check reads the pins of
+# scripts/fetch-g729-vectors.py, so the hook and the fetch cannot disagree.
+# Like the same-checkout check above, this is a precondition of running the
+# gates, not a gate: CI provisions these inputs itself, so nothing in CI
+# mirrors it, and it is not one of the hook's counted gates.
+if [ -f scripts/check-hook-prerequisites.py ]; then
+	if ! python3 scripts/check-hook-prerequisites.py pre-commit; then
+		echo "No gate ran: fetch the missing inputs above, then try again." >&2
+		exit 1
+	fi
+else
+	echo "  Prerequisites... NOT CHECKED -- scripts/check-hook-prerequisites.py is not on this branch"
+fi
+
 echo -e "${YELLOW}Running pre-commit checks...${NC}"
 
 # ── Naming what failed ─────────────────────────────────────────────

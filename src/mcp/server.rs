@@ -2044,39 +2044,6 @@ pub struct FindCorrelatedParams {
     pub limit: Option<u32>,
 }
 
-/// One leg correlated to the requested dialog.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
-#[schemars(crate = "rmcp::schemars")]
-pub struct CorrelatedLeg {
-    /// Call-ID of the correlated dialog. Feed it to `get_dialog` for detail.
-    pub call_id: String,
-    /// Confidence, 0-100.
-    pub score: u8,
-    /// WHICH strategy matched, by name. The decisive field.
-    ///
-    /// `session_id` and `x_call_id` both score 100 and are not the same claim:
-    /// one is an RFC 7989 identifier designed to cross a B2BUA, the other a
-    /// vendor header someone configured. `charging_vector_related_icid` and
-    /// `charging_vector_icid` come out of ONE header and are likewise not the
-    /// same claim: RFC 7315's `related-icid` is an intermediary declaring the
-    /// link across a B2BUA, while plain `icid-value` equality is silent across
-    /// a conformant one, because an ICID identifies a dialog and a B2BUA is
-    /// two. `timing_heuristic` is not an identifier at all.
-    pub strategy: String,
-    /// True when this strategy compared identifiers. False for a guess.
-    ///
-    /// Present so a caller can filter on the distinction without having to know
-    /// which strategy names mean what.
-    pub identifier_match: bool,
-    /// For `timing_heuristic` only: the observed gap between the two dialogs'
-    /// creation, in milliseconds.
-    ///
-    /// The evidence behind the guess, so a reader can judge it. A 15 ms gap on
-    /// a quiet box and a 1,900 ms gap on a busy SBC score identically and mean
-    /// very different things.
-    pub observed_gap_ms: Option<i64>,
-}
-
 /// What `find_correlated` returns.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -2085,8 +2052,10 @@ pub struct FindCorrelatedResponse {
     pub schema_version: u32,
     /// The Call-ID that was asked about.
     pub source_call_id: String,
-    /// Legs correlated to it, best first.
-    pub legs: Vec<CorrelatedLeg>,
+    /// Legs correlated to it, best first. The type REST's
+    /// `GET /v1/dialogs/{call_id}/correlated` returns, so both surfaces
+    /// describe a leg alike.
+    pub legs: Vec<crate::output::query::correlated::CorrelatedLeg>,
     /// Total correlated legs found, before `limit` truncated the list.
     pub total_matched: usize,
     /// True when every returned leg came from a heuristic rather than an
@@ -8945,17 +8914,7 @@ impl SipnabMcp {
             // that function, which reads `CorrelationResult::strategy_and_gap`
             // and `heuristic_only`: one rule, so `get_call_tree`, REST and
             // this tool cannot disagree about what is a guess.
-            let legs: Vec<CorrelatedLeg> = answer
-                .legs
-                .into_iter()
-                .map(|l| CorrelatedLeg {
-                    call_id: l.call_id,
-                    score: l.score,
-                    strategy: l.strategy,
-                    identifier_match: l.identifier_match,
-                    observed_gap_ms: l.observed_gap_ms,
-                })
-                .collect();
+            let legs = answer.legs;
             // Only when a time-based match is actually being reported. Sending
             // the clock unconditionally would invite a reader to weigh it
             // against identifier matches, which do not depend on it at all.
