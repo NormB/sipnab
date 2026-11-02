@@ -69005,7 +69005,7 @@ The Linux leg of the Check job, the Features job and the `Quality` workflow's Co
 - The four self-hosted runners share one machine's 14 cores with the local gates' build queue.
   - On 2026-10-27 that queue held about 20 entries with a wait of about two hours.
   - The runners' test jobs were among the busiest processes on the machine.
-  - Norm moved the three jobs back to GitHub's runners that day.
+  - The three jobs moved back to GitHub's runners that day.
 - Measured on the self-hosted machine on 2026-10-09, with a load average of 20 to 35 on its 14 cores from other work:
   - The Check job's Test step (`cargo test --all-features`) took 9.9 and 11.9 minutes with a warm build directory.
     It used 30 CPU-minutes and 16.4 GiB peak resident memory.

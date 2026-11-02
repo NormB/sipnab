@@ -51,7 +51,7 @@ jobs:
     # runners share one machine's 14 cores with the local gates' build queue,
     # and on 2026-10-27 that queue held about 20 entries with a wait of about
     # two hours while these jobs were among the busiest processes on the
-    # machine; Norm moved the three back that day. The job keeps the shape
+    # machine, so the three moved back that day. The job keeps the shape
     # that let it run there: the runner-target step and the guards on the
     # steps written for a disposable VM (free-disk, the cargo cache) mean
     # routing it back is a change to the line below alone, and
@@ -635,12 +635,12 @@ jobs:
   rpm-packaging:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes.
-    # 0.1 to 0.2 min on GitHub's runners; 0.4 min on the x86_64 self-hosted
-    # runner (pull request #601, run 40735575581).
-    # Slowest run measured on the self-hosted runners: 0.4 min
+    # 0.1 to 0.2 min on GitHub's runners; 0.5 min (29 s) on the x86_64
+    # self-hosted runner (pull request #601, run 40735575581).
+    # Slowest run measured on the self-hosted runners: 0.5 min
     timeout-minutes: 10
     name: RPM packaging (build-rpm.sh)
-    # Self-hosted because: Norm approved one light x86_64 job for the x86_64 self-hosted runner on 2026-10-27, and this is the lightest that runs there unchanged.
+    # Self-hosted because: the x86_64 self-hosted runner was added on 2026-10-27 to add CI capacity beside the aarch64 ones, and this is the lightest job that runs there unchanged.
     # That runner is a four-core VM with 6 GB of memory, registered for this
     # repository only, and holds one Rust build at a time. This job builds no
     # Rust: rpmbuild over stub ELFs. Every package it names (rpm, patchelf,
@@ -830,8 +830,11 @@ jobs:
   # suite still runs under `check`.
   features:
     # Bounds how long this job can hold the main-branch concurrency
-    # group, which never supersedes. Observed: 7.2 min slowest combo.
-    # Slowest run measured on GitHub's runners: 7.2 min
+    # group, which never supersedes. Observed: 7.2 min slowest combo before
+    # 2026-09-29; 13.4 min, the headless recipe leg (its full test suite took
+    # 10.1 of them), on ubuntu-24.04-arm with no cargo cache to restore (pull
+    # request #601, run 40815803913). The timeout clears it by half again.
+    # Slowest run measured on GitHub's runners: 13.4 min
     timeout-minutes: 30
     name: Features (${{ matrix.features }})
     # GitHub's ubuntu-24.04-arm, which keeps the aarch64 builds these legs had.

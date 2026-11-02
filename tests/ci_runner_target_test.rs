@@ -400,7 +400,7 @@ fn job<'a>(jobs: &'a [Job], workflow: &str, id: &str) -> Result<&'a Job, TestErr
 /// cores with the local gates' build queue, and on 2026-10-27 that queue held
 /// about 20 entries with a wait of about two hours while the runners' test
 /// jobs were among the busiest processes on the machine. The repository is
-/// public, so GitHub's runners cost nothing; Norm moved the three back on
+/// public, so GitHub's runners cost nothing, and the three moved back on
 /// 2026-10-27. `ubuntu-24.04-arm` keeps the aarch64 builds these jobs had.
 #[test]
 fn the_per_push_jobs_run_on_github_hosted_runners() -> Result<(), TestError> {
