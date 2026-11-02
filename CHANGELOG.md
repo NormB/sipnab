@@ -59,6 +59,7 @@ entry that carries them.
 - TypeScript MCP client: `typescript` 6.0.3 → 7.0.2, the native compiler. `tsconfig.json` needs no change: it sets none of the options 7.0 turns into errors. From Dependabot #613.
 - Python clients: `mcp` 2.2.0 → 2.3.0, `pydantic` 2.13.5 → 2.14.1, `starlette` 1.7.0 → 1.10.0, `pytest` 9.0.3 → 9.2.0 and fourteen other pins in `clients/python/requirements-*.txt`, each by hash. From Dependabot #614.
 - GitHub Actions: `taiki-e/install-action` 2.87.30 → 2.87.32 and `docker/login-action` 4.6.0 → 4.7.0. From Dependabot #615.
+- eBPF capture backend (`bpf` feature): `aya` 0.14 → 0.15. aya 0.15 opens a per-CPU ring and publishes it in the map as two calls instead of one, takes the ring size as an argument, and attaches a uprobe to a list of points. The backend now publishes every ring it opens and fails the attach, naming the CPU, when one cannot be opened or published; it keeps the two-page rings 0.14 chose, and keeps the map in the loaded object for as long as the rings are read. From Dependabot #610.
 
 ## [0.5.231] - 2026-10-27
 
