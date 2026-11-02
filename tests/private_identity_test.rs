@@ -838,6 +838,169 @@ fn message_script_refuses_a_run_that_checked_nothing() -> Result<(), TestError> 
     Ok(())
 }
 
+/// More bytes than a Linux pipe holds (64 KiB), so a writer feeding a reader
+/// that stops early is still writing when the reader exits.
+const PAST_A_PIPE_BUFFER: usize = 1 << 20;
+
+/// Run the script with a stand-in test binary that prints `output` and exits
+/// with `code`, and return the script's exit code and output.
+///
+/// The stand-in is a shell script that `cat`s a file, so the output can be any
+/// size and is exactly what the test wrote.
+fn run_message_script_on_output(
+    output: &str,
+    code: i32,
+    tag: &str,
+) -> Result<(i32, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let printed = dir.path().join("printed.txt");
+    std::fs::write(&printed, output)?;
+    let bin = dir.path().join("stand-in-test-binary");
+    executable::write_executable(
+        &bin,
+        &format!("#!/bin/sh\ncat '{}'\nexit {code}\n", printed.display()),
+    )?;
+    run_message_script_with("Fix the parser\n", tag, bin.as_os_str())
+}
+
+/// libtest's report of a failed run of [`MESSAGE_TEST`], with `findings` as
+/// the lines of the test's own panic message and `after` printed after the
+/// backtrace note.
+fn failed_message_test_output(findings: &str, after: &str) -> String {
+    format!(
+        "\nrunning 1 test\ntest {MESSAGE_TEST} ... FAILED\n\nfailures:\n\n\
+         ---- {MESSAGE_TEST} stdout ----\n\n\
+         thread '{MESSAGE_TEST}' (1) panicked at tests/private_identity_test.rs:1:1:\n\
+         {findings}\n\
+         note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\
+         {after}\n\nfailures:\n    {MESSAGE_TEST}\n\n\
+         test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 103 filtered out\n"
+    )
+}
+
+/// M7b. A message with findings fails the script with exit 1 however long
+/// the list of findings is.
+///
+/// Coverage on pull request #601 failed M6 with "the check failed before it
+/// read the message" although the output named the finding. The script fed
+/// the findings to `grep -q` through a pipe under `set -o pipefail`: `grep -q`
+/// exits at its first match, the `printf` writing to it then dies of SIGPIPE
+/// (exit 141) while it still has output to write, and pipefail fails the
+/// pipeline although `grep` matched. With a short list the race is lost about
+/// once in a few thousand runs on a loaded host (measured 2026-11-02: one in
+/// 2400 with every core busy); with more output than a pipe holds it is lost
+/// every time, so this test does not depend on timing.
+#[test]
+fn message_script_reports_a_long_list_of_findings() -> Result<(), TestError> {
+    let line = "  line 3: class A: Measured on the host.\n    Name what the machine IS.";
+    let mut findings = String::from("the message in message.txt names a private identity.");
+    while findings.len() < PAST_A_PIPE_BUFFER {
+        findings.push('\n');
+        findings.push_str(line);
+    }
+    let (rc, out) =
+        run_message_script_on_output(&failed_message_test_output(&findings, ""), 101, "long")?;
+    assert_eq!(
+        rc,
+        1,
+        "a message with findings must fail with exit 1:\n{}",
+        &out[..out.len().min(2000)]
+    );
+    assert!(
+        out.starts_with("the message in message.txt names a private identity."),
+        "the script must print the findings: {}",
+        &out[..out.len().min(2000)]
+    );
+    Ok(())
+}
+
+/// M7c. The findings are read correctly when more output follows them than a
+/// pipe holds.
+///
+/// The script cuts the findings out of the test's output with an `awk` that
+/// exits at the backtrace note. Fed through a pipe under `set -o pipefail`,
+/// the writer died of SIGPIPE once `awk` had exited, and `set -e` ended the
+/// script with exit 141 before it reported anything.
+#[test]
+fn message_script_reads_findings_followed_by_long_output() -> Result<(), TestError> {
+    let after = "x".repeat(79).repeat(PAST_A_PIPE_BUFFER / 79 + 1);
+    let output = failed_message_test_output(
+        "the message in message.txt names a private identity.\n  line 3: class A: planted",
+        &after,
+    );
+    let (rc, out) = run_message_script_on_output(&output, 101, "trailing")?;
+    assert_eq!(
+        rc,
+        1,
+        "a message with findings must fail with exit 1:\n{}",
+        &out[..out.len().min(2000)]
+    );
+    assert!(
+        out.contains("line 3: class A") && !out.contains("xxxx"),
+        "the script must print the findings and nothing after the note:\n{}",
+        &out[..out.len().min(2000)]
+    );
+    Ok(())
+}
+
+/// M7d. A clean run passes when more output follows libtest's summary than a
+/// pipe holds.
+///
+/// The script looks for `test result: ok. 1 passed` with `grep -q` on a pipe
+/// under `set -o pipefail`, the same race as M7b: a match followed by more
+/// output read as "NOT CHECKED".
+#[test]
+fn message_script_passes_a_clean_run_followed_by_long_output() -> Result<(), TestError> {
+    let after = "y".repeat(79).repeat(PAST_A_PIPE_BUFFER / 79 + 1);
+    let output = format!(
+        "\nrunning 1 test\ntest {MESSAGE_TEST} ... ok\n\n\
+         test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 103 filtered out\n{after}\n"
+    );
+    let (rc, out) = run_message_script_on_output(&output, 0, "clean-long")?;
+    assert_eq!(
+        rc,
+        0,
+        "a clean run must pass:\n{}",
+        &out[..out.len().min(2000)]
+    );
+    assert!(out.is_empty(), "the script is quiet on success");
+    Ok(())
+}
+
+/// M7e. The script never decides from a pipe into a reader that can stop
+/// before the writer is done.
+///
+/// M7b to M7d drive the three places the race bit. This holds the rest of the
+/// script to the same rule: `grep -q` exits at its first match and `awk`
+/// at `exit`, and under `set -o pipefail` the writer's SIGPIPE then fails the
+/// pipeline. The script reads captured text from a here-string instead, which
+/// no writer process feeds. split_debuginfo_test.rs holds
+/// scripts/split-debuginfo.sh to the same rule.
+#[test]
+fn message_script_never_pipes_into_a_reader_that_stops_early() -> Result<(), TestError> {
+    let script = std::fs::read_to_string(repo().join(MESSAGE_SCRIPT))
+        .map_err(|e| format!("{MESSAGE_SCRIPT}: {e}"))?;
+    let offenders: Vec<(usize, &str)> = script
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| !l.trim_start().starts_with('#'))
+        .filter(|(_, l)| {
+            let piped: Vec<&str> = l.split('|').skip(1).map(str::trim_start).collect();
+            piped
+                .iter()
+                .any(|s| s.starts_with("grep") || s.starts_with("awk"))
+        })
+        .map(|(i, l)| (i + 1, l.trim()))
+        .collect();
+    assert!(
+        offenders.is_empty(),
+        "{MESSAGE_SCRIPT} pipes into `grep` or `awk`, which can stop reading \
+         before the writer is done; under pipefail the writer's SIGPIPE fails \
+         the pipeline. Read a here-string instead: {offenders:?}"
+    );
+    Ok(())
+}
+
 /// Run `scripts/check-message-identity.sh` with a stand-in `cargo` first on
 /// `PATH`, and return the script's exit code, its output and the arguments it
 /// passed to cargo.
