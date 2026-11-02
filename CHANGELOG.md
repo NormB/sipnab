@@ -51,6 +51,10 @@ entry that carries them.
   - `tests/dependabot_coverage_test.rs` fails when a dependency file has no entry of its ecosystem and directory.
 - **The git hooks refuse a fresh worktree in seconds, naming the command for each missing input.** `.githooks/pre-commit` reached its suite in a new worktree and failed there about 25 minutes in, on 52 G.729 tests: `crates/g729/test-vectors/` is gitignored and only `python3 scripts/fetch-g729-vectors.py` fills it. `.githooks/pre-push` died the same way at its prose gate on the missing `.vale/styles/Google`, which only `vale sync` writes. Both hooks now run `scripts/check-hook-prerequisites.py` before any gate. It prints each missing input with its command and stops. The G.729 check is `fetch-g729-vectors.py --check`, which reads the same pins a fetch writes and downloads nothing.
 
+### Dependencies
+
+- Fuzz targets: `smallvec` 1.16.3 → 1.16.4 and `zip` 9.0.5 → 9.1.3 (with `typed-path` 0.12 → 0.13), the `zip` the main crate builds. From Dependabot #611, which proposed `zip` 9.1.2.
+
 ## [0.5.231] - 2026-10-27
 
 ### Security
