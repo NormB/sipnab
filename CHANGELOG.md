@@ -57,6 +57,7 @@ entry that carries them.
 - `rmcp` 3.6.0 → 3.8.0, `jsonschema` 0.60.0 → 0.60.2, `zip` 9.0.5 → 9.1.3, and patch releases of `smallvec` and `unicode-width`. `THIRD-PARTY-NOTICES.md` is regenerated for them. From Dependabot #616.
 - TypeScript MCP client: `@modelcontextprotocol/sdk` 1.32.1 → 1.32.2. Site test tooling: `@playwright/test` 1.62.1 → 1.64.1 and `@axe-core/playwright` 4.13.0 → 4.14.0. From Dependabot #612.
 - TypeScript MCP client: `typescript` 6.0.3 → 7.0.2, the native compiler. `tsconfig.json` needs no change: it sets none of the options 7.0 turns into errors. From Dependabot #613.
+- Python clients: `mcp` 2.2.0 → 2.3.0, `pydantic` 2.13.5 → 2.14.1, `starlette` 1.7.0 → 1.10.0, `pytest` 9.0.3 → 9.2.0 and fourteen other pins in `clients/python/requirements-*.txt`, each by hash. From Dependabot #614.
 
 ## [0.5.231] - 2026-10-27
 
