@@ -58,6 +58,7 @@ entry that carries them.
 - TypeScript MCP client: `@modelcontextprotocol/sdk` 1.32.1 → 1.32.2. Site test tooling: `@playwright/test` 1.62.1 → 1.64.1 and `@axe-core/playwright` 4.13.0 → 4.14.0. From Dependabot #612.
 - TypeScript MCP client: `typescript` 6.0.3 → 7.0.2, the native compiler. `tsconfig.json` needs no change: it sets none of the options 7.0 turns into errors. From Dependabot #613.
 - Python clients: `mcp` 2.2.0 → 2.3.0, `pydantic` 2.13.5 → 2.14.1, `starlette` 1.7.0 → 1.10.0, `pytest` 9.0.3 → 9.2.0 and fourteen other pins in `clients/python/requirements-*.txt`, each by hash. From Dependabot #614.
+- GitHub Actions: `taiki-e/install-action` 2.87.30 → 2.87.32 and `docker/login-action` 4.6.0 → 4.7.0. From Dependabot #615.
 
 ## [0.5.231] - 2026-10-27
 
