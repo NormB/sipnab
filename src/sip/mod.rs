@@ -38,6 +38,8 @@ pub mod stack_fingerprint;
 pub mod stir_shaken;
 pub mod talkers;
 pub mod termination;
+#[cfg(feature = "tls")]
+pub mod th_callid;
 pub mod timing;
 
 pub use message::{SipHeader, SipMessage};

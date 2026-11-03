@@ -50,6 +50,8 @@ fn export_vcon_names_the_other_leg() -> Result<(), TestError> {
         let body = &attachment["body"];
         assert_eq!(body["legs"][0]["uuid"], other["uuid"], "{body}");
         assert_eq!(body["legs"][0]["identifier_match"], true, "{body}");
+        // How the tie was made, in the vocabulary `find_correlated` uses.
+        assert_eq!(body["legs"][0]["method"], "header", "{body}");
     }
     Ok(())
 }

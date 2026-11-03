@@ -919,7 +919,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/check-rustfmt.sh three times (the format gate in CI's check
     // job, in pre-commit and in pre-push) and bpf/rust-toolchain.toml once
     // (the pre-push bpf clippy gate).
-    const EXPECTED_CODE_LINKS: usize = 741;
+    // 741 -> 742: docs/internals/mcp.md links src/sip/th_callid.rs from its
+    // section on the topology-hiding join (#617).
+    const EXPECTED_CODE_LINKS: usize = 742;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -670,10 +670,11 @@ whose two calls share an SDP origin:
   "source_call_id": "1-1966@10.0.2.20",
   "legs": [
     { "call_id": "1-1968@10.0.2.20", "score": 90, "strategy": "sdp_origin",
-      "identifier_match": true, "observed_gap_ms": null }
+      "method": "sdp", "identifier_match": true, "observed_gap_ms": null }
   ],
   "total_matched": 1,
   "heuristic_only": false,
+  "th_callid": null,                // set only for an OpenSIPS topology-hiding leg
   "capture_identity": {
     "node": "capture-01",
     "instance": "12cfb618df00766c6ccc3d-2",
@@ -694,6 +695,7 @@ the same claim:
 | `session_id` | [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID` matched | **Yes, by design** |
 | `x_call_id` | A configured header matched (none configured by default) | Only if the SBC inserts it |
 | `charging_vector_related_icid` | One leg's [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
+| `th_callid_decoded` | One leg's OpenSIPS `topology_hiding("C")` Call-ID decodes, with the configured secret, to the other leg's Call-ID, and the From tags match ([Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)) | Yes, for OpenSIPS with the secret configured |
 | `sdp_origin` | The [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) SDP origin tuple matched | Only if the SBC forwards SDP untouched |
 | `charging_vector_icid` | Both legs carry the same RFC 7315 `icid-value` | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `via_branch` | Two INVITEs shared a Via branch | No: a new transaction gets a new branch |
@@ -725,6 +727,20 @@ Neither strategy puts the matched ICID in the response, because
 [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6)'s
 suggested construction embeds the generating proxy's hostname or address in
 it.
+
+`method` groups the strategies by what sipnab compared the legs on:
+
+- `decoded` is `th_callid_decoded`.
+- `header` is `session_id`, `x_call_id`, both charging-vector strategies and
+  `via_branch`.
+- `sdp` is `sdp_origin`.
+- `timing` is `timing_heuristic`.
+
+`th_callid` has a value only when the source is the callee-side leg of an OpenSIPS
+`topology_hiding("C")` call: `decoded`, `no_secret`, `undecodable` or
+`unmatched`, as
+[Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)
+explains.
 
 `identifier_match` is `true` when the leg matched on a value both legs carry,
 and `false` for `timing_heuristic`. `heuristic_only` is `true` when *every*
@@ -771,6 +787,7 @@ its first three keys:
       "parent_call_id": null,
       "score": null,
       "strategy": null,
+      "method": null,
       "identifier_match": null,
       "followed": true,
       "dialog": { "call_id": "1-1966@10.0.2.20", "state": "Completed", "method": "INVITE" }
@@ -781,6 +798,7 @@ its first three keys:
       "parent_call_id": "1-1966@10.0.2.20",
       "score": 90,
       "strategy": "sdp_origin",
+      "method": "sdp",
       "identifier_match": true,
       "followed": true,
       "dialog": { "call_id": "1-1968@10.0.2.20", "state": "InCall", "method": "INVITE" }

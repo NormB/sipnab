@@ -5030,7 +5030,8 @@ pub fn read_config(cli: &Cli) -> Result<LoadedConfig, PlanError> {
 /// # Side effects
 ///
 /// Mutates process-global parser and dialog-store limits via
-/// `set_parser_limits` / `set_max_messages_per_dialog`.
+/// `set_parser_limits` / `set_max_messages_per_dialog`, and installs the
+/// topology-hiding Call-ID decoder via `set_th_callid` (`tls` builds).
 pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, PlanError> {
     if let Err(e) = loaded.config.limits.validate() {
         return Err(PlanError {
@@ -5224,6 +5225,31 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
     crate::sip::dialog_store::set_active_idle_window_secs(
         cli.active_idle_window_secs(&loaded.config) as i64,
     );
+
+    // The OpenSIPS topology-hiding Call-ID secret, read once from its file
+    // and installed for every store this process builds. A secret that cannot
+    // be read fails the run: running without it would quietly fall back to
+    // the timing guess the operator configured the secret to replace. The
+    // error names the file and the rule, never the secret.
+    #[cfg(feature = "tls")]
+    match crate::sip::th_callid::from_config(&loaded.config.sip) {
+        Ok(Some(th)) => {
+            if th.source() == crate::sip::th_callid::SecretSource::OpenSipsDefault {
+                tracing::warn!(
+                    "[sip] th_callid_secret = \"opensips-default\": decoding hidden Call-IDs \
+                     with the OpenSIPS default secret, which is public and hides nothing"
+                );
+            }
+            crate::sip::dialog_store::set_th_callid(std::sync::Arc::new(th));
+        }
+        Ok(None) => {}
+        Err(message) => {
+            return Err(PlanError {
+                exit_code: 1,
+                message,
+            });
+        }
+    }
 
     // Three caps that reach code no config is threaded to: streams are created
     // by the batch runner, the TUI, every `--cores` shard and the WASM entry

@@ -47,6 +47,11 @@ pub struct CallTreeLeg {
     pub score: Option<u8>,
     /// Which correlation strategy matched this edge. `None` for the root.
     pub strategy: Option<String>,
+    /// How the edge was made: `decoded` (an OpenSIPS topology-hiding Call-ID
+    /// decoded with the configured secret), `header` (a SIP header both legs
+    /// carry), `sdp` (the SDP origin) or `timing` (the guess). `None` for the
+    /// root.
+    pub method: Option<String>,
     /// Whether the edge is an identifier comparison rather than a guess.
     ///
     /// `None` for the root, which was named by the caller rather than matched.
@@ -216,6 +221,7 @@ impl SipnabMcp {
                         parent_call_id: leg.parent_call_id.clone(),
                         score: leg.score,
                         strategy: leg.strategy.map(str::to_string),
+                        method: leg.method.map(|m| m.as_str().to_string()),
                         identifier_match: leg.identifier_match,
                         followed: leg.followed,
                         dialog: crate::mcp::shape::fenced_dialog_summary(dialog),
@@ -483,6 +489,38 @@ mod tests {
             Arc::new(RwLock::new(store)),
             Arc::new(RwLock::new(StreamStore::new(100))),
         )
+    }
+
+    /// T13 (MCP `get_call_tree`): a topology-hidden call is one tree, its
+    /// edge says `decoded`, and the walk follows it as an identifier match.
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn get_call_tree_follows_a_decoded_topology_hiding_edge() -> Result<(), TestError> {
+        let (ds, caller, hidden) = crate::test_utils::th_hidden_call_store("right", Some("right"))?;
+        let srv = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let v = json_of(
+            &srv.get_call_tree(Parameters(CallTreeParams {
+                call_id: caller.clone(),
+                limit: None,
+            }))
+            .await
+            .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
+        let legs = v["legs"].as_array().ok_or("legs is an array")?;
+        let edge = legs
+            .iter()
+            .find(|l| l["call_id"] == hidden.as_str())
+            .ok_or("the hidden leg is in the tree")?;
+        assert_eq!(edge["strategy"], "th_callid_decoded", "{v}");
+        assert_eq!(edge["method"], "decoded", "{v}");
+        assert_eq!(edge["identifier_match"], true, "{v}");
+        assert_eq!(edge["followed"], true, "{v}");
+        let root = legs.iter().find(|l| l["depth"] == 0).ok_or("root")?;
+        assert!(root["method"].is_null(), "the root has no edge: {v}");
+        Ok(())
     }
 
     /// The JSON block of a tool result.

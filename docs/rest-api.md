@@ -1357,12 +1357,14 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
       "call_id": "d4e5f6@sbc.example.com",
       "score": 100,
       "strategy": "session_id",
+      "method": "header",
       "identifier_match": true,
       "observed_gap_ms": null
     }
   ],
   "total_matched": 1,
   "heuristic_only": false,
+  "th_callid": null,
   "capture_identity": {
     "node": "capture-01",
     "instance": "117b0818df1033d4fd2a28-2",
@@ -1385,6 +1387,14 @@ trust it.**
     the same. They mean different things.
 - `heuristic_only` is true when every leg is
   such a guess.
+- `th_callid_decoded` joined an OpenSIPS `topology_hiding("C")` leg by
+  decoding its Call-ID with the configured secret. See
+  [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding).
+
+`method` says what sipnab compared the legs on: `decoded`, `header` (a SIP
+header both carry), `sdp` (the SDP origin) or `timing` (the guess).
+`th_callid` has a value only when the source is the callee-side leg of an OpenSIPS
+topology-hiding call: `decoded`, `no_secret`, `undecodable` or `unmatched`.
 
 **One hop.** This route answers the legs one step from the Call-ID asked about.
 
@@ -1415,8 +1425,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
   "schema_version": 1,
   "root_call_id": "a1b2c3@example.com",
   "legs": [
-    { "call_id": "a1b2c3@example.com", "depth": 0, "parent_call_id": null, "score": null, "strategy": null, "identifier_match": null, "followed": true },
-    { "call_id": "d4e5f6@sbc.example.com", "depth": 1, "parent_call_id": "a1b2c3@example.com", "score": 100, "strategy": "session_id", "identifier_match": true, "followed": true }
+    { "call_id": "a1b2c3@example.com", "depth": 0, "parent_call_id": null, "score": null, "strategy": null, "method": null, "identifier_match": null, "followed": true },
+    { "call_id": "d4e5f6@sbc.example.com", "depth": 1, "parent_call_id": "a1b2c3@example.com", "score": 100, "strategy": "session_id", "method": "header", "identifier_match": true, "followed": true }
   ],
   "total_legs": 2,
   "max_depth": 1,

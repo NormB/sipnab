@@ -1489,6 +1489,47 @@ fn report_retention_losses(dialogs: &DialogStore) {
     }
 }
 
+/// Say, at the end of a run, what became of the OpenSIPS topology-hiding
+/// legs it captured when any of them did not join. See
+/// [`th_callid_guidance`].
+fn report_th_callid(dialogs: &DialogStore) {
+    for line in th_callid_guidance(&dialogs.th_callid_summary()) {
+        tracing::warn!("{line}");
+    }
+}
+
+/// The topology-hiding lines for `summary`: empty when no hidden leg was
+/// captured, or when every one joined.
+fn th_callid_guidance(summary: &crate::sip::dialog_store::ThCallidSummary) -> Vec<String> {
+    let mut lines = Vec::new();
+    if summary.wrong_secret_suspected() {
+        lines.push(format!(
+            "Topology hiding: {} hidden Call-ID(s) did not decode to the captured caller \
+             leg that has their From tag, so those legs are not joined. Check [sip] \
+             th_callid_secret_file and th_callid_prefix against OpenSIPS's \
+             th_callid_passwd and th_callid_prefix.",
+            summary.undecoded_with_peer
+        ));
+    }
+    let lone =
+        (summary.undecodable + summary.unmatched).saturating_sub(summary.undecoded_with_peer);
+    if lone > 0 {
+        lines.push(format!(
+            "Topology hiding: {lone} hidden Call-ID(s) joined no leg, and no captured leg \
+             has their From tag: the caller side was not captured."
+        ));
+    }
+    if summary.no_secret > 0 {
+        lines.push(format!(
+            "Topology hiding: {} dialog(s) carry an OpenSIPS hidden Call-ID and no secret \
+             is configured, so only timing can tie them to their caller leg. Set [sip] \
+             th_callid_secret_file to join them exactly.",
+            summary.no_secret
+        ));
+    }
+    lines
+}
+
 /// The retention sentence, or `None` when the store shed nothing.
 ///
 /// Split from the logging so the wording is testable: the value of this line
@@ -4785,6 +4826,7 @@ impl BatchRunner {
         report_relay_retries(&self.stream_store.read());
         report_impossible_rates(&self.stream_store.read());
         report_retention_losses(&self.dialog_store.read());
+        report_th_callid(&self.dialog_store.read());
         report_capture_quality();
         report_llmnr_summary();
 
@@ -15700,6 +15742,58 @@ mod tests {
     /// This is the reported defect: the operator supplies a keylog, is told
     /// the keys loaded, and is then told no SIP was found — three true
     /// statements that together assert the opposite of what happened.
+    /// The topology-hiding report at the end of a run: nothing when no hidden
+    /// leg was seen or every one joined; otherwise the count, the cause and
+    /// the settings to check, and never a value.
+    #[test]
+    fn th_callid_guidance_names_the_count_the_cause_and_the_settings() {
+        use crate::sip::dialog_store::ThCallidSummary;
+        assert!(
+            th_callid_guidance(&ThCallidSummary::default()).is_empty(),
+            "a run that captured no hidden leg says nothing about topology hiding"
+        );
+        let joined = ThCallidSummary {
+            decoded: 3,
+            ..ThCallidSummary::default()
+        };
+        assert!(
+            th_callid_guidance(&joined).is_empty(),
+            "a run in which every hidden leg joined has nothing to warn about"
+        );
+
+        // Hidden legs whose caller leg WAS captured did not decode to it: the
+        // secret or the prefix.
+        let wrong = ThCallidSummary {
+            decoded: 1,
+            undecodable: 2,
+            unmatched: 1,
+            undecoded_with_peer: 3,
+            ..ThCallidSummary::default()
+        };
+        let text = th_callid_guidance(&wrong).join("\n");
+        assert!(text.contains("3 hidden"), "{text}");
+        assert!(text.contains("th_callid_secret_file"), "{text}");
+        assert!(text.contains("th_callid_prefix"), "{text}");
+
+        // Hidden legs with no captured caller leg: not evidence of a wrong
+        // secret, and said differently.
+        let lone = ThCallidSummary {
+            unmatched: 2,
+            ..ThCallidSummary::default()
+        };
+        let text = th_callid_guidance(&lone).join("\n");
+        assert!(text.contains("2 hidden"), "{text}");
+        assert!(text.contains("caller side was not captured"), "{text}");
+
+        let none = ThCallidSummary {
+            no_secret: 4,
+            ..ThCallidSummary::default()
+        };
+        let text = th_callid_guidance(&none).join("\n");
+        assert!(text.contains("4 dialog"), "{text}");
+        assert!(text.contains("th_callid_secret_file"), "{text}");
+    }
+
     #[test]
     fn a_run_that_decrypted_no_tls_says_so_with_counts_and_a_remedy() {
         let lines = tls_decrypt_guidance(&tls_report(2, 9, 0), &[]);

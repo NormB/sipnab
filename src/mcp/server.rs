@@ -2065,6 +2065,10 @@ pub struct FindCorrelatedResponse {
     /// timing guesses is a hypothesis, and an agent that cannot tell the
     /// difference will present it as a finding.
     pub heuristic_only: bool,
+    /// When the source is the callee-side leg of an OpenSIPS
+    /// `topology_hiding("C")` call: `decoded`, `no_secret`, `undecodable` or
+    /// `unmatched`. Null when it is not a hidden leg.
+    pub th_callid: Option<crate::sip::dialog_store::ThCallidStatus>,
     /// Which capture and store revision this answer describes.
     pub capture_identity: crate::provenance::CaptureEtag,
     /// The clock a `timing_heuristic` match depended on — present ONLY when
@@ -8928,6 +8932,7 @@ impl SipnabMcp {
                 legs,
                 total_matched: answer.total_matched,
                 heuristic_only: answer.heuristic_only,
+                th_callid: answer.th_callid,
                 capture_identity,
                 timing_clock,
             }
@@ -19336,6 +19341,60 @@ mod tests {
     /// construction embeds the generating proxy's hostname or address in the
     /// icid, so like every other strategy here the response carries the
     /// strategy's NAME and never the value it matched on.
+    /// T13 (MCP `find_correlated`): a topology-hidden call is one call, the
+    /// leg says `decoded`, and the source's status is reported. With a wrong
+    /// secret (T6) there is no decoded leg and the status says `undecodable`.
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn find_correlated_reports_a_decoded_topology_hiding_leg() -> Result<(), TestError> {
+        for (key, status, decoded_legs) in
+            [("right", "decoded", 1usize), ("wrong", "undecodable", 0)]
+        {
+            let (ds, caller, hidden) = crate::test_utils::th_hidden_call_store("right", Some(key))?;
+            let server = SipnabMcp::new(
+                Arc::new(RwLock::new(ds)),
+                Arc::new(RwLock::new(StreamStore::new(100))),
+            );
+            let v: serde_json::Value = serde_json::from_str(&text_of(
+                &server
+                    .find_correlated(Parameters(FindCorrelatedParams {
+                        call_id: hidden.clone(),
+                        limit: None,
+                    }))
+                    .await
+                    .map_err(|e| format!("correlates: {e:?}"))?,
+            )?)?;
+            assert_eq!(
+                v["th_callid"], status,
+                "find_correlated reports the hidden leg's topology-hiding status: {v}"
+            );
+            let legs = v["legs"].as_array().ok_or("legs")?;
+            let decoded: Vec<_> = legs.iter().filter(|l| l["method"] == "decoded").collect();
+            assert_eq!(decoded.len(), decoded_legs, "{v}");
+            if let Some(l) = decoded.first() {
+                assert_eq!(
+                    l["call_id"],
+                    caller.as_str(),
+                    "the decoded leg is the caller leg: {v}"
+                );
+                assert_eq!(
+                    l["strategy"], "th_callid_decoded",
+                    "the decoded leg names the decode strategy: {v}"
+                );
+                assert_eq!(
+                    l["identifier_match"], true,
+                    "a decoded join compares identifiers, not timing: {v}"
+                );
+            }
+            let secret = String::from_utf8(crate::test_utils::th_test_secret(key))?;
+            assert!(
+                !v.to_string().contains(&secret),
+                "the answer shows the secret: {v}"
+            );
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn find_correlated_reports_a_related_icid_match_as_an_identifier_match()
     -> Result<(), TestError> {

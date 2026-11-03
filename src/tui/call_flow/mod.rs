@@ -11,6 +11,7 @@
 //! - `prepare` — data preparation (formatting, timestamp modes, SDP)
 //! - `render` — buffer painting and Paragraph-based rendering
 //! - `arrows` — arrow formatting between column positions
+//! - `correlation` — the status bar's summary of the call's other legs
 //! - `export` — Mermaid sequence-diagram export (raw source + HTML page)
 //!
 //! The module root also owns the shared display types (`FlowDisplayOptions`,
@@ -20,6 +21,7 @@
 //! (`ladder_split_width`).
 
 pub mod arrows;
+pub mod correlation;
 pub mod export;
 pub mod prepare;
 pub mod render;

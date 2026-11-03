@@ -1911,6 +1911,21 @@ pub(in crate::tui) struct EndpointCache {
     pub(in crate::tui) floor: ChurnFloor,
 }
 
+/// Cross-tick cache of the call flow's correlation summary
+/// ([`crate::tui::call_flow::correlation::summary`]), shown on the status
+/// line. Keyed on the call and the dialog store's generation, because the
+/// call's other leg can arrive while the call is open; floored, because the
+/// summary walks the store.
+#[derive(Debug, Default)]
+pub(in crate::tui) struct FlowCorrelationCache {
+    /// (Call-ID, dialog generation) the summary was derived from.
+    pub(in crate::tui) key: Option<(String, u64)>,
+    /// The summary; empty when there is nothing to say.
+    pub(in crate::tui) text: String,
+    /// Floors generation-driven recomputation.
+    pub(in crate::tui) floor: ChurnFloor,
+}
+
 /// Cross-tick cache of the call-volume histogram text.
 ///
 /// A full-store bucketing like [`TalkersCache`], cached for the same reason and

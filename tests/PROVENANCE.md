@@ -262,3 +262,73 @@ leaves it by gaining a real entry here, or by the file being deleted.
   `scripts/smoke-clients.sh` (cookbook recipes "Detect SIP scanners and auto-block via fail2ban" and "Find the device flooding REGISTER"): sipnab accuses all
   three sources, and the PBX's earlier registration is the counter-evidence
   that keeps it from being banned.
+
+### tests/fixtures/th-callid/opensips-3.6-secret.pcap
+
+- **Category:** synthetic
+- **Generator:** `harness/th-callid/capture.sh` (mode `secret`)
+- **SHA-256:** `5908934c4d072c9069b2ad403f5002bd38c16e3357ecfe45e4a23732b25c39c9`
+- **Holds:** three calls placed by SIPp through OpenSIPS 3.6.9 running
+  `topology_hiding("C")`, with `th_callid_passwd` set to `th-lab-secret-0100`. SIPp, OpenSIPS and the capture ran
+  on a private Docker network with RFC 5737 addresses only (192.0.2.1 and
+  192.0.2.10), and every Call-ID and URI host is `example.com` or one of
+  those addresses. The hidden Call-IDs are the bytes OpenSIPS wrote, which
+  is what the tests decode. Running the generator again writes the same
+  messages with other timestamps and From tags (SIPp puts its process ID
+  in the tag), so the hash changes with each run.
+
+### tests/fixtures/th-callid/opensips-4.0-default.pcap
+
+- **Category:** synthetic
+- **Generator:** `harness/th-callid/capture.sh` (mode `default`)
+- **SHA-256:** `6841125f59b334605ef88a400b24481daef717ab8a1c96994f5bcdbf205120d7`
+- **Holds:** three calls placed by SIPp through OpenSIPS 4.0.2 running
+  `topology_hiding("C")`, with OpenSIPS's default `th_callid_passwd`. SIPp, OpenSIPS and the capture ran
+  on a private Docker network with RFC 5737 addresses only (192.0.2.1 and
+  192.0.2.10), and every Call-ID and URI host is `example.com` or one of
+  those addresses. The hidden Call-IDs are the bytes OpenSIPS wrote, which
+  is what the tests decode. Running the generator again writes the same
+  messages with other timestamps and From tags (SIPp puts its process ID
+  in the tag), so the hash changes with each run.
+
+### tests/fixtures/th-callid/opensips-4.0-secret-loop.pcap
+
+- **Category:** synthetic
+- **Generator:** `harness/th-callid/capture.sh` (mode `secret-loop`)
+- **SHA-256:** `93165dc015022e321d8dde0ff6777df96af234c310f2b147d9b02aa9429e5dd4`
+- **Holds:** three calls placed by SIPp through OpenSIPS 4.0.2 running
+  `topology_hiding("C")`, with the same secret, with `th_callid_loop_protection = 1`, so each hidden Call-ID also carries the caller's From tag. SIPp, OpenSIPS and the capture ran
+  on a private Docker network with RFC 5737 addresses only (192.0.2.1 and
+  192.0.2.10), and every Call-ID and URI host is `example.com` or one of
+  those addresses. The hidden Call-IDs are the bytes OpenSIPS wrote, which
+  is what the tests decode. Running the generator again writes the same
+  messages with other timestamps and From tags (SIPp puts its process ID
+  in the tag), so the hash changes with each run.
+
+### tests/fixtures/th-callid/opensips-4.0-secret.pcap
+
+- **Category:** synthetic
+- **Generator:** `harness/th-callid/capture.sh` (mode `secret`)
+- **SHA-256:** `ab06c4bcb883569c8ab854e65454796e66a3ab73b97375216f357629be860a85`
+- **Holds:** three calls placed by SIPp through OpenSIPS 4.0.2 running
+  `topology_hiding("C")`, with `th_callid_passwd` set to `th-lab-secret-0100`, the value `tests/th_callid_test.rs` writes into its secret file. SIPp, OpenSIPS and the capture ran
+  on a private Docker network with RFC 5737 addresses only (192.0.2.1 and
+  192.0.2.10), and every Call-ID and URI host is `example.com` or one of
+  those addresses. The hidden Call-IDs are the bytes OpenSIPS wrote, which
+  is what the tests decode. Running the generator again writes the same
+  messages with other timestamps and From tags (SIPp puts its process ID
+  in the tag), so the hash changes with each run.
+
+### tests/fixtures/th-callid/opensips-4.0-xcid.pcap
+
+- **Category:** synthetic
+- **Generator:** `harness/th-callid/capture.sh` (mode `xcid`)
+- **SHA-256:** `7ec6e2d23bedcb862fc137a8134f76c45f54a7891d89f071442d4100b6b29183`
+- **Holds:** three calls placed by SIPp through OpenSIPS 4.0.2 running
+  `topology_hiding("C")`, with the default secret, and the documented `append_hf("X-CID: $ci\r\n")` on the callee leg. SIPp, OpenSIPS and the capture ran
+  on a private Docker network with RFC 5737 addresses only (192.0.2.1 and
+  192.0.2.10), and every Call-ID and URI host is `example.com` or one of
+  those addresses. The hidden Call-IDs are the bytes OpenSIPS wrote, which
+  is what the tests decode. Running the generator again writes the same
+  messages with other timestamps and From tags (SIPp puts its process ID
+  in the tag), so the hash changes with each run.

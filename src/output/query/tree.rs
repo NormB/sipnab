@@ -28,6 +28,9 @@ pub struct CallTreeLeg {
     pub score: Option<u8>,
     /// Which strategy matched this edge. Null for the root.
     pub strategy: Option<String>,
+    /// How the edge was made: `decoded`, `header`, `sdp` or `timing`, as on
+    /// `/v1/dialogs/{call_id}/correlated`. Null for the root.
+    pub method: Option<String>,
     /// Whether the edge compared identifiers rather than guessing. Null for
     /// the root, which the caller named rather than the walk matching.
     pub identifier_match: Option<bool>,
@@ -94,6 +97,7 @@ pub fn call_tree(
             parent_call_id: leg.parent_call_id.clone(),
             score: leg.score,
             strategy: leg.strategy.map(str::to_string),
+            method: leg.method.map(|m| m.as_str().to_string()),
             identifier_match: leg.identifier_match,
             followed: leg.followed,
         })
@@ -136,6 +140,7 @@ pub fn render(answer: &CallTree, format: ReportFormat) -> String {
             vec![
                 format!("{indent}{}", leg.call_id),
                 leg.strategy.clone().unwrap_or_else(|| "root".to_string()),
+                leg.method.clone().unwrap_or_else(|| "-".to_string()),
                 leg.score.map_or_else(|| "-".to_string(), |s| s.to_string()),
                 match leg.identifier_match {
                     Some(true) => "identifier".to_string(),
@@ -148,7 +153,7 @@ pub fn render(answer: &CallTree, format: ReportFormat) -> String {
         .collect();
     out.push_str(&super::table(
         format,
-        &["Leg", "Strategy", "Score", "Match", "Followed"],
+        &["Leg", "Strategy", "Method", "Score", "Match", "Followed"],
         &rows,
     ));
     if answer.truncated {
@@ -158,4 +163,40 @@ pub fn render(answer: &CallTree, format: ReportFormat) -> String {
         ));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+
+    /// T13 (REST `/v1/dialogs/{id}/tree` and `--call-tree`): the decoded edge
+    /// names its method, and the root, which has no edge, names none.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn t13_tree_edge_names_its_method() -> Result<(), Box<dyn std::error::Error>> {
+        let (ds, caller, hidden) = crate::test_utils::th_hidden_call_store("right", Some("right"))?;
+        let tree = super::call_tree(&ds, &hidden, 10, None).ok_or("known")?;
+        let root = tree.legs.iter().find(|l| l.depth == 0).ok_or("root")?;
+        assert_eq!(root.method, None, "the root has no edge, so no method");
+        let edge = tree
+            .legs
+            .iter()
+            .find(|l| l.call_id == caller)
+            .ok_or("caller")?;
+        assert_eq!(
+            edge.method.as_deref(),
+            Some("decoded"),
+            "the edge to the caller leg was made by decoding"
+        );
+        assert_eq!(
+            edge.strategy.as_deref(),
+            Some("th_callid_decoded"),
+            "the edge to the caller leg names the decode strategy"
+        );
+        let text = super::render(&tree, crate::output::ReportFormat::Text);
+        assert!(
+            text.contains("Method") && text.contains("decoded"),
+            "{text}"
+        );
+        Ok(())
+    }
 }

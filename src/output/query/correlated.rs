@@ -32,9 +32,10 @@ pub struct CorrelatedLeg {
     /// Confidence, 0-100.
     #[cfg_attr(feature = "api", schema(minimum = 0, maximum = 100))]
     pub score: u8,
-    /// Which strategy matched, by name: `session_id`, `x_call_id`,
-    /// `sdp_origin`, `charging_vector_related_icid`, `charging_vector_icid`,
-    /// `via_branch` or `timing_heuristic`. The decisive field.
+    /// Which strategy matched, by name: `session_id`, `th_callid_decoded`,
+    /// `x_call_id`, `sdp_origin`, `charging_vector_related_icid`,
+    /// `charging_vector_icid`, `via_branch` or `timing_heuristic`. The
+    /// decisive field.
     ///
     /// `session_id` and `x_call_id` both score 100 and are not the same claim:
     /// one is an RFC 7989 identifier designed to cross a B2BUA, the other a
@@ -45,6 +46,12 @@ pub struct CorrelatedLeg {
     /// a conformant one, because an ICID identifies a dialog and a B2BUA is
     /// two. `timing_heuristic` is not an identifier at all.
     pub strategy: String,
+    /// How the link was made: `decoded` (an OpenSIPS topology-hiding Call-ID
+    /// decoded with the configured secret), `header` (a SIP header both legs
+    /// carry: a header named in `[sip] xcid_headers`, `Session-ID`,
+    /// `P-Charging-Vector` or a Via branch), `sdp` (the SDP origin) or
+    /// `timing` (the guess).
+    pub method: String,
     /// True when the strategy compared identifiers, false for a guess.
     ///
     /// Present so a caller can filter on the distinction without having to
@@ -76,6 +83,12 @@ pub struct Correlated {
     /// True when every matched leg is a timing guess rather than an
     /// identifier match, so a reader weighs the whole answer accordingly.
     pub heuristic_only: bool,
+    /// When the source is the callee-side leg of an OpenSIPS
+    /// `topology_hiding("C")` call: `decoded`, `no_secret` (no secret
+    /// configured), `undecodable` (the secret or prefix does not decode it) or
+    /// `unmatched` (decoded, but no observed leg has that Call-ID and From
+    /// tag). Null when the source is not a hidden leg.
+    pub th_callid: Option<crate::sip::dialog_store::ThCallidStatus>,
     /// WHICH capture this answer came from, and which revision of its
     /// stores, stamped under the locks the answer was built with. A
     /// different `instance` from an earlier answer means a different
@@ -126,6 +139,7 @@ pub fn correlated(
                 call_id: r.dialog.call_id.clone(),
                 score: r.score,
                 strategy: strategy.to_string(),
+                method: r.reason.method().to_string(),
                 identifier_match,
                 observed_gap_ms,
             }
@@ -137,6 +151,7 @@ pub fn correlated(
         heuristic_only: heuristic_only(legs.iter().map(|l| l.identifier_match)),
         legs,
         total_matched: results.len(),
+        th_callid: ds.th_callid_status(call_id),
         capture_identity,
     })
 }
@@ -159,6 +174,7 @@ pub fn render(answer: &Correlated, format: ReportFormat) -> String {
             vec![
                 leg.call_id.clone(),
                 leg.strategy.clone(),
+                leg.method.clone(),
                 leg.score.to_string(),
                 if leg.identifier_match {
                     "identifier"
@@ -173,7 +189,7 @@ pub fn render(answer: &Correlated, format: ReportFormat) -> String {
         .collect();
     out.push_str(&super::table(
         format,
-        &["Leg", "Strategy", "Score", "Match", "Gap ms"],
+        &["Leg", "Strategy", "Method", "Score", "Match", "Gap ms"],
         &rows,
     ));
     if answer.total_matched > answer.legs.len() {
@@ -185,6 +201,12 @@ pub fn render(answer: &Correlated, format: ReportFormat) -> String {
     }
     if answer.heuristic_only {
         out.push_str("Every leg here is a timing guess: no identifier ties it to this call.\n");
+    }
+    if let Some(status) = answer.th_callid {
+        out.push_str(&format!(
+            "Topology hiding: {status} ({})\n",
+            status.explanation()
+        ));
     }
     out
 }
@@ -200,5 +222,107 @@ mod tests {
         assert!(!heuristic_only([]));
         assert!(heuristic_only([false, false]));
         assert!(!heuristic_only([false, true]));
+    }
+
+    /// T13 (REST and --correlate answer): a hidden call is one correlated
+    /// call, its leg says `decoded`, and the source's topology-hiding status
+    /// is reported.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn t13_decoded_leg_names_its_method_and_status() -> Result<(), Box<dyn std::error::Error>> {
+        let (ds, caller, hidden) = crate::test_utils::th_hidden_call_store("right", Some("right"))?;
+        let a = correlated(&ds, &hidden, 10, None).ok_or("hidden leg known")?;
+        let leg = a
+            .legs
+            .iter()
+            .find(|l| l.call_id == caller)
+            .ok_or("caller leg")?;
+        assert_eq!(
+            leg.strategy, "th_callid_decoded",
+            "the caller leg is joined by the decode strategy"
+        );
+        assert_eq!(
+            leg.method, "decoded",
+            "the caller leg is joined by the decoded method"
+        );
+        assert!(
+            leg.identifier_match,
+            "a decoded join compares identifiers, not timing"
+        );
+        assert_eq!(
+            a.th_callid.map(|s| s.as_str()),
+            Some("decoded"),
+            "the hidden source reports that it decoded"
+        );
+        let v = serde_json::to_value(&a)?;
+        assert_eq!(
+            v["th_callid"], "decoded",
+            "the JSON answer carries th_callid by its wire name: {v}"
+        );
+        let b = correlated(&ds, &caller, 10, None).ok_or("caller leg known")?;
+        assert!(
+            b.legs
+                .iter()
+                .any(|l| l.call_id == hidden && l.method == "decoded"),
+            "from the caller side, the hidden leg is listed as decoded"
+        );
+        assert!(b.th_callid.is_none(), "the caller leg is not hidden");
+        Ok(())
+    }
+
+    /// T13 / T8 (text report): the method column, and a line for a hidden
+    /// source that says what went wrong without naming any secret.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn render_shows_method_and_th_status() -> Result<(), Box<dyn std::error::Error>> {
+        let (ds, _, hidden) = crate::test_utils::th_hidden_call_store("right", Some("right"))?;
+        let a = correlated(&ds, &hidden, 10, None).ok_or("known")?;
+        let text = render(&a, ReportFormat::Text);
+        assert!(text.contains("Method"), "{text}");
+        assert!(text.contains("decoded"), "{text}");
+        assert!(text.contains("Topology hiding: decoded"), "{text}");
+        let (ds, _, hidden) = crate::test_utils::th_hidden_call_store("right", Some("wrong"))?;
+        let a = correlated(&ds, &hidden, 10, None).ok_or("known")?;
+        let text = render(&a, ReportFormat::Text);
+        assert!(text.contains("Topology hiding: undecodable"), "{text}");
+        assert!(text.contains("th_callid_secret_file"), "{text}");
+        let wrong = String::from_utf8(crate::test_utils::th_test_secret("wrong"))?;
+        assert!(
+            !text.contains(&wrong),
+            "the report shows the secret: {text}"
+        );
+        let (ds, _, hidden) = crate::test_utils::th_hidden_call_store("right", None)?;
+        let a = correlated(&ds, &hidden, 10, None).ok_or("known")?;
+        assert!(
+            render(&a, ReportFormat::Text).contains("Topology hiding: no_secret"),
+            "the text report names a hidden leg with no secret configured"
+        );
+        Ok(())
+    }
+
+    /// T6 / T8 (REST): a wrong or missing secret yields no decoded leg, and
+    /// the status says which. The timing guess may still appear, labeled
+    /// `timing`.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn t6_wrong_or_missing_secret_is_reported_not_joined() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for (key, status) in [(Some("wrong"), "undecodable"), (None, "no_secret")] {
+            let (ds, _, hidden) = crate::test_utils::th_hidden_call_store("right", key)?;
+            let a = correlated(&ds, &hidden, 10, None).ok_or("hidden leg known")?;
+            assert!(a.legs.iter().all(|l| l.method != "decoded"), "{status}");
+            assert!(
+                a.legs
+                    .iter()
+                    .all(|l| l.method == "timing" && !l.identifier_match),
+                "with a {status} secret, only timing may tie the legs, and as a guess"
+            );
+            assert_eq!(
+                a.th_callid.map(|s| s.as_str()),
+                Some(status),
+                "the hidden source reports {status}"
+            );
+        }
+        Ok(())
     }
 }

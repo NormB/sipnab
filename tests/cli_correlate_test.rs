@@ -101,7 +101,7 @@ fn the_table_lists_each_leg_and_warns_on_guesses_only() -> Result<(), TestError>
         .collect();
     assert_eq!(
         row,
-        vec![B_LEG, "timing_heuristic", "50", "guess", "3"],
+        vec![B_LEG, "timing_heuristic", "timing", "50", "guess", "3"],
         "{out}"
     );
     assert!(
@@ -218,7 +218,14 @@ fn an_identifier_match_is_not_called_a_guess() -> Result<(), TestError> {
         .collect();
     assert_eq!(
         row,
-        vec!["1-1968@10.0.2.20", "sdp_origin", "90", "identifier", "-"],
+        vec![
+            "1-1968@10.0.2.20",
+            "sdp_origin",
+            "sdp",
+            "90",
+            "identifier",
+            "-"
+        ],
         "{}",
         run.stdout
     );

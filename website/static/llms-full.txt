@@ -7835,12 +7835,14 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
       "call_id": "d4e5f6@sbc.example.com",
       "score": 100,
       "strategy": "session_id",
+      "method": "header",
       "identifier_match": true,
       "observed_gap_ms": null
     }
   ],
   "total_matched": 1,
   "heuristic_only": false,
+  "th_callid": null,
   "capture_identity": {
     "node": "capture-01",
     "instance": "117b0818df1033d4fd2a28-2",
@@ -7863,6 +7865,14 @@ trust it.**
     the same. They mean different things.
 - `heuristic_only` is true when every leg is
   such a guess.
+- `th_callid_decoded` joined an OpenSIPS `topology_hiding("C")` leg by
+  decoding its Call-ID with the configured secret. See
+  [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding).
+
+`method` says what sipnab compared the legs on: `decoded`, `header` (a SIP
+header both carry), `sdp` (the SDP origin) or `timing` (the guess).
+`th_callid` has a value only when the source is the callee-side leg of an OpenSIPS
+topology-hiding call: `decoded`, `no_secret`, `undecodable` or `unmatched`.
 
 **One hop.** This route answers the legs one step from the Call-ID asked about.
 
@@ -7893,8 +7903,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
   "schema_version": 1,
   "root_call_id": "a1b2c3@example.com",
   "legs": [
-    { "call_id": "a1b2c3@example.com", "depth": 0, "parent_call_id": null, "score": null, "strategy": null, "identifier_match": null, "followed": true },
-    { "call_id": "d4e5f6@sbc.example.com", "depth": 1, "parent_call_id": "a1b2c3@example.com", "score": 100, "strategy": "session_id", "identifier_match": true, "followed": true }
+    { "call_id": "a1b2c3@example.com", "depth": 0, "parent_call_id": null, "score": null, "strategy": null, "method": null, "identifier_match": null, "followed": true },
+    { "call_id": "d4e5f6@sbc.example.com", "depth": 1, "parent_call_id": "a1b2c3@example.com", "score": 100, "strategy": "session_id", "method": "header", "identifier_match": true, "followed": true }
   ],
   "total_legs": 2,
   "max_depth": 1,
@@ -18940,16 +18950,23 @@ sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --call-tree b2bua-caller-synt
 
 ```text
 Call tree from b2bua-caller-synth@203.0.113.1: 2 legs, depth 1, 28 messages, 1 timing guess
-Leg                                   Strategy          Score  Match  Followed
-------------------------------------------------------------------------------
-b2bua-caller-synth@203.0.113.1        root              -      -      yes
-  b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  50     guess  no
+Leg                                   Strategy          Method  Score  Match  Followed
+--------------------------------------------------------------------------------------
+b2bua-caller-synth@203.0.113.1        root              -       -      -      yes
+  b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  no
 ```
 
 - Each hop indents the leg two more spaces.
 - `Match` is `identifier` when the legs share an identifier (`X-Call-ID`,
-  `Session-ID`, the SDP origin, P-Charging-Vector or a Via branch), and
-  `guess` when only their timing ties them.
+  `Session-ID`, the SDP origin, P-Charging-Vector or a Via branch, or a
+  topology-hidden Call-ID that decodes to the other leg's), and `guess` when
+  only their timing ties them.
+- `Method` says how sipnab made the link: `decoded` (an OpenSIPS
+  topology-hiding Call-ID, decoded with the configured secret; see
+  [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)),
+  `header` (a SIP header both legs carry: one named in `[sip] xcid_headers`,
+  `Session-ID`, `P-Charging-Vector` or a Via branch), `sdp` (the SDP
+  origin) or `timing` (the guess).
 - `Followed` is `no` on a guess: sipnab lists the leg but does not look for
   that leg's own matches, so one wrong guess does not pull in unrelated calls.
 
@@ -18978,9 +18995,9 @@ sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --correlate 1-1966@10.0.2.20 --no
 
 ```text
 Legs correlated with 1-1966@10.0.2.20: 1 leg
-Leg               Strategy    Score  Match       Gap ms
--------------------------------------------------------
-1-1968@10.0.2.20  sdp_origin  90     identifier  -
+Leg               Strategy    Method  Score  Match       Gap ms
+---------------------------------------------------------------
+1-1968@10.0.2.20  sdp_origin  sdp     90     identifier  -
 ```
 
 The two calls carry the same SDP origin, an identifier, so the score is high.
@@ -18994,9 +19011,9 @@ sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --correlate b2bua-caller-synt
 
 ```text
 Legs correlated with b2bua-caller-synth@203.0.113.1: 1 leg
-Leg                                 Strategy          Score  Match  Gap ms
---------------------------------------------------------------------------
-b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  50     guess  3
+Leg                                 Strategy          Method  Score  Match  Gap ms
+----------------------------------------------------------------------------------
+b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  3
 Every leg here is a timing guess: no identifier ties it to this call.
 ```
 
@@ -22305,6 +22322,62 @@ A fraud-detection or scanner-detection count, window or factor in `[security]` i
 `[sip] leg_correlation_window_ms` is how many milliseconds apart two legs of one call may start for sipnab to still join them on timing alone. sipnab refuses 0 because it does not turn timing correlation off: legs created in the same millisecond still correlate. The printed line starts with `invalid config value: `.
 
 **What to do:** Set a whole number of 1 or more, for example the default `2000`, or remove the key. To disregard timing-based joins, check the strategy that sipnab reports with each correlation.
+
+**Exit code:** 1.
+
+### `[sip] th_callid_* needs a sipnab built with the tls feature`
+
+The configuration sets `[sip] th_callid_secret_file`, `th_callid_secret` or `th_callid_prefix`, and this sipnab build lacks the `tls` feature, which holds the code that decodes OpenSIPS topology-hiding Call-IDs. sipnab refuses the setting rather than ignore a secret the configuration names. Every release package includes `tls`. The printed line starts with `invalid config value: `.
+
+**What to do:** Run a release package or a build with `--features tls`, or remove the `th_callid_*` keys.
+
+**Exit code:** 1.
+
+### `[sip] th_callid_prefix must not be empty`
+
+`[sip] th_callid_prefix` is the OpenSIPS `th_callid_prefix` that starts every hidden Call-ID. An empty prefix would make every Call-ID look hidden. The printed line starts with `invalid config value: `.
+
+**What to do:** Set it to the value of `th_callid_prefix` in the OpenSIPS script, or remove the key for the OpenSIPS default, `DLGCH_`.
+
+**Exit code:** 1.
+
+### `[sip] th_callid_prefix needs th_callid_secret_file or th_callid_secret`
+
+The configuration sets `[sip] th_callid_prefix` and no secret to decode with, so the prefix would do nothing. The printed line starts with `invalid config value: `.
+
+**What to do:** Add `th_callid_secret_file`, or `th_callid_secret = "opensips-default"` when OpenSIPS keeps its default secret. Or remove the prefix. See [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding).
+
+**Exit code:** 1.
+
+### `[sip] th_callid_secret = "opensips-default": decoding hidden Call-IDs with the OpenSIPS default secret, which is public and hides nothing`
+
+A warning at startup, not an error. The configuration asks sipnab to decode topology-hiding Call-IDs with the `th_callid_passwd` OpenSIPS uses when the script sets none. That value is in the OpenSIPS source, so anyone who sees the hidden Call-ID can decode it as well.
+
+**What to do:** Nothing, when that is the deployment. To hide the caller's Call-ID, set `th_callid_passwd` in the OpenSIPS script, put the same value in a file and name the file with `[sip] th_callid_secret_file`.
+
+**Exit code:** None. The run continues.
+
+### `[sip] th_callid_secret accepts only "opensips-default"; put a real secret in a file named by th_callid_secret_file (the value given is not shown)`
+
+`[sip] th_callid_secret` takes one value, `"opensips-default"`. Any other value may be a real secret typed into the configuration file, so sipnab refuses it and does not print it. The printed line starts with `invalid config value: `.
+
+**What to do:** Put the secret in a file that only the account running sipnab can read, name it with `th_callid_secret_file`, and remove `th_callid_secret`.
+
+**Exit code:** 1.
+
+### `[sip] th_callid_secret_file must not be empty`
+
+`[sip] th_callid_secret_file` names the file that holds the OpenSIPS `th_callid_passwd`, and the value is an empty path. The printed line starts with `invalid config value: `.
+
+**What to do:** Give the path of the secret file, or remove the key.
+
+**Exit code:** 1.
+
+### `[sip] th_callid_secret_file and th_callid_secret: set one, not both`
+
+Both keys name a secret, and sipnab would have to choose one. The printed line starts with `invalid config value: `.
+
+**What to do:** Keep `th_callid_secret_file` for a secret OpenSIPS sets, or `th_callid_secret = "opensips-default"` for its default, and remove the other.
 
 **Exit code:** 1.
 
@@ -29844,6 +29917,9 @@ SIP protocol handling.
 | `xcid_headers` | array | `[]` | Header names used to correlate B2BUA call legs (`sip.xcid`). A dialog whose message carries one of these headers pointing at another dialog's Call-ID joins that dialog. Add your estate's headers here. Empty by default: sipnab picks no `X-` name for you ([RFC 6648](https://www.rfc-editor.org/rfc/rfc6648.html)), and the identifier that crosses a B2BUA by design is [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID`, which correlates with no configuration. An empty list turns the header strategy off |
 | `leg_correlation_window_ms` | integer | `2000` | How far apart, in milliseconds, one call's two legs may start and still correlate on TIMING alone. Timing is the strategy sipnab falls back on when a B2BUA has rewritten every identifier the other strategies compare. Widen it for a PBX that does an LNP or ENUM dip, or walks an LCR cascade, before it places the outbound leg. Every correlation reports the strategy that matched. Must be at least `1`: sipnab refuses `0`. `--leg-correlation-window` overrides it |
 | `active_idle_window_secs` | integer | `3600` | Seconds a dialog may go untouched and still count toward the active-dialog and active-call gauges every surface publishes. The default is twice [RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)'s default `Session-Expires`. Raise it where calls stay quiet for longer, such as a caller on hold for over an hour; a call that never sent its BYE then also keeps counting for longer. `--active-idle-window` overrides it. `0` fails validation and names the key |
+| `th_callid_secret_file` | path | none | File holding the OpenSIPS `th_callid_passwd`, so sipnab can join the two legs of a call through `topology_hiding("C")` by decoding the hidden Call-ID. sipnab reads it once at startup and removes one trailing line end. sipnab refuses a world-readable file, a file larger than `MAX_SECRET_FILE_BYTES` (4096) bytes, an empty secret and a NUL byte, and never prints or logs the secret. A decoded join also requires matching From tags, so a wrong secret never joins two legs; sipnab reports it instead (`th_callid` status `undecodable` or `unmatched`). Needs a `tls` build. Not with `th_callid_secret` |
+| `th_callid_secret` | string | none | Accepts only `"opensips-default"`: decode with the OpenSIPS default secret, which the OpenSIPS source publishes, so it hides nothing. sipnab refuses any other value and does not show it; a real secret goes in `th_callid_secret_file`. Not with `th_callid_secret_file` |
+| `th_callid_prefix` | string | `"DLGCH_"` | The OpenSIPS `th_callid_prefix` that marks a hidden Call-ID. Must not be empty |
 
 ```toml
 [sip]
@@ -34415,6 +34491,7 @@ degrees of one thing:
 | `strategy` | Crosses a B2BUA? | What a match is worth | `identifier_match` |
 |---|---|---|---|
 | `session_id` | **Yes, by design** ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)) | An identifier both ends agreed on | `true` |
+| `th_callid_decoded` | **Yes**, through OpenSIPS `topology_hiding("C")` with the secret configured ([how](opensips-sipnab.md#calls-through-topology-hiding)) | The hidden Call-ID decodes to the other leg's, and the From tags match | `true` |
 | `x_call_id` | Only if the box inserts it | An identifier, by vendor convention | `true` |
 | `charging_vector_related_icid` | **Yes** — but only when the B2BUA chose to emit it ([RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) makes it a `MAY`) | The intermediary declared the link itself, in the parameter the RFC provides for it | `true` |
 | `sdp_origin` | Only if the box forwards SDP untouched | An identifier of the MEDIA session, not the dialog | `true` |
@@ -34425,11 +34502,12 @@ degrees of one thing:
 The rows are in descending score. sipnab reports a leg that satisfies two
 strategies under the higher-scoring one.
 
-Four fields decide how much of that tree you should act on:
+Five fields decide how much of that tree you should act on:
 
 | Field | Read it as |
 |---|---|
-| `strategy` | Which of the seven above matched, per leg |
+| `strategy` | Which of the eight above matched, per leg |
+| `method` | What sipnab compared the legs on: `decoded`, `header`, `sdp` or `timing` |
 | `identifier_match` | `true`: two ends agreed on an identifier. `false`: a guess |
 | `heuristic_only` | `true`: **every** returned leg rests on a guess, so the whole tree is a hypothesis |
 | `timing_clock` | Present only when the answer contains a time-based match. Absent means no leg needed one |
@@ -37515,10 +37593,11 @@ whose two calls share an SDP origin:
   "source_call_id": "1-1966@10.0.2.20",
   "legs": [
     { "call_id": "1-1968@10.0.2.20", "score": 90, "strategy": "sdp_origin",
-      "identifier_match": true, "observed_gap_ms": null }
+      "method": "sdp", "identifier_match": true, "observed_gap_ms": null }
   ],
   "total_matched": 1,
   "heuristic_only": false,
+  "th_callid": null,                // set only for an OpenSIPS topology-hiding leg
   "capture_identity": {
     "node": "capture-01",
     "instance": "12cfb618df00766c6ccc3d-2",
@@ -37539,6 +37618,7 @@ the same claim:
 | `session_id` | [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID` matched | **Yes, by design** |
 | `x_call_id` | A configured header matched (none configured by default) | Only if the SBC inserts it |
 | `charging_vector_related_icid` | One leg's [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
+| `th_callid_decoded` | One leg's OpenSIPS `topology_hiding("C")` Call-ID decodes, with the configured secret, to the other leg's Call-ID, and the From tags match ([Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)) | Yes, for OpenSIPS with the secret configured |
 | `sdp_origin` | The [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) SDP origin tuple matched | Only if the SBC forwards SDP untouched |
 | `charging_vector_icid` | Both legs carry the same RFC 7315 `icid-value` | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `via_branch` | Two INVITEs shared a Via branch | No: a new transaction gets a new branch |
@@ -37570,6 +37650,20 @@ Neither strategy puts the matched ICID in the response, because
 [RFC 7315 section 4.6](https://www.rfc-editor.org/rfc/rfc7315.html#section-4.6)'s
 suggested construction embeds the generating proxy's hostname or address in
 it.
+
+`method` groups the strategies by what sipnab compared the legs on:
+
+- `decoded` is `th_callid_decoded`.
+- `header` is `session_id`, `x_call_id`, both charging-vector strategies and
+  `via_branch`.
+- `sdp` is `sdp_origin`.
+- `timing` is `timing_heuristic`.
+
+`th_callid` has a value only when the source is the callee-side leg of an OpenSIPS
+`topology_hiding("C")` call: `decoded`, `no_secret`, `undecodable` or
+`unmatched`, as
+[Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)
+explains.
 
 `identifier_match` is `true` when the leg matched on a value both legs carry,
 and `false` for `timing_heuristic`. `heuristic_only` is `true` when *every*
@@ -37616,6 +37710,7 @@ its first three keys:
       "parent_call_id": null,
       "score": null,
       "strategy": null,
+      "method": null,
       "identifier_match": null,
       "followed": true,
       "dialog": { "call_id": "1-1966@10.0.2.20", "state": "Completed", "method": "INVITE" }
@@ -37626,6 +37721,7 @@ its first three keys:
       "parent_call_id": "1-1966@10.0.2.20",
       "score": 90,
       "strategy": "sdp_origin",
+      "method": "sdp",
       "identifier_match": true,
       "followed": true,
       "dialog": { "call_id": "1-1968@10.0.2.20", "state": "InCall", "method": "INVITE" }
@@ -42986,6 +43082,7 @@ on a server started with `--node-name capture-01` and without
         "legs": [
           {
             "identifier_match": true,
+            "method": "sdp",
             "score": 90,
             "strategy": "sdp_origin",
             "uuid": "0158a120-253e-8c52-80ff-fb7de8c13332"
@@ -47350,7 +47447,8 @@ With `grouping = "leg"`, the default, each leg is its own container.
 
 ```json
 {"legs": [{"uuid": "018bcfe5-6800-88c0-b9c0-24e4c93555ff",
-           "strategy": "x_call_id", "identifier_match": true, "score": 100}]}
+           "strategy": "x_call_id", "method": "header",
+           "identifier_match": true, "score": 100}]}
 ```
 
 - `uuid` is the other leg's container uuid. It stays the same under
@@ -60712,8 +60810,10 @@ the packages or built from source.
 
 ## Tested on
 
-Every block on this page ran as written, in order, on 2026-10-01, with sipnab
-0.5.198 from its release package.
+Every block on this page above
+[Calls through topology hiding](#calls-through-topology-hiding) ran as
+written, in order, on 2026-10-01, with sipnab 0.5.198 from its release
+package. That section names the checks that cover it.
 
 - It ran on the Debian 13 (kernel 6.12.63) and Ubuntu 24.04 (kernel 6.8.0)
   machines that [the OpenSIPS guide](opensips.md) had set up:
@@ -60801,6 +60901,128 @@ A call through each proxy then appears in the report, one row per call.
 - So the `RTP Streams:` table lists each call's streams on rows of their own:
   - 236 `PCMA` packets each way for each call,
   - not one stream of 472 across both.
+
+## Calls through topology hiding
+
+`topology_hiding("C")` gives the callee's leg a different Call-ID from the
+caller's leg. OpenSIPS builds it from the caller's Call-ID:
+
+1. XOR each byte with `th_callid_passwd`.
+2. Encode the result in a base64 variant.
+3. Put `th_callid_prefix` (`DLGCH_` by default) in front.
+
+OpenSIPS also strips Via, Record-Route and Route, and replaces Contact.
+Without help, sipnab can tie the two legs only by timing, which is a guess.
+
+The `C` flag changes the Call-ID only when the call has a dialog
+(`create_dialog()`). Without a dialog, OpenSIPS leaves the Call-ID alone.
+
+There are two ways to tie the legs exactly.
+
+### Decode the hidden Call-ID
+
+Put the OpenSIPS `th_callid_passwd` in a file, on one line. Only the account
+that runs sipnab may read it: mode `600`, or `640` with that account's group.
+Then name the file:
+
+```toml
+[sip]
+th_callid_secret_file = "/etc/sipnab/th_callid.secret"
+# th_callid_prefix = "DLGCH_"   # set this when OpenSIPS sets th_callid_prefix
+```
+
+- sipnab reads the file once at startup and never prints or logs the secret.
+- It refuses to start when the file is world-readable, is empty or holds a
+  NUL byte.
+- Only a file can hold the secret. There is no command-line flag or
+  environment variable for it.
+- Decoding needs a sipnab built with the `tls` feature. Every release
+  package has it.
+
+When OpenSIPS keeps its default secret, set
+`th_callid_secret = "opensips-default"` instead. The OpenSIPS source
+publishes that secret, so it hides nothing. sipnab logs a warning at startup
+that says so.
+
+The legs join only when both of these hold:
+
+- the decoded value equals the other leg's Call-ID,
+- the two legs have the same From tag.
+
+OpenSIPS does not change tags, so a wrong secret cannot join two legs.
+
+A decoded leg reports `strategy` `th_callid_decoded` and `method` `decoded`
+on all of these:
+
+- `--correlate` and `--call-tree`,
+- `GET /v1/dialogs/{call_id}/correlated` and `GET /v1/dialogs/{call_id}/tree`,
+- the MCP tools `find_correlated` and `get_call_tree`,
+- the `sipnab-related-legs` attachment of a vCon export.
+
+In the terminal interface, the call flow's status line says
+`Legs: 1 decoded`, and on the hidden leg also `Topology hiding: decoded`.
+The extended view (`F4`) draws both legs in one ladder.
+
+For a hidden leg, `--correlate`, REST and MCP also return `th_callid`, which
+says what happened:
+
+- `decoded`: the legs joined.
+- `no_secret`: sipnab has no secret configured.
+- `undecodable`: the secret or the prefix does not decode this Call-ID.
+- `unmatched`: the value decoded, but no captured leg has that Call-ID and
+  From tag. Either the caller's side was not captured or the secret is
+  wrong. A wrong secret that shares bytes with the right one can decode part
+  of a Call-ID, so it can show here.
+
+At the end of a run over a capture file, sipnab warns when hidden legs did
+not join, with the count and the settings to check. For example, with the
+wrong secret:
+
+```text
+Topology hiding: 3 hidden Call-ID(s) did not decode to the captured caller leg that has their From tag, so those legs are not joined. Check [sip] th_callid_secret_file and th_callid_prefix against OpenSIPS's th_callid_passwd and th_callid_prefix.
+```
+
+The OpenSIPS source uses the same XOR and alphabet in every release from
+2.4.11 to 4.0.2. OpenSIPS 4.0 adds `th_callid_loop_protection`, which
+appends the caller's From tag before encoding. sipnab decodes both forms,
+and checks the appended tag against the From tag.
+
+### Or copy the Call-ID into a header
+
+Without the secret, OpenSIPS can carry the caller's Call-ID to the callee in a
+header. Inside the script, `$ci` is the caller's Call-ID even with the `C` flag:
+
+```text
+if (!create_dialog() || !topology_hiding("C")) {
+	send_reply(500, "Internal Server Error");
+	exit;
+}
+append_hf("X-CID: $ci\r\n");
+```
+
+Then tell sipnab the header's name:
+
+```toml
+[sip]
+xcid_headers = ["X-CID"]
+```
+
+The legs then join with `method` `header`.
+
+**This header discloses the caller's Call-ID to the callee's side**, which is
+part of what topology hiding exists to hide. Use it only when the callee is
+inside your own network, or remove the header where the call leaves it. When
+the configuration names both the secret and the header, sipnab reports the
+decoded match.
+
+### What checks this section
+
+On 2026-11-02, test calls went through OpenSIPS 4.0.2 and 3.6.9 with
+[`harness/th-callid/capture.sh`](https://github.com/NormB/sipnab/blob/main/harness/th-callid/capture.sh). Its
+OpenSIPS script contains the `append_hf` lines above as shown. The captures
+are in `tests/fixtures/th-callid/`, and the tests in
+[`tests/th_callid_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/th_callid_test.rs) run sipnab against
+them on the command line, REST and MCP, including the warning quoted above.
 
 ## When something does not work
 
@@ -61919,6 +62141,7 @@ The answer names Asterisk's leg:
     {
       "call_id": "37e58306-c14d-4a0f-9fa1-41a2b3c05f96",
       "identifier_match": false,
+      "method": "timing",
       "observed_gap_ms": 1,
       "score": 50,
       "strategy": "timing_heuristic"
@@ -62743,12 +62966,14 @@ kill %1
       "call_id": "3c33fca7-40b8-1240-48b2-bc24119de73a",
       "score": 50,
       "strategy": "timing_heuristic",
+      "method": "timing",
       "identifier_match": false,
       "observed_gap_ms": 2
     }
   ],
   "total_matched": 1,
-  "heuristic_only": true
+  "heuristic_only": true,
+  "th_callid": null
 }
 ```
 
@@ -76993,6 +77218,36 @@ implementation from a broken one.
 `Session-ID` correlation ([`src/sip/session_id.rs`](../../src/sip/session_id.rs)) intersects the non-nil halves
 rather than comparing strings, because the halves swap direction across a B2BUA
 and string equality would find nothing.
+
+### Correlation: why a decoded topology-hiding Call-ID also needs the From tag
+
+OpenSIPS `topology_hiding("C")` combines the caller's Call-ID by XOR with
+`th_callid_passwd` and encodes it in word64
+([`src/sip/th_callid.rs`](../../src/sip/th_callid.rs) quotes the OpenSIPS
+functions). The scheme has no MAC, nonce or checksum, so any key decodes any
+value to some bytes. A wrong secret is therefore not detectable from the
+decode alone, and the decode check only refuses bytes that cannot be a
+Call-ID. The join, `th_callid::joins`, also requires the decoded value to
+equal a captured leg's Call-ID AND the two legs' From tags to match. OpenSIPS
+does not rewrite tags, so that check does not depend on the secret, and a
+wrong secret cannot join two legs. The join does not check which leg sipnab saw first:
+two HEP agents with skewed clocks, or a capture that starts mid-call, show the
+legs in either order.
+
+The decoder is process-wide (`dialog_store::set_th_callid`, set once by
+`bootstrap::apply_config`), for the reason `set_active_idle_window_secs` is:
+the batch run, the terminal interface and each `--cores` shard build their own
+stores, and a decoder threaded to some of them would join the legs on one
+surface and not on another.
+
+Every surface derives `method` from one function,
+`CorrelationReason::method`, an exhaustive match with no catch-all, so a new
+strategy is a compile error until its author picks one. The terminal interface's
+call-flow status line is the live view's only place for it: the ladder paints
+directly into the buffer and has no section for legs. Its text
+(`tui::call_flow::correlation::summary`) walks the store, so `App` caches it
+keyed on the Call-ID and the store generation, under a refresh floor, and
+rebuilds it at once when the operator opens another call.
 
 ## Notes for [core bundle](../mcp-tools-core.md)
 

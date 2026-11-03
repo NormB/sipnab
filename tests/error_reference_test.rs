@@ -745,7 +745,12 @@ fn lists() -> Result<Lists, TestError> {
 // provenance, Cli::validate) print through PlanError::usage(..).exit()
 // instead of their own `error!`, so the PlanError site carries them, and
 // SIPNAB_LOG=off no longer hides them (startup_refusal_stderr_test).
-const EXPECTED_UNRESOLVED: usize = 82;
+// 82 -> 84 (#617): src/app/batch.rs's `warn!("{line}")` gained
+// th_callid_guidance (5 -> 6, still unresolved for report_hep_exports), and
+// src/app/bootstrap.rs's `PlanError { exit_code: 1, message, }` passes on
+// the topology-hiding secret file's refusal, which names the file from
+// src/sip/th_callid.rs, out of scope.
+const EXPECTED_UNRESOLVED: usize = 84;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.
@@ -862,7 +867,15 @@ const EXPECTED_UNRESOLVED: usize = 82;
 // requires --features hep`, --tls-key, --keylog, --keylog-watch,
 // --srtp-keys, --dtls-keylog, --api, --api-key, --api-tls-cert and
 // --api-tls-key. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 533;
+// 533 -> 539: the OpenSIPS topology-hiding Call-ID keys (#617). Five
+// src/config.rs refusals of `[sip] th_callid_*` (no tls feature, both secret
+// keys, a secret value other than "opensips-default", a prefix alone, an
+// empty prefix) and the src/app/bootstrap.rs warning that the opted-in
+// OpenSIPS default secret is public. Nothing removed.
+// 539 -> 540: src/config.rs, `[sip] th_callid_secret_file must not be
+// empty`, which `config_cli_key_values_test` found refused only as a file
+// that could not be opened, under no key. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 540;
 
 // ---------------------------------------------------------------------------
 // The page gates

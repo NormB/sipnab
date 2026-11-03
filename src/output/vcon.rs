@@ -166,6 +166,9 @@ pub struct RelatedLeg {
     /// Which correlation strategy tied the two legs, in the vocabulary
     /// `find_correlated` and `get_call_tree` report.
     pub strategy: &'static str,
+    /// How the tie was made: `decoded`, `header`, `sdp` or `timing`, as
+    /// `find_correlated` reports it.
+    pub method: &'static str,
     /// Whether the tie compared an identifier both legs carry. `false` is a
     /// timing guess, which a busy server can get wrong.
     pub identifier_match: bool,
@@ -198,6 +201,7 @@ pub fn related_legs(
             RelatedLeg {
                 uuid: dialog_uuid(r.dialog, dialog_capture_id(r.dialog)),
                 strategy,
+                method: r.reason.method().as_str(),
                 identifier_match,
                 score: r.score,
             }

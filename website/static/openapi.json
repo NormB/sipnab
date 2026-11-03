@@ -1593,6 +1593,13 @@
               "null"
             ]
           },
+          "method": {
+            "description": "How the edge was made: `decoded`, `header`, `sdp` or `timing`, as on\n`/v1/dialogs/{call_id}/correlated`. Null for the root.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "parent_call_id": {
             "description": "The leg this one was correlated FROM. Null for the root.",
             "type": [
@@ -2272,6 +2279,17 @@
             "description": "The Call-ID the legs were correlated against.",
             "type": "string"
           },
+          "th_callid": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThCallidStatus",
+                "description": "When the source is the callee-side leg of an OpenSIPS\n`topology_hiding(\"C\")` call: `decoded`, `no_secret` (no secret\nconfigured), `undecodable` (the secret or prefix does not decode it) or\n`unmatched` (decoded, but no observed leg has that Call-ID and From\ntag). Null when the source is not a hidden leg."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "total_matched": {
             "description": "How many legs matched before the row cap.",
             "minimum": 0,
@@ -2298,6 +2316,10 @@
             "description": "True when the strategy compared identifiers, false for a guess.\n\nPresent so a caller can filter on the distinction without having to\nknow which strategy names mean what.",
             "type": "boolean"
           },
+          "method": {
+            "description": "How the link was made: `decoded` (an OpenSIPS topology-hiding Call-ID\ndecoded with the configured secret), `header` (a SIP header both legs\ncarry: a header named in `[sip] xcid_headers`, `Session-ID`,\n`P-Charging-Vector` or a Via branch), `sdp` (the SDP origin) or\n`timing` (the guess).",
+            "type": "string"
+          },
           "observed_gap_ms": {
             "description": "For `timing_heuristic` only: the observed gap between the two\ndialogs' creation, in milliseconds. Null for an identifier match,\nwhere it would be a number with no bearing on why they matched.\n\nThe evidence behind the guess, so a reader can judge it. A 15 ms gap on\na quiet box and a 1,900 ms gap on a busy SBC score identically and mean\nvery different things.",
             "format": "int64",
@@ -2314,7 +2336,7 @@
             "type": "integer"
           },
           "strategy": {
-            "description": "Which strategy matched, by name: `session_id`, `x_call_id`,\n`sdp_origin`, `charging_vector_related_icid`, `charging_vector_icid`,\n`via_branch` or `timing_heuristic`. The decisive field.\n\n`session_id` and `x_call_id` both score 100 and are not the same claim:\none is an RFC 7989 identifier designed to cross a B2BUA, the other a\nvendor header someone configured. `charging_vector_related_icid` and\n`charging_vector_icid` come out of ONE header and are likewise not the\nsame claim: RFC 7315's `related-icid` is an intermediary declaring the\nlink across a B2BUA, while plain `icid-value` equality is silent across\na conformant one, because an ICID identifies a dialog and a B2BUA is\ntwo. `timing_heuristic` is not an identifier at all.",
+            "description": "Which strategy matched, by name: `session_id`, `th_callid_decoded`,\n`x_call_id`, `sdp_origin`, `charging_vector_related_icid`,\n`charging_vector_icid`, `via_branch` or `timing_heuristic`. The\ndecisive field.\n\n`session_id` and `x_call_id` both score 100 and are not the same claim:\none is an RFC 7989 identifier designed to cross a B2BUA, the other a\nvendor header someone configured. `charging_vector_related_icid` and\n`charging_vector_icid` come out of ONE header and are likewise not the\nsame claim: RFC 7315's `related-icid` is an intermediary declaring the\nlink across a B2BUA, while plain `icid-value` equality is silent across\na conformant one, because an ICID identifies a dialog and a B2BUA is\ntwo. `timing_heuristic` is not an identifier at all.",
             "type": "string"
           }
         },
@@ -2322,6 +2344,7 @@
           "call_id",
           "score",
           "strategy",
+          "method",
           "identifier_match"
         ],
         "type": "object"
@@ -6382,6 +6405,16 @@
           "ip"
         ],
         "type": "object"
+      },
+      "ThCallidStatus": {
+        "description": "The state of one callee-side leg of an OpenSIPS `topology_hiding(\"C\")`\ncall, as `--correlate`, REST, MCP and the terminal interface report it.\n\nDefined in every build: one without `tls` cannot decode, and reports no\nstatus at all rather than a status it did not work out.",
+        "enum": [
+          "decoded",
+          "no_secret",
+          "undecodable",
+          "unmatched"
+        ],
+        "type": "string"
       },
       "Timeline": {
         "description": "Call volume over time, in fixed-width buckets.",
