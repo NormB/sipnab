@@ -326,7 +326,7 @@ renders every message of the selection as one scrollable document.
 | Down / j | Scroll down |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
-| Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
+| Shift+P | Play / stop the stream's audio (G.711 or Opus; requires the `audio` build) |
 | L | Open the packet loss map (RTP loss pattern) — a single screen with nothing to scroll, so `Esc` or `q` is the only key it takes, and either returns here |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
@@ -627,6 +627,8 @@ saw. Open with `S`:
 It needs a relay control address and
 a live capture. A run reading a file reports that it may not ask. The ask runs
 in the background. So the view never freezes waiting on a slow relay.
+[Ask a media relay about itself](@/docs/relay-statistics.md#use-the-terminal-ui)
+shows the view against a live relay.
 
 | Key | Action |
 |-----|--------|

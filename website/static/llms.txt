@@ -15,6 +15,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Install sipnab](https://sipnab.com/docs/install/): Install sipnab from a pre-built binary, a package, Homebrew or cargo, then check the download is genuine.
 - [Name calls on an rtpengine relay](https://sipnab.com/docs/rtpengine/): Media captured on a standalone rtpengine relay comes back orphaned because a relay carries no SIP. Read rtpengine's own control plane to name the calls, with no change to an existing Homer pipeline.
 - [Troubleshoot a call](https://sipnab.com/docs/troubleshooting/): Start from what the caller reports, find the matching section, and run the commands it gives, in order.
+- [Measure call quality](https://sipnab.com/docs/call-quality/): Read each stream's MOS, R-factor, jitter and loss, see when in the call they changed, read what the far end reported over RTCP, and set the thresholds and alerts that act on them.
 - [Walk through the terminal UI](https://sipnab.com/docs/tui/): Your first analysis in the interactive TUI, step by step: open a capture, read the ladder, measure a delay, and inspect RTP.
 - [Look up a key binding](https://sipnab.com/docs/keybindings/): Complete TUI keyboard shortcut reference for all views.
 - [Change the terminal UI colors](https://sipnab.com/docs/theme/): Customize sipnab's TUI colors with 11 semantic color slots and preset themes.
@@ -63,6 +64,7 @@ This file indexes the documentation as plain text. `llms-full.txt` beside it car
 - [Let sipnab name rtpengine's media](https://sipnab.com/docs/rtpengine-sipnab/): Have sipnab name the media on an rtpengine relay, from the relay's mirrored control plane or by asking it, with the relay on the same machine as the SIP proxy or its own.
 - [Add rtpproxy to your voice stack](https://sipnab.com/docs/rtpproxy-relay/): Install rtpproxy from the project's own packages, have OpenSIPS or Kamailio anchor every call's media on it, prove it with a test call, and operate it. No sipnab involved.
 - [Let sipnab name rtpproxy's media](https://sipnab.com/docs/rtpproxy-sipnab/): Have sipnab name the media on an rtpproxy relay from the relay's control traffic, with the relay on the same machine as the SIP proxy or its own.
+- [Ask a media relay about itself](https://sipnab.com/docs/relay-statistics/): Ask rtpengine for its own counters, the calls it holds and its count for one call beside sipnab's, from the command line, REST, MCP or the terminal UI.
 - [Add Homer to your voice stack](https://sipnab.com/docs/homer/): Run heplify-server, homer-app and PostgreSQL, have OpenSIPS or Kamailio send every call to Homer over HEP, and find the call. No sipnab involved.
 - [Connect sipnab to Homer](https://sipnab.com/docs/homer-sipnab/): Have sipnab receive the SIP proxy's HEP beside Homer, and have sipnab on another machine forward what it captures to Homer.
 - [Add Prometheus and Grafana to your voice stack](https://sipnab.com/docs/prometheus/): Run Prometheus and Grafana, have OpenSIPS or Kamailio publish its statistics, and watch a test call in the numbers. No sipnab involved.

@@ -45,6 +45,7 @@ PAGES: dict[str, str] = {
     "client-examples.md": "Runnable-Examples",
     "real-world-captures.md": "Real-World-Captures",
     "troubleshooting.md": "Troubleshooting",
+    "call-quality.md": "Measure-Call-Quality",
     "tuning-capture.md": "Tuning-Capture",
     "encapsulations.md": "Encapsulations",
     "rtpengine.md": "Rtpengine-Relays",
@@ -58,6 +59,7 @@ PAGES: dict[str, str] = {
     "tfps-sipnab.md": "Control-TFPS-from-sipnab",
     "rtpengine-relay.md": "Add-rtpengine",
     "rtpengine-sipnab.md": "Name-rtpengine-Media-with-sipnab",
+    "relay-statistics.md": "Ask-a-Media-Relay-About-Itself",
     "rtpproxy-relay.md": "Add-rtpproxy",
     "rtpproxy-sipnab.md": "Name-rtpproxy-Media-with-sipnab",
     "homer.md": "Add-Homer",
@@ -145,9 +147,9 @@ PAGES: dict[str, str] = {
 # Sidebar grouping: (section title, [source paths]), ordered by user journey —
 # install first, internals last. Order within a group is the reading order.
 GROUPS: list[tuple[str, list[str]]] = [
-    ("Getting started", ["install.md", "first-cli-triage.md", "glossary.md", "examples.md", "client-examples.md", "real-world-captures.md", "troubleshooting.md",
+    ("Getting started", ["install.md", "first-cli-triage.md", "glossary.md", "examples.md", "client-examples.md", "real-world-captures.md", "troubleshooting.md", "call-quality.md",
                          "tuning-capture.md", "encapsulations.md",
-                         "rtpengine.md",
+                         "rtpengine.md", "relay-statistics.md",
                          "backers.md"]),
     ("Using the TUI", ["tui-walkthrough.md", "keybindings.md", "theme-guide.md"]),
     ("CLI & automation", ["cli-reference.md", "errors.md", "filter-dsl.md", "output-formats.md",

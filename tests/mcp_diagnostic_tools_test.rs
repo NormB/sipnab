@@ -675,6 +675,59 @@ fn rtp_stats_declares_whether_the_mos_is_grounded() -> Result<(), TestError> {
     Ok(())
 }
 
+/// A call whose far end sends RTCP: a sender report and an XR VoIP Metrics
+/// block about the caller's stream, from `synthetic_captures::rtcp_xr_call`.
+const RTCP_XR: &str = "tests/fixtures/rtcp-xr-call.pcap";
+
+/// `media_diagnostics` reports what the far end said over RTCP apart from what
+/// sipnab measured, and scores the MOS on the far end's XR round trip.
+///
+/// Every expected value below is one the fixture's builder wrote into the
+/// packets: the callee's SR reports fraction lost 13/256 about the caller's
+/// stream, and its XR block reports R 78, MOS-LQ 3.8, a 3 % discard rate and a
+/// 180 ms round trip. sipnab's own loss is the 25 sequence gaps the builder
+/// left in that stream. The documentation's RTCP recipe shows this answer.
+#[test]
+fn media_diagnostics_reports_the_far_ends_rtcp_xr_apart() -> Result<(), TestError> {
+    let call_id = first_call_id(RTCP_XR)?;
+    let v = call_tool(
+        RTCP_XR,
+        "media_diagnostics",
+        serde_json::json!({"call_id": call_id}),
+    )?;
+    let streams = v["streams"].as_array().ok_or("streams array")?;
+    let caller = streams
+        .iter()
+        .find(|s| s["ssrc"] == "0x0a0a0a0a")
+        .ok_or_else(|| format!("no stream 0x0a0a0a0a in {v}"))?;
+    let reported = &caller["endpoint_reported"];
+    let rr = &reported["reception_report"];
+    assert_eq!(
+        rr["reporter_ssrc"], "0x0b0b0b0b",
+        "the SR's sender: {caller}"
+    );
+    assert_eq!(rr["cumulative_lost"], 25, "the SR's report block: {caller}");
+    let xr = &reported["voip_metrics"];
+    assert_eq!(xr["r_factor"], 78, "the XR block's R factor: {caller}");
+    assert_eq!(
+        xr["round_trip_delay_ms"], 180,
+        "the XR round trip: {caller}"
+    );
+    assert_eq!(
+        caller["delay"]["source"], "per far end",
+        "the MOS delay: {caller}"
+    );
+    assert_eq!(
+        caller["delay"]["one_way_ms"], 90.0,
+        "half the XR round trip: {caller}"
+    );
+    assert_eq!(
+        caller["packets"], 475,
+        "sipnab's own count, 25 short of 500: {caller}"
+    );
+    Ok(())
+}
+
 // ── bounded answers: the count, the flag, and the way to the rest ────
 //
 // A truncated list that does not say it was truncated is the worst failure on

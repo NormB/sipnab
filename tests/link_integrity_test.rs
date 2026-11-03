@@ -1592,7 +1592,23 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // (to `GET /v1/th-mappings`), rest-api.md +5 (to `GET /v1/th-mappings`
     // and the how-to, the how-to's two links to opensips-sipnab.md and one to
     // `th_mappings`).
-    const EXPECTED_WIKI_LINKS: usize = 2113;
+    // 2113 -> 2166 (#634, the media how-tos: docs/relay-statistics.md and
+    // docs/call-quality.md, and the stale-statement fixes): relay-statistics.md
+    // +8 and call-quality.md +7 (new pages); cli-reference.md +22 (a How-to
+    // link on each relay row, `--relay-stats`, `--relay-stats-call`,
+    // `--relay-stats-list`, `--relay-stats-interval`, `--relay-compare`,
+    // `--relay-holdings`, `--rtpengine-control`, `--rtpproxy-control`,
+    // `--api-allow-relay-query` and `--mcp-allow-relay-query`, and on the rows
+    // of `--max-lost-sequences`, `--quality-interval`, `--quality-threshold`,
+    // `--on-quality-exec` and the eight quality-band flags); examples.md +4
+    // (two relay recipes, the thresholds recipe and the audio recipe's G.729
+    // row); README.md +2 (the two How-to entries); rtpengine.md +2; and
+    // troubleshooting.md +2 (to the call-quality page and its troubleshooting
+    // list); keybindings.md, mcp-tools-relay.md, mos-and-codecs.md,
+    // rest-api.md, rtpengine-sipnab.md and tui-walkthrough.md +1 each.
+    // Counted per page against origin/main 9124a6f08: every other changed page
+    // held its count.
+    const EXPECTED_WIKI_LINKS: usize = 2166;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2849,8 +2865,11 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // operator-guide-notes.md.
     // 99 -> 100: docs/integrations.md, reached through the How-to list in
     // docs/README.md.
-    // 100 -> 101: docs/fleet.md, reached from docs/README.md.
-    const EXPECTED_DOCS_PAGES: usize = 101;
+    // 100 -> 101 (#635): docs/fleet.md, reached from docs/README.md.
+    // 101 -> 103 (#634): docs/relay-statistics.md, "Ask a media relay about
+    // itself", and docs/call-quality.md, "Measure call quality", each reached
+    // from docs/README.md's How-to list.
+    const EXPECTED_DOCS_PAGES: usize = 103;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

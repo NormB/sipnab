@@ -153,6 +153,16 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "the commands it gives, in order.",
     ),
     (
+        "docs/call-quality.md",
+        "call-quality.md",
+        "Measure call quality",
+        "Measure call quality",
+        69,
+        "Read each stream's MOS, R-factor, jitter and loss, see when in the "
+        "call they changed, read what the far end reported over RTCP, and set "
+        "the thresholds and alerts that act on them.",
+    ),
+    (
         "docs/tui-walkthrough.md",
         "tui.md",
         "Walk through the terminal UI",
@@ -677,6 +687,16 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Have sipnab name the media on an rtpproxy relay from the relay's "
         "control traffic, with the relay on the same machine as the SIP proxy "
         "or its own.",
+    ),
+    (
+        "docs/relay-statistics.md",
+        "relay-statistics.md",
+        "Ask a media relay about itself",
+        "Ask a media relay about itself",
+        68,
+        "Ask rtpengine for its own counters, the calls it holds and its count "
+        "for one call beside sipnab's, from the command line, REST, MCP or the "
+        "terminal UI.",
     ),
     (
         "docs/homer.md",

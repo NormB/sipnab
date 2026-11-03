@@ -334,6 +334,7 @@ pages = [
   { path = "docs/first-cli-triage.md", menu = true },
   { path = "docs/cookbook.md", menu = true },
   { path = "docs/troubleshooting.md", menu = true },
+  { path = "docs/call-quality.md", menu = true },
   { path = "docs/real-world-captures.md", menu = true },
   { path = "docs/glossary.md", menu = true },
 ]
@@ -347,6 +348,7 @@ pages = [
   { path = "docs/tuning-capture.md", menu = true },
   { path = "docs/encapsulations.md", menu = true },
   { path = "docs/rtpengine.md", menu = true },
+  { path = "docs/relay-statistics.md", menu = true },
 ]
 
 [[extra.docs_nav]]

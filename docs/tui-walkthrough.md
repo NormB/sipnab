@@ -166,7 +166,12 @@ a stream's row in the Call Flow (`F6`). Stream Detail shows:
 - silence detection,
 - MOS/jitter sparklines.
 
-A stream whose far end sent RTCP XR gains a **Reported by Far End (RTCP XR)**
+From the RTP Streams view, `D` opens the **Quality dashboard**, which ranks
+the streams worst MOS first. `L` there, or in Stream Detail, opens the
+selected stream's **Packet loss map**. [Measure call quality](call-quality.md#watch-quality-in-the-terminal-ui)
+shows both.
+
+A stream whose far end sent RTCP XR gains a **Reported by far end (RTCP XR)**
 section at the bottom.
 
 - It holds that endpoint's own R-factor, MOS-LQ, MOS-CQ, delays and discard
@@ -174,7 +179,7 @@ section at the bottom.
 - Everything above that section is what sipnab measured. Nothing in the
   section moves those numbers.
 
-With an `audio` build, `Shift+P` plays the stream (G.711). `Esc` returns to the
+With an `audio` build, `Shift+P` plays the stream (G.711 or Opus). `Esc` returns to the
 RTP Streams list. `Tab` there switches back to the Call List.
 
 ## Follow each RTP stream in the call flow

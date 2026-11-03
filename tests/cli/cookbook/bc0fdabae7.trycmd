@@ -1,0 +1,5 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --export-audio 1-1966@10.0.2.20 --export-audio-out bc0fdabae7/call.wav --no-cli-print
+Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to bc0fdabae7/call.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.
+
+```

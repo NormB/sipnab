@@ -4992,9 +4992,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // was hand-written for the site alone and is now its source. Attributed
     // against the staged diff: `--diff-filter=A` lists it as the one
     // markdown file added.
-    // 322 -> 324: docs/fleet.md, the fleet inventory how-to, and its site
+    // 322 -> 324 (#635): docs/fleet.md, the fleet inventory how-to, and its site
     // mirror website/content/docs/fleet.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 324;
+    // 324 -> 328 (the media how-tos, #634): docs/relay-statistics.md and
+    // docs/call-quality.md, and their generated site mirrors under
+    // website/content/docs/. Attributed against the staged diff:
+    // `--diff-filter=A` lists those four markdown files.
+    const EXPECTED_MARKDOWN_FILES: usize = 328;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5748,7 +5752,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/mcp-tools-signaling.md +1 (`th_mappings` parameters) and its
     // mirror +1; docs/design/surface-capability-matrix.md +1 (the
     // "Topology-hiding mappings" row), which has no mirror.
-    const EXPECTED_TABLES: usize = 1325;
+    // 1325 -> 1335 (the media how-tos, #634): docs/relay-statistics.md +4 (the
+    // counters to read first, the six REST routes, the three MCP tools and the
+    // TUI view's keys) and docs/call-quality.md +1 (the `--on-quality-exec`
+    // variables), and their site mirrors under website/content/docs/ +4 and
+    // +1. Attributed per file against origin/main 9124a6f08: no other changed
+    // page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1335;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

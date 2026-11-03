@@ -594,6 +594,13 @@ sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
 - Loss is high:
   - First rule out sipnab itself.
   - Then run a path MTR/traceroute to find where packets are dropping.
+- The run logs a warning that starts `IMPOSSIBLE RATE:`: sipnab read the
+  same traffic twice, such as a capture and its copy in one `-I` directory.
+  [Measure call quality](@/docs/call-quality.md#when-something-does-not-work) quotes
+  the warning in full. Every count and rate in that run is too high,
+  the loss and MOS included. Read one copy.
+- To see when in the call the quality changed, and what the far end reported
+  over RTCP, see [Measure call quality](@/docs/call-quality.md).
 
 > **Before you chase high loss on the network, check whether *sipnab* dropped the packets.**
 >

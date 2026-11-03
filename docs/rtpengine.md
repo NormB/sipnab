@@ -135,10 +135,10 @@ sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 \
 The queries below need the address, the key and a Call-ID. Set them once, on
 whichever machine you are running `curl` from.
 
-`$H` interpolates `$KEY`. So set the key first.
+`$AUTH` interpolates `$KEY`. So set the key first.
 
-- An `$H` built before `$KEY` exists carries an `Authorization` header with no
-  token in it.
+- An `$AUTH` built before `$KEY` exists carries an `Authorization` header with
+  no token in it.
 - Every query below then returns `401`.
 
 ```bash
@@ -146,8 +146,11 @@ KEY="$SIPNAB_API_KEY"
 ```
 
 ```bash
-H="-H 'Authorization: Bearer $KEY'"
+AUTH="Authorization: Bearer $KEY"
 ```
+
+Each `curl` below passes it as `-H "$AUTH"`, in double quotes, so the header
+reaches `curl` as one argument.
 
 Then the call you are chasing:
 
@@ -170,7 +173,7 @@ steered the call to.
 **First, ask the proxy which relay has it.**
 
 ```bash
-curl -fsS "http://proxy:8080/v1/dialogs/$CALL_ID" $H \
+curl -fsS -H "$AUTH" "http://proxy:8080/v1/dialogs/$CALL_ID" \
   | jq -r '.sdp_timeline[0] | "\(.media_addr):\(.media_port)"'
 # 192.0.2.40:38664
 ```
@@ -178,7 +181,7 @@ curl -fsS "http://proxy:8080/v1/dialogs/$CALL_ID" $H \
 **Then ask that one relay, and no others.**
 
 ```bash
-curl -fsS "http://192.0.2.40:8080/v1/dialogs/$CALL_ID" $H | jq '.streams'
+curl -fsS -H "$AUTH" "http://192.0.2.40:8080/v1/dialogs/$CALL_ID" | jq '.streams'
 ```
 
 A relay that never carried the call answers **404**. A relay that carried the
@@ -190,7 +193,7 @@ Every node stamps its answers with its own `capture_identity`. It carries the
 host name:
 
 ```bash
-curl -fsS "http://192.0.2.40:8080/v1/stats" $H | jq -c '.capture_identity'
+curl -fsS -H "$AUTH" "http://192.0.2.40:8080/v1/stats" | jq -c '.capture_identity'
 # {"dialog_generation":412,"instance":"9e22818dfa9f0a876b200-2","node":"relay-a","stream_generation":0}
 ```
 
@@ -499,9 +502,14 @@ WARN sipnab::app::bootstrap: --rtpengine-control 127.0.0.1:22222 asks a live rel
 The analysis still runs and exits 0. sipnab skips only the question to the
 relay.
 
-sipnab sends a relay two commands only: `list` and `query`. It never sends
-`offer`, `answer`, `delete` or `start recording`, the `ng` commands that
-change a relay.
+sipnab sends a relay three commands only, and all three read:
+
+- `list` and `query`, to name calls;
+- `statistics`, only for `--relay-stats` and the other relay-statistics
+  requests.
+
+It never sends `offer`, `answer`, `delete` or `start recording`, the `ng`
+commands that change a relay.
 
 Three limits bound the asking, whatever the traffic:
 
@@ -545,7 +553,9 @@ itself:
 - its own loss and jitter.
 
 `--relay-stats` asks the relay named by `--rtpengine-control` for them, and
-prints them:
+prints them. [Ask a media relay about itself](relay-statistics.md) covers
+every way to ask, with real output: the command line, REST, MCP and the
+terminal UI.
 
 ```bash
 sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
@@ -621,6 +631,8 @@ The rest of the analysis still runs and exits 0.
 ## Let an agent ask the relay
 
 Everything above is a person at a terminal.
+[Ask a media relay about itself](relay-statistics.md#let-an-agent-ask) shows
+all three tools that ask the relay. This section covers `query_relay`.
 
 - `query_relay` gives an AI agent the same reach.
 - `decode_ng` lets it read a control message it finds in the capture.

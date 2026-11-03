@@ -5047,6 +5047,9 @@ Only a build with the `vcon` feature registers this route.
 
 ### GET /v1/relay/stats
 
+[Ask a media relay about itself](@/docs/relay-statistics.md#ask-over-rest) walks
+through the six `/v1/relay/` routes on a live relay.
+
 The relay's own global counters, tiered `relay_reported`.
 
 - It transmits once to the

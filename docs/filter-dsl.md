@@ -278,7 +278,7 @@ When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
 
 **Every figure above belongs to the endpoint that sent it, not to sipnab.**
 
-- The TUI Stream Detail view shows them in a **Reported by Far End (RTCP XR)**
+- The TUI Stream Detail view shows them in a **Reported by far end (RTCP XR)**
   section of their own, below everything sipnab measured.
 - One figure feeds sipnab's MOS: the round-trip delay. Halved, it is the
   one-way delay behind the MOS when the run declares no `--one-way-delay`. See

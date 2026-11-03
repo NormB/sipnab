@@ -3253,6 +3253,56 @@ The CLI `--filter` outputs per-message records. So deduplicate to call_ids first
 
 **Problem:** A call sounds bad. You want the actual audio to listen to or share.
 
+### Export a WAV from the command line
+
+Name the call with `--export-audio`. sipnab reads the capture, writes the
+call's decoded audio to a WAV file and prints what it wrote. Against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```bash
+sipnab -N -I capture.pcap --export-audio 1-1966@10.0.2.20 --export-audio-out call.wav --no-cli-print
+```
+
+```text
+Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to call.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.
+```
+
+- `--export-audio-out <FILE>` names the file. Without it, the name is the
+  Call-ID with every character other than a letter, a digit, `-`, `_` or `.`
+  replaced by `_`, plus `.wav`: here `1-1966_10.0.2.20.wav`, in the current
+  directory.
+- The file is mono for one stream and stereo for two.
+- sipnab never overwrites a file. An existing one exits 1:
+  `--export-audio: Failed to create WAV file: 1-1966_10.0.2.20.wav: File exists (os error 17)`
+  is what a second run without `--export-audio-out` printed.
+- A Call-ID the capture does not hold exits 1:
+  `--export-audio: no SIP dialog and no RTP stream associated with call_id 'nosuch@example.com' in this capture`.
+- `--no-cli-print` keeps the capture's SIP messages off the terminal, so the
+  export line is the only output on stdout.
+- `--export-audio` keeps the call's audio payload for the run by itself. It
+  needs no `--retain-audio`.
+
+### Export a WAV over REST
+
+A server started with `--retain-audio` returns a call's audio from
+`GET /v1/dialogs/{call_id}/audio`:
+
+```bash
+sipnab -N -I capture.pcap --api 127.0.0.1:8080 --retain-audio --no-cli-print
+```
+
+```bash
+curl -s -o call.wav -w '%{http_code} %{content_type}\n' 'http://127.0.0.1:8080/v1/dialogs/1-1966@10.0.2.20/audio'
+```
+
+```text
+200 audio/wav
+```
+
+Without `--retain-audio` the same request answers `422` with a body that
+starts `No audio payload retained`. The MCP `export_audio` tool writes the
+same file under `--mcp-file-root`.
+
 ### Export a WAV from the TUI
 
 ```bash
@@ -3274,7 +3324,9 @@ WAV is the format you want for audio.
 You may have built with the `audio` feature (in default). Then:
 
 - Press `Enter` on a stream to open Stream Detail.
-- Then `P` plays that stream through your local audio device.
+- Then `Shift+P` plays that stream through your local audio device.
+- Playback decodes G.711 (`PCMU`, `PCMA`) and Opus. A G.722 or G.729 stream
+  exports to WAV but does not play.
 - Only Stream Detail binds that key. The stream list ignores it.
 
 ### Check whether the file holds the whole call
@@ -3291,6 +3343,10 @@ Read it with any tool that shows RIFF metadata:
 ffprobe -v error -show_entries format_tags -of default=noprint_wrappers=1 call.wav
 ```
 
+```text
+TAG:comment=Produced by sipnab 0.5.232 via mechanism sipnab-capture. Audio decoded from RTP payload this run retained; it is bounded by where the capture point sat and by what retention kept, and is not a recording made by the endpoints. INCOMPLETE. — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.
+```
+
 A complete file says `No omissions recorded`.
 A partial one says `INCOMPLETE` and names the reason, because these are different problems:
 
@@ -3300,7 +3356,7 @@ A partial one says `INCOMPLETE` and names the reason, because these are differen
 | `the [limits] max_audio_bytes retention budget was reached and released N earlier frame(s)` | The audio retained across every call reached the budget, and the oldest stream gave up its earliest frames. The file holds the END of it. | Raise `[limits] max_audio_bytes` |
 | `N earlier frame(s) were released after this call's vCon container was written` | A live capture wrote this call's vCon, which carries the audio, and then released it | Read the audio from the vCon container |
 | `N of M stream(s) on this call are NOT in this file` | A WAV carries two channels; a three-legged call does not fit | Export the legs separately |
-| `(G729)` beside that | A stream's codec is not one sipnab decodes | Nothing — the audio is not recoverable from this capture |
+| `(G729)` beside that | sipnab did not decode a G.729 stream: the host has no codebook tables, or the binary lacks the `g729` feature | Run `sipnab g729 install` ([G.729 decoding](g729.md)), then export again. `sipnab --version` lists `g729` when the binary carries it |
 | `N frame(s) failed to decode` | The decoder rejected individual Opus frames | Check for truncation (`--snaplen`) |
 | `media in only ONE direction reached this capture` | sipnab saw no stream going the other way. Either the call really was one-way, or the capture point only sees one leg | Check where the tap sits before treating it as a fault |
 
@@ -3317,15 +3373,16 @@ So the first 44 bytes stay a standard WAV header, and every player reads the fil
   - G.729 (payload type 18), when the binary carries the `g729` feature and you have installed the codebook tables.
     [G.729 audio](g729.md) covers `sipnab g729 install`.
   - Other codecs (AMR, GSM, video) are not decoded. The export names the codec it skipped.
+- A call whose only stream is G.729, on a host without the tables, exits 1 with
+  `--export-audio: No stream on this call carries a codec that decodes to WAV (found: G729)`
+  and the line that names `sipnab g729 install`.
 - **An export refusing with "No audio payload retained" is telling you about the run, not the call.**
   - It means this run kept no payload to decode.
   - Most often, that is because retention was off.
   - It is not a finding that the call was silent.
 - On a host with no audio device, such as a headless server, the TUI disables playback.
   - It shows a message suggesting F2 → WAV instead.
-- No command-line flag writes WAV files. For a scripted export, use one of these:
-  - the MCP `export_audio` tool, which writes under `--mcp-file-root`,
-  - a vCon export with `--retain-audio`, which carries each call's audio inside the container as a `recording` ([Export one call to a conversation archive as a vCon](#export-one-call-to-a-conversation-archive-as-a-vcon)).
+- A vCon export with `--retain-audio` carries each call's audio inside the container as a `recording` ([Export one call to a conversation archive as a vCon](#export-one-call-to-a-conversation-archive-as-a-vcon)).
 
 ---
 
@@ -4191,7 +4248,8 @@ sipnab -N -I capture.pcap --no-final-response-timeout 30 --analyze
 The shipped thresholds describe a general network, and yours is not one.
 
 The eight quality knobs carry no built-in command-line default.
-So a value you do not pass leaves the config file's value in charge:
+So a value you do not pass leaves the config file's value in charge.
+[Measure call quality](call-quality.md#set-the-thresholds-to-your-network) shows the `[quality]` file form, what the thresholds change, and how to check that sipnab took them:
 
 ```bash
 sipnab -N -I capture.pcap --mos-warn 4.0 --mos-bad 3.2 --jitter-warn-ms 20 --jitter-bad-ms 50 --loss-warn-pct 1.0 --loss-bad-pct 3.0 --report --no-cli-print
@@ -5416,7 +5474,8 @@ Selected with the `jq` filter `{orphans: [.orphans[] | {ssrc, reason}], total_or
   - The destination comes from `--rtpengine-control` and from nowhere else.
   - An address sipnab could otherwise infer is one it learned from packets.
   - That is a host that was a relay during the capture, and may be somebody's laptop now.
-- `--rtpengine-control` transmits `list` and `query` and nothing else. This is structural.
+- `--rtpengine-control` transmits `list`, `query` and `statistics`, and nothing else. This is structural.
+  - `statistics` goes only with a relay-statistics request, such as `--relay-stats`.
   - `offer`, `answer`, `delete` and `start recording` each change a production relay.
   - None is representable on that path.
 
@@ -5639,7 +5698,7 @@ sipnab -N --mcp -I capture.pcap --quiet
   "applicable": true,
   "streams": [
     { "ssrc": "0x343da99b", "codec": "PCMU", "packets": 425,
-      "qos": { "marking_observed": true, "dscp": 0, "name": "CS0 / default (best effort)" },
+      "qos": { "marking_observed": true, "dscp": 0, "expedited": false, "name": "CS0 / default (best effort)" },
       "jitter": { "grounded": true, "clock_basis": "rfc3551", "clock_rate_hz": 8000,
                   "measured_ms": 0.0054046519599899685 },
       "delay": { "source": "assumed", "assumed": true, "one_way_ms": 100.0 },
@@ -5808,21 +5867,36 @@ A relay statistic is a claim from the relay, not something sipnab measured.
 - The output carries a tag naming it the relay's own count. So you never mistake it for sipnab's:
 
 ```bash
-sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats --duration 1 2>/dev/null \
+  | grep -E '^Relay|relayedpacket|packets_lost|uptime'
+```
+
+```text
+Relay statistics (rtpengine at 127.0.0.1:22222, asked 2026-11-03T16:09:58Z) — relay_reported counts
+  statistics.interfaces.0.packets_lost         0
+  statistics.totalstatistics.relayedpacketerrors 0
+  statistics.totalstatistics.relayedpacketerrors_kernel 0
+  statistics.totalstatistics.relayedpacketerrors_user 0
+  statistics.totalstatistics.relayedpackets    60451
+  statistics.totalstatistics.relayedpackets_kernel 0
+  statistics.totalstatistics.relayedpackets_user 60451
+  statistics.totalstatistics.uptime            86974
+  statistics.voip_metrics.packets_lost         0
 ```
 
 Every figure names the relay as its source (wire tier `relay_reported`).
 Reading it as "sipnab saw this" is the one mistake this whole view exists to stop.
+[Ask a media relay about itself](relay-statistics.md#ask-the-relay-for-its-counters) explains the counters to read first.
 
 **Pitfalls:**
 
 - **A relay that restarted a second ago reads as a quiet one.**
   - rtpengine's counters are cumulative, and reset to zero on restart.
-  - Where the relay publishes `uptime`, sipnab shows it beside them. rtpproxy publishes none.
+  - rtpengine publishes `statistics.totalstatistics.uptime`, in seconds, beside them.
   - So a small number can mean "handled little" or "just restarted". Only the uptime tells them apart.
   - A polled series (`--relay-stats-interval`) can step backwards. sipnab flags that as a probable restart, rather than a drop in traffic.
 - Asking transmits to the relay.
-  - So this needs a live source (`-d`), never a capture file.
+  - So this needs a live source (`-d`), never a capture file, and capturing an interface needs `sudo` or `sudo sipnab --setup-caps` once.
   - On `-I file.pcap`, sipnab does not ask. It logs `--relay-stats will not ask a relay on a run that reads a file`, analyzes the file, and exits 0.
   - `--rtpengine-control` on a file run logs a warning and transmits nothing.
 - A statistic missing from the reply was not asked for. A zero means the relay counted zero.
@@ -5834,13 +5908,44 @@ Reading it as "sipnab saw this" is the one mistake this whole view exists to sto
 
 **Problem:** You suspect leaked sessions. These are calls that ended, but whose media ports the relay never tore down.
 
+Ask the relay which calls it holds now:
+
 ```bash
-sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-holdings 2>/dev/null
 ```
 
-Read the active-session count beside the created and destroyed totals.
+```text
+Holdings of relay (rtpengine at 127.0.0.1:22222), asked 2026-11-03T15:18:50.189704516+00:00
+1 call held.
+Call-ID
+----------------
+1-29@192.0.2.21
+```
 
-- A created count far above destroyed, with a high active count, is the shape of sessions nobody released.
+Compare that list with the calls your SIP proxy still has up. A Call-ID the relay holds and the proxy does not is a candidate.
+The relay's own session counters add the totals:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats --duration 1 2>/dev/null \
+  | grep -E 'sessionsown|managedsessions|terminatedsessions|timeoutsessions'
+```
+
+```text
+  statistics.currentstatistics.sessionsown     0
+  statistics.totalstatistics.finaltimeoutsessions 0
+  statistics.totalstatistics.forcedterminatedsessions 0
+  statistics.totalstatistics.managedsessions   7
+  statistics.totalstatistics.offertimeoutsessions 0
+  statistics.totalstatistics.regularterminatedsessions 6
+  statistics.totalstatistics.silenttimeoutsessions 0
+  statistics.totalstatistics.timeoutsessions   1
+```
+
+- `currentstatistics.sessionsown` is the number held now.
+- `totalstatistics.managedsessions` counts every session since the relay started.
+- `regularterminatedsessions`, `forcedterminatedsessions` and the four timeout counters (`timeoutsessions`, `silenttimeoutsessions`, `finaltimeoutsessions` and `offertimeoutsessions`) say how sessions ended.
+  Here six of seven ended normally and one on a timeout, which is a session whose media stopped before anything deleted it.
+- [Ask a media relay about itself](relay-statistics.md#list-the-calls-the-relay-holds) covers `--relay-holdings-max` and the JSON form.
 
 **Pitfalls:**
 
@@ -5858,7 +5963,7 @@ Read the active-session count beside the created and destroyed totals.
 This is "we sent it" / "we never got it", one hop up.
 
 ```bash
-sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-compare 'abc123@host'
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-compare 'abc123@host' --duration 5
 ```
 
 This shows two figures side by side, each showing which it is:
@@ -5903,7 +6008,7 @@ You need to know which to believe.
 | the far end's RTCP `fraction lost` | what the far end claims (`endpoint_reported`) | the remote endpoint's own assertion, never checkable |
 
 ```bash
-sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
 ```
 
 ```bash
@@ -11695,6 +11800,9 @@ Only a build with the `vcon` feature registers this route.
 
 ### GET /v1/relay/stats
 
+[Ask a media relay about itself](relay-statistics.md#ask-over-rest) walks
+through the six `/v1/relay/` routes on a live relay.
+
 The relay's own global counters, tiered `relay_reported`.
 
 - It transmits once to the
@@ -13984,10 +14092,10 @@ sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222 \
 The queries below need the address, the key and a Call-ID. Set them once, on
 whichever machine you are running `curl` from.
 
-`$H` interpolates `$KEY`. So set the key first.
+`$AUTH` interpolates `$KEY`. So set the key first.
 
-- An `$H` built before `$KEY` exists carries an `Authorization` header with no
-  token in it.
+- An `$AUTH` built before `$KEY` exists carries an `Authorization` header with
+  no token in it.
 - Every query below then returns `401`.
 
 ```bash
@@ -13995,8 +14103,11 @@ KEY="$SIPNAB_API_KEY"
 ```
 
 ```bash
-H="-H 'Authorization: Bearer $KEY'"
+AUTH="Authorization: Bearer $KEY"
 ```
+
+Each `curl` below passes it as `-H "$AUTH"`, in double quotes, so the header
+reaches `curl` as one argument.
 
 Then the call you are chasing:
 
@@ -14019,7 +14130,7 @@ steered the call to.
 **First, ask the proxy which relay has it.**
 
 ```bash
-curl -fsS "http://proxy:8080/v1/dialogs/$CALL_ID" $H \
+curl -fsS -H "$AUTH" "http://proxy:8080/v1/dialogs/$CALL_ID" \
   | jq -r '.sdp_timeline[0] | "\(.media_addr):\(.media_port)"'
 # 192.0.2.40:38664
 ```
@@ -14027,7 +14138,7 @@ curl -fsS "http://proxy:8080/v1/dialogs/$CALL_ID" $H \
 **Then ask that one relay, and no others.**
 
 ```bash
-curl -fsS "http://192.0.2.40:8080/v1/dialogs/$CALL_ID" $H | jq '.streams'
+curl -fsS -H "$AUTH" "http://192.0.2.40:8080/v1/dialogs/$CALL_ID" | jq '.streams'
 ```
 
 A relay that never carried the call answers **404**. A relay that carried the
@@ -14039,7 +14150,7 @@ Every node stamps its answers with its own `capture_identity`. It carries the
 host name:
 
 ```bash
-curl -fsS "http://192.0.2.40:8080/v1/stats" $H | jq -c '.capture_identity'
+curl -fsS -H "$AUTH" "http://192.0.2.40:8080/v1/stats" | jq -c '.capture_identity'
 # {"dialog_generation":412,"instance":"9e22818dfa9f0a876b200-2","node":"relay-a","stream_generation":0}
 ```
 
@@ -14348,9 +14459,14 @@ WARN sipnab::app::bootstrap: --rtpengine-control 127.0.0.1:22222 asks a live rel
 The analysis still runs and exits 0. sipnab skips only the question to the
 relay.
 
-sipnab sends a relay two commands only: `list` and `query`. It never sends
-`offer`, `answer`, `delete` or `start recording`, the `ng` commands that
-change a relay.
+sipnab sends a relay three commands only, and all three read:
+
+- `list` and `query`, to name calls;
+- `statistics`, only for `--relay-stats` and the other relay-statistics
+  requests.
+
+It never sends `offer`, `answer`, `delete` or `start recording`, the `ng`
+commands that change a relay.
 
 Three limits bound the asking, whatever the traffic:
 
@@ -14394,7 +14510,9 @@ itself:
 - its own loss and jitter.
 
 `--relay-stats` asks the relay named by `--rtpengine-control` for them, and
-prints them:
+prints them. [Ask a media relay about itself](relay-statistics.md) covers
+every way to ask, with real output: the command line, REST, MCP and the
+terminal UI.
 
 ```bash
 sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
@@ -14470,6 +14588,8 @@ The rest of the analysis still runs and exits 0.
 ## Let an agent ask the relay
 
 Everything above is a person at a terminal.
+[Ask a media relay about itself](relay-statistics.md#let-an-agent-ask) shows
+all three tools that ask the relay. This section covers `query_relay`.
 
 - `query_relay` gives an AI agent the same reach.
 - `decode_ng` lets it read a control message it finds in the capture.
@@ -15137,6 +15257,13 @@ sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
 - Loss is high:
   - First rule out sipnab itself.
   - Then run a path MTR/traceroute to find where packets are dropping.
+- The run logs a warning that starts `IMPOSSIBLE RATE:`: sipnab read the
+  same traffic twice, such as a capture and its copy in one `-I` directory.
+  [Measure call quality](call-quality.md#when-something-does-not-work) quotes
+  the warning in full. Every count and rate in that run is too high,
+  the loss and MOS included. Read one copy.
+- To see when in the call the quality changed, and what the far end reported
+  over RTCP, see [Measure call quality](call-quality.md).
 
 > **Before you chase high loss on the network, check whether *sipnab* dropped the packets.**
 >
@@ -16327,6 +16454,400 @@ Then see [Tuning capture on a busy server](tuning-capture.md).
 
 ---
 
+<!-- source: docs/call-quality.md -->
+
+# Measure call quality
+
+sipnab scores every RTP stream it captures: a MOS, the E-model R-factor
+behind it, jitter and packet loss. It keeps the score for each few seconds
+of the call as well, so you can see when quality changed, and it keeps what
+the far end reported over RTCP apart from what sipnab measured.
+
+Use this page to answer "how did this call sound, and when did it go wrong?"
+For one-way audio, dead air and codec mismatches, see
+[Troubleshooting](troubleshooting.md). For where the MOS comes from and
+which codecs have a published basis for it, see
+[MOS and codecs](mos-and-codecs.md).
+
+## Before you start
+
+- **No change to any other system.** sipnab measures the RTP it captures.
+  Nothing on the SIP server, the phones or the relay needs to change.
+- **RTCP is optional.** When the endpoints send RTCP, sipnab also reports
+  what the far end said. Without it, every figure is sipnab's own.
+- **The capture must hold the media.** A capture of signaling only has no
+  streams to score. Live capture needs root or the capture capabilities
+  `sudo sipnab --setup-caps` grants once. Reading a file needs neither.
+- **Build.** Every build scores streams. The REST route needs the `api`
+  feature, the MCP tools need `mcp`, and the terminal UI needs `tui`. All
+  three are in the release binaries; `sipnab --version` lists them.
+
+The examples read
+[`tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap),
+a public capture of one call with a lossy stream, and
+[`tests/fixtures/rtcp-xr-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/rtcp-xr-call.pcap),
+a generated call whose far end sends RTCP. The output came from sipnab
+0.5.232.
+
+## Read each stream's score
+
+`--json-dialogs` prints each call with its streams. Pick the quality fields
+with `jq`:
+
+```bash
+sipnab -N -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --json-dialogs --no-cli-print 2>/dev/null \
+  | jq -c '.streams[]? | {ssrc, codec, packets, loss_pct: (.loss_pct*100|round/100), jitter_ms: (.jitter_ms*100|round/100), mos: (.mos*100|round/100), r_factor: (.r_factor*10|round/10)}' \
+  | sort -u
+```
+
+```json
+{"ssrc":"0xb72a7104","codec":"PCMU","packets":790,"loss_pct":0.13,"jitter_ms":0.56,"mos":4.33,"r_factor":89.6}
+{"ssrc":"0xbee0f2ed","codec":"PCMU","packets":205,"loss_pct":64.29,"jitter_ms":0.25,"mos":1.02,"r_factor":8.6}
+{"ssrc":"0xbee0f2ed","codec":"PCMU","packets":2,"loss_pct":0,"jitter_ms":0.03,"mos":4.36,"r_factor":90.8}
+```
+
+- `mos` runs from 1.0 to 4.5, higher is better.
+- `r_factor` is the ITU-T G.107 rating sipnab converts to the MOS, 0 to 100.
+- `loss_pct` and `jitter_ms` are what sipnab measured on the wire.
+- `mos_grounded: false` on a stream means its codec has no published
+  impairment value and the MOS is a placeholder.
+  [MOS and codecs](mos-and-codecs.md#tell-a-scored-mos-from-a-placeholder)
+  covers it.
+
+Here one direction of the call lost 64 % of its packets and scores 1.0,
+while the other direction scores 4.33.
+
+## See when the quality changed
+
+A whole-stream figure averages a bad minute into a good call. Each stream
+also carries `quality_intervals`, one entry per interval, five seconds by
+default:
+
+```bash
+sipnab -N -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --json-dialogs --no-cli-print 2>/dev/null \
+  | jq -c '.streams[]? | select(.ssrc=="0xbee0f2ed" and .packets>100) | .quality_intervals[] | {timestamp: .timestamp[11:19], packets, loss_pct: (.loss_pct|round), mos: (.mos*10|round/10), verdict}'
+```
+
+```json
+{"timestamp":"07:13:11","packets":114,"loss_pct":54,"mos":1,"verdict":"degraded"}
+{"timestamp":"07:13:16","packets":17,"loss_pct":93,"mos":1,"verdict":"degraded"}
+```
+
+Five seconds hides a burst shorter than itself. `--quality-interval` sets
+the interval, from 1 to 300 seconds (`[limits] quality_interval_secs` in the
+config file):
+
+```bash
+sipnab -N -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --quality-interval 1 --json-dialogs --no-cli-print 2>/dev/null \
+  | jq -c '.streams[]? | select(.ssrc=="0xbee0f2ed" and .packets>100) | .quality_intervals[] | {timestamp: .timestamp[11:19], packets, loss_pct: (.loss_pct|round), mos: (.mos*10|round/10), verdict}'
+```
+
+```json
+{"timestamp":"07:13:07","packets":38,"loss_pct":24,"mos":1.4,"verdict":"degraded"}
+{"timestamp":"07:13:08","packets":51,"loss_pct":0,"mos":4.4,"verdict":"acceptable"}
+{"timestamp":"07:13:11","packets":6,"loss_pct":95,"mos":1,"verdict":"degraded"}
+{"timestamp":"07:13:16","packets":22,"loss_pct":91,"mos":1,"verdict":"degraded"}
+{"timestamp":"07:13:17","packets":50,"loss_pct":0,"mos":4.4,"verdict":"acceptable"}
+```
+
+At one second the stream shows clean seconds between the bursts, which the
+five-second view averaged away. An interval with no packets has no entry.
+A finer interval costs memory, not history: the trend still covers an hour
+of call time.
+
+`--max-lost-sequences` (`[limits] max_lost_sequences`, default 1000) sets
+how many lost sequence numbers sipnab keeps per stream for the loss map and
+the burst and gap analysis below.
+
+## Watch quality in the terminal UI
+
+```bash
+sipnab -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap
+```
+
+Press `Tab` for the RTP streams, then `D` for the **Quality dashboard**. It
+ranks the streams worst MOS first and draws the selected stream's trend:
+
+```text
+┌ Quality dashboard ──────────────────────────────────────────────────────────────
+│  Streams: 3 (0 active)   Avg MOS: 3.2   Worst: 1.0   With loss: 2
+│
+│    MOS   Rating   Jitter   Loss%   Packets  Codec    Stream
+│▶ · 1.0   Bad       0.2ms  64.29       205  PCMU     ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E.
+│  · 4.3   Good      0.6ms   0.13       790  PCMU     ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E.
+│  · 4.4   Good      0.0ms   0.00         2  PCMU     ZDYzOWVlNjEwM2NjZTBjNzliNmM1ZTNiOGZjNWFhN2E.
+│
+│  Trend (selected, 5s intervals, oldest → newest)
+│  MOS:    ▁▁
+│  Jitter: ▁▁
+│  Loss:   ██
+```
+
+In the first column, `●` marks an active stream and `·` an idle one. On a
+live capture with a call up, every stream of that call shows `●`.
+
+Press `L` for the **Packet loss map** of the selected stream. It shows where
+in the stream the packets went missing:
+
+```text
+┌ Packet loss map ────────────────────────────────────────────────────────────────
+│  SSRC 0xBEE0F2ED   192.168.10.41:64508 → 192.168.10.40:49848
+│  Loss 64.29%   369 lost / 574 packets
+│  Bursts 3   Pattern Bursty   Avg burst 2473ms
+│
+│███                      ▓█████████████████████████████░    ▒███████████████████
+│4513                                                               4800
+```
+
+Three long bursts mean the path dropped everything for seconds at a time, a
+different fault from a steady trickle of loss. `Esc` returns to the
+dashboard, and `Enter` there opens **Stream detail**: the MOS, the delay
+sipnab scored it with, the quality intervals and the burst and gap analysis for
+the stream.
+
+## Find the bad streams over REST
+
+`GET /v1/streams?mos_below=` returns the streams scored below a MOS:
+
+```bash
+sipnab -N -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --api 127.0.0.1:8080 --no-cli-print
+```
+
+```bash
+curl -s 'http://127.0.0.1:8080/v1/streams?mos_below=3.0' \
+  | jq -c '{total, ungrounded_excluded, streams: [.streams[] | {ssrc, codec, mos: (.mos*100|round/100), loss_pct: (.loss_pct*100|round/100), r_factor: (.r_factor*10|round/10)}]}'
+```
+
+```json
+{"total":1,"ungrounded_excluded":0,"streams":[{"ssrc":"0xbee0f2ed","codec":"PCMU","mos":1.02,"loss_pct":64.29,"r_factor":8.6}]}
+```
+
+`ungrounded_excluded` counts streams whose MOS is a placeholder. The filter
+never selects them. The MCP `rtp_stats` tool answers the same question for
+an agent, with `min_mos` and `max_mos`.
+
+## Read what the far end reported
+
+An endpoint that sends RTCP reports its own view of the stream it receives:
+loss, jitter, and in an RTCP XR VoIP Metrics block, its own R-factor, MOS,
+round trip and jitter-buffer discards. sipnab keeps that apart, under
+`endpoint_reported` in the MCP `media_diagnostics` answer. It never moves sipnab's
+own loss or jitter.
+
+Start an MCP server on the capture and call `media_diagnostics` for the call:
+
+```bash
+sipnab -N --mcp -I tests/fixtures/rtcp-xr-call.pcap --quiet
+```
+
+`media_diagnostics { "call_id": "rtcp-xr-1@192.0.2.30" }` answers with one
+entry per stream. The caller's stream, selected with the `jq` filter
+`.streams[] | select(.ssrc=="0x0a0a0a0a") | {ssrc, packets, delay, endpoint_reported: (.endpoint_reported | del(.note))}`,
+reads:
+
+```json
+{
+  "ssrc": "0x0a0a0a0a",
+  "packets": 475,
+  "delay": {
+    "assumed": false,
+    "one_way_ms": 90.0,
+    "source": "per far end"
+  },
+  "endpoint_reported": {
+    "reception_report": {
+      "cumulative_lost": 25,
+      "fraction_lost_pct": 5.078125,
+      "jitter_ms": 2.0,
+      "reporter_ssrc": "0x0b0b0b0b",
+      "reports_seen": 2,
+      "round_trip_ms": null
+    },
+    "voip_metrics": {
+      "burst_duration_ms": 0,
+      "discard_rate_pct": 3.125,
+      "end_system_delay_ms": 40,
+      "gap_duration_ms": 10000,
+      "loss_rate_pct": 5.078125,
+      "mos_cq": 3.7,
+      "mos_lq": 3.8,
+      "r_factor": 78,
+      "reporter_ssrc": "0x0b0b0b0b",
+      "reports_seen": 2,
+      "round_trip_delay_ms": 180
+    }
+  }
+}
+```
+
+Read it in three parts:
+
+- **`reception_report`** is the far end's RTCP receiver report about this
+  stream: 25 packets lost, about 5 %. sipnab's own count agrees: 475 of the
+  500 packets reached the capture.
+- **`voip_metrics`** is the far end's RTCP XR block. Two figures in it are
+  out of any capture's reach: `discard_rate_pct`, the packets that arrived
+  and that the far end's jitter buffer threw away, and the far end's own
+  `r_factor` and MOS.
+- **`delay`** is the one-way delay behind sipnab's own MOS. Here it is half
+  the XR block's 180 ms round trip, `per far end`. Without RTCP it reads
+  `"source": "assumed"` and 100 ms.
+
+The answer also carries a `note`: nothing authenticates RTCP, and a report
+describes the path from the sender to the reporter, which on a mid-path
+capture is not the segment sipnab sees. Where the far end and sipnab
+disagree, the difference says where on the path the fault is.
+[MOS and codecs](mos-and-codecs.md#what-sipnab-computes-the-score-from)
+explains how to read it.
+
+In the TUI, the same stream's Stream detail scores it on that delay and adds
+the far end's figures at the bottom:
+
+```text
+  MOS: 3.1 (Poor)    Jitter: 0.0ms    Loss: 5.00%    RTT: 180ms    (delay 90ms per far end)
+```
+
+```text
+── Reported by far end (RTCP XR) ──────────────────────────────────────────────────
+  Endpoint's own claim, not sipnab's measurement (reporter SSRC 0x0B0B0B0B, 2 reports)
+  MOS-LQ: 3.8    MOS-CQ: 3.7    R factor: 78    Ext R: n/a
+  Loss: 5.08%    Discard: 3.12%    Burst density: 0.0%    Gap density: 5.1%
+  Burst duration: 0ms    Gap duration: 10000ms    Round-trip: 180ms    End-system: 40ms
+```
+
+## Set the thresholds to your network
+
+Eight thresholds decide when a figure counts as a warning or as bad. They
+color the TUI's quality columns, set the buckets of the Prometheus MOS,
+jitter and loss histograms, and set the loss and jitter limits of the
+`--problems` alias. Put them in the config file:
+
+```toml
+[quality]
+mos_warn = 4.0
+mos_bad = 3.2
+jitter_warn_ms = 20.0
+jitter_bad_ms = 50.0
+loss_warn_pct = 1.0
+loss_bad_pct = 3.0
+rtt_warn_ms = 150.0
+rtt_bad_ms = 300.0
+```
+
+Or pass them for one run as `--mos-warn`, `--mos-bad`, `--jitter-warn-ms`,
+`--jitter-bad-ms`, `--loss-warn-pct`, `--loss-bad-pct`, `--rtt-warn-ms` and
+`--rtt-bad-ms`. A flag overrides the file.
+
+To check that sipnab took them, serve metrics and read the MOS histogram's
+buckets. `--api` keeps a file run serving after it has read the file:
+
+```bash
+sipnab -N -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --mos-warn 4.0 --mos-bad 3.2 \
+  --metrics 127.0.0.1:9090 --api 127.0.0.1:8080 --no-cli-print
+```
+
+```bash
+curl -s http://127.0.0.1:9090/metrics | grep '^sipnab_mos_bucket'
+```
+
+```text
+sipnab_mos_bucket{le="1"} 0
+sipnab_mos_bucket{le="2"} 1
+sipnab_mos_bucket{le="2.5"} 1
+sipnab_mos_bucket{le="3.2"} 1
+sipnab_mos_bucket{le="3.5"} 1
+sipnab_mos_bucket{le="4"} 1
+sipnab_mos_bucket{le="4.5"} 3
+sipnab_mos_bucket{le="5"} 3
+sipnab_mos_bucket{le="+Inf"} 3
+```
+
+The `le="3.2"` bucket is your `mos_bad`. With the shipped values it reads
+`le="3"`.
+
+sipnab refuses thresholds that cannot work, names the pair, and exits 2:
+
+```text
+--mos-warn (3) is below --mos-bad (3.5); MOS bands run downward, so no score could ever be a warning
+```
+
+Thresholds change what sipnab colors and selects, never the measurement.
+
+## Run a command when quality drops
+
+`--on-quality-exec` runs a command when a stream's MOS falls below
+`--quality-threshold` (default 3.0). sipnab passes the stream in
+environment variables, never in the command string:
+
+| Variable | Holds |
+|---|---|
+| `SIPNAB_SSRC` | the stream's SSRC, in hexadecimal with a `0x` prefix |
+| `SIPNAB_MOS` | the MOS at that moment |
+| `SIPNAB_JITTER` | jitter, in milliseconds |
+| `SIPNAB_LOSS` | loss, in percent |
+| `SIPNAB_STREAM_JSON` | the whole stream, as the JSON stream object |
+
+```bash
+sipnab -N -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --quality-threshold 3.0 \
+  --on-quality-exec 'echo "$SIPNAB_SSRC mos=$SIPNAB_MOS jitter=$SIPNAB_JITTER loss=$SIPNAB_LOSS" >> alerts.log' \
+  --no-cli-print
+```
+
+```bash
+sort alerts.log
+```
+
+```text
+0xb72a7104 mos=2.63 jitter=5.0 loss=7.1
+0xb72a7104 mos=2.71 jitter=6.0 loss=6.7
+0xb72a7104 mos=2.79 jitter=6.8 loss=6.2
+0xb72a7104 mos=2.86 jitter=6.5 loss=5.9
+0xb72a7104 mos=2.93 jitter=6.1 loss=5.6
+0xb72a7104 mos=2.99 jitter=5.8 loss=5.3
+0xbee0f2ed mos=1.00 jitter=1.0 loss=75.0
+0xbee0f2ed mos=1.00 jitter=1.0 loss=80.0
+0xbee0f2ed mos=1.00 jitter=1.1 loss=85.7
+0xbee0f2ed mos=1.01 jitter=0.9 loss=70.6
+```
+
+- The check runs on every RTP packet, against the stream's score so far. So
+  a stream that ends well, such as `0xb72a7104` at 4.33, can still fire early
+  in the call.
+- `--exec-rate-limit` caps the commands per second (default 10). The run
+  ends with a warning that counts the commands run and the events the limit
+  skipped; this run ran 10 and skipped 200.
+- The command runs in `sh -c`. sipnab reports a failing command, never
+  retries it, and never stops the capture for it.
+
+## When something does not work
+
+- **The MOS reads `(delay 100ms assumed, not measured)`** in Stream detail,
+  or `delay.assumed: true` in MCP. Nothing supplied a one-way delay, so the
+  score uses 100 ms. Declare yours with `--one-way-delay`, or capture the
+  endpoints' RTCP. [MOS and codecs](mos-and-codecs.md#what-sipnab-computes-the-score-from)
+  lists the order sipnab tries.
+- **A stream reports `mos_grounded: false`.** Its codec has no published
+  impairment value. Declare one in `[media.codec_ie]`
+  ([MOS and codecs](mos-and-codecs.md#declare-an-impairment-factor-for-a-codec)).
+- **Loss looks high on every call at once.** The capture host may have
+  dropped the packets. See
+  [Tune capture on a busy server](tuning-capture.md).
+- **A warning that starts `IMPOSSIBLE RATE:`.** sipnab read the same traffic
+  twice, usually a capture and its copy in one `-I` directory. Every count
+  and rate in that run is too high by that factor. Reading a directory that
+  held two copies of `sip-rtp-g711.pcap` logged:
+
+  ```text
+  WARN sipnab::app::batch: IMPOSSIBLE RATE: 2 stream(s) carry more payload than their codec can produce — worst is PCMU ssrc=343da99b 10.0.2.15:27942 -> 10.0.2.20:6000 at 2.0x its ceiling. The most common cause is the same traffic read twice: a directory holding a capture and its backup, or one call captured at two hops. Counts and rates in this run are inflated by that factor. sipnab does not de-duplicate, because two vantage points on one call are a legitimate input.
+  ```
+- **`invalid value '0' for '--quality-interval <SECONDS>': 0 is not in
+  1..=300`** and exit 2. The interval is 1 to 300 seconds.
+- **No `endpoint_reported` key.** No RTCP for that stream reached the
+  capture. Its absence means the far end reported nothing, not that
+  everything was fine.
+
+---
+
 <!-- source: docs/tui-walkthrough.md -->
 
 # Walk through the terminal UI
@@ -16497,7 +17018,12 @@ a stream's row in the Call Flow (`F6`). Stream Detail shows:
 - silence detection,
 - MOS/jitter sparklines.
 
-A stream whose far end sent RTCP XR gains a **Reported by Far End (RTCP XR)**
+From the RTP Streams view, `D` opens the **Quality dashboard**, which ranks
+the streams worst MOS first. `L` there, or in Stream Detail, opens the
+selected stream's **Packet loss map**. [Measure call quality](call-quality.md#watch-quality-in-the-terminal-ui)
+shows both.
+
+A stream whose far end sent RTCP XR gains a **Reported by far end (RTCP XR)**
 section at the bottom.
 
 - It holds that endpoint's own R-factor, MOS-LQ, MOS-CQ, delays and discard
@@ -16505,7 +17031,7 @@ section at the bottom.
 - Everything above that section is what sipnab measured. Nothing in the
   section moves those numbers.
 
-With an `audio` build, `Shift+P` plays the stream (G.711). `Esc` returns to the
+With an `audio` build, `Shift+P` plays the stream (G.711 or Opus). `Esc` returns to the
 RTP Streams list. `Tab` there switches back to the Call List.
 
 ## Follow each RTP stream in the call flow
@@ -16965,7 +17491,7 @@ renders every message of the selection as one scrollable document.
 | Down / j | Scroll down |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
-| Shift+P | Play / stop the stream's audio (G.711; requires the `audio` build) |
+| Shift+P | Play / stop the stream's audio (G.711 or Opus; requires the `audio` build) |
 | L | Open the packet loss map (RTP loss pattern) — a single screen with nothing to scroll, so `Esc` or `q` is the only key it takes, and either returns here |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save the stream's audio as WAV **(configurable: `save`)** |
@@ -17266,6 +17792,8 @@ saw. Open with `S`:
 It needs a relay control address and
 a live capture. A run reading a file reports that it may not ask. The ask runs
 in the background. So the view never freezes waiting on a slow relay.
+[Ask a media relay about itself](relay-statistics.md#use-the-terminal-ui)
+shows the view against a live relay.
 
 | Key | Action |
 |-----|--------|
@@ -19305,13 +19833,13 @@ out the end-of-run summary on stderr.
 | `--endpoint-ip` | `<IP>` | | 0.5.231 | Print everything one address did: dialogs by method and state, messages sent and received, call outcomes, registration, banners, the signaling stack, media, and the most recent dialogs. `--json` prints the shape of `GET /v1/endpoints`. An address that does not parse exits 2 |
 | `--endpoint-user` | `<USER>` | | 0.5.231 | Print everything one SIP user did, matched against the user part of each dialog's From and To: the `--endpoint-ip` rollup without the message counts. `--json` prints the shape of `GET /v1/endpoints`. Not with `--endpoint-ip` |
 | `--export-audio` | `<CALL-ID>` | | 0.5.231 | Write one call's decoded RTP audio to a WAV file, and print the export summary. Holds the call's audio payload for the run, as `--retain-audio` does. A Call-ID the capture does not hold, a call with nothing to decode, or an existing file exits 1 |
-| `--export-audio-out` | `<FILE>` | the Call-ID with `.wav` | 0.5.231 | The file `--export-audio` writes. It must not exist. Needs `--export-audio` |
+| `--export-audio-out` | `<FILE>` | the Call-ID with `.wav`, each character other than a letter, a digit, `-`, `_` or `.` written as `_` | 0.5.231 | The file `--export-audio` writes. It must not exist. Needs `--export-audio` |
 | `--vcon-validate` | `<FILE>` | | 0.5.231 | Check a vCon container file against sipnab's vendored schema and print the verdict and every finding. Exits 0 when valid and 3 when invalid, and 1 when sipnab cannot read or check the file. Needs no `-I`. `--json` prints the shape of `POST /v1/vcon/validate`. Needs the `vcon` feature |
 | `--compare-captures` | `<A> <B>` | | 0.5.231 | Compare two capture files: for each dimension, the dialogs per value in A (the baseline) and B, and the change, largest movement first. Needs no `-I`. `--json` prints the shape of `GET /v1/captures/compare`. The same file twice exits 2; a file that yields no dialogs exits 1 |
 | `--compare-dimensions` | `<DIMENSIONS>` | `state,response_code` | 0.5.231 | The dimensions `--compare-captures` diffs, comma-separated, from the `--count-by` set. Any other exits 2. Needs `--compare-captures` |
 | `--find-in-files` | `<PATH>...` | | 0.5.231 | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
 | `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns |
-| `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native` |
+| `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-calls-the-relay-holds) |
 | `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Needs `--relay-holdings`; `0` exits 2 |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
@@ -20179,17 +20707,17 @@ classification instead of a list:
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
 | `--max-streams` | `<N>` | `50000` | 0.3.0 | Maximum number of RTP streams to track simultaneously. At least 1: sipnab refuses `0`. Config: `[limits] max_streams` |
-| `--max-lost-sequences` | `<N>` | `1000` | 0.5.97 | Lost RTP sequence numbers retained per stream, for the Packet Loss Map and the burst/gap analysis. The default is about a minute of a call losing 1 % at 50 packets a second, so on a half-hour call the map shows the tail and marks itself truncated. The burst/gap window widens with it, and each retained loss costs two bytes per stream. Config: `[limits] max_lost_sequences` |
-| `--quality-interval` | `<SECONDS>` | `5` | 0.5.160 | Seconds between RTP quality snapshots — the resolution of the per-stream quality trend, which carries a MOS, an R-factor and an `acceptable`/`degraded`/`not_scorable` verdict per interval. The shipped five seconds averages away any burst shorter than itself, so three half-second dropouts read as a mild five-second average. The trend still covers an hour of call time whatever this is, so one second retains 3600 snapshots per stream instead of 720: resolution costs memory, never history. Accepts 1 to 300. Config: `[limits] quality_interval_secs` |
-| `--quality-threshold` | `<MOS>` | `3.0` | 0.3.0 | MOS quality threshold for alerts (1.0-5.0 scale) |
+| `--max-lost-sequences` | `<N>` | `1000` | 0.5.97 | Lost RTP sequence numbers retained per stream, for the Packet Loss Map and the burst/gap analysis. The default is about a minute of a call losing 1 % at 50 packets a second, so on a half-hour call the map shows the tail and marks itself truncated. The burst/gap window widens with it, and each retained loss costs two bytes per stream. Config: `[limits] max_lost_sequences`. How-to: [Measure call quality](call-quality.md#see-when-the-quality-changed) |
+| `--quality-interval` | `<SECONDS>` | `5` | 0.5.160 | Seconds between RTP quality snapshots — the resolution of the per-stream quality trend, which carries a MOS, an R-factor and an `acceptable`/`degraded`/`not_scorable` verdict per interval. The shipped five seconds averages away any burst shorter than itself, so three half-second dropouts read as a mild five-second average. The trend still covers an hour of call time whatever this is, so one second retains 3600 snapshots per stream instead of 720: resolution costs memory, never history. Accepts 1 to 300. Config: `[limits] quality_interval_secs`. How-to: [Measure call quality](call-quality.md#see-when-the-quality-changed) |
+| `--quality-threshold` | `<MOS>` | `3.0` | 0.3.0 | MOS quality threshold for alerts (1.0-5.0 scale). How-to: [Measure call quality](call-quality.md#run-a-command-when-quality-drops) |
 | `--g729-tables` | `<PATH>` | -- | 0.5.222 | The G.729 codebook table file, for decoding G.729 audio in WAV exports, vCon recordings, the live audio route and the dead-air measurement. sipnab ships no ITU-T table values: [`sipnab g729 install`](g729.md) builds this file from the ITU-T G.729 software package. Absent, sipnab reads `[g729] tables`, else `g729-tables.bin` in the directory of the user config file (`$XDG_CONFIG_HOME/sipnab`, else `~/.config/sipnab`). sipnab reads a path given here as it is: when no file is there, sipnab leaves G.729 streams out of the audio and the export says `G.729 not decoded: codebook tables not installed; run sipnab g729 install`. Feature: `g729`. Config: `[g729] tables` |
-| `--rtpengine-control` | `<ADDR>` | -- | 0.5.124 | Ask an rtpengine relay which calls it currently has up, so a capture that started mid-call can still name the dialog behind a stream. **Off unless you give an address**, and the address is never inferred from captured traffic. sipnab sends only rtpengine's read-only `list` and `query` commands, so it cannot change a relay's behavior. **Not a poller**: it asks at startup, before the capture opens, and again only when a stream turns up that nothing explains, never on a timer. sipnab asks about each relay-side socket at most once for the run, under a per-run ceiling on control transactions. **On `-I <file>` it sends nothing**: sipnab warns that a live relay would describe the calls up today rather than the calls in the capture, still decodes any relay control traffic the capture holds, and analyzes the file. Feature: `native` |
-| `--rtpproxy-control` | `<ADDR:PORT>` | -- | 0.5.196 | Read rtpproxy's control traffic on this UDP socket and name the call each relayed stream belongs to, even on the relay's own machine where no SIP passes. The SIP proxy's command names the call and rtpproxy's reply names the port it opened; sipnab pairs the two by the cookie they share. Recording streams (`R`, `C`) are never named as the call's media. **Name the socket; sipnab assumes none**: rtpproxy's default control socket is a UNIX socket, which a capture cannot see, so give it a UDP one with `-s udp:ADDR:PORT` (22222 when you leave out the port) and pass the same address and port here. sipnab reads only datagrams to and from exactly that socket, because they carry no credential. **Passive**: sipnab never sends rtpproxy anything, and rtpproxy has no command that lists its sessions, so sipnab names a call already up when the capture starts from its next command. Works on live captures and on files, and applies to a capture opened inside the TUI. Feature: `native` |
-| `--relay-stats` | -- | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits; on `-I <file>` it prints why it declines to ask rather than asking, and with no `--rtpengine-control` it says to name one. Feature: `native` |
-| `--relay-stats-call` | `<CALL-ID>` | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its own counters about ONE call, by Call-ID: per-stream and per-SSRC packet and byte counts, RTP and RTCP totals, as the relay counts them (`relay_reported`). A relay not holding the call answers in its own words, which sipnab reports rather than inventing a not-found. Same live-source gate as `--relay-stats`. Feature: `native` |
-| `--relay-stats-list` | -- | -- | 0.5.169 | List which statistics the relay named by `--rtpengine-control` knows, rather than their values. The key set is version-specific, so "what can I ask for?" is a real question; sipnab asks the relay rather than reading a built-in table, and the header names how it got the set (for rtpengine, the relay listed them in a `statistics` reply). Same live-source gate as `--relay-stats`, because listing asks the relay and asking transmits. Feature: `native` |
-| `--relay-stats-interval` | `<SECONDS>` | -- | 0.5.170 | Poll the relay named by `--rtpengine-control` for its statistics every SECONDS, for as long as the capture runs. Nothing polls by default. One transaction per interval, the next beginning only once the previous returns, so a slow relay slows the cadence rather than stacking requests. Each polled reading says it was `polled` and names the interval. CLI only (a poll is a standing instruction to transmit; the REST/MCP caller does not own the host). Same live-source gate as `--relay-stats`. Range 1--3600. A headless run prints each reading to stdout, so `-N` with `--mcp` refuses it. Feature: `native` |
-| `--relay-compare` | `<CALL-ID>` | -- | 0.5.169 | Compare the relay's own RTP packet count for one call against what sipnab measured on the wire. It shows the relay's `totals.RTP.packets` for the call (`relay_reported`) beside sipnab's own count of the RTP packets it captured for it (`sipnab_measured`), both labeled, with a word verdict (`match` or `differ`) and a direction-aware note. The two count different sockets over different windows, so an ordinary gap is not a relay fault: if sipnab counted fewer the note names the undercount causes (a mirror-port drop, a mid-call restart) and points at `capture_health`; if sipnab counted more it names the usual cause -- a capture that sees both sides of the relay hairpin counts each packet twice, so a point upstream and downstream reads about twice the relay's count. It never sums the counts. Runs after capture, when sipnab's tally is final; sipnab reports a call the relay does not hold, or one it captured no RTP for, distinctly rather than comparing it against a made-up zero. Same live-source gate as `--relay-stats`. Feature: `native` |
+| `--rtpengine-control` | `<ADDR>` | -- | 0.5.124 | Ask an rtpengine relay which calls it currently has up, so a capture that started mid-call can still name the dialog behind a stream. **Off unless you give an address**, and the address is never inferred from captured traffic. sipnab sends only rtpengine's read-only `list`, `query` and `statistics` commands, so it cannot change a relay's behavior. `statistics` goes only with `--relay-stats` and its relatives. **Not a poller**: to name calls it asks at startup, before the capture opens, and again only when a stream turns up that nothing explains. Nothing polls unless `--relay-stats-interval` names an interval. sipnab asks about each relay-side socket at most once for the run, under a per-run ceiling on control transactions. **On `-I <file>` it sends nothing**: sipnab warns that a live relay would describe the calls up today rather than the calls in the capture, still decodes any relay control traffic the capture holds, and analyzes the file. Feature: `native`. How-to: [Let sipnab name rtpengine's media](rtpengine-sipnab.md) |
+| `--rtpproxy-control` | `<ADDR:PORT>` | -- | 0.5.196 | Read rtpproxy's control traffic on this UDP socket and name the call each relayed stream belongs to, even on the relay's own machine where no SIP passes. The SIP proxy's command names the call and rtpproxy's reply names the port it opened; sipnab pairs the two by the cookie they share. Recording streams (`R`, `C`) are never named as the call's media. **Name the socket; sipnab assumes none**: rtpproxy's default control socket is a UNIX socket, which a capture cannot see, so give it a UDP one with `-s udp:ADDR:PORT` (22222 when you leave out the port) and pass the same address and port here. sipnab reads only datagrams to and from exactly that socket, because they carry no credential. **Passive**: sipnab never sends rtpproxy anything, and rtpproxy has no command that lists its sessions, so sipnab names a call already up when the capture starts from its next command. Works on live captures and on files, and applies to a capture opened inside the TUI. Feature: `native`. How-to: [Let sipnab name rtpproxy's media](rtpproxy-sipnab.md) |
+| `--relay-stats` | -- | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits; on `-I <file>` it prints why it declines to ask rather than asking, and with no `--rtpengine-control` it says to name one. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-the-relay-for-its-counters) |
+| `--relay-stats-call` | `<CALL-ID>` | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its own counters about ONE call, by Call-ID: per-stream and per-SSRC packet and byte counts, RTP and RTCP totals, as the relay counts them (`relay_reported`). A relay not holding the call answers in its own words, which sipnab reports rather than inventing a not-found. Same live-source gate as `--relay-stats`. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-about-one-call) |
+| `--relay-stats-list` | -- | -- | 0.5.169 | List which statistics the relay named by `--rtpengine-control` knows, rather than their values. The key set is version-specific, so "what can I ask for?" is a real question; sipnab asks the relay rather than reading a built-in table, and the header names how it got the set (for rtpengine, the relay listed them in a `statistics` reply). Same live-source gate as `--relay-stats`, because listing asks the relay and asking transmits. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-statistics-the-relay-knows) |
+| `--relay-stats-interval` | `<SECONDS>` | -- | 0.5.170 | Poll the relay named by `--rtpengine-control` for its statistics every SECONDS, for as long as the capture runs. Nothing polls by default. One transaction per interval, the next beginning only once the previous returns, so a slow relay slows the cadence rather than stacking requests. Each polled reading says it was `polled` and names the interval. CLI only (a poll is a standing instruction to transmit; the REST/MCP caller does not own the host). Same live-source gate as `--relay-stats`. Range 1--3600. A headless run prints each reading to stdout, so `-N` with `--mcp` refuses it. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#watch-the-counters-move) |
+| `--relay-compare` | `<CALL-ID>` | -- | 0.5.169 | Compare the relay's own RTP packet count for one call against what sipnab measured on the wire. It shows the relay's `totals.RTP.packets` for the call (`relay_reported`) beside sipnab's own count of the RTP packets it captured for it (`sipnab_measured`), both labeled, with a word verdict (`match` or `differ`) and a direction-aware note. The two count different sockets over different windows, so an ordinary gap is not a relay fault: if sipnab counted fewer the note names the undercount causes (a mirror-port drop, a mid-call restart) and points at `capture_health`; if sipnab counted more it names the usual cause -- a capture that sees both sides of the relay hairpin counts each packet twice, so a point upstream and downstream reads about twice the relay's count. It never sums the counts. Runs after capture, when sipnab's tally is final; sipnab reports a call the relay does not hold, or one it captured no RTP for, distinctly rather than comparing it against a made-up zero. Same live-source gate as `--relay-stats`. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#compare-the-relays-count-with-your-capture) |
 
 **Examples**
 
@@ -20201,7 +20729,7 @@ classification instead of a list:
 - `sipnab -N -I dead-air.pcap --quality-interval 1 --json-dialogs --no-cli-print` — one snapshot a second on the call somebody complained about, so a half-second dropout appears as its own degraded interval instead of disappearing into a five-second mean
 - `sudo sipnab -d eth0 --quality-interval 30 --max-streams 20000` — the other direction, on a busy trunk where twenty thousand streams each holding 720 snapshots is memory better spent elsewhere. Thirty seconds still covers the retained hour, in 120 entries per stream
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222` — start capturing on a proxy that shares a host with rtpengine, and ask the relay once, at startup, which calls are already up. Streams whose offer happened before sipnab started get a Call-ID, where otherwise sipnab would report them as orphans
-- `sudo sipnab -N -d eth0 --rtpengine-control 192.0.2.50:22222 --max-streams 10000` — the relay on its own host: same question, over the network to its ng control port. sipnab sends only `list` and `query`, and asks again only when a stream turns up that the signaling does not explain — each socket once, under a ceiling it reports when it reaches
+- `sudo sipnab -N -d eth0 --rtpengine-control 192.0.2.50:22222 --max-streams 10000` — the relay on its own host: same question, over the network to its ng control port. To name calls sipnab sends only `list` and `query`, and asks again only when a stream turns up that the signaling does not explain — each socket once, under a ceiling it reports when it reaches
 - `sipnab -N -I capture.pcap --rtpengine-control 127.0.0.1:22222` — sends nothing to the relay: sipnab warns that a file run never transmits, then analyzes the capture and exits `0`
 - `sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats` — capture live and print the relay's own counters at startup: packets relayed, sessions held, its own loss. The header marks them `relay_reported`, because the relay reports on itself rather than sipnab measuring the wire
 - `sipnab -N -I capture.pcap --relay-stats --rtpengine-control 127.0.0.1:22222` — asks nothing on a file run. sipnab logs `--relay-stats will not ask a relay on a run that reads a file`, analyzes the capture, and exits `0`
@@ -20274,14 +20802,14 @@ These bands paint the TUI.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `--jitter-warn-ms` | `<MS>` | `30.0` | 0.5.97 | Jitter at or above which the column turns yellow. Config: `[quality] jitter_warn_ms` |
-| `--jitter-bad-ms` | `<MS>` | `50.0` | 0.5.97 | Jitter at or above which the column turns red. Config: `[quality] jitter_bad_ms` |
-| `--loss-warn-pct` | `<PCT>` | `1.0` | 0.5.97 | Loss at or above which the column turns yellow. `0` is a legitimate setting: it means any loss at all is worth a color. Config: `[quality] loss_warn_pct` |
-| `--loss-bad-pct` | `<PCT>` | `5.0` | 0.5.97 | Loss at or above which the column turns red. Config: `[quality] loss_bad_pct` |
-| `--mos-warn` | `<MOS>` | `4.0` | 0.5.97 | MOS below which the column turns yellow. MOS bands run downward, so this must sit at or above `--mos-bad`. Config: `[quality] mos_warn` |
-| `--mos-bad` | `<MOS>` | `3.0` | 0.5.97 | MOS below which the column turns red. Config: `[quality] mos_bad` |
-| `--rtt-warn-ms` | `<MS>` | `300.0` | 0.5.97 | Round trip at or above which the column turns yellow. The default is ITU-T G.114's 150 ms one-way guidance doubled. Config: `[quality] rtt_warn_ms` |
-| `--rtt-bad-ms` | `<MS>` | `800.0` | 0.5.97 | Round trip at or above which the column turns red. The default is G.114's 400 ms one-way figure doubled. Config: `[quality] rtt_bad_ms` |
+| `--jitter-warn-ms` | `<MS>` | `30.0` | 0.5.97 | Jitter at or above which the column turns yellow. Config: `[quality] jitter_warn_ms`. How-to: [Measure call quality](call-quality.md#set-the-thresholds-to-your-network) |
+| `--jitter-bad-ms` | `<MS>` | `50.0` | 0.5.97 | Jitter at or above which the column turns red. Config: `[quality] jitter_bad_ms`. How-to: [Measure call quality](call-quality.md#set-the-thresholds-to-your-network) |
+| `--loss-warn-pct` | `<PCT>` | `1.0` | 0.5.97 | Loss at or above which the column turns yellow. `0` is a legitimate setting: it means any loss at all is worth a color. Config: `[quality] loss_warn_pct`. How-to: [Measure call quality](call-quality.md#set-the-thresholds-to-your-network) |
+| `--loss-bad-pct` | `<PCT>` | `5.0` | 0.5.97 | Loss at or above which the column turns red. Config: `[quality] loss_bad_pct`. How-to: [Measure call quality](call-quality.md#set-the-thresholds-to-your-network) |
+| `--mos-warn` | `<MOS>` | `4.0` | 0.5.97 | MOS below which the column turns yellow. MOS bands run downward, so this must sit at or above `--mos-bad`. Config: `[quality] mos_warn`. How-to: [Measure call quality](call-quality.md#set-the-thresholds-to-your-network) |
+| `--mos-bad` | `<MOS>` | `3.0` | 0.5.97 | MOS below which the column turns red. Config: `[quality] mos_bad`. How-to: [Measure call quality](call-quality.md#set-the-thresholds-to-your-network) |
+| `--rtt-warn-ms` | `<MS>` | `300.0` | 0.5.97 | Round trip at or above which the column turns yellow. The default is ITU-T G.114's 150 ms one-way guidance doubled. Config: `[quality] rtt_warn_ms`. How-to: [Measure call quality](call-quality.md#set-the-thresholds-to-your-network) |
+| `--rtt-bad-ms` | `<MS>` | `800.0` | 0.5.97 | Round trip at or above which the column turns red. The default is G.114's 400 ms one-way figure doubled. Config: `[quality] rtt_bad_ms`. How-to: [Measure call quality](call-quality.md#set-the-thresholds-to-your-network) |
 
 sipnab refuses, with exit `2`, a warn boundary above its matching bad
 boundary:
@@ -20439,7 +20967,7 @@ It also refuses a boundary that is not a finite number of 0 or more, such as
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
 | `--on-dialog-exec` | `<CMD>` | -- | 0.3.0 | Execute command when a dialog state changes |
-| `--on-quality-exec` | `<CMD>` | -- | 0.3.0 | Execute command when RTP quality drops below threshold |
+| `--on-quality-exec` | `<CMD>` | -- | 0.3.0 | Execute command when RTP quality drops below threshold. How-to: [Measure call quality](call-quality.md#run-a-command-when-quality-drops) |
 | `--exec-rate-limit` | `<N>` | `10` | 0.3.0 | Maximum exec invocations per second (rate limit). `0` means no limit |
 | `--exec-queue-depth` | `<N>` | `100` | 0.5.100 | Hook commands allowed to be running at once before sipnab drops `--on-dialog-exec` and `--on-quality-exec` events. The second ceiling above `--exec-rate-limit`, and the binding one for any hook that takes longer than a second: its slot is still occupied when the next second's budget arrives, so on a busy trunk this is what events actually meet. Config: `[limits] exec_queue_depth` |
 
@@ -20513,7 +21041,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-token-ttl` | `<SECS>` | `3600` | 0.4.3 | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
 | `--api-max-rows` | `<N>` | `1000` | 0.5.100 | Rows one list-style REST response returns. The REST counterpart of `--mcp-max-rows`. Raise it for a batch consumer that reads every row of `/v1/dialogs`; lower it for a dashboard. A caller may always ask for less with `?limit=`, and nothing it sends asks for more than this. Config: `[limits] api_max_rows` Feature: `api` |
 | `--api-rate-limit-per-peer` | `<N>` | `100` | 0.5.100 | REST requests one client IP may make per second; `0` disables the cap, the reading `--mcp-rate-limit-per-peer` and `--hep-rate-limit` also give it. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance. A refused request gets `503`, not `429`: the limiter runs before authentication and says nothing about the credential. Config: `[limits] api_rate_limit_per_peer` Feature: `api` |
-| `--api-allow-relay-query` | -- | -- | 0.5.170 | Let REST clients query the relay named by `--rtpengine-control` through the six `GET /v1/relay/` routes (`stats`, `stats/names`, `stats/call/{call_id}`, `compare/{call_id}`, `holdings` and `holdings/{call_id}`), which transmit. The REST counterpart of `--mcp-allow-relay-query`, off for the same reason: every other REST answer comes from bytes sipnab already holds, and these put a packet on the network — at the address that flag names, never one a client chooses. Without a relay address (no `--rtpengine-control`), those routes answer `not_configured`. With one, they answer `not_permitted` when this flag is absent, and on a file-backed run even with the flag. Each response is HTTP 200 carrying an `outcome`, so a refusal is content, not a 4xx. Polling on an interval is not offered over REST at all. Feature: `api` |
+| `--api-allow-relay-query` | -- | -- | 0.5.170 | Let REST clients query the relay named by `--rtpengine-control` through the six `GET /v1/relay/` routes (`stats`, `stats/names`, `stats/call/{call_id}`, `compare/{call_id}`, `holdings` and `holdings/{call_id}`), which transmit. The REST counterpart of `--mcp-allow-relay-query`, off for the same reason: every other REST answer comes from bytes sipnab already holds, and these put a packet on the network — at the address that flag names, never one a client chooses. Without a relay address (no `--rtpengine-control`), those routes answer `not_configured`. With one, they answer `not_permitted` when this flag is absent, and on a file-backed run even with the flag. Each response is HTTP 200 carrying an `outcome`, so a refusal is content, not a 4xx. Polling on an interval is not offered over REST at all. Feature: `api`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-over-rest) |
 | `--api-allow-vcon-fetch` | -- | off | 0.5.221 | Let REST clients read one vCon by uuid from the store the `[vcon_fetch]` keys configure, through [`GET /v1/vcon/fetch/:uuid`](rest-api.md#get-v1vconfetchuuid), which connects to that store. The REST counterpart of `--mcp-allow-vcon-fetch`, off for the same reason. The store, its kind, the credential and the decryption key come from `[vcon_fetch]` only, never from the request, and the answer holds no key. Without this flag the route answers `503` naming it; with it and no `[vcon_fetch] url`, `503` naming the keys. sipnab stops at startup when it cannot read the store's credential or key file. The container comes back in the answer, and sipnab writes no file. Feature: `api` and `vcon` |
 | `--api-accept-archive-passwords` | -- | off | 0.5.187 | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: making sure it does is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`, also when `--api-tls-cert` serves HTTPS. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | 0.5.177 | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..`, an absolute prefix or a control character before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
@@ -20868,7 +21396,7 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 | `--mcp-evidence-ring` | `<MIB>` | -- | 0.5.168 | Retain this many MiB of raw frames so a provenance pointer into a LIVE capture resolves. A reader can seek a capture file again and needs none of this; a device or a HEP listener offers no second read, because sipnab holds parsed messages and not frames. The ring keeps frames only from a source nothing can read twice. A pointer it cannot answer names which kind of miss it hit — the ring dropped that frame, the ring has not reached that ordinal, or the ring keeps nothing for that source — because only one of those means "use a bigger ring". A frame it does answer carries the label `retained` rather than resolved: those bytes come from this process's own buffer, and no second reader can confirm them. Feature: `mcp` |
 | `--mcp-allow-shutdown` | -- | off | 0.5.70 | Permit the `shutdown_server` MCP tool to stop this process. Off by default, so an agent cannot stop a stock server. Even enabled, the tool dry-runs unless told otherwise and refuses to discard an unsaved live capture. sipnab refuses it with the TUI up, because the TUI would stay on screen after the tool stopped the run; add `-N`. Feature: `mcp` |
 | `--mcp-allow-open-capture` | -- | off | 0.5.74 | Permit the `open_capture` MCP tool to load a different capture from `--mcp-file-root`, discarding every dialog and stream held. Off by default, so a stock server keeps the capture the command line named. The tool refuses while the source is live or still filling the stores, loads in the background, and mints a new capture identity every later answer carries. sipnab refuses it with the TUI up, because the tool would replace the capture the operator is reading; add `-N`. Feature: `mcp` |
-| `--mcp-allow-relay-query` | -- | off | 0.5.139 | Permit the `query_relay` MCP tool to ask the configured relay what calls it holds right now. Off by default because this tool **transmits**: every other MCP tool answers from bytes sipnab already has, and this one puts a packet on the network at the address `--rtpengine-control` names. That address comes from the flag and from nowhere else, never from a tool argument. Without `--rtpengine-control`, or on a run reading a file, the tool refuses and names which of the two is missing. sipnab refuses it with the TUI up, because the TUI's relay statistics view holds the run's one transmit permit; add `-N`. Feature: `mcp` |
+| `--mcp-allow-relay-query` | -- | off | 0.5.139 | Permit the `query_relay` MCP tool to ask the configured relay what calls it holds right now. Off by default because this tool **transmits**: every other MCP tool answers from bytes sipnab already has, and this one puts a packet on the network at the address `--rtpengine-control` names. That address comes from the flag and from nowhere else, never from a tool argument. Without `--rtpengine-control`, or on a run reading a file, the tool refuses and names which of the two is missing. sipnab refuses it with the TUI up, because the TUI's relay statistics view holds the run's one transmit permit; add `-N`. Feature: `mcp`. How-to: [Ask a media relay about itself](relay-statistics.md#let-an-agent-ask) |
 | `--mcp-allow-tls-capture` | -- | off | 0.5.102 | Let an agent install kernel uprobes and read TLS plaintext ([`start_tls_capture`](mcp-tools-tls.md#start_tls_capture), `stop_tls_capture`). **The most consequential opt-in on this surface**: it lets an agent read the plaintext of TLS sessions belonging to processes it does not own, needs the server to still be root, and creates kernel state that outlives a crash. `list_tls_libraries` stays available without it, so an agent can always report what a capture WOULD see. sipnab refuses it with the TUI up, because the capture would write into the stores the operator is reading; add `-N`. Feature: `mcp` |
 | `--mcp-allow-vcon-fetch` | -- | off | 0.5.221 | Permit the [`fetch_vcon`](mcp-tools-vcon.md#fetch_vcon) MCP tool to read one vCon by uuid from the store the `[vcon_fetch]` keys configure. Off by default because this tool **connects** to that store: every other vCon tool answers from bytes sipnab already has. The store, its kind, the credential and the decryption key come from `[vcon_fetch]` only, never from a tool argument; the tool takes a uuid and nothing else, and its answer holds no key. Without `[vcon_fetch] url` the tool refuses and names the keys. sipnab stops at startup when it cannot read the store's credential or key file. The container comes back in the answer, and sipnab writes no file. Feature: `mcp` and `vcon` |
 | `--mcp-allow-save-findings` | -- | off | 0.5.81 | Permit the `save_findings` MCP tool to record an agent's conclusion. Off by default. A finding goes to sipnab's log and nowhere else: no tool reads it back, it appears in no query result, and no analysis consumes it, so it cannot return as evidence in a later answer. Clipped at 500 characters of summary and bounded at 1000 findings per process, both reported rather than silent. sipnab refuses it with the TUI up, because a TUI run logs only errors and nobody would see the finding; add `-N`. Feature: `mcp` |
@@ -27420,7 +27948,7 @@ When a capture carries RTCP XR (PT=207), sipnab decodes the VoIP Metrics block
 
 **Every figure above belongs to the endpoint that sent it, not to sipnab.**
 
-- The TUI Stream Detail view shows them in a **Reported by Far End (RTCP XR)**
+- The TUI Stream Detail view shows them in a **Reported by far end (RTCP XR)**
   section of their own, below everything sipnab measured.
 - One figure feeds sipnab's MOS: the round-trip delay. Halved, it is the
   one-way delay behind the MOS when the run declares no `--one-way-delay`. See
@@ -28790,7 +29318,9 @@ sipnab -N -I tests/pcap-samples/sip-rtp-g722.pcap --call-report 1-2161@10.0.2.20
 ## Declare an impairment factor for a codec
 
 If you know the `Ie` (equipment impairment factor) for a codec on your own
-network, declare it in the config file and sipnab scores with it. Put this in
+network, declare it in the config file and sipnab scores with it. It is one
+table in sipnab's config file: no other system changes, and every build reads
+it. Put this in
 `ie.toml`:
 
 ```toml
@@ -28838,11 +29368,15 @@ captured media. The one-way delay comes from the first of these that exists:
    sender-report echo, which reads as a lower bound;
 4. otherwise 100 ms, labeled `assumed`.
 
-MCP `rtp_stats` names the delay's source in each row's `delay` member.
+MCP `media_diagnostics` names the delay's source in each stream's `delay`
+member. MCP `rtp_stats` carries the round trip itself, as `round_trip_ms`
+and `round_trip_source`.
 
 What the far end reported about loss, jitter and its own quality score never
-moves sipnab's MOS. MCP `rtp_stats` returns it separately, under
-`endpoint_reported`, omitted when no RTCP arrived:
+moves sipnab's MOS. MCP `media_diagnostics` returns it separately, under
+`endpoint_reported`, omitted when no RTCP arrived
+([Measure call quality](call-quality.md#read-what-the-far-end-reported)
+shows one):
 
 | What the far end sent | Key under `endpoint_reported` | Carries |
 |---|---|---|
@@ -42330,6 +42864,8 @@ Every tool on this page follows the [rules every tool
 follows](mcp-tools.md#rules-every-tool-follows), and each section states only
 what its tool does differently. The [MCP tool reference](mcp-tools.md) lists
 the other bundles and finds any tool by name.
+[Ask a media relay about itself](relay-statistics.md#let-an-agent-ask) shows
+the three tools that transmit in use, with the server they need.
 
 | Tool | Parameters | Returns |
 |---|---|---|
@@ -53015,7 +53551,17 @@ same outputs as G.711, G.722 and Opus:
 It also decodes the core layer of G.729.1 streams: see
 [The core layer of G.729.1](#the-core-layer-of-g7291).
 
-It needs one file per host first: the decoder's codebook tables. sipnab
+It needs a build with the `g729` feature. Every release binary has it,
+including the static musl tarballs and the `-noaudio` packages. A build from
+source has it only when you name the `g729` cargo feature, or the `full` set
+that includes it. The default feature set leaves it out. `sipnab --version`
+lists `g729` when the binary carries it:
+
+```text
+sipnab 0.5.232 (0d8eea19-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729
+```
+
+It also needs one file per host: the decoder's codebook tables. sipnab
 builds that file from the ITU-T G.729 software package on your host. This page
 says how to install it, and why sipnab does not ship it.
 
@@ -59197,7 +59743,8 @@ read:
 - `statistics` returns the relay's own totals.
 
 To name calls, sipnab asks once at startup. It asks again only when a stream
-turns up that nothing explains. It never asks on a timer.
+turns up that nothing explains. It does not ask on a timer. Only
+`--relay-stats-interval` polls, and it asks for `statistics`, not for calls.
 
 No sipnab command, flag, REST route or MCP tool can make rtpengine create,
 change or delete a call.
@@ -59320,6 +59867,8 @@ sipnab can also print rtpengine's own counters for one call:
 
 These are what the relay says about itself. So sipnab marks them
 `relay_reported`, apart from what it measured on the wire.
+[Ask a media relay about itself](relay-statistics.md) covers the relay's
+other counters, the calls it holds, and the same questions over REST and MCP.
 
 The first line waits until the relay no longer holds the call from the Name a
 call that was already up step. That takes up to a minute after the call ends:
@@ -60574,6 +61123,27 @@ Call-ID                                                      Streams
 - There is no SDP on this machine. So the report shows the DTMF streams' codec
   as `?`.
 
+## See when the proxy retries a command
+
+A SIP proxy that hears no answer from rtpproxy in time sends the same command
+again, with the same cookie. rtpproxy answers the repeat from its reply
+cache. sipnab counts the repeats, and at the end of the run logs one line per
+control socket that saw any:
+
+```text
+WARN sipnab::app::batch: rtpproxy at 127.0.0.1:7722: 1 of 5 control commands were retried (the same cookie sent again), 1 after the relay's answer was already on the wire. A retry means the proxy did not hear an answer in time; one sent after the answer means that answer was lost or late on its way back.
+```
+
+- Retries before the answer mean rtpproxy was slow to answer.
+- Retries after the answer mean the answer got lost or arrived late on its
+  way back to the proxy.
+- From the SIP side, either looks only like a proxy that is sometimes slow.
+
+A run with no retries logs nothing about them. This line came from sipnab
+0.5.232 watching an rtpproxy 2.1.1 control socket in the repository's harness,
+with one command sent twice by hand, and the socket written here as this
+guide's `127.0.0.1:7722`.
+
 ## When something does not work
 
 - **The report shows calls but `0 RTP packets`.** sipnab's filter admitted
@@ -60593,6 +61163,418 @@ Call-ID                                                      Streams
   - rtpproxy read the first one as a delete with the wrong number of
     arguments, and refused it.
   - Use `--rtpproxy-control` for rtpproxy.
+
+---
+
+<!-- source: docs/relay-statistics.md -->
+
+# Ask a media relay about itself
+
+A media relay keeps its own counters: the packets it relayed, the sessions it
+holds, and its own loss and jitter. sipnab can ask an rtpengine relay for
+them, and put them beside what sipnab measured on the wire.
+
+Use this page when you suspect the relay itself:
+
+- calls sound bad and the relay may be dropping packets;
+- the relay may be holding sessions that nobody released;
+- you want the relay's count for one call beside your capture's.
+
+Every answer here is the relay's own claim, labeled `relay_reported`. sipnab
+never adds it to, or subtracts it from, a number it measured. To name the
+calls behind the media on a relay, see
+[Let sipnab name rtpengine's media](rtpengine-sipnab.md) instead.
+
+## Before you start
+
+- **The relay is rtpengine.** sipnab asks over rtpengine's `ng` control
+  protocol. sipnab sends rtpproxy nothing, so none of these requests apply to
+  rtpproxy ([Let sipnab name rtpproxy's media](rtpproxy-sipnab.md)).
+- **No change to rtpengine.** sipnab asks on the control address rtpengine
+  already listens on, its `listen-ng` setting. Every request only reads:
+  `statistics`, `list` and `query`. Nothing here can create, change or delete
+  a call.
+- **No change to the SIP proxy, Homer or anything else.**
+- **The control address must be reachable from sipnab.** rtpengine's control
+  protocol has no authentication, so run sipnab on the relay's own machine, or
+  on a host your firewall already lets reach `listen-ng`.
+- **A live source.** Asking transmits, so sipnab asks only on a run that
+  captures an interface (`-d`) or listens for HEP (`-L`). A run that reads a
+  capture file never asks.
+- **Privileges.** Capturing an interface needs root or the capture
+  capabilities `sudo sipnab --setup-caps` grants once.
+- **Build.** Every release binary can ask. A source build needs the `native`
+  feature, which the default build includes. The REST routes need `api` and
+  the MCP tools need `mcp`; `sipnab --version` lists both when the binary
+  carries them.
+
+The examples use `127.0.0.1:22222` for the relay's `listen-ng` address and
+`eth0` for the interface. Replace them with yours. The output on this page
+came from sipnab 0.5.232 against rtpengine 12.5.1 (the Debian 13 package),
+with the relay's address written as `127.0.0.1` and the SIP test clients'
+address as `192.0.2.21`.
+
+## Ask the relay for its counters
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats --duration 1
+```
+
+sipnab asks once, prints the answer, and captures for `--duration` seconds.
+The answer is long: rtpengine 12.5.1 reports 303 counters. The header names
+the relay, when it answered, and the tier:
+
+```text
+Relay statistics (rtpengine at 127.0.0.1:22222, asked 2026-11-03T15:38:21Z) — relay_reported counts
+  result                                       ok
+  statistics.currentstatistics.sessionsown     1
+  statistics.totalstatistics.managedsessions   6
+  statistics.totalstatistics.relayedpacketerrors 0
+  statistics.totalstatistics.relayedpackets    51643
+  statistics.totalstatistics.timeoutsessions   1
+  statistics.totalstatistics.uptime            85077
+```
+
+That is a few lines of the answer. Keep only the lines you want with `grep`:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats --duration 1 2>/dev/null \
+  | grep -E 'sessionsown|relayedpackets |packets_lost|uptime'
+```
+
+```text
+  statistics.currentstatistics.sessionsown     0
+  statistics.interfaces.0.packets_lost         0
+  statistics.totalstatistics.relayedpackets    51451
+  statistics.totalstatistics.uptime            85061
+  statistics.voip_metrics.packets_lost         0
+```
+
+Read these first:
+
+| Counter | What it says |
+|---|---|
+| `statistics.currentstatistics.sessionsown` | Calls the relay holds now |
+| `statistics.totalstatistics.relayedpackets` | Packets relayed since the relay started |
+| `statistics.totalstatistics.relayedpacketerrors` | Packets the relay failed to relay |
+| `statistics.interfaces.0.packets_lost` | Loss the relay counted on its first interface |
+| `statistics.totalstatistics.uptime` | Seconds since the relay started |
+
+The counters are cumulative and reset when rtpengine restarts. A small
+`relayedpackets` can mean a quiet relay or one that restarted a minute ago.
+`uptime` tells them apart.
+
+### List the statistics the relay knows
+
+The names depend on the rtpengine version. Ask for the names alone:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-list --duration 1 2>/dev/null | head -3
+```
+
+```text
+Statistics rtpengine at 127.0.0.1:22222 knows (303 names, asked 2026-11-03T15:19:04Z) — the relay listed these in a statistics reply
+  result
+  statistics.controlstatistics.proxies.0.answercount
+```
+
+The header says how sipnab learned the names: the relay listed them. sipnab
+holds no table of its own.
+
+### Ask about one call
+
+Give a Call-ID the relay holds:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-call '1-29@192.0.2.21' --duration 1 2>/dev/null \
+  | grep -E '^Relay|totals'
+```
+
+```text
+Relay statistics (rtpengine at 127.0.0.1:22222, call 1-29@192.0.2.21, asked 2026-11-03T15:19:03Z) — relay_reported counts
+  totals.RTCP.bytes                            0
+  totals.RTCP.errors                           0
+  totals.RTCP.packets                          0
+  totals.RTP.bytes                             530104
+  totals.RTP.errors                            0
+  totals.RTP.packets                           3082
+```
+
+Without the `grep`, the answer also lists each side of the call by its tag:
+the codec, the relay's port, and the packets and bytes per SSRC.
+
+### Watch the counters move
+
+One answer is a snapshot. To see a counter move, poll on a timer:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-interval 2 --duration 5 2>/dev/null \
+  | grep -E '^Relay|sessionsown|relayedpackets |uptime'
+```
+
+```text
+Relay statistics (rtpengine at 127.0.0.1:22222, polled 2026-11-03T15:19:22Z, every 2s) — relay_reported counts
+  statistics.currentstatistics.sessionsown     2
+  statistics.totalstatistics.relayedpackets    14117
+  statistics.totalstatistics.uptime            83938
+Relay statistics (rtpengine at 127.0.0.1:22222, polled 2026-11-03T15:19:24Z, every 2s) — relay_reported counts
+  statistics.currentstatistics.sessionsown     2
+  statistics.totalstatistics.relayedpackets    14517
+  statistics.totalstatistics.uptime            83940
+```
+
+- Each reading says `polled` and names the interval.
+- The interval is 1 to 3600 seconds. Nothing polls unless you give one.
+- sipnab sends the next request only after the previous answer, so a slow
+  relay slows the cadence rather than piling up requests. A poll whose round
+  trip takes longer than the interval logs a warning that the cadence has
+  slipped.
+- A cumulative counter that is lower than at the previous poll logs a warning
+  that the relay probably restarted. The counters after it start from an
+  unknown point.
+- Only the command line polls. REST and MCP do not offer it.
+
+### Read the answer as JSON
+
+`--json` prints one object per answer, on one line. Here `grep` picks out its
+envelope and two of its counters:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats --json --duration 1 2>/dev/null \
+  | tail -1 \
+  | grep -oE '"(obtained_at|origin|relay)":"[^"]*"|\{"name":"statistics\.(currentstatistics\.sessionsown|totalstatistics\.uptime)","tier":"[a-z_]*","value":"[^"]*"\}'
+```
+
+```text
+"obtained_at":"2026-11-03T19:13:24Z"
+"origin":"asked"
+"relay":"rtpengine at 127.0.0.1:22222"
+{"name":"statistics.currentstatistics.sessionsown","tier":"relay_reported","value":"0"}
+{"name":"statistics.totalstatistics.uptime","tier":"relay_reported","value":"97979"}
+```
+
+The object carries `relay`, `origin` (`asked`, or `polled` under
+`--relay-stats-interval`), `obtained_at`, `refusals`, and `statistics`: one
+entry per counter, with its `name`, its `tier` and its `value` as the relay
+wrote it.
+
+## List the calls the relay holds
+
+To see which calls the relay is carrying right now, without capturing
+anything:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-holdings 2>/dev/null
+```
+
+```text
+Holdings of relay (rtpengine at 127.0.0.1:22222), asked 2026-11-03T15:18:50.189704516+00:00
+1 call held.
+Call-ID
+----------------
+1-29@192.0.2.21
+```
+
+- sipnab sends one `list` request, prints the answer and exits 0. It reads no
+  packet.
+- The relay returns at most 32 Call-IDs unless you raise the limit with
+  `--relay-holdings-max <CALLS>`. When it returns as many as you asked for,
+  the answer says the relay may hold more.
+- `--json` prints the body `GET /v1/relay/holdings` returns, with
+  `"truncated"` true or false.
+
+A leaked session is one the relay still holds after its call ended. Compare
+this list with the calls your SIP proxy still has up. A Call-ID the relay
+holds and the proxy does not is a candidate. rtpengine removes a session
+whose media stopped only after its RTP `timeout` setting has passed, so a
+call that ended a short time ago can still appear.
+
+## Compare the relay's count with your capture
+
+For one call, put the relay's RTP packet count beside the count sipnab
+measured. The capture must see the call's media, so run it where the media
+passes, here on the relay's own machine:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-compare '1-77@192.0.2.21' --duration 5 2>/dev/null \
+  | grep -A3 '^Relay vs capture'
+```
+
+```text
+Relay vs capture for call 1-77@192.0.2.21 (rtpengine at 127.0.0.1:22222, asked 2026-11-03T16:11:40Z) — differ
+  relay                                        818  [relay_reported totals.RTP.packets]
+  sipnab                                       996  [sipnab_measured]
+  note: the relay counted fewer; a capture that sees both sides of a relay counts each packet more than once -- once arriving at the relay and once leaving it -- so a point upstream AND downstream of the relay reads about twice the relay's own count. A window that does not line up or a relay restart mid-call also gaps them. To compare like for like, capture one leg, or read the relay's per-stream counts.
+```
+
+sipnab asks after the capture ends, so its own count is final. A capture on
+the relay's machine sees each packet arrive and leave, so here sipnab counted
+more than the relay. The note names the cause. When the call was up before
+the capture began, the gap runs the other way and the note says so: the
+relay counted packets the capture never saw.
+
+Read it with the three loss figures apart:
+
+- the relay's own count (`relay_reported`), for its sockets since it started;
+- sipnab's count (`sipnab_measured`), for what reached the capture point;
+- the far end's RTCP report (`endpoint_reported`), which nobody can check.
+
+Never subtract one from another. They count different sockets over different
+windows. Quote the tier with the number: "the relay reports 40 lost, our
+capture measured 3 gaps".
+
+## Ask over REST
+
+The REST server answers the same questions on six routes. They transmit, so
+they are off unless you add `--api-allow-relay-query`:
+
+```bash
+sudo env SIPNAB_API_KEY="$SIPNAB_API_KEY" sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 \
+  --api 127.0.0.1:8080 --api-allow-relay-query
+```
+
+```bash
+AUTH="Authorization: Bearer $SIPNAB_API_KEY"
+```
+
+```bash
+curl -s -H "$AUTH" http://127.0.0.1:8080/v1/relay/holdings
+```
+
+```json
+{"call_ids":["1-37@192.0.2.21","1-45@192.0.2.21","1-29@192.0.2.21"],"kind":"calls","obtained_at":"2026-11-03T15:19:51.410109408+00:00","origin":"asked","outcome":"ok","relay":"relay (rtpengine at 127.0.0.1:22222)","truncated":false}
+```
+
+| Route | Answers |
+|---|---|
+| `GET /v1/relay/stats` | the relay's counters, as `--relay-stats` |
+| `GET /v1/relay/stats/names` | the names it knows, as `--relay-stats-list` |
+| `GET /v1/relay/stats/call/{call_id}` | one call's counters, as `--relay-stats-call` |
+| `GET /v1/relay/compare/{call_id}` | the comparison, as `--relay-compare` |
+| `GET /v1/relay/holdings` | the Call-IDs it holds, as `--relay-holdings`; `?max_calls=` raises the limit |
+| `GET /v1/relay/holdings/{call_id}` | one call's tags, ports, SSRCs and codec |
+
+Every answer is HTTP 200 with an `outcome` field. Branch on it first: `ok`,
+or one of `not_configured`, `not_permitted`, `unreachable`, `refused` and
+`suspect`. The comparison carries its two counts and the verdict under
+`packets`.
+
+Without `--api-allow-relay-query`, every route refuses. `/v1/relay/holdings`
+answers:
+
+```json
+{"detail":"this run may not query the relay; it needs a live capture source and --api-allow-relay-query","outcome":"not_permitted","responsibility":"invocation"}
+```
+
+The [REST API reference](rest-api.md#get-v1relaystats) gives each route's full
+response.
+
+## Let an agent ask
+
+The MCP server has three tools that ask the relay. All three transmit, so
+they need the same three things: `--mcp-allow-relay-query`,
+`--rtpengine-control`, and a live source.
+
+```bash
+sudo sipnab --mcp -N -d eth0 --rtpengine-control 127.0.0.1:22222 --mcp-allow-relay-query --quiet
+```
+
+| Tool | Arguments | Answers |
+|---|---|---|
+| `query_relay` | none, or `call_id` | the Call-IDs the relay holds, or one call's tags and streams |
+| `relay_stats` | none, `call_id`, or `names_only: true` | the relay's counters, one call's, or the names it knows |
+| `relay_compare` | `call_id` | the relay's count beside sipnab's, with a verdict and a note |
+
+`relay_compare { "call_id": "1-53@192.0.2.21" }`
+answers, trimmed:
+
+```json
+{"call_id":"1-53@192.0.2.21","delivery_trust":"asked","outcome":"compared","relay_address":"127.0.0.1:22222","relay_reported":{"name":"totals.RTP.packets","value":2112},"sipnab_measured":1188,"schema_version":1}
+```
+
+`delivery_trust: "asked"` means sipnab asked the relay over its control
+socket, so no third party could have answered. `decode_ng` needs none of the
+three opt-ins: it decodes a relay control message already in the capture
+([rtpengine relay attribution](rtpengine.md#let-an-agent-ask-the-relay)).
+
+The [relay tool reference](mcp-tools-relay.md) gives each tool's full
+response.
+
+## Use the terminal UI
+
+Start the TUI with the relay's control address, on a live source:
+
+```bash
+sudo sipnab -d eth0 --rtpengine-control 127.0.0.1:22222
+```
+
+Press `S` to open the **Relay statistics** view:
+
+- from the call list, it shows the relay's counters;
+- from a call's flow view, it shows that call's counters.
+
+The view asks in the background and says that it is asking the relay until
+the answer arrives. Inside it:
+
+| Key | Shows |
+|---|---|
+| `?` | the names the relay knows |
+| `H` | the Call-IDs the relay holds now, up to 32 (press again for the counters) |
+| `K` | the relay's count beside this capture's, in a call's view only |
+| `Esc` or `S` | closes the view |
+
+`K` needs the call's media in the capture. On a machine that sees the SIP
+and not the media, it reads:
+
+```text
+Relay statistics unavailable — not_configured (invocation)
+
+the relay reports 542 RTP packet(s) for call 1-61@192.0.2.21, but this capture measured none for it; widen the capture filter to include the media
+```
+
+## When something does not work
+
+- **`--relay-stats will not ask a relay on a run that reads a file`** (logged
+  as an error, exit 0). The run reads a capture file. Ask from a live capture
+  with `-d`. The file's analysis still runs.
+- **`--relay-holdings will not ask a relay on a run that reads a file`** and
+  exit 2. The same, for `--relay-holdings`. Its live sources are `-d` and
+  `-L`.
+- **`relay at 127.0.0.1:22222 did not answer the statistics request (no reply
+  from 127.0.0.1:22222 within 2s)`.** Nothing answers at that address.
+  Give `--rtpengine-control` the `listen-ng` value from rtpengine's
+  configuration, and check that sipnab can reach it. For the same cause,
+  `--relay-holdings` exits 1 with
+  `--relay-holdings: unreachable: relay (rtpengine at 127.0.0.1:22222) did not answer (no reply from 127.0.0.1:22222 within 2s); asked, nothing came back`.
+- **`Permission denied on 'eth0'`** and exit 1. The capture needs privileges.
+  Run with `sudo`, or grant them once with `sudo sipnab --setup-caps`.
+- **`not_permitted` from every `/v1/relay/` route.** You started the server
+  without `--api-allow-relay-query`, or it reads a capture file.
+- **`relay_stats is not available on this server. It transmits, so it needs
+  three things`** (the same for `query_relay` and `relay_compare`), as a
+  JSON-RPC error with `"reason":"not_enabled"`. The run lacks one of
+  `--mcp-allow-relay-query`, `--rtpengine-control` and a live source. A run
+  that reads a capture file never has a live source.
+- **`--mcp-allow-relay-query: these opt-ins act on the sipnab process or the
+  relay`** and exit 2. The run opened the TUI as well as MCP. The TUI's relay
+  view and the MCP tools share one permission to transmit, so sipnab refuses
+  the MCP opt-in beside the TUI. Add `-N`.
+- **The comparison reads `not_configured` and `this capture measured none for
+  it`.** The capture did not see the call's media. Capture where the media
+  passes, usually on the relay's machine, and check that your capture filter
+  admits rtpengine's `port-min` to `port-max` range.
+- **`--relay-holdings: suspect: relay (rtpengine at 127.0.0.1:22223): a relay reply could not be trusted: rtpengine reply is not bencode: bencode: 'E' does not begin any bencode value; the reply was discarded and not read`**
+  and exit 1. The address is rtpproxy's control socket, or something else
+  that is not rtpengine. These requests are for rtpengine.
+
+## See also
+
+- [Let sipnab name rtpengine's media](rtpengine-sipnab.md): tie relay media to
+  its call.
+- [Attribute media on an rtpengine relay](rtpengine.md): how sipnab decides
+  which call a relay stream belongs to, and how far it trusts the relay.
+- [Add rtpengine to your voice stack](rtpengine-relay.md): install the relay
+  these requests ask.
 
 ---
 

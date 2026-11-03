@@ -2568,7 +2568,7 @@ fn retention_bound_message(limits: crate::rtp::stream_store::AudioLimits) -> Str
         |f| format!("up to {f} frame(s) per stream"),
     );
     format!(
-        "RTP payload retention is on so the MCP export_audio tool can decode it: \
+        "RTP payload retention is on, so this run can decode the audio it captures: \
          {per_stream}, inside a budget of {} byte(s) across every stream. At the \
          budget the oldest stream's earliest frames are released first, and its \
          export says so. Set [limits] max_audio_bytes to change the budget.",
@@ -17124,6 +17124,32 @@ mod tests {
         assert!(stored > 0, "the heuristic must have admitted the flow");
         assert_eq!(driven.counters.rtp_count, stored);
         Ok(())
+    }
+
+    /// The line a run logs when it retains audio names no single consumer.
+    ///
+    /// It said retention was on "so the MCP export_audio tool can decode it".
+    /// Since 0.5.160 `--retain-audio` works without `--mcp`, and
+    /// `--export-audio`, vCon rules and the amplitude measurement retain audio
+    /// too, so on those runs the line named a tool the run was not serving.
+    #[test]
+    fn retention_bound_message_names_no_single_consumer() {
+        let line = retention_bound_message(crate::rtp::stream_store::AudioLimits {
+            max_frames: None,
+            max_bytes: 1024 * 1024,
+        });
+        assert!(
+            line.starts_with("RTP payload retention is on"),
+            "the line no longer says what it reports: {line}"
+        );
+        assert!(
+            !line.contains("MCP") && !line.contains("export_audio"),
+            "the retention line names one consumer: {line}"
+        );
+        assert!(
+            line.contains("whole calls") && line.contains("1048576 byte(s)"),
+            "{line}"
+        );
     }
 
     /// An RTP packet on a stream the signaling explains queues a quality

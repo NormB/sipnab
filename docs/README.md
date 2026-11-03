@@ -49,6 +49,9 @@ Each answers one "how do I" question and assumes you already know what you want.
 - **[Worked examples from real captures](real-world-captures.md)**: twelve
   findings read out of live carrier and PBX traffic, each with the command,
   the output and what to do next.
+- **[Measure call quality](call-quality.md)**: each stream's MOS, R-factor,
+  jitter and loss, when in the call they changed, what the far end reported
+  over RTCP, and the thresholds and alerts that act on them.
 - **[Narrow to the calls that matter](filter-dsl.md)**: the filter language
   (`method == 'INVITE' and rtp.mos < 3.5`) and the diagnostic aliases
   (`--filter codec-asym`), with its complete grammar and field list.
@@ -139,6 +142,9 @@ Each answers one "how do I" question and assumes you already know what you want.
   sipnab involved.
 - **[Let sipnab name rtpengine's media](rtpengine-sipnab.md)**: tie the media
   on a relay to its call, from the relay's control plane or by asking it.
+- **[Ask a media relay about itself](relay-statistics.md)**: rtpengine's own
+  counters, the calls it holds, and its count for one call beside sipnab's,
+  from the command line, REST, MCP or the TUI.
 - **[Add rtpproxy to your voice stack](rtpproxy-relay.md)**: anchor every
   call's media on an rtpproxy relay instead, from OpenSIPS or Kamailio. No
   sipnab involved.

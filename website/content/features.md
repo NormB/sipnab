@@ -171,11 +171,12 @@ Terms used on this page:
 - **Quality dashboard.** In the terminal UI, `D` opens a live view of MOS, jitter and loss. The worst streams come first. [Look up a key binding](/docs/keybindings/#quality-dashboard)
 - **Listen to a stream or save it as WAV.** In the terminal UI:
   - `F2` saves a stream's audio as WAV.
-  - `Shift+P` plays it (G.711, in builds with the `audio` feature).
+  - `Shift+P` plays it (G.711 or Opus, in builds with the `audio` feature).
   - [Look up a key binding](/docs/keybindings/#rtp-streams)
 - **Name the media on an rtpengine relay.**
   - `--rtpengine-control <addr>` asks rtpengine which calls it holds.
-  - It uses rtpengine's read-only `list` and `query` commands.
+  - It uses rtpengine's read-only `list` and `query` commands to name calls.
+  - `--relay-stats` adds the read-only `statistics` command.
   - So sipnab matches a stream on the relay to its call.
   - [Let sipnab name rtpengine's media](/docs/rtpengine-sipnab/)
 - **Relay statistics beside measured ones.**

@@ -2092,11 +2092,12 @@ pub struct RtpArgs {
     /// response usually begins mid-call, which is exactly when that gap is
     /// worst. This closes it by ASKING.
     ///
-    /// **Read-only, and structurally so.** Only `list` and `query` can be
-    /// sent, because those are the only two commands the type reaching this
-    /// path can express. sipnab never sends `offer`, `answer`, `delete` or
-    /// `start recording`: each of them changes a production relay, and none is
-    /// representable here.
+    /// **Read-only, and structurally so.** sipnab sends only `list`, `query`
+    /// and `statistics` (the last for `--relay-stats` and its relatives),
+    /// because those are the commands the type reaching this path can express.
+    /// sipnab never sends `offer`, `answer`, `delete` or `start recording`:
+    /// each of them changes a production relay, and none is representable
+    /// here.
     ///
     /// **Not a poller by default.** sipnab asks for its call list at two
     /// moments: once at startup, before the capture opens, and again when a
@@ -9141,6 +9142,54 @@ mod tests {
             found.len(),
             found.join("\n")
         );
+    }
+
+    /// `--rtpengine-control`'s help names every command sipnab can send the
+    /// relay, taken from the command type itself, and no fixed count of them.
+    ///
+    /// The help said only `list` and `query` could be sent, calling them the
+    /// only two commands, after `--relay-stats` had added `statistics` to the
+    /// same control client. The match below is exhaustive, so a new command fails
+    /// to compile here until its verb is listed, and the help must name it.
+    #[test]
+    fn rtpengine_control_help_names_every_command_it_can_send() -> Result<(), TestError> {
+        use crate::relay::types::ReadOnlyCommand;
+        use clap::CommandFactory;
+        let every = [
+            ReadOnlyCommand::List { limit: 1 },
+            ReadOnlyCommand::Query {
+                call_id: String::new(),
+            },
+            ReadOnlyCommand::Statistics,
+        ];
+        for cmd in &every {
+            match cmd {
+                ReadOnlyCommand::List { .. }
+                | ReadOnlyCommand::Query { .. }
+                | ReadOnlyCommand::Statistics => {}
+            }
+        }
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == Some("rtpengine-control"))
+            .ok_or("no --rtpengine-control argument")?;
+        let help = arg
+            .get_long_help()
+            .ok_or("--rtpengine-control has no long help")?
+            .to_string();
+        for cmd in &every {
+            let verb = format!("`{}`", cmd.verb());
+            assert!(
+                help.contains(&verb),
+                "--rtpengine-control help does not name {verb}:\n{help}"
+            );
+        }
+        assert!(
+            !help.contains("only two commands"),
+            "--rtpengine-control help states a command count:\n{help}"
+        );
+        Ok(())
     }
 
     /// `--slow-setup` and `--short-calls` state the threshold they select on,

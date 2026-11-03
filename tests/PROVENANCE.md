@@ -347,3 +347,16 @@ leaves it by gaining a real entry here, or by the file being deleted.
   replays it into a live listener. Running the generator again writes the
   same messages with other timestamps and From tags (SIPp puts its process
   ID in the tag), so the hash changes with each run.
+
+### tests/fixtures/rtcp-xr-call.pcap
+
+- **Category:** synthetic
+- **Generator:** `tests/support/synthetic_captures.rs` (`rtcp_xr_call`)
+- **SHA-256:** `10aa38e45dbba2efa2d71f2feea3278a8e9278366402246ee08e110a83255e88`
+- **Holds:** a ten-second PCMU call from 192.0.2.30 to 198.51.100.40 with
+  500 RTP packets each way, the caller's stream missing every twentieth
+  packet. At five and ten seconds the callee sends a compound RTCP packet to
+  the caller's RTCP port: a sender report about the caller's stream and an
+  RTCP XR VoIP Metrics block ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html) section 4.7) about the same
+  stream. `media_diagnostics_reports_the_far_ends_rtcp_xr_apart` and the RTCP section
+  of `docs/call-quality.md` read it.

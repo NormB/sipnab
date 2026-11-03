@@ -1971,6 +1971,56 @@ The CLI `--filter` outputs per-message records. So deduplicate to call_ids first
 
 **Problem:** A call sounds bad. You want the actual audio to listen to or share.
 
+### Export a WAV from the command line
+
+Name the call with `--export-audio`. sipnab reads the capture, writes the
+call's decoded audio to a WAV file and prints what it wrote. Against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap):
+
+```bash
+sipnab -N -I capture.pcap --export-audio 1-1966@10.0.2.20 --export-audio-out call.wav --no-cli-print
+```
+
+```text
+Exported 8.5s of mu-law audio (425 frames, PCMU/8000Hz) to call.wav — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.
+```
+
+- `--export-audio-out <FILE>` names the file. Without it, the name is the
+  Call-ID with every character other than a letter, a digit, `-`, `_` or `.`
+  replaced by `_`, plus `.wav`: here `1-1966_10.0.2.20.wav`, in the current
+  directory.
+- The file is mono for one stream and stereo for two.
+- sipnab never overwrites a file. An existing one exits 1:
+  `--export-audio: Failed to create WAV file: 1-1966_10.0.2.20.wav: File exists (os error 17)`
+  is what a second run without `--export-audio-out` printed.
+- A Call-ID the capture does not hold exits 1:
+  `--export-audio: no SIP dialog and no RTP stream associated with call_id 'nosuch@example.com' in this capture`.
+- `--no-cli-print` keeps the capture's SIP messages off the terminal, so the
+  export line is the only output on stdout.
+- `--export-audio` keeps the call's audio payload for the run by itself. It
+  needs no `--retain-audio`.
+
+### Export a WAV over REST
+
+A server started with `--retain-audio` returns a call's audio from
+`GET /v1/dialogs/{call_id}/audio`:
+
+```bash
+sipnab -N -I capture.pcap --api 127.0.0.1:8080 --retain-audio --no-cli-print
+```
+
+```bash
+curl -s -o call.wav -w '%{http_code} %{content_type}\n' 'http://127.0.0.1:8080/v1/dialogs/1-1966@10.0.2.20/audio'
+```
+
+```text
+200 audio/wav
+```
+
+Without `--retain-audio` the same request answers `422` with a body that
+starts `No audio payload retained`. The MCP `export_audio` tool writes the
+same file under `--mcp-file-root`.
+
 ### Export a WAV from the TUI
 
 ```bash
@@ -1992,7 +2042,9 @@ WAV is the format you want for audio.
 You may have built with the `audio` feature (in default). Then:
 
 - Press `Enter` on a stream to open Stream Detail.
-- Then `P` plays that stream through your local audio device.
+- Then `Shift+P` plays that stream through your local audio device.
+- Playback decodes G.711 (`PCMU`, `PCMA`) and Opus. A G.722 or G.729 stream
+  exports to WAV but does not play.
 - Only Stream Detail binds that key. The stream list ignores it.
 
 ### Check whether the file holds the whole call
@@ -2009,6 +2061,10 @@ Read it with any tool that shows RIFF metadata:
 ffprobe -v error -show_entries format_tags -of default=noprint_wrappers=1 call.wav
 ```
 
+```text
+TAG:comment=Produced by sipnab 0.5.232 via mechanism sipnab-capture. Audio decoded from RTP payload this run retained; it is bounded by where the capture point sat and by what retention kept, and is not a recording made by the endpoints. INCOMPLETE. — PARTIAL: media in only ONE direction reached this capture; no stream going the other way was observed. That may be a one-way call, or a capture point that only sees one leg -- this file cannot tell you which.
+```
+
 A complete file says `No omissions recorded`.
 A partial one says `INCOMPLETE` and names the reason, because these are different problems:
 
@@ -2018,7 +2074,7 @@ A partial one says `INCOMPLETE` and names the reason, because these are differen
 | `the [limits] max_audio_bytes retention budget was reached and released N earlier frame(s)` | The audio retained across every call reached the budget, and the oldest stream gave up its earliest frames. The file holds the END of it. | Raise `[limits] max_audio_bytes` |
 | `N earlier frame(s) were released after this call's vCon container was written` | A live capture wrote this call's vCon, which carries the audio, and then released it | Read the audio from the vCon container |
 | `N of M stream(s) on this call are NOT in this file` | A WAV carries two channels; a three-legged call does not fit | Export the legs separately |
-| `(G729)` beside that | A stream's codec is not one sipnab decodes | Nothing — the audio is not recoverable from this capture |
+| `(G729)` beside that | sipnab did not decode a G.729 stream: the host has no codebook tables, or the binary lacks the `g729` feature | Run `sipnab g729 install` ([G.729 decoding](g729.md)), then export again. `sipnab --version` lists `g729` when the binary carries it |
 | `N frame(s) failed to decode` | The decoder rejected individual Opus frames | Check for truncation (`--snaplen`) |
 | `media in only ONE direction reached this capture` | sipnab saw no stream going the other way. Either the call really was one-way, or the capture point only sees one leg | Check where the tap sits before treating it as a fault |
 
@@ -2035,15 +2091,16 @@ So the first 44 bytes stay a standard WAV header, and every player reads the fil
   - G.729 (payload type 18), when the binary carries the `g729` feature and you have installed the codebook tables.
     [G.729 audio](g729.md) covers `sipnab g729 install`.
   - Other codecs (AMR, GSM, video) are not decoded. The export names the codec it skipped.
+- A call whose only stream is G.729, on a host without the tables, exits 1 with
+  `--export-audio: No stream on this call carries a codec that decodes to WAV (found: G729)`
+  and the line that names `sipnab g729 install`.
 - **An export refusing with "No audio payload retained" is telling you about the run, not the call.**
   - It means this run kept no payload to decode.
   - Most often, that is because retention was off.
   - It is not a finding that the call was silent.
 - On a host with no audio device, such as a headless server, the TUI disables playback.
   - It shows a message suggesting F2 → WAV instead.
-- No command-line flag writes WAV files. For a scripted export, use one of these:
-  - the MCP `export_audio` tool, which writes under `--mcp-file-root`,
-  - a vCon export with `--retain-audio`, which carries each call's audio inside the container as a `recording` ([Export one call to a conversation archive as a vCon](#export-one-call-to-a-conversation-archive-as-a-vcon)).
+- A vCon export with `--retain-audio` carries each call's audio inside the container as a `recording` ([Export one call to a conversation archive as a vCon](#export-one-call-to-a-conversation-archive-as-a-vcon)).
 
 ---
 
@@ -2909,7 +2966,8 @@ sipnab -N -I capture.pcap --no-final-response-timeout 30 --analyze
 The shipped thresholds describe a general network, and yours is not one.
 
 The eight quality knobs carry no built-in command-line default.
-So a value you do not pass leaves the config file's value in charge:
+So a value you do not pass leaves the config file's value in charge.
+[Measure call quality](call-quality.md#set-the-thresholds-to-your-network) shows the `[quality]` file form, what the thresholds change, and how to check that sipnab took them:
 
 ```bash
 sipnab -N -I capture.pcap --mos-warn 4.0 --mos-bad 3.2 --jitter-warn-ms 20 --jitter-bad-ms 50 --loss-warn-pct 1.0 --loss-bad-pct 3.0 --report --no-cli-print
@@ -4134,7 +4192,8 @@ Selected with the `jq` filter `{orphans: [.orphans[] | {ssrc, reason}], total_or
   - The destination comes from `--rtpengine-control` and from nowhere else.
   - An address sipnab could otherwise infer is one it learned from packets.
   - That is a host that was a relay during the capture, and may be somebody's laptop now.
-- `--rtpengine-control` transmits `list` and `query` and nothing else. This is structural.
+- `--rtpengine-control` transmits `list`, `query` and `statistics`, and nothing else. This is structural.
+  - `statistics` goes only with a relay-statistics request, such as `--relay-stats`.
   - `offer`, `answer`, `delete` and `start recording` each change a production relay.
   - None is representable on that path.
 
@@ -4357,7 +4416,7 @@ sipnab -N --mcp -I capture.pcap --quiet
   "applicable": true,
   "streams": [
     { "ssrc": "0x343da99b", "codec": "PCMU", "packets": 425,
-      "qos": { "marking_observed": true, "dscp": 0, "name": "CS0 / default (best effort)" },
+      "qos": { "marking_observed": true, "dscp": 0, "expedited": false, "name": "CS0 / default (best effort)" },
       "jitter": { "grounded": true, "clock_basis": "rfc3551", "clock_rate_hz": 8000,
                   "measured_ms": 0.0054046519599899685 },
       "delay": { "source": "assumed", "assumed": true, "one_way_ms": 100.0 },
@@ -4526,21 +4585,36 @@ A relay statistic is a claim from the relay, not something sipnab measured.
 - The output carries a tag naming it the relay's own count. So you never mistake it for sipnab's:
 
 ```bash
-sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats --duration 1 2>/dev/null \
+  | grep -E '^Relay|relayedpacket|packets_lost|uptime'
+```
+
+```text
+Relay statistics (rtpengine at 127.0.0.1:22222, asked 2026-11-03T16:09:58Z) — relay_reported counts
+  statistics.interfaces.0.packets_lost         0
+  statistics.totalstatistics.relayedpacketerrors 0
+  statistics.totalstatistics.relayedpacketerrors_kernel 0
+  statistics.totalstatistics.relayedpacketerrors_user 0
+  statistics.totalstatistics.relayedpackets    60451
+  statistics.totalstatistics.relayedpackets_kernel 0
+  statistics.totalstatistics.relayedpackets_user 60451
+  statistics.totalstatistics.uptime            86974
+  statistics.voip_metrics.packets_lost         0
 ```
 
 Every figure names the relay as its source (wire tier `relay_reported`).
 Reading it as "sipnab saw this" is the one mistake this whole view exists to stop.
+[Ask a media relay about itself](relay-statistics.md#ask-the-relay-for-its-counters) explains the counters to read first.
 
 **Pitfalls:**
 
 - **A relay that restarted a second ago reads as a quiet one.**
   - rtpengine's counters are cumulative, and reset to zero on restart.
-  - Where the relay publishes `uptime`, sipnab shows it beside them. rtpproxy publishes none.
+  - rtpengine publishes `statistics.totalstatistics.uptime`, in seconds, beside them.
   - So a small number can mean "handled little" or "just restarted". Only the uptime tells them apart.
   - A polled series (`--relay-stats-interval`) can step backwards. sipnab flags that as a probable restart, rather than a drop in traffic.
 - Asking transmits to the relay.
-  - So this needs a live source (`-d`), never a capture file.
+  - So this needs a live source (`-d`), never a capture file, and capturing an interface needs `sudo` or `sudo sipnab --setup-caps` once.
   - On `-I file.pcap`, sipnab does not ask. It logs `--relay-stats will not ask a relay on a run that reads a file`, analyzes the file, and exits 0.
   - `--rtpengine-control` on a file run logs a warning and transmits nothing.
 - A statistic missing from the reply was not asked for. A zero means the relay counted zero.
@@ -4552,13 +4626,44 @@ Reading it as "sipnab saw this" is the one mistake this whole view exists to sto
 
 **Problem:** You suspect leaked sessions. These are calls that ended, but whose media ports the relay never tore down.
 
+Ask the relay which calls it holds now:
+
 ```bash
-sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-holdings 2>/dev/null
 ```
 
-Read the active-session count beside the created and destroyed totals.
+```text
+Holdings of relay (rtpengine at 127.0.0.1:22222), asked 2026-11-03T15:18:50.189704516+00:00
+1 call held.
+Call-ID
+----------------
+1-29@192.0.2.21
+```
 
-- A created count far above destroyed, with a high active count, is the shape of sessions nobody released.
+Compare that list with the calls your SIP proxy still has up. A Call-ID the relay holds and the proxy does not is a candidate.
+The relay's own session counters add the totals:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats --duration 1 2>/dev/null \
+  | grep -E 'sessionsown|managedsessions|terminatedsessions|timeoutsessions'
+```
+
+```text
+  statistics.currentstatistics.sessionsown     0
+  statistics.totalstatistics.finaltimeoutsessions 0
+  statistics.totalstatistics.forcedterminatedsessions 0
+  statistics.totalstatistics.managedsessions   7
+  statistics.totalstatistics.offertimeoutsessions 0
+  statistics.totalstatistics.regularterminatedsessions 6
+  statistics.totalstatistics.silenttimeoutsessions 0
+  statistics.totalstatistics.timeoutsessions   1
+```
+
+- `currentstatistics.sessionsown` is the number held now.
+- `totalstatistics.managedsessions` counts every session since the relay started.
+- `regularterminatedsessions`, `forcedterminatedsessions` and the four timeout counters (`timeoutsessions`, `silenttimeoutsessions`, `finaltimeoutsessions` and `offertimeoutsessions`) say how sessions ended.
+  Here six of seven ended normally and one on a timeout, which is a session whose media stopped before anything deleted it.
+- [Ask a media relay about itself](relay-statistics.md#list-the-calls-the-relay-holds) covers `--relay-holdings-max` and the JSON form.
 
 **Pitfalls:**
 
@@ -4576,7 +4681,7 @@ Read the active-session count beside the created and destroyed totals.
 This is "we sent it" / "we never got it", one hop up.
 
 ```bash
-sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-compare 'abc123@host'
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-compare 'abc123@host' --duration 5
 ```
 
 This shows two figures side by side, each showing which it is:
@@ -4621,7 +4726,7 @@ You need to know which to believe.
 | the far end's RTCP `fraction lost` | what the far end claims (`endpoint_reported`) | the remote endpoint's own assertion, never checkable |
 
 ```bash
-sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
+sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats
 ```
 
 ```bash

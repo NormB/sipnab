@@ -213,7 +213,7 @@ RTP STREAMS (Tab):
 STREAM DETAIL:
   \u{2191}/\u{2193}             Scroll
   PgUp/PgDn, Home/End  Page / jump
-  Shift+P          Play / stop audio (G.711, audio build)
+  Shift+P          Play / stop audio (G.711 or Opus, audio build)
   L                Packet loss map (RTP loss pattern)
   Esc              Back to RTP streams
 

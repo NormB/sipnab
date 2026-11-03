@@ -18,6 +18,8 @@ Every tool on this page follows the [rules every tool
 follows](@/docs/mcp-tools.md#rules-every-tool-follows), and each section states only
 what its tool does differently. The [MCP tool reference](@/docs/mcp-tools.md) lists
 the other bundles and finds any tool by name.
+[Ask a media relay about itself](@/docs/relay-statistics.md#let-an-agent-ask) shows
+the three tools that transmit in use, with the server they need.
 
 | Tool | Parameters | Returns |
 |---|---|---|
