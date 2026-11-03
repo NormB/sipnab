@@ -83,10 +83,16 @@ else
 		--test private_identity_test -- --ignored --exact "$TEST_NAME" 2>&1) && rc=0 || rc=$?
 fi
 
+# The captured output is read from here-strings, never through a pipe. Under
+# `set -o pipefail` a pipe into a reader that stops early -- `grep -q` at its
+# first match, `awk` at `exit` -- kills the writer with SIGPIPE when it still
+# has output to write, and the pipeline then fails although the reader found
+# what it looked for (tests/private_identity_test.rs M7b to M7e).
+
 # A run that exits 0 without running the test checked nothing: a renamed test
 # matches no `--exact` filter, and libtest reports "0 passed" and success.
 if [ "$rc" -eq 0 ]; then
-	if printf '%s\n' "$OUT" | grep -q 'test result: ok\. 1 passed'; then
+	if grep -q 'test result: ok\. 1 passed' <<<"$OUT"; then
 		exit 0
 	fi
 	echo "$0: the check did not run $TEST_NAME, so the message is NOT CHECKED:" >&2
@@ -95,15 +101,15 @@ if [ "$rc" -eq 0 ]; then
 fi
 
 # The test ran and failed: print its own message, which names every line.
-FINDINGS=$(printf '%s\n' "$OUT" | awk -v name="---- $TEST_NAME stdout ----" '
+FINDINGS=$(awk -v name="---- $TEST_NAME stdout ----" '
 	$0 == name { on = 1; next }
 	on && /^note: run with `RUST_BACKTRACE=1`/ { exit }
 	on && /^failures:$/ { exit }
 	on && /^thread / { next }
 	on && !started && /^$/ { next }
 	on { started = 1; print }
-')
-if printf '%s\n' "$FINDINGS" | grep -q 'names a private identity'; then
+' <<<"$OUT")
+if grep -q 'names a private identity' <<<"$FINDINGS"; then
 	printf '%s\n' "$FINDINGS"
 	exit 1
 fi
