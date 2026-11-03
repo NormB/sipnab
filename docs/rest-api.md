@@ -1388,13 +1388,17 @@ trust it.**
 - `heuristic_only` is true when every leg is
   such a guess.
 - `th_callid_decoded` joined an OpenSIPS `topology_hiding("C")` leg by
-  decoding its Call-ID with the configured secret. See
+  decoding its Call-ID with the configured secret.
+- `th_callid_mapping` joined an OpenSIPS `topology_hiding("C")` leg by the
+  `E_SIPNAB_TH_MAP` event the OpenSIPS script sent. See
   [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding).
 
-`method` says what sipnab compared the legs on: `decoded`, `header` (a SIP
-header both carry), `sdp` (the SDP origin) or `timing` (the guess).
+`method` says what sipnab compared the legs on: `mapping` (the OpenSIPS
+event), `decoded`, `header` (a SIP header both carry), `sdp` (the SDP origin)
+or `timing` (the guess).
 `th_callid` has a value only when the source is the callee-side leg of an OpenSIPS
-topology-hiding call: `decoded`, `no_secret`, `undecodable` or `unmatched`.
+topology-hiding call: `decoded`, `no_secret`, `undecodable`, `unmatched`,
+`mapped` or `conflict`.
 
 **One hop.** This route answers the legs one step from the Call-ID asked about.
 

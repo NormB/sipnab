@@ -705,6 +705,7 @@ the same claim:
 | `x_call_id` | A configured header matched (none configured by default) | Only if the SBC inserts it |
 | `charging_vector_related_icid` | One leg's [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
 | `th_callid_decoded` | One leg's OpenSIPS `topology_hiding("C")` Call-ID decodes, with the configured secret, to the other leg's Call-ID, and the From tags match ([Calls through topology hiding](@/docs/opensips-sipnab.md#calls-through-topology-hiding)) | Yes, for OpenSIPS with the secret configured |
+| `th_callid_mapping` | The OpenSIPS script named both Call-IDs in an `E_SIPNAB_TH_MAP` event | Yes, for OpenSIPS with the script change |
 | `sdp_origin` | The [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) SDP origin tuple matched | Only if the SBC forwards SDP untouched |
 | `charging_vector_icid` | Both legs carry the same RFC 7315 `icid-value` | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `via_branch` | Two INVITEs shared a Via branch | No: a new transaction gets a new branch |
@@ -739,6 +740,7 @@ it.
 
 `method` groups the strategies by what sipnab compared the legs on:
 
+- `mapping` is `th_callid_mapping`.
 - `decoded` is `th_callid_decoded`.
 - `header` is `session_id`, `x_call_id`, both charging-vector strategies and
   `via_branch`.
@@ -746,8 +748,8 @@ it.
 - `timing` is `timing_heuristic`.
 
 `th_callid` has a value only when the source is the callee-side leg of an OpenSIPS
-`topology_hiding("C")` call: `decoded`, `no_secret`, `undecodable` or
-`unmatched`, as
+`topology_hiding("C")` call: `decoded`, `no_secret`, `undecodable`,
+`unmatched`, `mapped` or `conflict`, as
 [Calls through topology hiding](@/docs/opensips-sipnab.md#calls-through-topology-hiding)
 explains.
 

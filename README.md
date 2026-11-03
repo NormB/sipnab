@@ -334,6 +334,15 @@ Next:
   - It reads rtpengine's own counters over its control port
     (`--rtpengine-control`). sipnab labels them as the relay's report, not
     sipnab's measurement.
+- **OpenSIPS topology hiding.** It joins the two legs of a call through
+  `topology_hiding("C")`, which gives the callee's leg a new Call-ID
+  ([Calls through topology hiding](docs/opensips-sipnab.md#calls-through-topology-hiding)):
+  - from an `E_SIPNAB_TH_MAP` event the OpenSIPS script sends. This is a
+    change to the OpenSIPS script only, with no module to build
+    ([how-to](docs/opensips-sipnab.md#have-opensips-send-the-mapping)).
+  - by decoding the hidden Call-ID with the OpenSIPS secret, with no change to
+    OpenSIPS.
+  - from a header the OpenSIPS script adds.
 - **vCon export and delivery.**
   - It writes each observed call as a vCon, a conversation container
     (`--export-vcon`, [Export a call as a vCon](docs/vcon.md)).

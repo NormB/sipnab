@@ -30,6 +30,7 @@ the cause from there.
 | "Something is hammering the PBX" / probes across unknown extensions | [SIP scanner detection](#sip-scanner-detection) |
 | "No SIP traffic found" on a link you know carries calls | [A live capture that sees nothing](#a-live-capture-that-sees-nothing) |
 | A HEP collector (`-L`) shows no calls, or one proxy's calls are missing | [A HEP collector that receives nothing](#a-hep-collector-that-receives-nothing) |
+| The two legs of a call through OpenSIPS `topology_hiding("C")` do not join | [Troubleshooting the OpenSIPS mapping](opensips-sipnab.md#6-troubleshooting), or [Decode the hidden Call-ID](opensips-sipnab.md#decode-the-hidden-call-id) |
 | SIP is over TLS and the calls never appear | [Encrypted SIP that does not decrypt](#encrypted-sip-that-does-not-decrypt) |
 | Somebody handed you a `.tgz` or `.tar` of captures, and the run looks short | [An archive of captures](#an-archive-of-captures) |
 | `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
