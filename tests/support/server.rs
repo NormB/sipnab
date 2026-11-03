@@ -317,6 +317,26 @@ impl ApiServer {
         http_post(&self.addr, path, body, Some(&format!("Bearer {token}")))
     }
 
+    /// [`Self::post_json_bearer`], reading the answer for up to `wait_secs`
+    /// rather than 10 s: for a route that answers only after a wait of its
+    /// own, such as a ban whose `tfps_ctl` runs into sipnab's 10 s timeout.
+    pub fn post_json_bearer_waiting(
+        &self,
+        path: &str,
+        body: &str,
+        token: &str,
+        wait_secs: u64,
+    ) -> Result<Resp, TestError> {
+        http_post_waiting(
+            &self.addr,
+            &self.addr,
+            path,
+            body,
+            Some(&format!("Bearer {token}")),
+            wait_secs,
+        )
+    }
+
     /// `GET path` with no auth header and `host` as the `Host` header.
     pub fn get_as_host(&self, path: &str, host: &str) -> Result<Resp, TestError> {
         http_get_as(&self.addr, host, path, None)
@@ -420,8 +440,20 @@ fn http_post_as(
     body: &str,
     auth: Option<&str>,
 ) -> Result<Resp, TestError> {
+    http_post_waiting(addr, host, path, body, auth, 10)
+}
+
+/// [`http_post_as`], reading the answer for up to `wait_secs`.
+fn http_post_waiting(
+    addr: &str,
+    host: &str,
+    path: &str,
+    body: &str,
+    auth: Option<&str>,
+    wait_secs: u64,
+) -> Result<Resp, TestError> {
     let mut stream = TcpStream::connect(addr).map_err(|e| format!("connect {addr}: {e}"))?;
-    stream.set_read_timeout(Some(test_timeout(10))).ok();
+    stream.set_read_timeout(Some(test_timeout(wait_secs))).ok();
 
     let mut req = format!(
         "POST {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\

@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 
 use sipnab::security::actions::{
     ActionCaller, ActionError, ActionLimits, ActionPolicy, ActionService, ActionSurface, BanRule,
-    RevertTarget, Reverter,
+    RevertTarget, Reverter, TfpsActions,
 };
 
 #[path = "support/fake_tfps.rs"]
@@ -540,5 +540,277 @@ fn a_second_sipnab_on_the_same_journal_is_refused_at_start() -> Result<(), TestE
         r.t0,
     );
     assert!(matches!(second, Err(ActionError::JournalUnusable(_))));
+    Ok(())
+}
+
+// ── a ban whose answer was lost ──────────────────────────────────────────
+//
+// Once `tfps_ctl` has run, TFPS may have acted whatever became of its answer:
+// a timeout, a non-zero exit with no result, or an answer in a shape sipnab
+// cannot read. sipnab recorded that as "failed", which the ledger reads as
+// "did not happen": the ban stood in TFPS, sipnab held no record of it, and
+// every surface refused to lift it ("sipnab holds no ban on this address").
+// Found against a real TFPS whose tfps_ctl predated the JSON contract.
+
+/// A rig whose TFPS applies every ban and loses its answer, and, with
+/// `unban_lost`, every unban's too.
+fn lossy(unban_not_blocked: bool, unban_lost: bool) -> Result<Rig, TestError> {
+    let tmp = tempfile::tempdir()?;
+    let dir = tmp.path().join("journal");
+    let tfps = Arc::new(FakeTfps {
+        journal_dir: dir.clone(),
+        ban_answer_lost: true,
+        unban_not_blocked,
+        unban_answer_lost: unban_lost,
+        ..FakeTfps::default()
+    });
+    Ok(Rig {
+        _tmp: tmp,
+        dir,
+        tfps,
+        t0: Instant::now(),
+    })
+}
+
+/// Ban `addr(20)` as `token:ops` through a TFPS that loses the answer, and
+/// check that it is held in doubt rather than forgotten.
+fn ban_and_lose_the_answer(r: &Rig, svc: &ActionService) -> Result<(), TestError> {
+    let err = svc
+        .ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, r.t0)
+        .err()
+        .ok_or("a ban whose answer was lost is not a success")?;
+    assert!(
+        matches!(err, ActionError::Unanswered(_)),
+        "TFPS was asked, so this is not `could not be asked`: {err:?}"
+    );
+    let doubt = svc.in_doubt();
+    assert_eq!(doubt.len(), 1, "the ban is held in doubt: {doubt:?}");
+    assert_eq!(doubt[0].address, "198.51.100.20", "with the address banned");
+    assert_eq!(doubt[0].caller, "token:ops", "with who asked");
+    assert_eq!(doubt[0].at, T0, "and when");
+    assert!(svc.owned(addr(20)).is_none(), "not owned: it is not proven");
+    Ok(())
+}
+
+#[test]
+fn a_ban_whose_answer_is_lost_is_held_in_doubt() -> Result<(), TestError> {
+    let r = lossy(false, false)?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    ban_and_lose_the_answer(&r, &svc)?;
+    assert!(
+        r.tfps.journal_text().contains("\"unknown\""),
+        "the outcome is journaled as unknown: {}",
+        r.tfps.journal_text()
+    );
+    Ok(())
+}
+
+#[test]
+fn the_caller_can_lift_a_ban_left_in_doubt_and_tfps_settles_it() -> Result<(), TestError> {
+    let r = lossy(false, false)?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    ban_and_lose_the_answer(&r, &svc)?;
+    let done = svc.unban(
+        ActionSurface::Rest,
+        caller("token:ops", false),
+        addr(20),
+        T0 + 61,
+        r.t0 + Duration::from_secs(61),
+    )?;
+    assert!(done.applied, "TFPS lifted it: {done:?}");
+    assert_eq!(
+        r.tfps.calls()?,
+        ["ban 198.51.100.20 3600", "unban 198.51.100.20"],
+        "the unban reached TFPS"
+    );
+    assert!(svc.in_doubt().is_empty(), "TFPS's answer settled it");
+    assert!(svc.owned(addr(20)).is_none(), "and nothing is left owned");
+    assert!(r.tfps.banned()?.is_empty(), "and TFPS holds nothing");
+    Ok(())
+}
+
+#[test]
+fn an_admin_can_lift_another_callers_ban_left_in_doubt() -> Result<(), TestError> {
+    let r = lossy(false, false)?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    ban_and_lose_the_answer(&r, &svc)?;
+    let done = svc.unban(
+        ActionSurface::Rest,
+        caller("token:lead", true),
+        addr(20),
+        T0 + 61,
+        r.t0 + Duration::from_secs(61),
+    )?;
+    assert!(done.applied, "{done:?}");
+    assert_eq!(
+        r.tfps.calls()?.last().map(String::as_str),
+        Some("unban 198.51.100.20"),
+        "the admin's unban reached TFPS"
+    );
+    assert!(
+        svc.in_doubt().is_empty(),
+        "TFPS lifting it settled the doubt"
+    );
+    Ok(())
+}
+
+#[test]
+fn another_caller_cannot_lift_a_ban_left_in_doubt_without_admin() -> Result<(), TestError> {
+    let r = lossy(false, false)?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    ban_and_lose_the_answer(&r, &svc)?;
+    let err = svc
+        .unban(
+            ActionSurface::Rest,
+            caller("token:intern", false),
+            addr(20),
+            T0 + 61,
+            r.t0 + Duration::from_secs(61),
+        )
+        .err()
+        .ok_or("another caller's ban is refused")?;
+    assert_eq!(
+        err,
+        ActionError::NotYours {
+            owner: "token:ops".to_string()
+        },
+        "the refusal names who placed the ban"
+    );
+    assert_eq!(
+        r.tfps.calls()?,
+        ["ban 198.51.100.20 3600"],
+        "TFPS not asked"
+    );
+    assert_eq!(svc.in_doubt().len(), 1, "still in doubt");
+    Ok(())
+}
+
+#[test]
+fn an_unban_tfps_answers_not_blocked_settles_the_doubt_as_never_applied() -> Result<(), TestError> {
+    let r = lossy(true, false)?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    ban_and_lose_the_answer(&r, &svc)?;
+    let done = svc.unban(
+        ActionSurface::Rest,
+        caller("token:ops", false),
+        addr(20),
+        T0 + 61,
+        r.t0 + Duration::from_secs(61),
+    )?;
+    assert_eq!(done.refused.as_deref(), Some("not-blocked"), "{done:?}");
+    assert!(svc.in_doubt().is_empty(), "TFPS said it holds no ban");
+    assert!(
+        svc.owned(addr(20)).is_none(),
+        "a ban TFPS never held is not owned"
+    );
+    Ok(())
+}
+
+#[test]
+fn an_unban_whose_answer_is_lost_too_leaves_the_address_in_doubt() -> Result<(), TestError> {
+    let r = lossy(false, true)?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    ban_and_lose_the_answer(&r, &svc)?;
+    let err = svc
+        .unban(
+            ActionSurface::Rest,
+            caller("token:ops", false),
+            addr(20),
+            T0 + 61,
+            r.t0 + Duration::from_secs(61),
+        )
+        .err()
+        .ok_or("an unban whose answer was lost is not a success")?;
+    assert!(matches!(err, ActionError::Unanswered(_)), "{err:?}");
+    assert!(
+        !svc.in_doubt().is_empty(),
+        "nothing TFPS said settles the address"
+    );
+    Ok(())
+}
+
+#[test]
+fn while_a_ban_is_in_doubt_other_actions_wait() -> Result<(), TestError> {
+    let r = lossy(false, false)?;
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    ban_and_lose_the_answer(&r, &svc)?;
+    let err = svc
+        .ban(
+            ActionSurface::Rest,
+            "token:ops",
+            addr(21),
+            None,
+            T0 + 1,
+            r.t0,
+        )
+        .err()
+        .ok_or("a new ban waits for the doubt to be settled")?;
+    assert_eq!(
+        err,
+        ActionError::InDoubt(1),
+        "one action elsewhere is in doubt"
+    );
+    assert_eq!(
+        r.tfps.calls()?,
+        ["ban 198.51.100.20 3600"],
+        "the second ban never reached TFPS"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_restart_resolves_a_lost_answer_against_tfps() -> Result<(), TestError> {
+    let r = lossy(false, false)?;
+    {
+        let svc = start(&r, enabled("tfps:rest")?)?;
+        ban_and_lose_the_answer(&r, &svc)?;
+    }
+    // TFPS lists the ban with the expiry sipnab asked for, so the restart
+    // proves sipnab placed it, and owns it.
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    assert!(
+        svc.in_doubt().is_empty(),
+        "the restart settled it against TFPS"
+    );
+    assert!(
+        svc.owned(addr(20)).is_some(),
+        "the journal kept it in doubt"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_revert_whose_answer_is_lost_is_held_in_doubt() -> Result<(), TestError> {
+    let r = lossy(false, true)?;
+    // This TFPS answers bans; only unbans lose their answer.
+    let tfps = Arc::new(FakeTfps {
+        journal_dir: r.dir.clone(),
+        unban_answer_lost: true,
+        ..FakeTfps::default()
+    });
+    let r = Rig { tfps, ..r };
+    let svc = start(&r, enabled("tfps:rest")?)?;
+    let id = svc
+        .ban(ActionSurface::Rest, "token:ops", addr(20), None, T0, r.t0)?
+        .id;
+    let err = svc
+        .revert(
+            Reverter::Surface {
+                surface: ActionSurface::Rest,
+                caller: caller("token:ops", false),
+            },
+            RevertTarget::One(id),
+            T0 + 61,
+            r.t0 + Duration::from_secs(61),
+        )
+        .err()
+        .ok_or("a revert whose answer was lost is not a success")?;
+    assert!(matches!(err, ActionError::Unanswered(_)), "{err:?}");
+    let doubt = svc.in_doubt();
+    assert_eq!(doubt.len(), 1, "the revert is held in doubt: {doubt:?}");
+    assert_eq!(
+        doubt[0].address, "198.51.100.20",
+        "on the address it reverts"
+    );
     Ok(())
 }

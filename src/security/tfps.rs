@@ -607,6 +607,20 @@ pub fn peer_capability_hint(subcommand: &str, stderr: &str) -> Option<&'static s
     }
 }
 
+impl TfpsError {
+    /// Whether `tfps_ctl` ran: every error but [`Self::Spawn`].
+    ///
+    /// A peer that ran may have acted before whatever went wrong with its
+    /// answer -- a timeout, a non-zero exit with no result, output sipnab
+    /// cannot read or too much of it -- so for a command that changes TFPS the
+    /// effect is unknown, not absent. Only a peer that never started is known
+    /// to have done nothing.
+    #[must_use]
+    pub fn ran(&self) -> bool {
+        !matches!(self, Self::Spawn { .. })
+    }
+}
+
 impl fmt::Display for TfpsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -636,7 +650,10 @@ impl fmt::Display for TfpsError {
                 what,
             } => write!(
                 f,
-                "{} {subcommand} answered something this sipnab cannot read: {what}",
+                "{} {subcommand} answered something this sipnab cannot read: {what}. sipnab reads \
+                 the JSON contract of sippulse/tfps e7ee57a (2026-09-16) and later, where every \
+                 time is epoch seconds; a tfps_ctl built from that contract's draft wrote times, \
+                 `expires` among them, as RFC 3339 strings",
                 ctl.display()
             ),
             Self::TimedOut { ctl, after, stderr } => write!(

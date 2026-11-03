@@ -177,7 +177,7 @@ fn action_refusal(e: ActionError) -> Result<CallToolResult, rmcp::ErrorData> {
         ActionError::NotYours { .. } => ("not_yours", None),
         ActionError::InDoubt(_) => ("in_doubt", None),
         ActionError::JournalUnusable(_) => ("journal", None),
-        ActionError::Tfps(_) => ("tfps", None),
+        ActionError::Tfps(_) | ActionError::Unanswered(_) => ("tfps", None),
     };
     let mut body = serde_json::json!({ "error": message, "refusal": refusal });
     if let Some(secs) = retry_after {

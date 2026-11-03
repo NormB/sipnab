@@ -1727,7 +1727,7 @@ fn action_problem(e: crate::security::actions::ActionError) -> Problem {
         E::InDoubt(_) | E::JournalUnusable(_) => {
             Problem::detailed(StatusCode::SERVICE_UNAVAILABLE, detail)
         }
-        E::Tfps(_) => Problem::detailed(StatusCode::BAD_GATEWAY, detail),
+        E::Tfps(_) | E::Unanswered(_) => Problem::detailed(StatusCode::BAD_GATEWAY, detail),
     }
 }
 

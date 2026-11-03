@@ -2278,10 +2278,24 @@ That is the answer TFPS gave, not an error:
 
 `tfps_ctl` missing or failing is `502`, with its reason in `detail`.
 
+- If `tfps_ctl` could not start, TFPS did nothing, and the journal records
+  the ban as failed.
+- If it ran and sipnab could not read its answer, TFPS may have banned the
+  address. That covers a timeout, a non-zero exit with no result, and an
+  answer that is not the JSON TFPS has given since
+  [`e7ee57a`](https://github.com/sippulse/tfps/commit/e7ee57a). In that case:
+  - the journal holds the ban **in doubt**, and `detail` says so;
+  - `sipnab --journal-show` lists it with its address, its caller and its
+    time;
+  - the caller who asked, or a token with scope `admin`, can lift it with
+    `POST /v1/tfps/unban`, and TFPS's answer settles it.
+
 `503` means no action may run just now. Either:
 
 - sipnab cannot use the journal, or
-- actions a crash left unfinished are waiting for TFPS to answer for them.
+- actions are in doubt: sipnab stopped before TFPS answered for them, or
+  sipnab asked TFPS and could not read its answer. They wait for TFPS
+  to answer for them, or for an unban of their address.
 
 ---
 
@@ -2290,7 +2304,8 @@ That is the answer TFPS gave, not an error:
 Ask TFPS to release a source **sipnab banned**. Off by default, behind the
 same two locks, rules and limits as the ban.
 
-sipnab lifts only a ban it placed and still holds, as its journal records.
+sipnab lifts only a ban it placed and still holds, as its journal records,
+or one it asked for and holds in doubt.
 
 - A ban TFPS placed itself, or anyone else did, answers `409`. TFPS is not
   asked.

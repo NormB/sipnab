@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::journal::ledger::{Intent, Ledger, Owned, TfpsView};
+use crate::journal::ledger::{Intent, Ledger, Owned, Resolution, TfpsView, Verb};
 use crate::journal::{Journal, JournalError, JournalLimits, Record};
 
 use super::{
@@ -41,6 +41,10 @@ pub enum TfpsReply {
     Applied,
     /// TFPS refused, in its own words.
     Refused(String),
+    /// `tfps_ctl` ran, so TFPS may have acted, and sipnab could not read what
+    /// it did: an answer that is not the JSON contract, a non-zero exit with no
+    /// result, a timeout, or too much output. Carries what went wrong.
+    Unanswered(String),
 }
 
 /// The three things the service asks TFPS. A trait so the service can be
@@ -97,6 +101,8 @@ fn action_reply(
             value.refused.unwrap_or_else(|| "unnamed".to_string()),
         )),
         Ok(Reply::NotInstalled { reason }) => Err(reason),
+        // It ran, so TFPS may have acted: the effect is unknown, not absent.
+        Err(e) if e.ran() => Ok(TfpsReply::Unanswered(e.to_string())),
         Err(e) => Err(e.to_string()),
     }
 }
@@ -150,13 +156,18 @@ pub enum ActionError {
         /// Who placed the ban.
         owner: String,
     },
-    /// Actions from before a crash are still unresolved; nothing new runs
-    /// until TFPS can be asked about them.
+    /// Actions are unresolved -- sipnab stopped before TFPS answered for
+    /// them, or TFPS was asked and its answer could not be read -- and
+    /// nothing new runs until TFPS answers for them or their address is
+    /// unbanned.
     InDoubt(usize),
     /// The journal cannot be used, so no action may run.
     JournalUnusable(String),
     /// TFPS could not be asked.
     Tfps(String),
+    /// TFPS was asked, so it may have acted, and its answer could not be
+    /// read. The action is held in doubt. Carries what went wrong.
+    Unanswered(String),
 }
 
 impl std::fmt::Display for ActionError {
@@ -178,11 +189,20 @@ impl std::fmt::Display for ActionError {
             ),
             Self::InDoubt(n) => write!(
                 f,
-                "{n} action(s) from before sipnab last stopped are unresolved, because TFPS could \
-                 not be asked about them; no new action runs until it can"
+                "{n} action(s) are unresolved: sipnab stopped before TFPS answered for them, or \
+                 TFPS was asked and sipnab could not read what it did. No new action runs until \
+                 TFPS answers for them, or until their caller, or a token with the admin scope, \
+                 unbans their address; `sipnab --journal-show` lists them"
             ),
             Self::JournalUnusable(m) => write!(f, "actions are off: {m}"),
             Self::Tfps(m) => write!(f, "TFPS could not be asked: {m}"),
+            Self::Unanswered(m) => write!(
+                f,
+                "TFPS was asked, and sipnab could not read what it did: {m}. TFPS may have \
+                 acted, so sipnab holds the action in doubt: `sipnab --journal-show` lists it, \
+                 no other action runs until it is settled, and the caller who asked, or a \
+                 token with the admin scope, can unban the address to settle it"
+            ),
         }
     }
 }
@@ -593,19 +613,42 @@ impl ActionService {
         if let Err(r) = self.policy.permit(ActionTarget::Tfps, surface) {
             return Err(refuse(&mut inner, "policy", ActionError::NotEnabled(r)));
         }
-        let doubt = inner.ledger.in_doubt().len();
-        if doubt > 0 {
-            return Err(refuse(&mut inner, "in_doubt", ActionError::InDoubt(doubt)));
+        // An action in doubt on THIS address is what an unban here settles,
+        // so it does not refuse the unban; one on any other address still
+        // does, as it refuses every action.
+        let address = ip.to_string();
+        let (here, elsewhere): (Vec<Intent>, Vec<Intent>) = inner
+            .ledger
+            .in_doubt()
+            .into_iter()
+            .partition(|i| i.address == address);
+        if !elsewhere.is_empty() {
+            return Err(refuse(
+                &mut inner,
+                "in_doubt",
+                ActionError::InDoubt(elsewhere.len()),
+            ));
         }
         inner.ledger.set_now(now_unix);
-        let Some((owned_id, owner)) = inner
+        let owned_id = inner.ledger.owned(&address).map(|o| o.id.clone());
+        // Who may lift it: the caller of the ban sipnab holds, and of every
+        // ban left in doubt here. A ban in doubt is the caller's as an owned
+        // one is: TFPS may hold it, and nobody else may lift it for them.
+        let owners: Vec<String> = inner
             .ledger
-            .owned(&ip.to_string())
-            .map(|o| (o.id.clone(), o.caller.clone()))
-        else {
+            .owned(&address)
+            .map(|o| o.caller.clone())
+            .into_iter()
+            .chain(
+                here.iter()
+                    .filter(|i| i.verb == Verb::Ban)
+                    .map(|i| i.caller.clone()),
+            )
+            .collect();
+        if owners.is_empty() {
             return Err(refuse(&mut inner, "ownership", ActionError::NotOwned));
-        };
-        if !may_lift(caller, &owner) {
+        }
+        if let Some(owner) = owners.into_iter().find(|o| !may_lift(caller, o)) {
             return Err(refuse(
                 &mut inner,
                 "ownership",
@@ -622,18 +665,39 @@ impl ActionService {
         inner.write(
             "action_intent",
             serde_json::json!({
-                "id": id, "target": "tfps", "verb": "unban", "address": ip.to_string(),
+                "id": id, "target": "tfps", "verb": "unban", "address": address,
                 "at": now_unix, "surface": surface.name(), "caller": caller.name,
             }),
         )?;
         let reply = self.tfps.unban(v4);
         let gone = matches!(&reply, Ok(TfpsReply::Refused(why)) if why == "not-blocked");
+        // TFPS's answer settles what was in doubt here: it lifted a ban, so
+        // the address was banned; or it held none, so it was not. Any other
+        // answer settles nothing, and the doubt stays.
+        let was_banned = match &reply {
+            Ok(TfpsReply::Applied) => Some(true),
+            _ if gone => Some(false),
+            _ => None,
+        };
+        if let Some(was_banned) = was_banned {
+            for intent in &here {
+                let resolution = if (intent.verb == Verb::Ban) == was_banned {
+                    Resolution::Applied
+                } else {
+                    Resolution::NotApplied
+                };
+                inner.write(
+                    "reconciled",
+                    serde_json::json!({ "id": intent.id, "resolution": resolution }),
+                )?;
+            }
+        }
         let done = inner.finish(&id, reply)?;
-        if gone {
+        if gone && let Some(owned_id) = owned_id {
             // TFPS no longer held it: the ban sipnab placed has ended.
             inner.write(
                 "lapsed_by_peer",
-                serde_json::json!({ "id": owned_id, "address": ip.to_string(), "at": now_unix }),
+                serde_json::json!({ "id": owned_id, "address": address, "at": now_unix }),
             )?;
         }
         Ok(done)
@@ -820,11 +884,7 @@ impl ActionService {
                 }),
             )?;
             let reply = self.tfps.unban(v4);
-            let (result, detail) = match &reply {
-                Ok(TfpsReply::Applied) => ("applied", None),
-                Ok(TfpsReply::Refused(why)) => ("refused", Some(why.clone())),
-                Err(e) => ("failed", Some(e.clone())),
-            };
+            let (result, detail) = outcome_of(&reply);
             inner.write(
                 "revert_outcome",
                 serde_json::json!({ "id": id, "result": result, "detail": detail }),
@@ -844,10 +904,13 @@ impl ActionService {
                     address: owned.address.clone(),
                     why,
                 }),
+                Ok(TfpsReply::Unanswered(e)) if matches!(target, RevertTarget::One(_)) => {
+                    return Err(ActionError::Unanswered(e));
+                }
                 Err(e) if matches!(target, RevertTarget::One(_)) => {
                     return Err(ActionError::Tfps(e));
                 }
-                Err(e) => report.failed.push(RevertFailure {
+                Ok(TfpsReply::Unanswered(e)) | Err(e) => report.failed.push(RevertFailure {
                     id: owned.id.clone(),
                     address: owned.address.clone(),
                     why: e,
@@ -1059,11 +1122,7 @@ impl Inner {
         id: &str,
         reply: Result<TfpsReply, String>,
     ) -> Result<ActionDone, ActionError> {
-        let (result, detail) = match &reply {
-            Ok(TfpsReply::Applied) => ("applied", None),
-            Ok(TfpsReply::Refused(why)) => ("refused", Some(why.clone())),
-            Err(e) => ("failed", Some(e.clone())),
-        };
+        let (result, detail) = outcome_of(&reply);
         self.write(
             "action_outcome",
             serde_json::json!({ "id": id, "result": result, "detail": detail }),
@@ -1079,8 +1138,24 @@ impl Inner {
                 applied: false,
                 refused: Some(why),
             }),
+            Ok(TfpsReply::Unanswered(e)) => Err(ActionError::Unanswered(e)),
             Err(e) => Err(ActionError::Tfps(e)),
         }
+    }
+}
+
+/// The `result` and `detail` an outcome record carries for `reply`.
+///
+/// `unknown` for an answer that was lost after `tfps_ctl` ran: the ledger
+/// keeps that action in doubt, because TFPS may have acted. `failed` only for
+/// a `tfps_ctl` that never ran, which the ledger reads as "did not happen".
+/// One rule for the action and the revert records alike.
+fn outcome_of(reply: &Result<TfpsReply, String>) -> (&'static str, Option<String>) {
+    match reply {
+        Ok(TfpsReply::Applied) => ("applied", None),
+        Ok(TfpsReply::Refused(why)) => ("refused", Some(why.clone())),
+        Ok(TfpsReply::Unanswered(e)) => ("unknown", Some(e.clone())),
+        Err(e) => ("failed", Some(e.clone())),
     }
 }
 

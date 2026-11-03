@@ -40,6 +40,12 @@ pub struct FakeTfps {
     pub ban_takes: Option<std::time::Duration>,
     /// Set as a ban starts, before it waits `ban_takes`.
     pub ban_started: std::sync::atomic::AtomicBool,
+    /// Apply every ban, then lose its answer, as a `tfps_ctl` does that
+    /// writes the block map and then times out, exits with no result, or
+    /// answers in a shape sipnab cannot read.
+    pub ban_answer_lost: bool,
+    /// The same, for every unban.
+    pub unban_answer_lost: bool,
 }
 
 impl FakeTfps {
@@ -89,6 +95,11 @@ impl TfpsActions for FakeTfps {
             .lock()
             .map_err(|e| e.to_string())?
             .push((ip, Some(now_unix + ttl_secs)));
+        if self.ban_answer_lost {
+            return Ok(TfpsReply::Unanswered(
+                "tfps_ctl did not finish within 10.0s and was stopped".into(),
+            ));
+        }
         Ok(TfpsReply::Applied)
     }
 
@@ -103,6 +114,11 @@ impl TfpsActions for FakeTfps {
         let mut b = self.banned.lock().map_err(|e| e.to_string())?;
         let before = b.len();
         b.retain(|(a, _)| *a != ip);
+        if self.unban_answer_lost {
+            return Ok(TfpsReply::Unanswered(
+                "tfps_ctl exited 1 with no result".into(),
+            ));
+        }
         Ok(if b.len() < before {
             TfpsReply::Applied
         } else {

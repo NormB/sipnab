@@ -436,8 +436,13 @@ fn an_unban_straight_after_a_ban_waits_out_the_address_cooldown() -> Result<(), 
     Ok(())
 }
 
+/// A `tfps_ctl` that ran and exited non-zero with no result is a `502`, and
+/// its outcome is journaled as `unknown`, not `failed`: it ran, so sipnab
+/// cannot know that TFPS did not act. `failed` is the ledger's "did not
+/// happen", and recording it here lost track of bans TFPS did apply.
 #[test]
-fn tfps_failing_is_a_bad_gateway_and_the_outcome_is_journaled_as_failed() -> Result<(), TestError> {
+fn tfps_failing_after_it_ran_is_a_bad_gateway_and_the_outcome_is_unknown() -> Result<(), TestError>
+{
     let fake = Fake::new()?;
     fake.fail_bans()?;
     let journal = tempfile::tempdir()?;
@@ -453,7 +458,10 @@ fn tfps_failing_is_a_bad_gateway_and_the_outcome_is_journaled_as_failed() -> Res
     let all = records(journal.path())?;
     let outcome = of_kind(&all, "action_outcome");
     assert_eq!(outcome.len(), 1, "{all:?}");
-    assert_eq!(outcome[0]["result"], "failed");
+    assert_eq!(
+        outcome[0]["result"], "unknown",
+        "tfps_ctl ran, so whether TFPS acted is unknown: {all:?}"
+    );
     Ok(())
 }
 
@@ -718,4 +726,107 @@ fn forged_expired_tampered_revoked_and_foreign_tokens_cannot_act() -> Result<(),
         "nothing was admitted: {all:?}"
     );
     Ok(())
+}
+
+// ── a ban whose answer was lost ──────────────────────────────────────────
+//
+// Found against a real TFPS whose tfps_ctl predated the JSON contract: the ban
+// took effect, the answer could not be read, sipnab answered 502 and
+// journaled nothing it could act on, and every later unban answered 409.
+
+/// Ban an address through a TFPS that applies the ban and loses the answer
+/// `how`, then lift it as `lifter`: the ban is held in doubt, the unban
+/// reaches TFPS, and TFPS's answer settles it.
+fn a_lost_answer_is_held_in_doubt_and_can_be_lifted(
+    how: &str,
+    lifter: &str,
+) -> Result<(), TestError> {
+    let fake = Fake::new()?;
+    fake.lose_ban_answers(how)?;
+    let journal = tempfile::tempdir()?;
+    let (_cfg, config) = quick_cooldown()?;
+    let srv = server(&fake, journal.path(), &["--config", &config])?;
+    // `hang` answers only when sipnab's own 10 s `tfps_ctl` timeout stops
+    // the peer, so the client waits longer than that.
+    let resp = srv.post_json_bearer_waiting(
+        "/v1/tfps/ban",
+        &ban_body("198.51.100.40"),
+        &token_for("ops-console"),
+        30,
+    )?;
+    assert_eq!(resp.status, 502, "{}", resp.body);
+    assert!(
+        resp.body.contains("in doubt"),
+        "the 502 says the ban is held in doubt: {}",
+        resp.body
+    );
+    assert_eq!(fake.held().trim(), "198.51.100.40", "TFPS applied it");
+    let all = records(journal.path())?;
+    let outcome = of_kind(&all, "action_outcome");
+    assert_eq!(outcome.len(), 1, "{all:?}");
+    assert_eq!(outcome[0]["result"], "unknown", "{all:?}");
+
+    // Past the one-second address cooldown.
+    std::thread::sleep(Duration::from_millis(1100));
+    let token = if lifter == "admin" {
+        sipnab::auth::mint(
+            SIGNING_KEY.as_bytes(),
+            "lead",
+            chrono::Utc::now().timestamp() + 3600,
+            sipnab::auth::AUDIENCE_API,
+            sipnab::auth::SCOPE_ADMIN,
+        )
+    } else {
+        token_for("ops-console")
+    };
+    let resp = srv.post_json_bearer("/v1/tfps/unban", &ban_body("198.51.100.40"), &token)?;
+    assert_eq!(resp.status, 200, "{lifter} lifts it: {}", resp.body);
+    assert_eq!(resp.json()?["applied"], true, "{}", resp.body);
+    assert_eq!(
+        fake.count("unban"),
+        1,
+        "the unban reached TFPS: {}",
+        fake.calls()
+    );
+    assert_eq!(fake.held().trim(), "", "TFPS no longer holds it");
+
+    // Settled: a new action runs again.
+    fake.answer_bans()?;
+    let resp = srv.post_json_bearer(
+        "/v1/tfps/ban",
+        &ban_body("198.51.100.41"),
+        &token_for("ops-console"),
+    )?;
+    assert_eq!(resp.status, 200, "nothing is left in doubt: {}", resp.body);
+    Ok(())
+}
+
+#[test]
+fn a_ban_answered_with_garbage_can_be_lifted_by_its_caller() -> Result<(), TestError> {
+    a_lost_answer_is_held_in_doubt_and_can_be_lifted("garbage", "caller")
+}
+
+#[test]
+fn a_ban_answered_with_garbage_can_be_lifted_by_an_admin() -> Result<(), TestError> {
+    a_lost_answer_is_held_in_doubt_and_can_be_lifted("garbage", "admin")
+}
+
+#[test]
+fn a_ban_that_exits_non_zero_after_acting_can_be_lifted_by_its_caller() -> Result<(), TestError> {
+    a_lost_answer_is_held_in_doubt_and_can_be_lifted("nonzero", "caller")
+}
+
+#[test]
+fn a_ban_that_exits_non_zero_after_acting_can_be_lifted_by_an_admin() -> Result<(), TestError> {
+    a_lost_answer_is_held_in_doubt_and_can_be_lifted("nonzero", "admin")
+}
+
+#[test]
+fn a_ban_that_times_out_can_be_lifted_by_its_caller() -> Result<(), TestError> {
+    a_lost_answer_is_held_in_doubt_and_can_be_lifted("hang", "caller")
+}
+
+#[test]
+fn a_ban_that_times_out_can_be_lifted_by_an_admin() -> Result<(), TestError> {
+    a_lost_answer_is_held_in_doubt_and_can_be_lifted("hang", "admin")
 }

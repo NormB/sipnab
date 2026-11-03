@@ -8924,10 +8924,24 @@ That is the answer TFPS gave, not an error:
 
 `tfps_ctl` missing or failing is `502`, with its reason in `detail`.
 
+- If `tfps_ctl` could not start, TFPS did nothing, and the journal records
+  the ban as failed.
+- If it ran and sipnab could not read its answer, TFPS may have banned the
+  address. That covers a timeout, a non-zero exit with no result, and an
+  answer that is not the JSON TFPS has given since
+  [`e7ee57a`](https://github.com/sippulse/tfps/commit/e7ee57a). In that case:
+  - the journal holds the ban **in doubt**, and `detail` says so;
+  - `sipnab --journal-show` lists it with its address, its caller and its
+    time;
+  - the caller who asked, or a token with scope `admin`, can lift it with
+    `POST /v1/tfps/unban`, and TFPS's answer settles it.
+
 `503` means no action may run just now. Either:
 
 - sipnab cannot use the journal, or
-- actions a crash left unfinished are waiting for TFPS to answer for them.
+- actions are in doubt: sipnab stopped before TFPS answered for them, or
+  sipnab asked TFPS and could not read its answer. They wait for TFPS
+  to answer for them, or for an unban of their address.
 
 ---
 
@@ -8936,7 +8950,8 @@ That is the answer TFPS gave, not an error:
 Ask TFPS to release a source **sipnab banned**. Off by default, behind the
 same two locks, rules and limits as the ban.
 
-sipnab lifts only a ban it placed and still holds, as its journal records.
+sipnab lifts only a ban it placed and still holds, as its journal records,
+or one it asked for and holds in doubt.
 
 - A ban TFPS placed itself, or anyone else did, answers `409`. TFPS is not
   asked.
@@ -41988,9 +42003,20 @@ it:
 }
 ```
 
-`refusal` is `rate` (with `retry_after_secs`), `in_doubt` (actions a crash
-left unfinished are waiting for TFPS to answer for them), `journal` (sipnab
-cannot use the journal), or `tfps` (sipnab could not ask TFPS).
+`refusal` is `rate` (with `retry_after_secs`), `in_doubt`, `journal` (sipnab
+cannot use the journal), or `tfps`.
+
+- `in_doubt`: actions wait for TFPS to answer for them, or for an unban of
+  their address. Either sipnab stopped before TFPS answered, or TFPS was
+  asked and sipnab could not read its answer.
+- `tfps`: either sipnab could not ask TFPS, or it asked and could not read
+  the answer.
+  - In the second case TFPS may have acted. That covers a timeout, a
+    non-zero exit with no result, and an answer that is not the JSON TFPS
+    has given since [`e7ee57a`](https://github.com/sippulse/tfps/commit/e7ee57a).
+  - The journal then holds the ban in doubt, and the message says so.
+  - The caller who asked, or a token with the `admin` scope, can lift it
+    with `tfps_unban`, and TFPS's answer settles it.
 
 The tool is `readOnlyHint: false` and `destructiveHint: true`, so a host that
 confirms destructive calls asks before this one. `idempotentHint: true`,
@@ -42001,8 +42027,8 @@ because banning a banned source changes nothing.
 Ask TFPS to release a source **sipnab banned**. Off by default, behind the
 same enabling, rules and limits as `tfps_ban`.
 
-sipnab lifts only a ban it placed and still holds, as its journal records. A
-ban TFPS placed itself, or anyone else did, is an error result with `refusal`
+sipnab lifts only a ban it placed and still holds, as its journal records,
+or one it asked for and holds in doubt. A ban TFPS placed itself, or anyone else did, is an error result with `refusal`
 `not_owned`, and sipnab does not ask TFPS. A ban belongs to the caller that
 placed it: another caller gets `refusal` `not_yours`, and the message names
 the owner, unless its token holds the `admin` scope. Because an address rests for a
@@ -57484,6 +57510,19 @@ The `curl` commands from the same-machine section work unchanged.
   HTTP token has the `full` scope. Mint one with `--token-scope actions`.
 - **`/v1/tfps/dropped` answers `502`.** Expected: no TFPS build has `dropped`
   yet.
+- **A ban answers `502` with `answered something this sipnab cannot read`.**
+  - sipnab reads the JSON of
+    [`e7ee57a`](https://github.com/sippulse/tfps/commit/e7ee57a) and later,
+    where every time is epoch seconds. A `tfps_ctl` built from the draft of
+    that JSON gives `expires` as an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) date string instead, and sipnab
+    cannot read it.
+  - TFPS may still have applied the ban, so sipnab holds it in doubt.
+    `sipnab --journal-show` lists it, and no other action runs until it is
+    settled.
+  - Unban the address with the same token, or with a token with scope
+    `admin`. TFPS's answer settles it.
+  - Then build TFPS from master, as in the "Check that TFPS answers in JSON"
+    step.
 - **`installed: false`, and the reason says `tfps_ctl` was not found on
   `PATH`.**
   - The service runs without `--tfps-ctl`, and its `PATH` has no `tfps_ctl`.
