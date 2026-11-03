@@ -5692,7 +5692,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // its site mirror website/content/docs/mcp.md +1. Attributed per file
     // against origin/main ffd06bfb1: no other changed page gained or lost a
     // table.
-    const EXPECTED_TABLES: usize = 1303;
+    // 1303 -> 1305: docs/prometheus-sipnab.md +1, the scrape errors of
+    // "Scrape sipnab from another machine", and its site mirror
+    // website/content/docs/prometheus-sipnab.md +1. Attributed per file
+    // against origin/main ffd06bfb1: no other changed page gained or lost a
+    // table.
+    const EXPECTED_TABLES: usize = 1305;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

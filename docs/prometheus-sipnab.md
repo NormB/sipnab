@@ -39,6 +39,24 @@ On Debian 13, causing each fault under
 [When something does not work](#when-something-does-not-work) produced what
 it describes.
 
+On 2026-11-03 the steps ran again with sipnab 0.5.232 built from source, on
+Ubuntu 24.04.5 (aarch64, kernel 6.8.12), with Prometheus 3.15.0 and Grafana
+13.2.2 started as [Start Prometheus and Grafana](prometheus.md#start-prometheus-and-grafana)
+says. That run differed from the steps in two ways:
+
+- sipnab ran from the command line, capturing the loopback interface, rather
+  than under the package's systemd unit.
+- No SIP server ran. `tcpreplay` replayed [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap),
+  which holds one completed call, onto the loopback interface. The
+  query in [Place a call and watch sipnab count it](#place-a-call-and-watch-sipnab-count-it)
+  printed `1`, and the imported dashboard was **sipnab Overview**, with 7
+  panels.
+
+[Scrape sipnab from another machine](#scrape-sipnab-from-another-machine)
+ran the same day against the same Prometheus, with sipnab and Prometheus on
+one host and `server_name` set, because the certificate named
+`capture01.example.net`.
+
 The examples use `192.0.2.10` as the machine's address.
 
 ## Install sipnab
@@ -150,6 +168,82 @@ counted the same call in its own series:
 
 - OpenSIPS's `opensips_processed_dialogs`,
 - or Kamailio's `kamailio_core_rcv_requests_invite`.
+
+## Scrape sipnab from another machine
+
+The steps above keep sipnab's metrics on `127.0.0.1`. When Prometheus runs on
+another machine, open the port to it with a password, and serve it over HTTPS
+so the password does not cross the network in the clear. sipnab refuses a
+non-loopback `--metrics` bind that has no credential.
+
+What changes on each side:
+
+- **sipnab:** a credential file, a certificate and its key, and three flags.
+- **Prometheus:** a job with `scheme: https`, the CA that issued sipnab's
+  certificate, and the password.
+- **The firewall** between them: the metrics port, open to Prometheus's
+  address only.
+
+On the sipnab machine, write the credential as `user:password`, and give
+sipnab a certificate that names the host Prometheus connects to. sipnab drops
+its privileges after it opens the capture, so the service user must be able
+to read both files. Other users must not read the key:
+
+```bash
+# Run all of these, in order.
+P=$(openssl rand -hex 12)
+sudo sh -c "umask 077; printf 'prometheus:%s\n' '$P' > /etc/sipnab/metrics.auth"
+sudo chown sipnab: /etc/sipnab/metrics.auth /etc/sipnab/metrics.key
+sudo chmod 600 /etc/sipnab/metrics.key
+```
+
+`/etc/sipnab/metrics.pem` is the certificate chain, the server's certificate
+first, with `DNS:capture01.example.net` in its subject alternative names.
+Then change the drop-in's `--metrics` flag:
+
+```text
+--metrics 0.0.0.0:9091 --metrics-auth-file /etc/sipnab/metrics.auth \
+  --metrics-tls-cert /etc/sipnab/metrics.pem --metrics-tls-key /etc/sipnab/metrics.key
+```
+
+On the Prometheus machine, put the CA certificate and the password where the
+container reads them, and add the job:
+
+```yaml
+  - job_name: sipnab-tls
+    scheme: https
+    tls_config:
+      ca_file: /etc/prometheus/scrape/sipnab-ca.pem
+    basic_auth:
+      username: prometheus
+      password_file: /etc/prometheus/scrape/sipnab-metrics.password
+    static_configs:
+      - targets: ['capture01.example.net:9091']
+```
+
+The password file holds the password alone, with no `prometheus:` and no
+newline. When Prometheus reaches sipnab by an address the certificate does
+not name, add `server_name: capture01.example.net` under `tls_config`.
+
+**Verify.** The targets check from [Scrape sipnab](#scrape-sipnab) prints
+`sipnab-tls up`.
+
+**When it does not work.** Prometheus's targets page, or `lastError` in
+`/api/v1/targets`, says why:
+
+| `lastError` | Cause and fix |
+|---|---|
+| `server returned HTTP status 401 Unauthorized` | The password file does not match `metrics.auth`. Write the password alone, with no newline. |
+| `tls: failed to verify certificate: x509: certificate is valid for capture01.example.net, not <name>` | Prometheus connects by a name the certificate does not hold. Use that name in `targets`, or set `server_name`. |
+| `connection refused` | sipnab is not listening there: check the drop-in's `--metrics` address and `systemctl is-active sipnab`. |
+
+sipnab itself stops at startup, naming the file, when:
+
+- it cannot read the credential file after dropping privileges, for example
+  `metrics auth: --metrics-auth-file '/etc/sipnab/metrics.auth': Permission denied (os error 13)`.
+  Make the file the service user's, as above.
+- other users can read the key, or the key does not match the certificate.
+  [Metrics TLS](prometheus-metrics.md#metrics-tls) lists every refusal.
 
 ## With OpenSIPS and Kamailio on one machine
 
