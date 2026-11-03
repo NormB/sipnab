@@ -58,7 +58,7 @@ sketched — the one divergence from the
 plan, and it is the plan's own scoring that produced it.
 
 The `identifier_match` column is assigned in one place, the exhaustive match at
-[`server.rs:4475`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4475), which carries a comment saying the
+[`server.rs:4427`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4427), which carries a comment saying the
 absence of a catch-all is deliberate so that *"a new strategy is a COMPILE ERROR
 here rather than something that quietly reports as 'unknown, not an identifier'"*.
 That is the single most useful fact for this proposal: adding an eighth reason
@@ -300,7 +300,7 @@ settled before anyone writes code, which is section 9's condition.
 ## 4. Ranking, and whether it is `identifier_match: true`
 
 **Yes, `identifier_match: true`, for both proposed reasons.** The field's
-meaning is documented at [`server.rs:4501`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4501) and in
+meaning is documented at [`server.rs:4453`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4453) and in
 [`mcp.md:1268`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L1268) as *identifiers were compared* versus *this was a
 guess*. An icid comparison compares an opaque value that RFC 7315 requires to be
 globally unique. It is not a guess from timing or endpoint overlap, and
@@ -370,7 +370,7 @@ router name in disguise.
 
 **The good news is that the existing surface already does the right thing and
 needs no new discipline.** `find_correlated`'s response
-([`server.rs:8878`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8878)) returns, per leg, `call_id`,
+([`server.rs:8831`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8831)) returns, per leg, `call_id`,
 `score`, `strategy`, `identifier_match` and `observed_gap_ms` — and never the
 matched identifier. `session_id` matches today without the `Session-ID` value
 ever reaching a client. **A sixth strategy that reports only its name inherits
@@ -415,7 +415,7 @@ The shape, by file:
 | [`src/sip/charging_vector.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/charging_vector.rs) (new) | Parse the header value into its parameters. Sibling of [`session_id.rs`](../../src/sip/session_id.rs) and of [`SdpOriginKey`](../../src/sip/sdp.rs) at [`sdp.rs:149`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L149), both of which model an identifier as a small owned struct with a `parse` returning `Option` |
 | [`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43) | Two new `CorrelationReason` variants, each with the doc comment explaining its survival properties that the existing five carry |
 | [`dialog_store.rs:1034-1058`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1034-L1058) | Two new candidate blocks between `sdp_origin` and `via_branch`, following the established pattern: hoist the source dialog's values into a `HashSet` once before the candidate loop (as `src_origins` does at [`:964`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L964)), parse the candidate side lazily inside the loop |
-| [`server.rs:4501`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4501) | Two new arms. **This is a compile error until written**, by design |
+| [`server.rs:4453`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4453) | Two new arms. **This is a compile error until written**, by design |
 | [`mcp.md:1264`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L1264), [`mcp-deploy.md:824`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L824), [`domain-primer.md:202`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L202) | Strategy tables and the "correlates legs five ways" sentence |
 
 Three code-level facts that a naive implementation would get wrong:

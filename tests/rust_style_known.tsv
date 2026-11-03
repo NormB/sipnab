@@ -120,7 +120,7 @@ AssertWithoutMessage	src/mcp/load.rs	2
 AssertWithoutMessage	src/mcp/metrics.rs	5
 AssertWithoutMessage	src/mcp/progress.rs	2
 AssertWithoutMessage	src/mcp/prompts.rs	3
-AssertWithoutMessage	src/mcp/sampling.rs	7
+AssertWithoutMessage	src/mcp/sampling.rs	1
 AssertWithoutMessage	src/mcp/schema.rs	24
 AssertWithoutMessage	src/mcp/server.rs	310
 AssertWithoutMessage	src/mcp/shape.rs	31

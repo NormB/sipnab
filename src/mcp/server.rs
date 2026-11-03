@@ -301,13 +301,6 @@ pub struct SipnabMcp {
     /// what lets `tools/list` stay small without the shapes becoming
     /// unreachable.
     output_schemas: Arc<std::collections::BTreeMap<String, Arc<rmcp::model::JsonObject>>>,
-    /// Governs whether sipnab may ask the client's model to narrate an
-    /// observation. Disabled unless the operator sets a budget.
-    ///
-    /// Shared across clones on purpose. `SipnabMcp` is `Clone`, and a budget
-    /// that copied with it would reset every time the server was cloned --
-    /// an hourly ceiling anything can reset is not a ceiling.
-    sampling: Arc<parking_lot::Mutex<super::sampling::Governor>>,
     /// The HEP authentication posture this run was started with, when one was.
     hep_auth_mode: Option<crate::cli::HepAuthMode>,
     /// The append-only file every tool call is recorded to, or `None` when the
@@ -448,9 +441,6 @@ impl SipnabMcp {
             // block, so a batch of additions all edited the same region; a
             // group in its own file merges here instead, and this line is the
             // only one they share.
-            sampling: Arc::new(parking_lot::Mutex::new(
-                super::sampling::Governor::disabled(),
-            )),
             audit_sink: None,
             hep_auth_mode: None,
             subscriptions: super::subscribe::Subscriptions::new(),
@@ -944,51 +934,6 @@ impl SipnabMcp {
     pub fn with_file_root(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
         self.file_root = Some(dir.into());
         self
-    }
-
-    /// Enable sampling with an hourly request budget.
-    ///
-    /// Without this the governor refuses every request as `Disabled`, which is
-    /// the default and the honest one: client support for sampling is thin, so
-    /// nothing in sipnab may depend on a narration arriving.
-    #[must_use]
-    pub fn with_sampling_budget(mut self, per_hour: u32) -> Self {
-        self.sampling = Arc::new(parking_lot::Mutex::new(
-            super::sampling::Governor::disabled().with_budget(per_hour),
-        ));
-        self
-    }
-
-    /// Record that the peer advertised the sampling capability.
-    ///
-    /// No longer test-only. `on_initialized` reads the capability out of the
-    /// handshake and calls the same setter, so this is the construction-time
-    /// spelling of a thing the live path now does for itself. It was named
-    /// `with_client_sampling_for_test` while nothing negotiated it, because a
-    /// builder that looked general-purpose would have implied otherwise.
-    ///
-    /// Mutates in place rather than rebuilding: the governor is shared behind
-    /// an `Arc<Mutex<..>>` across every clone rmcp makes per connection, and a
-    /// rebuild would drop the spend and dedupe state.
-    #[must_use]
-    pub fn with_client_sampling(self, advertised: bool) -> Self {
-        self.sampling.lock().set_client_sampling(advertised);
-        self
-    }
-
-    /// Whether a sampling request for `signature` may go out now.
-    ///
-    /// Exposed so a caller narrating an alert asks the governor rather than
-    /// keeping its own budget -- two budgets is two things to get wrong, and
-    /// the one that drifts is the one nobody reads.
-    ///
-    /// # Errors
-    ///
-    /// The [`Refusal`](super::sampling::Refusal) that applied.
-    pub fn may_sample(&self, signature: &str) -> Result<(), super::sampling::Refusal> {
-        self.sampling
-            .lock()
-            .allow(signature, std::time::Instant::now())
     }
 
     /// What a relay assertion delivered over a capture path was worth.
@@ -10009,48 +9954,6 @@ fn audit_args(arguments: Option<&rmcp::model::JsonObject>) -> String {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SipnabMcp {
-    /// Read what the peer advertised at `initialize`.
-    ///
-    /// The client's capabilities exist only after the handshake, which is why
-    /// this is the one place that can know them. It retires a setter that was
-    /// named `with_client_sampling_for_test` precisely because nothing
-    /// negotiated it.
-    ///
-    /// # What deliberately does NOT happen here
-    ///
-    /// The live narration loop is not armed, and will not be.
-    /// [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577)
-    /// deprecates MCP sampling: in `rmcp` 3.1.4 `CreateMessageRequestParams`,
-    /// `SamplingMessage` and `Peer::create_message` all carry
-    /// `#[deprecated(..., note = "will be removed in a future release")]`, so a
-    /// send path cannot compile under this project's
-    /// `cargo clippy -- -D warnings` without an `#[allow(deprecated)]` over it.
-    ///
-    /// Building a loop onto a protocol feature with a scheduled removal buys a
-    /// maintenance burden and a migration. The governor, its budget, its dedupe
-    /// and — the part worth keeping — the injection hardening in
-    /// [`super::sampling`] stay: a preamble stating every value is untrusted
-    /// observation, only named fields, control characters removed, clamped on a
-    /// character boundary. None of that is sampling-specific. It is how this
-    /// codebase forwards attacker-written capture text to any model, and the
-    /// next surface that needs it will not have to invent it again.
-    ///
-    /// The capability is still read and still recorded, so `may_sample` gives a
-    /// truthful answer to anything that asks.
-    async fn on_initialized(&self, context: rmcp::service::NotificationContext<rmcp::RoleServer>) {
-        let advertised = context
-            .peer
-            .peer_info()
-            .is_some_and(|i| i.capabilities.sampling.is_some());
-        self.sampling.lock().set_client_sampling(advertised);
-        tracing::debug!(
-            target: "sipnab::mcp",
-            client_can_sample = advertised,
-            budget_per_hour = ?self.sampling.lock().budget_per_hour(),
-            "sampling capability negotiated"
-        );
-    }
-
     /// The workflows this server suggests, and the order inside each.
     async fn list_prompts(
         &self,

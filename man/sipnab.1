@@ -832,7 +832,7 @@ Directory the MCP file tools may read from and write to.
 Mebibytes of raw frames to retain so a LIVE pointer can be followed.
 .TP
 \fB\-\-mcp\-sampling\-budget\fR \fIPER_HOUR\fR
-Requests per hour sipnab may ask the CLIENT's model to narrate.
+Deprecated, and has no effect: sipnab never sends an MCP sampling request. Still accepted, so a command line that carries it keeps working; the run warns at startup.
 .TP
 \fB\-\-mcp\-allow\-shutdown\fR
 Allow the \fBshutdown_server\fR MCP tool to stop this process.

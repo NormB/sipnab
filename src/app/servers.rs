@@ -885,10 +885,6 @@ pub fn start_servers(
             let s = s.with_vcon_spools(selection.vcon_spools.clone());
             #[cfg(feature = "vcon")]
             let s = s.with_vcon_fetch(mcp_vcon_fetch.clone());
-            let s = match cli.mcp_args.mcp_sampling_budget {
-                Some(per_hour) => s.with_sampling_budget(per_hour),
-                None => s,
-            };
             // What a relay's HEP assertion is worth on this run. Without it
             // every run reported `port-gated-only`, `--hep-auth-mode hmac`
             // included.

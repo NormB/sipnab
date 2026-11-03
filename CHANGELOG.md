@@ -22,6 +22,13 @@ entry that carries them.
 ### Changed
 
 - **The cookbook's relay recipes run as written.** They captured an interface without `sudo`, showed no output, and the recipe "Ask a relay what it is still holding" read `created` and `destroyed` counters rtpengine 12.5.1 does not publish. That recipe now uses `--relay-holdings` and the session counters the relay reports.
+### Deprecated
+
+- **`--mcp-sampling-budget` has no effect, and now says so.** Its help and the CLI reference said sipnab would ask the connected client's model to narrate alerts, within an hourly budget. sipnab never sent such a request: the loop that would have sent it was never armed, because [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577) (merged 2026-05-15) deprecates MCP sampling and `rmcp` marks `Peer::create_message` and the sampling request types deprecated, for removal. The flag set a budget on a governor that nothing consulted. The flag is still accepted, so a command line that carries it keeps working; the run now warns at startup that it has no effect, and its help and the CLI reference say the same. No value of it, `0` included, sends any observation to a model. A later release removes it.
+
+### Removed
+
+- **Library (breaking): the MCP sampling governor.** `SipnabMcp::with_sampling_budget`, `SipnabMcp::with_client_sampling`, `SipnabMcp::may_sample`, `mcp::sampling::Governor` and `mcp::sampling::Refusal` are gone, with the handshake hook that recorded whether the client advertised sampling. Nothing outside their tests called them. `mcp::sampling::sanitize`, `render` and `UNTRUSTED_PREAMBLE`, the hardening for forwarding capture text to a model, stay.
 
 ### Fixed
 

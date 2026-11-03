@@ -608,9 +608,7 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     refuse_cores_without_their_outputs(cli, config);
     warn_degraded_run_shape(cli, config);
-    for msg in cli.inert_key_warnings(config) {
-        tracing::warn!("{msg}");
-    }
+    warn_settings_with_no_effect(cli, config);
     warn_vcon_rules(&vcon_rules);
 
     let mode = select_run_mode(cli);
@@ -5862,6 +5860,19 @@ fn warn_live_rtp(
         {
             tracing::warn!("{notice}");
         }
+    }
+}
+
+/// Log, once at startup, each setting this run accepts and does nothing
+/// with: a config-file key for a HEP side the run does not start, and a
+/// deprecated flag.
+fn warn_settings_with_no_effect(cli: &Cli, config: &Config) {
+    for msg in cli
+        .inert_key_warnings(config)
+        .into_iter()
+        .chain(cli.deprecated_flag_warnings())
+    {
+        tracing::warn!("{msg}");
     }
 }
 

@@ -78,18 +78,18 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:2854`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2854)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:2852`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2852)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
-- **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface
+- **Auto-detection.** [`src/app/bootstrap.rs:878`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L878) substitutes a default interface
   when the plan produced `None`.
-- **Channel shape.** [`src/app/bootstrap.rs:926`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L926) picks a batched channel for
+- **Channel shape.** [`src/app/bootstrap.rs:924`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L924) picks a batched channel for
   `File` and a per-packet channel for everything else, because a live source's
   packets have to become visible the moment they arrive.
 - **Transmit permission.** `TransmitPermit::for_source`
   ([`src/security/transmit_guard.rs:88`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L88)) grants or refuses the scanner-kill path
   from the source *variant*: `Live` and `Hep` yes, `File` and `Uprobe` no.
-- **Thread spawn.** [`src/app/bootstrap.rs:936`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L936) branches to
+- **Thread spawn.** [`src/app/bootstrap.rs:934`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L934) branches to
   `start_multi_capture` for `--multi-device`, otherwise `start_capture`
   ([`src/capture/native.rs:471`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L471)), which matches the variant and spawns one named
   thread per arm.
@@ -432,8 +432,8 @@ work; until it exists, this feature should not claim that a quiet HEP source
 means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
-([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:6856`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6856)) already names both reasons a
+([`src/app/bootstrap.rs:685`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L685)), so it never sees a live or HEP source. The existing
+`cores_ignored_warning` ([`src/app/bootstrap.rs:6867`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6867)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -488,7 +488,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
   ([`src/capture/parse.rs:84`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L84) onward). Combining is coherent in principle and buys
   nothing over `-d` plus `--keylog`; leave it refused until someone asks.
 - **`--multi-device` with `-L`.** `--multi-device` reinterprets the `-d` string as
-  a comma-separated list ([`src/app/bootstrap.rs:936`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L936)). Composing a list with a
+  a comma-separated list ([`src/app/bootstrap.rs:934`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L934)). Composing a list with a
   HEP member is reasonable and should wait for stage three.
 - **`-O` with a composite.** See [section 5.2, "What breaks"](#52-what-breaks).
 - **`--cores > 1`.** Already warned, offline-only, no change.
@@ -496,8 +496,8 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 ### 6.3 What the operator gets told
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
-message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:6856`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6856)), `-I` beating `-d` warns
+message ([`src/app/bootstrap.rs:627-653`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L627-L653)), `--cores` on a live source warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:6867`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6867)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a
