@@ -255,7 +255,7 @@ s2.<base64url(payload)>.<base64url(HMAC-SHA256)>
 ```
 
 - `payload` is compact JSON
-  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>","scope":"<metrics|read|actions|audio>"}`.
+  `{"id":"<jti>","exp":<unix_seconds>,"aud":"<api|mcp>","scope":"<metrics|read|actions|admin|audio>"}`.
 - The signature is `HMAC-SHA256(signing_key, "s2." + base64url(payload))`.
 - base64url is URL-safe, no padding.
 

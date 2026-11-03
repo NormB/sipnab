@@ -1551,7 +1551,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // cli-reference.md +1 (the `--hep-listen` row) and config-reference.md +1
     // (the `th_callid_secret_file` row). Counted per page against origin/main
     // e019a2d55: every other changed page held its count.
-    const EXPECTED_WIKI_LINKS: usize = 2020;
+    // 2020 -> 2027 (REST and authentication how-to steps): docs/README.md +2,
+    // the How-to entry for the REST API and API TLS; docs/rest-api.md +3, the
+    // failure table linking the Host, auth and limits sections; and
+    // docs/tfps-sipnab.md +2, linking its own "Tested on" and "Check that
+    // TFPS answers in JSON". Counted per page against origin/main ffd06bfb1;
+    // every other page held its count.
+    const EXPECTED_WIKI_LINKS: usize = 2027;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

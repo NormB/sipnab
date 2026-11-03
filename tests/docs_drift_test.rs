@@ -5673,7 +5673,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // its site mirror website/content/docs/opensips-sipnab.md +2. Attributed
     // per file against origin/main e019a2d55: no other changed page gained or lost
     // a table.
-    const EXPECTED_TABLES: usize = 1291;
+    // 1291 -> 1293: docs/rest-api.md +1, the "When it does not answer" table
+    // of the getting-started steps, and its site mirror
+    // website/content/docs/api.md +1. Attributed per file against
+    // origin/main ffd06bfb1: no other changed page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1293;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

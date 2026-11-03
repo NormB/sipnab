@@ -75,6 +75,11 @@ Each answers one "how do I" question and assumes you already know what you want.
 - **[Run MCP across an estate](mcp-estate.md)**: several SIP servers feeding
   one capture host, agents outside the network, and one call followed across
   an SBC, a proxy and a PBX.
+- **[Query sipnab over the REST API](rest-api.md#getting-started)**: start
+  the API with a key, check that it answers, and read what each refusal
+  means. [API TLS](rest-api.md#api-tls) serves it over HTTPS, and
+  [Call the REST API from code](https://sipnab.com/docs/api-clients/) has
+  clients in Python, TypeScript, Rust and Go, and curl one-liners.
 - **[Set up authentication](auth.md)**: signed bearer tokens for the API and
   MCP, with lifetimes, key rotation and revocation.
 - **[Export a call as a vCon](vcon.md)**: write one observed dialog as a
