@@ -1889,6 +1889,9 @@ apart:
 ### POST /v1/persistence
 
 Stop writing content, or start again up to what the command line allowed.
+[Stop writing containers partway through a run](@/docs/vcon.md#stop-writing-containers-partway-through-a-run)
+walks through it on a live run, and says what happens to the calls that end
+while writing is off.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \

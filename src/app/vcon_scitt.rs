@@ -19,7 +19,8 @@
 //! the statement follows the drafts that do define one:
 //!
 //! - [draft-ietf-scitt-architecture-22 section 6](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6):
-//!   a COSE_Sign1 whose protected header carries the CWT Claims (label 15)
+//!   a COSE_Sign1 whose protected header carries the CWT Claims (label 15, the
+//!   value [RFC 9597](https://www.rfc-editor.org/rfc/rfc9597.html) registers)
 //!   with `iss` and `sub`, and, with X.509, `x5chain` (33). `iss` is a URI.
 //! - [draft-ietf-scitt-scrapi-11 section 2.3](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-scrapi-11#section-2.3):
 //!   POSTed to `/entries` as `application/cose`, answered by `201` with the

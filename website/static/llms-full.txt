@@ -5154,7 +5154,19 @@ To check the containers later, save the lines and verify them from inside the ex
 
 **Problem:** A conserver refuses a container. It reports the refusal to whoever POSTed it, never to whoever built it.
 
-Run sipnab as an MCP server over the capture. Ask `validate_vcon` before you hand anything to a store:
+Check a container file at the shell. The exit status is the verdict: `0` valid, `3` invalid, `1` not checked:
+
+```bash
+sipnab --vcon-validate tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json
+```
+
+```text
+tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json: valid against https://ietf.org/vcon/schemas/unsigned-vcon.json
+```
+
+[Check a container before a store gets it](vcon.md#check-a-container-before-a-store-gets-it) shows an invalid one and what each finding says.
+
+An agent asks the same question over MCP. Run sipnab as an MCP server over the capture, and ask `validate_vcon` before you hand anything to a store:
 
 ```bash
 sipnab -N --mcp -I capture.pcap --quiet
@@ -8363,6 +8375,9 @@ apart:
 ### POST /v1/persistence
 
 Stop writing content, or start again up to what the command line allowed.
+[Stop writing containers partway through a run](vcon.md#stop-writing-containers-partway-through-a-run)
+walks through it on a live run, and says what happens to the calls that end
+while writing is off.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \
@@ -47340,7 +47355,9 @@ export writes the same bytes. Pick the one that suits you:
 | At a shell, wanting it on stdout | `sipnab -N -I call.pcap --export-vcon 'CALL-ID'` | the container on stdout |
 | An agent holding an MCP session, one call | the `export_vcon` tool, with `call_id` | one container, its SHA-256, and what the capture missed |
 | An agent holding an MCP session, a set | the `export_vcon` tool, with `filter` | one entry per matching dialog, bounded by `--mcp-max-rows` |
+| At a shell, checking a container file before a store gets it | `sipnab --vcon-validate out.json` | the verdict and every finding, and exit `0` (valid) or `3` (invalid) |
 | An agent checking a container before sending it | the `validate_vcon` tool | a verdict against the working group's draft-ietf-vcon-vcon-core-04 schema, with every finding named |
+| A program checking a container it holds | `POST /v1/vcon/validate` | the same verdict as JSON |
 | A program over HTTP | `GET /v1/dialogs/{call_id}/vcon` | `200` and the container, or `404` |
 | Rust, in-process | `sipnab::output::vcon::export_dialog` | a `Vcon` value |
 
@@ -47380,6 +47397,71 @@ container when that call ends.
 
 The TUI has no export key. Its help screen names the REST route and the
 feature flag: use one of the ways in the table above.
+
+### Check a container before a store gets it
+
+A store that refuses a container tells whoever sent it, not whoever built it.
+Check the file first. `--vcon-validate` reads one container file, checks it
+against the draft-ietf-vcon-vcon-core-04 schema sipnab ships, and exits. It
+needs no capture, so give no `-I`:
+
+```sh
+sipnab --vcon-validate tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json
+```
+
+```text
+tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json: valid against https://ietf.org/vcon/schemas/unsigned-vcon.json
+```
+
+A container that breaks the schema prints one row per finding, with the JSON
+Pointer to the value, the schema keyword that refused it, and why. This one
+names its parties on a `transfer` Dialog Object, which core-04 forbids
+([section 4.3.4](https://datatracker.ietf.org/doc/html/draft-ietf-vcon-vcon-core-04#section-4.3.4)),
+and carries an old `vcon` version:
+
+```sh
+# Run all of these, in order.
+printf '{"vcon":"0.0.2","uuid":"018f3a2b-4c5d-8e6f-9012-3456789abcde","created_at":"2026-09-01T12:00:00Z","parties":[{"tel":"+12025550100"},{"tel":"+12025550101"}],"dialog":[{"type":"transfer","parties":[0,1]}]}\n' > rejected.vcon.json
+sipnab --vcon-validate rejected.vcon.json
+echo "exit $?"
+```
+
+```text
+rejected.vcon.json: invalid: 2 findings against https://ietf.org/vcon/schemas/unsigned-vcon.json
+Path       Keyword  Detail
+--------------------------------------------------------------------
+/dialog/0  not      carries `parties`, which the schema forbids here
+/vcon      const    expected `"0.4.0"`, found `"0.0.2"`
+exit 3
+```
+
+The exit status is the verdict, so a script or a CI step can stop on it:
+
+| Exit | Meaning |
+|---|---|
+| `0` | The container is valid. |
+| `3` | The container is invalid. sipnab prints every finding. |
+| `1` | sipnab could not check it: the file is missing, is not JSON, is JSON but not an object, or a `critical` extension forbids reading it. The message names the file, for example `--vcon-validate missing.vcon.json: No such file or directory (os error 2)`. |
+
+Add `--json` for the answer `POST /v1/vcon/validate` gives:
+
+```json
+{"schema_version":2,"verdict":"invalid","schema_id":"https://ietf.org/vcon/schemas/unsigned-vcon.json","schema_path":"tests/schemas/vcon.schema.json","errors":[{"instance_path":"/dialog/0","keyword":"not","detail":"carries `parties`, which the schema forbids here"},{"instance_path":"/vcon","keyword":"const","detail":"expected `\"0.4.0\"`, found `\"0.0.2\"`"}]}
+```
+
+- For a signed, encrypted or gzip container, sipnab checks the unsigned vCon inside.
+- A binary without the `vcon` feature refuses the flag:
+  `--vcon-validate requires the 'vcon' feature (not compiled in)`. Every
+  release package carries the feature.
+- To check a whole spool before delivery, loop over it and stop at the first
+  container that is not valid:
+
+  ```sh
+  for f in spool/*.vcon.json; do sipnab --vcon-validate "$f" >/dev/null || { echo "invalid: $f"; break; }; done
+  ```
+
+  With one valid and one invalid container in `spool`, it prints
+  `invalid: spool/b.vcon.json`.
 
 Read on for what the container means once you hold one.
 
@@ -47979,6 +48061,113 @@ A [`[[vcon.enrich]]`](#enrich-a-call-before-it-is-written) service on the same
 rule can return, at the call's end, what a transcriber produces during the call.
 So the transcript is in the call's container.
 
+> **Known defect.** In sipnab 0.5.232 a run that writes through `[[vcon.rule]]`
+> and serves `--api` writes no container for its rules: the live audio is
+> served, and the rule's `dir` stays empty. `GET /v1/persistence` on such a run
+> answers `{"authorized":false,"enabled":false}`. A fix is in progress. Until
+> it lands, add `--export-vcon-when` with the rule's filter and a directory of
+> its own, as the run below does. The rule then writes its containers, and
+> the flag writes a second copy into its own directory.
+
+**Try it on one machine.** This listens on the loopback interface and replays
+a capture onto it, so it needs root for the capture and for `tcpreplay`. The
+client needs Python 3 and the `websockets` package (`pip install websockets`).
+
+Write the rule and the directories. sipnab drops to the `nobody` user after it
+opens the capture, so the directories must be writable by that user:
+
+```sh
+# Run all of these, in order.
+printf '[[vcon.rule]]\nname = "support"\nwhen = "method == %s"\ndir = "support"\naudio = "inline"\nlive_audio = true\n' "'INVITE'" > sipnab.toml
+mkdir -m 777 support extra
+sudo sipnab -N --no-cli-print -d lo --config sipnab.toml \
+  --export-vcon-when "method == 'INVITE'" --export-vcon-dir extra \
+  --api 127.0.0.1:18080 &
+SIPNAB_PID=$!
+```
+
+Save this client as `listen.py`. It waits for each call on
+`/v1/calls/live/events` and opens that call's audio socket, then prints what
+the socket sends and how many samples arrived per stream:
+
+```python
+import asyncio, json, urllib.request
+import websockets
+
+BASE = "127.0.0.1:18080"
+
+async def hear(call_id, audio_path):
+    samples = {}
+    async with websockets.connect(f"ws://{BASE}{audio_path}") as ws:
+        async for msg in ws:
+            if isinstance(msg, bytes):
+                samples[msg[0]] = samples.get(msg[0], 0) + (len(msg) - 1) // 2
+            else:
+                print(call_id, msg, flush=True)
+    for stream, n in sorted(samples.items()):
+        print(call_id, f"stream {stream}: {n} samples", flush=True)
+
+async def main():
+    events = urllib.request.urlopen(f"http://{BASE}/v1/calls/live/events")
+    tasks = []
+    while True:
+        line = (await asyncio.to_thread(events.readline)).decode().strip()
+        if line.startswith("data: "):
+            call = json.loads(line[6:])
+            print("call", call["call_id"], call["state"], flush=True)
+            tasks.append(asyncio.create_task(hear(call["call_id"], call["audio"])))
+
+asyncio.run(main())
+```
+
+Start it, then replay sipnab's two-call sample capture onto the loopback
+interface:
+
+```sh
+# Run all of these, in order.
+python3 listen.py &
+LISTEN_PID=$!
+sudo tcpreplay -q -i lo tests/pcap-samples/sip-rtp-g711.pcap
+```
+
+**Verify.** The client printed, as the replay ran:
+
+```text
+call 1-1966@10.0.2.20 InCall
+1-1966@10.0.2.20 {"codec":"PCMU","dst":"10.0.2.20:6000","format":"s16le","rate":8000,"src":"10.0.2.15:27942","ssrc":"0x343DA99B","stream":0,"type":"stream"}
+1-1966@10.0.2.20 {"reason":"the call ended","type":"end"}
+1-1966@10.0.2.20 stream 0: 68000 samples
+call 1-1968@10.0.2.20 InCall
+1-1968@10.0.2.20 {"codec":"PCMA","dst":"10.0.2.20:6000","format":"s16le","rate":8000,"src":"10.0.2.15:28102","ssrc":"0x343FFA34","stream":0,"type":"stream"}
+```
+
+- 68000 samples at 8000 per second is 8.5 seconds of the first call's audio.
+- The second call has no `end`: the capture stops before it hangs up.
+- About ten seconds after the first call ended, `support` and `extra` each
+  held its container, `1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json`.
+
+Stop both by the process IDs the commands recorded: `kill -INT "$SIPNAB_PID"` and `kill "$LISTEN_PID"`. `sudo` passes the interrupt on to sipnab, which stops the capture and exits.
+
+**When it does not work.**
+
+- `GET /v1/calls/live` answers `404` with `No [[vcon.rule]] has live_audio =
+  true, so this server serves no live call audio.`: the config file has no
+  such rule, or `--config` is missing.
+- `401` on `/v1/calls/live` from a server with a signing key: the token is
+  not an `audio` token. A `full` token gets `401` here. Mint one with
+  `sipnab --mint-token --token-scope audio`.
+- The run stops with this message. Make the directory writable by that user,
+  or run with `--user`:
+
+  ```text
+  Could not create the vCon directory 'extra': Permission denied (os error 13). sipnab dropped privileges to user 'nobody' before opening output; make the directory writable by that user (e.g. install -d -o nobody <dir>), pass --user <name> for a user that can write there, or --no-priv-drop.
+  ```
+
+- The client connects and no call appears: nothing on the capture
+  interface matched the rule's `when`, or the capture saw no SIP. Run the
+  same capture with `--report` and check the call is there.
+- The rule's `dir` stays empty while audio arrives: the known defect above.
+
 ### Send a call's audio as RTP
 
 A rule with `live_rtp` sends the audio of the calls it matches, as sipnab
@@ -48102,6 +48291,84 @@ Run `sipnab g729 install` to make that leg send audio.
 - A `live_rtp` rule turns audio retention on, as `live_audio` does.
 - `live_rtp` runs in a headless run (`-N`). A `--cores` run and the terminal
   UI send nothing, and say so at startup.
+
+**Try it.** Nothing else needs to change: no SIP server, relay or firewall
+setting takes part while the address is on loopback. The receiver below is a
+short Python program, with no package beyond the standard library. It binds
+the rule's address, prints each control message, and writes each leg to a WAV
+file named by the leg's SSRC. Save it as `receive.py`:
+
+```python
+import array, json, socket, struct, wave
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(("127.0.0.1", 40000))
+legs, calls = {}, set()
+while True:
+    data, _ = sock.recvfrom(65535)
+    if data[:1] == b"{":
+        msg = json.loads(data)
+        print(msg["type"], msg["call_id"], *([msg["reason"]] if "reason" in msg else []), flush=True)
+        if msg["type"] == "start":
+            calls.add(msg["call_id"])
+        elif msg["type"] == "stop":
+            calls.discard(msg["call_id"])
+            if not calls:
+                break
+        continue
+    ssrc = struct.unpack("!I", data[8:12])[0]
+    if ssrc not in legs:
+        legs[ssrc] = wave.open(f"leg-{ssrc:08x}.wav", "wb")
+        legs[ssrc].setnchannels(1)
+        legs[ssrc].setsampwidth(2)
+        legs[ssrc].setframerate(16000)
+    samples = array.array("h", data[12:])
+    samples.byteswap()  # L16 is big-endian on the wire, WAV little-endian
+    legs[ssrc].writeframes(samples.tobytes())
+for ssrc, w in legs.items():
+    print(f"leg {ssrc:08x}: {w.getnframes()} samples", flush=True)
+    w.close()
+```
+
+Write a rule for the sample capture's calls, start the receiver, and read the
+capture. A file read sends at up to ten times real time:
+
+```sh
+# Run all of these, in order.
+printf '[[vcon.rule]]\nname = "rtp"\nwhen = "method == %s"\ndir = "rtp-out"\nlive_rtp = "127.0.0.1:40000"\n' "'INVITE'" > sipnab.toml
+python3 receive.py &
+sleep 1
+sipnab -N --no-cli-print --quiet --config sipnab.toml -I tests/pcap-samples/sip-rtp-g711.pcap 2>/dev/null
+wait
+```
+
+The receiver printed:
+
+```text
+start 1-1966@10.0.2.20
+start 1-1968@10.0.2.20
+stop 1-1968@10.0.2.20 the capture ended
+stop 1-1966@10.0.2.20 the call ended
+leg 2492b185: 136000 samples
+leg 9c456a82: 132480 samples
+```
+
+- 136000 samples at 16000 a second is the first call's 8.5 seconds.
+- The second call is still up when the capture ends, so its `stop` says
+  `the capture ended`.
+- The SSRCs are new on every run.
+- `ffmpeg -i leg-2492b185.wav -af volumedetect -f null -` reported a mean
+  volume of -31.7 dB: the file holds the call's audio, not silence.
+
+**When it does not work.**
+
+- The receiver prints nothing: the rule matched no call, or the address in
+  `live_rtp` is not the one the receiver binds. A rule's `when` that matches
+  nothing writes no container either, so `rtp-out` stays empty too.
+- `start` and `stop` arrive and no RTP: each leg in the `start` says
+  `skipped` or `withheld`, with its `reason`, as in the G.729 example above.
+- `OSError: [Errno 98] Address already in use` from the receiver: another
+  program holds the port. Pick another and change `live_rtp` to match.
 
 ### Follow a call while it is in progress
 
@@ -48465,6 +48732,27 @@ HTTPS URL in `x5u`.
     `--vcon-signer-ca` and `--vcon-signer-sha256` then check that chain, as
     they check an `x5c`.
 
+**Publish the chain, and check it.** sipnab writes the URL and serves nothing
+there. Copy the PEM chain that `sign_cert` names to the HTTPS server, at the
+path in `sign_cert_url`, and fetch it back the way a reader does:
+
+```sh
+curl -s --cacert ca.pem https://127.0.0.1:18443/pki/vcon-signing.pem | cmp - vcon-signing.crt && echo served
+```
+
+On 2026-11-03 this ran against the Python HTTPS server shown under
+[Fetch the audio a vCon names](#fetch-the-audio-a-vcon-names), with
+`sign_cert_url = "https://127.0.0.1:18443/pki/vcon-signing.pem"` and a private
+CA in `ca.pem`. sipnab writes `x5u` and `x5c` in the signature's unprotected
+`header`. A container from that rule, with its `x5c` removed to stand for
+another producer's, read this way:
+
+| Reader | Result |
+|---|---|
+| `sipnab -N -I x5u-only.vcon.json --json-dialogs` | Refused, exit `1`: the message says the signature names its certificate by `x5u` and carries no `x5c`, and to give `--vcon-x5u-ca <FILE\|system>` |
+| the same with `--vcon-x5u-ca ca.pem` | Read: `{"call_id":"1-1966@10.0.2.20","msg_count":6,"input_origin":"vcon"}`, exit `0` |
+| the same with `--vcon-x5u-ca system` | Refused: `x5u "https://127.0.0.1:18443/pki/vcon-signing.pem": sending: invalid peer certificate: UnknownIssuer`, exit `1`, because the host's CA bundle does not hold the private CA |
+
 ### Re-sign for a long-term archive
 
 A signing certificate expires in a few years, and an archive may keep a vCon
@@ -48552,6 +48840,46 @@ sipnab --vcon-audio-fetch spool/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json -
 
 An unencrypted rule's WAV goes through the same steps, without the
 decryption.
+
+**Publish the audio where the `url` points.** sipnab writes the audio file
+and serves nothing. Whatever serves `audio_url_base` over HTTPS must hold
+each file under its own name. Copying the `.wav` files from the rule's `dir`
+into the web server's directory for that path is enough. Any HTTPS server
+does. On 2026-11-03 this ran with a rule whose `audio_url_base` was
+`https://127.0.0.1:18443/audio/`, a private CA in `ca.pem`, and this Python
+standard-library server, saved as `serve.py`, which serves the `www` directory:
+
+```python
+import functools, http.server
+from ssl import PROTOCOL_TLS_SERVER, SSLContext
+handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory="www")
+httpd = http.server.HTTPServer(("127.0.0.1", 18443), handler)
+ctx = SSLContext(PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain("srv.pem", "srv.key")
+httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+httpd.serve_forever()
+```
+
+```sh
+# Run all of these, in order.
+mkdir -p www/audio
+cp spool/*.wav www/audio/
+python3 serve.py &
+sipnab --vcon-audio-fetch spool/1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-ca ca.pem
+```
+
+It wrote `audio/<uuid>-dialog0.wav`, 136516 bytes, and exited `0`. The
+certificate must name the host in the `url`, here `IP:127.0.0.1` in its
+subject alternative names.
+
+When a fetch fails, sipnab names the dialog and the URL, writes nothing for
+that recording, and exits `1`:
+
+| sipnab prints | Cause and fix |
+|---|---|
+| `sending: invalid peer certificate: UnknownIssuer` | The server's certificate does not chain to the host's CA bundle. Give the issuing CA with `--vcon-audio-fetch-ca` (only that CA) or `--vcon-audio-fetch-extra-ca` (that CA and the bundle). |
+| `answered 404` | The server does not hold the file under that name. Copy it from the rule's `dir`. |
+| `content_hash does not match the file: the file is not the one the vCon names; nothing was written` | The server holds a different file under that name, for example one replaced or re-encoded after sipnab wrote it. Serve the file sipnab wrote. |
 
 ## The spool contract, for a bridge that consumes it
 
@@ -48705,6 +49033,85 @@ The digest is not a signature, and it is outside the container. It matches
 the file sipnab wrote, not the object a store holds after it adds fields on
 ingest. To sign the container itself, use a rule with `sign_only` or
 `encrypt_to` (see [Sign without encrypting](#sign-without-encrypting)).
+
+### Stop writing containers partway through a run
+
+You can tell a running capture to stop writing containers, and to start again,
+without a restart. Use it when someone asks you to stop recording calls while
+the capture itself must go on.
+
+**Before you start.**
+
+- The run writes containers with `--export-vcon-when` or `--export-vcon`, and
+  serves the REST API (`--api`). The `api` and `vcon` features are in every
+  release package.
+- The control is `GET` and `POST /v1/persistence`. Any token the API accepts
+  can use it.
+- It only narrows. A run started without `--export-vcon-when` or
+  `--export-vcon` reports `"authorized": false`, and no request makes it
+  write.
+- Known defect: a run that writes through `[[vcon.rule]]` and serves `--api`
+  reports `"authorized": false` from the start, and its rules write no
+  container. A defect fix is in progress. Until it lands, use
+  `--export-vcon-when` on a run that serves the API.
+
+**Steps.** This run takes its calls from a HEP listener, so it keeps
+running while calls come and go:
+
+```sh
+# Run all of these, in order.
+export SIPNAB_API_KEY="$(openssl rand -hex 32)"
+sipnab -N --no-cli-print -L 127.0.0.1:19060 \
+  --export-vcon-when "state == 'Completed'" --export-vcon-dir live-spool \
+  --api 127.0.0.1:18080 &
+sleep 2
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"enabled":false}' http://127.0.0.1:18080/v1/persistence
+```
+
+```json
+{"authorized":true,"enabled":false}
+```
+
+Send it a call. Here a second sipnab replays sipnab's test call,
+[`tests/fixtures/sip_call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip_call.pcap), to the listener as HEP:
+
+```sh
+sipnab -N --no-cli-print --quiet -I tests/fixtures/sip_call.pcap -H 127.0.0.1:19060
+```
+
+**Verify.** Fifteen seconds after the call ended, `live-spool` was still
+empty, and `GET /v1/persistence` answered
+`{"authorized":true,"enabled":false}`.
+
+To start writing again:
+
+```sh
+curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H 'Content-Type: application/json' \
+  -d '{"enabled":true}' http://127.0.0.1:18080/v1/persistence
+```
+
+What happened to the call that ended while writing was off:
+
+- **The run still held it.** sipnab wrote it on the next sweep after
+  `{"enabled":true}`, within about ten seconds. Its `capture_completeness`
+  says `"gate_closed_during_run": true`
+  ([When a container is missing on purpose](#when-a-container-is-missing-on-purpose)).
+- **The run ended first.** A run with `--duration 20` that ended with writing
+  off wrote no container for the call. Turning writing back on after the end
+  wrote nothing either.
+
+So turning writing off holds containers back while the run keeps the calls.
+A run that ends before you turn writing back on writes none of them.
+
+**When it does not work.**
+
+- `{"authorized":false,"enabled":false}`, and `{"enabled":true}` changes
+  nothing: the run started without `--export-vcon-when` or
+  `--export-vcon`. Restart it with one. See also the known defect above.
+- `400`: the body is not exactly `{"enabled": true}` or `{"enabled": false}`.
+- `401`: the token is missing, wrong or expired.
+  [POST /v1/persistence](rest-api.md#post-v1persistence) lists every answer.
 
 ## Deliver the spool to a store
 
@@ -49000,6 +49407,58 @@ All three give one answer.
 - The answer is a snapshot dated by its `as_of` field. The forwarder may move a file a moment
   later.
 
+For example, after a forwarder run in which vcon-server stored one container
+and refused another with `422`:
+
+```sh
+sipnab --vcon-spool-status spool
+```
+
+```json
+{
+  "schema_version": 1,
+  "as_of": "2026-11-03T14:37:33.956Z",
+  "note": "A snapshot of files on disk at as_of. The vCon forwarder (sipnab --vcon-forward) is a separate process that moves files out of the spool; whatever produced this answer sends, fetches, moves and deletes nothing. The delivered and failed directories are the forwarder's defaults beside the spool; a forwarder started with --vcon-forward-done or --vcon-forward-failed moves files elsewhere, and those are not counted.",
+  "spool": {"path": "spool", "exists": true},
+  "delivered_dir": {"path": "spool/delivered", "exists": true},
+  "failed_dir": {"path": "spool/failed", "exists": true},
+  "pending": 0,
+  "delivered": 1,
+  "failed": 1,
+  "failures": [
+    {
+      "file": "junk.vcon.json",
+      "record": {
+        "at": "2026-11-03T14:37:31Z",
+        "body": "{\"detail\":[{\"type\":\"missing\",\"loc\":[\"body\",\"vcon\"],\"msg\":\"Field required\",\"input\":{\"x\":1}},{\"type\":\"missing\",\"loc\":[\"body\",\"uuid\"],\"msg\":\"Field required\",\"input\":{\"x\":1}},{\"type\":\"missing\",\"loc\":[\"body\",\"created_at\"],\"msg\":\"Field required\",\"input\":{\"x\":1}}]}",
+        "body_truncated": false,
+        "file": "junk.vcon.json",
+        "method": "POST",
+        "reason": null,
+        "status": 422,
+        "url": "http://127.0.0.1:18000/vcon/external-ingress?ingress_list=sipnab"
+      }
+    }
+  ],
+  "returned": 1,
+  "truncated": false,
+  "next_cursor": null
+}
+```
+
+Read it this way:
+
+- `pending` counts containers the forwarder has not yet sent, or is still
+  retrying. A count that keeps rising means the forwarder has stopped or cannot
+  reach the store: read its log.
+- `delivered` counts containers the store accepted. A `2xx` means the store
+  took the request, not that it stored the container. Check the store.
+- `failed` counts containers the store refused. Each entry in `failures`
+  carries the store's status and body. Fix the cause, move the file back into
+  the spool, and the forwarder sends it again.
+- `"exists": false` on `spool` means the path is wrong, or nothing has written
+  to it yet. The command still exits `0`.
+
 The forwarder reads the spool by the contract above.
 
 - It skips dot-prefixed names and names that do not end in `.json`. So it never reads a staging file.
@@ -49080,6 +49539,29 @@ scitt_sign_key = "/etc/sipnab/scitt.key"
 scitt_sign_cert = "/etc/sipnab/scitt.crt"
 scitt_issuer = "https://pbx.example.com/sipnab"
 ```
+
+**What the tests cover, and what they do not.** No transparency service has
+accepted a statement from sipnab in a test, so this page names none as
+verified.
+
+- A mock service in [`tests/vcon_scitt_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_scitt_test.rs) is the only test of this path.
+  It checks the statement sipnab sends and each answer the forwarder handles.
+- On 2026-11-03 the forwarder ran against the SCITT API emulator
+  ([scitt-community/scitt-api-emulator](https://github.com/scitt-community/scitt-api-emulator),
+  commit `6e677607` of 2024-11-22, an archived repository). The emulator
+  refused both statements with `400`, and `<name>.scitt` recorded:
+
+  ```text
+  "detail": "Claim does not have a CWTClaims header parameter"
+  ```
+
+  The refusal is the emulator's defect, not sipnab's. The emulator looks for
+  the CWT Claims under COSE header label 14, a value from before
+  registration. [RFC 9597 section 2](https://www.rfc-editor.org/rfc/rfc9597.html#section-2)
+  registers label 15 for the CWT Claims header parameter, and sipnab writes
+  them there. That is why this page names no service as verified.
+- Before you depend on this, register one statement with the service you
+  plan to use, and read `<name>.scitt` as described below.
 
 **The statement.** The lifecycle draft names the events and defines no
 statement format. sipnab follows the SCITT drafts that define one:
@@ -49255,6 +49737,19 @@ The fetcher checks each container it writes against the vendored vCon schema.
   - It is the store's record. You need it to see what is wrong.
 - The log line lists each finding, and the run exits `1`.
 
+For example, vcon-server `d441470b` returns a container it stored with `null`
+in place of each optional member the sender left out. Fetching a container
+sipnab sent to it on 2026-11-03 wrote the file, exited `1`, and logged findings
+such as:
+
+```text
+WARN sipnab::app::vcon_fetch: 018bcfe5-6800-85e2-9169-dfa7890bbb52: written to fetched/018bcfe5-6800-85e2-9169-dfa7890bbb52.vcon.json, but the schema refuses it (9 finding(s)): /amended (type): expected type "object", found null; /attachments/2 (required): missing required properties: mediatype; /attachments/2 (required): missing required properties: start, party, dialog; /dialog/0/mediatype (type): expected type "string", found null; /dialog/0/url (type): expected type "string", found null; /dialog/0 (dependencies): `url` is present, which requires: content_hash; /parties/0/tel (type): expected type "string", found null; /parties/1/tel (type): expected type "string", found null; /parties/2/tel (type): expected type "string", found null
+```
+
+The container sipnab sent passed the schema. The findings describe what the
+store gives back, so compare the fetched file with the delivered one before
+you report the container as wrong.
+
 A file that already exists is not replaced.
 
 - The fetcher does not ask the store for that uuid, and the run exits `1`.
@@ -49428,6 +49923,71 @@ the config sets `decrypt_key`, else as the store holds it. `decrypted`,
 container that is not encrypted comes back as stored, signature included,
 with `signature_verified: true` once its signature verifies, as
 [A signed container](#a-signed-container) describes.
+
+### Hand calls to a store from an agent
+
+An agent connected to sipnab's MCP server can export calls for a store
+itself. Two parts of the server help it do that in a checked order:
+
+- the prompt `vcon-handoff`, which a client lists under `prompts/list` and
+  fetches with `prompts/get`;
+- the resource template `sipnab://vcon/{call_id}`, which reads one call's
+  container through `resources/read`.
+
+Neither needs a flag beyond `--mcp`, and neither sends anything to a store.
+The agent, or you, hands the containers over afterwards. The run needs the
+`vcon` feature for the export, and `mcp`. Every release package carries both.
+
+A client that shows MCP prompts offers `vcon-handoff` by name. Over the stdio
+wire, these lines ask for it and then read one container:
+
+```sh
+# Run all of these, in order.
+{ printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"doc","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"vcon-handoff","arguments":{}}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"resources/read","params":{"uri":"sipnab://vcon/1-1966@10.0.2.20"}}'
+  sleep 3; } | sipnab -N --mcp -I tests/pcap-samples/sip-rtp-g711.pcap --quiet > mcp.out
+```
+
+The answer to `id` 2 is the procedure the agent follows, in five steps:
+
+```text
+You are exporting vCon containers with sipnab for another system to store.
+
+1. `capture_status` -- a container built from a partly-parsed capture is missing messages, and the store cannot tell.
+2. `validate_filter` on the filter that selects the calls. Read `valid` and `total_matched` against `total_dialogs`: a filter that does not parse, or that matches nothing on a full capture, is the finding, not an empty export.
+3. `export_vcon` with that `filter`, never one `call_id` at a time. If `truncated` is true, `total_matched` says how many were left out; narrow the filter rather than reporting the page as the set. Read each container's `completeness` block: audio refused for size looks, to a reader, like a call with no audio.
+4. `validate_vcon` on each exported container, passed as `container`. Passing `call_id` instead exports a second document with a different creation time, so its result describes a container you did not send.
+5. Record each container's `digest` (SHA-256 of the container) and its `call_id`. The store's ledger entry is compared against that digest; a digest you did not record cannot be matched later.
+
+Hand over only containers that came back `valid`. For any that did not, report the `instance_path` and `keyword` of each finding rather than editing the container to pass.
+```
+
+The answer to `id` 3 holds the container as text, under
+`contents[0].text`, with `mimeType` `text/plain`. Parse that text as JSON.
+
+What to check before anything leaves:
+
+- Every `validate_vcon` verdict is `valid`. The prompt tells the agent to hand
+  over nothing else, and to report each finding rather than edit the container.
+- `truncated` on `export_vcon` is `false`, or `total_matched` says how many
+  calls the page left out.
+- The `digest` the agent recorded for each container matches the SHA-256 of
+  the bytes the store received.
+
+When it does not work:
+
+- `prompts/get` answers `prompt 'vcon-handoff' is not served: it calls
+  validate_filter, export_vcon, validate_vcon, which this server does not
+  load. Add the bundle(s) signaling, vcon with --mcp-tools or [mcp] tools.`
+  The server started with `--mcp-tools` naming too few bundles, here
+  `core` alone, and `prompts/list` comes back empty. Add the bundles the
+  message names ([Choosing which tools load](mcp-tools.md#choosing-which-tools-load)).
+- `resources/read` answers `call_id 'nosuch@192.0.2.1' not found`, with
+  `reason` `not_found`: the capture holds no call with that Call-ID. List the
+  calls with `list_dialogs`.
 
 ## Walk through one, end to end
 
@@ -50423,7 +50983,7 @@ you look for a capture fault:
 
 | Field | What it means |
 |---|---|
-| `gate_closed_during_run` | An operator stopped this run writing content partway through, over `POST /v1/persistence`. Containers are absent for the calls on one side of that point, and the capture does not otherwise record it. |
+| `gate_closed_during_run` | An operator stopped this run writing content partway through, over `POST /v1/persistence`. A container written after writing resumed may be late, and calls that ended while it was off are absent when the run ended first. The capture does not otherwise record it. See [Stop writing containers partway through a run](#stop-writing-containers-partway-through-a-run). |
 | `dialogs_suppressed_by_deny` | How many dialogs carried the `--content-deny-header` name and produced no container. |
 
 Both are always present, including as `false` and `0`.
@@ -54981,6 +55541,21 @@ On Debian 13, causing each fault under
 [When something does not work](#when-something-does-not-work) produced what
 it describes.
 
+On 2026-11-03 the blocks under
+[Or deliver them with sipnab's own forwarder](#or-deliver-them-with-sipnabs-own-forwarder),
+and the forwarder entries under
+[When something does not work](#when-something-does-not-work), ran again:
+
+- with sipnab 0.5.232 built from source,
+- on Ubuntu 24.04.5 (aarch64, kernel 6.8.12) with Docker 29.9.2,
+- against vcon-server `d441470b` set up as
+  [Install the vCon server](vcon-server.md#install-the-vcon-server) says, with
+  its API published on `127.0.0.1:18000` instead of port 8000, and the
+  `sipnab` ingress list from the first step.
+
+No live call ran in that check. It exported the containers from
+`sip_call.pcap`, as the forwarder section does.
+
 ## Add an ingress list and a chain for sipnab
 
 Add a key, a tag and a table for sipnab to `/opt/vcon/config.yml`. Leave the
@@ -55443,6 +56018,25 @@ On the vCon server, port 8000 is now reachable from the network.
 - **The forwarder stops with `answered 403`.** The key in
   `/etc/sipnab/vcon-forward.env` does not match the `sipnab` key in
   `config.yml`.
+- **`sipnab --vcon-forward` stops and exits `3`.** vcon-server answered `403`,
+  and the log line quotes its reason. sipnab sends nothing more and leaves
+  every container in the spool:
+  - `{"detail":"Invalid API Key for ingress list 'sipnab'"}`: the key in the
+    auth file is not the `sipnab` key in `config.yml`.
+  - `{"detail":"Ingress list 'sipnabx' not configured"}`: the
+    `ingress_list` in the URL is not a list in `config.yml`.
+
+  Fix the file or the URL and run it again.
+- **`sipnab --vcon-forward` logs `not reached`, and a line that ends
+  `Connection refused (os error 111); will retry`.** Nothing listens at the URL: vcon-server is down, or the
+  port is wrong. The container stays in the spool. With
+  `--vcon-forward-once` the run exits `1`; without it, the forwarder tries again.
+- **A container lands in `spool/failed` with `answered 422`.** vcon-server
+  refused the container itself. The `.error.json` record beside it holds the
+  server's reason, for example `"loc":["body","uuid"],"msg":"Field required"`.
+  `sipnab --vcon-spool-status spool` lists every refusal and its record.
+  Check the file with `sipnab --vcon-validate` before sending it again
+  ([Check a container before a store gets it](vcon.md#check-a-container-before-a-store-gets-it)).
 - **Files pile up in `rejected/`.**
   - vcon-server refused them with a `4xx` other than `401`, `403` or `404`.
   - The forwarder's journal names each file it moved there.
@@ -55474,6 +56068,38 @@ describes.
 
 The forwarder sends each container byte for byte: it does not change what
 sipnab wrote.
+
+## What this page's check covered
+
+The hosted vcon.store service was not used to check this page. On 2026-11-03
+the sipnab commands on it ran with sipnab 0.5.232, built from source, on
+Ubuntu 24.04.5 (aarch64), against a local stand-in on `127.0.0.1:18777`. The
+stand-in is a short test server that answers the four routes this page uses
+the way it describes vcon.store doing: `POST /v1/vcons` (`201`, or `409` for a
+uuid it holds), `PUT /v1/vcons/{uuid}`, `GET /v1/vcons/{uuid}` with a `_meta`
+member, and `401` for a wrong token. The log lines on this page have the form that run
+printed, and name `127.0.0.1:18777`. The response bodies quoted in them, such
+as `{"error":"unauthorized"}` and `{"error": "vCon already exists"}`, are a
+test server's, not the hosted service's. Against the hosted service the lines
+name `https://api.vcon.store`.
+
+What that run checked is sipnab's side:
+
+- the `vcon-store` kind adds `/v1/vcons` to the base URL and sends the token
+  as `Authorization: Bearer <token>`;
+- the forwarder refuses a token file other users can read, and exits `2`;
+- the exit status for each answer, and where each container goes;
+- `--vcon-forward-replace-url` sends a `PUT` after a `409`;
+- the fetcher removes `_meta`.
+
+What it did not check is the hosted service's side: its real answers, its
+error bodies, and the Cloudflare `403` with `error code: 1010` under
+[When something does not work](#when-something-does-not-work). Those come
+from the service and were not observed in this check. The routes and the
+container shape the service documents are in its OpenAPI document, vendored
+as [`tests/schemas/vcon-store-openapi.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon-store-openapi.json) (vcon.store API 0.1.0), and
+[`tests/vcon_ingest_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_ingest_contract_test.rs) checks sipnab's containers against the
+`VCon` schema in it. That document lists no `409` and no `401`.
 
 ## Before you send anything
 
@@ -55579,7 +56205,7 @@ auth_file = "/etc/sipnab/vcon-store.key"
 
 For each container the forwarder logs a `delivered` line with the store's
 status and moves the file to `spool/delivered`. The log line has this form
-(here from a run against a store on `127.0.0.1:18777`):
+(here from the local stand-in on `127.0.0.1:18777`, not the hosted store):
 
 ```text
 INFO sipnab::app::vcon_forward: vCon forwarder watching 'spool', delivering to http://127.0.0.1:18777/v1/vcons

@@ -1557,7 +1557,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // docs/tfps-sipnab.md +2, linking its own "Tested on" and "Check that
     // TFPS answers in JSON". Counted per page against origin/main ffd06bfb1;
     // every other page held its count.
-    const EXPECTED_WIKI_LINKS: usize = 2027;
+    // 2027 -> 2039 (vCon how-to steps): docs/vcon.md +5, docs/vcon-sipnab.md
+    // +4, docs/examples.md +1, docs/rest-api.md +1 and docs/vcon-store.md +1,
+    // each a link to a new vCon task section or to the page that explains
+    // what the step relies on. Counted per page against origin/main
+    // ffd06bfb1; every other page held its count.
+    const EXPECTED_WIKI_LINKS: usize = 2039;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

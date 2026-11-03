@@ -3907,7 +3907,19 @@ To check the containers later, save the lines and verify them from inside the ex
 
 **Problem:** A conserver refuses a container. It reports the refusal to whoever POSTed it, never to whoever built it.
 
-Run sipnab as an MCP server over the capture. Ask `validate_vcon` before you hand anything to a store:
+Check a container file at the shell. The exit status is the verdict: `0` valid, `3` invalid, `1` not checked:
+
+```bash
+sipnab --vcon-validate tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json
+```
+
+```text
+tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json: valid against https://ietf.org/vcon/schemas/unsigned-vcon.json
+```
+
+[Check a container before a store gets it](@/docs/vcon.md#check-a-container-before-a-store-gets-it) shows an invalid one and what each finding says.
+
+An agent asks the same question over MCP. Run sipnab as an MCP server over the capture, and ask `validate_vcon` before you hand anything to a store:
 
 ```bash
 sipnab -N --mcp -I capture.pcap --quiet

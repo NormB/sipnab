@@ -241,10 +241,14 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // `curl --cacert <FILE>`, named by the REST API page's "API TLS" section,
     // the MCP page's "MCP TLS" and the metrics page's "Metrics TLS": how a
     // client trusts the CA behind `--api-tls-cert`, `--mcp-tls-cert` and
-    // `--metrics-tls-cert`. curl's flag, not sipnab's.
+    // `--metrics-tls-cert`, and by the vCon page's "Name the chain by URL",
+    // which fetches a published certificate chain back the way a reader
+    // does. curl's flag, not sipnab's.
     (
         "cacert",
         &[
+            "docs/vcon.md",
+            "website/content/docs/vcon.md",
             "docs/rest-api.md",
             "website/content/docs/api.md",
             "docs/mcp-deploy.md",
@@ -5677,7 +5681,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // of the getting-started steps, and its site mirror
     // website/content/docs/api.md +1. Attributed per file against
     // origin/main ffd06bfb1: no other changed page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1293;
+    // 1293 -> 1299: docs/vcon.md +3 and its site mirror
+    // website/content/docs/vcon.md +3: the `--vcon-validate` exit codes, the
+    // failures of `--vcon-audio-fetch` against a published URL, and the three
+    // readers of an `x5u`-only container. Attributed per file against
+    // origin/main ffd06bfb1: no other changed page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1299;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
