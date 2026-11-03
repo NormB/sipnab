@@ -3,8 +3,8 @@
   "@id": "https://github.com/NormB/sipnab/blob/main/vex/sipnab.openvex.json",
   "author": "sipnab maintainers <n.brandinger@gmail.com>",
   "role": "Project maintainer",
-  "timestamp": "2026-11-02T00:00:00Z",
-  "version": 6,
+  "timestamp": "2026-11-03T00:00:00Z",
+  "version": 7,
   "tooling": "Hand-written; held to deny.toml and osv-scanner.toml by tests/vex_document_test.rs",
   "statements": [
     {
@@ -66,23 +66,6 @@
       "status": "not_affected",
       "justification": "vulnerable_code_not_present",
       "impact_statement": "The advisory's mechanism is an inline cursor that a panicking callback leaves out of range. block-buffer 0.10.4 has none: it keeps its cursor in a separate field that digest_blocks leaves unchanged and in range when the compression callback panics, and it has no ReadBuffer. It reaches sipnab only through digest 0.10 under rsa 0.9 (the newest stable rsa) and sha1 0.10, which sipnab uses only as rsa's OAEP hash for JWE RSA-OAEP; the two hashers live inside the OAEP padding and are consumed by one encrypt or decrypt call, so none is reused after a caught panic. Cargo.lock also lists it under ratatui's optional termwiz backend, which sipnab never enables. tests/digest_010_confinement_test.rs holds these facts. Re-evaluate when a stable rsa 0.10 exists; move to it then."
-    },
-    {
-      "vulnerability": {
-        "name": "GHSA-g3hv-75wg-m249",
-        "aliases": [
-          "CVE-2026-118764"
-        ],
-        "description": "minimatch denial of service through glob-part amplification in firstPhasePreProcess"
-      },
-      "products": [
-        {
-          "@id": "pkg:cargo/sipnab"
-        }
-      ],
-      "status": "not_affected",
-      "justification": "component_not_present",
-      "impact_statement": "minimatch is not part of sipnab: no binary, package or crate the project ships contains it. It appears only in e2e/package-lock.json, the dev tooling for the website's Lighthouse CI step (@lhci/cli 0.15.1 -> chrome-launcher 0.13.4 -> rimraf 3.0.2 -> glob 7.2.3 -> minimatch 3.1.5). The vulnerable code is also absent from that version. osv.dev gives the affected range as introduced 0, fixed 11.0.1, which covers 3.1.5 by number, but in the published minimatch-3.1.5.tgz (LICENSE, README.md, minimatch.js, package.json) `grep -rlE 'firstPhasePreProcess|optimizationLevel'` matches no file, while the same grep over minimatch-11.0.1.tgz matches seven, among them dist/commonjs/index.js and dist/esm/index.js. chrome-launcher calls rimraf only on the browser profile directory it removes on exit, and rimraf 3 reaches glob, and so minimatch, only for a path with glob magic in it. tests/minimatch_confinement_test.rs holds these facts. Re-evaluate when @lhci/cli drops chrome-launcher 0.13."
     }
   ]
 }

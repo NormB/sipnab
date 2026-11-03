@@ -21,6 +21,7 @@
     "qs": "~6.16.1",
     "@puppeteer/browsers": "^3.2.2",
     "basic-ftp": "^6.2.1",
-    "zod": "^4.6.6"
+    "zod": "^4.6.6",
+    "chrome-launcher": "1.2.2"
   }
 }
