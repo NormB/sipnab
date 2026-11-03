@@ -44,7 +44,7 @@ No criterion is unmet.
 | `interact` | Met | [`SUPPORT.md`](https://github.com/NormB/sipnab/blob/main/SUPPORT.md) routes questions, bugs and vulnerabilities |
 | `contribution` | Met | [`CONTRIBUTING.md`](https://github.com/NormB/sipnab/blob/main/CONTRIBUTING.md) |
 | `floss_license` | Met | MIT OR Apache-2.0, declared in [`Cargo.toml`](https://github.com/NormB/sipnab/blob/main/Cargo.toml) |
-| `license_location` | Met | [`LICENSE-MIT`](https://github.com/NormB/sipnab/blob/main/LICENSE-MIT) and [`LICENSE-APACHE`](https://github.com/NormB/sipnab/blob/main/LICENSE-APACHE) at the repo root |
+| `license_location` | Met | [`LICENSE-MIT`](https://github.com/NormB/sipnab/blob/main/LICENSE-MIT) and [`LICENSE-APACHE`](https://github.com/NormB/sipnab/blob/main/LICENSE-APACHE) at the repo root, and the dual-license notice [`DUAL-LICENSE`](https://github.com/NormB/sipnab/blob/main/DUAL-LICENSE), which the site detects |
 | `documentation_basics` | Met | Install, usage and security are all published sections |
 | `documentation_interface` | Met | CLI reference, REST API and MCP pages document every external surface |
 | `sites_https` | Met | Site and repository are HTTPS only |

@@ -746,7 +746,7 @@ jobs:
           stage="sipnab-${version}-${{ matrix.target }}${{ steps.features.outputs.suffix }}"
           mkdir -p "dist/${stage}"
           cp "target/${{ matrix.target }}/release/sipnab" "dist/${stage}/"
-          cp README.md LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.md "dist/${stage}/"
+          cp README.md LICENSE-MIT LICENSE-APACHE DUAL-LICENSE THIRD-PARTY-NOTICES.md "dist/${stage}/"
           [ -f man/sipnab.1 ] && cp man/sipnab.1 "dist/${stage}/"
           # Stage the audio plugin alongside the binary when it was built.
           if [ "${{ steps.features.outputs.audio_plugin }}" = "yes" ]; then

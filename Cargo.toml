@@ -78,6 +78,7 @@ include = [
   "/README.md",
   "/LICENSE-APACHE",
   "/LICENSE-MIT",
+  "/DUAL-LICENSE",
   "/LICENSES/**",
   "/CHANGELOG.md",
   "/contrib/fail2ban/sipnab-jail.conf",

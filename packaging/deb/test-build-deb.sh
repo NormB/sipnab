@@ -47,7 +47,7 @@ cp "$REPO_ROOT/man/sipnab.1"               "$SANDBOX/man/"
 # /usr/share/doc/sipnab. The sandbox is a declared minimal file set, so a new
 # input to build-deb.sh has to be added here too — which is how this test
 # caught them being introduced without it.
-cp "$REPO_ROOT/LICENSE-MIT" "$REPO_ROOT/LICENSE-APACHE" \
+cp "$REPO_ROOT/LICENSE-MIT" "$REPO_ROOT/LICENSE-APACHE" "$REPO_ROOT/DUAL-LICENSE" \
    "$REPO_ROOT/THIRD-PARTY-NOTICES.md" "$SANDBOX/"
 
 printf '#!/bin/sh\nexit 0\n' > "$SANDBOX/bin/sipnab"
@@ -84,6 +84,7 @@ if build 1.2.3 amd64 >/dev/null 2>&1 && [ -f sipnab_1.2.3_amd64.deb ]; then
     # build that succeeds proves nothing about whether they are inside it.
     assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/LICENSE-MIT"
     assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/LICENSE-APACHE"
+    assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/DUAL-LICENSE"
     assert_contains     "full contents" "$contents" "usr/share/doc/sipnab/THIRD-PARTY-NOTICES.md"
     # build-deb.sh installs seven things; this asserted three of them, so
     # deleting the man page, the systemd unit and the postinst chmod outright
