@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+#
+# Topology hiding with Call-ID hiding ("C"), for the sipnab th-callid
+# fixtures. Rendered by capture.sh, which fills in the three @-delimited
+# placeholders per capture. @XCID@ becomes nothing in xcid mode and "#" (a
+# comment) otherwise, so the append_hf line is the one docs/opensips-sipnab.md
+# shows, character for character (tests/th_callid_test.rs checks it). Modeled on the OpenSIPS sipssert case
+# topology-hiding/06.th-dialog-callid.
+log_level=3
+stderror_enabled=yes
+udp_workers=2
+socket=udp:192.0.2.10:5060
+mpath="/usr/local/lib64/opensips/modules/"
+
+loadmodule "signaling.so"
+loadmodule "sl.so"
+loadmodule "tm.so"
+loadmodule "sipmsgops.so"
+loadmodule "dialog.so"
+loadmodule "topology_hiding.so"
+@SECRET_LINE@
+@LOOP@
+loadmodule "maxfwd.so"
+loadmodule "rr.so"
+loadmodule "proto_udp.so"
+
+route {
+	if (!mf_process_maxfwd_header(10)) {
+		send_reply(483, "Too Many Hops");
+		exit;
+	}
+	if (has_totag()) {
+		if (is_method("ACK") && t_check_trans()) {
+			t_relay();
+			exit;
+		}
+		if (!loose_route() && !topology_hiding_match()) {
+			send_reply(404, "Not here");
+			exit;
+		}
+		t_relay();
+		exit;
+	}
+	if (is_method("CANCEL")) {
+		if (t_check_trans())
+			t_relay();
+		exit;
+	}
+	if (!is_method("INVITE")) {
+		send_reply(503, "Service Unavailable");
+		exit;
+	}
+	if (!create_dialog() || !topology_hiding("C")) {
+		send_reply(500, "Internal Server Error");
+		exit;
+	}
+	@XCID@append_hf("X-CID: $ci\r\n");
+	$du = "sip:192.0.2.1:5070";
+	if (!t_relay())
+		send_reply(500, "Internal Error");
+	exit;
+}

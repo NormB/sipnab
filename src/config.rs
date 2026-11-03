@@ -173,6 +173,9 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "xcid_headers",
             "leg_correlation_window_ms",
             "active_idle_window_secs",
+            "th_callid_secret_file",
+            "th_callid_secret",
+            "th_callid_prefix",
         ]
         .as_slice(),
     );
@@ -1328,6 +1331,57 @@ pub struct SipConfig {
     /// this is the trade an operator makes for their own traffic.
     /// `--active-idle-window` overrides this.
     pub active_idle_window_secs: Option<u64>,
+    /// File holding the OpenSIPS `th_callid_passwd`, so the two legs of a call
+    /// through `topology_hiding("C")` can be joined by decoding the hidden
+    /// Call-ID. World-readable files are refused. Needs a `tls` build. The
+    /// secret itself is never a config value.
+    pub th_callid_secret_file: Option<std::path::PathBuf>,
+    /// The only value accepted is `"opensips-default"`: decode with OpenSIPS's
+    /// published default secret, which hides nothing. Any other value is
+    /// refused (a secret belongs in `th_callid_secret_file`) and is never
+    /// printed back.
+    pub th_callid_secret: Option<ThCallidSecretName>,
+    /// OpenSIPS `th_callid_prefix` (default `DLGCH_`).
+    pub th_callid_prefix: Option<String>,
+}
+
+/// The value of `[sip] th_callid_secret`. Only `"opensips-default"` is valid;
+/// anything else may be a real secret typed in the wrong place, so `Debug` and
+/// `Serialize` never show it.
+#[derive(Clone, Default, PartialEq, Deserialize)]
+#[serde(transparent)]
+pub struct ThCallidSecretName(String);
+
+impl ThCallidSecretName {
+    /// The one accepted value.
+    pub const OPENSIPS_DEFAULT: &'static str = "opensips-default";
+
+    /// Whether this is the opt-in for OpenSIPS's published default secret.
+    #[must_use]
+    pub fn is_opensips_default(&self) -> bool {
+        self.0 == Self::OPENSIPS_DEFAULT
+    }
+
+    /// What may be shown: the opt-in itself, or a placeholder.
+    fn shown(&self) -> &str {
+        if self.is_opensips_default() {
+            Self::OPENSIPS_DEFAULT
+        } else {
+            "<refused value, not shown>"
+        }
+    }
+}
+
+impl std::fmt::Debug for ThCallidSecretName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.shown())
+    }
+}
+
+impl Serialize for ThCallidSecretName {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(self.shown())
+    }
 }
 
 impl SipConfig {
@@ -1360,6 +1414,61 @@ impl SipConfig {
                  active-dialog and active-call gauges permanently at zero, \
                  which reads as a quiet trunk rather than as a setting)"
                     .into(),
+            ));
+        }
+        self.validate_th_callid()
+    }
+
+    /// The `th_callid_*` rules: file or opt-in, not both; the opt-in is the
+    /// only literal; a prefix is never empty; and a build without `tls` refuses
+    /// them rather than ignoring a secret the operator configured.
+    fn validate_th_callid(&self) -> Result<(), crate::Error> {
+        let any = self.th_callid_secret_file.is_some()
+            || self.th_callid_secret.is_some()
+            || self.th_callid_prefix.is_some();
+        if !any {
+            return Ok(());
+        }
+        if cfg!(not(feature = "tls")) {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] th_callid_* needs a sipnab built with the tls feature".into(),
+            ));
+        }
+        if self.th_callid_secret_file.is_some() && self.th_callid_secret.is_some() {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] th_callid_secret_file and th_callid_secret: set one, not both".into(),
+            ));
+        }
+        if let Some(name) = &self.th_callid_secret
+            && !name.is_opensips_default()
+        {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] th_callid_secret accepts only \"opensips-default\"; put a real \
+                 secret in a file named by th_callid_secret_file (the value given is \
+                 not shown)"
+                    .into(),
+            ));
+        }
+        if self.th_callid_prefix.is_some()
+            && self.th_callid_secret_file.is_none()
+            && self.th_callid_secret.is_none()
+        {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] th_callid_prefix needs th_callid_secret_file or th_callid_secret".into(),
+            ));
+        }
+        if self
+            .th_callid_secret_file
+            .as_ref()
+            .is_some_and(|p| p.as_os_str().is_empty())
+        {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] th_callid_secret_file must not be empty".into(),
+            ));
+        }
+        if self.th_callid_prefix.as_deref() == Some("") {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] th_callid_prefix must not be empty".into(),
             ));
         }
         Ok(())
@@ -6160,6 +6269,90 @@ column_selector = "F10"
         assert!(
             err.to_string().contains("leg_correlation_window_ms"),
             "the refusal must name the key, got: {err}"
+        );
+        Ok(())
+    }
+
+    /// T9 (config): the three `[sip] th_callid_*` keys parse, are registered,
+    /// and the refusals never echo a value given as a secret.
+    #[test]
+    fn th_callid_keys_parse_register_and_refuse() -> Result<(), TestError> {
+        let set = "[sip]\nth_callid_secret_file = \"/etc/sipnab/th.secret\"\n\
+                   th_callid_prefix = \"SIPSSERT_\"\n";
+        let cfg: Config = toml::from_str(set).map_err(|e| format!("valid: {e:?}"))?;
+        assert_eq!(
+            cfg.sip.th_callid_secret_file.as_deref(),
+            Some(std::path::Path::new("/etc/sipnab/th.secret")),
+            "th_callid_secret_file must parse as the path written"
+        );
+        assert_eq!(
+            cfg.sip.th_callid_prefix.as_deref(),
+            Some("SIPSSERT_"),
+            "th_callid_prefix must parse as the prefix written"
+        );
+        let both =
+            "[sip]\nth_callid_secret_file = \"/x\"\nth_callid_secret = \"opensips-default\"\n";
+        for text in [set, both] {
+            assert!(
+                Config::unknown_keys(text)
+                    .map_err(|e| format!("scan: {e:?}"))?
+                    .is_empty(),
+                "th_callid keys must be registered in KNOWN_KEYS"
+            );
+        }
+        let refuse = |text: &str, needle: &str| -> Result<(), TestError> {
+            let cfg: Config = toml::from_str(text).map_err(|e| format!("parses: {e:?}"))?;
+            let err = cfg
+                .sip
+                .validate()
+                .err()
+                .ok_or_else(|| format!("must be refused: {text:?}"))?
+                .to_string();
+            assert!(err.contains(needle), "{err:?} lacks {needle:?}");
+            assert!(!err.contains("hunter2-0100"), "{err:?} echoes the secret");
+            Ok(())
+        };
+        #[cfg(feature = "tls")]
+        {
+            assert!(
+                cfg.sip.validate().is_ok(),
+                "a secret file with a prefix is a valid [sip] table"
+            );
+            let default_only: Config =
+                toml::from_str("[sip]\nth_callid_secret = \"opensips-default\"\n")
+                    .map_err(|e| format!("parses: {e:?}"))?;
+            assert!(
+                default_only.sip.validate().is_ok(),
+                "the opensips-default opt-in alone is a valid [sip] table"
+            );
+            refuse(both, "not both")?;
+            refuse(
+                "[sip]\nth_callid_secret = \"hunter2-0100\"\n",
+                "th_callid_secret_file",
+            )?;
+            refuse(
+                "[sip]\nth_callid_secret_file = \"/x\"\nth_callid_prefix = \"\"\n",
+                "th_callid_prefix",
+            )?;
+            refuse(
+                "[sip]\nth_callid_prefix = \"X_\"\n",
+                "needs th_callid_secret_file",
+            )?;
+            refuse(
+                "[sip]\nth_callid_secret_file = \"\"\n",
+                "th_callid_secret_file must not be empty",
+            )?;
+        }
+        #[cfg(not(feature = "tls"))]
+        refuse(set, "tls")?;
+        // A secret typed into the config is never written back out.
+        let typed: Config = toml::from_str("[sip]\nth_callid_secret = \"hunter2-0100\"\n")
+            .map_err(|e| format!("parses: {e:?}"))?;
+        let shown = toml::to_string(&typed)?;
+        assert!(!shown.contains("hunter2-0100"), "{shown}");
+        assert!(
+            !format!("{typed:?}").contains("hunter2-0100"),
+            "Debug of a config must not show a secret typed into th_callid_secret"
         );
         Ok(())
     }

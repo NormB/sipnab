@@ -216,12 +216,14 @@ kill %1
       "call_id": "3c33fca7-40b8-1240-48b2-bc24119de73a",
       "score": 50,
       "strategy": "timing_heuristic",
+      "method": "timing",
       "identifier_match": false,
       "observed_gap_ms": 2
     }
   ],
   "total_matched": 1,
-  "heuristic_only": true
+  "heuristic_only": true,
+  "th_callid": null
 }
 ```
 

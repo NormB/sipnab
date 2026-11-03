@@ -1507,6 +1507,38 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "sip",
+        "th_callid_prefix",
+        KeyKind::Literal {
+            accept: &["\"DLGCH_\"", "\"SIPSSERT_\""],
+            reject: &["\"\""],
+            // A prefix alone is refused: it needs a secret to decode with.
+            ctx: "th_callid_secret = \"opensips-default\"",
+        },
+    ),
+    (
+        "sip",
+        "th_callid_secret",
+        KeyKind::Literal {
+            accept: &["\"opensips-default\""],
+            // Anything else may be a real secret in the wrong place.
+            reject: &["\"x\"", "\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "sip",
+        "th_callid_secret_file",
+        KeyKind::Literal {
+            // sipnab reads the file at startup and refuses one anybody may
+            // read, so no fixed path is an accepted value here;
+            // tests/th_callid_test.rs writes a mode-600 file and runs it.
+            accept: &[],
+            reject: &["\"/nonexistent/th_callid.secret\"", "\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "sip",
         "xcid_headers",
         KeyKind::Literal {
             accept: &["[]", "[\"x\"]", "[\"syslog\"]", "[\"json\", \"syslog\"]"],

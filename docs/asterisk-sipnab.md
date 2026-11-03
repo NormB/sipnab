@@ -242,6 +242,7 @@ The answer names Asterisk's leg:
     {
       "call_id": "37e58306-c14d-4a0f-9fa1-41a2b3c05f96",
       "identifier_match": false,
+      "method": "timing",
       "observed_gap_ms": 1,
       "score": 50,
       "strategy": "timing_heuristic"

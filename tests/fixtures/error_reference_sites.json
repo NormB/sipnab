@@ -433,9 +433,9 @@
     {
       "file": "src/app/batch.rs",
       "call": "warn!(\"{line}\")",
-      "count": 5,
+      "count": 6,
       "carries": [],
-      "why": "4 occurrences are in-file (relay_retry_lines, stun_failure_lines/unanswered_request_line, lapsed_allocation_lines, ice_role_conflict_lines, all literals in batch.rs), but report_hep_exports prints src/capture/hep_export.rs HepExportSnapshot::summary_line (out of scope)."
+      "why": "5 occurrences are in-file (relay_retry_lines, stun_failure_lines/unanswered_request_line, lapsed_allocation_lines, ice_role_conflict_lines, th_callid_guidance, all literals in batch.rs), but report_hep_exports prints src/capture/hep_export.rs HepExportSnapshot::summary_line (out of scope)."
     },
     {
       "file": "src/app/batch.rs",
@@ -688,6 +688,13 @@
       "count": 1,
       "carries": [],
       "why": "resolved_filter_text in bootstrap.rs: src/sip/named_filters.rs::unknown_reference_message, a format! outside the extractor's scope; the same text reaches the request-time surfaces through src/sip/dsl.rs."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError { exit_code: 1, message, }",
+      "count": 1,
+      "carries": [],
+      "why": "apply_config in bootstrap.rs: the error of src/sip/th_callid.rs::from_config, which is SipConfig::validate's text (the [sip] th_callid_* Error::ConfigInvalid literals in src/config.rs, each extracted on its own) or load_secret_file's format! naming the secret file's path (src/sip/th_callid.rs, out of scope)."
     }
   ]
 }

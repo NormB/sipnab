@@ -324,8 +324,15 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         } else {
             "off".to_string()
         };
+        // How the call's other legs were joined, when it has any, and a
+        // topology-hiding leg's status (call_flow::correlation).
+        let correlation = if app.flow_correlation.text.is_empty() {
+            String::new()
+        } else {
+            format!(" | {}", app.flow_correlation.text)
+        };
         let content = format!(
-            " {} | {} | {} | Detail: {detail}{focus}",
+            " {} | {} | {} | Detail: {detail}{focus}{correlation}",
             app.timestamp_mode.label(),
             app.sdp_display_mode.label(),
             app.color_mode.label(),
@@ -848,6 +855,54 @@ mod tests {
     use crossterm::event::KeyEvent;
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// The call flow's status line says how the call's other legs were joined
+    /// and, for a callee-side OpenSIPS topology-hiding leg, its status. It
+    /// follows the store: the caller leg captured after the hidden leg turns
+    /// `unmatched` into a decoded join at the next refresh. Opening another
+    /// call shows that call's summary at once, never the last one's.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn call_flow_status_names_how_the_legs_were_joined() -> Result<(), TestError> {
+        let line = |app: &App| -> Result<String, TestError> {
+            let mut terminal = Terminal::new(TestBackend::new(160, 1))?;
+            terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, 160, 1), app))?;
+            let buf = terminal.backend().buffer();
+            let mut row = String::new();
+            for x in 0..buf.area.width {
+                row.push_str(buf.cell((x, 0)).ok_or("cell")?.symbol());
+            }
+            Ok(row)
+        };
+        let ([caller_invite, hidden_invite], caller, hidden) =
+            crate::test_utils::th_hidden_call_messages("right")?;
+        let mut app = App::new_test();
+        let mut store =
+            crate::test_utils::th_store(Some(&crate::test_utils::th_test_secret("right")))?;
+        store.process_message(hidden_invite);
+        app.dialog_store = std::sync::Arc::new(parking_lot::RwLock::new(store));
+        app.current_view = View::CallFlow(hidden.clone());
+        app.sync_caches();
+        let before = line(&app)?;
+        assert!(before.contains("Topology hiding: unmatched"), "{before:?}");
+        assert!(!before.contains("Legs:"), "{before:?}");
+
+        app.dialog_store.write().process_message(caller_invite);
+        app.flow_correlation.floor.elapse_for_test();
+        app.sync_caches();
+        let after = line(&app)?;
+        assert!(
+            after.contains("Legs: 1 decoded | Topology hiding: decoded"),
+            "{after:?}"
+        );
+
+        app.current_view = View::CallFlow(caller);
+        app.sync_caches();
+        let other = line(&app)?;
+        assert!(other.contains("Legs: 1 decoded"), "{other:?}");
+        assert!(!other.contains("Topology hiding"), "{other:?}");
+        Ok(())
+    }
 
     /// The auto-generated default is summarized, never drawn as its raw
     /// thousand-column expression -- the whole point of the display fix. A

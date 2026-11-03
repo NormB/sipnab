@@ -1534,7 +1534,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 1990 -> 1991: docs/errors.md +1, the `## Exit codes` list linking the
     // exit-code table of cli-reference.md. Attributed per changed page
     // against HEAD: cli-reference.md and mcp-tools-security.md held theirs.
-    const EXPECTED_WIKI_LINKS: usize = 1991;
+    // 1991 -> 1998 (#617, OpenSIPS topology hiding): cli-reference.md +1,
+    // errors.md +1, mcp-estate.md +1, mcp-tools-signaling.md +2 and
+    // rest-api.md +1, each a link to opensips-sipnab.md's "Calls through
+    // topology hiding"; opensips-sipnab.md +1, its "Tested on" pointing at
+    // that section. Counted per page against origin/main 8a7b78ab5.
+    const EXPECTED_WIKI_LINKS: usize = 1998;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

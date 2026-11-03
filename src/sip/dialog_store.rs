@@ -104,6 +104,11 @@ pub enum CorrelationReason {
     ViaBranch,
     /// Matched via endpoint overlap + timing heuristic.
     TimingHeuristic,
+    /// One leg's Call-ID is the other's, encoded by OpenSIPS
+    /// `topology_hiding("C")`, decoded with the configured secret, and the From
+    /// tags agree. See [`crate::sip::th_callid`] for the encoding and for why
+    /// the tag check, not the decode, is what rules out a false join.
+    TopologyHidingCallid,
 }
 
 impl CorrelationReason {
@@ -147,6 +152,9 @@ impl CorrelationReason {
             Self::ChargingVectorIcid => ("charging_vector_icid", true),
             Self::ViaBranch => ("via_branch", true),
             Self::TimingHeuristic => ("timing_heuristic", false),
+            // The decoded value is compared exactly, and the From tags must
+            // match as well, so it is an identifier comparison.
+            Self::TopologyHidingCallid => ("th_callid_decoded", true),
             // NO CATCH-ALL, deliberately. `CorrelationReason` is
             // `#[non_exhaustive]` for external crates, but this match lives in
             // the defining crate, so it is checked exhaustively: a new strategy
@@ -156,6 +164,66 @@ impl CorrelationReason {
             // match — which is exactly the decision that must not be made by
             // default.
         }
+    }
+
+    /// How the link was made: see [`CorrelationMethod`].
+    ///
+    /// Exhaustive, like [`Self::strategy`], so a new strategy must choose.
+    #[must_use]
+    pub fn method(&self) -> CorrelationMethod {
+        match self {
+            Self::TopologyHidingCallid => CorrelationMethod::Decoded,
+            // Each compares a value carried in a SIP header both legs have:
+            // a header the operator named, `Session-ID`, `P-Charging-Vector`
+            // or `Via`.
+            Self::XCallId
+            | Self::SessionId
+            | Self::ChargingVectorRelatedIcid
+            | Self::ChargingVectorIcid
+            | Self::ViaBranch => CorrelationMethod::Header,
+            Self::SdpOrigin => CorrelationMethod::Sdp,
+            Self::TimingHeuristic => CorrelationMethod::Timing,
+        }
+    }
+}
+
+/// How a correlation was made, one level coarser than the strategy: what the
+/// two legs were compared on.
+///
+/// The strategy name says WHICH rule matched; this says what kind of evidence
+/// it was, so an operator can tell an exact join from a guess at a glance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum CorrelationMethod {
+    /// An OpenSIPS topology-hiding Call-ID, decoded with the configured
+    /// secret, equals the other leg's Call-ID, and the From tags agree.
+    Decoded,
+    /// The two legs carry the same value in a SIP header: a header named in
+    /// `[sip] xcid_headers`, `Session-ID`, `P-Charging-Vector` or a `Via`
+    /// branch.
+    Header,
+    /// The two legs carry the same SDP origin ([RFC 8866 section 5.2](https://www.rfc-editor.org/rfc/rfc8866.html#section-5.2)).
+    Sdp,
+    /// The two legs started close together and share an endpoint. A guess.
+    Timing,
+}
+
+impl CorrelationMethod {
+    /// The wire name: `decoded`, `header`, `sdp` or `timing`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Decoded => "decoded",
+            Self::Header => "header",
+            Self::Sdp => "sdp",
+            Self::Timing => "timing",
+        }
+    }
+}
+
+impl std::fmt::Display for CorrelationMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -210,6 +278,9 @@ pub struct TreeLeg {
     pub score: Option<u8>,
     /// Which strategy matched this edge. `None` for the root.
     pub strategy: Option<&'static str>,
+    /// How the edge was made (see [`CorrelationMethod`]). `None` for the
+    /// root.
+    pub method: Option<CorrelationMethod>,
     /// Whether the edge is an identifier comparison rather than a guess. `None`
     /// for the root, which the caller named rather than the walk matching.
     pub identifier_match: Option<bool>,
@@ -374,6 +445,119 @@ pub struct DialogStore {
     /// describes a PBX that places the outbound leg immediately — not one
     /// doing an LNP or ENUM dip, or an LCR cascade, before it places one.
     leg_correlation_window_ms: u64,
+    /// The OpenSIPS topology-hiding Call-ID decoder, when a secret is
+    /// configured. Defaults to the process-wide one set at startup by
+    /// [`set_th_callid`], so every store the process builds (batch, TUI, each
+    /// `--cores` shard) decodes alike.
+    #[cfg(feature = "tls")]
+    th_callid: Option<std::sync::Arc<crate::sip::th_callid::ThCallid>>,
+}
+
+/// The process-wide topology-hiding decoder; see [`set_th_callid`].
+#[cfg(feature = "tls")]
+static TH_CALLID: std::sync::OnceLock<std::sync::Arc<crate::sip::th_callid::ThCallid>> =
+    std::sync::OnceLock::new();
+
+/// Install the topology-hiding Call-ID decoder for every [`DialogStore`]
+/// built after this call. Call once at startup.
+///
+/// Process-wide for the reason [`set_active_idle_window_secs`] is: stores are
+/// built in several places, and a decoder threaded to some of them would join
+/// legs on one surface and not on another. A second call is ignored.
+#[cfg(feature = "tls")]
+pub fn set_th_callid(th: std::sync::Arc<crate::sip::th_callid::ThCallid>) {
+    let _ = TH_CALLID.set(th);
+}
+
+/// The state of one callee-side leg of an OpenSIPS `topology_hiding("C")`
+/// call, as `--correlate`, REST, MCP and the terminal interface report it.
+///
+/// Defined in every build: one without `tls` cannot decode, and reports no
+/// status at all rather than a status it did not work out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+#[non_exhaustive]
+pub enum ThCallidStatus {
+    /// Decoded, and joined to the captured leg with that Call-ID and From tag.
+    Decoded,
+    /// A hidden Call-ID, and no secret is configured.
+    NoSecret,
+    /// A hidden Call-ID that the configured secret does not decode: a wrong
+    /// secret, or a wrong `th_callid_prefix`.
+    Undecodable,
+    /// Decoded, but no captured leg has that Call-ID and From tag: the caller
+    /// side was not captured, or the secret is wrong and its output happened
+    /// to look like a Call-ID.
+    Unmatched,
+}
+
+impl ThCallidStatus {
+    /// The wire name: `decoded`, `no_secret`, `undecodable` or `unmatched`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Decoded => "decoded",
+            Self::NoSecret => "no_secret",
+            Self::Undecodable => "undecodable",
+            Self::Unmatched => "unmatched",
+        }
+    }
+
+    /// What the status means and what to check, in one sentence, for the
+    /// text report and the terminal interface. Names settings, never a value.
+    #[must_use]
+    pub const fn explanation(self) -> &'static str {
+        match self {
+            Self::Decoded => "the hidden Call-ID decoded to a captured leg with the same From tag",
+            Self::NoSecret => {
+                "an OpenSIPS hidden Call-ID; set [sip] th_callid_secret_file to decode it"
+            }
+            Self::Undecodable => {
+                "the configured secret or prefix does not decode this Call-ID; check \
+                 [sip] th_callid_secret_file and th_callid_prefix"
+            }
+            Self::Unmatched => {
+                "decoded, but no captured leg has that Call-ID and From tag: the caller \
+                 side was not captured, or the secret is wrong"
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for ThCallidStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Counts of hidden dialogs by [`ThCallidStatus`], from
+/// [`DialogStore::th_callid_summary`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct ThCallidSummary {
+    /// Hidden legs decoded and joined.
+    pub decoded: usize,
+    /// Hidden legs seen with no secret configured.
+    pub no_secret: usize,
+    /// Hidden legs the secret did not decode.
+    pub undecodable: usize,
+    /// Hidden legs decoded to no observed caller leg.
+    pub unmatched: usize,
+    /// Undecodable or unmatched hidden legs whose From tag IS on an observed
+    /// non-hidden leg: the caller side was captured, so the secret (or the
+    /// prefix) is the likely fault.
+    pub undecoded_with_peer: usize,
+}
+
+impl ThCallidSummary {
+    /// Whether the evidence points at a wrong secret or prefix: a hidden leg
+    /// whose caller leg was captured did not decode to it.
+    #[must_use]
+    pub fn wrong_secret_suspected(&self) -> bool {
+        self.undecoded_with_peer > 0
+    }
 }
 
 /// Shipped width of the B2BUA timing-heuristic window, in milliseconds.
@@ -687,7 +871,132 @@ impl DialogStore {
             #[cfg(feature = "native")]
             admission: None,
             leg_correlation_window_ms: DEFAULT_LEG_CORRELATION_WINDOW_MS,
+            #[cfg(feature = "tls")]
+            th_callid: TH_CALLID.get().cloned(),
         }
+    }
+
+    /// Set (or clear, with `None`) the topology-hiding Call-ID decoder,
+    /// overriding the process-wide one. Builder-style.
+    #[cfg(feature = "tls")]
+    #[must_use]
+    pub fn with_th_callid(
+        mut self,
+        th: Option<std::sync::Arc<crate::sip::th_callid::ThCallid>>,
+    ) -> Self {
+        self.th_callid = th;
+        self
+    }
+
+    /// The prefix that marks a hidden Call-ID: the configured one, else
+    /// OpenSIPS's default.
+    #[cfg(feature = "tls")]
+    fn th_prefix(&self) -> &str {
+        self.th_callid
+            .as_deref()
+            .map_or(crate::sip::th_callid::DEFAULT_PREFIX, |t| t.prefix())
+    }
+
+    /// Whether `hidden` (decoded as `decoded`) is the callee side of `caller`.
+    #[cfg(feature = "tls")]
+    fn th_joins(
+        decoded: &crate::sip::th_callid::Decode,
+        hidden: &SipDialog,
+        caller: &SipDialog,
+    ) -> bool {
+        fn leg(d: &SipDialog) -> crate::sip::th_callid::Leg<'_> {
+            crate::sip::th_callid::Leg {
+                call_id: d.call_id.as_str(),
+                from_tag: d.from_tag.as_deref(),
+                to_tag: d.to_tag.as_deref(),
+            }
+        }
+        crate::sip::th_callid::joins(decoded, leg(hidden), leg(caller))
+    }
+
+    /// The topology-hiding state of the dialog `call_id`: `None` when it is
+    /// not a hidden leg, is not in the store, or the build has no `tls` and
+    /// so cannot decode.
+    #[must_use]
+    pub fn th_callid_status(&self, call_id: &str) -> Option<ThCallidStatus> {
+        #[cfg(feature = "tls")]
+        {
+            self.th_status_of(self.get(call_id)?)
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            let _ = call_id;
+            None
+        }
+    }
+
+    /// [`Self::th_callid_status`] for a dialog already looked up.
+    #[cfg(feature = "tls")]
+    fn th_status_of(&self, d: &SipDialog) -> Option<ThCallidStatus> {
+        use crate::sip::th_callid::{Decode, is_hidden};
+        if !is_hidden(&d.call_id, self.th_prefix()) {
+            return None;
+        }
+        let Some(th) = self.th_callid.as_deref() else {
+            return Some(ThCallidStatus::NoSecret);
+        };
+        let decoded = th.decode(&d.call_id);
+        Some(match &decoded {
+            Decode::NotHidden | Decode::Undecodable => ThCallidStatus::Undecodable,
+            Decode::Decoded { call_id, .. } => match self.get(call_id) {
+                Some(caller) if Self::th_joins(&decoded, d, caller) => ThCallidStatus::Decoded,
+                _ => ThCallidStatus::Unmatched,
+            },
+        })
+    }
+
+    /// Counts of every hidden dialog in the store by status, and how many of
+    /// the undecoded ones share a From tag with an observed non-hidden leg.
+    /// Never carries a secret or a decoded value. All zero in a build
+    /// without `tls`, which cannot decode.
+    #[must_use]
+    pub fn th_callid_summary(&self) -> ThCallidSummary {
+        #[cfg(feature = "tls")]
+        {
+            self.th_summary_tls()
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            ThCallidSummary::default()
+        }
+    }
+
+    /// [`Self::th_callid_summary`] in a build that can decode.
+    #[cfg(feature = "tls")]
+    fn th_summary_tls(&self) -> ThCallidSummary {
+        use crate::sip::th_callid::is_hidden;
+        let prefix = self.th_prefix();
+        let peer_tags: std::collections::HashSet<&str> = self
+            .dialogs
+            .values()
+            .filter(|d| !is_hidden(&d.call_id, prefix))
+            .filter_map(|d| d.from_tag.as_deref())
+            .collect();
+        let mut s = ThCallidSummary::default();
+        for d in self.dialogs.values() {
+            let Some(status) = self.th_status_of(d) else {
+                continue;
+            };
+            match status {
+                ThCallidStatus::Decoded => s.decoded += 1,
+                ThCallidStatus::NoSecret => s.no_secret += 1,
+                ThCallidStatus::Undecodable => s.undecodable += 1,
+                ThCallidStatus::Unmatched => s.unmatched += 1,
+            }
+            if matches!(
+                status,
+                ThCallidStatus::Undecodable | ThCallidStatus::Unmatched
+            ) && d.from_tag.as_deref().is_some_and(|t| peer_tags.contains(t))
+            {
+                s.undecoded_with_peer += 1;
+            }
+        }
+        s
     }
 
     /// Set how far apart two legs may be created and still correlate on
@@ -1379,10 +1688,13 @@ impl DialogStore {
 
     /// Find dialogs correlated to the given Call-ID with confidence scores.
     ///
-    /// Checks seven correlation strategies per candidate dialog, in descending
+    /// Checks eight correlation strategies per candidate dialog, in descending
     /// score order, first match wins:
     /// 1. **RFC 7989 `Session-ID`** (100): set intersection over the non-nil
     ///    halves, which is what survives a B2BUA swapping them.
+    /// 1. **OpenSIPS topology-hiding Call-ID** (100, `tls` builds with a
+    ///    configured secret): one leg's Call-ID decodes to the other's, and
+    ///    the From tags agree. See [`crate::sip::th_callid::joins`].
     /// 2. **Correlation header** (100): the B-leg carries a configured header
     ///    (none by default, see `sip.xcid`) pointing at the source Call-ID, or
     ///    vice versa.
@@ -1396,7 +1708,7 @@ impl DialogStore {
     /// 7. **Timing heuristic** (50): both INVITE dialogs share an endpoint IP
     ///    and started within the configured leg-correlation window of each
     ///    other — two seconds unless `[sip] leg_correlation_window_ms` or
-    ///    `--leg-correlation-window` says otherwise. The only one of the seven
+    ///    `--leg-correlation-window` says otherwise. The only one of the eight
     ///    that is a guess rather than an identifier comparison.
     ///
     /// Results are sorted by score descending.
@@ -1483,6 +1795,10 @@ impl DialogStore {
 
         let mut results: Vec<CorrelationResult<'_>> = Vec::new();
 
+        // Strategy 0.5 data: the source decoded once, when it is a hidden leg.
+        #[cfg(feature = "tls")]
+        let src_th = self.th_callid.as_deref().map(|th| (th, th.decode(call_id)));
+
         for candidate in self.dialogs.values() {
             if candidate.call_id == call_id {
                 continue;
@@ -1507,6 +1823,29 @@ impl DialogStore {
                         dialog: candidate,
                         score: 100,
                         reason: CorrelationReason::SessionId,
+                    });
+                    continue;
+                }
+            }
+
+            // Strategy 0.5: OpenSIPS topology-hiding Call-ID (score=100). Either
+            // the source or the candidate is the hidden leg; the other must be
+            // exactly the decoded Call-ID with the same From tag.
+            #[cfg(feature = "tls")]
+            if let Some((th, src_decoded)) = &src_th {
+                use crate::sip::th_callid::Decode;
+                let joined = match src_decoded {
+                    Decode::NotHidden => {
+                        let cand = th.decode(&candidate.call_id);
+                        Self::th_joins(&cand, candidate, dialog)
+                    }
+                    decoded => Self::th_joins(decoded, dialog, candidate),
+                };
+                if joined {
+                    results.push(CorrelationResult {
+                        dialog: candidate,
+                        score: 100,
+                        reason: CorrelationReason::TopologyHidingCallid,
                     });
                     continue;
                 }
@@ -1669,6 +2008,7 @@ impl DialogStore {
             parent_call_id: None,
             score: None,
             strategy: None,
+            method: None,
             identifier_match: None,
             // Overwritten below from `walked`; the root is always walked.
             followed: false,
@@ -1724,6 +2064,7 @@ impl DialogStore {
                     parent_call_id: Some(parent.clone()),
                     score: Some(r.score),
                     strategy: Some(strategy),
+                    method: Some(r.reason.method()),
                     identifier_match: Some(identifier_match),
                     followed: false,
                 });
@@ -6000,6 +6341,354 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             .err()
             .ok_or("one over is refused")?;
         assert_eq!(e.intervals, MAX_TIMELINE_BUCKETS + 1);
+        Ok(())
+    }
+
+    // ---- OPENSIPS topology hiding ("C" flag): decoded Call-ID correlation ----
+
+    /// An INVITE with `call_id` and From tag `from_tag` at `ts`.
+    #[cfg(feature = "tls")]
+    fn make_invite_tagged(
+        call_id: &str,
+        from_tag: &str,
+        ts: DateTime<Utc>,
+    ) -> Result<SipMessage, TestError> {
+        let raw = build_sip(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                &format!("From: <sip:alice@example.com>;tag={from_tag}"),
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {call_id}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        Ok(parse_sip(
+            &raw,
+            ts,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("should parse tagged INVITE: {e:?}"))?)
+    }
+
+    #[cfg(feature = "tls")]
+    fn th_store(key: &[u8]) -> Result<DialogStore, TestError> {
+        use crate::sip::th_callid::{SecretSource, ThCallid, ThCallidKey};
+        let th = ThCallid::new(ThCallidKey::from_bytes(key)?, "DLGCH_", SecretSource::File)?;
+        Ok(DialogStore::new(1000, false).with_th_callid(Some(std::sync::Arc::new(th))))
+    }
+
+    #[cfg(feature = "tls")]
+    fn th_results<'a>(store: &'a DialogStore, call_id: &str) -> Vec<&'a str> {
+        store
+            .find_correlated_scored(call_id)
+            .into_iter()
+            .filter(|r| r.reason == CorrelationReason::TopologyHidingCallid)
+            .map(|r| r.dialog.call_id.as_str())
+            .collect()
+    }
+
+    /// T12: the decoded strategy is an identifier match with its own wire name,
+    /// and every strategy maps to exactly one method, named by what the two
+    /// legs were compared on: a decoded Call-ID, a SIP header both carry, the
+    /// SDP origin, or timing. Every variant is listed, so a new strategy that
+    /// is not given a method here is noticed.
+    #[test]
+    fn t12_th_callid_reason_and_methods() {
+        assert_eq!(
+            CorrelationReason::TopologyHidingCallid.strategy(),
+            ("th_callid_decoded", true),
+            "the decode strategy has its own wire name and is an identifier match"
+        );
+        for (reason, method) in [
+            (CorrelationReason::TopologyHidingCallid, "decoded"),
+            (CorrelationReason::XCallId, "header"),
+            (CorrelationReason::SessionId, "header"),
+            (CorrelationReason::ChargingVectorRelatedIcid, "header"),
+            (CorrelationReason::ChargingVectorIcid, "header"),
+            (CorrelationReason::ViaBranch, "header"),
+            (CorrelationReason::SdpOrigin, "sdp"),
+            (CorrelationReason::TimingHeuristic, "timing"),
+        ] {
+            assert_eq!(reason.method().to_string(), method, "{reason:?}");
+        }
+    }
+
+    /// T13 (store level): a hidden leg joins its caller leg from either side,
+    /// at 100, under the decoded strategy, and its status is `decoded`.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn t13_hidden_leg_joins_its_caller_leg_both_ways() -> Result<(), TestError> {
+        use crate::sip::th_callid::encode;
+        let t0 = base_ts()?;
+        let caller = "a84b4c76e66710@example.com";
+        let hidden = encode(
+            caller,
+            None,
+            &crate::test_utils::th_test_secret("right"),
+            "DLGCH_",
+        );
+        let mut store = th_store(&crate::test_utils::th_test_secret("right"))?;
+        store.process_message(make_invite_tagged(caller, "ft1", t0)?);
+        store.process_message(make_invite_tagged(
+            &hidden,
+            "ft1",
+            t0 + TimeDelta::milliseconds(3),
+        )?);
+        assert_eq!(
+            th_results(&store, caller),
+            [hidden.as_str()],
+            "from the caller leg, the hidden leg is the one decoded join"
+        );
+        assert_eq!(
+            th_results(&store, &hidden),
+            [caller],
+            "from the hidden leg, the caller leg is the one decoded join"
+        );
+        let r = store.find_correlated_scored(&hidden);
+        assert_eq!(r[0].score, 100, "a decoded join scores 100");
+        assert_eq!(
+            r[0].reason,
+            CorrelationReason::TopologyHidingCallid,
+            "the strongest match is the decoded Call-ID"
+        );
+        assert_eq!(
+            store.th_callid_status(&hidden),
+            Some(ThCallidStatus::Decoded),
+            "the hidden leg reports that it decoded"
+        );
+        assert_eq!(
+            store.th_callid_status(caller),
+            None,
+            "the caller leg is not hidden, so it has no status"
+        );
+        // Loop protection (OpenSIPS 4.0): the tag rides along and must match.
+        let caller2 = "b2@example.com";
+        let hidden2 = encode(
+            caller2,
+            Some("ft2"),
+            &crate::test_utils::th_test_secret("right"),
+            "DLGCH_",
+        );
+        store.process_message(make_invite_tagged(caller2, "ft2", t0)?);
+        store.process_message(make_invite_tagged(&hidden2, "ft2", t0)?);
+        assert_eq!(
+            th_results(&store, &hidden2),
+            [caller2],
+            "loop protection's appended tag matches the From tag, so the leg joins"
+        );
+        Ok(())
+    }
+
+    /// T6 (store level): a wrong secret never joins, even a wrong secret built
+    /// so that the hidden leg decodes to ANOTHER observed Call-ID.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn t6_wrong_secret_never_joins() -> Result<(), TestError> {
+        use crate::sip::th_callid::encode;
+        let t0 = base_ts()?;
+        let a = "aaaaaaaaaaaaaa@example.com";
+        let b = "bbbbbbbbbbbbbb@example.com";
+        let hidden = encode(
+            a,
+            None,
+            &crate::test_utils::th_test_secret("right"),
+            "DLGCH_",
+        );
+        // The key that turns `hidden` into `b`: (a XOR right) XOR b, per byte.
+        let right = crate::test_utils::th_test_secret("right");
+        let evil: Vec<u8> = a
+            .bytes()
+            .zip(b.bytes())
+            .enumerate()
+            .map(|(i, (x, y))| x ^ right[i % right.len()] ^ y)
+            .collect();
+        let mut store = th_store(&evil)?;
+        store.process_message(make_invite_tagged(a, "fa", t0)?);
+        store.process_message(make_invite_tagged(b, "fb", t0)?);
+        store.process_message(make_invite_tagged(&hidden, "fa", t0)?);
+        assert!(th_results(&store, &hidden).is_empty(), "evil key joined");
+        assert!(
+            th_results(&store, b).is_empty(),
+            "the Call-ID the evil key decodes to has another From tag, so nothing joins it"
+        );
+        assert_eq!(
+            store.th_callid_status(&hidden),
+            Some(ThCallidStatus::Unmatched),
+            "decoded to a Call-ID with another From tag is unmatched, not decoded"
+        );
+        // An ordinary wrong secret: undecodable.
+        let mut store = th_store(&crate::test_utils::th_test_secret("wrong"))?;
+        store.process_message(make_invite_tagged(a, "fa", t0)?);
+        store.process_message(make_invite_tagged(&hidden, "fa", t0)?);
+        assert!(
+            th_results(&store, &hidden).is_empty(),
+            "a wrong secret joins nothing"
+        );
+        assert_eq!(
+            store.th_callid_status(&hidden),
+            Some(ThCallidStatus::Undecodable),
+            "a wrong secret leaves the hidden Call-ID undecodable"
+        );
+        let summary = store.th_callid_summary();
+        assert_eq!(
+            summary.undecodable, 1,
+            "one hidden leg the secret did not decode"
+        );
+        assert_eq!(
+            summary.undecoded_with_peer, 1,
+            "its caller leg, with the same From tag, was captured"
+        );
+        assert!(
+            summary.wrong_secret_suspected(),
+            "a captured caller leg that did not decode points at the secret"
+        );
+        Ok(())
+    }
+
+    /// The hidden leg seen BEFORE its caller leg still joins: two HEP agents
+    /// with skewed clocks, or a capture that starts mid-call, show the legs in
+    /// either order, and order is not evidence of anything.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn hidden_leg_seen_first_still_joins() -> Result<(), TestError> {
+        use crate::sip::th_callid::encode;
+        let t0 = base_ts()?;
+        let caller = "a84b4c76e66710@example.com";
+        let hidden = encode(
+            caller,
+            None,
+            &crate::test_utils::th_test_secret("right"),
+            "DLGCH_",
+        );
+        let mut store = th_store(&crate::test_utils::th_test_secret("right"))?;
+        store.process_message(make_invite_tagged(&hidden, "ft1", t0)?);
+        store.process_message(make_invite_tagged(
+            caller,
+            "ft1",
+            t0 + TimeDelta::seconds(1),
+        )?);
+        assert_eq!(
+            th_results(&store, &hidden),
+            [caller],
+            "seen first, the hidden leg still joins its caller leg"
+        );
+        assert_eq!(
+            th_results(&store, caller),
+            [hidden.as_str()],
+            "seen second, the caller leg still joins the hidden leg"
+        );
+        assert_eq!(
+            store.th_callid_status(&hidden),
+            Some(ThCallidStatus::Decoded),
+            "the order the legs arrived in does not change the status"
+        );
+        Ok(())
+    }
+
+    /// T7 (store level): the right secret with a different From tag does not join.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn t7_from_tag_mismatch_refuses_the_join() -> Result<(), TestError> {
+        use crate::sip::th_callid::encode;
+        let t0 = base_ts()?;
+        let a = "a84b4c76e66710@example.com";
+        let hidden = encode(
+            a,
+            None,
+            &crate::test_utils::th_test_secret("right"),
+            "DLGCH_",
+        );
+        let mut store = th_store(&crate::test_utils::th_test_secret("right"))?;
+        store.process_message(make_invite_tagged(a, "fa", t0)?);
+        store.process_message(make_invite_tagged(&hidden, "other", t0)?);
+        assert!(
+            th_results(&store, &hidden).is_empty(),
+            "the right secret with another From tag joins nothing"
+        );
+        assert!(th_results(&store, a).is_empty(), "nor from the caller side");
+        assert_eq!(
+            store.th_callid_status(&hidden),
+            Some(ThCallidStatus::Unmatched),
+            "decoded but with no leg holding that Call-ID and From tag is unmatched"
+        );
+        Ok(())
+    }
+
+    /// T8: no secret configured: no decoded join, status `no_secret`, and the
+    /// summary says so without suspecting a wrong secret.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn t8_missing_secret_reports_no_secret() -> Result<(), TestError> {
+        use crate::sip::th_callid::encode;
+        let t0 = base_ts()?;
+        let a = "a84b4c76e66710@example.com";
+        let hidden = encode(
+            a,
+            None,
+            &crate::test_utils::th_test_secret("right"),
+            "DLGCH_",
+        );
+        let mut store = DialogStore::new(100, false).with_th_callid(None);
+        store.process_message(make_invite_tagged(a, "fa", t0)?);
+        store.process_message(make_invite_tagged(&hidden, "fa", t0)?);
+        assert!(
+            th_results(&store, &hidden).is_empty(),
+            "with no secret configured nothing joins by decoding"
+        );
+        assert_eq!(
+            store.th_callid_status(&hidden),
+            Some(ThCallidStatus::NoSecret),
+            "a hidden Call-ID with no secret configured reports no_secret"
+        );
+        let summary = store.th_callid_summary();
+        assert_eq!(summary.no_secret, 1, "one hidden leg seen with no secret");
+        assert!(
+            !summary.wrong_secret_suspected(),
+            "no secret is not a wrong secret"
+        );
+        Ok(())
+    }
+
+    /// T15: fifty interleaved hidden calls inside one timing window: each
+    /// hidden leg joins its own caller leg and no other.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn t15_busy_proxy_joins_each_leg_to_its_own_caller() -> Result<(), TestError> {
+        use crate::sip::th_callid::encode;
+        let t0 = base_ts()?;
+        let mut store = th_store(&crate::test_utils::th_test_secret("right"))?;
+        let mut pairs = Vec::new();
+        for i in 0..50 {
+            let caller = format!("call-{i:03}@example.com");
+            let hidden = encode(
+                &caller,
+                None,
+                &crate::test_utils::th_test_secret("right"),
+                "DLGCH_",
+            );
+            let ts = t0 + TimeDelta::milliseconds(i * 7);
+            store.process_message(make_invite_tagged(&caller, &format!("f{i}"), ts)?);
+            pairs.push((caller, hidden));
+        }
+        for (i, (_, hidden)) in pairs.iter().enumerate() {
+            let ts = t0 + TimeDelta::milliseconds(i as i64 * 7 + 3);
+            store.process_message(make_invite_tagged(hidden, &format!("f{i}"), ts)?);
+        }
+        for (caller, hidden) in &pairs {
+            assert_eq!(th_results(&store, hidden), [caller.as_str()], "{hidden}");
+            assert_eq!(th_results(&store, caller), [hidden.as_str()], "{caller}");
+        }
+        assert_eq!(
+            store.th_callid_summary().decoded,
+            50,
+            "every one of the fifty hidden legs decoded and joined"
+        );
         Ok(())
     }
 }

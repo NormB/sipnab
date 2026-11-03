@@ -797,6 +797,7 @@ on a server started with `--node-name capture-01` and without
         "legs": [
           {
             "identifier_match": true,
+            "method": "sdp",
             "score": 90,
             "strategy": "sdp_origin",
             "uuid": "0158a120-253e-8c52-80ff-fb7de8c13332"

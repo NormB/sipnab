@@ -452,6 +452,7 @@ degrees of one thing:
 | `strategy` | Crosses a B2BUA? | What a match is worth | `identifier_match` |
 |---|---|---|---|
 | `session_id` | **Yes, by design** ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)) | An identifier both ends agreed on | `true` |
+| `th_callid_decoded` | **Yes**, through OpenSIPS `topology_hiding("C")` with the secret configured ([how](opensips-sipnab.md#calls-through-topology-hiding)) | The hidden Call-ID decodes to the other leg's, and the From tags match | `true` |
 | `x_call_id` | Only if the box inserts it | An identifier, by vendor convention | `true` |
 | `charging_vector_related_icid` | **Yes** — but only when the B2BUA chose to emit it ([RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) makes it a `MAY`) | The intermediary declared the link itself, in the parameter the RFC provides for it | `true` |
 | `sdp_origin` | Only if the box forwards SDP untouched | An identifier of the MEDIA session, not the dialog | `true` |
@@ -462,11 +463,12 @@ degrees of one thing:
 The rows are in descending score. sipnab reports a leg that satisfies two
 strategies under the higher-scoring one.
 
-Four fields decide how much of that tree you should act on:
+Five fields decide how much of that tree you should act on:
 
 | Field | Read it as |
 |---|---|
-| `strategy` | Which of the seven above matched, per leg |
+| `strategy` | Which of the eight above matched, per leg |
+| `method` | What sipnab compared the legs on: `decoded`, `header`, `sdp` or `timing` |
 | `identifier_match` | `true`: two ends agreed on an identifier. `false`: a guess |
 | `heuristic_only` | `true`: **every** returned leg rests on a guess, so the whole tree is a hypothesis |
 | `timing_clock` | Present only when the answer contains a time-based match. Absent means no leg needed one |

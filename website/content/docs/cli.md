@@ -1441,16 +1441,23 @@ sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --call-tree b2bua-caller-synt
 
 ```text
 Call tree from b2bua-caller-synth@203.0.113.1: 2 legs, depth 1, 28 messages, 1 timing guess
-Leg                                   Strategy          Score  Match  Followed
-------------------------------------------------------------------------------
-b2bua-caller-synth@203.0.113.1        root              -      -      yes
-  b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  50     guess  no
+Leg                                   Strategy          Method  Score  Match  Followed
+--------------------------------------------------------------------------------------
+b2bua-caller-synth@203.0.113.1        root              -       -      -      yes
+  b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  no
 ```
 
 - Each hop indents the leg two more spaces.
 - `Match` is `identifier` when the legs share an identifier (`X-Call-ID`,
-  `Session-ID`, the SDP origin, P-Charging-Vector or a Via branch), and
-  `guess` when only their timing ties them.
+  `Session-ID`, the SDP origin, P-Charging-Vector or a Via branch, or a
+  topology-hidden Call-ID that decodes to the other leg's), and `guess` when
+  only their timing ties them.
+- `Method` says how sipnab made the link: `decoded` (an OpenSIPS
+  topology-hiding Call-ID, decoded with the configured secret; see
+  [Calls through topology hiding](@/docs/opensips-sipnab.md#calls-through-topology-hiding)),
+  `header` (a SIP header both legs carry: one named in `[sip] xcid_headers`,
+  `Session-ID`, `P-Charging-Vector` or a Via branch), `sdp` (the SDP
+  origin) or `timing` (the guess).
 - `Followed` is `no` on a guess: sipnab lists the leg but does not look for
   that leg's own matches, so one wrong guess does not pull in unrelated calls.
 
@@ -1479,9 +1486,9 @@ sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --correlate 1-1966@10.0.2.20 --no
 
 ```text
 Legs correlated with 1-1966@10.0.2.20: 1 leg
-Leg               Strategy    Score  Match       Gap ms
--------------------------------------------------------
-1-1968@10.0.2.20  sdp_origin  90     identifier  -
+Leg               Strategy    Method  Score  Match       Gap ms
+---------------------------------------------------------------
+1-1968@10.0.2.20  sdp_origin  sdp     90     identifier  -
 ```
 
 The two calls carry the same SDP origin, an identifier, so the score is high.
@@ -1495,9 +1502,9 @@ sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --correlate b2bua-caller-synt
 
 ```text
 Legs correlated with b2bua-caller-synth@203.0.113.1: 1 leg
-Leg                                 Strategy          Score  Match  Gap ms
---------------------------------------------------------------------------
-b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  50     guess  3
+Leg                                 Strategy          Method  Score  Match  Gap ms
+----------------------------------------------------------------------------------
+b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  3
 Every leg here is a timing guess: no identifier ties it to this call.
 ```
 

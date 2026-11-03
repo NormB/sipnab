@@ -325,7 +325,8 @@ With `grouping = "leg"`, the default, each leg is its own container.
 
 ```json
 {"legs": [{"uuid": "018bcfe5-6800-88c0-b9c0-24e4c93555ff",
-           "strategy": "x_call_id", "identifier_match": true, "score": 100}]}
+           "strategy": "x_call_id", "method": "header",
+           "identifier_match": true, "score": 100}]}
 ```
 
 - `uuid` is the other leg's container uuid. It stays the same under

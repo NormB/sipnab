@@ -389,3 +389,124 @@ mod tests {
         Ok(())
     }
 }
+
+/// A topology-hiding secret for a test, minted at run time rather than
+/// pasted (a pasted one is what CodeQL's hard-coded-cryptographic-value rule
+/// reports; `tests/hardcoded_crypto_material_test.rs` holds the tree to it).
+///
+/// The tests need the properties `digest_leak::tests::nonce_for` gives a
+/// nonce: the same label is the same secret, and different labels differ.
+/// Hex text, so it is never empty and never holds a NUL, which OpenSIPS could
+/// not hold either.
+///
+/// One label is special, because a test that names the outcome of a WRONG
+/// secret needs that outcome not to depend on the draw: `"wrong"` is the
+/// `"right"` secret with bit 5 (0x20) of every byte flipped. It then decodes
+/// every byte of a Call-ID with that bit flipped, and the `.` of
+/// `example.com` becomes 0x0e, which no Call-ID holds, so the decode is
+/// always refused as undecodable. Flipping 0x20 in a hex digit or letter
+/// never gives a NUL.
+#[cfg(feature = "tls")]
+pub fn th_test_secret(label: &str) -> Vec<u8> {
+    if label == "wrong" {
+        return th_test_secret("right")
+            .into_iter()
+            .map(|b| b ^ 0x20)
+            .collect();
+    }
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static MINTED: OnceLock<parking_lot::Mutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
+    let mut minted = MINTED
+        .get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+        .lock();
+    if let Some(s) = minted.get(label) {
+        return s.clone();
+    }
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos() as u64);
+    let distinct = minted.len() as u64;
+    let minted_now = format!("{:016x}", nanos.rotate_left(13) ^ distinct).into_bytes();
+    minted.insert(label.to_string(), minted_now.clone());
+    minted_now
+}
+
+/// The two INVITEs of one call through OpenSIPS `topology_hiding("C")`: the
+/// caller leg, then the hidden leg 4 ms later, whose Call-ID OpenSIPS encoded
+/// with the secret [`th_test_secret`] mints for `opensips_label`. Both carry
+/// From tag `ft0100`. Addresses are RFC 5737.
+///
+/// Returns `([caller_invite, hidden_invite], caller_call_id, hidden_call_id)`.
+#[cfg(feature = "tls")]
+pub fn th_hidden_call_messages(
+    opensips_label: &str,
+) -> Result<([crate::sip::SipMessage; 2], String, String), String> {
+    let caller = "a84b4c76e66710@example.com".to_string();
+    let hidden =
+        crate::sip::th_callid::encode(&caller, None, &th_test_secret(opensips_label), "DLGCH_");
+    let t0 = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH + chrono::TimeDelta::days(20_000);
+    let invite = |i: i64, cid: &str, src: [u8; 4], dst: [u8; 4]| {
+        let raw = build_sip_message(
+            "INVITE sip:bob@example.com SIP/2.0",
+            &[
+                "From: <sip:alice@example.com>;tag=ft0100",
+                "To: <sip:bob@example.com>",
+                &format!("Call-ID: {cid}"),
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        crate::sip::parser::parse_sip(
+            &raw,
+            t0 + chrono::TimeDelta::milliseconds(i * 4),
+            std::net::IpAddr::from(src),
+            std::net::IpAddr::from(dst),
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .map_err(|e| format!("parse: {e:?}"))
+    };
+    let msgs = [
+        invite(0, &caller, [192, 0, 2, 10], [192, 0, 2, 1])?,
+        invite(1, &hidden, [192, 0, 2, 1], [198, 51, 100, 20])?,
+    ];
+    Ok((msgs, caller, hidden))
+}
+
+/// A store holding both INVITEs of [`th_hidden_call_messages`] for
+/// `opensips_label`, decoding with the secret minted for `store_label`, or not
+/// decoding when it is `None`. Equal labels are the right secret.
+///
+/// Returns `(store, caller_call_id, hidden_call_id)`.
+#[cfg(feature = "tls")]
+pub fn th_hidden_call_store(
+    opensips_label: &str,
+    store_label: Option<&str>,
+) -> Result<(crate::sip::dialog_store::DialogStore, String, String), String> {
+    let (msgs, caller, hidden) = th_hidden_call_messages(opensips_label)?;
+    let mut ds = th_store(store_label.map(th_test_secret).as_deref())?;
+    for m in msgs {
+        ds.process_message(m);
+    }
+    Ok((ds, caller, hidden))
+}
+
+/// An empty store that decodes with `key` and prefix `DLGCH_`, or does not
+/// decode when `key` is `None`.
+#[cfg(feature = "tls")]
+pub fn th_store(key: Option<&[u8]>) -> Result<crate::sip::dialog_store::DialogStore, String> {
+    use crate::sip::th_callid::{SecretSource, ThCallid, ThCallidKey};
+    let th = match key {
+        Some(k) => Some(Arc::new(ThCallid::new(
+            ThCallidKey::from_bytes(k)?,
+            "DLGCH_",
+            SecretSource::File,
+        )?)),
+        None => None,
+    };
+    Ok(crate::sip::dialog_store::DialogStore::new(100, false).with_th_callid(th))
+}

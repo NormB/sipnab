@@ -1613,6 +1613,62 @@ A fraud-detection or scanner-detection count, window or factor in `[security]` i
 
 **Exit code:** 1.
 
+### `[sip] th_callid_* needs a sipnab built with the tls feature`
+
+The configuration sets `[sip] th_callid_secret_file`, `th_callid_secret` or `th_callid_prefix`, and this sipnab build lacks the `tls` feature, which holds the code that decodes OpenSIPS topology-hiding Call-IDs. sipnab refuses the setting rather than ignore a secret the configuration names. Every release package includes `tls`. The printed line starts with `invalid config value: `.
+
+**What to do:** Run a release package or a build with `--features tls`, or remove the `th_callid_*` keys.
+
+**Exit code:** 1.
+
+### `[sip] th_callid_prefix must not be empty`
+
+`[sip] th_callid_prefix` is the OpenSIPS `th_callid_prefix` that starts every hidden Call-ID. An empty prefix would make every Call-ID look hidden. The printed line starts with `invalid config value: `.
+
+**What to do:** Set it to the value of `th_callid_prefix` in the OpenSIPS script, or remove the key for the OpenSIPS default, `DLGCH_`.
+
+**Exit code:** 1.
+
+### `[sip] th_callid_prefix needs th_callid_secret_file or th_callid_secret`
+
+The configuration sets `[sip] th_callid_prefix` and no secret to decode with, so the prefix would do nothing. The printed line starts with `invalid config value: `.
+
+**What to do:** Add `th_callid_secret_file`, or `th_callid_secret = "opensips-default"` when OpenSIPS keeps its default secret. Or remove the prefix. See [Calls through topology hiding](@/docs/opensips-sipnab.md#calls-through-topology-hiding).
+
+**Exit code:** 1.
+
+### `[sip] th_callid_secret = "opensips-default": decoding hidden Call-IDs with the OpenSIPS default secret, which is public and hides nothing`
+
+A warning at startup, not an error. The configuration asks sipnab to decode topology-hiding Call-IDs with the `th_callid_passwd` OpenSIPS uses when the script sets none. That value is in the OpenSIPS source, so anyone who sees the hidden Call-ID can decode it as well.
+
+**What to do:** Nothing, when that is the deployment. To hide the caller's Call-ID, set `th_callid_passwd` in the OpenSIPS script, put the same value in a file and name the file with `[sip] th_callid_secret_file`.
+
+**Exit code:** None. The run continues.
+
+### `[sip] th_callid_secret accepts only "opensips-default"; put a real secret in a file named by th_callid_secret_file (the value given is not shown)`
+
+`[sip] th_callid_secret` takes one value, `"opensips-default"`. Any other value may be a real secret typed into the configuration file, so sipnab refuses it and does not print it. The printed line starts with `invalid config value: `.
+
+**What to do:** Put the secret in a file that only the account running sipnab can read, name it with `th_callid_secret_file`, and remove `th_callid_secret`.
+
+**Exit code:** 1.
+
+### `[sip] th_callid_secret_file must not be empty`
+
+`[sip] th_callid_secret_file` names the file that holds the OpenSIPS `th_callid_passwd`, and the value is an empty path. The printed line starts with `invalid config value: `.
+
+**What to do:** Give the path of the secret file, or remove the key.
+
+**Exit code:** 1.
+
+### `[sip] th_callid_secret_file and th_callid_secret: set one, not both`
+
+Both keys name a secret, and sipnab would have to choose one. The printed line starts with `invalid config value: `.
+
+**What to do:** Keep `th_callid_secret_file` for a secret OpenSIPS sets, or `th_callid_secret = "opensips-default"` for its default, and remove the other.
+
+**Exit code:** 1.
+
 ### `sipnabrc is not valid TOML: {e}`
 
 While saving from the terminal UI, sipnab found that the existing configuration file is not valid TOML (the configuration file format).

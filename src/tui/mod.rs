@@ -329,6 +329,8 @@ pub struct App {
     talkers: TalkersCache,
     carrier_metrics: CarrierMetricsCache,
     endpoint: EndpointCache,
+    /// The call flow's correlation summary for the status line.
+    flow_correlation: FlowCorrelationCache,
     call_volume: VolumeCache,
     /// Relay-statistics view cache and the ask in flight (ST8).
     relay_stats: relay_stats::RelayStatsCache,
@@ -571,6 +573,7 @@ impl App {
             talkers: TalkersCache::default(),
             carrier_metrics: CarrierMetricsCache::default(),
             endpoint: EndpointCache::default(),
+            flow_correlation: FlowCorrelationCache::default(),
             call_volume: VolumeCache::default(),
             relay_stats: relay_stats::RelayStatsCache::default(),
             relay_query: relay_stats::RelayQueryState::default(),
@@ -1208,6 +1211,30 @@ impl App {
         self.sync_stream_list(&store);
         self.sync_text_views(&store);
         self.sync_ladder(&store);
+        self.sync_flow_correlation(&store);
+    }
+
+    /// The call flow's correlation summary for the status line. Rebuilt at
+    /// once for a different call, so opening a call never shows the last
+    /// call's legs; for the same call, when the store changed and the floor
+    /// allows, because its other leg can arrive while the view is open.
+    fn sync_flow_correlation(&mut self, store: &DialogStore) {
+        let View::CallFlow(ref cid) = self.current_view else {
+            return;
+        };
+        let c = &mut self.flow_correlation;
+        if c.key.as_ref().is_some_and(|(k, _)| k != cid) {
+            c.key = None;
+        }
+        refresh_text(
+            TextCacheParts {
+                key: &mut c.key,
+                text: &mut c.text,
+                floor: &mut c.floor,
+            },
+            (cid.clone(), store.generation()),
+            || call_flow::correlation::summary(store, cid),
+        );
     }
 
     /// Quality dashboard: rebuild the snapshot outside the render pass
