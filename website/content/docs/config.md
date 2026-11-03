@@ -49,7 +49,7 @@ and exit status, and prints nothing else. A run's checks of `[actions] tfps`,
 `[[vcon.rule]]` all apply. A port range written backwards:
 
 ```text
-ERROR sipnab::app::bootstrap: Invalid [capture] portrange: Port range start (9) > end (1)
+Invalid [capture] portrange: Port range start (9) > end (1)
 ```
 
 sipnab exits with status 1.
@@ -506,7 +506,7 @@ sipnab refuses a `reg_flood_window_secs` outside 1 to 3600 and a
   the range and the value:
 
   ```text
-  ERROR sipnab::app::bootstrap: invalid config value: [security] reg_flood_window_secs must be 1-3600 (seconds of capture time one failure count spans), got 3601
+  invalid config value: [security] reg_flood_window_secs must be 1-3600 (seconds of capture time one failure count spans), got 3601
   ```
 
 - The `--reg-flood-window` and `--reg-flood-transaction-timeout` flags refuse
@@ -635,7 +635,7 @@ Rules for the keys:
   the message names the key:
 
   ```text
-  ERROR sipnab::app::bootstrap: [action_limits] per_minute: action rate limits cannot be turned off: every limit must be at least 1
+  [action_limits] per_minute: action rate limits cannot be turned off: every limit must be at least 1
   ```
 - The limits survive a restart. sipnab rebuilds them from the journal, so
   crashing it does not reset them.
@@ -944,7 +944,7 @@ once.
 - The minimum is 1048576 (1 MiB). A smaller value stops the run with exit 1:
 
   ```text
-  ERROR sipnab::app::bootstrap: invalid config value: [limits] max_audio_bytes must be >= 1048576 (1 MiB), got 1048575; to keep no audio at all, leave --retain-audio off
+  invalid config value: [limits] max_audio_bytes must be >= 1048576 (1 MiB), got 1048575; to keep no audio at all, leave --retain-audio off
   ```
 
 - Set `max_audio_frames` to cap each stream as well. For example, 1500 frames

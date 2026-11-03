@@ -915,7 +915,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // release job to attaching a signature and a provenance file.
     // Measurement: with origin/main's build-ci-release.md swapped back in,
     // the extractor reads 736.
-    const EXPECTED_CODE_LINKS: usize = 737;
+    // 737 -> 741: docs/internals/build-ci-release.md links
+    // scripts/check-rustfmt.sh three times (the format gate in CI's check
+    // job, in pre-commit and in pre-push) and bpf/rust-toolchain.toml once
+    // (the pre-push bpf clippy gate).
+    const EXPECTED_CODE_LINKS: usize = 741;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

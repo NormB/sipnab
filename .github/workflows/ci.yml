@@ -132,6 +132,14 @@ jobs:
           restore-keys: |
             cargo-check-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
+      - name: Install the pinned rustfmt for the scripts' tests
+        if: runner.os == 'Linux'
+        # scripts/tests/test_prepare_commit.py runs scripts/prepare-commit.sh,
+        # whose formatting fixer runs scripts/check-rustfmt.sh, which needs the
+        # dated nightly rustfmt in .rustfmt-toolchain. The Format step below
+        # installs it too, but only after this test has run.
+        run: rustup toolchain install "$(cat .rustfmt-toolchain)" --profile minimal --component rustfmt
+
       - name: Test Python examples and documentation tooling
         if: runner.os == 'Linux'
         run: |
@@ -368,14 +376,35 @@ jobs:
         # pre-push copy.
         run: cargo clippy --no-default-features --lib -- -D warnings
 
-      - name: Format
-        # `--check` alone covers this workspace. `fuzz/` and `bpf/` are
-        # excluded from it deliberately, so they need naming: bpf/src/main.rs
-        # sat unformatted with every fmt gate in the repository green.
+      - name: Clippy the fuzz targets
+        # fuzz/ is its own workspace, so `--workspace` above never lints it,
+        # and the fuzz-check job only compiles it. The pre-push hook runs the
+        # same command.
+        if: runner.os == 'Linux'
+        run: cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+
+      - name: Clippy the BPF program
+        # bpf/ is its own workspace on the dated nightly in
+        # bpf/rust-toolchain.toml, so no other clippy run reads it. The binary
+        # target only: a `no_std` program has no test harness. The pre-push
+        # hook runs the same command.
+        if: runner.os == 'Linux'
+        working-directory: bpf
         run: |
-          cargo fmt --check
-          cargo fmt --manifest-path fuzz/Cargo.toml -- --check
-          cargo fmt --manifest-path bpf/Cargo.toml -- --check
+          rustup toolchain install
+          rustup component add clippy
+          cargo clippy -- -D warnings
+
+      - name: Format
+        # The dated nightly rustfmt in .rustfmt-toolchain, the only rustfmt
+        # that applies every option in rustfmt.toml, over every tracked `.rs`
+        # file: `fuzz/` and `bpf/` are not workspace members, and bpf/src/main.rs
+        # once sat unformatted with every fmt gate in the repository green.
+        # Only rustfmt runs on the nightly; the build stays on stable. The
+        # hooks run the same script.
+        run: |
+          rustup toolchain install "$(cat .rustfmt-toolchain)" --profile minimal --component rustfmt
+          scripts/check-rustfmt.sh
 
       - name: Docs
         # rustdoc-only lints (broken intra-doc links, private-item links)
@@ -794,6 +823,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
         with:
           components: clippy, rustfmt
+      - name: Install the pinned rustfmt
+        # The pre-push scenarios run the real format gate, which needs the
+        # dated nightly rustfmt; the stable one above ignores the Google style
+        # options. Without it every scenario is blocked by the format step.
+        run: rustup toolchain install "$(cat .rustfmt-toolchain)" --profile minimal --component rustfmt
       - name: Run the pre-push hook against its scenarios
         run: sh scripts/test-pre-push.sh
       - name: Run the pre-commit hook against its scenarios
@@ -1088,12 +1122,12 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
       - name: Install cargo-audit
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2
         with:
           tool: cargo-audit
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2
         with:
           tool: cargo-deny
 

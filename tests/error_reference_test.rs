@@ -741,7 +741,11 @@ fn lists() -> Result<Lists, TestError> {
 // 86 -> 85: pcap_export_mode_refusal is gone. --pcap-export-mode is typed
 // as PcapExportMode, so clap refuses any other value and the refusal could
 // not be reached.
-const EXPECTED_UNRESOLVED: usize = 85;
+// 85 -> 82: src/main.rs's three refusals (archive passwords, run
+// provenance, Cli::validate) print through PlanError::usage(..).exit()
+// instead of their own `error!`, so the PlanError site carries them, and
+// SIPNAB_LOG=off no longer hides them (startup_refusal_stderr_test).
+const EXPECTED_UNRESOLVED: usize = 82;
 
 /// How many distinct templates the scope prints (informational lines
 /// excluded). Pinned with `==` so a new or removed message is a decision.

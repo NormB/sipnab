@@ -113,7 +113,8 @@ fn the_reader_finds_every_copy() {
         .collect();
     assert_eq!(
         found,
-        BTreeSet::from(["3.1.5".to_string(), "9.0.5".to_string()])
+        BTreeSet::from(["3.1.5".to_string(), "9.0.5".to_string()]),
+        "both the top-level and the nested minimatch are found, and minimatch-extra is not"
     );
 }
 

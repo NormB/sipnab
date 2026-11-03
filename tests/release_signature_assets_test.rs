@@ -426,7 +426,11 @@ fn assert_caught(fault: &str, workflow: &str, expect: &str) {
 
 #[test]
 fn the_good_fixture_has_no_gaps() {
-    assert_eq!(signing_gaps(GOOD), Vec::<String>::new());
+    assert_eq!(
+        signing_gaps(GOOD),
+        Vec::<String>::new(),
+        "the good fixture uploads and signs everything, so no gap is reported"
+    );
 }
 
 #[test]
@@ -450,14 +454,20 @@ fn a_release_that_does_not_upload_the_provenance_is_caught() {
 #[test]
 fn a_signature_scorecard_does_not_recognize_is_caught() {
     let wrong = GOOD.replace("SHA256SUMS.txt.sigstore.json", "SHA256SUMS.txt.bundle.json");
-    assert_ne!(wrong, GOOD);
+    assert_ne!(
+        wrong, GOOD,
+        "the fault must change the fixture, or the test proves nothing"
+    );
     assert_caught("signature misnamed", &wrong, "Scorecard does not count");
 }
 
 #[test]
 fn a_provenance_file_scorecard_does_not_recognize_is_caught() {
     let wrong = GOOD.replace(".intoto.jsonl", ".intoto.json");
-    assert_ne!(wrong, GOOD);
+    assert_ne!(
+        wrong, GOOD,
+        "the fault must change the fixture, or the test proves nothing"
+    );
     assert_caught("provenance misnamed", &wrong, "Scorecard does not count");
 }
 
@@ -559,24 +569,30 @@ fn a_commented_out_signing_step_is_caught() {
 
 #[test]
 fn the_glob_matches_within_one_path_component() {
-    assert!(glob_matches(
-        "artifacts/*.sigstore.json",
-        "artifacts/SHA256SUMS.txt.sigstore.json"
-    ));
-    assert!(glob_matches(
-        "artifacts/*.intoto.jsonl",
-        "artifacts/sipnab-${version}.intoto.jsonl"
-    ));
-    assert!(!glob_matches(
-        "artifacts/*.sigstore.json",
-        "artifacts/sub/x.sigstore.json"
-    ));
-    assert!(!glob_matches(
-        "artifacts/*.sig",
-        "artifacts/x.sigstore.json"
-    ));
-    assert!(glob_matches(
-        "artifacts/SHA256SUMS.txt",
-        "artifacts/SHA256SUMS.txt"
-    ));
+    assert!(
+        glob_matches(
+            "artifacts/*.sigstore.json",
+            "artifacts/SHA256SUMS.txt.sigstore.json"
+        ),
+        "a star matches the file name in the same directory"
+    );
+    assert!(
+        glob_matches(
+            "artifacts/*.intoto.jsonl",
+            "artifacts/sipnab-${version}.intoto.jsonl"
+        ),
+        "a star matches a version placeholder in the file name"
+    );
+    assert!(
+        !glob_matches("artifacts/*.sigstore.json", "artifacts/sub/x.sigstore.json"),
+        "a star does not cross a path separator"
+    );
+    assert!(
+        !glob_matches("artifacts/*.sig", "artifacts/x.sigstore.json"),
+        "the literal suffix after the star must match"
+    );
+    assert!(
+        glob_matches("artifacts/SHA256SUMS.txt", "artifacts/SHA256SUMS.txt"),
+        "a pattern without a star matches only the same path"
+    );
 }

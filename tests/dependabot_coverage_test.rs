@@ -389,28 +389,56 @@ updates:
                 ecosystem: "docker".into(),
                 dirs: vec!["/**".into(), "/ops".into()]
             },
-        ]
+        ],
+        "each entry keeps its ecosystem and every directory, from both list styles"
     );
 }
 
 /// `/` matches the root only, `*` one segment, `**` any number.
 #[test]
 fn directory_patterns_match_as_dependabot_reads_them() {
-    assert!(glob_matches("/", "/"));
-    assert!(!glob_matches("/", "/e2e"));
-    assert!(glob_matches("/e2e", "/e2e"));
-    assert!(glob_matches("/e2e/", "/e2e"));
-    assert!(!glob_matches("/e2e", "/e2e/sub"));
-    assert!(glob_matches("/**", "/"));
-    assert!(glob_matches("/**", "/harness/sipp"));
-    assert!(glob_matches(
-        "/.github/actions/*",
-        "/.github/actions/free-disk"
-    ));
-    assert!(!glob_matches("/.github/actions/*", "/.github/actions/a/b"));
-    assert!(!glob_matches("/.github/actions/*", "/.github/actions"));
-    assert!(glob_matches("/clients/*-sdk", "/clients/go-sdk"));
-    assert!(!glob_matches("/clients/*-sdk", "/clients/go"));
+    assert!(glob_matches("/", "/"), "a slash matches the root");
+    assert!(
+        !glob_matches("/", "/e2e"),
+        "a slash matches the root only, not a subdirectory"
+    );
+    assert!(
+        glob_matches("/e2e", "/e2e"),
+        "a plain directory matches itself"
+    );
+    assert!(
+        glob_matches("/e2e/", "/e2e"),
+        "a trailing slash does not change the directory matched"
+    );
+    assert!(
+        !glob_matches("/e2e", "/e2e/sub"),
+        "a plain directory does not match its subdirectories"
+    );
+    assert!(glob_matches("/**", "/"), "a double star matches the root");
+    assert!(
+        glob_matches("/**", "/harness/sipp"),
+        "a double star matches any depth"
+    );
+    assert!(
+        glob_matches("/.github/actions/*", "/.github/actions/free-disk"),
+        "a single star matches one path segment"
+    );
+    assert!(
+        !glob_matches("/.github/actions/*", "/.github/actions/a/b"),
+        "a single star does not match two segments"
+    );
+    assert!(
+        !glob_matches("/.github/actions/*", "/.github/actions"),
+        "a single star needs a segment to match"
+    );
+    assert!(
+        glob_matches("/clients/*-sdk", "/clients/go-sdk"),
+        "a star inside a segment matches the rest of that segment"
+    );
+    assert!(
+        !glob_matches("/clients/*-sdk", "/clients/go"),
+        "a star inside a segment still needs the literal suffix"
+    );
 }
 
 /// Each class of dependency file is found, in its own directory, named as
@@ -499,7 +527,8 @@ fn every_class_of_dependency_file_is_found() -> Result<(), TestError> {
                 "/.github/actions/free-disk"
             ),
             (".github/workflows", "github-actions", "/"),
-        ]
+        ],
+        "each dependency file maps to its ecosystem and directory, and other files are skipped"
     );
     Ok(())
 }
@@ -510,12 +539,24 @@ fn coverage_needs_the_ecosystem_and_the_directory() {
     let updates = parse_updates(
         "updates:\n  - package-ecosystem: cargo\n    directory: /\n  - package-ecosystem: npm\n    directory: /e2e\n",
     );
-    assert!(covered(&updates, "cargo", "/"));
-    assert!(covered(&updates, "npm", "/e2e"));
+    assert!(
+        covered(&updates, "cargo", "/"),
+        "an entry covers its own ecosystem and directory"
+    );
+    assert!(
+        covered(&updates, "npm", "/e2e"),
+        "a non-root directory entry covers that directory"
+    );
     assert!(
         !covered(&updates, "npm", "/"),
         "cargo's / does not cover npm"
     );
-    assert!(!covered(&updates, "npm", "/clients/typescript"));
-    assert!(!covered(&updates, "pip", "/e2e"));
+    assert!(
+        !covered(&updates, "npm", "/clients/typescript"),
+        "an npm entry for /e2e does not cover another directory"
+    );
+    assert!(
+        !covered(&updates, "pip", "/e2e"),
+        "an entry for /e2e does not cover another ecosystem there"
+    );
 }

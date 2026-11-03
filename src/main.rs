@@ -168,8 +168,7 @@ fn run_immediate_steps(cli: &Cli) {
     //     2 read inputs too. A source that cannot supply one is an argument
     //     error, the same as a malformed flag.
     if let Err(msg) = bootstrap::install_archive_passwords(cli) {
-        tracing::error!("{msg}");
-        sipnab::capture::archive::release_run_and_exit(2);
+        bootstrap::PlanError::usage(msg).exit();
     }
 
     // 2. Immediate commands that run before config load (--setup-caps,
@@ -216,8 +215,7 @@ fn run_validation_steps(cli: &Cli) -> Result<sipnab::config::LoadedConfig, boots
     // 3. Signal handlers + argument-combination validation.
     signals::install_handlers();
     if let Err(msg) = cli.validate() {
-        tracing::error!("{}", msg);
-        sipnab::capture::archive::release_run_and_exit(2);
+        bootstrap::PlanError::usage(msg.to_string()).exit();
     }
     // 3a. Read the config file, applying nothing in it yet. The one setting
     //     needed before step 5 is the node name, which the record below
@@ -239,8 +237,7 @@ fn run_validation_steps(cli: &Cli) -> Result<sipnab::config::LoadedConfig, boots
     //     full" -- and no reader could tell which. Nothing is lost by stopping
     //     here: no packet has been read.
     if let Err(msg) = sipnab::app::run_provenance::write_record(cli) {
-        tracing::error!("{msg}");
-        sipnab::capture::archive::release_run_and_exit(2);
+        bootstrap::PlanError::usage(msg).exit();
     }
 
     // 4. --mint-token: mint a signed bearer token and exit.

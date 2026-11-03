@@ -1824,8 +1824,15 @@ mod tests {
     #[test]
     fn an_empty_application_sdp_body_carries_no_sdp() -> Result<(), TestError> {
         let m = invite_with(Some("application/sdp"), b"")?;
-        assert!(!m.carries_sdp());
-        assert_eq!(m.label(), "INVITE");
+        assert!(
+            !m.carries_sdp(),
+            "an empty application/sdp body holds no session description"
+        );
+        assert_eq!(
+            m.label(),
+            "INVITE",
+            "an INVITE with an empty SDP body is labeled without (SDP)"
+        );
         Ok(())
     }
 
@@ -1843,7 +1850,11 @@ mod tests {
     #[test]
     fn a_200_ok_with_an_empty_sdp_body_is_labeled_without_sdp() -> Result<(), TestError> {
         let m = response_with("SIP/2.0 200 OK", Some("application/sdp"), b"")?;
-        assert_eq!(m.label(), "200 OK");
+        assert_eq!(
+            m.label(),
+            "200 OK",
+            "a 200 OK with an empty SDP body is labeled without (SDP)"
+        );
         Ok(())
     }
 
@@ -1856,7 +1867,10 @@ mod tests {
         empty
             .extend_from_slice(b"--B\r\nContent-Type: application/rs-metadata+xml\r\n\r\n<x/>\r\n");
         empty.extend_from_slice(b"--B\r\nContent-Type: application/sdp\r\n\r\n\r\n--B--\r\n");
-        assert!(!invite_with(ct, &empty)?.carries_sdp());
+        assert!(
+            !invite_with(ct, &empty)?.carries_sdp(),
+            "a multipart body whose only SDP part is empty carries no SDP"
+        );
         assert!(
             invite_with(ct, &multipart("application/sdp"))?.carries_sdp(),
             "a real SDP part still counts"
@@ -1868,11 +1882,20 @@ mod tests {
     /// or without a declared type, and with a leading blank line.
     #[test]
     fn a_body_holding_a_session_description_still_carries_sdp() -> Result<(), TestError> {
-        assert!(invite_with(Some("application/sdp"), SDP_BODY)?.carries_sdp());
-        assert!(invite_with(None, SDP_BODY)?.carries_sdp());
+        assert!(
+            invite_with(Some("application/sdp"), SDP_BODY)?.carries_sdp(),
+            "a declared application/sdp body with a session description carries SDP"
+        );
+        assert!(
+            invite_with(None, SDP_BODY)?.carries_sdp(),
+            "a session description with no declared type still carries SDP"
+        );
         let mut padded = b"\r\n".to_vec();
         padded.extend_from_slice(SDP_BODY);
-        assert!(invite_with(Some("application/sdp"), &padded)?.carries_sdp());
+        assert!(
+            invite_with(Some("application/sdp"), &padded)?.carries_sdp(),
+            "a leading blank line does not hide the session description"
+        );
         Ok(())
     }
 

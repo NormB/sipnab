@@ -761,3 +761,131 @@ fn the_renderer_escapes_roff_markup() {
         "\\fBIt denies nothing\\fR"
     );
 }
+
+/// The codes `docs/cli-reference.md`'s `## Exit codes` table lists, the one
+/// list the man page's EXIT STATUS is generated from.
+fn reference_exit_code_set() -> Result<BTreeSet<String>, TestError> {
+    Ok(reference_exit_codes()?
+        .into_iter()
+        .map(|(c, _)| c)
+        .collect())
+}
+
+/// The codes in the `## Exit codes` list of `docs/errors.md`: the first
+/// cell of each `` | `N` | `` row under that heading.
+fn errors_page_exit_codes() -> Result<BTreeSet<String>, TestError> {
+    let text = std::fs::read_to_string(repo().join("docs/errors.md"))?;
+    let start = text
+        .find("\n## Exit codes\n")
+        .ok_or("docs/errors.md has an `## Exit codes` section")?;
+    let mut codes = BTreeSet::new();
+    for line in text[start..].lines().skip(2) {
+        if line.starts_with("## ") {
+            break;
+        }
+        if let Some((code, _)) = line.strip_prefix("| `").and_then(|r| r.split_once('`'))
+            && !code.is_empty()
+            && code.chars().all(|c| c.is_ascii_digit())
+        {
+            codes.insert(code.to_string());
+        }
+    }
+    Ok(codes)
+}
+
+/// **`docs/errors.md` lists every exit code the CLI reference lists, and no
+/// other.** The error page is where an operator looks up what a number
+/// means; a code the reference gains and the page lacks is the gap the
+/// undocumented exit `130` was.
+#[test]
+fn the_error_page_lists_every_exit_code_the_reference_lists() -> Result<(), TestError> {
+    let reference = reference_exit_code_set()?;
+    let page = errors_page_exit_codes()?;
+    assert_eq!(
+        page, reference,
+        "docs/errors.md `## Exit codes` must list exactly the codes of the \
+         `## Exit codes` table in docs/cli-reference.md"
+    );
+    Ok(())
+}
+
+/// **Every number an error entry gives as its exit code is a documented
+/// code.** Each `**Exit code:**` line names the code its message stops the
+/// run with; a number outside the reference table would send the reader to a
+/// code nothing explains.
+#[test]
+fn every_exit_code_an_error_entry_names_is_documented() -> Result<(), TestError> {
+    let reference = reference_exit_code_set()?;
+    let text = std::fs::read_to_string(repo().join("docs/errors.md"))?;
+    let mut unknown = BTreeSet::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("**Exit code:**") else {
+            continue;
+        };
+        for word in rest.split(|c: char| !c.is_ascii_digit()) {
+            if !word.is_empty() && !reference.contains(word) {
+                unknown.insert(word.to_string());
+            }
+        }
+    }
+    assert!(
+        unknown.is_empty(),
+        "docs/errors.md names exit codes the CLI reference does not list: {unknown:?}"
+    );
+    Ok(())
+}
+
+/// **Every exit status the source spells as a literal is documented.** The
+/// exits go through `release_run_and_exit(N)`, `std::process::exit(N)` and
+/// the crash hook's `PostAction::Exit(N)`; a literal outside the reference
+/// table is a code an operator can see and cannot look up, which is how
+/// `130` (Ctrl-C at the archive password prompt) went undocumented.
+#[test]
+fn every_literal_exit_code_in_the_source_is_documented() -> Result<(), TestError> {
+    let reference = reference_exit_code_set()?;
+    let mut found = BTreeSet::new();
+    let mut stack = vec![repo().join("src")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path)?;
+            for call in [
+                "release_run_and_exit(",
+                "std::process::exit(",
+                "PostAction::Exit(",
+            ] {
+                for (at, _) in text.match_indices(call) {
+                    let digits: String = text[at + call.len()..]
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect();
+                    if !digits.is_empty() && text[at + call.len() + digits.len()..].starts_with(')')
+                    {
+                        found.insert((digits, path.display().to_string()));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        found.iter().any(|(c, _)| c == "1") && found.iter().any(|(c, _)| c == "2"),
+        "control: the scan finds the ordinary exits 1 and 2: {found:?}"
+    );
+    let undocumented: Vec<_> = found
+        .iter()
+        .filter(|(c, _)| !reference.contains(c))
+        .collect();
+    assert!(
+        undocumented.is_empty(),
+        "exit codes the source uses and docs/cli-reference.md `## Exit codes` \
+         does not list: {undocumented:?}"
+    );
+    Ok(())
+}

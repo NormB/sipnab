@@ -1717,10 +1717,15 @@ mod tests {
             "carrier.example",
             "peer.example",
             "transit1.example",
-            "8f2a",
         ] {
             assert!(!out.contains(leak), "{leak} survived: {out}");
         }
+        // `8f2a` is all hex, and so is every token this redactor writes, from
+        // a key minted per run: as a substring it turns up inside a digest
+        // such as `h-aa82d8f2a72e` (9 runs in 10,000 measured). A kept
+        // suffix would stand as a word of its own, so it is looked for as one.
+        let words: Vec<&str> = out.split(|c: char| !c.is_ascii_alphanumeric()).collect();
+        assert!(!words.contains(&"8f2a"), "8f2a survived: {out}");
         assert!(
             out.contains("void.2"),
             "void is the spec's own marker: {out}"

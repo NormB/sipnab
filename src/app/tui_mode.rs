@@ -582,7 +582,7 @@ pub fn run_tui_mode(
     // be read. A path that does not exist yet starts an empty session whose
     // notes save there.
     let (notes, notes_path) = tui_notes(cli.name_args.notes.as_deref()).unwrap_or_else(|e| {
-        tracing::error!(
+        stderr_line!(
             "--notes {}: {e}. sipnab will not start the TUI on it",
             cli.name_args.notes.as_deref().unwrap_or_default()
         );
@@ -637,7 +637,7 @@ pub fn run_tui_mode(
     // Actions, with their journal, before any server listens: a journal that
     // cannot be used refuses the run here.
     let actions = crate::app::servers::start_actions(&cli, &config).unwrap_or_else(|e| {
-        tracing::error!("{e}");
+        stderr_line!("{e}");
         crate::capture::archive::release_run_and_exit(2);
     });
 
@@ -890,7 +890,7 @@ fn open_action_trail(cli: &Cli) -> Option<Arc<crate::tui::action_trail::ActionTr
     let path = cli.security_args.tui_audit_file.as_deref()?;
     let trail = crate::tui::action_trail::ActionTrail::open(std::path::Path::new(path))
         .unwrap_or_else(|e| {
-            tracing::error!(
+            stderr_line!(
                 "--tui-audit-file {path}: {e}. sipnab refuses to run the TUI \
                  without the action trail it was asked for"
             );
@@ -1110,7 +1110,7 @@ fn start_tui_servers(
         capture_meter,
     )
     .unwrap_or_else(|e| {
-        tracing::error!("{e}");
+        stderr_line!("{e}");
         crate::capture::archive::release_run_and_exit(2);
     })
 }
@@ -1161,7 +1161,7 @@ fn spawn_tui_processor(inputs: TuiProcessorInputs) -> std::thread::JoinHandle<()
     match spawned {
         Ok(handle) => handle,
         Err(e) => {
-            tracing::error!("Failed to spawn processing thread: {e}");
+            stderr_line!("Failed to spawn processing thread: {e}");
             crate::capture::archive::release_run_and_exit(1);
         }
     }

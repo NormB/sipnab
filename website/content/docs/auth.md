@@ -119,7 +119,7 @@ sipnab --mint-token --token-scope metrics --mcp-signing-key "$KEY"
 ```
 
 ```text
-2026-10-16T12:00:16.370935Z ERROR sipnab::app::bootstrap: --token-scope metrics applies to the REST API only; the MCP surface has no /metrics endpoint
+--token-scope metrics applies to the REST API only; the MCP surface has no /metrics endpoint
 ```
 
 It exits with status `2`.

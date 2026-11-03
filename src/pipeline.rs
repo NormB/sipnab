@@ -3895,7 +3895,12 @@ mod quiet_bad_parse_tests {
         );
         let store = store_after(&[invite], near, callee, 10)?;
         let stream = store.iter().next().ok_or("one stream")?;
-        assert_eq!(stream.associated_dialog.as_deref(), Some("noct-1@test"));
+        assert_eq!(
+            stream.associated_dialog.as_deref(),
+            Some("noct-1@test"),
+            "a body with no Content-Type that starts `v=` is SDP, so its media links \
+             to the dialog that offered it"
+        );
         Ok(())
     }
 
@@ -3908,7 +3913,10 @@ mod quiet_bad_parse_tests {
         let invite = sip_with_body_typed(Some("text/plain"), "typed-1@test");
         let store = store_after(&[invite], near, callee, 10)?;
         let stream = store.iter().next().ok_or("one stream")?;
-        assert_eq!(stream.associated_dialog, None);
+        assert_eq!(
+            stream.associated_dialog, None,
+            "a body declared text/plain is not SDP however it starts, so it links no media"
+        );
         Ok(())
     }
 

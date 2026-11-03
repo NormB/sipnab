@@ -56,17 +56,31 @@ fn the_scan_finds_the_deps_walk_that_broke_branch_coverage() {
                }\n    \
                Ok(p.join(\"sipnab\"))\n\
                }\n";
-    assert_eq!(derives_the_binary_from_this_executable(src), vec![2]);
+    assert_eq!(
+        derives_the_binary_from_this_executable(src),
+        vec![2],
+        "a deps walk from current_exe is flagged at the line that calls current_exe"
+    );
     let parent = "let exe = std::env::current_exe()?;\nlet bin = exe.parent().ok_or(\"dir\")?.join(\"sipnab\");\n";
-    assert_eq!(derives_the_binary_from_this_executable(parent), vec![1]);
+    assert_eq!(
+        derives_the_binary_from_this_executable(parent),
+        vec![1],
+        "a join onto current_exe's parent is flagged at the line that calls current_exe"
+    );
 }
 
 #[test]
 fn the_scan_allows_rerunning_this_test_and_the_cargo_path() {
     let rerun = "let exe = std::env::current_exe()?;\nlet out = Command::new(exe)\n    .args([\"--exact\", role, \"--ignored\"])\n    .output()?;\n";
-    assert!(derives_the_binary_from_this_executable(rerun).is_empty());
+    assert!(
+        derives_the_binary_from_this_executable(rerun).is_empty(),
+        "running this test's own executable again is not deriving the sipnab binary"
+    );
     let cargo = "let out = Command::new(env!(\"CARGO_BIN_EXE_sipnab\")).output()?;\n";
-    assert!(derives_the_binary_from_this_executable(cargo).is_empty());
+    assert!(
+        derives_the_binary_from_this_executable(cargo).is_empty(),
+        "CARGO_BIN_EXE_sipnab is the sanctioned way to find the binary"
+    );
 }
 
 #[test]

@@ -24,6 +24,7 @@
 #[cfg(all(feature = "bpf", target_os = "linux"))]
 pub mod bpf;
 pub mod bpf_record;
+pub mod bpf_rings;
 pub mod btf;
 pub mod discover;
 pub mod elf;

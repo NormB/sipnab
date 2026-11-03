@@ -35,8 +35,8 @@
 
 use std::io;
 
-use aya::maps::perf::PerfEvent;
-use aya::maps::{Array, MapData, PerfEventArray};
+use aya::maps::perf::{PerfEvent, PerfEventArrayBuffer};
+use aya::maps::{Array, PerfEventArray};
 use aya::programs::uprobe::UProbeScope;
 use aya::programs::{KProbe, UProbe};
 use aya::{Ebpf, EbpfLoader};
@@ -45,6 +45,7 @@ use sipnab_bpf_types::{SockOffsets, TlsRecord};
 use super::bpf_record::{
     RingEvent, aligned_copy, attach_failed, describe_targets, refuse_without_programs, take_event,
 };
+use super::bpf_rings::{RING_PAGES, open_rings};
 use super::btf::Btf;
 use super::reader::Target;
 use crate::capture::channel::PacketTx;
@@ -71,7 +72,7 @@ pub struct BpfReader {
     /// a runtime would put a scheduler between the kernel ring and the channel
     /// for no benefit, and would drag `tokio` into a feature that otherwise
     /// needs none.
-    buffers: Vec<aya::maps::perf::PerfEventArrayBuffer<MapData>>,
+    buffers: Vec<PerfEventArrayBuffer>,
     /// Reassembly buffer for the rare sample that wraps the ring boundary.
     ///
     /// The kernel writes a sample as one contiguous run only when it fits
@@ -132,7 +133,7 @@ impl BpfReader {
                     .ok_or_else(|| io::Error::other("the object has no OFFSETS map"))?,
             )
             .map_err(|e| io::Error::other(format!("OFFSETS is not an array: {e}")))?;
-            map.set(0, offsets, 0)
+            map.set(0, &offsets, 0)
                 .map_err(|e| io::Error::other(format!("could not publish offsets: {e}")))?;
         }
 
@@ -159,7 +160,7 @@ impl BpfReader {
             prog.load()
                 .map_err(|e| io::Error::other(format!("verifier rejected the uprobe: {e}")))?;
             for t in targets {
-                prog.attach(t.symbol.as_str(), &t.library, UProbeScope::AllProcesses)
+                prog.attach([t.symbol.as_str()], &t.library, UProbeScope::AllProcesses)
                     .map_err(|e| {
                         io::Error::other(format!(
                             "attaching {}:{} failed: {e}",
@@ -170,24 +171,25 @@ impl BpfReader {
             }
         }
 
-        let mut events: PerfEventArray<_> = PerfEventArray::try_from(
-            bpf.take_map("EVENTS")
-                .ok_or_else(|| io::Error::other("the object has no EVENTS map"))?,
-        )
-        .map_err(|e| io::Error::other(format!("EVENTS is not a perf array: {e}")))?;
-
-        let mut buffers = Vec::new();
-        for cpu in aya::util::online_cpus().map_err(|(_, e)| io::Error::other(e.to_string()))? {
-            let buf = events
-                .open(cpu, None)
-                .map_err(|e| io::Error::other(format!("opening the ring for cpu {cpu}: {e}")))?;
-            buffers.push(buf);
-        }
-        if buffers.is_empty() {
-            return Err(io::Error::other(
-                "no per-CPU ring could be opened, so nothing would ever be read",
-            ));
-        }
+        // Borrowed from the loaded object, not taken out of it. A ring does not
+        // keep the map alive (in `aya` 0.14 it held a reference to it; from
+        // 0.15 it does not), and the kernel empties a perf event array when
+        // the last user-space descriptor of the map closes. Left inside `bpf`,
+        // which `Self` keeps, the map lives exactly as long as the rings.
+        let buffers = {
+            let mut events = PerfEventArray::try_from(
+                bpf.map_mut("EVENTS")
+                    .ok_or_else(|| io::Error::other("the object has no EVENTS map"))?,
+            )
+            .map_err(|e| io::Error::other(format!("EVENTS is not a perf array: {e}")))?;
+            let cpus =
+                aya::util::online_cpus().map_err(|(_, e)| io::Error::other(e.to_string()))?;
+            open_rings(
+                cpus,
+                |cpu| PerfEventArrayBuffer::open(cpu, RING_PAGES).map_err(io::Error::other),
+                |cpu, ring| events.set(cpu, ring).map_err(io::Error::other),
+            )?
+        };
 
         Ok(Self {
             _bpf: bpf,
