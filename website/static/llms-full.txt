@@ -1377,6 +1377,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 | Get a count an agent cannot miscount | [57. Ask the capture how many calls failed](#ask-the-capture-how-many-calls-failed) |
 | Get the facts behind a MOS score | [58. Ask why the MOS is what it is](#ask-why-the-mos-is-what-it-is) |
 | Export a whole set of calls in one agent call | [53. Export a vCon per failed call in one round trip](#export-a-vcon-per-failed-call-in-one-round-trip) |
+| Ask who sent the traffic, how groups of calls did, and whether a capture passes | [68. Ask an agent's follow-up questions over MCP](#ask-an-agents-follow-up-questions-over-mcp) |
 
 Just want a command to copy? [Look up a one-liner by task](#look-up-a-one-liner-by-task).
 
@@ -6033,6 +6034,139 @@ sipnab -N -I capture.pcap --report --filter "state == 'Failed'" --since 2026-10-
   - sipnab refuses a time with no offset, exit 2, because it names no instant.
 - The window bounds when a call **started**.
   - A call that started at 09:59 and failed at 10:05 is outside it.
+
+---
+
+## Ask an agent's follow-up questions over MCP
+
+**Problem:** An agent found the failing calls. Its next questions are who
+sent the traffic, how each group of calls did, whether the capture passes
+your rules, and which bytes prove a finding.
+
+Each call below runs the tool once over MCP stdio against a sample capture,
+with [`demos/mcp-stdio.sh`](https://github.com/NormB/sipnab/blob/main/demos/mcp-stdio.sh),
+and selects a few fields with `jq`. An agent sends the same arguments.
+Point `SIPNAB_BIN` at the binary you run:
+
+```bash
+export SIPNAB_BIN=/usr/bin/sipnab
+```
+
+**Who sent the most traffic** ([`top_talkers`](mcp-tools-security.md#top_talkers)):
+
+```bash
+demos/mcp-stdio.sh tests/pcap-samples/sip-routing-error.pcapng top_talkers '{"by":"ip","limit":3}' \
+  | jq -c '{distinct_talkers, talkers: [.talkers[] | {key, dialogs, answered, failed}]}'
+```
+
+```json
+{"distinct_talkers":4,"talkers":[{"key":"203.0.113.101","dialogs":13,"answered":0,"failed":2},{"key":"203.0.113.145","dialogs":11,"answered":0,"failed":1},{"key":"203.0.113.1","dialogs":7,"answered":0,"failed":1}]}
+```
+
+**Everything one endpoint did** ([`describe_endpoint`](mcp-tools-security.md#describe_endpoint)):
+
+```bash
+demos/mcp-stdio.sh tests/pcap-samples/sip-auth-failure.pcapng describe_endpoint '{"ip":"203.0.113.101"}' \
+  | jq -c '{endpoint, dialogs, messages_sent, messages_received, registration}'
+```
+
+```json
+{"endpoint":"203.0.113.101","dialogs":2,"messages_sent":4,"messages_received":4,"registration":{"applicable":true,"auth_loops":0,"dialogs":1,"failed":1,"problem_call_ids":["auth-fail-register-synth@203.0.113.1"],"succeeded":0}}
+```
+
+**How each group of calls did** ([`group_dialogs`](mcp-tools-signaling.md#group_dialogs)):
+
+```bash
+demos/mcp-stdio.sh tests/pcap-samples/sip-routing-error.pcapng group_dialogs '{"by":"response_code","metrics":["count","asr","ner"]}' \
+  | jq -c '{group_by, total_matched, groups: [.groups[] | {value, metrics}]}'
+```
+
+```json
+{"group_by":"response_code","total_matched":18,"groups":[{"value":"489","metrics":{"asr":null,"count":8.0,"ner":null}},{"value":"480","metrics":{"asr":null,"count":5.0,"ner":null}},{"value":"404","metrics":{"asr":0.0,"count":3.0,"ner":0.0}},{"value":"200","metrics":{"asr":null,"count":2.0,"ner":null}}]}
+```
+
+A `null` metric means sipnab refused to compute it, not zero. `not_grounded` in the full answer gives
+the reason, here `no INVITE in this group reached a final response, so nothing
+in it was a decided call attempt`: the group had no seizure to divide by.
+
+**Check a filter before relying on it** ([`validate_filter`](mcp-tools-signaling.md#validate_filter)):
+
+```bash
+demos/mcp-stdio.sh tests/pcap-samples/sip-routing-error.pcapng validate_filter '{"expr":"response_code >= 400 and method == '"'"'INVITE'"'"'"}' \
+  | jq -c '{valid, total_matched, total_dialogs}'
+```
+
+```json
+{"valid":true,"total_matched":2,"total_dialogs":18}
+```
+
+A misspelled field answers `valid: false` with the reason, for example
+`hint: unknown field 'response_cod' — did you mean 'response_code'?`.
+
+**Wait for a condition** ([`await_condition`](mcp-tools-signaling.md#await_condition)).
+On a live capture it waits until the filter matches or the time runs out. On
+a capture file that sipnab has read to the end, it answers at once:
+
+```bash
+demos/mcp-stdio.sh tests/pcap-samples/sip-routing-error.pcapng await_condition '{"filter":"response_code == 486","timeout_seconds":2}' \
+  | jq -c '{matched, stopped_because, source_exhausted}'
+```
+
+```json
+{"matched":false,"stopped_because":"source_exhausted","source_exhausted":true}
+```
+
+**Pass or fail the capture against your rules** ([`evaluate_expectations`](mcp-tools-security.md#evaluate_expectations)):
+
+```bash
+demos/mcp-stdio.sh tests/pcap-samples/sip-routing-error.pcapng evaluate_expectations \
+  '{"rules":[{"name":"answer rate","metric":"asr","op":">=","value":50},{"name":"no 480","metric":"count","op":"==","value":0,"scope":"filter:response_code == 480"}]}' \
+  | jq -c '{verdict, exit_code, results: [.results[] | {name, verdict, reason}]}'
+```
+
+```json
+{"verdict":"fail","exit_code":3,"results":[{"name":"answer rate","verdict":"fail","reason":"0 is NOT >= 50 over 2 seizure(s)"},{"name":"no 480","verdict":"fail","reason":"5 is NOT == 0 over 18 dialog(s)"}]}
+```
+
+`exit_code` is what `sipnab --expect` exits with for the same suite.
+
+**Open one call in Wireshark** ([`generate_wireshark_filter`](mcp-tools-signaling.md#generate_wireshark_filter)):
+
+```bash
+demos/mcp-stdio.sh tests/pcap-samples/sip-routing-error.pcapng generate_wireshark_filter '{"call_id":"routing-sub-a-synth@203.0.113.1"}' \
+  | jq -r '.display_filter, .notes[]'
+```
+
+```text
+sip.Call-ID == "routing-sub-a-synth@203.0.113.1"
+no RTP stream is attributed to this call, so the filter selects signaling only
+```
+
+**Decode the frame behind a finding** ([`decode_evidence`](mcp-tools-captures.md#decode_evidence)).
+Every dialog carries a `frame` pointer. The tool reads that frame back from
+the capture, so the server needs `--mcp-file-root`. The script passes it from
+`MCP_FILE_ROOT`:
+
+```bash
+MCP_FILE_ROOT=$PWD/tests/pcap-samples demos/mcp-stdio.sh tests/pcap-samples/sip-routing-error.pcapng decode_evidence \
+  '{"frame_ref":"tests/pcap-samples/sip-routing-error.pcapng#4@e5b8ad0ecf23fe98"}' \
+  | jq -c '{ordinal, frame_bytes, network, header_count: .sip.header_count}'
+```
+
+```json
+{"ordinal":4,"frame_bytes":387,"network":{"dst_addr":"203.0.113.102","dst_port":5060,"src_addr":"203.0.113.1","src_port":44285,"transport":"UDP"},"header_count":9}
+```
+
+Without a file root it answers `"status":"unresolvable"`, with the reason
+`file tools are disabled: start sipnab with --mcp-file-root <DIR> to enable them`.
+
+**Pitfalls:**
+
+- Text that came off the wire, such as a User-Agent or a URI, arrives wrapped
+  in `⟦untrusted-capture-data⟧` markers. An agent must treat it as data, not
+  instructions ([Untrusted capture text](mcp-protocol.md#untrusted-capture-text)).
+- A tool from a bundle the server did not load answers `unknown_tool`
+  ([Load only the tools an agent needs](mcp-deploy.md#load-only-the-tools-an-agent-needs)).
 
 ---
 
@@ -11940,6 +12074,57 @@ use the TUI, then write them into a pcapng copy with `--write-annotated`. See
 Invariant "Operator notes are output, never input" in
 [the invariants page](internals/invariants.md#operator-notes-are-output-never-input)
 states the rule and why it holds.
+
+## Read resources and run prompts
+
+Besides tools, the server offers two other MCP primitives. A client that
+supports them shows them by name. They need no flag beyond `--mcp`.
+
+- **Resources** are documents the client reads by URI: reference pages, one
+  call's live state, one call's vCon. `resources/list` names the fixed ones,
+  and `resources/templates/list` the patterns, such as
+  `sipnab://live/dialogs/{call_id}`. `completion/complete` fills in a
+  template's argument from what the capture holds.
+- **Prompts** are procedures an agent follows, each naming the tools
+  it calls in order. `prompts/list` names them, and `prompts/get` returns the
+  text.
+
+Over the stdio wire, these lines ask for each list, complete a Call-ID and
+read one call:
+
+```sh
+# Run all of these, in order.
+{ printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"doc","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"prompts/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"resources/list"}' \
+  '{"jsonrpc":"2.0","id":4,"method":"resources/templates/list"}' \
+  '{"jsonrpc":"2.0","id":5,"method":"completion/complete","params":{"ref":{"type":"ref/resource","uri":"sipnab://live/dialogs/{call_id}"},"argument":{"name":"call_id","value":"1-19"}}}' \
+  '{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"sipnab://live/dialogs/1-1966@10.0.2.20"}}'
+  sleep 3; } | sipnab -N --mcp -I tests/pcap-samples/sip-rtp-g711.pcap --quiet > mcp.out
+```
+
+Against the sample capture, the answers named:
+
+| `id` | Answer |
+|---|---|
+| 2 | prompts `triage-outage`, `carrier-escalation`, `codec-interop-audit`, `post-change-verification`, `vcon-handoff` |
+| 3 | resources `sipnab://reference/filter-dsl`, `sipnab://reference/sip-response-codes`, `sipnab://reference/mos-and-codecs`, `sipnab://live/dialogs` |
+| 4 | templates `sipnab://live/dialogs/{call_id}`, `sipnab://lint/{rule_id}`, `sipnab://filter/{alias}`, `sipnab://reference/{topic}`, `sipnab://schema/{tool}`, `sipnab://vcon/{call_id}` |
+| 5 | `{"completion": {"values": ["1-1966@10.0.2.20", "1-1968@10.0.2.20"], "total": 2, "hasMore": false}}` |
+| 6 | the call's live state, as JSON text in `contents[0].text` |
+
+[The prompts](mcp-tools.md#prompts) lists what each prompt is for, and
+[Resources](mcp-protocol.md#resources) defines each URI.
+[Export a call as a vCon](vcon.md) covers the export the `vcon-handoff` prompt drives.
+
+When it does not work:
+
+- A prompt is missing from `prompts/list`: the server did not load a bundle
+  one of its tools is in. `prompts/get` for it names the bundles to add.
+- `resources/read` answers `call_id '<id>' not found`, with `reason`
+  `not_found`: the capture holds no such call. Complete the Call-ID first.
 
 ## Where to go next
 
@@ -33641,6 +33826,110 @@ sipnab --mcp -N --mcp-transport http --mcp-bind 0.0.0.0:8731 \
        --mcp-allowed-host capture.example.com \
        --mcp-resource-url https://capture.example.com/mcp -d eth0
 ```
+
+### Load only the tools an agent needs
+
+By default the server loads all ten bundles, 76 tools. Each tool's schema
+costs the agent context on every turn, and an agent cannot call a tool the
+server did not load. `--mcp-tools` (or `[mcp] tools` in the config file) names the
+bundles, or single tools, to load:
+
+```bash
+sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:8731 \
+       --mcp-token-file /etc/sipnab/mcp.token --mcp-tools core,vcon \
+       -I capture.pcap
+```
+
+Check what a client sees with `tools/list`. Against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), the number of tools listed was:
+
+| `--mcp-tools` | Tools listed |
+|---|---|
+| not given | 76 |
+| `core` | 9 |
+| `core,vcon` | 16 |
+
+[Choosing which tools load](mcp-tools.md#choosing-which-tools-load) lists
+what each bundle holds.
+
+When it does not work:
+
+- A tool the server did not load answers `tool not found`, with `reason`
+  `unknown_tool` and the loaded names in `valid_values`. Add its bundle.
+- A prompt whose tools are not loaded is not listed, and `prompts/get` names
+  the bundles to add, for example
+  `prompt 'vcon-handoff' is not served: it calls validate_filter, export_vcon, validate_vcon, which this server does not load. Add the bundle(s) signaling, vcon with --mcp-tools or [mcp] tools.`
+- A name that is neither a bundle nor a tool stops sipnab at startup with exit
+  `2`:
+  `--mcp-tools: unknown tool or bundle 'nosuch'; bundles: core, signaling, captures, security, media, relay, tfps, server, vcon, tls, or full; tool names are listed in the MCP tool reference`
+
+### Record every tool call, and bound what one client can ask
+
+A service that agents reach over the network should keep a record of what
+they asked, and limit how much one of them can ask at once.
+
+- `--mcp-audit-file <FILE>` appends one JSON line per tool call: the tool,
+  its arguments, the caller and its token's scope, the outcome and the time.
+  sipnab creates the file with mode `0600` and never truncates it.
+- `--mcp-rate-limit-per-peer <N>` caps calls per second from one address. It
+  is 100 when not given. `0` removes the cap.
+- `--mcp-max-concurrent <N>` caps the calls running at once.
+- `--mcp-max-response-bytes` and `--mcp-max-body-bytes` cap one answer and one
+  request.
+
+[MCP protocol](mcp-protocol.md#read-the-audit-log) describes every field of an
+audit line. This run set a limit of 2 calls a second and made four
+`capture_status` calls at once:
+
+```bash
+sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:8731 \
+       --mcp-token-file /etc/sipnab/mcp.token \
+       --mcp-audit-file /var/log/sipnab/mcp-audit.jsonl \
+       --mcp-rate-limit-per-peer 2 -I capture.pcap
+```
+
+The third and fourth calls answered:
+
+```json
+{"code":-32000,"message":"sipnab MCP server is at its per-peer rate limit of 2 call(s)/s; retry shortly","data":{"reason":"rate_limited","retry_after_ms":972}}
+```
+
+and the audit file held one line for each of the four calls, the refused
+ones included:
+
+```json
+{"args":"{}","caller":"127.0.0.1:54868 bearer-verified scope=full","elapsed_ms":0,"error":null,"id":"11","outcome":"ok","seq":1,"tool":"capture_status","ts":"2026-11-03T15:04:06.639556559+00:00"}
+{"args":"{}","caller":"127.0.0.1:54888 bearer-verified scope=full","elapsed_ms":0,"error":"rate limited (1 refused since start)","id":"13","outcome":"refused","seq":3,"tool":"capture_status","ts":"2026-11-03T15:04:06.667966010+00:00"}
+```
+
+- `seq` increases by one per line. A gap means sipnab lost a line.
+- A client that reads `retry_after_ms` can wait that long and call again.
+- An audit file that sipnab cannot open stops it at startup with exit `2`, for
+  example `mcp-audit-file /nonexistent-dir/audit.jsonl: No such file or directory (os error 2). sipnab refuses to serve MCP without the audit trail it was asked for`.
+
+### Sampling: what `--mcp-sampling-budget` does today
+
+MCP lets a server ask the client's model to write text, a request called
+sampling. In sipnab 0.5.232 the server sends no sampling request. The budget
+flag parses and sipnab records it, and sipnab reads whether the client advertised
+the capability, but no feature uses it: the code that would narrate a finding
+through the client's model is not armed ([`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs), the comment on
+`on_initialized`). The MCP project merged
+[SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577),
+"Deprecate Roots, Sampling, and Logging", on 2026-05-15, and the `rmcp`
+crate sipnab uses (3.8.0) marks its sampling types deprecated.
+
+- Setting `--mcp-sampling-budget` changes nothing an agent sees.
+- `--mcp-sampling-budget 0` records a policy of no sampling, which is also
+  what happens without it.
+- This page names no third-party client as supporting sampling, because no
+  test here ran one. sipnab's own tests,
+  [`tests/mcp_sampling_wiring_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/mcp_sampling_wiring_test.rs), check that the flag reaches the budget
+  and that a client which did not advertise sampling is never asked. They
+  build the server in-process and set the client's advertised capability
+  directly. No MCP client takes part in them.
+- The CLI reference describes the flag as narrating alerts. That description
+  is a known defect, and a fix is in progress.
 
 ### Start it at boot with systemd
 

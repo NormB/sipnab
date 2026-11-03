@@ -5686,7 +5686,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // failures of `--vcon-audio-fetch` against a published URL, and the three
     // readers of an `x5u`-only container. Attributed per file against
     // origin/main ffd06bfb1: no other changed page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1299;
+    // 1299 -> 1303: docs/mcp-deploy.md +1, the tool counts per `--mcp-tools`
+    // value, and its site mirror website/content/docs/mcp-deploy.md +1;
+    // docs/mcp.md +1, the answers to the resource and prompt requests, and
+    // its site mirror website/content/docs/mcp.md +1. Attributed per file
+    // against origin/main ffd06bfb1: no other changed page gained or lost a
+    // table.
+    const EXPECTED_TABLES: usize = 1303;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

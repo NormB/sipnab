@@ -1562,7 +1562,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // each a link to a new vCon task section or to the page that explains
     // what the step relies on. Counted per page against origin/main
     // ffd06bfb1; every other page held its count.
-    const EXPECTED_WIKI_LINKS: usize = 2039;
+    // 2039 -> 2055 (MCP how-to steps): docs/examples.md +11, the new recipe 68
+    // and its index row linking each tool it runs; docs/mcp-deploy.md +2 and
+    // docs/mcp.md +3, linking the bundle, audit, prompt and resource
+    // references. Counted per page against origin/main ffd06bfb1; every other
+    // page held its count.
+    const EXPECTED_WIKI_LINKS: usize = 2055;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
