@@ -1539,6 +1539,22 @@ static KEY_SPECS: &[KeySpec] = &[
     ),
     (
         "sip",
+        "th_mapping_max",
+        KeyKind::Int {
+            lo: 1,
+            hi: i64::MAX as i128,
+        },
+    ),
+    (
+        "sip",
+        "th_mapping_ttl_secs",
+        KeyKind::Int {
+            lo: 1,
+            hi: i64::MAX as i128,
+        },
+    ),
+    (
+        "sip",
         "xcid_headers",
         KeyKind::Literal {
             accept: &["[]", "[\"x\"]", "[\"syslog\"]", "[\"json\", \"syslog\"]"],

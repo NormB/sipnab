@@ -481,6 +481,37 @@ implementation from a broken one.
 rather than comparing strings, because the halves swap direction across a B2BUA
 and string equality would find nothing.
 
+### Correlation: how an OpenSIPS mapping event reaches the store
+
+OpenSIPS can also state the pair: an `E_SIPNAB_TH_MAP` event from
+`event_datagram`, one JSON-RPC 2.0 datagram per call. It arrives on the HEP
+listener's UDP socket. `HepIngest::receive` tells it from HEP by its first
+byte (`{`, where HEP v3 starts with `HEP3` and v1 and v2 with a version byte),
+checks the sender against `--hep-allow`, the only check that applies to an
+event because it carries no HEP auth chunk, and hands the bytes on with
+`HepOrigin::json_event` set. Classification claims a marked packet before
+SIP detection (`pipeline::claim_th_mapping`) and parses the bytes there, so
+the store counts a malformed event rather than the SIP or RTP detectors
+seeing it. Every applier, live, batch, the parallel engine and the terminal
+interface's file loader, hands the result to
+`DialogStore::apply_th_mapping`.
+
+The table ([`src/sip/th_mapping.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/th_mapping.rs)) lives in
+the store, not beside it, so the store's own traffic ages it: a mapping
+expires `[sip] th_mapping_ttl_secs` after either leg was last in the store,
+checked at most once a second of capture time from `process_message` and from
+each event. The store works the join out when a surface asks for a
+correlation, so an event may arrive before or after the SIP it names. `links` answers for a
+pair rather than naming one partner, because one Call-ID can be the callee
+side of one hop and the caller side of the next when two topology-hiding
+proxies are in series. A conflict stops both mappings it touches: two
+statements disagree, and sipnab cannot tell which is right.
+
+A device plus a HEP listener gets the media-only capture filter, which
+assumes the listener carries the signaling, so a run receiving events for SIP
+on the wire must give its own filter. `bootstrap::th_mapping_filter_notice`
+says so at startup, and the end-of-run line repeats it while mappings wait.
+
 ### Correlation: why a decoded topology-hiding Call-ID also needs the From tag
 
 OpenSIPS `topology_hiding("C")` combines the caller's Call-ID by XOR with

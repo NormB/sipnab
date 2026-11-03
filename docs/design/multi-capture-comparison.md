@@ -59,7 +59,7 @@ Call-ID in both files. That sounds like the answer. It is the problem, because
 sipnab's store is Call-ID-keyed and will *merge* the two observations rather than
 distinguish them.
 
-`DialogStore::merge` ([`dialog_store.rs:1494`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1494))
+`DialogStore::merge` ([`dialog_store.rs:1627`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1627))
 carries a doc section headed *"Same-Call-ID collisions are the normal case, not
 the rare one"* ([`:719`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L719)), and its stated
 resolution is a sum, not a choice:

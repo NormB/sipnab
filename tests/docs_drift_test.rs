@@ -5665,7 +5665,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1283 -> 1285: docs/errors.md +1, the `## Exit codes` list, and its site
     // mirror website/content/docs/errors.md +1. Attributed per file against
     // HEAD: no other changed page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1285;
+    // 1285 -> 1287 (#617): docs/rest-api.md +1, the `th_mappings` keys of
+    // `/v1/stats`, and its site mirror website/content/docs/api.md +1.
+    // Attributed per file against origin/main 23eb5a0bc.
+    const EXPECTED_TABLES: usize = 1287;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -8672,5 +8675,45 @@ fn output_formats_names_every_case_of_the_sdp_rule() -> Result<(), TestError> {
         "INVITE",
         "a blank application/sdp body is no session description"
     );
+    Ok(())
+}
+
+/// Every dead-link pass that excludes this repository's own GitHub URLs
+/// excludes both forms the docs use: `blob/` for a page and `raw/` for a
+/// download.
+///
+/// A file added on a branch 404s at either URL until the branch merges, which
+/// is after the pass has to succeed, and `repo_paths_in_docs_are_clickable`
+/// requires the link. The Markdown pass excluded `(blob|raw)` while the
+/// built-site pass excluded `blob` alone, so the guide's `raw/main` link to a
+/// capture added in the same pull request (#622) failed the built-site pass.
+/// `dev_docs_drift_test::linked_code_targets_exist` and `doc_link_hygiene_test`
+/// still check those targets against the working tree.
+#[test]
+fn every_dead_link_pass_excludes_both_own_url_forms() -> Result<(), TestError> {
+    const WORKFLOW: &str = ".github/workflows/quality.yml";
+    const OWN: &str = r"--exclude '^https://github\.com/NormB/sipnab/";
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(repo.join(WORKFLOW))
+        .map_err(|e| format!("cannot read {WORKFLOW}: {e}"))?;
+    let excludes: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with(OWN))
+        .collect();
+    assert!(
+        excludes.len() >= 2,
+        "{WORKFLOW} has {} exclusion(s) of this repository's URLs, fewer than \
+         the two dead-link passes: {excludes:?}",
+        excludes.len()
+    );
+    for line in excludes {
+        let rest = line.strip_prefix(OWN).unwrap_or(line);
+        assert!(
+            rest.starts_with("(blob|raw)/"),
+            "{WORKFLOW}: `{line}` must exclude both `blob/` and `raw/`, written \
+             `(blob|raw)/`, as the other dead-link pass does"
+        );
+    }
     Ok(())
 }

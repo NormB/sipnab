@@ -5,7 +5,7 @@
 //!
 //! # Why this module exists
 //!
-//! sipnab exports 45 Prometheus metrics and none of them is reachable over MCP
+//! sipnab exports 49 Prometheus metrics and none of them is reachable over MCP
 //! or REST. The metrics listener is also off by default, so on most
 //! deployments those numbers exist in-process and nothing can read them — an
 //! agent asked "is this server healthy" cannot enable a listener to find out.

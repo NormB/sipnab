@@ -725,13 +725,18 @@ jobs:
       # the file is missing, which is a stronger check than a network 404: it
       # cannot be satisfied by a stale copy on main, and it cannot be fooled by
       # branch timing. External github.com links are still checked.
+      #
+      # `raw/` as well as `blob/`, as pass one excludes: a page that offers a
+      # capture added on the same branch as a download links it at `raw/main`,
+      # which 404s the same way (#622).
+      # `every_dead_link_pass_excludes_both_own_url_forms` keeps the passes alike.
       - name: Dead links (built site)
         uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           args: >-
             --no-progress --config lychee.toml
             --exclude '^https://sipnab\.com/'
-            --exclude '^https://github\.com/NormB/sipnab/blob/'
+            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/'
             --root-dir "$GITHUB_WORKSPACE/website/public"
             'website/public/**/*.html'
           fail: true

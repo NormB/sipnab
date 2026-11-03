@@ -40,6 +40,11 @@ pub struct HepOrigin {
     /// its way to somebody else, and rtpengine `ng` inside it is believed only
     /// on the HEP mirror port (`crate::rtpengine::HEP_MIRROR_PORTS`).
     pub sniffed_on_port: Option<u16>,
+    /// The `--hep-listen` socket received a JSON event datagram here, not a
+    /// HEP packet: an OpenSIPS `E_SIPNAB_TH_MAP` event, whose body starts
+    /// with `{` where a HEP v3 packet starts with `HEP3`. Only the listener
+    /// sets it, and only for a sender listed in `--hep-allow`.
+    pub json_event: bool,
 }
 
 /// What a stored vCon container said about one message rebuilt from it.

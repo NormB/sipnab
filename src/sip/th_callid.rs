@@ -348,25 +348,9 @@ fn word64_decode(input: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
     Some(out)
 }
 
-/// RFC 3261 `word` characters: alphanum and `-.!%*_+`'~()<>:\"/[]?{}`.
-fn is_word_char(c: u8) -> bool {
-    c.is_ascii_alphanumeric() || b"-.!%*_+`'~()<>:\\\"/[]?{}".contains(&c)
-}
-
 /// RFC 3261 `token` characters: alphanum and `-.!%*_+`'~`.
 fn is_token_char(c: u8) -> bool {
     c.is_ascii_alphanumeric() || b"-.!%*_+`'~".contains(&c)
-}
-
-/// RFC 3261 `callid = word [ "@" word ]`.
-fn is_rfc3261_callid(b: &[u8]) -> bool {
-    let mut parts = b.splitn(2, |&c| c == b'@');
-    let word_ok = |w: &[u8]| !w.is_empty() && w.iter().all(|&c| is_word_char(c));
-    match (parts.next(), parts.next()) {
-        (Some(w), None) => word_ok(w),
-        (Some(w), Some(h)) => word_ok(w) && word_ok(h),
-        _ => false,
-    }
 }
 
 /// Split decoded bytes at the first loop-protection separator and check each side.
@@ -375,7 +359,7 @@ fn split_decoded(plain: &[u8]) -> Decode {
         Some(at) => (&plain[..at], Some(&plain[at + 1..])),
         None => (plain, None),
     };
-    if !is_rfc3261_callid(cid) {
+    if !crate::sip::th_mapping::is_rfc3261_callid(cid) {
         return Decode::Undecodable;
     }
     if let Some(t) = tag

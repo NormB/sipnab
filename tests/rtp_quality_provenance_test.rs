@@ -100,6 +100,9 @@ fn replay(
             // This harness mirrors the production appliers, so it has to
             // carry every action they do -- including relay-asserted links,
             // which is how media on a standalone rtpengine host gets named.
+            PacketAction::ThMapping(event) => {
+                dialogs.write().apply_th_mapping(event, pp.timestamp);
+            }
             PacketAction::RelayControl(message) => {
                 pipeline::apply_relay_control(
                     &mut streams,
@@ -363,6 +366,9 @@ fn corpus_xr_voip_metrics_are_retained_not_discarded() -> Result<(), TestError> 
                 for (ip, port, call_id, media) in &sdp_links {
                     streams.link_to_dialog_with_sdp(*ip, *port, call_id, media);
                 }
+            }
+            PacketAction::ThMapping(event) => {
+                dialogs.write().apply_th_mapping(event, pp.timestamp);
             }
             PacketAction::RelayControl(message) => {
                 pipeline::apply_relay_control(

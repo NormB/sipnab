@@ -176,6 +176,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "th_callid_secret_file",
             "th_callid_secret",
             "th_callid_prefix",
+            "th_mapping_max",
+            "th_mapping_ttl_secs",
         ]
         .as_slice(),
     );
@@ -1343,6 +1345,13 @@ pub struct SipConfig {
     pub th_callid_secret: Option<ThCallidSecretName>,
     /// OpenSIPS `th_callid_prefix` (default `DLGCH_`).
     pub th_callid_prefix: Option<String>,
+    /// Most OpenSIPS `E_SIPNAB_TH_MAP` mappings held at once (default
+    /// [`crate::sip::th_mapping::DEFAULT_MAX_MAPPINGS`]). Past it, a new
+    /// mapping is refused and counted.
+    pub th_mapping_max: Option<usize>,
+    /// Seconds a mapping is kept after the store last held either of its
+    /// legs (default [`crate::sip::th_mapping::DEFAULT_TTL_SECS`]).
+    pub th_mapping_ttl_secs: Option<u64>,
 }
 
 /// The value of `[sip] th_callid_secret`. Only `"opensips-default"` is valid;
@@ -1413,6 +1422,20 @@ impl SipConfig {
                 "[sip] active_idle_window_secs must be > 0 (0 leaves the \
                  active-dialog and active-call gauges permanently at zero, \
                  which reads as a quiet trunk rather than as a setting)"
+                    .into(),
+            ));
+        }
+        if self.th_mapping_max == Some(0) {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] th_mapping_max must be > 0 (0 would refuse every E_SIPNAB_TH_MAP \
+                 mapping; to receive none, leave the sender out of --hep-allow)"
+                    .into(),
+            ));
+        }
+        if self.th_mapping_ttl_secs == Some(0) {
+            return Err(crate::Error::ConfigInvalid(
+                "[sip] th_mapping_ttl_secs must be > 0 (0 would expire a mapping before \
+                 the SIP it names could arrive)"
                     .into(),
             ));
         }
@@ -6354,6 +6377,41 @@ column_selector = "F10"
             !format!("{typed:?}").contains("hunter2-0100"),
             "Debug of a config must not show a secret typed into th_callid_secret"
         );
+        Ok(())
+    }
+
+    /// The two `[sip] th_mapping_*` keys parse and are registered, and 0,
+    /// which would hold no mapping or keep none, is refused naming the key.
+    #[test]
+    fn th_mapping_keys_parse_register_and_refuse_zero() -> Result<(), TestError> {
+        let text = "[sip]\nth_mapping_max = 5000\nth_mapping_ttl_secs = 120\n";
+        let cfg: Config = toml::from_str(text).map_err(|e| format!("valid: {e:?}"))?;
+        assert_eq!(cfg.sip.th_mapping_max, Some(5000), "th_mapping_max parses");
+        assert_eq!(
+            cfg.sip.th_mapping_ttl_secs,
+            Some(120),
+            "th_mapping_ttl_secs parses"
+        );
+        assert!(cfg.sip.validate().is_ok(), "both in range are valid");
+        assert!(
+            Config::unknown_keys(text)
+                .map_err(|e| format!("scan: {e:?}"))?
+                .is_empty(),
+            "th_mapping keys must be registered in KNOWN_KEYS"
+        );
+        for (text, key) in [
+            ("[sip]\nth_mapping_max = 0\n", "th_mapping_max"),
+            ("[sip]\nth_mapping_ttl_secs = 0\n", "th_mapping_ttl_secs"),
+        ] {
+            let cfg: Config = toml::from_str(text).map_err(|e| format!("parses: {e:?}"))?;
+            let err = cfg
+                .sip
+                .validate()
+                .err()
+                .ok_or_else(|| format!("0 must be refused: {text:?}"))?
+                .to_string();
+            assert!(err.contains(key), "{err:?} does not name {key}");
+        }
         Ok(())
     }
 

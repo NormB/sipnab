@@ -5489,6 +5489,7 @@ async fn get_stats(
     let ss = state.stream_store.read();
 
     let total_dialogs = ds.len();
+    let th_mappings = ds.th_mapping_counts();
     let active_dialogs = ds.active_dialog_count();
     let active_calls = ds.active_call_count();
 
@@ -5606,6 +5607,9 @@ async fn get_stats(
             "total": total_streams,
             "orphaned": orphaned_count,
         },
+        // OpenSIPS E_SIPNAB_TH_MAP events, by outcome, and the mappings held
+        // and pending now. The same object MCP `capture_status` returns.
+        "th_mappings": th_mappings,
         // Always present, always complete, and zero is a real answer. A key
         // that shows up only on a bad run is a key no client learns exists.
         "caveats": caveats.to_json(),
@@ -7282,6 +7286,10 @@ pub mod schema {
         pub dialogs: StatsDialogs,
         /// Stream counts.
         pub streams: StatsStreams,
+        /// OpenSIPS `E_SIPNAB_TH_MAP` mapping events the HEP listener
+        /// received: running totals by outcome, and the mappings held and
+        /// pending now. All zero when none arrived.
+        pub th_mappings: crate::sip::th_mapping::ThMappingCounts,
         /// What this capture DECLINED to do, beside what it lost. Always
         /// present and always complete: zero is a real answer, and a key that
         /// shows up only on a bad run is a key no client learns exists.
@@ -11897,6 +11905,48 @@ mod tests {
 
     /// `GET /v1/stats` returns 200 with dialogs/streams/timing objects and
     /// correct dialog totals.
+    #[tokio::test]
+    async fn stats_reports_the_topology_hiding_mapping_counts() -> Result<(), TestError> {
+        use crate::sip::th_mapping::{EventRefusal, ThMapping};
+        let state = make_state();
+        {
+            let mut ds = state.dialog_store.write();
+            let now = chrono::Utc::now();
+            let m = |caller: &str, callee: &str| {
+                Ok(ThMapping {
+                    caller_call_id: caller.into(),
+                    callee_call_id: callee.into(),
+                })
+            };
+            ds.apply_th_mapping(m("a@example.com", "DLGCH_a"), now);
+            ds.apply_th_mapping(m("a@example.com", "DLGCH_a"), now);
+            ds.apply_th_mapping(m("b@example.com", "DLGCH_b"), now);
+            ds.apply_th_mapping(m("b@example.com", "DLGCH_other"), now);
+            ds.apply_th_mapping(Err(EventRefusal::NotJson), now);
+        }
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/stats")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK, "/v1/stats answers");
+        let body = body_to_string(resp.into_body()).await?;
+        let v: Value = serde_json::from_str(&body).map_err(|e| format!("JSON: {e:?}"))?;
+        let t = &v["th_mappings"];
+        for (key, want) in [
+            ("accepted", 2),
+            ("duplicate", 1),
+            ("conflict", 1),
+            ("malformed", 1),
+            ("refused_full", 0),
+            ("expired", 0),
+            ("held", 2),
+            ("pending", 2),
+        ] {
+            assert_eq!(t[key], want, "th_mappings.{key}: {v}");
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn stats_endpoint_returns_expected_fields() -> Result<(), TestError> {
         let state = make_state();

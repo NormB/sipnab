@@ -921,7 +921,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // (the pre-push bpf clippy gate).
     // 741 -> 742: docs/internals/mcp.md links src/sip/th_callid.rs from its
     // section on the topology-hiding join (#617).
-    const EXPECTED_CODE_LINKS: usize = 742;
+    // 742 -> 743: docs/internals/mcp.md links src/sip/th_mapping.rs from its
+    // section on the OpenSIPS mapping event (#617).
+    const EXPECTED_CODE_LINKS: usize = 743;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

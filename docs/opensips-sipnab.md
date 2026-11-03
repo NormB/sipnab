@@ -123,7 +123,7 @@ Without help, sipnab can tie the two legs only by timing, which is a guess.
 The `C` flag changes the Call-ID only when the call has a dialog
 (`create_dialog()`). Without a dialog, OpenSIPS leaves the Call-ID alone.
 
-There are two ways to tie the legs exactly.
+There are three ways to tie the legs exactly.
 
 ### Decode the hidden Call-ID
 
@@ -193,6 +193,100 @@ The OpenSIPS source uses the same XOR and alphabet in every release from
 appends the caller's From tag before encoding. sipnab decodes both forms,
 and checks the appended tag against the From tag.
 
+### Have OpenSIPS send the mapping
+
+OpenSIPS knows both Call-IDs: `$ci` is the caller's, and
+`$TH_callee_callid` is the one it writes on the callee's leg. With the
+`event_datagram` module, the script sends sipnab one small UDP datagram per
+call naming both. This needs no secret, and the SIP is still what sipnab
+captures.
+
+Load the module, and subscribe sipnab's HEP listener to the event once at
+startup:
+
+```text
+loadmodule "event_datagram.so"
+```
+
+```text
+startup_route {
+	subscribe_event("E_SIPNAB_TH_MAP", "udp:127.0.0.1:9060");
+}
+```
+
+Then raise the event right after `topology_hiding("C")` in the request
+route:
+
+```text
+if (!create_dialog() || !topology_hiding("C")) {
+	send_reply(500, "Internal Server Error");
+	exit;
+}
+$avp(th_keys) = "caller_call_id";
+$avp(th_vals) = $ci;
+$avp(th_keys) = "callee_call_id";
+$avp(th_vals) = $TH_callee_callid;
+raise_event("E_SIPNAB_TH_MAP", $avp(th_keys), $avp(th_vals));
+```
+
+OpenSIPS sends a JSON-RPC 2.0 notification:
+
+```json
+{"jsonrpc":"2.0","method":"E_SIPNAB_TH_MAP","params":{"callee_call_id":"DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-","caller_call_id":"1-th-map@example.com"}}
+```
+
+Run sipnab with `--hep-listen` on the address the script names, and list
+OpenSIPS's address in `--hep-allow`. Give a capture filter that keeps the
+SIP, as here:
+
+```bash
+sudo sipnab -N -d any --hep-listen 127.0.0.1:9060 --hep-allow 127.0.0.1/32 --duration 30 --report 'udp port 5060 or udp[8] & 0xc0 = 0x80'
+```
+
+The filter matters. With `--hep-listen` as well as `-d` and no filter of
+your own, the interface takes media only, because sipnab expects a HEP
+mirror to deliver the signaling, and taking it off the wire too would count
+every message twice. Here the SIP is on the wire, so the filter keeps UDP
+port 5060 and RTP. sipnab prints a notice at startup when it sees
+`--hep-allow` with that default filter.
+
+What sipnab does with the event:
+
+- It reads the event on the HEP listener: a datagram that starts with `{`
+  is an event, and one that starts with `HEP3` is HEP. Events come over UDP
+  only.
+- It accepts an event only from a sender `--hep-allow` lists. An event
+  carries no HEP authentication, so `--hep-auth` cannot vouch for it. A
+  listener with no `--hep-allow` refuses every event, and counts each under
+  the refusal reason `event_sender_not_listed`.
+- The two legs join with `method` `mapping` and `strategy`
+  `th_callid_mapping`, whichever arrives first: the event or the SIP. The
+  callee's leg reports `th_callid` `mapped`.
+- A repeated event, as a retransmitted INVITE raises, changes nothing.
+- sipnab refuses an event that maps either Call-ID to a different partner. The
+  mapping already held for it stops joining too, and the callee's leg
+  reports `th_callid` `conflict`. sipnab cannot tell which of the two is
+  right, so it joins neither.
+- sipnab holds at most `[sip] th_mapping_max` mappings (100000), and drops
+  one when neither of its legs has been in the store for
+  `[sip] th_mapping_ttl_secs` (300). It refuses an event larger than
+  `MAX_EVENT_BYTES` (4096) bytes.
+
+The counts are on REST `GET /v1/stats` and the MCP tool `capture_status`
+under `th_mappings`, with the fields `accepted`, `duplicate`, `conflict`,
+`malformed`, `refused_full`, `expired`, `held` and `pending`. Prometheus has
+`sipnab_th_mapping_events_total{outcome}`, `sipnab_th_mappings_expired_total`,
+`sipnab_th_mappings_held` and `sipnab_th_mappings_pending`. The terminal
+interface's statistics view lists them, and a run ends with a line that
+says what the events did.
+
+Mappings arrive live, on the listener. A capture file read with `-I` holds
+no events, so for a file use the decode.
+
+OpenSIPS's `event_datagram` sends UDP to an IPv4 address only: its source
+passes `sizeof(struct sockaddr_in)` to `sendto`. Give the subscription an
+IPv4 address.
+
 ### Or copy the Call-ID into a header
 
 Without the secret, OpenSIPS can carry the caller's Call-ID to the callee in a
@@ -222,6 +316,23 @@ the configuration names both the secret and the header, sipnab reports the
 decoded match.
 
 ### What checks this section
+
+On 2026-11-03,
+[`harness/th-mapping/e2e.sh`](https://github.com/NormB/sipnab/blob/main/harness/th-mapping/e2e.sh)
+ran OpenSIPS 4.0.2, 4.0.1 and 3.6.9 with the event lines above, and a live
+sipnab capturing the network with the filter above and receiving the events
+on `--hep-listen`. It placed three calls with SIPp, and REST reported each
+callee leg joined to its own caller leg by `mapping`. The script's OpenSIPS
+lines are the ones above, character for character. The capture
+[`tests/fixtures/th-mapping/opensips-4.0-events.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/th-mapping/opensips-4.0-events.pcap), recorded by
+[`harness/th-mapping/capture.sh`](https://github.com/NormB/sipnab/blob/main/harness/th-mapping/capture.sh),
+holds those calls and the events OpenSIPS 4.0.2 sent.
+[`tests/th_mapping_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/th_mapping_test.rs)
+replays it into a live listener: events after the SIP and before it,
+repeats, a conflict, a listener with no `--hep-allow`, and the end-of-run
+line. The script runs the `sudo sipnab` command above with the test
+network's interface and addresses, and with `--api` in place of
+`--duration 30 --report`, so it can ask REST how each leg joined.
 
 On 2026-11-02, test calls went through OpenSIPS 4.0.2 and 3.6.9 with
 [`harness/th-callid/capture.sh`](https://github.com/NormB/sipnab/blob/main/harness/th-callid/capture.sh). Its

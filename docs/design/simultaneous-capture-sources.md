@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:456`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L456)), `capture_hep` ([`src/capture/hep.rs:3175`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3175)), the
+([`src/capture/file.rs:456`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L456)), `capture_hep` ([`src/capture/hep.rs:3247`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3247)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:658`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L658)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -151,7 +151,7 @@ by SDP media endpoint, and the key is a bare `(IpAddr, u16)`.
 `extract_sdp_links` ([`src/pipeline.rs:1783`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L1783)) resolves each `m=` section's address
 through `effective_address` ([`src/sip/sdp.rs:340`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp.rs#L340)) — media-level `c=` when
 present, session-level otherwise — and yields `(ip, port, call_id, media)`
-tuples. `process_packet` ([`src/pipeline.rs:2962`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2962)) feeds each one to `link_to_dialog_with_sdp`
+tuples. `process_packet` ([`src/pipeline.rs:2985`](https://github.com/NormB/sipnab/blob/main/src/pipeline.rs#L2985)) feeds each one to `link_to_dialog_with_sdp`
 ([`src/rtp/stream_store.rs:1685`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1685)), which lands in `link_endpoint_with_ptime`
 ([`src/rtp/stream_store.rs:1859`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L1859)). That function does two things:
 
@@ -433,7 +433,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:6804`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6804)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:6856`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6856)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -497,7 +497,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:6804`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6804)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:6856`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6856)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

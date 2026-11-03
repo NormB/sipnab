@@ -1365,6 +1365,14 @@ fn apply_capture_filter(
         // built so the operator reads it beside the "Auto-generated BPF
         // filter:" line it explains.
         composite_filter_warning(source, capture_config.bpf_filter.is_some(), media),
+        // The OpenSIPS mapping deployment with the SIP on the wire: said here,
+        // because otherwise its mappings stay pending with nothing to say why.
+        th_mapping_filter_notice(
+            source,
+            capture_config.bpf_filter.is_some(),
+            media,
+            !cli.hep_args.hep_allow.is_empty(),
+        ),
     ];
     for msg in context.into_iter().flatten() {
         tracing::warn!("{msg}");
@@ -5226,6 +5234,21 @@ pub fn apply_config(cli: &Cli, loaded: LoadedConfig) -> Result<LoadedConfig, Pla
         cli.active_idle_window_secs(&loaded.config) as i64,
     );
 
+    // The OpenSIPS E_SIPNAB_TH_MAP table's bound and lifetime, for every
+    // store this process builds (validated > 0 by SipConfig::validate).
+    crate::sip::dialog_store::set_th_mapping_limits(
+        loaded
+            .config
+            .sip
+            .th_mapping_max
+            .unwrap_or(crate::sip::th_mapping::DEFAULT_MAX_MAPPINGS),
+        loaded
+            .config
+            .sip
+            .th_mapping_ttl_secs
+            .unwrap_or(crate::sip::th_mapping::DEFAULT_TTL_SECS),
+    );
+
     // The OpenSIPS topology-hiding Call-ID secret, read once from its file
     // and installed for every store this process builds. A secret that cannot
     // be read fails the run: running without it would quietly fall back to
@@ -6708,6 +6731,35 @@ fn composite_filter_warning(
          `sipnab -N -d eth0 -L 127.0.0.1:9060 \"udp portrange 10000-20000\"`."
             .to_string(),
     )
+}
+
+/// The notice for a run that may be the OpenSIPS mapping deployment with a
+/// filter that cannot serve it; `None` otherwise.
+///
+/// A composite live source with no filter of the operator's gets the
+/// media-only filter ([`generated_capture_filter`]): its HEP listener is
+/// expected to carry the signaling, and taking it off the wire too would
+/// count every message twice. `--hep-allow` is what admits `E_SIPNAB_TH_MAP`
+/// events, so a run with one may be receiving mappings for SIP that is on the
+/// wire, which that filter drops; the mappings then stay pending, and nothing
+/// else says why. With media off, the generated filter is signaling and keeps
+/// the SIP.
+fn th_mapping_filter_notice(
+    source: Option<&CaptureSource>,
+    has_filter: bool,
+    media: bool,
+    allowlisted: bool,
+) -> Option<String> {
+    let composite = matches!(source, Some(CaptureSource::Composite(_)));
+    (composite && !has_filter && media && allowlisted).then(|| {
+        "this run captures from an interface AND a HEP listener with --hep-allow, and \
+         no BPF filter was given, so the interface takes media only and \
+         E_SIPNAB_TH_MAP mappings join only SIP that arrives over HEP. If the SIP \
+         is on the wire, give a filter that keeps it, e.g. \
+         `'udp port 5060 or udp[8] & 0xc0 = 0x80'` (docs/opensips-sipnab.md, \
+         \"Have OpenSIPS send the mapping\")."
+            .to_string()
+    })
 }
 
 /// The message to log when a run reads its timestamps from two clocks, or
@@ -10766,6 +10818,50 @@ mod tests {
     /// A composite with no BPF filter and RTP off measures no media and
     /// doubles every dialog, and the auto-generated filter is what makes that happen — so
     /// the warning has to arrive with it, not instead of it.
+    #[test]
+    fn th_mapping_filter_notice_fires_only_for_the_media_only_composite() -> Result<(), TestError> {
+        let composite = CaptureSource::Composite(vec![
+            CaptureSource::Live {
+                device: "eth0".into(),
+            },
+            hep_src("127.0.0.1:19060"),
+        ]);
+        let device = CaptureSource::Live {
+            device: "eth0".into(),
+        };
+        let notice = th_mapping_filter_notice(Some(&composite), false, true, true)
+            .ok_or("a composite with the generated filter and an allowlist gets the notice")?;
+        for part in [
+            "E_SIPNAB_TH_MAP",
+            "media only",
+            "udp port 5060 or udp[8] & 0xc0 = 0x80",
+            "opensips-sipnab.md",
+        ] {
+            assert!(notice.contains(part), "`{part}` missing from: {notice}");
+        }
+        assert_eq!(
+            th_mapping_filter_notice(Some(&composite), true, true, true),
+            None,
+            "the operator's own filter is theirs to have chosen"
+        );
+        assert_eq!(
+            th_mapping_filter_notice(Some(&composite), false, true, false),
+            None,
+            "with no allowlist no event is accepted, so there is nothing to join"
+        );
+        assert_eq!(
+            th_mapping_filter_notice(Some(&device), false, true, true),
+            None,
+            "a device alone takes the signaling"
+        );
+        assert_eq!(
+            th_mapping_filter_notice(Some(&composite), false, false, true),
+            None,
+            "with media off the generated filter is signaling, and keeps the SIP"
+        );
+        Ok(())
+    }
+
     #[test]
     fn composite_filter_warning_fires_when_nothing_names_the_media_ports() -> Result<(), TestError>
     {

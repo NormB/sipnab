@@ -6284,6 +6284,10 @@ The metric families:
 | `sipnab_dialogs_total{state}` | counter | Tracked dialogs grouped by `DialogState` (`Trying`, `Ringing`, `InCall`, `Completed`, `Canceled`, `Failed`, `Redirected`, `Registered`, `Expired`, `Pending`, `Active`, `Terminated`, `Transferring`). State values are lowercase: `state="completed"`. |
 | `sipnab_dialogs_active` | gauge | Dialogs in one of six active states: `Trying`, `Ringing`, `InCall`, `Transferring`, `Pending`, `Active`. `Pending` and `Active` are SUBSCRIBE dialogs, which carry no media, so **this is not a count of calls**: a host serving presence traffic reports a non-zero value with no call up. For calls, use `sipnab_calls_active`. |
 | `sipnab_calls_active` | gauge | Calls that are up right now: dialogs in `InCall`, and nothing else. A dialog enters `InCall` on the 200 OK to its INVITE and leaves on the BYE. Compare it against a carrier's simultaneous-call limit. Never greater than `sipnab_dialogs_active`; the difference is calls still in setup plus subscriptions. |
+| `sipnab_th_mapping_events_total{outcome}` | counter | OpenSIPS `E_SIPNAB_TH_MAP` events the HEP listener accepted from a `--hep-allow` sender, by outcome: `accepted` (a new mapping), `duplicate` (one already held), `conflict` (a Call-ID already mapped to another partner; refused, and the held mapping stops joining), `malformed` (not a valid event) and `refused_full` (the table held `[sip] th_mapping_max`). Every outcome appears on every scrape, at `0` where none happened. See [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping). |
+| `sipnab_th_mappings_expired_total` | counter | Mappings dropped because neither leg was in the store for `[sip] th_mapping_ttl_secs`. |
+| `sipnab_th_mappings_held` | gauge | Mappings held now. |
+| `sipnab_th_mappings_pending` | gauge | Mappings held whose two legs are not both captured. A value that stays up means the SIP the events name is not reaching sipnab: with `--hep-listen` as well as `-d` and no filter of your own, the interface takes media only. |
 | `sipnab_messages_total{method}` | counter | SIP messages in the tracked dialogs, labeled by the method that opened each dialog. Every message of an INVITE dialog, its responses, `ACK` and `BYE` included, counts under `method="INVITE"`. |
 | `sipnab_responses_total{code}` | counter | SIP responses in the tracked dialogs, grouped by class: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, `6xx`. Every class appears on every scrape, at `0` where the capture saw none. |
 | `sipnab_rtp_streams_active` | gauge | RTP streams a dialog claims, however long ago their last packet arrived: the same population as `sipnab_rtp_streams_total{status="established"}`. A call whose media stopped five minutes ago still counts until sipnab drops its dialog. |
@@ -6309,7 +6313,7 @@ The metric families:
 | `sipnab_capture_sources_refused_total` | counter | Packets whose new capture source the full table refused. They are still analyzed, but carry no `frame` pointer for `--show-frame`. Nonzero means raise `max_capture_sources`. |
 | `sipnab_hep_senders` | gauge | Senders the `--hep-listen` listener is tracking, each keyed by the capture id it claims and the address it sent from. Present only on a run with a HEP listener. A total only, with no series per sender: to see which sender stopped, use [`GET /v1/hep/senders`](rest-api.md#get-v1hepsenders) (full scope), the MCP `hep_senders` tool, or `--hep-senders`. Both servers fill it. |
 | `sipnab_hep_datagrams_received_total` | counter | HEP packets the listener received, admitted or refused. With the refused family below, `received - sum(refused)` is what reached the capture. |
-| `sipnab_hep_datagrams_refused_total{reason}` | counter | HEP packets the listener refused, by reason: `allowlist`, `rate_limit_global`, `rate_limit_per_peer`, `peer_tracking_full`, `malformed`, `auth_missing`, `auth_mismatch`, and the five `hmac_*` reasons (`hmac_bad_format`, `hmac_unsupported_version`, `hmac_timestamp_out_of_window`, `hmac_bad_mac`, `hmac_replay`). Every reason appears on every scrape of a run with a listener, at `0` where the listener refused none. A climbing `auth_mismatch` or `hmac_bad_mac` is a sender with the wrong key; `hmac_timestamp_out_of_window` is a sender with a drifting clock. Both servers fill it. |
+| `sipnab_hep_datagrams_refused_total{reason}` | counter | HEP packets the listener refused, by reason: `allowlist`, `rate_limit_global`, `rate_limit_per_peer`, `peer_tracking_full`, `malformed`, `auth_missing`, `auth_mismatch`, the five `hmac_*` reasons (`hmac_bad_format`, `hmac_unsupported_version`, `hmac_timestamp_out_of_window`, `hmac_bad_mac`, `hmac_replay`), and `event_sender_not_listed` (an `E_SIPNAB_TH_MAP` event on a listener with no `--hep-allow`). Every reason appears on every scrape of a run with a listener, at `0` where the listener refused none. A climbing `auth_mismatch` or `hmac_bad_mac` is a sender with the wrong key; `hmac_timestamp_out_of_window` is a sender with a drifting clock. Both servers fill it. |
 | `sipnab_hep_export_packets_total` | counter | Packets the `--hep-send` exporter delivered as far as its transport can tell. Over TCP and TLS, the exporter wrote it to the connection. **Over UDP, the exporter handed it to the kernel**, and the series climbs whether or not a collector is listening; check the collector's own `sipnab_hep_senders` or its roster for delivery. Present only on a run that exports. |
 | `sipnab_hep_export_failures_total{kind}` | counter | Delivery **attempts** that failed, by the step that failed: `connect` (the collector refused, or the sender could not reach it within `--hep-send-timeout`), `tls_handshake` (it connected and the certificate was not one the sender accepts, or the session broke), `write` (an established connection or the socket refused the packet, or the collector closed the connection). A failed attempt loses nothing: the packet stays queued and the sender retries with backoff, so read losses off `sipnab_hep_export_dropped_total`. Every kind appears, at `0` where nothing failed. A climbing `tls_handshake` after a collector rebuild is a certificate the sender does not trust. Present only on a run that exports. |
 | `sipnab_hep_export_queued_total` | counter | Packets the capture handed to the exporter's queue. Every one ends up sent, dropped, or still queued: `queued = packets + dropped + queue_depth`. Present only on a run that exports. |
@@ -9263,7 +9267,7 @@ The MCP `get_capture_report` tool answers the same question, with the same
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 45 Prometheus metrics. The listener that serves them is off
+sipnab exports 49 Prometheus metrics. The listener that serves them is off
 by default.
 
 - This endpoint answers the same questions without that listener.
@@ -9475,7 +9479,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/hep/
   "packets_admitted": 1829,
   "packets_refused": 14,
   "refused_by_reason": {
-    "allowlist": 0, "auth_missing": 0, "auth_mismatch": 14, "hmac_bad_format": 0,
+    "allowlist": 0, "auth_missing": 0, "auth_mismatch": 14, "event_sender_not_listed": 0,
+    "hmac_bad_format": 0,
     "hmac_bad_mac": 0, "hmac_replay": 0, "hmac_timestamp_out_of_window": 0,
     "hmac_unsupported_version": 0, "malformed": 0, "peer_tracking_full": 0,
     "rate_limit_global": 0, "rate_limit_per_peer": 0
@@ -9737,6 +9742,10 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
     "total": 46,
     "orphaned": 3
   },
+  "th_mappings": {
+    "accepted": 0, "duplicate": 0, "conflict": 0, "malformed": 0,
+    "refused_full": 0, "expired": 0, "held": 0, "pending": 0
+  },
   "caveats": {
     "media_creating_commands": 0
   },
@@ -9901,6 +9910,25 @@ Read `unsaved` before you stop a capture.
   on disk, so it is never unsaved.
 - A live capture with an output file is safe to
   stop.
+
+### Count the OpenSIPS topology-hiding mappings
+
+`th_mappings` counts the OpenSIPS `E_SIPNAB_TH_MAP` events the HEP listener
+accepted from a `--hep-allow` sender, and the mappings they hold. The MCP tool
+`capture_status` returns the same object.
+
+| Key | Meaning |
+|-----|---------|
+| `accepted` | events that added a mapping |
+| `duplicate` | events that repeated a mapping already held |
+| `conflict` | events refused because a Call-ID was already mapped to another partner; the held mapping stops joining |
+| `malformed` | event datagrams that were not a valid event |
+| `refused_full` | events refused because the table held `[sip] th_mapping_max` mappings |
+| `expired` | mappings dropped after `[sip] th_mapping_ttl_secs` with neither leg in the store |
+| `held` | mappings held now |
+| `pending` | mappings held now whose two legs are not both captured |
+
+See [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping).
 
 ### Find SIP that `--portrange` excluded
 
@@ -15226,6 +15254,7 @@ no sender row. Its address appears under `refused_sources` with the reason:
 | `rate_limit_global`, `rate_limit_per_peer` | Traffic above `--hep-rate-limit` or `--hep-rate-limit-per-peer` |
 | `peer_tracking_full` | More senders at once than `[limits] max_tracked_peers` |
 | `malformed` | The bytes are not HEP; check the sender speaks HEP v3, or v2 over UDP |
+| `event_sender_not_listed` | An OpenSIPS `E_SIPNAB_TH_MAP` event on a listener with no `--hep-allow`; list OpenSIPS's address there ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)) |
 
 The roster names senders by the capture id each claims and the address it
 sends from. Give each sender its own id (`--hep-id` on a sipnab agent). Then
@@ -19902,7 +19931,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--hep-senders` | -- | off | 0.5.185 | At the end of a headless (`-N`) run, print who fed the `--hep-listen` listener: each sender, keyed by the capture id it claims and the address it sent from, with its packet count, when sipnab last heard from it, how long it has been idle and whether it went silent past `--hep-silence-warn`; then every address the listener refused, with counts by reason, and the refusal totals. The capture id is the sender's claim, never proven. With `--json`, the same as one JSON object on the last line of stdout, the shape `GET /v1/hep/senders` and the MCP `hep_senders` tool return. The roster covers this run only and nothing persists it. Refused without `--hep-listen`, which is the side it describes. Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | 0.3.0 | Parse incoming HEP packets (enable HEP decoding): sipnab unwraps a HEP datagram on the wire or in a capture file and reads its message with the addresses the HEP chunks carry and the time the HEP packet carries, as `-L` does, not the time sipnab sniffed the wrapper. A HEP packet that carries no time (a HEP v3 packet without a `TS_SEC` chunk, or a HEP v1 packet) keeps the time sipnab sniffed the wrapper; a HEP v2 packet carries its time in its time header. Sniffing a HEP port that no process listens on loses messages from some senders: see the note under [`[capture]` in the configuration reference](config-reference.md#capture). The transport comes from the IP protocol chunk by the same rule `--hep-listen` uses, so a TLS, WS or WSS leg an OpenSIPS or Kamailio tracer sends reads the same from a file as from a socket, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). `--portrange` does not apply to the HEP messages it unwraps. It still gates SIP that sipnab captures directly. It applies wherever sipnab reads packets: a headless run, `--cores N`, the TUI's own capture, and a capture opened or re-scanned inside the TUI. `--no-hep-parse` turns it off again when the config file sets `[capture] hep_parse = true`. Config: `[capture] hep_parse`. Feature: `hep` |
 | `--no-hep-parse` | -- | off | 0.5.204 | Do not unwrap HEP found in the capture, even when `[capture] hep_parse = true`. The last of `-E` / `--no-hep-parse` typed wins. Config: `[capture] hep_parse`. Feature: `hep` |
-| `--hep-allow` | `<ADDR>` | -- | 0.3.0 | Allowed source addresses for HEP input (repeatable). Takes CIDR (`192.0.2.0/8`, `2001:db8::/32`) or a **bare address** (`192.0.2.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `192.0.2.0` is one host, not `192.0.2.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. Refused without `--hep-listen`, the side it governs, exit `2`; `-E` reads no allowlist. Feature: `hep` |
+| `--hep-allow` | `<ADDR>` | -- | 0.3.0 | Allowed source addresses for HEP input (repeatable). Takes CIDR (`192.0.2.0/8`, `2001:db8::/32`) or a **bare address** (`192.0.2.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `192.0.2.0` is one host, not `192.0.2.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. It is also the only check on an OpenSIPS `E_SIPNAB_TH_MAP` event, which carries no HEP authentication: the listener accepts an event only from an address listed here, and with no list it refuses every event, counted as `event_sender_not_listed` ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). Refused without `--hep-listen`, the side it governs, exit `2`; `-E` reads no allowlist. Feature: `hep` |
 | `--hep-rate-limit` | `<N>` | `50000` | 0.3.0 | Maximum HEP packets per second (global ceiling across all senders); `0` disables the global ceiling, consistent with `off` on the per-peer knob. Refused without `--hep-listen`, the side it governs, exit `2`; a `[limits] hep_rate_limit` on a run without `--hep-listen` gets a startup warning naming it instead, because one config file serves runs with and without a listener. Feature: `hep`. Config: `[limits] hep_rate_limit` |
 | `--hep-rate-limit-per-peer` | `<N\|auto\|off>` | `off` | 0.5.28 | Maximum HEP packets/second from any single source IP: a number, `off` (the default), or `auto`. Adds fairness so one flooding peer cannot exhaust the global `--hep-rate-limit`. `auto` divides the global ceiling evenly across the `--hep-allow` sources (stays off without an allowlist). The listener logs its active limiters at startup. Refused without `--hep-listen`, the side it governs, exit `2`. Feature: `hep` |
 | `--hep-allow-kill` | -- | off | 0.5.28 | Allow scanner-kill to send active responses for packets received via HEP, and admit HEP-carried detections to the `--fail2ban` jail log. **Off by default**: a HEP sender asserts the inner src/dst, so absent `--hep-auth` an attacker could aim the kill at a victim of their choosing, or have the jail ban an address of their choosing. Only enable with authenticated, trusted HEP input. Feature: `hep` |
@@ -22378,6 +22407,22 @@ A warning at startup, not an error. The configuration asks sipnab to decode topo
 Both keys name a secret, and sipnab would have to choose one. The printed line starts with `invalid config value: `.
 
 **What to do:** Keep `th_callid_secret_file` for a secret OpenSIPS sets, or `th_callid_secret = "opensips-default"` for its default, and remove the other.
+
+**Exit code:** 1.
+
+### `[sip] th_mapping_max must be > 0 (0 would refuse every E_SIPNAB_TH_MAP mapping; to receive none, leave the sender out of --hep-allow)`
+
+`[sip] th_mapping_max` is how many OpenSIPS `E_SIPNAB_TH_MAP` mappings sipnab holds at once. A value of 0 would refuse every one. The printed line starts with `invalid config value: `.
+
+**What to do:** Set a whole number of 1 or more, for example the default `100000`, or remove the key. To receive no events, leave OpenSIPS's address out of `--hep-allow`.
+
+**Exit code:** 1.
+
+### `[sip] th_mapping_ttl_secs must be > 0 (0 would expire a mapping before the SIP it names could arrive)`
+
+`[sip] th_mapping_ttl_secs` is how many seconds sipnab keeps an `E_SIPNAB_TH_MAP` mapping after the store last held either of its legs. A value of 0 would drop a mapping before its SIP could arrive. The printed line starts with `invalid config value: `.
+
+**What to do:** Set a whole number of 1 or more, for example the default `300`, or remove the key.
 
 **Exit code:** 1.
 
@@ -29920,6 +29965,8 @@ SIP protocol handling.
 | `th_callid_secret_file` | path | none | File holding the OpenSIPS `th_callid_passwd`, so sipnab can join the two legs of a call through `topology_hiding("C")` by decoding the hidden Call-ID. sipnab reads it once at startup and removes one trailing line end. sipnab refuses a world-readable file, a file larger than `MAX_SECRET_FILE_BYTES` (4096) bytes, an empty secret and a NUL byte, and never prints or logs the secret. A decoded join also requires matching From tags, so a wrong secret never joins two legs; sipnab reports it instead (`th_callid` status `undecodable` or `unmatched`). Needs a `tls` build. Not with `th_callid_secret` |
 | `th_callid_secret` | string | none | Accepts only `"opensips-default"`: decode with the OpenSIPS default secret, which the OpenSIPS source publishes, so it hides nothing. sipnab refuses any other value and does not show it; a real secret goes in `th_callid_secret_file`. Not with `th_callid_secret_file` |
 | `th_callid_prefix` | string | `"DLGCH_"` | The OpenSIPS `th_callid_prefix` that marks a hidden Call-ID. Must not be empty |
+| `th_mapping_max` | integer | `100000` | Most OpenSIPS `E_SIPNAB_TH_MAP` mappings sipnab holds at once, `DEFAULT_MAX_MAPPINGS` (100000) unless set. Past it, sipnab refuses a new mapping, counts it as `refused_full` and logs a warning; held mappings stay. Must be at least `1`. See [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping) |
+| `th_mapping_ttl_secs` | integer | `300` | Seconds sipnab keeps an `E_SIPNAB_TH_MAP` mapping after the store last held either of its legs, `DEFAULT_TTL_SECS` (300) unless set. A mapping whose SIP never arrives, or whose calls the store has evicted, expires then, counted as `expired`. sipnab checks at most once a second, as SIP or events arrive. Must be at least `1` |
 
 ```toml
 [sip]
@@ -35637,6 +35684,10 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
   "source_exhausted": true,        // true once a file is read to the end
   "source_stopped_early": false,   // true when a read ended before the file did
   "stream_count": 2,
+  "th_mappings": {                 // OpenSIPS E_SIPNAB_TH_MAP events, as on /v1/stats
+    "accepted": 0, "conflict": 0, "duplicate": 0, "expired": 0,
+    "held": 0, "malformed": 0, "pending": 0, "refused_full": 0
+  },
   "unanalysed_busiest_ports": [],
   "unanalysed_sip_messages": 0,    // SIP that --portrange excluded
   "unanalysed_websocket_messages": 0,  // SIP-over-WebSocket the WS port set excluded
@@ -35646,6 +35697,11 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
   "writing_to": null               // path packets are being saved to, if any
 }
 ```
+
+`th_mappings` counts the OpenSIPS `E_SIPNAB_TH_MAP` events the HEP listener
+accepted, by outcome, and the mappings held and still waiting for their SIP
+(`pending`). It is the same object REST `GET /v1/stats` returns. See
+[Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping).
 
 Read `unsaved` before you stop a server. It is `true` only for a **live**
 capture with no output file, where the packets exist only in memory. A capture
@@ -41670,7 +41726,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 What sipnab is doing, and what it is costing the host it runs on.
 
 Use it to answer "is this server healthy" without a metrics listener. sipnab
-exports 45 Prometheus metrics, and the listener that serves them is off by
+exports 49 Prometheus metrics, and the listener that serves them is off by
 default. This tool reports process, host and store state over MCP without
 that listener.
 
@@ -41988,6 +42044,7 @@ Both senders share the address `127.0.0.1`:
     "allowlist": 0,
     "auth_mismatch": 10,
     "auth_missing": 0,
+    "event_sender_not_listed": 0,
     "hmac_bad_format": 0,
     "hmac_bad_mac": 0,
     "hmac_replay": 0,
@@ -60917,7 +60974,7 @@ Without help, sipnab can tie the two legs only by timing, which is a guess.
 The `C` flag changes the Call-ID only when the call has a dialog
 (`create_dialog()`). Without a dialog, OpenSIPS leaves the Call-ID alone.
 
-There are two ways to tie the legs exactly.
+There are three ways to tie the legs exactly.
 
 ### Decode the hidden Call-ID
 
@@ -60987,6 +61044,100 @@ The OpenSIPS source uses the same XOR and alphabet in every release from
 appends the caller's From tag before encoding. sipnab decodes both forms,
 and checks the appended tag against the From tag.
 
+### Have OpenSIPS send the mapping
+
+OpenSIPS knows both Call-IDs: `$ci` is the caller's, and
+`$TH_callee_callid` is the one it writes on the callee's leg. With the
+`event_datagram` module, the script sends sipnab one small UDP datagram per
+call naming both. This needs no secret, and the SIP is still what sipnab
+captures.
+
+Load the module, and subscribe sipnab's HEP listener to the event once at
+startup:
+
+```text
+loadmodule "event_datagram.so"
+```
+
+```text
+startup_route {
+	subscribe_event("E_SIPNAB_TH_MAP", "udp:127.0.0.1:9060");
+}
+```
+
+Then raise the event right after `topology_hiding("C")` in the request
+route:
+
+```text
+if (!create_dialog() || !topology_hiding("C")) {
+	send_reply(500, "Internal Server Error");
+	exit;
+}
+$avp(th_keys) = "caller_call_id";
+$avp(th_vals) = $ci;
+$avp(th_keys) = "callee_call_id";
+$avp(th_vals) = $TH_callee_callid;
+raise_event("E_SIPNAB_TH_MAP", $avp(th_keys), $avp(th_vals));
+```
+
+OpenSIPS sends a JSON-RPC 2.0 notification:
+
+```json
+{"jsonrpc":"2.0","method":"E_SIPNAB_TH_MAP","params":{"callee_call_id":"DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-","caller_call_id":"1-th-map@example.com"}}
+```
+
+Run sipnab with `--hep-listen` on the address the script names, and list
+OpenSIPS's address in `--hep-allow`. Give a capture filter that keeps the
+SIP, as here:
+
+```bash
+sudo sipnab -N -d any --hep-listen 127.0.0.1:9060 --hep-allow 127.0.0.1/32 --duration 30 --report 'udp port 5060 or udp[8] & 0xc0 = 0x80'
+```
+
+The filter matters. With `--hep-listen` as well as `-d` and no filter of
+your own, the interface takes media only, because sipnab expects a HEP
+mirror to deliver the signaling, and taking it off the wire too would count
+every message twice. Here the SIP is on the wire, so the filter keeps UDP
+port 5060 and RTP. sipnab prints a notice at startup when it sees
+`--hep-allow` with that default filter.
+
+What sipnab does with the event:
+
+- It reads the event on the HEP listener: a datagram that starts with `{`
+  is an event, and one that starts with `HEP3` is HEP. Events come over UDP
+  only.
+- It accepts an event only from a sender `--hep-allow` lists. An event
+  carries no HEP authentication, so `--hep-auth` cannot vouch for it. A
+  listener with no `--hep-allow` refuses every event, and counts each under
+  the refusal reason `event_sender_not_listed`.
+- The two legs join with `method` `mapping` and `strategy`
+  `th_callid_mapping`, whichever arrives first: the event or the SIP. The
+  callee's leg reports `th_callid` `mapped`.
+- A repeated event, as a retransmitted INVITE raises, changes nothing.
+- sipnab refuses an event that maps either Call-ID to a different partner. The
+  mapping already held for it stops joining too, and the callee's leg
+  reports `th_callid` `conflict`. sipnab cannot tell which of the two is
+  right, so it joins neither.
+- sipnab holds at most `[sip] th_mapping_max` mappings (100000), and drops
+  one when neither of its legs has been in the store for
+  `[sip] th_mapping_ttl_secs` (300). It refuses an event larger than
+  `MAX_EVENT_BYTES` (4096) bytes.
+
+The counts are on REST `GET /v1/stats` and the MCP tool `capture_status`
+under `th_mappings`, with the fields `accepted`, `duplicate`, `conflict`,
+`malformed`, `refused_full`, `expired`, `held` and `pending`. Prometheus has
+`sipnab_th_mapping_events_total{outcome}`, `sipnab_th_mappings_expired_total`,
+`sipnab_th_mappings_held` and `sipnab_th_mappings_pending`. The terminal
+interface's statistics view lists them, and a run ends with a line that
+says what the events did.
+
+Mappings arrive live, on the listener. A capture file read with `-I` holds
+no events, so for a file use the decode.
+
+OpenSIPS's `event_datagram` sends UDP to an IPv4 address only: its source
+passes `sizeof(struct sockaddr_in)` to `sendto`. Give the subscription an
+IPv4 address.
+
 ### Or copy the Call-ID into a header
 
 Without the secret, OpenSIPS can carry the caller's Call-ID to the callee in a
@@ -61016,6 +61167,23 @@ the configuration names both the secret and the header, sipnab reports the
 decoded match.
 
 ### What checks this section
+
+On 2026-11-03,
+[`harness/th-mapping/e2e.sh`](https://github.com/NormB/sipnab/blob/main/harness/th-mapping/e2e.sh)
+ran OpenSIPS 4.0.2, 4.0.1 and 3.6.9 with the event lines above, and a live
+sipnab capturing the network with the filter above and receiving the events
+on `--hep-listen`. It placed three calls with SIPp, and REST reported each
+callee leg joined to its own caller leg by `mapping`. The script's OpenSIPS
+lines are the ones above, character for character. The capture
+[`tests/fixtures/th-mapping/opensips-4.0-events.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/th-mapping/opensips-4.0-events.pcap), recorded by
+[`harness/th-mapping/capture.sh`](https://github.com/NormB/sipnab/blob/main/harness/th-mapping/capture.sh),
+holds those calls and the events OpenSIPS 4.0.2 sent.
+[`tests/th_mapping_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/th_mapping_test.rs)
+replays it into a live listener: events after the SIP and before it,
+repeats, a conflict, a listener with no `--hep-allow`, and the end-of-run
+line. The script runs the `sudo sipnab` command above with the test
+network's interface and addresses, and with `--api` in place of
+`--duration 30 --report`, so it can ask REST how each leg joined.
 
 On 2026-11-02, test calls went through OpenSIPS 4.0.2 and 3.6.9 with
 [`harness/th-callid/capture.sh`](https://github.com/NormB/sipnab/blob/main/harness/th-callid/capture.sh). Its
@@ -77218,6 +77386,37 @@ implementation from a broken one.
 `Session-ID` correlation ([`src/sip/session_id.rs`](../../src/sip/session_id.rs)) intersects the non-nil halves
 rather than comparing strings, because the halves swap direction across a B2BUA
 and string equality would find nothing.
+
+### Correlation: how an OpenSIPS mapping event reaches the store
+
+OpenSIPS can also state the pair: an `E_SIPNAB_TH_MAP` event from
+`event_datagram`, one JSON-RPC 2.0 datagram per call. It arrives on the HEP
+listener's UDP socket. `HepIngest::receive` tells it from HEP by its first
+byte (`{`, where HEP v3 starts with `HEP3` and v1 and v2 with a version byte),
+checks the sender against `--hep-allow`, the only check that applies to an
+event because it carries no HEP auth chunk, and hands the bytes on with
+`HepOrigin::json_event` set. Classification claims a marked packet before
+SIP detection (`pipeline::claim_th_mapping`) and parses the bytes there, so
+the store counts a malformed event rather than the SIP or RTP detectors
+seeing it. Every applier, live, batch, the parallel engine and the terminal
+interface's file loader, hands the result to
+`DialogStore::apply_th_mapping`.
+
+The table ([`src/sip/th_mapping.rs`](../../src/sip/th_mapping.rs)) lives in
+the store, not beside it, so the store's own traffic ages it: a mapping
+expires `[sip] th_mapping_ttl_secs` after either leg was last in the store,
+checked at most once a second of capture time from `process_message` and from
+each event. The store works the join out when a surface asks for a
+correlation, so an event may arrive before or after the SIP it names. `links` answers for a
+pair rather than naming one partner, because one Call-ID can be the callee
+side of one hop and the caller side of the next when two topology-hiding
+proxies are in series. A conflict stops both mappings it touches: two
+statements disagree, and sipnab cannot tell which is right.
+
+A device plus a HEP listener gets the media-only capture filter, which
+assumes the listener carries the signaling, so a run receiving events for SIP
+on the wire must give its own filter. `bootstrap::th_mapping_filter_notice`
+says so at startup, and the end-of-run line repeats it while mappings wait.
 
 ### Correlation: why a decoded topology-hiding Call-ID also needs the From tag
 

@@ -80,6 +80,10 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
   "source_exhausted": true,        // true once a file is read to the end
   "source_stopped_early": false,   // true when a read ended before the file did
   "stream_count": 2,
+  "th_mappings": {                 // OpenSIPS E_SIPNAB_TH_MAP events, as on /v1/stats
+    "accepted": 0, "conflict": 0, "duplicate": 0, "expired": 0,
+    "held": 0, "malformed": 0, "pending": 0, "refused_full": 0
+  },
   "unanalysed_busiest_ports": [],
   "unanalysed_sip_messages": 0,    // SIP that --portrange excluded
   "unanalysed_websocket_messages": 0,  // SIP-over-WebSocket the WS port set excluded
@@ -89,6 +93,11 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
   "writing_to": null               // path packets are being saved to, if any
 }
 ```
+
+`th_mappings` counts the OpenSIPS `E_SIPNAB_TH_MAP` events the HEP listener
+accepted, by outcome, and the mappings held and still waiting for their SIP
+(`pending`). It is the same object REST `GET /v1/stats` returns. See
+[Have OpenSIPS send the mapping](@/docs/opensips-sipnab.md#have-opensips-send-the-mapping).
 
 Read `unsaved` before you stop a server. It is `true` only for a **live**
 capture with no output file, where the packets exist only in memory. A capture

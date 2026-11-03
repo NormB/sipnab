@@ -139,6 +139,9 @@ fn ingest(path: &Path) -> Option<Ingested> {
                         .link_to_dialog_with_sdp(*ip, *port, call_id, media);
                 }
             }
+            PacketAction::ThMapping(event) => {
+                out.dialogs.apply_th_mapping(event, parsed.timestamp);
+            }
             PacketAction::RelayControl(message) => {
                 sipnab::pipeline::apply_relay_control(
                     &mut out.streams,

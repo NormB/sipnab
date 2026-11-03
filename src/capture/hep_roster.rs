@@ -73,12 +73,17 @@ pub enum HepRefusal {
     HmacBadMac,
     /// `hmac` mode: a token with this nonce was already accepted.
     HmacReplay,
+    /// A JSON event datagram (`E_SIPNAB_TH_MAP`) from a sender `--hep-allow`
+    /// does not list. An event carries no HEP auth chunk, so the allowlist is
+    /// the only thing that vouches for it, and a listener with none refuses
+    /// every event.
+    EventSenderNotListed,
 }
 
 impl HepRefusal {
     /// Every reason, in declaration order. [`Self::index`] is each one's
     /// position here, and a test holds the two together.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
         Self::Allowlist,
         Self::RateLimitGlobal,
         Self::RateLimitPerPeer,
@@ -91,6 +96,7 @@ impl HepRefusal {
         Self::HmacTimestampOutOfWindow,
         Self::HmacBadMac,
         Self::HmacReplay,
+        Self::EventSenderNotListed,
     ];
 
     /// How many reasons there are, for arrays indexed by [`Self::index`].
@@ -115,6 +121,7 @@ impl HepRefusal {
             Self::HmacTimestampOutOfWindow => 9,
             Self::HmacBadMac => 10,
             Self::HmacReplay => 11,
+            Self::EventSenderNotListed => 12,
         }
     }
 
@@ -135,6 +142,7 @@ impl HepRefusal {
             Self::HmacTimestampOutOfWindow => "hmac_timestamp_out_of_window",
             Self::HmacBadMac => "hmac_bad_mac",
             Self::HmacReplay => "hmac_replay",
+            Self::EventSenderNotListed => "event_sender_not_listed",
         }
     }
 
@@ -159,6 +167,7 @@ impl HepRefusal {
             }
             Self::HmacBadMac => "the HMAC does not verify (wrong key, or a tampered packet)",
             Self::HmacReplay => "a replayed HMAC token",
+            Self::EventSenderNotListed => "a JSON event from a sender --hep-allow does not list",
         }
     }
 }

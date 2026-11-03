@@ -11,9 +11,10 @@
 
 use crate::sip::dialog_store::{CorrelationMethod, DialogStore};
 
-/// The methods in the order the summary lists them: exact joins first, the
-/// guess last.
-const METHOD_ORDER: [CorrelationMethod; 4] = [
+/// The methods in the order the summary lists them: what OpenSIPS stated,
+/// then the other exact joins, the guess last.
+const METHOD_ORDER: [CorrelationMethod; 5] = [
+    CorrelationMethod::Mapping,
     CorrelationMethod::Decoded,
     CorrelationMethod::Header,
     CorrelationMethod::Sdp,
@@ -115,6 +116,11 @@ mod tests {
             render_counts(&[M::Timing, M::Header, M::Timing, M::Sdp]),
             "Legs: 1 header, 1 sdp, 2 timing",
             "methods are counted apart, exact joins first"
+        );
+        assert_eq!(
+            render_counts(&[M::Timing, M::Mapping, M::Decoded]),
+            "Legs: 1 mapping, 1 decoded, 1 timing",
+            "a stated mapping is listed first, then the decode"
         );
         assert_eq!(render_counts(&[]), "", "no legs is no text");
         let ds = DialogStore::new(10, false);
