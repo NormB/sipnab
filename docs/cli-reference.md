@@ -1433,10 +1433,10 @@ sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --call-tree b2bua-caller-synt
 
 ```text
 Call tree from b2bua-caller-synth@203.0.113.1: 2 legs, depth 1, 28 messages, 1 timing guess
-Leg                                   Strategy          Method  Score  Match  Followed
---------------------------------------------------------------------------------------
-b2bua-caller-synth@203.0.113.1        root              -       -      -      yes
-  b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  no
+Leg                                   Strategy          Method  Score  Match  Followed  TH
+------------------------------------------------------------------------------------------
+b2bua-caller-synth@203.0.113.1        root              -       -      -      yes       -
+  b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  no        -
 ```
 
 - Each hop indents the leg two more spaces.
@@ -1450,11 +1450,16 @@ b2bua-caller-synth@203.0.113.1        root              -       -      -      ye
   event), `decoded` (an OpenSIPS
   topology-hiding Call-ID, decoded with the configured secret; see
   [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)),
+  `mapping` (an OpenSIPS `E_SIPNAB_TH_MAP` event named both legs),
   `header` (a SIP header both legs carry: one named in `[sip] xcid_headers`,
   `Session-ID`, `P-Charging-Vector` or a Via branch), `sdp` (the SDP
   origin) or `timing` (the guess).
 - `Followed` is `no` on a guess: sipnab lists the leg but does not look for
   that leg's own matches, so one wrong guess does not pull in unrelated calls.
+- `TH` is the leg's own OpenSIPS topology-hiding status, `-` for a leg that
+  is not hidden: `decoded`, `no_secret`, `undecodable`, `unmatched`, `mapped`
+  or `conflict`. To see the mappings behind `mapped` and `conflict`, use
+  `--th-mappings`.
 
 The Call-ID must match exactly, and `--report` lists the ones the run holds. Under
 `--json`, each leg names its parent and depth:
@@ -1481,9 +1486,9 @@ sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --correlate 1-1966@10.0.2.20 --no
 
 ```text
 Legs correlated with 1-1966@10.0.2.20: 1 leg
-Leg               Strategy    Method  Score  Match       Gap ms
----------------------------------------------------------------
-1-1968@10.0.2.20  sdp_origin  sdp     90     identifier  -
+Leg               Strategy    Method  Score  Match       Gap ms  TH
+-------------------------------------------------------------------
+1-1968@10.0.2.20  sdp_origin  sdp     90     identifier  -       -
 ```
 
 The two calls carry the same SDP origin, an identifier, so the score is high.
@@ -1497,9 +1502,9 @@ sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --correlate b2bua-caller-synt
 
 ```text
 Legs correlated with b2bua-caller-synth@203.0.113.1: 1 leg
-Leg                                 Strategy          Method  Score  Match  Gap ms
-----------------------------------------------------------------------------------
-b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  3
+Leg                                 Strategy          Method  Score  Match  Gap ms  TH
+--------------------------------------------------------------------------------------
+b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  3       -
 Every leg here is a timing guess: no identifier ties it to this call.
 ```
 
@@ -2386,6 +2391,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--hep-hmac-window` | `<SECS>` | `30` | 0.5.100 | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. When the agent's and the collector's clocks differ by more than this, sipnab refuses every packet as out of window and the listener admits nothing; `--hep-silence-warn` then names `hmac_timestamp_out_of_window`. A wider window keeps a packet captured on the path replayable for longer. Range 1-300. Refused without `--hep-listen`, the side that checks the window, exit `2`; a `[security] hep_hmac_window_secs` on a run without `--hep-listen` gets a startup warning naming it instead. Config: `[security] hep_hmac_window_secs`. Feature: `hep` |
 | `--hep-silence-warn` | `<SECS>` | `30` | 0.5.185 | Seconds a `--hep-listen` listener may go without **admitting** a packet before it logs a warning; `0` turns the warning off. Only an admitted packet counts as traffic. When packets keep arriving and sipnab refuses every one, the warning says `no packets admitted` and names the refusal most of them met (`auth_mismatch`, `allowlist`, `hmac_timestamp_out_of_window` and so on) and a peer that sent them: the sender is reaching the port and sipnab is turning it away, which is a key, mode or allowlist problem rather than a network one. When nothing arrives at all the warning keeps its `no packets for` wording. Refused without `--hep-listen`, which is the side it governs. Feature: `hep` |
 | `--hep-senders` | -- | off | 0.5.185 | At the end of a headless (`-N`) run, print who fed the `--hep-listen` listener: each sender, keyed by the capture id it claims and the address it sent from, with its packet count, when sipnab last heard from it, how long it has been idle and whether it went silent past `--hep-silence-warn`; then every address the listener refused, with counts by reason, and the refusal totals. The capture id is the sender's claim, never proven. With `--json`, the same as one JSON object on the last line of stdout, the shape `GET /v1/hep/senders` and the MCP `hep_senders` tool return. The roster covers this run only and nothing persists it. Refused without `--hep-listen`, which is the side it describes. Feature: `hep` |
+| `--th-mappings` | -- | off | Unreleased | At the end of a headless (`-N`) run, print the OpenSIPS topology-hiding mappings the `--hep-listen` listener received in `E_SIPNAB_TH_MAP` events: a line with the event counts, a line with the hidden legs by status (`decoded`, `no_secret`, `undecodable`, `unmatched`, `mapped`, `conflict`), then one row per mapping with its caller-side and callee-side Call-IDs, its state (`conflict`, `pending` or `joined`) and whether sipnab captured each leg, conflicts first. A `pending` row names the leg whose SIP did not arrive. With `--json`, the same as one JSON object on the last line of stdout, the shape `GET /v1/th-mappings` and the MCP `th_mappings` tool return. Refused without `--hep-listen`, where the events arrive. How-to: [Find why a call through topology hiding did not join](rest-api.md#find-why-a-call-through-topology-hiding-did-not-join). Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | 0.3.0 | Parse incoming HEP packets (enable HEP decoding): sipnab unwraps a HEP datagram on the wire or in a capture file and reads its message with the addresses the HEP chunks carry and the time the HEP packet carries, as `-L` does, not the time sipnab sniffed the wrapper. A HEP packet that carries no time (a HEP v3 packet without a `TS_SEC` chunk, or a HEP v1 packet) keeps the time sipnab sniffed the wrapper; a HEP v2 packet carries its time in its time header. Sniffing a HEP port that no process listens on loses messages from some senders: see the note under [`[capture]` in the configuration reference](config-reference.md#capture). The transport comes from the IP protocol chunk by the same rule `--hep-listen` uses, so a TLS, WS or WSS leg an OpenSIPS or Kamailio tracer sends reads the same from a file as from a socket, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). `--portrange` does not apply to the HEP messages it unwraps. It still gates SIP that sipnab captures directly. It applies wherever sipnab reads packets: a headless run, `--cores N`, the TUI's own capture, and a capture opened or re-scanned inside the TUI. `--no-hep-parse` turns it off again when the config file sets `[capture] hep_parse = true`. Config: `[capture] hep_parse`. Feature: `hep` |
 | `--no-hep-parse` | -- | off | 0.5.204 | Do not unwrap HEP found in the capture, even when `[capture] hep_parse = true`. The last of `-E` / `--no-hep-parse` typed wins. Config: `[capture] hep_parse`. Feature: `hep` |
 | `--hep-allow` | `<ADDR>` | -- | 0.3.0 | Allowed source addresses for HEP input (repeatable). Takes CIDR (`192.0.2.0/8`, `2001:db8::/32`) or a **bare address** (`192.0.2.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `192.0.2.0` is one host, not `192.0.2.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. It is also the only check on an OpenSIPS `E_SIPNAB_TH_MAP` event, which carries no HEP authentication: the listener accepts an event only from an address listed here, and with no list it refuses every event, counted as `event_sender_not_listed`. List the address OpenSIPS sends the event from: `127.0.0.1` when OpenSIPS and sipnab share a machine ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). Refused without `--hep-listen`, the side it governs, exit `2`; `-E` reads no allowlist. Feature: `hep` |
@@ -2426,6 +2432,8 @@ This applies to root runs and to unprivileged runs set up with
 - `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-silence-warn 0` — a lab listener fed by hand, where long silences are normal and the warning would only be noise
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --duration 300 --hep-senders` — five minutes of a collector's feed, then the roster: which proxies sent and how much, which went silent, and which addresses the listener turned away and why
 - `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-senders --count 5000 --json` — the same roster as one JSON object on the last line of stdout, after the per-message lines, for a script to pick up with `tail -1`
+- `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-allow 127.0.0.1/32 --duration 300 --th-mappings` — five minutes of an OpenSIPS proxy's HEP mirror and its `E_SIPNAB_TH_MAP` events, then each mapping with its state: a `pending` row names the leg whose SIP never arrived, and a `conflict` row a Call-ID two events disagree about
+- `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-allow 127.0.0.1/32 --duration 300 --th-mappings --json | tail -1 | jq '.mappings[] | select(.state != "joined")'` — the same listing as one JSON object on the last line of stdout, filtered to the mappings that did not join
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-token t0ken-alice --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-token-ttl 1800` — loopback HTTP MCP server with a bearer token, file-loaded signing key, revocation denylist, and a 30-minute mint TTL
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token t0ken-bob --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-allowed-host mcp.example.com` — non-loopback HTTP MCP server (token required) accepting an extra Host header for named clients
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token-file /etc/sipnab/mcp.token --mcp-allowed-host mcp.example.com --mcp-tls-cert /etc/sipnab/mcp.pem --mcp-tls-key /etc/sipnab/mcp.key` — a non-loopback MCP server serving HTTPS itself, with no nginx in front: the bearer token and every tool result cross the network encrypted

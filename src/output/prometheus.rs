@@ -301,6 +301,34 @@ fn write_th_mappings(out: &mut String, t: &crate::sip::th_mapping::ThMappingCoun
     out.push('\n');
 }
 
+/// The OpenSIPS topology-hiding legs held now, by status, and the undecoded
+/// ones whose caller leg was captured. Every status is written on every
+/// scrape, zeros included; no per-call label.
+fn write_th_callid(out: &mut String, t: &crate::sip::dialog_store::ThCallidSummary) {
+    write_help_type(
+        out,
+        "sipnab_th_callid_legs",
+        "OpenSIPS topology-hiding legs held now, by status",
+        "gauge",
+    );
+    for (status, n) in t.by_status() {
+        let _ = writeln!(out, "sipnab_th_callid_legs{{status=\"{status}\"}} {n}");
+    }
+    out.push('\n');
+    write_help_type(
+        out,
+        "sipnab_th_callid_undecoded_with_peer",
+        "Undecoded topology-hiding legs whose caller leg was captured: check the secret and prefix",
+        "gauge",
+    );
+    let _ = writeln!(
+        out,
+        "sipnab_th_callid_undecoded_with_peer {}",
+        t.undecoded_with_peer
+    );
+    out.push('\n');
+}
+
 /// Collected metrics for Prometheus exposition.
 ///
 /// All counters use monotonically increasing values. Histograms store
@@ -330,6 +358,9 @@ pub struct PrometheusMetrics {
     /// OpenSIPS `E_SIPNAB_TH_MAP` mapping events and the mappings held, from
     /// [`crate::sip::dialog_store::DialogStore::th_mapping_counts`].
     pub th_mappings: crate::sip::th_mapping::ThMappingCounts,
+    /// OpenSIPS topology-hiding legs held now, by status, from
+    /// [`crate::sip::dialog_store::DialogStore::th_callid_summary`].
+    pub th_callid: crate::sip::dialog_store::ThCallidSummary,
     /// RTP stream counts by status (e.g., `"established"`, `"orphaned"`).
     pub rtp_streams_total: HashMap<String, u64>,
     /// Total captured packets.
@@ -855,6 +886,7 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
     let _ = writeln!(out, "sipnab_calls_active {}", metrics.calls_active);
     out.push('\n');
     write_th_mappings(&mut out, &metrics.th_mappings);
+    write_th_callid(&mut out, &metrics.th_callid);
 
     // Active streams (gauge)
     write_help_type(
@@ -1385,6 +1417,7 @@ pub fn populate_from_stores(
     metrics.dialogs_active = dialogs.active_dialog_count() as u64;
     metrics.calls_active = dialogs.active_call_count() as u64;
     metrics.th_mappings = dialogs.th_mapping_counts();
+    metrics.th_callid = dialogs.th_callid_summary();
 
     let mut established = 0u64;
     let mut orphaned = 0u64;
@@ -1608,6 +1641,33 @@ mod tests {
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
     // ── HEP listener series ──────────────────────────────────────────
+
+    /// The hidden legs by topology-hiding status reach the scrape, every
+    /// status on every scrape, zeros included, with no per-call label.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn th_callid_status_counts_reach_the_scrape() -> Result<(), Box<dyn std::error::Error>> {
+        let (ds, _, _) = crate::test_utils::th_hidden_call_store("right", Some("wrong"))?;
+        let ss = crate::rtp::stream_store::StreamStore::new(10);
+        let mut metrics = PrometheusMetrics::default();
+        populate_from_stores(&mut metrics, &ds, &ss);
+        let text = format_metrics(&metrics);
+        for line in [
+            "sipnab_th_callid_legs{status=\"decoded\"} 0",
+            "sipnab_th_callid_legs{status=\"no_secret\"} 0",
+            "sipnab_th_callid_legs{status=\"undecodable\"} 1",
+            "sipnab_th_callid_legs{status=\"unmatched\"} 0",
+            "sipnab_th_callid_legs{status=\"mapped\"} 0",
+            "sipnab_th_callid_legs{status=\"conflict\"} 0",
+            "sipnab_th_callid_undecoded_with_peer 1",
+        ] {
+            assert!(
+                text.contains(line),
+                "`{line}` missing from the scrape:\n{text}"
+            );
+        }
+        Ok(())
+    }
 
     /// The OpenSIPS `E_SIPNAB_TH_MAP` counts reach the scrape from the
     /// store, every outcome on every scrape, zeros included, so an alert on

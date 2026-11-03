@@ -4228,13 +4228,17 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // directory of the file root, reads files and changes nothing, so the
     // split moves to 63 read-only of 76 and the thirteen write-capable
     // tools are unchanged.
-    // 76 -> 77 by `fleet_inventory` (src/mcp/tools/inventory.rs), the
+    // 76 -> 77 by `fleet_inventory` (src/mcp/tools/inventory.rs, #635), the
     // process's fleet inventory record, the same document as GET
     // /v1/inventory. It reads and changes nothing, so the split moves to 64
     // read-only of 77 and the thirteen write-capable tools are unchanged.
+    // 77 -> 78 by `th_mappings` (src/mcp/tools/hep.rs, #636), which lists the
+    // OpenSIPS topology-hiding mappings the store holds. It reads and changes
+    // nothing, so the split moves to 65 read-only of 78 and the thirteen
+    // write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        77,
+        78,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -5733,11 +5737,18 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // plugin load failures, and its site mirror website/content/docs/plugins.md
     // +1. Attributed per file against origin/main ffd06bfb1: no other changed
     // page gained or lost a table.
-    // 1311 -> 1318 (the fleet inventory): docs/fleet.md +3 (exit status,
-    // host states, findings), its site mirror website/content/docs/fleet.md
-    // +3, and docs/design/surface-capability-matrix.md +1, the "Fleet
-    // inventory" capability row. Attributed per file against origin/main.
-    const EXPECTED_TABLES: usize = 1318;
+    // 1311 -> 1318 (the fleet inventory, #635): docs/fleet.md +3 (exit
+    // status, host states, findings), its site mirror
+    // website/content/docs/fleet.md +3, and
+    // docs/design/surface-capability-matrix.md +1, the "Fleet inventory"
+    // capability row. Attributed per file against origin/main.
+    // 1318 -> 1325: the topology-hiding mapping listing (#636).
+    // docs/rest-api.md +2 (`GET /v1/th-mappings` parameters, the `th_callid`
+    // keys of `/v1/stats`) and its mirror website/content/docs/api.md +2;
+    // docs/mcp-tools-signaling.md +1 (`th_mappings` parameters) and its
+    // mirror +1; docs/design/surface-capability-matrix.md +1 (the
+    // "Topology-hiding mappings" row), which has no mirror.
+    const EXPECTED_TABLES: usize = 1325;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

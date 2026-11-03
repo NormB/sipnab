@@ -4452,6 +4452,17 @@ pub struct HepArgs {
     #[arg(help_heading = "HEP", long = "hep-senders", requires = "hep_listen")]
     pub hep_senders: bool,
 
+    /// At the end of a headless run, print the OpenSIPS topology-hiding
+    /// mappings the `--hep-listen` listener received in `E_SIPNAB_TH_MAP`
+    /// events: one row per mapping with its caller-side and callee-side
+    /// Call-IDs, its state (`conflict`, `pending` or `joined`) and whether
+    /// each leg was captured, after the event counts and the hidden legs by
+    /// status. With `--json`, the same as one JSON object on the last line of
+    /// stdout — the shape `GET /v1/th-mappings` and the MCP `th_mappings`
+    /// tool return. Refused without `--hep-listen`, where the events arrive.
+    #[arg(help_heading = "HEP", long = "th-mappings", requires = "hep_listen")]
+    pub th_mappings: bool,
+
     /// Parse incoming HEP packets (enable HEP decoding). Config:
     /// `[capture] hep_parse`; `--no-hep-parse` turns it off again.
     #[arg(

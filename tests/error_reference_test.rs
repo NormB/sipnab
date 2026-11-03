@@ -878,10 +878,13 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 540 -> 542: src/config.rs, the refusals of 0 for `[sip] th_mapping_max`
 // and `[sip] th_mapping_ttl_secs`, the OpenSIPS E_SIPNAB_TH_MAP table's
 // bound and lifetime (#617). Nothing removed.
-// 542 -> 546: src/app/fleet.rs, `sipnab fleet inventory`: the hosts file's
-// empty url and repeated name, a token file that does not hold one token,
-// and an answer over MAX_ANSWER_BYTES. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 546;
+// 542 -> 546: src/app/fleet.rs, `sipnab fleet inventory` (#635): the hosts
+// file's empty url and repeated name, a token file that does not hold one
+// token, and an answer over MAX_ANSWER_BYTES. Nothing removed.
+// 546 -> 547: src/app/batch.rs (#636), `--th-mappings: the mappings did not
+// serialize: {e}`, the --json failure of the new mapping listing, worded as
+// --hep-senders words its own. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 547;
 
 // ---------------------------------------------------------------------------
 // The page gates

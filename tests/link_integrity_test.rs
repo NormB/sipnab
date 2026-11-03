@@ -1578,12 +1578,21 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // the site alone; docs/plugins.md +2, docs/README.md +1, docs/examples.md
     // +1, docs/fail2ban-sipnab.md +1 and docs/library.md +1. Counted per page
     // against origin/main ffd06bfb1; every other page held its count.
-    // 2079 -> 2097 (the fleet inventory): docs/fleet.md +4, its new how-to;
+    // 2079 -> 2097 (the fleet inventory, #635): docs/fleet.md +4, its how-to;
     // README.md, auth.md +1 each and cli-reference.md, errors.md,
     // mcp-estate.md, mcp-tools-server.md, mcp-tools.md and rest-api.md +2
     // each, links to fleet.md and its sections or, in mcp-tools.md, to the
     // new tool's section. Counted per page against origin/main.
-    const EXPECTED_WIKI_LINKS: usize = 2097;
+    // 2097 -> 2113 (the topology-hiding mapping listing and its how-to,
+    // #636): README.md +1 (the how-to), cli-reference.md +1 (the
+    // `--th-mappings` row's how-to), mcp-tools-core.md +2 (to `th_mappings`
+    // and `find_correlated`), mcp-tools-signaling.md +4 (the `th_mappings`
+    // row, links to `find_correlated` and `capture_status`, and the how-to),
+    // mcp-tools.md +2 (the `th_mappings` index row), prometheus-metrics.md +1
+    // (to `GET /v1/th-mappings`), rest-api.md +5 (to `GET /v1/th-mappings`
+    // and the how-to, the how-to's two links to opensips-sipnab.md and one to
+    // `th_mappings`).
+    const EXPECTED_WIKI_LINKS: usize = 2113;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

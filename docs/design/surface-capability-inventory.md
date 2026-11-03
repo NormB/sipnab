@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 396, TUI 25, REST 48, MCP 77.
+Totals: CLI 397, TUI 25, REST 49, MCP 78.
 
-## CLI flags (396)
+## CLI flags (397)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -330,6 +330,7 @@ Totals: CLI 396, TUI 25, REST 48, MCP 77.
 - `--telephone-event`
 - `--text-dump`
 - `--tfps-ctl`
+- `--th-mappings`
 - `--timeline`
 - `--tls-key`
 - `--tls-lockon-window`
@@ -440,7 +441,7 @@ Totals: CLI 396, TUI 25, REST 48, MCP 77.
 - `Talkers`
 - `TfpsObserve`
 
-## REST routes (48)
+## REST routes (49)
 
 - `/health`
 - `/metrics`
@@ -485,13 +486,14 @@ Totals: CLI 396, TUI 25, REST 48, MCP 77.
 - `/v1/tfps/labels`
 - `/v1/tfps/status`
 - `/v1/tfps/unban`
+- `/v1/th-mappings`
 - `/v1/timeline`
 - `/v1/vcon/analyze`
 - `/v1/vcon/fetch/{uuid}`
 - `/v1/vcon/spool`
 - `/v1/vcon/validate`
 
-## MCP tools (77)
+## MCP tools (78)
 
 - `actions_revert`
 - `aggregate_dialogs`
@@ -562,6 +564,7 @@ Totals: CLI 396, TUI 25, REST 48, MCP 77.
 - `tfps_labels`
 - `tfps_status`
 - `tfps_unban`
+- `th_mappings`
 - `timeline`
 - `top_talkers`
 - `triage_call`

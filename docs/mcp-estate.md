@@ -470,8 +470,8 @@ Five fields decide how much of that tree you should act on:
 
 | Field | Read it as |
 |---|---|
-| `strategy` | Which of the eight above matched, per leg |
-| `method` | What sipnab compared the legs on: `decoded`, `header`, `sdp` or `timing` |
+| `strategy` | Which of the nine above matched, per leg |
+| `method` | What sipnab compared the legs on: `decoded`, `mapping`, `header`, `sdp` or `timing` |
 | `identifier_match` | `true`: two ends agreed on an identifier. `false`: a guess |
 | `heuristic_only` | `true`: **every** returned leg rests on a guess, so the whole tree is a hypothesis |
 | `timing_clock` | Present only when the answer contains a time-based match. Absent means no leg needed one |

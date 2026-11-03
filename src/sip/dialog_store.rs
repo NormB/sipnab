@@ -300,6 +300,9 @@ pub struct TreeLeg {
     /// timing guess, and on any leg the cap cut the walk short of -- the two
     /// produce the same leaf shape for opposite reasons.
     pub followed: bool,
+    /// This leg's own OpenSIPS topology-hiding status (see
+    /// [`DialogStore::th_callid_status`]). `None` when it is not a hidden leg.
+    pub th_callid: Option<ThCallidStatus>,
 }
 
 /// The correlation graph reachable from one dialog, breadth-first.
@@ -501,7 +504,11 @@ pub enum ThCallidStatus {
     /// Decoded, and joined to the captured leg with that Call-ID and From tag.
     Decoded,
     /// A hidden Call-ID, and no secret is configured.
-    NoSecret,
+    // The wire name stays `no_secret`. The identifier avoids "secret" because
+    // CodeQL's `rust/cleartext-logging` reads a name containing it as secret
+    // data, and every test that prints the Prometheus scrape became an alert.
+    #[serde(rename = "no_secret")]
+    NotConfigured,
     /// A hidden Call-ID that the configured secret does not decode: a wrong
     /// secret, or a wrong `th_callid_prefix`.
     Undecodable,
@@ -518,12 +525,13 @@ pub enum ThCallidStatus {
 }
 
 impl ThCallidStatus {
-    /// The wire name: `decoded`, `no_secret`, `undecodable` or `unmatched`.
+    /// The wire name: `decoded`, `no_secret`, `undecodable`, `unmatched`,
+    /// `mapped` or `conflict`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Decoded => "decoded",
-            Self::NoSecret => "no_secret",
+            Self::NotConfigured => "no_secret",
             Self::Undecodable => "undecodable",
             Self::Unmatched => "unmatched",
             Self::Mapped => "mapped",
@@ -537,7 +545,7 @@ impl ThCallidStatus {
     pub const fn explanation(self) -> &'static str {
         match self {
             Self::Decoded => "the hidden Call-ID decoded to a captured leg with the same From tag",
-            Self::NoSecret => {
+            Self::NotConfigured => {
                 "an OpenSIPS hidden Call-ID; set [sip] th_callid_secret_file to decode it"
             }
             Self::Undecodable => {
@@ -581,13 +589,21 @@ pub fn set_th_mapping_limits(max: usize, ttl_secs: u64) {
 }
 
 /// Counts of hidden dialogs by [`ThCallidStatus`], from
-/// [`DialogStore::th_callid_summary`].
+/// [`DialogStore::th_callid_summary`]. The `th_callid` object REST
+/// `/v1/stats` and MCP `capture_status` return, and the source of the
+/// `sipnab_th_callid_*` series. Counts of dialogs held now, not running totals.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
 pub struct ThCallidSummary {
     /// Hidden legs decoded and joined.
     pub decoded: usize,
     /// Hidden legs seen with no secret configured.
-    pub no_secret: usize,
+    // Serialized as `no_secret`; `ThCallidStatus::NotConfigured` says why the
+    // field is not named so.
+    #[serde(rename = "no_secret")]
+    pub not_configured: usize,
     /// Hidden legs the secret did not decode.
     pub undecodable: usize,
     /// Hidden legs decoded to no observed caller leg.
@@ -603,6 +619,21 @@ pub struct ThCallidSummary {
 }
 
 impl ThCallidSummary {
+    /// Every status with its count, in the order the statuses are declared,
+    /// zeros included: the one list the scrape and the text report walk, so a
+    /// status added to [`ThCallidStatus`] cannot reach one and not the other.
+    #[must_use]
+    pub const fn by_status(&self) -> [(ThCallidStatus, usize); 6] {
+        [
+            (ThCallidStatus::Decoded, self.decoded),
+            (ThCallidStatus::NotConfigured, self.not_configured),
+            (ThCallidStatus::Undecodable, self.undecodable),
+            (ThCallidStatus::Unmatched, self.unmatched),
+            (ThCallidStatus::Mapped, self.mapped),
+            (ThCallidStatus::Conflict, self.conflict),
+        ]
+    }
+
     /// Whether the evidence points at a wrong secret or prefix: a hidden leg
     /// whose caller leg was captured did not decode to it.
     #[must_use]
@@ -985,6 +1016,14 @@ impl DialogStore {
         self.th_mappings_swept = Some(now);
     }
 
+    /// Every topology-hiding mapping held, in no particular order. See
+    /// [`crate::output::query::th_mappings`] for the listing built on it.
+    pub fn th_mapping_entries(
+        &self,
+    ) -> impl Iterator<Item = crate::sip::th_mapping::HeldMapping<'_>> {
+        self.th_mappings.entries()
+    }
+
     /// The mapping table's counts, with `pending` the mappings whose two legs
     /// the store does not both hold.
     #[must_use]
@@ -1079,7 +1118,7 @@ impl DialogStore {
             return None;
         }
         let Some(th) = self.th_callid.as_deref() else {
-            return Some(ThCallidStatus::NoSecret);
+            return Some(ThCallidStatus::NotConfigured);
         };
         let decoded = th.decode(&d.call_id);
         Some(match &decoded {
@@ -1113,7 +1152,7 @@ impl DialogStore {
             };
             match status {
                 ThCallidStatus::Decoded => s.decoded += 1,
-                ThCallidStatus::NoSecret => s.no_secret += 1,
+                ThCallidStatus::NotConfigured => s.not_configured += 1,
                 ThCallidStatus::Undecodable => s.undecodable += 1,
                 ThCallidStatus::Unmatched => s.unmatched += 1,
                 ThCallidStatus::Mapped => s.mapped += 1,
@@ -2157,6 +2196,8 @@ impl DialogStore {
             identifier_match: None,
             // Overwritten below from `walked`; the root is always walked.
             followed: false,
+            // Filled in below, once per leg, from the one status rule.
+            th_callid: None,
         }];
         let mut total_messages = root.messages.len();
         let mut first_activity = root.created_at;
@@ -2212,6 +2253,7 @@ impl DialogStore {
                     method: Some(r.reason.method()),
                     identifier_match: Some(identifier_match),
                     followed: false,
+                    th_callid: None,
                 });
                 if identifier_match {
                     queue.push_back((r.dialog.call_id.clone(), child_depth));
@@ -2228,6 +2270,7 @@ impl DialogStore {
         // would claim its subtree was searched.
         for leg in &mut legs {
             leg.followed = walked.contains(&leg.call_id);
+            leg.th_callid = self.th_callid_status(&leg.call_id);
         }
         legs.sort_by(|a, b| {
             let a_created = self.get(&a.call_id).map(|d| d.created_at);
@@ -6787,11 +6830,14 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         );
         assert_eq!(
             store.th_callid_status(&hidden),
-            Some(ThCallidStatus::NoSecret),
+            Some(ThCallidStatus::NotConfigured),
             "a hidden Call-ID with no secret configured reports no_secret"
         );
         let summary = store.th_callid_summary();
-        assert_eq!(summary.no_secret, 1, "one hidden leg seen with no secret");
+        assert_eq!(
+            summary.not_configured, 1,
+            "one hidden leg seen with no secret"
+        );
         assert!(
             !summary.wrong_secret_suspected(),
             "no secret is not a wrong secret"

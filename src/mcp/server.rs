@@ -2067,8 +2067,8 @@ pub struct FindCorrelatedResponse {
     /// difference will present it as a finding.
     pub heuristic_only: bool,
     /// When the source is the callee-side leg of an OpenSIPS
-    /// `topology_hiding("C")` call: `decoded`, `no_secret`, `undecodable` or
-    /// `unmatched`. Null when it is not a hidden leg.
+    /// `topology_hiding("C")` call: `decoded`, `no_secret`, `undecodable`,
+    /// `unmatched`, `mapped` or `conflict`. Null when it is not a hidden leg.
     pub th_callid: Option<crate::sip::dialog_store::ThCallidStatus>,
     /// Which capture and store revision this answer describes.
     pub capture_identity: crate::provenance::CaptureEtag,
@@ -2775,6 +2775,12 @@ pub struct CaptureStatusResponse {
     /// `malformed`, `refused_full`, `expired`), and the mappings `held` and
     /// `pending` now. The same object REST `/v1/stats` returns.
     pub th_mappings: crate::sip::th_mapping::ThMappingCounts,
+    /// The OpenSIPS topology-hiding legs held now, by status (`decoded`,
+    /// `no_secret`, `undecodable`, `unmatched`, `mapped`, `conflict`), and
+    /// `undecoded_with_peer`: undecoded legs whose caller leg WAS captured,
+    /// which points at the secret or prefix rather than the capture. The
+    /// same object REST `/v1/stats` returns.
+    pub th_callid: crate::sip::dialog_store::ThCallidSummary,
     /// Cleartext Asterisk Manager Interface credentials seen on the wire.
     ///
     /// Reported HERE, on the tool whose `unanalysed_sip_messages: 0` was the
@@ -6790,6 +6796,7 @@ impl SipnabMcp {
                 capture_identity: state.identity.etag(ds.generation(), ss.generation()),
                 unanalysed_sip_messages: skipped.messages,
                 th_mappings: ds.th_mapping_counts(),
+                th_callid: ds.th_callid_summary(),
                 // Read from the recorder, the way `icmp_media_findings` is
                 // read by the dialog report: the packet path notices and the
                 // surface reports, with no shared state threaded between them.
@@ -9271,7 +9278,7 @@ impl SipnabMcp {
     ///
     /// # Why this is a tool rather than a metrics scrape
     ///
-    /// sipnab exports 49 Prometheus metrics and the listener that serves them
+    /// sipnab exports 51 Prometheus metrics and the listener that serves them
     /// is off by default, so on most deployments those numbers exist in-process
     /// and nothing can read them. An agent asked "is this server healthy"
     /// cannot enable a listener to find out.
@@ -12609,6 +12616,28 @@ mod tests {
     /// whatever this test's process happens to have skipped is not the point —
     /// the defect was a field that did not exist, and a client that cannot see
     /// the key cannot see the loss whatever number would have been in it.
+    /// `capture_status` counts the hidden legs by topology-hiding status,
+    /// the same `th_callid` object REST `/v1/stats` returns.
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn capture_status_counts_hidden_legs_by_th_status() -> Result<(), TestError> {
+        let (ds, _, _) = crate::test_utils::th_hidden_call_store("right", Some("right"))?;
+        let server = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("capture_status: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        let t = &v["th_callid"];
+        assert_eq!(t["decoded"], 1, "{v}");
+        assert_eq!(t["undecodable"], 0, "{v}");
+        assert_eq!(t["undecoded_with_peer"], 0, "{v}");
+        Ok(())
+    }
+
     #[tokio::test]
     async fn capture_status_carries_the_topology_hiding_mapping_counts() -> Result<(), TestError> {
         use crate::sip::th_mapping::ThMapping;
@@ -13248,7 +13277,10 @@ mod tests {
             // 3_500 at 3,480, up from 3,112, by `reconcile_orphans`' cursor
             // and byte budget.
             ("core", 12_500),
-            ("signaling", 22_500),
+            // 22_500 -> 24_000 and full 90_000 -> 91_500 by `th_mappings`,
+            // the OpenSIPS topology-hiding mapping listing (1,102 bytes):
+            // signaling measured 23,576 over 21 tools and full 91,074 over 77.
+            ("signaling", 24_000),
             // 11_000 -> 13_000 and full 79_000 -> 81_000 by
             // `find_in_captures_status` and `cancel_find_in_captures`, the
             // poll and cancel of the background sweep job (captures measured
@@ -13299,9 +13331,15 @@ mod tests {
             // `filter` parameters, once bare filter values parse (measured:
             // full 89,667; core 12,316, signaling 22,474 and security 9,954
             // stay under theirs).
-            // full 90_000 -> 90_500: `fleet_inventory`, as the server row
-            // above says; full measured 90,456 over 77 tools.
-            ("full", 90_500),
+            // full 90_000 -> 90_500: `fleet_inventory` (#635), as the server
+            // row above says; full measured 90,456 over 77 tools.
+            // full 90_000 -> 91_500: `th_mappings` (#636), as the signaling
+            // row above says; full measured 91,074 over 77 tools.
+            // full -> 92_000 when the two met in one train: full measured
+            // 91,558 over 78 tools on the merged tree, the 89,972 the two
+            // branches share plus 484 (`fleet_inventory`, server 5,492 ->
+            // 5,976) and 1,102 (`th_mappings`, signaling 22,474 -> 23,576).
+            ("full", 92_000),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

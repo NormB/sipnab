@@ -39,7 +39,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 What sipnab is doing, and what it is costing the host it runs on.
 
 Use it to answer "is this server healthy" without a metrics listener. sipnab
-exports 49 Prometheus metrics, and the listener that serves them is off by
+exports 51 Prometheus metrics, and the listener that serves them is off by
 default. This tool reports process, host and store state over MCP without
 that listener.
 
@@ -565,7 +565,7 @@ opt-in flags:
     "search_messages", "security_findings", "server_capabilities", "show_evidence",
     "shutdown_server", "siprec_metadata", "start_tls_capture", "stop_tls_capture",
     "tail_dialogs", "tfps_ban", "tfps_banned", "tfps_dropped", "tfps_labels",
-    "tfps_status", "tfps_unban", "timeline", "top_talkers", "triage_call",
+    "tfps_status", "tfps_unban", "th_mappings", "timeline", "top_talkers", "triage_call",
     "validate_filter", "validate_message", "validate_vcon", "vcon_directory_report",
     "vcon_spool_status"
   ],

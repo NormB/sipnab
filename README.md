@@ -218,7 +218,7 @@ sipnab's analysis as tools.
 sipnab --mcp -N -I sip-problem-call.pcap --mcp-tools core
 ```
 
-The server offers 77 tools. Every tool costs the agent context before it asks
+The server offers 78 tools. Every tool costs the agent context before it asks
 anything.
 
 - `--mcp-tools core` loads a small set that still answers a whole call.
@@ -388,8 +388,8 @@ Next:
   - A capture started as root drops to `--user` after opening its devices.
   - It can confine itself with a Landlock sandbox (`--sandbox`) and a seccomp
     allowlist (`--seccomp`).
-- **MCP server.** 77 tools over stdio or HTTP.
-  - 64 only read.
+- **MCP server.** 78 tools over stdio or HTTP.
+  - 65 only read.
   - The 13 that write each say what they change.
   - File writes stay inside `--mcp-file-root`.
   - These stay off until you enable them:

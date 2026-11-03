@@ -2481,6 +2481,18 @@ sipnab could not write an end-of-run report to standard output.
 
 **Exit code:** 1.
 
+### `--th-mappings: the mappings did not serialize: {e}`
+
+`--th-mappings` with `--json` prints the OpenSIPS topology-hiding mappings the HEP listener received as one JSON object, with their counts.
+
+- Converting that listing to JSON failed.
+- `{e}` is the JSON serializer's error.
+- The run then exits.
+
+**What to do:** Run without `--json` to get the same listing as a text table.
+
+**Exit code:** 1.
+
 ### `No SIP dialogs to generate Wireshark filter for.`
 
 `--wireshark` prints a Wireshark display filter that selects every tracked call by Call-ID. This run tracked no SIP dialogs, so there is no filter to print.

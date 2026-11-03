@@ -98,6 +98,9 @@ Each answers one "how do I" question and assumes you already know what you want.
   guides below build on. No sipnab involved.
 - **[Run sipnab beside OpenSIPS](opensips-sipnab.md)**: watch a call through
   OpenSIPS as one call, from both its legs.
+- **[Find why a call through topology hiding did not join](rest-api.md#find-why-a-call-through-topology-hiding-did-not-join)**:
+  list the OpenSIPS `E_SIPNAB_TH_MAP` mappings sipnab holds, and see which
+  leg of which call is missing.
 - **[Use Kamailio as your voice stack's SIP server](kamailio.md)**: the same
   with Kamailio 6.1, alone or beside OpenSIPS. No sipnab involved.
 - **[Run sipnab beside Kamailio](kamailio-sipnab.md)**: watch a call through

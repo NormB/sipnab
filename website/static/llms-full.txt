@@ -6459,7 +6459,9 @@ The metric families:
 | `sipnab_th_mapping_events_total{outcome}` | counter | OpenSIPS `E_SIPNAB_TH_MAP` events the HEP listener accepted from a `--hep-allow` sender, by outcome: `accepted` (a new mapping), `duplicate` (one already held), `conflict` (a Call-ID already mapped to another partner; refused, and the held mapping stops joining), `malformed` (not a valid event) and `refused_full` (the table held `[sip] th_mapping_max`). Every outcome appears on every scrape, at `0` where none happened. See [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping). |
 | `sipnab_th_mappings_expired_total` | counter | Mappings dropped because neither leg was in the store for `[sip] th_mapping_ttl_secs`. |
 | `sipnab_th_mappings_held` | gauge | Mappings held now. |
-| `sipnab_th_mappings_pending` | gauge | Mappings held whose two legs are not both captured. A value that stays up means the SIP the events name is not reaching sipnab: with `--hep-listen` as well as `-d` and no filter of your own, the interface takes media only. |
+| `sipnab_th_mappings_pending` | gauge | Mappings held whose two legs are not both captured. A value that stays up means the SIP the events name is not reaching sipnab: with `--hep-listen` as well as `-d` and no filter of your own, the interface takes media only. To see which mappings, use [`GET /v1/th-mappings?state=pending`](rest-api.md#get-v1th-mappings), the MCP `th_mappings` tool, or `--th-mappings`. |
+| `sipnab_th_callid_legs{status}` | gauge | OpenSIPS topology-hiding legs held now, by status: `decoded`, `no_secret`, `undecodable`, `unmatched`, `mapped` and `conflict`, the values `th_callid` takes on `/v1/dialogs/{call_id}/correlated`. Every status appears on every scrape, at `0` where the store holds none. No per-call label. |
+| `sipnab_th_callid_undecoded_with_peer` | gauge | Of the `undecodable` and `unmatched` legs, those whose From tag is on a captured caller leg. sipnab captured the caller side, so a non-zero value points at `[sip] th_callid_secret_file` or `th_callid_prefix` rather than the capture. |
 | `sipnab_messages_total{method}` | counter | SIP messages in the tracked dialogs, labeled by the method that opened each dialog. Every message of an INVITE dialog, its responses, `ACK` and `BYE` included, counts under `method="INVITE"`. |
 | `sipnab_responses_total{code}` | counter | SIP responses in the tracked dialogs, grouped by class: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, `6xx`. Every class appears on every scrape, at `0` where the capture saw none. |
 | `sipnab_rtp_streams_active` | gauge | RTP streams a dialog claims, however long ago their last packet arrived: the same population as `sipnab_rtp_streams_total{status="established"}`. A call whose media stopped five minutes ago still counts until sipnab drops its dialog. |
@@ -8042,7 +8044,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
       "strategy": "session_id",
       "method": "header",
       "identifier_match": true,
-      "observed_gap_ms": null
+      "observed_gap_ms": null,
+      "th_callid": null
     }
   ],
   "total_matched": 1,
@@ -8071,17 +8074,19 @@ trust it.**
 - `heuristic_only` is true when every leg is
   such a guess.
 - `th_callid_decoded` joined an OpenSIPS `topology_hiding("C")` leg by
-  decoding its Call-ID with the configured secret.
-- `th_callid_mapping` joined an OpenSIPS `topology_hiding("C")` leg by the
-  `E_SIPNAB_TH_MAP` event the OpenSIPS script sent. See
+  decoding its Call-ID with the configured secret, and `th_callid_mapping`
+  joined one because an OpenSIPS `E_SIPNAB_TH_MAP` event named both legs. See
   [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding).
 
-`method` says what sipnab compared the legs on: `mapping` (the OpenSIPS
-event), `decoded`, `header` (a SIP header both carry), `sdp` (the SDP origin)
-or `timing` (the guess).
-`th_callid` has a value only when the source is the callee-side leg of an OpenSIPS
+`method` says what sipnab compared the legs on: `decoded`, `mapping` (an
+`E_SIPNAB_TH_MAP` event), `header` (a SIP header both carry), `sdp` (the SDP
+origin) or `timing` (the guess).
+
+`th_callid` has a value only for the callee-side leg of an OpenSIPS
 topology-hiding call: `decoded`, `no_secret`, `undecodable`, `unmatched`,
-`mapped` or `conflict`.
+`mapped` or `conflict`. The top-level `th_callid` describes the source, and
+each leg's `th_callid` describes that leg, so an answer asked from the caller
+side still says which leg OpenSIPS hid and whether it joined.
 
 **One hop.** This route answers the legs one step from the Call-ID asked about.
 
@@ -8112,8 +8117,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
   "schema_version": 1,
   "root_call_id": "a1b2c3@example.com",
   "legs": [
-    { "call_id": "a1b2c3@example.com", "depth": 0, "parent_call_id": null, "score": null, "strategy": null, "method": null, "identifier_match": null, "followed": true },
-    { "call_id": "d4e5f6@sbc.example.com", "depth": 1, "parent_call_id": "a1b2c3@example.com", "score": 100, "strategy": "session_id", "method": "header", "identifier_match": true, "followed": true }
+    { "call_id": "a1b2c3@example.com", "depth": 0, "parent_call_id": null, "score": null, "strategy": null, "method": null, "identifier_match": null, "followed": true, "th_callid": null },
+    { "call_id": "d4e5f6@sbc.example.com", "depth": 1, "parent_call_id": "a1b2c3@example.com", "score": 100, "strategy": "session_id", "method": "header", "identifier_match": true, "followed": true, "th_callid": null }
   ],
   "total_legs": 2,
   "max_depth": 1,
@@ -8140,6 +8145,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dial
 - `heuristic_edges` counts the guesses in the
   tree.
 - `truncated` is true when the row cap stopped the walk early.
+- `th_callid` is each leg's own topology-hiding status, as on `/correlated`.
 - Follow each leg's `call_id` to `/v1/dialogs/{call_id}` for its detail.
 
 **The walk is symmetric.** Naming any leg returns the same tree, rooted at what
@@ -9492,7 +9498,7 @@ The MCP `get_capture_report` tool answers the same question, with the same
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 49 Prometheus metrics. The listener that serves them is off
+sipnab exports 51 Prometheus metrics. The listener that serves them is off
 by default.
 
 - This endpoint answers the same questions without that listener.
@@ -9798,6 +9804,203 @@ roster, with its keys in alphabetical order and `source_exhausted` and
 the aggregate counts, with no per-sender label. See
 [Metrics](prometheus-metrics.md).
 
+### GET /v1/th-mappings
+
+The OpenSIPS topology-hiding mappings sipnab holds, one row per mapping, from
+the `E_SIPNAB_TH_MAP` events the HEP listener accepted. Use it to find why one
+call through `topology_hiding("C")` did not join its caller leg.
+
+It exists only in a build with the `hep` feature, where the events can arrive.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/th-mappings?call_id=DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-" | jq .
+```
+
+**Response:**
+
+```json
+{
+  "schema_version": 1,
+  "call_id": "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-",
+  "state": null,
+  "mappings": [
+    {
+      "caller_call_id": "1-th-map@example.com",
+      "callee_call_id": "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-",
+      "state": "joined",
+      "caller_captured": true,
+      "callee_captured": true
+    }
+  ],
+  "total_matched": 1,
+  "counts": {
+    "accepted": 3, "duplicate": 0, "conflict": 0, "malformed": 0,
+    "refused_full": 0, "expired": 0, "held": 3, "pending": 0
+  },
+  "th_callid": {
+    "decoded": 0, "no_secret": 0, "undecodable": 0, "unmatched": 0,
+    "mapped": 3, "conflict": 0, "undecoded_with_peer": 0
+  },
+  "capture_identity": {
+    "node": "capture-01",
+    "instance": "1f4a17c8e2b91d40-1",
+    "dialog_generation": 6,
+    "stream_generation": 0
+  }
+}
+```
+
+| Parameter | Meaning |
+|-----------|---------|
+| `call_id` | Only the mapping that names this Call-ID, on either side |
+| `state` | Only mappings in this state: `conflict`, `pending` or `joined`. Any other word answers `400` |
+| `limit` | The most rows to return, at most `--api-max-rows`. `total_matched` counts every match |
+
+`state` is one of three values:
+
+- `joined`: sipnab captured both legs, and the mapping joins them.
+- `pending`: a leg is not captured yet. `caller_captured` and
+  `callee_captured` say which one is missing.
+- `conflict`: another event named one of its Call-IDs with a different
+  partner, so this mapping joins nothing.
+
+Rows come in that order of interest: conflicts first, then pending, then
+joined, each by caller-side Call-ID.
+
+**Why a call did not join.** Ask with the call's Call-ID, either leg:
+
+- No row: no `E_SIPNAB_TH_MAP` event named it.
+- `pending`: the event arrived, and the SIP of the leg marked `false` was not
+  captured.
+- `conflict`: two events disagree about it.
+
+`counts` is the object `/v1/stats` returns as `th_mappings`, and `th_callid` is
+the object it returns as `th_callid`. The MCP tool `th_mappings` returns the
+same fields and values, and `--th-mappings` prints them at the end of a
+headless run. [Find why a call through topology hiding did not
+join](#find-why-a-call-through-topology-hiding-did-not-join) walks through
+using it.
+
+### Find why a call through topology hiding did not join
+
+OpenSIPS `topology_hiding("C")` gives the callee's leg a Call-ID that shares
+nothing with the caller's. When OpenSIPS sends sipnab an `E_SIPNAB_TH_MAP`
+event per call, sipnab joins the two legs. When one call shows up as two
+unrelated dialogs, this finds out which part did not arrive.
+
+**Prerequisites.**
+
+- OpenSIPS: the `event_datagram` module, the `subscribe_event` line and the
+  `raise_event` lines in
+  [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping).
+  Nothing else changes on OpenSIPS.
+- sipnab: a build with the `hep` feature, which the release packages carry,
+  listening for HEP with `--hep-listen`, with OpenSIPS's address in
+  `--hep-allow`. sipnab refuses every event from a sender `--hep-allow` does
+  not list.
+- REST: `--api` and a key. For a run with no server, `--th-mappings` prints the
+  same listing when the run ends.
+
+**Steps.** On a running instance, read the counts, then ask about the call by
+either of its Call-IDs:
+
+```bash
+# Run all of these, in order.
+curl -s -H "Authorization: Bearer s3cret" http://127.0.0.1:8092/v1/stats | jq '{th_mappings, th_callid}'
+curl -s -H "Authorization: Bearer s3cret" "http://127.0.0.1:8092/v1/th-mappings?call_id=DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-" | jq '.mappings'
+```
+
+This example's listener ran
+`sipnab -N -L 127.0.0.1:9063 --hep-allow 127.0.0.1/32 --api 127.0.0.1:8092 --api-key s3cret`.
+It received the three calls of the OpenSIPS 4.0.2 capture in
+[`tests/fixtures/th-mapping/opensips-4.0-events.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/th-mapping/opensips-4.0-events.pcap), SIP over HEP and one
+event each.
+
+**Verify.** Every event joined a call when `accepted` equals `held`,
+`pending` is 0 and the hidden legs are all `mapped`:
+
+```json
+{
+  "th_mappings": {
+    "accepted": 3,
+    "conflict": 0,
+    "duplicate": 0,
+    "expired": 0,
+    "held": 3,
+    "malformed": 0,
+    "pending": 0,
+    "refused_full": 0
+  },
+  "th_callid": {
+    "conflict": 0,
+    "decoded": 0,
+    "mapped": 3,
+    "no_secret": 0,
+    "undecodable": 0,
+    "undecoded_with_peer": 0,
+    "unmatched": 0
+  }
+}
+```
+
+The call asked about is one row, `joined`, with both legs captured:
+
+```json
+[
+  {
+    "caller_call_id": "1-th-map@example.com",
+    "callee_call_id": "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-",
+    "state": "joined",
+    "caller_captured": true,
+    "callee_captured": true
+  }
+]
+```
+
+A headless run prints the whole table at its end with `--th-mappings`. This
+run (`sipnab -N -L 127.0.0.1:9063 --hep-allow 127.0.0.1/32 --duration 10
+--th-mappings --no-cli-print`) received the same three calls, then an event
+pairing call 1's caller with call 2's callee, and an event for a call whose
+SIP never arrived:
+
+```text
+Topology-hiding mappings: 4 mappings held, 1 pending; events: 4 accepted, 0 duplicate, 1 conflicting, 0 malformed, 0 refused (table full); 0 expired
+Hidden legs held: 0 decoded, 0 no_secret, 0 undecodable, 0 unmatched, 1 mapped, 2 conflict
+Caller Call-ID        Callee Call-ID                      State     Caller captured  Callee captured
+----------------------------------------------------------------------------------------------------
+1-th-map@example.com  DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-  conflict  yes              yes
+2-th-map@example.com  DLGCH_fV0RBn4kMSMPFR0PPjk8NmETCgM-  conflict  yes              yes
+4-th-map@example.com  DLGCH_never-captured                pending   no               no
+3-th-map@example.com  DLGCH_fF0RBn4kMSMPFR0PPjk8NmETCgM-  joined    yes              yes
+```
+
+**Troubleshoot.**
+
+- **No row for the call's Call-ID.** No event named it. Check that OpenSIPS
+  raises `E_SIPNAB_TH_MAP` after `topology_hiding("C")`. Then read
+  `refused_by_reason` on `/v1/hep/senders`: `event_sender_not_listed` means
+  the run has no `--hep-allow` at all, and `allowlist` means OpenSIPS's
+  address is not in it.
+- **`pending`, with a leg marked `false` (`no` in the table).** The event
+  arrived and the SIP of that leg did not. With `--hep-listen` and `-d`
+  together and no filter of your own, the interface takes media only. See
+  [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping).
+- **`conflict`.** Two events named one of the Call-IDs with different
+  partners, so neither joins. Rows 1 and 2 above are one such pair. Check for
+  two OpenSIPS instances sharing a Call-ID space, or a script that raises the
+  event with the wrong variables.
+- **`malformed` grows in the counts.** A datagram reached the listener from a
+  listed sender and was not a valid event. Compare the script's
+  `raise_event` lines with the guide's.
+- **`undecodable` or `unmatched` legs, with `undecoded_with_peer` above 0.**
+  sipnab tried to join these legs by decoding, not by events, and it captured
+  the caller leg. Check `[sip] th_callid_secret_file` and `th_callid_prefix`.
+
+The MCP tool [`th_mappings`](mcp-tools-signaling.md#th_mappings) takes the same
+`call_id` and `state`.
+
 ### GET /v1/capabilities
 
 What this build can do and what the operator turned on. This is the machine contract a
@@ -10068,6 +10271,10 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
     "accepted": 0, "duplicate": 0, "conflict": 0, "malformed": 0,
     "refused_full": 0, "expired": 0, "held": 0, "pending": 0
   },
+  "th_callid": {
+    "conflict": 0, "decoded": 0, "mapped": 0, "no_secret": 0,
+    "undecodable": 0, "undecoded_with_peer": 0, "unmatched": 0
+  },
   "caveats": {
     "media_creating_commands": 0
   },
@@ -10201,7 +10408,7 @@ sipnab reads the instance and both generations at the same moment.
 `/v1/dialogs/{call_id}/lint`, `/v1/dialogs/compare`, `/v1/dialogs/tail`,
 `/v1/dialogs/rates`, `/v1/streams`, `/v1/streams/{id}`, `/v1/report`,
 `/v1/stats`, `/v1/aggregate`, `/v1/timeline`, `/v1/talkers`, `/v1/endpoints`,
-`/v1/runtime` and `/v1/security/findings`.
+`/v1/runtime`, `/v1/security/findings` and `/v1/th-mappings`.
 Each one carries the identity the MCP tool answering the same question
 carries, read under the same locks as the answer. These answers do not carry it:
 
@@ -10251,6 +10458,23 @@ accepted from a `--hep-allow` sender, and the mappings they hold. The MCP tool
 | `pending` | mappings held now whose two legs are not both captured |
 
 See [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping).
+To list the mappings themselves, use [`GET /v1/th-mappings`](#get-v1th-mappings).
+
+### Count the topology-hiding legs by status
+
+`th_callid` counts the OpenSIPS topology-hiding legs the store holds now, by
+the status each leg's `th_callid` reports on `/v1/dialogs/{call_id}/correlated`.
+The MCP tool `capture_status` returns the same object.
+
+| Key | Meaning |
+|-----|---------|
+| `decoded` | hidden legs whose Call-ID decoded to a captured caller leg with the same From tag |
+| `no_secret` | hidden legs seen with no `[sip] th_callid_secret_file` configured |
+| `undecodable` | hidden legs the configured secret or prefix does not decode |
+| `unmatched` | hidden legs that decoded to no captured caller leg |
+| `mapped` | hidden legs an `E_SIPNAB_TH_MAP` event joined |
+| `conflict` | hidden legs whose mapping a conflicting event stopped |
+| `undecoded_with_peer` | `undecodable` or `unmatched` legs whose From tag is on a captured caller leg: sipnab captured the caller side, so check the secret and the prefix |
 
 ### Find SIP that `--portrange` excluded
 
@@ -12097,7 +12321,7 @@ it does these things:
 It does for this surface what <https://sipnab.com/api-reference/> does for the
 [REST API](rest-api.md).
 
-sipnab registers 77 MCP tools. That is more than anyone reads in a table. The
+sipnab registers 78 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
 The MCP project maintains Inspector, not sipnab. When a tool
@@ -19353,10 +19577,10 @@ sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --call-tree b2bua-caller-synt
 
 ```text
 Call tree from b2bua-caller-synth@203.0.113.1: 2 legs, depth 1, 28 messages, 1 timing guess
-Leg                                   Strategy          Method  Score  Match  Followed
---------------------------------------------------------------------------------------
-b2bua-caller-synth@203.0.113.1        root              -       -      -      yes
-  b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  no
+Leg                                   Strategy          Method  Score  Match  Followed  TH
+------------------------------------------------------------------------------------------
+b2bua-caller-synth@203.0.113.1        root              -       -      -      yes       -
+  b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  no        -
 ```
 
 - Each hop indents the leg two more spaces.
@@ -19370,11 +19594,16 @@ b2bua-caller-synth@203.0.113.1        root              -       -      -      ye
   event), `decoded` (an OpenSIPS
   topology-hiding Call-ID, decoded with the configured secret; see
   [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)),
+  `mapping` (an OpenSIPS `E_SIPNAB_TH_MAP` event named both legs),
   `header` (a SIP header both legs carry: one named in `[sip] xcid_headers`,
   `Session-ID`, `P-Charging-Vector` or a Via branch), `sdp` (the SDP
   origin) or `timing` (the guess).
 - `Followed` is `no` on a guess: sipnab lists the leg but does not look for
   that leg's own matches, so one wrong guess does not pull in unrelated calls.
+- `TH` is the leg's own OpenSIPS topology-hiding status, `-` for a leg that
+  is not hidden: `decoded`, `no_secret`, `undecodable`, `unmatched`, `mapped`
+  or `conflict`. To see the mappings behind `mapped` and `conflict`, use
+  `--th-mappings`.
 
 The Call-ID must match exactly, and `--report` lists the ones the run holds. Under
 `--json`, each leg names its parent and depth:
@@ -19401,9 +19630,9 @@ sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --correlate 1-1966@10.0.2.20 --no
 
 ```text
 Legs correlated with 1-1966@10.0.2.20: 1 leg
-Leg               Strategy    Method  Score  Match       Gap ms
----------------------------------------------------------------
-1-1968@10.0.2.20  sdp_origin  sdp     90     identifier  -
+Leg               Strategy    Method  Score  Match       Gap ms  TH
+-------------------------------------------------------------------
+1-1968@10.0.2.20  sdp_origin  sdp     90     identifier  -       -
 ```
 
 The two calls carry the same SDP origin, an identifier, so the score is high.
@@ -19417,9 +19646,9 @@ sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --correlate b2bua-caller-synt
 
 ```text
 Legs correlated with b2bua-caller-synth@203.0.113.1: 1 leg
-Leg                                 Strategy          Method  Score  Match  Gap ms
-----------------------------------------------------------------------------------
-b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  3
+Leg                                 Strategy          Method  Score  Match  Gap ms  TH
+--------------------------------------------------------------------------------------
+b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  3       -
 Every leg here is a timing guess: no identifier ties it to this call.
 ```
 
@@ -20306,6 +20535,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--hep-hmac-window` | `<SECS>` | `30` | 0.5.100 | Seconds either side of now within which sipnab still honors a `--hep-auth-mode hmac` token's timestamp. When the agent's and the collector's clocks differ by more than this, sipnab refuses every packet as out of window and the listener admits nothing; `--hep-silence-warn` then names `hmac_timestamp_out_of_window`. A wider window keeps a packet captured on the path replayable for longer. Range 1-300. Refused without `--hep-listen`, the side that checks the window, exit `2`; a `[security] hep_hmac_window_secs` on a run without `--hep-listen` gets a startup warning naming it instead. Config: `[security] hep_hmac_window_secs`. Feature: `hep` |
 | `--hep-silence-warn` | `<SECS>` | `30` | 0.5.185 | Seconds a `--hep-listen` listener may go without **admitting** a packet before it logs a warning; `0` turns the warning off. Only an admitted packet counts as traffic. When packets keep arriving and sipnab refuses every one, the warning says `no packets admitted` and names the refusal most of them met (`auth_mismatch`, `allowlist`, `hmac_timestamp_out_of_window` and so on) and a peer that sent them: the sender is reaching the port and sipnab is turning it away, which is a key, mode or allowlist problem rather than a network one. When nothing arrives at all the warning keeps its `no packets for` wording. Refused without `--hep-listen`, which is the side it governs. Feature: `hep` |
 | `--hep-senders` | -- | off | 0.5.185 | At the end of a headless (`-N`) run, print who fed the `--hep-listen` listener: each sender, keyed by the capture id it claims and the address it sent from, with its packet count, when sipnab last heard from it, how long it has been idle and whether it went silent past `--hep-silence-warn`; then every address the listener refused, with counts by reason, and the refusal totals. The capture id is the sender's claim, never proven. With `--json`, the same as one JSON object on the last line of stdout, the shape `GET /v1/hep/senders` and the MCP `hep_senders` tool return. The roster covers this run only and nothing persists it. Refused without `--hep-listen`, which is the side it describes. Feature: `hep` |
+| `--th-mappings` | -- | off | Unreleased | At the end of a headless (`-N`) run, print the OpenSIPS topology-hiding mappings the `--hep-listen` listener received in `E_SIPNAB_TH_MAP` events: a line with the event counts, a line with the hidden legs by status (`decoded`, `no_secret`, `undecodable`, `unmatched`, `mapped`, `conflict`), then one row per mapping with its caller-side and callee-side Call-IDs, its state (`conflict`, `pending` or `joined`) and whether sipnab captured each leg, conflicts first. A `pending` row names the leg whose SIP did not arrive. With `--json`, the same as one JSON object on the last line of stdout, the shape `GET /v1/th-mappings` and the MCP `th_mappings` tool return. Refused without `--hep-listen`, where the events arrive. How-to: [Find why a call through topology hiding did not join](rest-api.md#find-why-a-call-through-topology-hiding-did-not-join). Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | 0.3.0 | Parse incoming HEP packets (enable HEP decoding): sipnab unwraps a HEP datagram on the wire or in a capture file and reads its message with the addresses the HEP chunks carry and the time the HEP packet carries, as `-L` does, not the time sipnab sniffed the wrapper. A HEP packet that carries no time (a HEP v3 packet without a `TS_SEC` chunk, or a HEP v1 packet) keeps the time sipnab sniffed the wrapper; a HEP v2 packet carries its time in its time header. Sniffing a HEP port that no process listens on loses messages from some senders: see the note under [`[capture]` in the configuration reference](config-reference.md#capture). The transport comes from the IP protocol chunk by the same rule `--hep-listen` uses, so a TLS, WS or WSS leg an OpenSIPS or Kamailio tracer sends reads the same from a file as from a socket, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). `--portrange` does not apply to the HEP messages it unwraps. It still gates SIP that sipnab captures directly. It applies wherever sipnab reads packets: a headless run, `--cores N`, the TUI's own capture, and a capture opened or re-scanned inside the TUI. `--no-hep-parse` turns it off again when the config file sets `[capture] hep_parse = true`. Config: `[capture] hep_parse`. Feature: `hep` |
 | `--no-hep-parse` | -- | off | 0.5.204 | Do not unwrap HEP found in the capture, even when `[capture] hep_parse = true`. The last of `-E` / `--no-hep-parse` typed wins. Config: `[capture] hep_parse`. Feature: `hep` |
 | `--hep-allow` | `<ADDR>` | -- | 0.3.0 | Allowed source addresses for HEP input (repeatable). Takes CIDR (`192.0.2.0/8`, `2001:db8::/32`) or a **bare address** (`192.0.2.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `192.0.2.0` is one host, not `192.0.2.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. It is also the only check on an OpenSIPS `E_SIPNAB_TH_MAP` event, which carries no HEP authentication: the listener accepts an event only from an address listed here, and with no list it refuses every event, counted as `event_sender_not_listed`. List the address OpenSIPS sends the event from: `127.0.0.1` when OpenSIPS and sipnab share a machine ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). Refused without `--hep-listen`, the side it governs, exit `2`; `-E` reads no allowlist. Feature: `hep` |
@@ -20346,6 +20576,8 @@ This applies to root runs and to unprivileged runs set up with
 - `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-silence-warn 0` — a lab listener fed by hand, where long silences are normal and the warning would only be noise
 - `sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --duration 300 --hep-senders` — five minutes of a collector's feed, then the roster: which proxies sent and how much, which went silent, and which addresses the listener turned away and why
 - `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-senders --count 5000 --json` — the same roster as one JSON object on the last line of stdout, after the per-message lines, for a script to pick up with `tail -1`
+- `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-allow 127.0.0.1/32 --duration 300 --th-mappings` — five minutes of an OpenSIPS proxy's HEP mirror and its `E_SIPNAB_TH_MAP` events, then each mapping with its state: a `pending` row names the leg whose SIP never arrived, and a `conflict` row a Call-ID two events disagree about
+- `sipnab -N -L 127.0.0.1:9060 --hep-parse --hep-allow 127.0.0.1/32 --duration 300 --th-mappings --json | tail -1 | jq '.mappings[] | select(.state != "joined")'` — the same listing as one JSON object on the last line of stdout, filtered to the mappings that did not join
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-token t0ken-alice --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-token-ttl 1800` — loopback HTTP MCP server with a bearer token, file-loaded signing key, revocation denylist, and a 30-minute mint TTL
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token t0ken-bob --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-allowed-host mcp.example.com` — non-loopback HTTP MCP server (token required) accepting an extra Host header for named clients
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token-file /etc/sipnab/mcp.token --mcp-allowed-host mcp.example.com --mcp-tls-cert /etc/sipnab/mcp.pem --mcp-tls-key /etc/sipnab/mcp.key` — a non-loopback MCP server serving HTTPS itself, with no nginx in front: the bearer token and every tool result cross the network encrypted
@@ -23606,6 +23838,18 @@ sipnab could not write an end-of-run report to standard output.
 - The run then exits.
 
 **What to do:** Run without `--json` to get the same roster as a text table.
+
+**Exit code:** 1.
+
+### `--th-mappings: the mappings did not serialize: {e}`
+
+`--th-mappings` with `--json` prints the OpenSIPS topology-hiding mappings the HEP listener received as one JSON object, with their counts.
+
+- Converting that listing to JSON failed.
+- `{e}` is the JSON serializer's error.
+- The run then exits.
+
+**What to do:** Run without `--json` to get the same listing as a text table.
 
 **Exit code:** 1.
 
@@ -35096,8 +35340,8 @@ Five fields decide how much of that tree you should act on:
 
 | Field | Read it as |
 |---|---|
-| `strategy` | Which of the eight above matched, per leg |
-| `method` | What sipnab compared the legs on: `decoded`, `header`, `sdp` or `timing` |
+| `strategy` | Which of the nine above matched, per leg |
+| `method` | What sipnab compared the legs on: `decoded`, `mapping`, `header`, `sdp` or `timing` |
 | `identifier_match` | `true`: two ends agreed on an identifier. `false`: a guess |
 | `heuristic_only` | `true`: **every** returned leg rests on a guess, so the whole tree is a hypothesis |
 | `timing_clock` | Present only when the answer contains a time-based match. Absent means no leg needed one |
@@ -35751,7 +35995,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | Bundle | Tools | What its tools answer |
 |---|---|---|
 | [`core`](mcp-tools-core.md) | 9 | The smallest set that answers what happened on one call, and whether the fault was in signaling or media, from listing the calls to the bytes that prove it. |
-| [`signaling`](mcp-tools-signaling.md) | 20 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
+| [`signaling`](mcp-tools-signaling.md) | 21 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
 | [`captures`](mcp-tools-captures.md) | 11 | Capture files in the file root: listing, searching, comparing, opening and exporting them, and the evidence that ties a finding to captured bytes. |
 | [`security`](mcp-tools-security.md) | 6 | Who sent what: scanner and fraud findings, the busiest sources, one endpoint's activity, registration problems, pass/fail expectations, and fail2ban rules. |
 | [`media`](mcp-tools-media.md) | 4 | Where a call's media endpoints came from, why a stream has no dialog, the facts under a quality score, and audio export. |
@@ -35831,22 +36075,22 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,308 | 58,240 |
-| signaling | 20 | 22,452 | 66,162 |
-| captures | 11 | 12,709 | 30,189 |
-| security | 6 | 9,944 | 9,944 |
-| media | 4 | 3,478 | 16,042 |
+| core | 9 | 12,316 | 59,983 |
+| signaling | 21 | 23,576 | 76,040 |
+| captures | 11 | 12,723 | 30,211 |
+| security | 6 | 9,954 | 9,954 |
+| media | 4 | 3,480 | 16,048 |
 | relay | 4 | 4,199 | 20,607 |
 | tfps | 7 | 5,717 | 16,101 |
-| server | 6 | 5,972 | 35,126 |
-| vcon | 7 | 10,710 | 34,428 |
-| tls | 3 | 2,899 | 4,990 |
-| full | 77 | 90,388 | 291,829 |
+| server | 6 | 5,976 | 35,136 |
+| vcon | 7 | 10,714 | 34,446 |
+| tls | 3 | 2,903 | 4,996 |
+| full | 78 | 91,558 | 303,522 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.232** (a development build of this change, 2026-11-03) on a build with every feature.
+> **Measured on sipnab 0.5.232 with `fleet_inventory` and `th_mappings` added** on a build with every feature.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -35928,6 +36172,7 @@ links to its section on the bundle's page.
 | [`tfps_labels`](mcp-tools-tfps.md#tfps_labels) | [tfps](mcp-tools-tfps.md) | The TFPS verdict log -- blocked, would-block, exempt -- the export the label corpus harness scores the scanner detector against |
 | [`tfps_status`](mcp-tools-tfps.md#tfps_status) | [tfps](mcp-tools-tfps.md) | Whether the toll-fraud prevention peer (TFPS) runs on this host, and what it reports: enforcement, mode, interface, sources blocked now, database, version |
 | [`tfps_unban`](mcp-tools-tfps.md#tfps_unban) | [tfps](mcp-tools-tfps.md) | **Write, off by default.** Releases a source sipnab banned |
+| [`th_mappings`](mcp-tools-signaling.md#th_mappings) | [signaling](mcp-tools-signaling.md) | The OpenSIPS topology-hiding mappings held, one row each with its state and which legs sipnab captured, beside the event counts |
 | [`timeline`](mcp-tools-signaling.md#timeline) | [signaling](mcp-tools-signaling.md) | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
 | [`top_talkers`](mcp-tools-security.md#top_talkers) | [security](mcp-tools-security.md) | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
 | [`triage_call`](mcp-tools-core.md#triage_call) | [core](mcp-tools-core.md) | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
@@ -36469,6 +36714,7 @@ which:**
 |---|---|---|---|
 | `security_findings` | Yes, `total_matched` | Its source is a ring buffer whose default depth is 1000, the same as the maximum `limit`, so one call reaches all of it | Raise `limit`, and narrow with `since` |
 | `find_correlated` | Yes, `total_matched` | A ranking by score: a later page would hold weaker matches, not the rest of a list | Raise `limit` |
+| `th_mappings` | Yes, `total_matched` | One answer narrowed by Call-ID and state, ordered by state, and the same fields and values `GET /v1/th-mappings` returns | Raise `limit`, or narrow with `call_id` or `state` |
 | `get_call_tree` | No, `truncated` only | A breadth-first walk outward from one call, stopped at `limit` legs | Raise `limit` |
 | `top_talkers` | Yes, `distinct_talkers` | A ranking by dialog count | Raise `limit` |
 | `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `updated_at`, which moves each time a call gains a message, so a cursor on it would skip rows | [`list_dialogs`](mcp-tools-core.md#list_dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |
@@ -36591,6 +36837,10 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
   "source_exhausted": true,        // true once a file is read to the end
   "source_stopped_early": false,   // true when a read ended before the file did
   "stream_count": 2,
+  "th_callid": {                   // hidden legs held now, by status, as on /v1/stats
+    "conflict": 0, "decoded": 0, "mapped": 0, "no_secret": 0,
+    "undecodable": 0, "undecoded_with_peer": 0, "unmatched": 0
+  },
   "th_mappings": {                 // OpenSIPS E_SIPNAB_TH_MAP events, as on /v1/stats
     "accepted": 0, "conflict": 0, "duplicate": 0, "expired": 0,
     "held": 0, "malformed": 0, "pending": 0, "refused_full": 0
@@ -36609,6 +36859,15 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
 accepted, by outcome, and the mappings held and still waiting for their SIP
 (`pending`). It is the same object REST `GET /v1/stats` returns. See
 [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping).
+To list the mappings themselves, call
+[`th_mappings`](mcp-tools-signaling.md#th_mappings).
+
+`th_callid` counts the OpenSIPS topology-hiding legs held now by the status
+each one's `th_callid` reports on [`find_correlated`](mcp-tools-signaling.md#find_correlated):
+`decoded`, `no_secret`, `undecodable`, `unmatched`, `mapped` and `conflict`.
+`undecoded_with_peer` counts the `undecodable` and `unmatched` legs whose From
+tag is on a captured caller leg: sipnab captured the caller side, so check the
+secret and the prefix. It is the same object REST `GET /v1/stats` returns.
 
 Read `unsaved` before you stop a server. It is `true` only for a **live**
 capture with no output file, where the packets exist only in memory. A capture
@@ -37907,6 +38166,7 @@ the other bundles and finds any tool by name.
 | [`await_condition`](#await_condition) | `filter`, `timeout_seconds?`, `poll_interval_ms?` | Waits until a filter matches or a deadline passes, whichever is first, so a live capture costs one call instead of a polling loop |
 | [`find_correlated`](#find_correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | [`get_call_tree`](#get_call_tree) | `call_id`, `limit?` | Every leg of one call as a tree, each edge carrying its parent, depth, score, strategy and whether the walk went through it |
+| [`th_mappings`](#th_mappings) | `call_id?`, `state?`, `limit?` | The OpenSIPS topology-hiding mappings held, one row each with its state and which legs sipnab captured, beside the event counts |
 | [`compare_dialogs`](#compare_dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
 | [`get_dialog_report`](#get_dialog_report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
 | [`get_message`](#get_message) | `call_id`, `index` | Single SIP message at a given index |
@@ -38556,7 +38816,8 @@ whose two calls share an SDP origin:
   "source_call_id": "1-1966@10.0.2.20",
   "legs": [
     { "call_id": "1-1968@10.0.2.20", "score": 90, "strategy": "sdp_origin",
-      "method": "sdp", "identifier_match": true, "observed_gap_ms": null }
+      "method": "sdp", "identifier_match": true, "observed_gap_ms": null,
+      "th_callid": null }
   ],
   "total_matched": 1,
   "heuristic_only": false,
@@ -38619,16 +38880,20 @@ it.
 
 - `mapping` is `th_callid_mapping`.
 - `decoded` is `th_callid_decoded`.
+- `mapping` is `th_callid_mapping`: an OpenSIPS `E_SIPNAB_TH_MAP` event named
+  both legs.
 - `header` is `session_id`, `x_call_id`, both charging-vector strategies and
   `via_branch`.
 - `sdp` is `sdp_origin`.
 - `timing` is `timing_heuristic`.
 
-`th_callid` has a value only when the source is the callee-side leg of an OpenSIPS
+`th_callid` has a value only for the callee-side leg of an OpenSIPS
 `topology_hiding("C")` call: `decoded`, `no_secret`, `undecodable`,
 `unmatched`, `mapped` or `conflict`, as
 [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)
-explains.
+explains. The top-level `th_callid` describes the source, and each leg's
+`th_callid` describes that leg. `get_call_tree` carries the same per-leg
+`th_callid`.
 
 `identifier_match` is `true` when the leg matched on a value both legs carry,
 and `false` for `timing_heuristic`. `heuristic_only` is `true` when *every*
@@ -38678,6 +38943,7 @@ its first three keys:
       "method": null,
       "identifier_match": null,
       "followed": true,
+      "th_callid": null,
       "dialog": { "call_id": "1-1966@10.0.2.20", "state": "Completed", "method": "INVITE" }
     },
     {
@@ -38689,6 +38955,7 @@ its first three keys:
       "method": "sdp",
       "identifier_match": true,
       "followed": true,
+      "th_callid": null,
       "dialog": { "call_id": "1-1968@10.0.2.20", "state": "InCall", "method": "INVITE" }
     }
   ],
@@ -38730,6 +38997,62 @@ ladder the TUI's extended flow renders, and `first_activity` and
 An unknown `call_id` fails with `invalid_params` (`call_id 'nope' not found`,
 `data.reason: "not_found"`). A dialog with no other legs comes back as a
 one-leg tree with `total_legs: 1` and `max_depth: 0`.
+
+### `th_mappings`
+
+The OpenSIPS topology-hiding mappings sipnab holds, one row per mapping, from
+the `E_SIPNAB_TH_MAP` events its HEP listener accepted. Use it to find why one
+call through `topology_hiding("C")` did not join its caller leg:
+[`find_correlated`](#find_correlated) says THAT a leg is `conflict` or did not
+join, and this says which mapping and which leg. Exists in a build with the
+`hep` feature.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id?` | string? | A Call-ID, either leg. The answer holds only the mapping that names it. | Every mapping. |
+| `state?` | string? | `conflict`, `pending` or `joined`. Any other word fails with a message naming the three. | Every state. |
+| `limit?` | u32? | Maximum rows. Ceiling is `--mcp-max-rows`, higher clamps to it, `0` means the default. | 50 rows. |
+
+```jsonc
+// th_mappings { "call_id": "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-" }
+{
+  "call_id": "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-",
+  "capture_identity": { "dialog_generation": 6, "instance": "1f4a17c8e2b91d40-1",
+                        "node": "capture-01", "stream_generation": 0 },
+  "counts": { "accepted": 3, "conflict": 0, "duplicate": 0, "expired": 0,
+              "held": 3, "malformed": 0, "pending": 0, "refused_full": 0 },
+  "mappings": [
+    { "callee_call_id": "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-",
+      "callee_captured": true, "caller_call_id": "1-th-map@example.com",
+      "caller_captured": true, "state": "joined" }
+  ],
+  "schema_version": 1,
+  "state": null,
+  "th_callid": { "conflict": 0, "decoded": 0, "mapped": 3, "no_secret": 0,
+                 "undecodable": 0, "undecoded_with_peer": 0, "unmatched": 0 },
+  "total_matched": 1,
+  "source_exhausted": false,
+  "source_stopped_early": false
+}
+```
+
+`state` is one of three values:
+
+- `joined`: sipnab captured both legs, and the mapping joins them.
+- `pending`: sipnab has not captured a leg yet. `caller_captured` and
+  `callee_captured` say which.
+- `conflict`: another event named one of its Call-IDs with a different
+  partner, so the mapping joins nothing.
+
+Rows come conflicts first, then pending, then joined. No row for a Call-ID means no event named it.
+
+`counts` is the `th_mappings` object [`capture_status`](mcp-tools-core.md#capture_status)
+returns, and `th_callid` its `th_callid` object. The Call-IDs came off the
+wire, so the response carries the untrusted-content note.
+`GET /v1/th-mappings` returns the same fields and values, and `--th-mappings`
+prints them at the end of a headless run. [Find why a call through topology
+hiding did not join](rest-api.md#find-why-a-call-through-topology-hiding-did-not-join)
+walks through reading it.
 
 ### `compare_dialogs`
 
@@ -42647,7 +42970,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 What sipnab is doing, and what it is costing the host it runs on.
 
 Use it to answer "is this server healthy" without a metrics listener. sipnab
-exports 49 Prometheus metrics, and the listener that serves them is off by
+exports 51 Prometheus metrics, and the listener that serves them is off by
 default. This tool reports process, host and store state over MCP without
 that listener.
 
@@ -43173,7 +43496,7 @@ opt-in flags:
     "search_messages", "security_findings", "server_capabilities", "show_evidence",
     "shutdown_server", "siprec_metadata", "start_tls_capture", "stop_tls_capture",
     "tail_dialogs", "tfps_ban", "tfps_banned", "tfps_dropped", "tfps_labels",
-    "tfps_status", "tfps_unban", "timeline", "top_talkers", "triage_call",
+    "tfps_status", "tfps_unban", "th_mappings", "timeline", "top_talkers", "triage_call",
     "validate_filter", "validate_message", "validate_vcon", "vcon_directory_report",
     "vcon_spool_status"
   ],
@@ -45268,8 +45591,8 @@ lines on stdin, the way a client does.
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content. They
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 77 carry MCP annotations, so a host
-  can decide what to call without asking. Sixty-four are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 78 carry MCP annotations, so a host
+  can decide what to call without asking. Sixty-five are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
 
@@ -45723,7 +46046,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions. There,
 
 ## What the write verbs do
 
-Sixty-four of the 77 tools are `readOnlyHint: true`. These thirteen are not.
+Sixty-five of the 78 tools are `readOnlyHint: true`. These thirteen are not.
 Each declares what kind of change it makes, so a host can decide which need
 confirmation:
 

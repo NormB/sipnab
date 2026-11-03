@@ -46,7 +46,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | Bundle | Tools | What its tools answer |
 |---|---|---|
 | [`core`](mcp-tools-core.md) | 9 | The smallest set that answers what happened on one call, and whether the fault was in signaling or media, from listing the calls to the bytes that prove it. |
-| [`signaling`](mcp-tools-signaling.md) | 20 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
+| [`signaling`](mcp-tools-signaling.md) | 21 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
 | [`captures`](mcp-tools-captures.md) | 11 | Capture files in the file root: listing, searching, comparing, opening and exporting them, and the evidence that ties a finding to captured bytes. |
 | [`security`](mcp-tools-security.md) | 6 | Who sent what: scanner and fraud findings, the busiest sources, one endpoint's activity, registration problems, pass/fail expectations, and fail2ban rules. |
 | [`media`](mcp-tools-media.md) | 4 | Where a call's media endpoints came from, why a stream has no dialog, the facts under a quality score, and audio export. |
@@ -126,22 +126,22 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,308 | 58,240 |
-| signaling | 20 | 22,452 | 66,162 |
-| captures | 11 | 12,709 | 30,189 |
-| security | 6 | 9,944 | 9,944 |
-| media | 4 | 3,478 | 16,042 |
+| core | 9 | 12,316 | 59,983 |
+| signaling | 21 | 23,576 | 76,040 |
+| captures | 11 | 12,723 | 30,211 |
+| security | 6 | 9,954 | 9,954 |
+| media | 4 | 3,480 | 16,048 |
 | relay | 4 | 4,199 | 20,607 |
 | tfps | 7 | 5,717 | 16,101 |
-| server | 6 | 5,972 | 35,126 |
-| vcon | 7 | 10,710 | 34,428 |
-| tls | 3 | 2,899 | 4,990 |
-| full | 77 | 90,388 | 291,829 |
+| server | 6 | 5,976 | 35,136 |
+| vcon | 7 | 10,714 | 34,446 |
+| tls | 3 | 2,903 | 4,996 |
+| full | 78 | 91,558 | 303,522 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.232** (a development build of this change, 2026-11-03) on a build with every feature.
+> **Measured on sipnab 0.5.232 with `fleet_inventory` and `th_mappings` added** on a build with every feature.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -223,6 +223,7 @@ links to its section on the bundle's page.
 | [`tfps_labels`](mcp-tools-tfps.md#tfps_labels) | [tfps](mcp-tools-tfps.md) | The TFPS verdict log -- blocked, would-block, exempt -- the export the label corpus harness scores the scanner detector against |
 | [`tfps_status`](mcp-tools-tfps.md#tfps_status) | [tfps](mcp-tools-tfps.md) | Whether the toll-fraud prevention peer (TFPS) runs on this host, and what it reports: enforcement, mode, interface, sources blocked now, database, version |
 | [`tfps_unban`](mcp-tools-tfps.md#tfps_unban) | [tfps](mcp-tools-tfps.md) | **Write, off by default.** Releases a source sipnab banned |
+| [`th_mappings`](mcp-tools-signaling.md#th_mappings) | [signaling](mcp-tools-signaling.md) | The OpenSIPS topology-hiding mappings held, one row each with its state and which legs sipnab captured, beside the event counts |
 | [`timeline`](mcp-tools-signaling.md#timeline) | [signaling](mcp-tools-signaling.md) | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
 | [`top_talkers`](mcp-tools-security.md#top_talkers) | [security](mcp-tools-security.md) | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
 | [`triage_call`](mcp-tools-core.md#triage_call) | [core](mcp-tools-core.md) | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
@@ -764,6 +765,7 @@ which:**
 |---|---|---|---|
 | `security_findings` | Yes, `total_matched` | Its source is a ring buffer whose default depth is 1000, the same as the maximum `limit`, so one call reaches all of it | Raise `limit`, and narrow with `since` |
 | `find_correlated` | Yes, `total_matched` | A ranking by score: a later page would hold weaker matches, not the rest of a list | Raise `limit` |
+| `th_mappings` | Yes, `total_matched` | One answer narrowed by Call-ID and state, ordered by state, and the same fields and values `GET /v1/th-mappings` returns | Raise `limit`, or narrow with `call_id` or `state` |
 | `get_call_tree` | No, `truncated` only | A breadth-first walk outward from one call, stopped at `limit` legs | Raise `limit` |
 | `top_talkers` | Yes, `distinct_talkers` | A ranking by dialog count | Raise `limit` |
 | `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `updated_at`, which moves each time a call gains a message, so a cursor on it would skip rows | [`list_dialogs`](mcp-tools-core.md#list_dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |

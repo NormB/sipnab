@@ -192,6 +192,82 @@ pub struct ThMappingCounts {
     pub pending: u64,
 }
 
+/// Where one held mapping stands, for the listing surfaces.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub enum ThMappingState {
+    /// Another event named one of its Call-IDs with a different partner: it
+    /// joins nothing.
+    Conflict,
+    /// Not both of its legs are captured yet.
+    Pending,
+    /// Both legs are captured, and the mapping joins them.
+    Joined,
+}
+
+impl ThMappingState {
+    /// The state of a mapping from whether a conflict stopped it and whether
+    /// each leg is captured. A conflict decides first: a stopped mapping
+    /// joins nothing whatever is captured.
+    #[must_use]
+    pub const fn of(conflicted: bool, caller_captured: bool, callee_captured: bool) -> Self {
+        if conflicted {
+            Self::Conflict
+        } else if caller_captured && callee_captured {
+            Self::Joined
+        } else {
+            Self::Pending
+        }
+    }
+
+    /// The wire name: `conflict`, `pending` or `joined`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Conflict => "conflict",
+            Self::Pending => "pending",
+            Self::Joined => "joined",
+        }
+    }
+
+    /// The state named `s`.
+    ///
+    /// # Errors
+    ///
+    /// The refusal every listing surface gives for any other word, naming the
+    /// three real ones.
+    pub fn parse(s: &str) -> Result<Self, String> {
+        [Self::Conflict, Self::Pending, Self::Joined]
+            .into_iter()
+            .find(|v| v.as_str() == s)
+            .ok_or_else(|| {
+                format!("'{s}' is not a mapping state; one of: conflict, pending, joined.")
+            })
+    }
+}
+
+impl std::fmt::Display for ThMappingState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// One held mapping, as [`ThMappingTable::entries`] yields it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldMapping<'a> {
+    /// The caller-side Call-ID.
+    pub caller_call_id: &'a str,
+    /// The callee-side Call-ID.
+    pub callee_call_id: &'a str,
+    /// Whether a conflicting event stopped it.
+    pub conflicted: bool,
+}
+
 /// One held mapping.
 #[derive(Debug, Clone)]
 struct Entry {
@@ -371,6 +447,15 @@ impl ThMappingTable {
             pending: pending as u64,
             ..self.counts
         }
+    }
+
+    /// Every mapping held, in no particular order.
+    pub fn entries(&self) -> impl Iterator<Item = HeldMapping<'_>> {
+        self.by_caller.iter().map(|(caller, e)| HeldMapping {
+            caller_call_id: caller.as_str(),
+            callee_call_id: e.callee.as_str(),
+            conflicted: e.conflicted,
+        })
     }
 
     /// How many mappings are held.

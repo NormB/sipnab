@@ -1672,7 +1672,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | MCP tool | Wraps |
 |---|---|
 | `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1580`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1580)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1101`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1101)) + `expand_alias` ([`src/sip/dsl.rs:746`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L746)) |
-| `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1545`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1545)) + iterate `dialog.messages` + `output::json::message_to_json` |
+| `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1574`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1574)) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:725`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L725)) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |
@@ -1682,17 +1682,17 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | `tail_dialogs` | `DialogStore::iter` filtered by `updated_at > cursor` |
 | `security_findings` | `security::AlertEngine` history (extend with ring buffer) |
 | `snapshot_pcap` | `capture::PcapWriter` + filter on captured packets |
-| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5520`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5520)) |
+| `stats` | Mirrors `GET /v1/stats` from `output::api::get_stats` ([`src/output/api.rs:5588`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L5588)) |
 
 | Phase 8 infra | Reuses |
 |---|---|
-| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1128`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1128)) |
+| Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1148`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1148)) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:279`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L279), `:309`) |
 | Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:562`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L562)) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |
-| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1013`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1013)) with new routes; reuse the existing `guard()` middleware |
+| WebSocket / SSE Router mounting | Extend `output::api::build_router` ([`src/output/api.rs:1034`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1034)) with new routes; reuse the existing `guard()` middleware |
 
 | Phase 8.4 sink | Wraps |
 |---|---|
@@ -1707,7 +1707,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | Swagger UI mount | New `/docs` route on the existing axum Router |
 | OTel span on capture | `#[tracing::instrument]` on `capture::start_capture` ([`src/capture/mod.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/mod.rs)) |
 | OTel span on parse | `#[tracing::instrument]` on `sip::parser::parse_sip` ([`src/sip/parser.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/parser.rs)) |
-| OTel span on dialog state | `#[tracing::instrument]` on `DialogStore::process_message` ([`src/sip/dialog_store.rs:1367`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1367)) |
+| OTel span on dialog state | `#[tracing::instrument]` on `DialogStore::process_message` ([`src/sip/dialog_store.rs:1396`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1396)) |
 | OTel span on API handler | `#[tracing::instrument]` on each axum handler in [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) |
 | OTel span on MCP tool | `#[tracing::instrument]` on each `#[tool]` method in [`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs) |
 | OTel metrics export | New layer on existing Prometheus endpoint ([`src/output/prometheus_server.rs`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus_server.rs)) plus OTLP exporter |

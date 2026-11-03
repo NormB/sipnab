@@ -411,6 +411,17 @@ Who is feeding this collector's HEP listener, who went silent, and who is it tur
 | REST | `/v1/hep/senders` |
 | MCP | `hep_senders` |
 
+### Topology-hiding mappings
+
+Which OpenSIPS topology-hiding mappings does sipnab hold, and why did one call not join?
+
+| Surface | Detail |
+|---|---|
+| CLI | `--th-mappings` |
+| TUI | gap: the statistics view shows the mapping counts, and no view lists the mappings themselves |
+| REST | `/v1/th-mappings` |
+| MCP | `th_mappings` |
+
 ### Runtime cost
 
 What is sipnab costing the host — its memory, threads, CPU, load-bearing share?

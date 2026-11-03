@@ -49,9 +49,9 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 396 | 321 | 33 | 42 | 0 |
-| HTTP routes | 48 | 48 | -- | 0 | 0 |
-| MCP tools | 77 | 77 | -- | 0 | 0 |
+| CLI flags | 397 | 322 | 33 | 42 | 0 |
+| HTTP routes | 49 | 49 | -- | 0 | 0 |
+| MCP tools | 78 | 78 | -- | 0 | 0 |
 
 **No row can ever say `none`, and that is the point.** `flag_coverage_test` already requires every flag's `--name` token to appear somewhere in the test corpus, and it defines "referenced" as exactly that. A coverage metric built on mentions therefore reports 100% for this project no matter what is actually exercised -- which is what a yes/no "tested" column would have shown. The rows at `referenced` are the ones that gate passes and this document does not.
 
@@ -190,7 +190,7 @@ behind them.
 | `--color` |  | `WHEN` | Output | e2e | `tests/cli_options_test.rs`, `tests/config_wiring_test.rs` |  |  |
 | `--payload-limit` |  | `BYTES` | Output | e2e | `tests/cli_options_test.rs` | **behavior** | payload_limit_truncates_raw_dump: [truncated] appears, User-Agent disappears, against a no-flag baseline |
 | `--text-dump` | `-T` |  | Output | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +1 |  |  |
-| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +80 |  |  |
+| `--no-cli-print` |  |  | Output | e2e | `tests/analyze_test.rs`, `tests/archive_input_test.rs` +81 |  |  |
 | `--wireshark` |  |  | Output | e2e | `tests/batch_run_paths_test.rs`, `tests/closed_stdout_test.rs` +1 | **behavior** | golden tests/cli/out/wireshark.trycmd adds two lines absent from the flagless golden |
 | `--lint` |  |  | Output | e2e | `tests/cli_options_test.rs`, `tests/config_cli_flag_values_test.rs` +4 |  |  |
 | `--lint-fail-on` |  | `SEVERITY` | Output | e2e | `tests/cli_options_test.rs` | **parse-only** | EXIT 3 IS NEVER OBSERVED. The assertion is guarded behind `if findings > 0` and no checked-in capture produces a lint finding |
@@ -370,6 +370,7 @@ behind them.
 | `--hep-hmac-window` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-silence-warn` |  | `SECS` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-senders` |  |  | HEP | e2e | `tests/hep_test.rs` |  |  |
+| `--th-mappings` |  |  | HEP | e2e | `tests/th_mapping_test.rs` |  |  |
 | `--hep-parse` | `-E` |  | HEP | e2e | `src/app/tui_mode.rs`, `tests/app_servers_wiring_test.rs` +7 |  |  |
 | `--no-hep-parse` |  |  | HEP | parsed | `src/cli.rs` |  |  |
 | `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +2 |  |  |
@@ -507,7 +508,7 @@ behind them.
 | `/v1/endpoints` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/hep/senders` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_token_test.rs` +2 |
 | `/v1/inventory` | exercised | `tests/api_capture_identity_test.rs`, `tests/fleet_inventory_test.rs` |
-| `/v1/persistence` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
+| `/v1/persistence` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +2 |
 | `/v1/relay/compare/{call_id}` | exercised | `tests/api_capture_identity_test.rs`, `tests/relay_rest_test.rs` |
 | `/v1/relay/holdings` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/relay/holdings/{call_id}` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` |
@@ -527,6 +528,7 @@ behind them.
 | `/v1/tfps/labels` | exercised | `tests/api_capture_identity_test.rs`, `tests/tfps_surfaces_test.rs` |
 | `/v1/tfps/status` | exercised | `tests/api_capture_identity_test.rs`, `tests/tfps_surfaces_test.rs` |
 | `/v1/tfps/unban` | exercised | `tests/actions_journal_rest_test.rs`, `tests/actions_optin_rest_test.rs` +1 |
+| `/v1/th-mappings` | exercised | `tests/api_capture_identity_test.rs`, `tests/th_mapping_test.rs` |
 | `/v1/timeline` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` |
 | `/v1/vcon/analyze` | exercised | `tests/api_test.rs`, `tests/vcon_reader_forms_test.rs` |
 | `/v1/vcon/fetch/{uuid}` | exercised | `tests/api_capture_identity_test.rs`, `tests/openapi_contract_test.rs` +1 |
@@ -606,6 +608,7 @@ behind them.
 | `tfps_labels` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `tfps_status` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `tfps_unban` | exercised | `tests/actions_journal_mcp_test.rs`, `tests/mcp_protocol_features_test.rs` +2 |
+| `th_mappings` | exercised | `tests/api_capture_identity_test.rs`, `tests/mcp_completeness_test.rs` +4 |
 | `timeline` | exercised | `tests/api_capture_identity_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `top_talkers` | exercised | `tests/api_capture_identity_test.rs`, `tests/mcp_completeness_test.rs` +2 |
 | `triage_call` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +3 |

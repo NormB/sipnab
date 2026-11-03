@@ -1551,12 +1551,12 @@ fn th_callid_guidance(summary: &crate::sip::dialog_store::ThCallidSummary) -> Ve
              has their From tag: the caller side was not captured."
         ));
     }
-    if summary.no_secret > 0 {
+    if summary.not_configured > 0 {
         lines.push(format!(
             "Topology hiding: {} dialog(s) carry an OpenSIPS hidden Call-ID and no secret \
              is configured, so only timing can tie them to their caller leg. Set [sip] \
              th_callid_secret_file to join them exactly.",
-            summary.no_secret
+            summary.not_configured
         ));
     }
     lines
@@ -4706,6 +4706,18 @@ impl BatchRunner {
         {
             crate::capture::archive::release_run_and_exit(1);
         }
+        // 21-th. --th-mappings: the OpenSIPS topology-hiding mappings the
+        //      listener received, after --hep-senders so its JSON object is
+        //      the last line when both are asked for.
+        if self.cli.hep_args.th_mappings
+            && !print_th_mappings(
+                &self.dialog_store.read(),
+                &self.stream_store.read(),
+                self.cli.output_args.json,
+            )
+        {
+            crate::capture::archive::release_run_and_exit(1);
+        }
 
         // 21-hep-send. End the exporter's delivery thread. `finish` makes the
         //      one decision: a stop signal discards the queue at once (stop
@@ -6566,6 +6578,40 @@ fn print_hep_senders(roster: Option<&crate::capture::hep_roster::HepRoster>, jso
         }
     } else {
         report.to_text()
+    };
+    write_stdout(&text)
+}
+
+/// Print the topology-hiding mapping listing for `--th-mappings`: the table,
+/// or under `--json` the object `GET /v1/th-mappings` returns, on one line.
+/// Every mapping is listed; the CLI has no row cap.
+///
+/// # Returns
+///
+/// `false` when stdout could not be written, which makes the output
+/// incomplete.
+fn print_th_mappings(dialogs: &DialogStore, streams: &StreamStore, json: bool) -> bool {
+    // The identity a server started by this run would stamp, so the JSON is
+    // the REST shape in full.
+    let identity =
+        crate::provenance::run_identity().etag(dialogs.generation(), streams.generation());
+    let answer = crate::output::query::th_mappings::th_mappings(
+        dialogs,
+        None,
+        None,
+        usize::MAX,
+        Some(identity),
+    );
+    let text = if json {
+        match serde_json::to_string(&answer) {
+            Ok(line) => format!("{line}\n"),
+            Err(e) => {
+                tracing::error!("--th-mappings: the mappings did not serialize: {e}");
+                return false;
+            }
+        }
+    } else {
+        crate::output::query::th_mappings::render(&answer, crate::output::ReportFormat::Text)
     };
     write_stdout(&text)
 }
@@ -15878,7 +15924,7 @@ mod tests {
         assert!(text.contains("caller side was not captured"), "{text}");
 
         let none = ThCallidSummary {
-            no_secret: 4,
+            not_configured: 4,
             ..ThCallidSummary::default()
         };
         let text = th_callid_guidance(&none).join("\n");

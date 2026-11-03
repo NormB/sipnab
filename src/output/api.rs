@@ -664,6 +664,20 @@ pub struct HepSendersParams {
     pub limit: Option<usize>,
 }
 
+/// Query parameters for the `GET /v1/th-mappings` endpoint.
+#[cfg(feature = "hep")]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ThMappingsParams {
+    /// Only the mapping naming this Call-ID, on either side.
+    pub call_id: Option<String>,
+    /// Only mappings in this state: `conflict`, `pending` or `joined`.
+    pub state: Option<String>,
+    /// The most rows to return. Omitted or `0`, the default page; at most
+    /// `--api-max-rows`. `total_matched` counts every match.
+    pub limit: Option<usize>,
+}
+
 /// Query parameters for the `POST /v1/vcon/analyze` endpoint.
 #[cfg(feature = "vcon")]
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
@@ -1067,6 +1081,10 @@ pub fn build_router(state: ApiState) -> Router {
     // above are gated: "this sipnab cannot" must not read as "nobody sends".
     #[cfg(feature = "hep")]
     let router = router.route("/v1/hep/senders", get(get_hep_senders));
+    // The mappings arrive only on the HEP listener, so the listing is
+    // registered where the senders roster is, for the same reason.
+    #[cfg(feature = "hep")]
+    let router = router.route("/v1/th-mappings", get(get_th_mappings));
     router
         .route(
             "/v1/persistence",
@@ -5341,6 +5359,55 @@ async fn get_hep_senders(
     )))
 }
 
+/// `GET /v1/th-mappings` — the OpenSIPS topology-hiding mappings held, one
+/// row each, with the counts they belong to.
+///
+/// 200 with the [`crate::output::query::th_mappings::ThMappings`] answer the
+/// MCP `th_mappings` tool and `--th-mappings` return, built by the one
+/// function they call.
+#[cfg(feature = "hep")]
+#[utoipa::path(
+    get,
+    path = "/v1/th-mappings",
+    tag = "capture",
+    description = "The OpenSIPS topology-hiding mappings sipnab holds from `E_SIPNAB_TH_MAP` events, one row each: the caller-side and callee-side Call-IDs, the state (`conflict`: another event named one of its Call-IDs with a different partner, so it joins nothing; `pending`: a leg is not captured yet; `joined`: both legs are captured and it joins them), and whether each leg is captured. Conflicts come first, then pending, then joined.\n\nBeside the rows: `counts`, the object `/v1/stats` returns as `th_mappings`, and `th_callid`, the hidden legs held now by status, as `/v1/stats` returns it.\n\nTo find why one call did not join, pass `call_id` (either leg): no row means no event named it.",
+    params(ThMappingsParams),
+    responses(
+        (status = 200, description = "The mappings held.", body = crate::output::query::th_mappings::ThMappings),
+        (status = 400, description = "A `state` other than `conflict`, `pending` or `joined`.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_th_mappings(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<ThMappingsParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let wanted = params
+        .state
+        .as_deref()
+        .map(crate::sip::th_mapping::ThMappingState::parse)
+        .transpose()
+        .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, e))?;
+    let limit = resolve_page_limit(params.limit, state.max_rows);
+    // Capture lock, then dialogs, then streams -- the order `CaptureState`
+    // documents -- held until the answer and its identity are both built.
+    let capture = state.capture.as_ref().map(|c| c.read());
+    let ds = state.dialog_store.read();
+    let ss = state.stream_store.read();
+    let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
+    Ok(Json(crate::output::query::th_mappings::th_mappings(
+        &ds,
+        params.call_id.as_deref(),
+        wanted,
+        limit,
+        capture_identity,
+    )))
+}
+
 /// `GET /v1/runtime` — what sipnab is doing and what it is costing the host.
 ///
 /// 200 with the [`schema::Runtime`] envelope: process resources, the host's
@@ -5543,6 +5610,7 @@ async fn get_stats(
 
     let total_dialogs = ds.len();
     let th_mappings = ds.th_mapping_counts();
+    let th_callid = ds.th_callid_summary();
     let active_dialogs = ds.active_dialog_count();
     let active_calls = ds.active_call_count();
 
@@ -5663,6 +5731,9 @@ async fn get_stats(
         // OpenSIPS E_SIPNAB_TH_MAP events, by outcome, and the mappings held
         // and pending now. The same object MCP `capture_status` returns.
         "th_mappings": th_mappings,
+        // The hidden legs held now, by topology-hiding status. The same
+        // object MCP `capture_status` returns.
+        "th_callid": th_callid,
         // Always present, always complete, and zero is a real answer. A key
         // that shows up only on a bad run is a key no client learns exists.
         "caveats": caveats.to_json(),
@@ -7344,6 +7415,12 @@ pub mod schema {
         /// received: running totals by outcome, and the mappings held and
         /// pending now. All zero when none arrived.
         pub th_mappings: crate::sip::th_mapping::ThMappingCounts,
+        /// The OpenSIPS topology-hiding legs held now, by status (`decoded`,
+        /// `no_secret`, `undecodable`, `unmatched`, `mapped`, `conflict`),
+        /// and `undecoded_with_peer`: undecoded legs whose caller leg WAS
+        /// captured, which points at the secret or prefix. All zero when no
+        /// hidden leg is held.
+        pub th_callid: crate::sip::dialog_store::ThCallidSummary,
         /// What this capture DECLINED to do, beside what it lost. Always
         /// present and always complete: zero is a real answer, and a key that
         /// shows up only on a bad run is a key no client learns exists.
@@ -7819,8 +7896,11 @@ struct VconDoc;
 #[cfg(feature = "hep")]
 #[derive(utoipa::OpenApi)]
 #[openapi(
-    paths(get_hep_senders),
+    paths(get_hep_senders, get_th_mappings),
     components(schemas(
+        crate::output::query::th_mappings::ThMappings,
+        crate::output::query::th_mappings::ThMappingRow,
+        crate::sip::th_mapping::ThMappingState,
         crate::output::model::HepSendersReport,
         crate::output::model::HepSenderRow,
         crate::output::model::HepRefusedSourceRow
@@ -11966,6 +12046,99 @@ mod tests {
             "a media-creating command went past and the count did not move \
              ({before} -> {after}); the key is wired to nothing"
         );
+        Ok(())
+    }
+
+    /// `GET /v1/th-mappings` lists the held topology-hiding mappings with
+    /// their state, narrowed by Call-ID (either side) and by state, and
+    /// refuses a state it does not know with 400 naming the real ones.
+    #[cfg(all(feature = "hep", feature = "tls"))]
+    #[tokio::test]
+    async fn th_mappings_route_lists_the_held_mappings() -> Result<(), TestError> {
+        use crate::sip::th_mapping::ThMapping;
+        let state = make_state();
+        let (mut ds, caller, hidden) = crate::test_utils::th_hidden_call_store("right", None)?;
+        let now = chrono::Utc::now();
+        for (a, b) in [
+            (caller.as_str(), hidden.as_str()),
+            ("waiting@example.com", "DLGCH_waiting"),
+        ] {
+            ds.apply_th_mapping(
+                Ok(ThMapping {
+                    caller_call_id: a.into(),
+                    callee_call_id: b.into(),
+                }),
+                now,
+            );
+        }
+        *state.dialog_store.write() = ds;
+        let get = |uri: String| {
+            let state = state.clone();
+            async move {
+                let resp = build_router(state)
+                    .oneshot(test_request(&uri)?)
+                    .await
+                    .map_err(|e| format!("oneshot: {e:?}"))?;
+                let status = resp.status();
+                let body = body_to_string(resp.into_body()).await?;
+                Ok::<_, TestError>((status, body))
+            }
+        };
+        let (status, body) = get("/v1/th-mappings".into()).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let v: Value = serde_json::from_str(&body)?;
+        assert_eq!(v["total_matched"], 2, "{v}");
+        assert_eq!(v["mappings"][0]["state"], "pending", "{v}");
+        assert_eq!(v["mappings"][1]["state"], "joined", "{v}");
+        assert_eq!(v["mappings"][1]["callee_call_id"], hidden.as_str(), "{v}");
+        assert_eq!(v["counts"]["held"], 2, "{v}");
+        assert_eq!(v["th_callid"]["mapped"], 1, "{v}");
+        let (_, body) = get(format!("/v1/th-mappings?call_id={hidden}")).await?;
+        let v: Value = serde_json::from_str(&body)?;
+        assert_eq!(v["total_matched"], 1, "{v}");
+        assert_eq!(v["call_id"], hidden.as_str(), "{v}");
+        let (_, body) = get("/v1/th-mappings?state=pending&limit=1".into()).await?;
+        let v: Value = serde_json::from_str(&body)?;
+        assert_eq!(v["total_matched"], 1, "{v}");
+        assert_eq!(
+            v["mappings"][0]["caller_call_id"], "waiting@example.com",
+            "{v}"
+        );
+        let (status, body) = get("/v1/th-mappings?state=stuck".into()).await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(body.contains("conflict, pending, joined"), "{body}");
+        Ok(())
+    }
+
+    /// `GET /v1/stats` counts the hidden legs by topology-hiding status, the
+    /// same `th_callid` object MCP `capture_status` returns: a wrong secret
+    /// shows as `undecodable`, and `undecoded_with_peer` says the caller leg
+    /// WAS captured, which points at the secret rather than the capture.
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn stats_counts_hidden_legs_by_th_status() -> Result<(), TestError> {
+        let state = make_state();
+        let (ds, _, _) = crate::test_utils::th_hidden_call_store("right", Some("wrong"))?;
+        *state.dialog_store.write() = ds;
+        let resp = build_router(state)
+            .oneshot(test_request("/v1/stats")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(resp.status(), StatusCode::OK, "/v1/stats answers");
+        let body = body_to_string(resp.into_body()).await?;
+        let v: Value = serde_json::from_str(&body).map_err(|e| format!("JSON: {e:?}"))?;
+        let t = &v["th_callid"];
+        for (key, want) in [
+            ("decoded", 0),
+            ("no_secret", 0),
+            ("undecodable", 1),
+            ("unmatched", 0),
+            ("mapped", 0),
+            ("conflict", 0),
+            ("undecoded_with_peer", 1),
+        ] {
+            assert_eq!(t[key], want, "th_callid.{key}: {v}");
+        }
         Ok(())
     }
 

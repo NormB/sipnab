@@ -970,6 +970,7 @@ const PROBES: &[(&str, &str)] = &[
     ("lint_dialog", r#"{"call_id":"{CALL}"}"#),
     ("validate_message", r#"{"call_id":"{CALL}","index":0}"#),
     ("find_correlated", r#"{"call_id":"{CALL}"}"#),
+    ("th_mappings", r#"{}"#),
     ("check_codec_negotiation", r#"{"call_id":"{CALL}"}"#),
     ("diagnose_registration", r#"{"call_id":"{CALL}"}"#),
     ("media_diagnostics", r#"{"call_id":"{CALL}"}"#),

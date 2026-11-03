@@ -147,6 +147,9 @@ const WITH_IDENTITY: &[(&str, &str, &str, &str)] = &[
     // Occupancy: `dialogs.used` and `streams.used` count this capture's
     // stores, so the answer is about the capture.
     ("/v1/runtime", "/v1/runtime", "runtime_stats", r#"{}"#),
+    // Whether a mapping's legs are captured depends on the dialog store, so
+    // the listing is about the capture even when it holds no mapping.
+    ("/v1/th-mappings", "/v1/th-mappings", "th_mappings", r#"{}"#),
 ];
 
 /// GET routes that do not carry `capture_identity`, each with the reason.

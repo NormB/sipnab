@@ -47,6 +47,23 @@ pub struct HepSendersParams {
     pub limit: Option<u32>,
 }
 
+/// Parameters for `th_mappings`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+pub struct ThMappingsParams {
+    /// Only the mapping naming this Call-ID, on either side. Use it to find
+    /// why one call did not join: no row means no event named it.
+    #[serde(default)]
+    pub call_id: Option<String>,
+    /// Only mappings in this state: conflict, pending or joined.
+    #[serde(default)]
+    pub state: Option<String>,
+    /// The most rows to return. Omitted or 0, 50: the default page. At most
+    /// --mcp-max-rows. total_matched counts every match.
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
 #[tool_router(router = hep_router, vis = "pub(crate)")]
 impl SipnabMcp {
     /// The HEP listener's sender roster.
@@ -91,6 +108,66 @@ impl SipnabMcp {
             limit,
         );
         Ok(CallToolResult::success(vec![ContentBlock::json(report)?]))
+    }
+
+    /// The OpenSIPS topology-hiding mappings held, one row each.
+    ///
+    /// # Errors
+    ///
+    /// `invalid_params` (-32602) for a `state` other than `conflict`,
+    /// `pending` or `joined`.
+    #[tool(
+        name = "th_mappings",
+        description = "Lists the OpenSIPS topology-hiding mappings sipnab \
+                       holds from E_SIPNAB_TH_MAP events: each one's caller-side \
+                       and callee-side Call-IDs, its state (conflict, pending \
+                       or joined) and whether each leg is captured, conflicts \
+                       first, beside the event counts and the hidden legs by \
+                       status. Pass call_id (either leg) to see why one call \
+                       did not join: no row means no event named it. Same \
+                       fields as GET /v1/th-mappings.",
+        output_schema = schema_for_output::<crate::output::query::th_mappings::ThMappings>(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn th_mappings(
+        &self,
+        Parameters(params): Parameters<ThMappingsParams>,
+    ) -> Result<CallToolResult, rmcp::ErrorData> {
+        let wanted = params
+            .state
+            .as_deref()
+            .map(crate::sip::th_mapping::ThMappingState::parse)
+            .transpose()
+            .map_err(|e| {
+                crate::mcp::errors::refuse_param(
+                    crate::mcp::errors::Reason::InvalidValue,
+                    "state",
+                    e,
+                )
+            })?;
+        let limit = resolve_limit_with_cap(params.limit, self.row_cap);
+        // The one builder `GET /v1/th-mappings` and `--th-mappings` call.
+        let answer = {
+            // Capture lock first, stores second, as every capture answer takes
+            // them, so the identity describes the store the rows came from.
+            let state = self.capture.read();
+            let ds = self.dialog_store.read();
+            let ss = self.stream_store.read();
+            let capture_identity = state.identity.etag(ds.generation(), ss.generation());
+            drop(ss);
+            crate::output::query::th_mappings::th_mappings(
+                &ds,
+                params.call_id.as_deref(),
+                wanted,
+                limit,
+                Some(capture_identity),
+            )
+        };
+        // The Call-IDs came off the wire, in events from a listed sender.
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(answer)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
     }
 }
 
@@ -147,6 +224,113 @@ mod tests {
             .map(|t| t.text.clone())
             .ok_or("a JSON block")?;
         Ok(serde_json::from_str(&text).map_err(|e| format!("the payload is JSON: {e:?}"))?)
+    }
+
+    /// `th_mappings` lists the store's mappings with their state, narrows by
+    /// Call-ID and state, and refuses an unknown state with the three real
+    /// ones named.
+    #[cfg(feature = "tls")]
+    #[tokio::test]
+    async fn th_mappings_lists_the_held_mappings() -> Result<(), TestError> {
+        use crate::sip::th_mapping::ThMapping;
+        let (mut ds, caller, hidden) = crate::test_utils::th_hidden_call_store("right", None)?;
+        let now = chrono::Utc::now();
+        for (a, b) in [
+            (caller.as_str(), hidden.as_str()),
+            ("waiting@example.com", "DLGCH_waiting"),
+        ] {
+            ds.apply_th_mapping(
+                Ok(ThMapping {
+                    caller_call_id: a.into(),
+                    callee_call_id: b.into(),
+                }),
+                now,
+            );
+        }
+        let srv = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let ask = |call_id: Option<&str>, state: Option<&str>| ThMappingsParams {
+            call_id: call_id.map(str::to_string),
+            state: state.map(str::to_string),
+            limit: None,
+        };
+        let v = json_of(
+            &srv.th_mappings(Parameters(ask(None, None)))
+                .await
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
+        assert_eq!(v["total_matched"], 2, "{v}");
+        assert_eq!(v["mappings"][0]["state"], "pending", "{v}");
+        assert_eq!(v["mappings"][1]["state"], "joined", "{v}");
+        assert_eq!(v["counts"]["held"], 2, "{v}");
+        assert_eq!(v["th_callid"]["mapped"], 1, "{v}");
+        let v = json_of(
+            &srv.th_mappings(Parameters(ask(Some(&hidden), None)))
+                .await
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
+        assert_eq!(v["total_matched"], 1, "{v}");
+        assert_eq!(v["mappings"][0]["caller_call_id"], caller.as_str(), "{v}");
+        let v = json_of(
+            &srv.th_mappings(Parameters(ask(None, Some("pending"))))
+                .await
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
+        assert_eq!(v["total_matched"], 1, "{v}");
+        let err = srv
+            .th_mappings(Parameters(ask(None, Some("stuck"))))
+            .await
+            .err()
+            .ok_or("an unknown state is refused")?;
+        assert!(err.message.contains("conflict, pending, joined"), "{err:?}");
+        Ok(())
+    }
+
+    /// A page size never moves the capture-wide claims beside the rows:
+    /// `total_matched`, the event counts and the hidden legs by status read
+    /// the same at `limit` 1 as at the default.
+    #[tokio::test]
+    async fn a_page_size_never_moves_the_mapping_counts() -> Result<(), TestError> {
+        use crate::sip::th_mapping::ThMapping;
+        let mut ds = DialogStore::new(100, false);
+        let now = chrono::Utc::now();
+        for n in 0..3 {
+            ds.apply_th_mapping(
+                Ok(ThMapping {
+                    caller_call_id: format!("{n}-page@example.com"),
+                    callee_call_id: format!("DLGCH_page{n}"),
+                }),
+                now,
+            );
+        }
+        let srv = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let ask = |limit: Option<u32>| ThMappingsParams {
+            call_id: None,
+            state: None,
+            limit,
+        };
+        let one = json_of(
+            &srv.th_mappings(Parameters(ask(Some(1))))
+                .await
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
+        let all = json_of(
+            &srv.th_mappings(Parameters(ask(None)))
+                .await
+                .map_err(|e| format!("the call succeeds: {e:?}"))?,
+        )?;
+        assert_eq!(one["mappings"].as_array().map(Vec::len), Some(1), "{one}");
+        assert_eq!(all["mappings"].as_array().map(Vec::len), Some(3), "{all}");
+        for key in ["total_matched", "counts", "th_callid"] {
+            assert_eq!(one[key], all[key], "{key} moved with the page size");
+        }
+        assert_eq!(one["total_matched"], 3, "{one}");
+        Ok(())
     }
 
     /// Registered, and annotated read-only, so a `read`-scoped token reaches
