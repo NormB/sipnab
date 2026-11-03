@@ -481,6 +481,36 @@ implementation from a broken one.
 rather than comparing strings, because the halves swap direction across a B2BUA
 and string equality would find nothing.
 
+### Correlation: why a decoded topology-hiding Call-ID also needs the From tag
+
+OpenSIPS `topology_hiding("C")` combines the caller's Call-ID by XOR with
+`th_callid_passwd` and encodes it in word64
+([`src/sip/th_callid.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/th_callid.rs) quotes the OpenSIPS
+functions). The scheme has no MAC, nonce or checksum, so any key decodes any
+value to some bytes. A wrong secret is therefore not detectable from the
+decode alone, and the decode check only refuses bytes that cannot be a
+Call-ID. The join, `th_callid::joins`, also requires the decoded value to
+equal a captured leg's Call-ID AND the two legs' From tags to match. OpenSIPS
+does not rewrite tags, so that check does not depend on the secret, and a
+wrong secret cannot join two legs. The join does not check which leg sipnab saw first:
+two HEP agents with skewed clocks, or a capture that starts mid-call, show the
+legs in either order.
+
+The decoder is process-wide (`dialog_store::set_th_callid`, set once by
+`bootstrap::apply_config`), for the reason `set_active_idle_window_secs` is:
+the batch run, the terminal interface and each `--cores` shard build their own
+stores, and a decoder threaded to some of them would join the legs on one
+surface and not on another.
+
+Every surface derives `method` from one function,
+`CorrelationReason::method`, an exhaustive match with no catch-all, so a new
+strategy is a compile error until its author picks one. The terminal interface's
+call-flow status line is the live view's only place for it: the ladder paints
+directly into the buffer and has no section for legs. Its text
+(`tui::call_flow::correlation::summary`) walks the store, so `App` caches it
+keyed on the Call-ID and the store generation, under a refresh floor, and
+rebuilds it at once when the operator opens another call.
+
 ## Notes for [core bundle](@/docs/mcp-tools-core.md)
 
 ### Why `capture_status` reports AMI cleartext logins
