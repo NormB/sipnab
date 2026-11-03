@@ -1869,8 +1869,10 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 There are two fields. "Not writing" has two causes an operator needs to tell
 apart:
 
-- `authorized` — whether the command line asked this run to write content at
-  all. Fixed when sipnab starts, and nothing over the network changes it.
+- `authorized` — whether the operator started this run to write content at
+  all: an export flag on the command line, or a `[[vcon.rule]]` in the config
+  file.
+  Fixed when sipnab starts, and nothing over the network changes it.
 - `enabled` — whether content is reaching disk right now.
 
 `authorized: false` means this run was never going to write anything.
@@ -1912,8 +1914,8 @@ rather than the request.
 - `{"enabled": true}` restores writing as far as
   the command line allowed and no further.
 - Starting sipnab without a persistence
-  flag is the way to guarantee a run writes no content. No API key changes
-  that.
+  flag and without a `[[vcon.rule]]` is the way to guarantee a run writes no
+  content. No API key changes that.
 - Anyone holding a token can switch recording off. Nobody can switch it on.
 
 **Body shape:** a JSON object with exactly the key `enabled`, carrying `true`

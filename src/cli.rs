@@ -6215,28 +6215,40 @@ impl Cli {
     /// which is compiled whether or not the server behind it is.
     pub const DEFAULT_METRICS_MAX_CONN: usize = 16;
 
-    /// Whether this run's flags authorize writing call content to disk.
+    /// Whether this run writes call content to disk: an export flag, or a
+    /// `[[vcon.rule]]` in the config file.
     ///
-    /// The ceiling the REST gate can never rise above. It reads the flags
-    /// rather than a resolved config because the question is what the OPERATOR
-    /// asked for: a default that turned persistence on would make the ceiling
-    /// something nobody chose.
+    /// THE rule for "this run writes content". The REST gate's ceiling is read
+    /// off it, and so is the `--redact` refusal, so the two cannot disagree
+    /// about a run. Both sources count because both are the operator's own
+    /// choice, made before the run started: a config file is chosen at the
+    /// terminal like a flag, and only a network request is a lesser authority.
+    /// While this read the flags alone, a run whose only writer was a
+    /// configured rule got a gate that was never authorized, and adding
+    /// `--api` or `--mcp` silently stopped the rule writing.
     ///
-    /// A flag added later that writes content belongs here, and
+    /// A rule counts only in a build with the vCon exporter: without it the
+    /// rule writes nothing, and a gate reporting `authorized: true` would be
+    /// reporting a writer that does not exist. A flag needs no such test,
+    /// because [`Self::validate`] refuses an export flag in that build.
+    ///
+    /// A flag or key added later that writes content belongs here, and
     /// `persists_content_names_every_flag_that_writes_content` is where that
     /// is stated, so the omission breaks a test rather than shipping a gate
     /// that reports no authority over a run that is writing.
     #[must_use]
-    pub const fn persists_content(&self) -> bool {
-        self.output_args.export_vcon.is_some() || self.output_args.export_vcon_when.is_some()
+    pub fn persists_content(&self, config: &crate::config::Config) -> bool {
+        self.output_args.export_vcon.is_some()
+            || self.output_args.export_vcon_when.is_some()
+            || (cfg!(feature = "vcon") && !config.vcon.rule.is_empty())
     }
 
     /// Whether this run redacts what it exports.
     ///
-    /// The companion of [`Self::persists_content`], which names the flags that
-    /// write a container: redaction acts on what that writes, so a run where
-    /// one is true and the other false is an operator asking for a guarantee
-    /// over nothing.
+    /// The companion of [`Self::persists_content`], which names the flags and
+    /// rules that write a container: redaction acts on what that writes, so a
+    /// run where one is true and the other false is an operator asking for a
+    /// guarantee over nothing.
     ///
     /// A method rather than a bare field read, so the flag and the checks that
     /// depend on it cannot drift: [`Self::validate`] refuses an inert
@@ -8275,8 +8287,8 @@ impl Cli {
     }
 
     /// The refusal for a redaction flag on a run that exports no container,
-    /// or `None`. `config_exports`: whether the config file defines a
-    /// `[[vcon.rule]]`, which is an export as the flags are.
+    /// or `None`. Whether the run exports is [`Self::persists_content`]'s
+    /// answer, which counts a `[[vcon.rule]]` in `config` as the flags.
     ///
     /// Refused rather than ignored, because the failure it prevents is the one
     /// that gets somebody hurt: an operator who passed --redact and got output
@@ -8284,8 +8296,8 @@ impl Cli {
     /// tree (#35, #55, #63, #83) cost a feature; this one would cost a
     /// disclosure.
     #[must_use]
-    pub fn inert_redaction_refusal(&self, config_exports: bool) -> Option<crate::Error> {
-        (self.redacting() && !self.persists_content() && !config_exports).then(|| {
+    pub fn inert_redaction_refusal(&self, config: &crate::config::Config) -> Option<crate::Error> {
+        (self.redacting() && !self.persists_content(config)).then(|| {
             crate::Error::CliValidation(
                 "--redact rewrites an EXPORTED container and this run exports \
                  none. Pair it with --export-vcon, --export-vcon-when or a \
@@ -11112,14 +11124,19 @@ mod tests {
 
         let inert = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap", "--redact"])?;
         let refusal = inert
-            .inert_redaction_refusal(false)
+            .inert_redaction_refusal(&crate::config::Config::default())
             .ok_or("--redact with no export is a promise over nothing")?;
         assert!(
             refusal.to_string().contains("exports none"),
             "the refusal has to say WHY: {refusal}"
         );
-        assert!(
-            inert.inert_redaction_refusal(true).is_none(),
+        // In a build without the exporter a rule writes nothing, and
+        // `validate` has already refused --redact there.
+        assert_eq!(
+            inert
+                .inert_redaction_refusal(&config_with_a_rule()?)
+                .is_none(),
+            cfg!(feature = "vcon"),
             "a [[vcon.rule]] is an export --redact applies to"
         );
         Ok(())
@@ -11255,23 +11272,44 @@ mod tests {
         Ok(())
     }
 
-    /// `persists_content` is true for exactly the flags that write content.
+    /// A config whose one `[[vcon.rule]]` writes every call into `/srv/out`.
+    fn config_with_a_rule() -> Result<crate::config::Config, TestError> {
+        Ok(toml::from_str(
+            "[[vcon.rule]]\nname = \"all\"\nwhen = \"call_id =~ '.'\"\ndir = \"/srv/out\"\n",
+        )?)
+    }
+
+    /// `persists_content` is true for exactly the flags AND the config keys
+    /// that write content.
     ///
-    /// The REST gate's ceiling is read off this, so a flag added later that
-    /// writes content and is not named here would ship a control that reports
-    /// `authorized: false` while the exporter went on writing -- the gate
-    /// lying in the one direction that matters.
+    /// The REST gate's ceiling is read off this, and the exporter writes
+    /// nothing through a gate whose ceiling is false. So a writer added later
+    /// and not named here ships a run that writes nothing the moment `--api`
+    /// or `--mcp` is added, with no message -- which is what a
+    /// `[[vcon.rule]]` did while this test named only the flags.
+    ///
+    /// Why the list below is written out rather than derived from the flags
+    /// and keys: whether a flag or key writes call content is a property of
+    /// the code that reads it, not of its declaration. clap can enumerate
+    /// every flag and `config::known_keys` every config key, but neither
+    /// says which of them lead to a file being written, so a derived check
+    /// would need a hand-kept classification of every one of several hundred
+    /// flags and keys -- the same hand-kept list, much longer. What is
+    /// structural instead: this is the ONE function that answers "does this
+    /// run write content", it takes the config as well as the flags, and the
+    /// gate and the `--redact` refusal both call it.
     #[test]
     fn persists_content_names_every_flag_that_writes_content() -> Result<(), TestError> {
+        let none = crate::config::Config::default();
         let bare = Cli::try_parse_from(["sipnab", "-I", "x.pcap"])?;
         assert!(
-            !bare.persists_content(),
-            "a run with no persistence flags writes no content"
+            !bare.persists_content(&none),
+            "a run with no persistence flags and no rule writes no content"
         );
 
         let single = Cli::try_parse_from(["sipnab", "-I", "x.pcap", "--export-vcon", "abc@1"])?;
         assert!(
-            single.persists_content(),
+            single.persists_content(&none),
             "--export-vcon writes a container"
         );
 
@@ -11285,8 +11323,16 @@ mod tests {
             "/tmp/out",
         ])?;
         assert!(
-            predicate.persists_content(),
+            predicate.persists_content(&none),
             "--export-vcon-when writes containers"
+        );
+
+        // A build without the vCon exporter writes nothing for a rule; one
+        // with it writes the rule's containers.
+        assert_eq!(
+            bare.persists_content(&config_with_a_rule()?),
+            cfg!(feature = "vcon"),
+            "a [[vcon.rule]] writes containers, with no flag on the command line"
         );
         Ok(())
     }
@@ -11308,7 +11354,7 @@ mod tests {
             argv.extend(extra.iter().copied());
             let cli = Cli::try_parse_from(&argv)?;
             assert!(
-                !cli.persists_content(),
+                !cli.persists_content(&crate::config::Config::default()),
                 "{extra:?} does not write content and must not authorize it"
             );
         }

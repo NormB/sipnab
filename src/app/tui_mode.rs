@@ -1096,6 +1096,11 @@ fn start_tui_servers(
             scanner_response: detections.scanner_response,
             pipeline_options: crate::app::server_pipeline_options(cli, config),
             alias_thresholds: cli.alias_thresholds(config),
+            // The TUI loop runs no vCon exporter: an export flag sends the run
+            // to the headless mode (`Cli::normalize`), and a `[[vcon.rule]]`
+            // is not run here. A gate reporting `authorized: true` would name
+            // a writer this run does not have.
+            persists_content: false,
             vcon_spools: crate::app::vcon_spool::spools(cli, config),
             vcon_fetch: config.vcon_fetch.clone(),
             live_audio: crate::app::bootstrap::live_audio_filters(cli, config),

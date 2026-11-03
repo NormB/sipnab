@@ -3228,6 +3228,7 @@ fn server_selection(
         scanner_response: engines.scanner_response(),
         pipeline_options: crate::app::server_pipeline_options(cli, config),
         alias_thresholds: cli.alias_thresholds(config),
+        persists_content: cli.persists_content(config),
         vcon_spools: crate::app::vcon_spool::spools(cli, config),
         vcon_fetch: config.vcon_fetch.clone(),
         live_audio: crate::app::bootstrap::live_audio_filters(cli, config),

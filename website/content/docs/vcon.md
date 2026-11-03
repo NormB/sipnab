@@ -3769,7 +3769,7 @@ Both are always present, including as `false` and `0`.
     header means "this call must leave no trace".
 
 A header can only suppress. sipnab has no header, flag or REST call that turns
-on persistence the command line did not authorize. See
+on persistence the command line and config file did not authorize. See
 [`POST /v1/persistence`](@/docs/api.md#post-v1-persistence) for the runtime gate.
 
 ## Someone handed you a sipnab vCon — what may you conclude?

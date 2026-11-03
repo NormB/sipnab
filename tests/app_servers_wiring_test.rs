@@ -72,6 +72,7 @@ fn metrics_only() -> Selection {
         vcon_fetch: Default::default(),
         live_audio: Vec::new(),
         alias_thresholds: Default::default(),
+        persists_content: false,
     }
 }
 
@@ -976,5 +977,186 @@ fn an_mcp_filter_takes_the_runs_named_filters() -> Result<(), TestError> {
     drop(stdin);
     let (code, log) = run.terminate();
     assert_eq!(code, Some(0), "closing stdin ends the run cleanly:\n{log}");
+    Ok(())
+}
+
+// ── A [[vcon.rule]] writes while a door is open ──────────────────────────
+
+/// A config whose one `[[vcon.rule]]` selects `CAPTURE`'s call and writes it
+/// into `out`, written into `home`.
+#[cfg(feature = "vcon")]
+fn vcon_rule_config(
+    home: &std::path::Path,
+    out: &std::path::Path,
+) -> Result<std::path::PathBuf, TestError> {
+    let path = home.join("rule.toml");
+    std::fs::write(
+        &path,
+        format!(
+            "[[vcon.rule]]\n\
+             name = \"the-call\"\n\
+             when = \"call_id == '{CAPTURE_CALL_ID}'\"\n\
+             dir = \"{}\"\n\
+             audio = \"omit\"\n",
+            out.display()
+        ),
+    )?;
+    Ok(path)
+}
+
+/// The vCon containers in `dir`.
+#[cfg(feature = "vcon")]
+fn written_containers(dir: &std::path::Path) -> Result<usize, TestError> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(0);
+    };
+    let mut n = 0;
+    for entry in entries {
+        if entry?.path().to_string_lossy().ends_with(".vcon.json") {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
+/// A `[[vcon.rule]]` writes its container on a run that also serves `--api`,
+/// and `GET /v1/persistence` reports the run as authorized and writing.
+///
+/// The REST door's persistence gate took its ceiling from the export FLAGS
+/// alone, so a run whose only writer was a configured rule got a gate that
+/// was never authorized, and the exporter, which consults that gate, wrote
+/// nothing and said nothing. The same config without `--api` wrote the call.
+#[cfg(feature = "vcon")]
+#[test]
+fn a_vcon_rule_writes_while_the_rest_api_serves() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let out = home.path().join("out");
+    let config = vcon_rule_config(home.path(), &out)?;
+    let config = config.to_string_lossy();
+    let mut run = Spawned::start(
+        &[
+            "-N",
+            "-I",
+            CAPTURE,
+            "--config",
+            &config,
+            "--api",
+            "127.0.0.1:0",
+            "--api-key",
+            "k",
+        ],
+        home.path(),
+        Stdio::null(),
+        Stdio::null(),
+    )?;
+    let addr = run
+        .after("REST API listening on ", Duration::from_secs(30))
+        .ok_or_else(|| format!("no listening line:\n{}", run.seen.join("\n")))?;
+    // The keep-alive loop comes after the end-of-run export, so the container
+    // is on disk by the time this line is logged.
+    assert!(
+        run.after("API server active", Duration::from_secs(30))
+            .is_some(),
+        "the run must reach its keep-alive loop:\n{}",
+        run.seen.join("\n")
+    );
+
+    let (status, body) = http_get(&addr, "/v1/persistence", "k")?;
+    assert_eq!(status, 200, "{body}");
+    let gate: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(
+        gate,
+        serde_json::json!({"authorized": true, "enabled": true}),
+        "a configured rule authorizes this run to write content"
+    );
+    assert_eq!(
+        written_containers(&out)?,
+        1,
+        "the rule writes the call while --api serves:\n{}",
+        run.seen.join("\n")
+    );
+
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "SIGTERM ends a served run cleanly:\n{log}");
+    Ok(())
+}
+
+/// A `[[vcon.rule]]` writes its container on a run that also serves `--mcp`.
+///
+/// The MCP door is built by the same `start_servers` and shares the one
+/// persistence gate, so it failed the same way: the rule wrote nothing.
+#[cfg(feature = "vcon")]
+#[test]
+fn a_vcon_rule_writes_while_mcp_serves() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let out = home.path().join("out");
+    let config = vcon_rule_config(home.path(), &out)?;
+    let config = config.to_string_lossy();
+    let mut run = Spawned::start(
+        &["--mcp", "-N", "-I", CAPTURE, "--config", &config],
+        home.path(),
+        Stdio::piped(),
+        Stdio::null(),
+    )?;
+    // Held open, so the stdio client stays connected while the run reads the
+    // capture to its end and exports.
+    let stdin = run.child.stdin.take().ok_or("stdin")?;
+    assert!(
+        run.after("MCP server active", Duration::from_secs(30))
+            .is_some(),
+        "the run must reach its keep-alive loop:\n{}",
+        run.seen.join("\n")
+    );
+    assert_eq!(
+        written_containers(&out)?,
+        1,
+        "the rule writes the call while --mcp serves:\n{}",
+        run.seen.join("\n")
+    );
+
+    drop(stdin);
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "closing stdin ends the run cleanly:\n{log}");
+    Ok(())
+}
+
+/// A run with no writer reports `authorized: false`, config file or not: the
+/// fix counts a configured rule, not any config file.
+#[cfg(feature = "vcon")]
+#[test]
+fn a_config_without_a_rule_does_not_authorize_persistence() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let config = named_filters_config(home.path())?;
+    let config = config.to_string_lossy();
+    let mut run = Spawned::start(
+        &[
+            "-N",
+            "-I",
+            CAPTURE,
+            "--config",
+            &config,
+            "--api",
+            "127.0.0.1:0",
+            "--api-key",
+            "k",
+        ],
+        home.path(),
+        Stdio::null(),
+        Stdio::null(),
+    )?;
+    let addr = run
+        .after("REST API listening on ", Duration::from_secs(30))
+        .ok_or_else(|| format!("no listening line:\n{}", run.seen.join("\n")))?;
+    let (status, body) = http_get(&addr, "/v1/persistence", "k")?;
+    assert_eq!(status, 200, "{body}");
+    let gate: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(
+        gate,
+        serde_json::json!({"authorized": false, "enabled": false}),
+        "a run with no writer has nothing to authorize"
+    );
+
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "SIGTERM ends a served run cleanly:\n{log}");
     Ok(())
 }
