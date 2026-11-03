@@ -452,3 +452,126 @@ fn container_builds_mark_the_checkout_safe_before_building() -> Result<(), TestE
     );
     Ok(())
 }
+
+/// The compiler wrappers `build` switches off: rustc's two, under both names
+/// cargo reads them by.
+const WRAPPER_VARS: [&str; 4] = [
+    "RUSTC_WRAPPER",
+    "CARGO_BUILD_RUSTC_WRAPPER",
+    "RUSTC_WORKSPACE_WRAPPER",
+    "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+];
+
+/// `build` runs cargo with every compiler wrapper switched off: each variable
+/// set, and set to the empty string.
+///
+/// On 2026-11-02 sccache configured as `build.rustc-wrapper` made the two
+/// builds of one commit differ in a clock time (run 41514782899). The `cc`
+/// crate routes C compiles through sccache when `RUSTC_WRAPPER` names it, so
+/// mimalloc's `__DATE__` and `__TIME__` came from the sccache server, which
+/// never saw `SOURCE_DATE_EPOCH`. Empty, not unset: an empty value overrides
+/// the config file's `build.rustc-wrapper`, and unsetting it does not.
+#[test]
+fn build_switches_every_compiler_wrapper_off() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let log = dir.path().join("cargo.log");
+    let stub = dir.path().join("cargo");
+    let mut body = String::from("#!/bin/sh\n{\n");
+    for var in WRAPPER_VARS {
+        body.push_str(&format!(
+            "  if [ \"${{{var}+set}}\" = set ]; then echo \"{var}=[${var}]\"; else echo \"{var} unset\"; fi\n"
+        ));
+    }
+    body.push_str(&format!("}} > '{}'\n", log.display()));
+    std::fs::write(&stub, body)?;
+    let mut perms = std::fs::metadata(&stub)?.permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&stub, perms)?;
+
+    let path = format!(
+        "{}:{}",
+        dir.path().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut cmd = Command::new("bash");
+    cmd.arg(repo()?.join(SCRIPT))
+        .args(["build", "x86_64-unknown-linux-gnu", "full"])
+        .current_dir(repo()?)
+        .env("PATH", path)
+        .env("CARGO_HOME", "/opt/some-cargo-home");
+    for var in WRAPPER_VARS {
+        cmd.env(var, "/usr/local/bin/sccache");
+    }
+    let out = cmd.output()?;
+    assert!(out.status.success(), "{}", text(&out));
+    let rec = std::fs::read_to_string(&log)?;
+    for var in WRAPPER_VARS {
+        assert!(
+            rec.lines().any(|l| l == format!("{var}=[]")),
+            "cargo must run with {var} set and empty, which switches off a \
+             wrapper the config file names; it saw:\n{rec}"
+        );
+    }
+    Ok(())
+}
+
+/// The mechanism `build` relies on, with real cargo: a wrapper named in the
+/// config file runs, and an empty `RUSTC_WRAPPER` stops it.
+///
+/// The control half matters: without it, a wrapper that never ran for another
+/// reason would pass the second half.
+#[test]
+fn an_empty_rustc_wrapper_overrides_the_config_files_wrapper() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let krate = dir.path().join("probe");
+    std::fs::create_dir_all(krate.join("src"))?;
+    std::fs::create_dir_all(krate.join(".cargo"))?;
+    std::fs::write(
+        krate.join("Cargo.toml"),
+        "[package]\nname = \"probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    )?;
+    std::fs::write(krate.join("src/main.rs"), "fn main() {}\n")?;
+    let marker = dir.path().join("wrapper-ran");
+    let wrapper = dir.path().join("wrapper.sh");
+    std::fs::write(
+        &wrapper,
+        format!("#!/bin/sh\ntouch '{}'\nexec \"$@\"\n", marker.display()),
+    )?;
+    let mut perms = std::fs::metadata(&wrapper)?.permissions();
+    std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+    std::fs::set_permissions(&wrapper, perms)?;
+    std::fs::write(
+        krate.join(".cargo/config.toml"),
+        format!("[build]\nrustc-wrapper = \"{}\"\n", wrapper.display()),
+    )?;
+
+    let cargo = |empty_wrapper: bool, target: &str| -> Result<Output, TestError> {
+        let mut cmd = Command::new(env!("CARGO"));
+        cmd.args(["build", "--quiet", "--offline", "--target-dir", target])
+            .current_dir(&krate);
+        for var in WRAPPER_VARS {
+            cmd.env_remove(var);
+        }
+        if empty_wrapper {
+            cmd.env("RUSTC_WRAPPER", "");
+        }
+        Ok(cmd.output()?)
+    };
+
+    let control = cargo(false, "t-control")?;
+    assert!(control.status.success(), "{}", text(&control));
+    assert!(
+        marker.exists(),
+        "control: the config file's wrapper did not run, so the second half \
+         would prove nothing"
+    );
+    std::fs::remove_file(&marker)?;
+
+    let off = cargo(true, "t-off")?;
+    assert!(off.status.success(), "{}", text(&off));
+    assert!(
+        !marker.exists(),
+        "an empty RUSTC_WRAPPER must stop the config file's wrapper"
+    );
+    Ok(())
+}
