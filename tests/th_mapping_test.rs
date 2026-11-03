@@ -523,6 +523,14 @@ fn fenced_blocks(md: &str, fence: &str) -> Vec<String> {
     out
 }
 
+/// The guide's OpenSIPS lines, after `@SIPNAB@` becomes its `127.0.0.1:9060`.
+fn rendered_template() -> Result<String, TestError> {
+    Ok(
+        std::fs::read_to_string("harness/th-mapping/opensips.cfg.tmpl")?
+            .replace("@SIPNAB@", "127.0.0.1:9060"),
+    )
+}
+
 /// The guide's OpenSIPS lines for the event are the ones
 /// `harness/th-mapping/e2e.sh` ran against OpenSIPS 4.0.2, 4.0.1 and 3.6.9,
 /// character for character (the request-route block one tab deeper), with
@@ -531,11 +539,12 @@ fn fenced_blocks(md: &str, fence: &str) -> Vec<String> {
 #[test]
 fn the_guides_event_lines_are_the_ones_the_harness_ran() -> Result<(), TestError> {
     let guide = std::fs::read_to_string("docs/opensips-sipnab.md")?;
-    let template = std::fs::read_to_string("harness/th-mapping/opensips.cfg.tmpl")?
-        .replace("@SIPNAB@", "127.0.0.1:9060");
+    let template = rendered_template()?;
     let blocks: Vec<String> = fenced_blocks(&guide, "```text")
         .into_iter()
-        .filter(|b| b.contains("E_SIPNAB_TH_MAP") || b.contains("event_datagram"))
+        .filter(|b| {
+            b.contains("loadmodule") || b.contains("subscribe_event(") || b.contains("raise_event(")
+        })
         .collect();
     assert_eq!(
         blocks.len(),
@@ -551,13 +560,42 @@ fn the_guides_event_lines_are_the_ones_the_harness_ran() -> Result<(), TestError
     }
     let json = fenced_blocks(&guide, "```json")
         .into_iter()
-        .find(|b| b.contains("E_SIPNAB_TH_MAP"))
+        .find(|b| b.starts_with(r#"{"jsonrpc""#) && b.contains("E_SIPNAB_TH_MAP"))
         .ok_or("the guide shows the datagram")?;
     let (_, events) = sip_and_events()?;
     assert_eq!(
         json.as_bytes(),
         events[0].as_slice(),
         "the guide's datagram is the one OpenSIPS sent"
+    );
+    Ok(())
+}
+
+/// The guide's complete `opensips.cfg` is the harness template that
+/// `harness/th-mapping/e2e.sh` ran, every line below the template's comment
+/// header, with `@SIPNAB@` as the guide's `127.0.0.1:9060`: so the two
+/// cannot drift apart.
+#[test]
+fn the_guides_complete_config_is_the_harness_template() -> Result<(), TestError> {
+    let guide = std::fs::read_to_string("docs/opensips-sipnab.md")?;
+    let configs: Vec<String> = fenced_blocks(&guide, "```cfg")
+        .into_iter()
+        .filter(|b| b.contains("E_SIPNAB_TH_MAP"))
+        .collect();
+    assert_eq!(
+        configs.len(),
+        1,
+        "the guide shows one complete opensips.cfg for the event"
+    );
+    let template = rendered_template()?;
+    let body: Vec<&str> = template
+        .lines()
+        .skip_while(|l| l.starts_with('#'))
+        .collect();
+    assert_eq!(
+        configs[0],
+        body.join("\n").trim_end(),
+        "the guide's opensips.cfg differs from harness/th-mapping/opensips.cfg.tmpl"
     );
     Ok(())
 }

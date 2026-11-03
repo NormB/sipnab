@@ -3,14 +3,15 @@
 #
 # Topology hiding with Call-ID hiding ("C"), plus one E_SIPNAB_TH_MAP event
 # per call to sipnab, for the sipnab th-mapping fixtures. Rendered by
-# capture.sh, which replaces @SIPNAB@ with the address sipnab listens on.
-# docs/opensips-sipnab.md shows the event lines of this file character for
-# character, with @SIPNAB@ as 127.0.0.1:9060 (tests/th_mapping_test.rs checks
-# it).
+# capture.sh and e2e.sh, which replace @SIPNAB@ with the address sipnab
+# listens on. docs/opensips-sipnab.md shows everything below this header as
+# its complete opensips.cfg, and the event lines again one by one, with
+# @SIPNAB@ as 127.0.0.1:9060 (tests/th_mapping_test.rs checks both).
 log_level=3
 stderror_enabled=yes
 udp_workers=2
 socket=udp:192.0.2.10:5060
+# The directory your OpenSIPS build or package installs its modules in.
 mpath="/usr/local/lib64/opensips/modules/"
 
 loadmodule "signaling.so"
@@ -23,6 +24,8 @@ loadmodule "maxfwd.so"
 loadmodule "rr.so"
 loadmodule "proto_udp.so"
 loadmodule "event_datagram.so"
+# For opensips-cli: the MI FIFO, at /tmp/opensips_fifo by default.
+loadmodule "mi_fifo.so"
 
 startup_route {
 	subscribe_event("E_SIPNAB_TH_MAP", "udp:@SIPNAB@");
@@ -63,6 +66,7 @@ route {
 	$avp(th_keys) = "callee_call_id";
 	$avp(th_vals) = $TH_callee_callid;
 	raise_event("E_SIPNAB_TH_MAP", $avp(th_keys), $avp(th_vals));
+	# Your routing goes here. This example sends every call to one callee.
 	$du = "sip:192.0.2.1:5070";
 	if (!t_relay())
 		send_reply(500, "Internal Error");

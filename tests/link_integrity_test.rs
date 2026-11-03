@@ -1544,7 +1544,14 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // rest-api.md and troubleshooting.md +1 each, each a link to
     // opensips-sipnab.md's "Have OpenSIPS send the mapping". Counted per page
     // against origin/main 23eb5a0bc.
-    const EXPECTED_WIKI_LINKS: usize = 2004;
+    // 2004 -> 2020 (#617, the mapping how-to): opensips-sipnab.md +12 (the
+    // comparison table's three method links, the how-to's step and
+    // troubleshooting cross-references, and the intro's pointer to the
+    // how-to), troubleshooting.md +2 (the symptom row's two links),
+    // cli-reference.md +1 (the `--hep-listen` row) and config-reference.md +1
+    // (the `th_callid_secret_file` row). Counted per page against origin/main
+    // e019a2d55: every other changed page held its count.
+    const EXPECTED_WIKI_LINKS: usize = 2020;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1685,7 +1692,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 141 -> 142: README.md's `g729` feature row links docs/g729.md.
     // 142 -> 143: SECURITY.md's "Verifying a release" links
     // docs/install.md's download-verification section.
-    const EXPECTED_COMMUNITY_LINKS: usize = 143;
+    // 143 -> 145 (#617): README.md's OpenSIPS topology-hiding bullet links
+    // docs/opensips-sipnab.md's section and its mapping how-to. Counted
+    // against origin/main e019a2d55.
+    const EXPECTED_COMMUNITY_LINKS: usize = 145;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",
