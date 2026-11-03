@@ -81,6 +81,19 @@ default feature set.
   - the static musl tarballs,
   - the gnu `-noaudio` packages.
 
+## Before you start
+
+- **A sipnab with the `plugins` feature.** Every release package has it.
+  `sipnab --version` lists `plugins` among the features. A source build needs
+  `--features plugins` or `--features full`.
+- **Rust with the `wasm32-unknown-unknown` target,** to build a plugin:
+  `rustup target add wasm32-unknown-unknown`.
+- **Nothing on any other system.** A plugin runs inside sipnab, on the
+  dialogs sipnab already holds. It needs no SIP server, relay or network
+  change.
+- **Where findings appear.** Only `--json-dialogs` prints them, as
+  [Known limits](#known-limits) says.
+
 ## Writing one, start to finish
 
 The worked example is [`crates/sipnab-plugin-example`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-plugin-example).
@@ -181,6 +194,43 @@ sipnab -N -I capture.pcap --json-dialogs --no-cli-print \
 
 - Each plugin gets its own sandbox.
 - A failure in one never stops the capture or the others.
+
+**What it printed.** On 2026-11-03, sipnab 0.5.232 read
+[`tests/pcap-samples/sip-proxy.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-proxy.pcap) with the example plugin. The call there
+ends 2.2 seconds after its answer, so the plugin reported it:
+
+```sh
+sipnab -N -I tests/pcap-samples/sip-proxy.pcap --json-dialogs --no-cli-print \
+  --plugin target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm \
+  | jq -c 'select(.plugin_findings != null) | {call_id, plugin_findings}'
+```
+
+```json
+{"call_id":"proxied-call-synth@192.0.2.101","plugin_findings":[{"evidence":[6,9],"id":"short-answered-call","plugin":"sipnab_plugin_example","summary":"Call answered and torn down after 2.2s (under 5s) — check routing, codec negotiation, or dial fraud."}]}
+```
+
+A call the plugin reports nothing for carries no `plugin_findings` key.
+
+### When it does not work
+
+A plugin that does not load does not stop the run. sipnab logs the reason,
+reads the capture without that plugin, and exits `1`. Every report the run
+prints says so, for example `--report`:
+
+```text
+INCOMPLETE RUN — this report does not describe the whole capture:
+  - 1 of 1 requested --plugin(s) did not load; findings they would have contributed are absent
+```
+
+| sipnab logs | Cause and fix |
+|---|---|
+| `plugin <path>: cannot read plugin: <path>: No such file or directory (os error 2)` | The path is wrong. `cargo build` writes the module under `target/wasm32-unknown-unknown/release/`. |
+| `plugin <path>: not a valid WASM module:`, then the parser's report | The file is not a WebAssembly module. Build with `--target wasm32-unknown-unknown`, and pass the `.wasm` file. |
+| `Error: unexpected argument '--plugin' found`, and exit `2` | The build left out the `plugins` feature, so the binary has no `--plugin` flag. `sipnab --version` lists the features. Every release package has `plugins`, through `full`. A source build needs `--features plugins` or `--features full`. |
+
+A plugin that loads and then fails on one dialog drops only its findings for
+that dialog, and the run goes on: see `plugin {} on {}: {e}` in
+[Error messages](@/docs/errors.md).
 
 ### Where the findings come out
 

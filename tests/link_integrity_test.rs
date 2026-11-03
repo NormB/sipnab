@@ -1573,7 +1573,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // Grafana, Place a call and the remote-scrape section; docs/homer-sipnab.md +2,
     // linking Start Homer and its own Tested on. Counted per page against
     // origin/main ffd06bfb1; every other page held its count.
-    const EXPECTED_WIKI_LINKS: usize = 2062;
+    // 2062 -> 2079 (event hooks, plugins and library how-to steps):
+    // docs/integrations.md +11, a new page in docs/ that was hand-written for
+    // the site alone; docs/plugins.md +2, docs/README.md +1, docs/examples.md
+    // +1, docs/fail2ban-sipnab.md +1 and docs/library.md +1. Counted per page
+    // against origin/main ffd06bfb1; every other page held its count.
+    const EXPECTED_WIKI_LINKS: usize = 2079;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2828,7 +2833,9 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // through docs/internals/README.md: code-map.md, encapsulation-decoding.md,
     // lint-rules.md, mcp.md, metrics-and-output-notes.md and
     // operator-guide-notes.md.
-    const EXPECTED_DOCS_PAGES: usize = 99;
+    // 99 -> 100: docs/integrations.md, reached through the How-to list in
+    // docs/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 100;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

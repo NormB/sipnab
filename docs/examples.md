@@ -1807,7 +1807,7 @@ It is never interpolated into the command string.
   - So each value reaches the hook as one argument.
 - Anything else, such as `%type%` or `%source_ip%`, reaches the shell verbatim.
 
-The hook is rate-limited (`--exec-rate-limit 10` default) and runs in a sandboxed process.
+The hook is rate-limited (`--exec-rate-limit 10` default). On a live capture started as root it runs as the user sipnab drops to, `nobody` unless `--user` names another, with `NoNewPrivs` set. Nothing else confines it. [Run commands and send alerts on sipnab's events](integrations.md#run-a-command-on-an-event) covers every hook and alert channel.
 
 **Pitfalls:**
 

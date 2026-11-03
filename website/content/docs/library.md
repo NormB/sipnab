@@ -197,6 +197,32 @@ Of the other three:
 cargo run --features native --example call_summary -- tests/pcap-samples/register-invite-reinvite-bye.pcap
 ```
 
+On 2026-11-03, from a checkout of sipnab 0.5.232, it printed:
+
+```text
+229 frames, 0 undecodable, 12 SIP messages, 2 dialogs
+
+REGISTER  Registered  [200]  alice -> alice  (2 messages)  1-1177095@127.0.0.1
+INVITE    Completed   [200]  alice -> bob  (10 messages)  1-1177106@127.0.0.1
+```
+
+When an example does not build or run:
+
+- An example run without the feature it needs says so and exits `2`, for
+  example `export_vcon` without `vcon`:
+
+  ```text
+  This example needs the `vcon` feature:
+    cargo run --features vcon --example export_vcon -- <capture.pcap>
+  ```
+
+  Add the feature it names.
+- Code that compiled against an earlier release no longer compiles: a public
+  item moved or changed. Pin the release with `=` as [Stability](#stability)
+  says, and read the changelog's `Library` entries for what moved.
+- The library finds more SIP than the binary on a capture that signals off
+  port 5060: that is the port policy described below, not a defect.
+
 One difference bites before any other:
 
 - The **binary** defaults to `--portrange 5060-5061`.

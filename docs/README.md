@@ -146,6 +146,9 @@ Each answers one "how do I" question and assumes you already know what you want.
   OpenSIPS's or Kamailio's statistics, stored and graphed. No sipnab involved.
 - **[Add sipnab's metrics to Prometheus](prometheus-sipnab.md)**: sipnab's call
   and media series beside the proxy's, with sipnab's dashboard.
+- **[Run commands and send alerts on sipnab's events](integrations.md)**: a
+  script of yours on each call or quality event, security alerts to syslog,
+  JSON or a command, and fail2ban.
 - **[Write a WASM plugin](plugins.md)**: add your own detection to sipnab's
   diagnosis without forking it.
 - **[Recolor the TUI](theme-guide.md)**: colors and preset palettes.

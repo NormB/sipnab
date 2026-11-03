@@ -93,6 +93,12 @@ const NESTED_OR_DERIVED: &[&str] = &[
     // tests/vcon_directory_report_test.rs runs the documented command shape
     // and reads the key from the real output.
     "sipnab_vcon_containers",
+    // Present only on a run that loads a `--plugin` that reports something:
+    // src/app/batch.rs adds the top-level `plugin_findings` array to a
+    // dialog's line then, and the harvester runs no plugin.
+    // tests/plugin_example_test.rs builds the example plugin and reads the
+    // key from the real output, as docs/plugins.md does.
+    "plugin_findings",
 ];
 
 /// Pull `sipnab ... --json* ... | jq '...'` pairs out of fenced blocks.

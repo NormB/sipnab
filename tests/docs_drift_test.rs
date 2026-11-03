@@ -4960,7 +4960,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 320 -> 321: website/brand/README.md, the logo's files and terms of use.
     // Attributed against the staged diff: `--diff-filter=A` lists it as the
     // one markdown file added.
-    const EXPECTED_MARKDOWN_FILES: usize = 321;
+    // 321 -> 322: docs/integrations.md, the event-hook and alert page that
+    // was hand-written for the site alone and is now its source. Attributed
+    // against the staged diff: `--diff-filter=A` lists it as the one
+    // markdown file added.
+    const EXPECTED_MARKDOWN_FILES: usize = 322;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5697,7 +5701,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // website/content/docs/prometheus-sipnab.md +1. Attributed per file
     // against origin/main ffd06bfb1: no other changed page gained or lost a
     // table.
-    const EXPECTED_TABLES: usize = 1305;
+    // 1305 -> 1311: docs/integrations.md +2, the event hooks and the alert
+    // channels, and its site mirror website/content/docs/integrations.md +2,
+    // which was a hand-written page with no table; docs/plugins.md +1, the
+    // plugin load failures, and its site mirror website/content/docs/plugins.md
+    // +1. Attributed per file against origin/main ffd06bfb1: no other changed
+    // page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1311;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
