@@ -155,7 +155,7 @@ task cards, which the generated-page mirror gate does not cover.
 **Evidence:** [`docs/README.md:20-29`](https://github.com/NormB/sipnab/blob/main/docs/README.md#L20-L29) promises tutorials that assume nothing and
 state what to expect. [`docs/tui-walkthrough.md:11-24`](https://github.com/NormB/sipnab/blob/main/docs/tui-walkthrough.md#L11-L24) instead begins with an
 unspecified `capture.pcap` or privileged live capture. The cookbook repeats the
-placeholder and approximate output ([`docs/examples.md:47-89`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L47-L89)). A redistributable
+placeholder and approximate output ([`docs/examples.md:47-91`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L47-L91)). A redistributable
 fixture already exists at [`website/static/demos/sample-call.pcap`](https://github.com/NormB/sipnab/raw/main/website/static/demos/sample-call.pcap).
 
 **Impact:** a first-time user cannot reproduce the tutorial without bringing
@@ -223,7 +223,7 @@ Every shell/config snippet is tested or labeled with its tested version/status.
 of the CLI matcher flags. [`docs/keybindings.md:1-24`](https://github.com/NormB/sipnab/blob/main/docs/keybindings.md#L1-L24) documents Sipnab's mappings rather
 than an upstream comparison, and CLI reference sections only label individual
 compatible flags (`docs/cli-reference.md:224-231,476`). The `-N` collision is
-notable ([`docs/cli-reference.md:576`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md#L576)).
+notable ([`docs/cli-reference.md:577`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md#L577)).
 
 **Impact:** migration expectations are ambiguous and semantic differences can
 cause incorrect automation or operator muscle memory.
@@ -239,8 +239,8 @@ claimed compatibility and pins collisions/differences in tests.
 
 **Priority / type / effort:** P2 / test-coverage improvement / M–L
 
-**Evidence:** [`docs/examples.md:47-180`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L47-L180) relies on arbitrary capture content and
-[`docs/examples.md:83-89`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L83-L89) gives hypothetical output. Existing drift tests validate
+**Evidence:** [`docs/examples.md:47-182`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L47-L182) relies on arbitrary capture content and
+[`docs/examples.md:85-91`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L85-L91) gives hypothetical output. Existing drift tests validate
 flags and generated mirrors, but not most command outcomes
 ([`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs); [`tests/dev_docs_drift_test.rs:1627-1671`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs#L1627-L1671)).
 

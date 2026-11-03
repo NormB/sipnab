@@ -48,6 +48,9 @@ PAGES: dict[str, str] = {
     "call-quality.md": "Measure-Call-Quality",
     "tuning-capture.md": "Tuning-Capture",
     "run-as-a-service.md": "Run-as-a-Service",
+    "least-privilege.md": "Capture-With-Least-Privilege",
+    "hep.md": "Collect-and-Forward-HEP",
+    "archives.md": "Read-Captures-From-Archives",
     "encapsulations.md": "Encapsulations",
     "rtpengine.md": "Rtpengine-Relays",
     "vcon.md": "vCon-Export",
@@ -150,7 +153,7 @@ PAGES: dict[str, str] = {
 GROUPS: list[tuple[str, list[str]]] = [
     ("Getting started", ["install.md", "first-cli-triage.md", "glossary.md", "examples.md", "client-examples.md", "real-world-captures.md", "troubleshooting.md", "call-quality.md",
                          "run-as-a-service.md",
-                         "tuning-capture.md", "encapsulations.md",
+                         "tuning-capture.md", "encapsulations.md", "least-privilege.md", "hep.md", "archives.md",
                          "rtpengine.md", "relay-statistics.md",
                          "backers.md"]),
     ("Using the TUI", ["tui-walkthrough.md", "keybindings.md", "theme-guide.md"]),

@@ -877,6 +877,19 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/rtpengine-control-plane.md",
         ],
     ),
+    // `--wait` and `--pipe` are systemd-run's. The archives page runs sipnab
+    // in a transient unit (`systemd-run --user --wait --pipe -p
+    // LoadCredential=archive-password:...`) to show the systemd credential
+    // source working, and those two flags keep the unit in the foreground and
+    // hand its output back. Scoped to that page and its generated mirror.
+    (
+        "wait",
+        &["docs/archives.md", "website/content/docs/archives.md"],
+    ),
+    (
+        "pipe",
+        &["docs/archives.md", "website/content/docs/archives.md"],
+    ),
     // `--now` is systemd's, on `systemctl enable --now`. The cookbook's
     // "Run sipnab as a service" recipe gives a unit file and then the two
     // commands that install it, and `enable` without `--now` leaves the
@@ -5086,7 +5099,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // `--diff-filter=A` lists those four markdown files.
     // 328 -> 330 (#638): docs/run-as-a-service.md, the systemd service page,
     // and its generated site mirror website/content/docs/run-as-a-service.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 330;
+    // 330 -> 336 (#640): the capture how-tos docs/hep.md, docs/archives.md and
+    // docs/least-privilege.md, and their site mirrors under
+    // website/content/docs/. Attributed against the staged diff:
+    // `--diff-filter=A` lists those six.
+    const EXPECTED_MARKDOWN_FILES: usize = 336;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5859,7 +5876,14 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // +2 and +2. No other changed page gained or lost a table.
     // 1361 -> 1362: docs/design/surface-capability-matrix.md +1, the "Read
     // the latest polled relay reading" row, which has no mirror.
-    const EXPECTED_TABLES: usize = 1362;
+    // 1362 -> 1374 (#640, the capture how-tos, one change): docs/hep.md +2 (the
+    // auth-mode table and the troubleshooting table), docs/least-privilege.md
+    // +2 (the step table and the troubleshooting table), docs/archives.md +1
+    // (the troubleshooting table) and docs/tls-capture.md +1 (the
+    // `--pcap-export-mode` table), and each one's site mirror the same.
+    // Attributed per file against origin/main 9124a6f08: no other changed page
+    // gained or lost a table.
+    const EXPECTED_TABLES: usize = 1374;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -6360,11 +6384,13 @@ fn how_to_headings_stay_task_first() -> Result<(), TestError> {
         "read",
         "record",
         "register",
+        "replay",
         "run",
         "save",
         "search",
         "send",
         "set",
+        "start",
         "stream",
         "test",
         "trace",

@@ -127,6 +127,9 @@ sees calls from the whole estate. The HEP listener is a plain UDP socket:
    `"[sipnab]uri=hep:capture01.example.net:9063;version=3;transport=udp"` with
    `Invalid key <version> in trace id!`: put the address in `hep_id` as above.
    [Add Homer to your voice stack](@/docs/homer.md) explains each line.
+   [Collect and forward HEP](@/docs/hep.md#have-your-sip-server-send-hep) shows the
+   OpenSIPS 4.0 form, which traces each call's whole dialog, and the page
+   gives the TCP and TLS forms.
 
    Kamailio (tested with 6.1.4) — `kamailio.cfg`:
 
@@ -236,7 +239,9 @@ sipnab can run there. Arrange two things:
 - **Port**: heplify-server owns udp/9060. So sipnab takes its own
   (udp/9063 above), and each proxy mirrors to **both** destinations.
   - OpenSIPS: add a second `trace_id` and a second `trace()` call.
-  - Kamailio: add a second duplicate destination.
+  - Kamailio's `siptrace` sends to one `duplicate_uri`, and a second one
+    replaces the first. [Connect sipnab to Homer](@/docs/homer-sipnab.md#sipnab-as-a-second-receiver)
+    gives the two ways to run sipnab beside Homer with Kamailio.
   - If a sender can't dup, put a small UDP fan-out (e.g. socat) in front.
 - **Budget**: cap sipnab's footprint with `[limits]` (see
   [Understand the load on a busy server](@/docs/mcp-deploy.md#understand-the-load-on-a-busy-server)).

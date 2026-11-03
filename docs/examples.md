@@ -48,6 +48,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 | Goal | Recipe |
 |---|---|
+| Start a live capture and check it sees SIP | [68. Start a live capture](#start-a-live-capture) |
 | Watch one user's traffic live | [2. Live capture, narrow to a single user](#live-capture-narrow-to-a-single-user) |
 | Capture without running as root | [48. Run a live capture without giving sipnab root](#run-a-live-capture-without-giving-sipnab-root) |
 | Keep a capture running across reboots | [28. Run sipnab as a service](#run-sipnab-as-a-service) |
@@ -55,6 +56,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 | Stop a week-long capture from eating the box | [43. Keep a long-running capture inside a memory budget](#keep-a-long-running-capture-inside-a-memory-budget) |
 | Read a very large capture faster | [19. Read a very large capture faster](#read-a-very-large-capture-faster) |
 | Read a call that spans several capture files | [39. Collect a directory of rotated captures into one analysis](#collect-a-directory-of-rotated-captures-into-one-analysis) |
+| Watch an old capture unfold at its own pace | [69. Replay a capture at its original pace](#replay-a-capture-at-its-original-pace) |
 | Read SIP split across TCP segments | [35. Read SIP that arrives in TCP segments or IP fragments](#read-sip-that-arrives-in-tcp-segments-or-ip-fragments) |
 | See the WebRTC leg of a call | [36. Read SIP over WebSocket from a WebRTC gateway](#read-sip-over-websocket-from-a-webrtc-gateway) |
 | Capture SIP inside a mobile or fabric tunnel | [37. Read SIP carried inside a GTP-U or VXLAN tunnel](#read-sip-carried-inside-a-gtp-u-or-vxlan-tunnel) |
@@ -240,6 +242,52 @@ It also tells a capture with nothing to judge apart from a clean one.
 
 ---
 
+## Start a live capture
+
+**Problem:** You want sipnab watching the SIP on this machine now, and to know
+it is seeing it.
+
+Live capture needs capture rights. Grant them to the binary once, then run it
+as yourself ([Capture live traffic without
+root](install.md#capture-live-traffic-without-root) has the alternatives):
+
+```bash
+sipnab --setup-caps
+```
+
+On Linux, with no `-d`, sipnab captures on every interface at once, loopback
+included. Name one when you know where the SIP is:
+
+```bash
+sipnab -N -d eth0 --duration 30 --report
+```
+
+A name sipnab cannot open stops the run with exit `1`, and the next line lists
+every interface it can open, after `Available devices:`:
+
+```text
+Capture source failed to open: Failed to activate capture on 'eth9': libpcap error: No such device exists
+```
+
+**What to look for:**
+
+- The start of the run names the interface and the filter it installed:
+  `Capturing on 'hepx' (link_type=1, snaplen=65535)` on a lab bridge, and
+  `Auto-generated BPF filter:` followed by the expression.
+- The end of the run counts what it saw and what it dropped. One call through
+  that bridge ended with `Live capture on 'hepx' finished: 13 packets, no drops`.
+- `No SIP traffic found` on a link you know carries calls is
+  [A live capture that sees nothing](troubleshooting.md#a-live-capture-that-sees-nothing).
+
+**Pitfalls:**
+
+- The kernel filters out SIP on a port other than 5060-5061. Widen
+  `--portrange` ([Read a capture whose SIP is not on port 5060](#read-a-capture-whose-sip-is-not-on-port-5060)).
+- A busy server can drop packets. [Tune capture on a busy
+  server](tuning-capture.md) starts with how to tell.
+
+---
+
 ## Live capture, narrow to a single user
 
 **Problem:** A user reports their calls are flaky. Capture only their traffic in real time.
@@ -265,7 +313,7 @@ sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --jso
 
 **Pitfalls:**
 
-- Live capture needs `CAP_NET_RAW` (Linux) or root. `setcap cap_net_raw,cap_net_admin=eip $(which sipnab)` lets you skip `sudo` after the first run.
+- Live capture needs `CAP_NET_RAW` (Linux) or root. `sipnab --setup-caps` grants the binary `cap_net_raw,cap_net_admin+ep` once, and you skip `sudo` after that ([Start a live capture](#start-a-live-capture)).
 - The filter DSL evaluates against complete dialog records.
   - It evaluates once the dialog state machine has enough information.
   - That is typically after the first response.
@@ -495,22 +543,29 @@ Put sipnab on the collector host first. [The install guide](install.md) covers e
 
 ### Configure the SIP server to mirror
 
-**OpenSIPS:**
+**OpenSIPS 3.6 and 4.0** (the same lines ran on 3.6.9 and 4.0.2):
 
 ```cfg
-loadmodule "proto_hep.so"
-modparam("proto_hep", "hep_id", "[hep_central]udp:capture.example.com:9060;version=3")
+socket=hep_udp:192.0.2.10:6061
 
-loadmodule "siptrace.so"
-modparam("siptrace", "trace_id", "[hep_central]uri=hep:hep_central")
+loadmodule "dialog.so"
+loadmodule "proto_hep.so"
+modparam("proto_hep", "hep_id", "[hep_central] capture.example.com:9060; transport=udp; version=3")
+modparam("proto_hep", "hep_capture_id", 101)
+loadmodule "tracer.so"
+modparam("tracer", "trace_id", "[tid]uri=hep:hep_central")
 
 route {
-    sip_trace("hep_central", "d", "sip");
-    # The rest of your routing logic follows here.
+    # The rest of your routing logic, then for each new call:
+    create_dialog();
+    trace("tid", "d");
 }
 ```
 
-Reload with `opensipsctl restart` (or `systemctl reload opensips` for graceful reload).
+Restart with `sudo systemctl restart opensips`. The `hep_udp` socket is what
+OpenSIPS sends HEP from: without one it refuses to start. [Collect and forward
+HEP](hep.md#have-your-sip-server-send-hep) shows these lines running, and TCP
+and TLS.
 
 **rtpengine:**
 
@@ -537,20 +592,25 @@ loadmodule "siptrace.so"
 modparam("siptrace", "duplicate_uri", "sip:capture.example.com:9060")
 modparam("siptrace", "hep_mode_on", 1)
 modparam("siptrace", "hep_version", 3)
-
-route {
-    sip_trace();
-    # The rest of your routing logic follows here.
-}
+modparam("siptrace", "hep_capture_id", 102)
+modparam("siptrace", "trace_to_database", 0)
+modparam("siptrace", "trace_on", 1)
+modparam("siptrace", "trace_mode", 1)
 ```
+
+`trace_mode` 1 traces every message, so no route needs a `sip_trace()` call.
 
 **FreeSWITCH (mod_sofia):**
 
 ```xml
-<!-- conf/sip_profiles/external.xml -->
-<param name="capture-server" value="udp:capture.example.com:9060;hep=3"/>
+<!-- conf/autoload_configs/sofia.conf.xml, in <global_settings> -->
+<param name="capture-server" value="udp:capture.example.com:9060;hep=3;capture_id=100"/>
+<!-- conf/sip_profiles/internal.xml and external.xml -->
 <param name="sip-capture" value="yes"/>
 ```
+
+[Run sipnab beside FreeSWITCH](freeswitch-sipnab.md#receive-freeswitchs-own-copy-of-its-sip-hep)
+gives the commands that make both edits.
 
 ### Verify packets are arriving
 
@@ -634,7 +694,7 @@ Then the tracer mirrors the message it *sent* as well as the one it received:
 
 ```cfg
 route {
-    $var(tid) = "hep_central";
+    $var(tid) = "tid";
     trace($var(tid), "t", "sip");   # "t", not "m"
 }
 ```
@@ -645,11 +705,15 @@ At `"m"` (message) scope the tracer mirrors only the received copy.
   - The address OpenSIPS received is not the address the media flows to.
   - So streams come out orphaned: bound to no dialog.
 - At `"t"`, each advertised media endpoint is the socket the RTP actually uses.
+- `"t"` traces the one transaction it runs in. Called from the INVITE route,
+  it mirrored 7 of a call's 13 messages: the INVITE transaction, and not the
+  ACK or BYE. `"d"`, after `create_dialog()` as in the block above, mirrored
+  all 13. Both ran the same on OpenSIPS 3.6.9 and 4.0.2.
 
-Note also that `proto_hep` refuses to start without a HEP *listener* socket.
+Note also that `proto_hep` refuses to start without a HEP socket.
 It refuses even when the config only sends.
 Add `socket=hep_udp:127.0.0.1:9061` alongside your `hep_id`.
-Otherwise OpenSIPS exits with `No HEP listener defined!`.
+Otherwise OpenSIPS 4.0 exits with `No binding found for protocol proto_hep`.
 
 **Where this helps, and where it cannot.**
 
@@ -662,8 +726,9 @@ Otherwise OpenSIPS exits with `No HEP listener defined!`.
 
 **Pitfalls:**
 
-- HEP is UDP. It silently drops if the listener can't keep up.
-  - The `--hep-rate-limit 50000` default lets you tune.
+- Over UDP, HEP drops silently when the listener cannot keep up, and a sender cannot tell.
+  - `--hep-rate-limit` (default 50000 packets a second) bounds what the listener takes.
+  - [Carry HEP over TCP or TLS](hep.md#carry-hep-over-tcp-or-tls) when a feed must not lose packets.
 - A routable HEP listener needs a guard.
   - sipnab refuses a non-loopback `--hep-listen` bind unless you pass one of these:
     - `--hep-allow 192.0.2.0/24` (repeatable),
@@ -702,7 +767,7 @@ The listener keeps a roster that answers all three.
 At the end of a bounded headless run:
 
 ```bash
-sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --duration 600 --hep-senders
+sipnab -N -L 0.0.0.0:9060 --hep-auth-file /etc/sipnab/hep.key --duration 600 --hep-senders
 ```
 
 While a server runs, from the REST API or the MCP `hep_senders` tool:
@@ -2726,7 +2791,7 @@ It refuses a private key that any other user on the host can read:
   sipnab -N \
     --hep-listen 0.0.0.0:9063 --hep-listen-transport tls \
     --hep-tls-cert /etc/sipnab/collector.pem --hep-tls-key /etc/sipnab/collector.key \
-    --hep-parse --hep-auth-file /etc/sipnab/hep.key
+    --hep-auth-file /etc/sipnab/hep.key
   ```
 
 **Pitfalls:**
@@ -2753,9 +2818,10 @@ It refuses a private key that any other user on the host can read:
   - A flag for either replaces both keys.
 - A `tcp` or `tls` sender connects at startup.
   - If the collector refuses that first connection, the run stops with exit 2 and `Failed to create HEP sender`. Start the collector first.
-- A `tcp` or `tls` sender rebuilds its connection when the collector restarts.
-  - It makes one attempt per packet.
-  - sipnab can lose the packet that discovers the break. It sends the packets after it on the new connection.
+- A `tcp` or `tls` sender rides out a collector restart.
+  - Packets queue while the collector is away, up to `--hep-send-queue` MiB (default 64), and replay in capture order when it answers.
+  - The sender redials with backoff. Each dial gives up after `--hep-send-timeout` seconds (default 3).
+  - [When the collector goes away](hep.md#when-the-collector-goes-away) shows a restart and the counts it left.
 
 **Runnable example:** [See who feeds a HEP collector](client-examples.md#see-who-feeds-a-hep-collector) lists each agent feeding a collector, and what the listener refused.
 
@@ -3416,6 +3482,9 @@ sipnab -N -I '/var/captures/*.pcap' --recursive --report --no-cli-print
 
 - One store serves the whole set.
   - So a dialog whose INVITE is in one file and whose BYE is in another comes out as one call.
+- Gzip-compressed files (`ring-3.pcap.gz`) join the set as they are, and so does every capture in a `.tgz` or a password-protected ZIP ([Archives read like directories](cli-reference.md#archives-read-like-directories)).
+  - sipnab stops inflating one input at `--max-gunzip-bytes` (1 GiB). Raise it for captures you compressed yourself.
+  - It reads a pcapng's embedded names and TLS secrets into memory only up to `--max-metadata-file-bytes` (2 GiB), and refuses a larger file. A `dumpcap -b` ring member can pass that. Raise it for captures you made.
 - `sipnab -N -I /var/captures --input-name 'tg.pcap[0-4]'` narrows a **directory** to the files worth reading.
   - sipnab matches the pattern against the filename alone.
   - So it behaves the same at every depth under `--recursive`.
@@ -3640,12 +3709,38 @@ Or keep capturing forever inside a fixed budget. Rotate, and delete the oldest c
 sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50 --split-keep 8
 ```
 
+`--split duration:N` rotates every N seconds instead. A 16-second run that
+rotated every 5 seconds and kept 2 files:
+
+```bash
+sipnab -N -d hepx -O rot/sip.pcapng --pcapng --split duration:5 --split-keep 2 --duration 16 --no-cli-print
+```
+
+```text
+INFO sipnab::capture::writer: Writing packets to 'rot/sip.pcapng' (pcapng, mode=raw)
+INFO sipnab::capture::writer: Rotating output to 'rot/sip_00001.pcapng' (seq=1, wrote 16624 bytes in 5.007842473s)
+INFO sipnab::capture::writer: Rotating output to 'rot/sip_00002.pcapng' (seq=2, wrote 16424 bytes in 5.003898045s)
+INFO sipnab::capture::writer: Deleted 'rot/sip.pcapng' to keep the last 2 split file(s) (--split-keep): 1 deleted so far this run
+INFO sipnab::app::batch: sipnab: 1 older split file(s) deleted by --split-keep (each one written by this run)
+```
+
+The first file takes the name you gave, and each rotation adds a five-digit
+number before the extension: `sip_00001.pcapng`, `sip_00002.pcapng`. A
+rotation happens when the next packet arrives after the bound, so a quiet link
+rotates late. [Collect a directory of rotated captures into one
+analysis](#collect-a-directory-of-rotated-captures-into-one-analysis) reads the
+set back as one capture.
+
 **What to look for:**
 
 - `filesize` counts **MiB**, the same unit `--split filesize` and `-B` use.
   - So `filesize:2048` stops at what a file browser calls 2 GiB.
 - `-n`/`--count` counts every packet received from the capture source.
   - On a HEP listener, that includes packets later dropped by the allowlist, the rate limiter or authentication.
+  - It works on a file too. `-n 100` on the sample capture ends with `Read 100 packets: 0 of 1 file(s) read in full, 1 stopped early`.
+- sipnab refuses a condition it cannot meet before it captures anything, with exit `2`:
+  - `--count 0`: `error: invalid value '0' for '--count <N>': 0 is not in 1..18446744073709551615`.
+  - `--autostop size:10`: `Invalid --autostop: Unknown autostop condition: 'size'. Expected 'duration' or 'filesize'`.
 
 **Pitfalls:**
 
@@ -3655,6 +3750,35 @@ sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50 -
   - But leave it off whenever the capture is evidence you cannot retake.
 - A run killed mid-capture leaves behind whatever it had not yet deleted.
   - The next run does not adopt it.
+
+---
+
+## Replay a capture at its original pace
+
+**Problem:** You want to watch an old capture unfold as it happened: a TUI
+session for a colleague, or a script that reacts to calls as they arrive.
+
+`--replay` reads a capture file and waits out the gaps between its packets:
+
+```bash
+sipnab -N -I sample-call.pcap --replay
+```
+
+```text
+INFO sipnab::capture::file: Replaying from 'sample-call.pcap' with original timing
+22:13:20.000 192.0.2.10:5060 -> 192.0.2.20:5060 REGISTER UDP
+22:13:20.004 192.0.2.20:5060 -> 192.0.2.10:5060 401 Unauthorized UDP
+22:13:20.011 192.0.2.10:5060 -> 192.0.2.20:5060 REGISTER UDP
+22:13:20.017 192.0.2.20:5060 -> 192.0.2.10:5060 200 OK UDP
+```
+
+The sample capture spans 16.03 seconds, and the replay took 16.2 seconds.
+Without `--replay`, the same run took 0.05 seconds.
+
+**Pitfalls:**
+
+- `--replay` reads a file. It sends nothing onto the network.
+- `--cores` refuses it, because the parallel reader does not keep time.
 
 ---
 
@@ -3787,9 +3911,15 @@ Where a run must start as root, for example from a script that already runs unde
 sudo sipnab -N -d eth0 --user sipnab
 ```
 
+To also confine the run to a directory, the directory must hold an `etc/passwd` naming the user, because sipnab looks the user up after it changes root ([Confine it to a directory](least-privilege.md#confine-it-to-a-directory) builds one):
+
+```bash
+sudo sipnab -N -d eth0 --user nobody --chroot /var/lib/sipnab/jail
+```
+
 **What to look for:**
 
-- `--setup-caps` sets `cap_net_raw,cap_net_admin+ep` via `setcap`, and exits.
+- `--setup-caps` sets `cap_net_raw,cap_net_admin+ep` via `setcap`, prints nothing, and exits.
   - It re-invokes itself through `sudo` when it is not already root.
   - `getcap "$(command -v sipnab)"` then prints `cap_net_admin,cap_net_raw=ep`.
 - The capability run logs `Capturing on 'eth0'` and nothing about privileges: it never had root to drop.
@@ -3817,6 +3947,7 @@ sudo sipnab -N -d eth0 --user sipnab
 - sipnab opens its capture device, keylog file or FIFO and config **before** the drop.
   - A keylog path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#decrypt-without-writing-the-keys-to-disk)).
   - It creates `-O` and `--split` files **after** the drop, as the drop user. See [An output file sipnab cannot create](troubleshooting.md#an-output-file-sipnab-cannot-create).
+- `--sandbox` and `--seccomp` narrow the files and system calls the process can reach after startup ([Capture with the least privilege](least-privilege.md)).
 - `--no-priv-drop` keeps the privileges for the rest of the run.
   - It is not the way to fix a permissions error.
   - Forging kill responses does not need it.

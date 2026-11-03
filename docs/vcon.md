@@ -1856,7 +1856,9 @@ stop, such as what leaves the host over the network.
   serves the API.
 
 **Steps.** This run takes its calls from a HEP listener, so it keeps
-running while calls come and go:
+running while calls come and go. [Collect and forward
+HEP](hep.md#have-your-sip-server-send-hep) has the lines a SIP server needs to
+send it:
 
 ```sh
 # Run all of these, in order.

@@ -1330,6 +1330,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 | Goal | Recipe |
 |---|---|
+| Start a live capture and check it sees SIP | [68. Start a live capture](#start-a-live-capture) |
 | Watch one user's traffic live | [2. Live capture, narrow to a single user](#live-capture-narrow-to-a-single-user) |
 | Capture without running as root | [48. Run a live capture without giving sipnab root](#run-a-live-capture-without-giving-sipnab-root) |
 | Keep a capture running across reboots | [28. Run sipnab as a service](#run-sipnab-as-a-service) |
@@ -1337,6 +1338,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 | Stop a week-long capture from eating the box | [43. Keep a long-running capture inside a memory budget](#keep-a-long-running-capture-inside-a-memory-budget) |
 | Read a very large capture faster | [19. Read a very large capture faster](#read-a-very-large-capture-faster) |
 | Read a call that spans several capture files | [39. Collect a directory of rotated captures into one analysis](#collect-a-directory-of-rotated-captures-into-one-analysis) |
+| Watch an old capture unfold at its own pace | [69. Replay a capture at its original pace](#replay-a-capture-at-its-original-pace) |
 | Read SIP split across TCP segments | [35. Read SIP that arrives in TCP segments or IP fragments](#read-sip-that-arrives-in-tcp-segments-or-ip-fragments) |
 | See the WebRTC leg of a call | [36. Read SIP over WebSocket from a WebRTC gateway](#read-sip-over-websocket-from-a-webrtc-gateway) |
 | Capture SIP inside a mobile or fabric tunnel | [37. Read SIP carried inside a GTP-U or VXLAN tunnel](#read-sip-carried-inside-a-gtp-u-or-vxlan-tunnel) |
@@ -1522,6 +1524,52 @@ It also tells a capture with nothing to judge apart from a clean one.
 
 ---
 
+## Start a live capture
+
+**Problem:** You want sipnab watching the SIP on this machine now, and to know
+it is seeing it.
+
+Live capture needs capture rights. Grant them to the binary once, then run it
+as yourself ([Capture live traffic without
+root](install.md#capture-live-traffic-without-root) has the alternatives):
+
+```bash
+sipnab --setup-caps
+```
+
+On Linux, with no `-d`, sipnab captures on every interface at once, loopback
+included. Name one when you know where the SIP is:
+
+```bash
+sipnab -N -d eth0 --duration 30 --report
+```
+
+A name sipnab cannot open stops the run with exit `1`, and the next line lists
+every interface it can open, after `Available devices:`:
+
+```text
+Capture source failed to open: Failed to activate capture on 'eth9': libpcap error: No such device exists
+```
+
+**What to look for:**
+
+- The start of the run names the interface and the filter it installed:
+  `Capturing on 'hepx' (link_type=1, snaplen=65535)` on a lab bridge, and
+  `Auto-generated BPF filter:` followed by the expression.
+- The end of the run counts what it saw and what it dropped. One call through
+  that bridge ended with `Live capture on 'hepx' finished: 13 packets, no drops`.
+- `No SIP traffic found` on a link you know carries calls is
+  [A live capture that sees nothing](troubleshooting.md#a-live-capture-that-sees-nothing).
+
+**Pitfalls:**
+
+- The kernel filters out SIP on a port other than 5060-5061. Widen
+  `--portrange` ([Read a capture whose SIP is not on port 5060](#read-a-capture-whose-sip-is-not-on-port-5060)).
+- A busy server can drop packets. [Tune capture on a busy
+  server](tuning-capture.md) starts with how to tell.
+
+---
+
 ## Live capture, narrow to a single user
 
 **Problem:** A user reports their calls are flaky. Capture only their traffic in real time.
@@ -1547,7 +1595,7 @@ sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --jso
 
 **Pitfalls:**
 
-- Live capture needs `CAP_NET_RAW` (Linux) or root. `setcap cap_net_raw,cap_net_admin=eip $(which sipnab)` lets you skip `sudo` after the first run.
+- Live capture needs `CAP_NET_RAW` (Linux) or root. `sipnab --setup-caps` grants the binary `cap_net_raw,cap_net_admin+ep` once, and you skip `sudo` after that ([Start a live capture](#start-a-live-capture)).
 - The filter DSL evaluates against complete dialog records.
   - It evaluates once the dialog state machine has enough information.
   - That is typically after the first response.
@@ -1777,22 +1825,29 @@ Put sipnab on the collector host first. [The install guide](install.md) covers e
 
 ### Configure the SIP server to mirror
 
-**OpenSIPS:**
+**OpenSIPS 3.6 and 4.0** (the same lines ran on 3.6.9 and 4.0.2):
 
 ```cfg
-loadmodule "proto_hep.so"
-modparam("proto_hep", "hep_id", "[hep_central]udp:capture.example.com:9060;version=3")
+socket=hep_udp:192.0.2.10:6061
 
-loadmodule "siptrace.so"
-modparam("siptrace", "trace_id", "[hep_central]uri=hep:hep_central")
+loadmodule "dialog.so"
+loadmodule "proto_hep.so"
+modparam("proto_hep", "hep_id", "[hep_central] capture.example.com:9060; transport=udp; version=3")
+modparam("proto_hep", "hep_capture_id", 101)
+loadmodule "tracer.so"
+modparam("tracer", "trace_id", "[tid]uri=hep:hep_central")
 
 route {
-    sip_trace("hep_central", "d", "sip");
-    # The rest of your routing logic follows here.
+    # The rest of your routing logic, then for each new call:
+    create_dialog();
+    trace("tid", "d");
 }
 ```
 
-Reload with `opensipsctl restart` (or `systemctl reload opensips` for graceful reload).
+Restart with `sudo systemctl restart opensips`. The `hep_udp` socket is what
+OpenSIPS sends HEP from: without one it refuses to start. [Collect and forward
+HEP](hep.md#have-your-sip-server-send-hep) shows these lines running, and TCP
+and TLS.
 
 **rtpengine:**
 
@@ -1819,20 +1874,25 @@ loadmodule "siptrace.so"
 modparam("siptrace", "duplicate_uri", "sip:capture.example.com:9060")
 modparam("siptrace", "hep_mode_on", 1)
 modparam("siptrace", "hep_version", 3)
-
-route {
-    sip_trace();
-    # The rest of your routing logic follows here.
-}
+modparam("siptrace", "hep_capture_id", 102)
+modparam("siptrace", "trace_to_database", 0)
+modparam("siptrace", "trace_on", 1)
+modparam("siptrace", "trace_mode", 1)
 ```
+
+`trace_mode` 1 traces every message, so no route needs a `sip_trace()` call.
 
 **FreeSWITCH (mod_sofia):**
 
 ```xml
-<!-- conf/sip_profiles/external.xml -->
-<param name="capture-server" value="udp:capture.example.com:9060;hep=3"/>
+<!-- conf/autoload_configs/sofia.conf.xml, in <global_settings> -->
+<param name="capture-server" value="udp:capture.example.com:9060;hep=3;capture_id=100"/>
+<!-- conf/sip_profiles/internal.xml and external.xml -->
 <param name="sip-capture" value="yes"/>
 ```
+
+[Run sipnab beside FreeSWITCH](freeswitch-sipnab.md#receive-freeswitchs-own-copy-of-its-sip-hep)
+gives the commands that make both edits.
 
 ### Verify packets are arriving
 
@@ -1916,7 +1976,7 @@ Then the tracer mirrors the message it *sent* as well as the one it received:
 
 ```cfg
 route {
-    $var(tid) = "hep_central";
+    $var(tid) = "tid";
     trace($var(tid), "t", "sip");   # "t", not "m"
 }
 ```
@@ -1927,11 +1987,15 @@ At `"m"` (message) scope the tracer mirrors only the received copy.
   - The address OpenSIPS received is not the address the media flows to.
   - So streams come out orphaned: bound to no dialog.
 - At `"t"`, each advertised media endpoint is the socket the RTP actually uses.
+- `"t"` traces the one transaction it runs in. Called from the INVITE route,
+  it mirrored 7 of a call's 13 messages: the INVITE transaction, and not the
+  ACK or BYE. `"d"`, after `create_dialog()` as in the block above, mirrored
+  all 13. Both ran the same on OpenSIPS 3.6.9 and 4.0.2.
 
-Note also that `proto_hep` refuses to start without a HEP *listener* socket.
+Note also that `proto_hep` refuses to start without a HEP socket.
 It refuses even when the config only sends.
 Add `socket=hep_udp:127.0.0.1:9061` alongside your `hep_id`.
-Otherwise OpenSIPS exits with `No HEP listener defined!`.
+Otherwise OpenSIPS 4.0 exits with `No binding found for protocol proto_hep`.
 
 **Where this helps, and where it cannot.**
 
@@ -1944,8 +2008,9 @@ Otherwise OpenSIPS exits with `No HEP listener defined!`.
 
 **Pitfalls:**
 
-- HEP is UDP. It silently drops if the listener can't keep up.
-  - The `--hep-rate-limit 50000` default lets you tune.
+- Over UDP, HEP drops silently when the listener cannot keep up, and a sender cannot tell.
+  - `--hep-rate-limit` (default 50000 packets a second) bounds what the listener takes.
+  - [Carry HEP over TCP or TLS](hep.md#carry-hep-over-tcp-or-tls) when a feed must not lose packets.
 - A routable HEP listener needs a guard.
   - sipnab refuses a non-loopback `--hep-listen` bind unless you pass one of these:
     - `--hep-allow 192.0.2.0/24` (repeatable),
@@ -1984,7 +2049,7 @@ The listener keeps a roster that answers all three.
 At the end of a bounded headless run:
 
 ```bash
-sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --duration 600 --hep-senders
+sipnab -N -L 0.0.0.0:9060 --hep-auth-file /etc/sipnab/hep.key --duration 600 --hep-senders
 ```
 
 While a server runs, from the REST API or the MCP `hep_senders` tool:
@@ -4008,7 +4073,7 @@ It refuses a private key that any other user on the host can read:
   sipnab -N \
     --hep-listen 0.0.0.0:9063 --hep-listen-transport tls \
     --hep-tls-cert /etc/sipnab/collector.pem --hep-tls-key /etc/sipnab/collector.key \
-    --hep-parse --hep-auth-file /etc/sipnab/hep.key
+    --hep-auth-file /etc/sipnab/hep.key
   ```
 
 **Pitfalls:**
@@ -4035,9 +4100,10 @@ It refuses a private key that any other user on the host can read:
   - A flag for either replaces both keys.
 - A `tcp` or `tls` sender connects at startup.
   - If the collector refuses that first connection, the run stops with exit 2 and `Failed to create HEP sender`. Start the collector first.
-- A `tcp` or `tls` sender rebuilds its connection when the collector restarts.
-  - It makes one attempt per packet.
-  - sipnab can lose the packet that discovers the break. It sends the packets after it on the new connection.
+- A `tcp` or `tls` sender rides out a collector restart.
+  - Packets queue while the collector is away, up to `--hep-send-queue` MiB (default 64), and replay in capture order when it answers.
+  - The sender redials with backoff. Each dial gives up after `--hep-send-timeout` seconds (default 3).
+  - [When the collector goes away](hep.md#when-the-collector-goes-away) shows a restart and the counts it left.
 
 **Runnable example:** [See who feeds a HEP collector](client-examples.md#see-who-feeds-a-hep-collector) lists each agent feeding a collector, and what the listener refused.
 
@@ -4698,6 +4764,9 @@ sipnab -N -I '/var/captures/*.pcap' --recursive --report --no-cli-print
 
 - One store serves the whole set.
   - So a dialog whose INVITE is in one file and whose BYE is in another comes out as one call.
+- Gzip-compressed files (`ring-3.pcap.gz`) join the set as they are, and so does every capture in a `.tgz` or a password-protected ZIP ([Archives read like directories](cli-reference.md#archives-read-like-directories)).
+  - sipnab stops inflating one input at `--max-gunzip-bytes` (1 GiB). Raise it for captures you compressed yourself.
+  - It reads a pcapng's embedded names and TLS secrets into memory only up to `--max-metadata-file-bytes` (2 GiB), and refuses a larger file. A `dumpcap -b` ring member can pass that. Raise it for captures you made.
 - `sipnab -N -I /var/captures --input-name 'tg.pcap[0-4]'` narrows a **directory** to the files worth reading.
   - sipnab matches the pattern against the filename alone.
   - So it behaves the same at every depth under `--recursive`.
@@ -4922,12 +4991,38 @@ Or keep capturing forever inside a fixed budget. Rotate, and delete the oldest c
 sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50 --split-keep 8
 ```
 
+`--split duration:N` rotates every N seconds instead. A 16-second run that
+rotated every 5 seconds and kept 2 files:
+
+```bash
+sipnab -N -d hepx -O rot/sip.pcapng --pcapng --split duration:5 --split-keep 2 --duration 16 --no-cli-print
+```
+
+```text
+INFO sipnab::capture::writer: Writing packets to 'rot/sip.pcapng' (pcapng, mode=raw)
+INFO sipnab::capture::writer: Rotating output to 'rot/sip_00001.pcapng' (seq=1, wrote 16624 bytes in 5.007842473s)
+INFO sipnab::capture::writer: Rotating output to 'rot/sip_00002.pcapng' (seq=2, wrote 16424 bytes in 5.003898045s)
+INFO sipnab::capture::writer: Deleted 'rot/sip.pcapng' to keep the last 2 split file(s) (--split-keep): 1 deleted so far this run
+INFO sipnab::app::batch: sipnab: 1 older split file(s) deleted by --split-keep (each one written by this run)
+```
+
+The first file takes the name you gave, and each rotation adds a five-digit
+number before the extension: `sip_00001.pcapng`, `sip_00002.pcapng`. A
+rotation happens when the next packet arrives after the bound, so a quiet link
+rotates late. [Collect a directory of rotated captures into one
+analysis](#collect-a-directory-of-rotated-captures-into-one-analysis) reads the
+set back as one capture.
+
 **What to look for:**
 
 - `filesize` counts **MiB**, the same unit `--split filesize` and `-B` use.
   - So `filesize:2048` stops at what a file browser calls 2 GiB.
 - `-n`/`--count` counts every packet received from the capture source.
   - On a HEP listener, that includes packets later dropped by the allowlist, the rate limiter or authentication.
+  - It works on a file too. `-n 100` on the sample capture ends with `Read 100 packets: 0 of 1 file(s) read in full, 1 stopped early`.
+- sipnab refuses a condition it cannot meet before it captures anything, with exit `2`:
+  - `--count 0`: `error: invalid value '0' for '--count <N>': 0 is not in 1..18446744073709551615`.
+  - `--autostop size:10`: `Invalid --autostop: Unknown autostop condition: 'size'. Expected 'duration' or 'filesize'`.
 
 **Pitfalls:**
 
@@ -4937,6 +5032,35 @@ sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50 -
   - But leave it off whenever the capture is evidence you cannot retake.
 - A run killed mid-capture leaves behind whatever it had not yet deleted.
   - The next run does not adopt it.
+
+---
+
+## Replay a capture at its original pace
+
+**Problem:** You want to watch an old capture unfold as it happened: a TUI
+session for a colleague, or a script that reacts to calls as they arrive.
+
+`--replay` reads a capture file and waits out the gaps between its packets:
+
+```bash
+sipnab -N -I sample-call.pcap --replay
+```
+
+```text
+INFO sipnab::capture::file: Replaying from 'sample-call.pcap' with original timing
+22:13:20.000 192.0.2.10:5060 -> 192.0.2.20:5060 REGISTER UDP
+22:13:20.004 192.0.2.20:5060 -> 192.0.2.10:5060 401 Unauthorized UDP
+22:13:20.011 192.0.2.10:5060 -> 192.0.2.20:5060 REGISTER UDP
+22:13:20.017 192.0.2.20:5060 -> 192.0.2.10:5060 200 OK UDP
+```
+
+The sample capture spans 16.03 seconds, and the replay took 16.2 seconds.
+Without `--replay`, the same run took 0.05 seconds.
+
+**Pitfalls:**
+
+- `--replay` reads a file. It sends nothing onto the network.
+- `--cores` refuses it, because the parallel reader does not keep time.
 
 ---
 
@@ -5069,9 +5193,15 @@ Where a run must start as root, for example from a script that already runs unde
 sudo sipnab -N -d eth0 --user sipnab
 ```
 
+To also confine the run to a directory, the directory must hold an `etc/passwd` naming the user, because sipnab looks the user up after it changes root ([Confine it to a directory](least-privilege.md#confine-it-to-a-directory) builds one):
+
+```bash
+sudo sipnab -N -d eth0 --user nobody --chroot /var/lib/sipnab/jail
+```
+
 **What to look for:**
 
-- `--setup-caps` sets `cap_net_raw,cap_net_admin+ep` via `setcap`, and exits.
+- `--setup-caps` sets `cap_net_raw,cap_net_admin+ep` via `setcap`, prints nothing, and exits.
   - It re-invokes itself through `sudo` when it is not already root.
   - `getcap "$(command -v sipnab)"` then prints `cap_net_admin,cap_net_raw=ep`.
 - The capability run logs `Capturing on 'eth0'` and nothing about privileges: it never had root to drop.
@@ -5099,6 +5229,7 @@ sudo sipnab -N -d eth0 --user sipnab
 - sipnab opens its capture device, keylog file or FIFO and config **before** the drop.
   - A keylog path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#decrypt-without-writing-the-keys-to-disk)).
   - It creates `-O` and `--split` files **after** the drop, as the drop user. See [An output file sipnab cannot create](troubleshooting.md#an-output-file-sipnab-cannot-create).
+- `--sandbox` and `--seccomp` narrow the files and system calls the process can reach after startup ([Capture with the least privilege](least-privilege.md)).
 - `--no-priv-drop` keeps the privileges for the rest of the run.
   - It is not the way to fix a permissions error.
   - Forging kill responses does not need it.
@@ -9762,7 +9893,9 @@ Every failure kind and every drop reason appears, zeros included.
   `queue_depth`.
 
 See [When the `--hep-send` collector goes
-away](cli-reference.md#when-the---hep-send-collector-goes-away).
+away](cli-reference.md#when-the---hep-send-collector-goes-away), and [When the
+collector goes away](hep.md#when-the-collector-goes-away) for the counts a
+collector restart left.
 
 **Over UDP, `packets_sent` means handed to
 the kernel.** A collector that is down produces no failure at all. `delivery` says
@@ -9978,7 +10111,8 @@ sending".
 The MCP tool `hep_senders` returns the same fields and values for the same
 roster, with its keys in alphabetical order and `source_exhausted` and
 `source_stopped_early` added.
-`--hep-senders` prints it at the end of a headless run. Prometheus carries only
+`--hep-senders` prints it at the end of a headless run ([See who feeds the
+listener](hep.md#see-who-feeds-the-listener)). Prometheus carries only
 the aggregate counts, with no per-sender label. See
 [Metrics](prometheus-metrics.md).
 
@@ -12825,7 +12959,7 @@ On Linux the installer chooses between two builds.
   - It lacks TUI audio playback, WASM plugins, vCon export and the eBPF uprobe
     backend.
   - It reads password-protected ZIP and 7z archives like every other release
-    build.
+    build ([Read captures from tar, ZIP and 7z archives](archives.md)).
 
 ## Download a release binary yourself
 
@@ -13624,6 +13758,9 @@ Prefer this to `sudo sipnab`.
 
 > macOS and other non-Linux platforms have no file capabilities. Run live
 > capture under `sudo` there.
+
+[Capture with the least privilege](least-privilege.md) goes further: the
+privilege drop, a chroot, and the Landlock and seccomp confinement.
 
 ## Feature flags
 
@@ -16250,10 +16387,15 @@ Skipping 'session.tgz/lab/cell-trace.pcap': empty (0 bytes)
   identify what it is. A text file starts with printable bytes: a member
   `notes.txt` holding `call notes` reads `Skipping 'session.tgz/lab/notes.txt':
   not a capture (starts with 63 61 6c 6c, which is not pcap or pcapng)`.
-- **`ZIP data, which sipnab does not unwrap`** (or 7-Zip, `zstd`, `xz`,
-  `bzip2`, LZ4).
+- **`xz data, which sipnab does not unwrap`** (or `zstd`, `bzip2`, LZ4).
   - Unpack that member with the tool that made it.
   - Then point `-I` at what comes out.
+  - sipnab reads ZIP and 7z members itself, password-protected ones
+    included. A build without the `archive` feature names them here instead
+    ([Read captures from tar, ZIP and 7z archives](archives.md)).
+- **`encrypted, and no password was supplied`** or **`encrypted, and no
+  password supplied opens it`**: a locked ZIP or 7z member. Give sipnab the
+  password ([Read a password-protected ZIP or 7z](archives.md#read-a-password-protected-zip-or-7z)).
 - **`has link type N, which sipnab does not decode`**.
   - The member is a capture of something other than IP, such as an LTE or NR
     MAC log from a test handset.
@@ -16313,6 +16455,8 @@ no sender row. Its address appears under `refused_sources` with the reason:
 | `hmac_timestamp_out_of_window` | The sender's clock is off by more than `--hep-hmac-window`; fix NTP there |
 | `hmac_bad_mac` | A wrong key under `--hep-auth-mode hmac`, or a packet altered on the way |
 | `hmac_unsupported_version` | The sending sipnab predates the current HMAC token; upgrade it |
+| `hmac_bad_format` | The packet carries no HMAC token this listener can read: most often a sender in `--hep-auth-mode plain` against a listener in `hmac` mode. Set the same mode on both |
+| `hmac_replay` | A token this listener has already accepted, inside the window: a packet sent twice, or replayed |
 | `rate_limit_global`, `rate_limit_per_peer` | Traffic above `--hep-rate-limit` or `--hep-rate-limit-per-peer` |
 | `peer_tracking_full` | More senders at once than `[limits] max_tracked_peers` |
 | `malformed` | The bytes are not HEP; check the sender speaks HEP v3, or v2 over UDP |
@@ -16333,19 +16477,26 @@ The sender may itself be a sipnab (`--hep-send`). Then ask it too.
 
   Start the collector, or correct the address, then start the sender again.
 - Its `runtime_stats` or `GET /v1/runtime` carries `hep_export`.
-- A headless run ends with a `HEP export to {destination} over {transport}:
-  {sent} packet(s) sent, {failed}, {reconnects} reconnect(s); sent means
-  {delivery}` line. `{failed}` is `none failed`, or the number that failed
-  followed by each kind and its count, such as `3 failed (connect 3)`. A UDP
-  run of `sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --hep-send
-  127.0.0.1:19999 --no-cli-print` ends with `HEP export to 127.0.0.1:19999
-  over udp: 10 packet(s) sent, none failed, 0 reconnect(s); sent means handed
-  to the kernel: UDP reports no delivery, so a collector that is down produces
-  no failure here`.
-  - `connect` failures are reconnects to a collector that went down or became
-    unreachable.
-  - `tls_handshake` failures are a collector whose certificate the sender does
-    not accept.
+- A headless run ends with one `HEP export to` line. A UDP run of
+  `sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --hep-send
+  127.0.0.1:19999 --no-cli-print` ends with:
+
+  ```text
+  HEP export to 127.0.0.1:19999 over udp: 10 packet(s) sent, 10 queued, 0 replayed after an outage, none dropped, 0 still queued, none failed, 0 reconnect(s); sent means handed to the kernel: UDP reports no delivery, so a collector that is down produces no failure here unless its host refuses with ICMP
+  ```
+
+  - `none dropped`, or the number lost and each reason: `queue_full`,
+    `stopped` or `unsent_at_exit`. These are the only packets lost.
+  - `N failed attempt(s)`, with each kind and its count, such as
+    `9 failed attempt(s) (connect 8, write 1)`. A failed attempt keeps its
+    packet queued, so a failure is not a loss.
+    - `connect` and `write` failures are a collector that went down or became
+      unreachable. The sender redials with backoff and replays the queue.
+    - `tls_handshake` failures are a collector whose certificate the sender
+      does not accept.
+  - `replayed after an outage` counts what the sender held and delivered once
+    the collector came back. [When the collector goes
+    away](hep.md#when-the-collector-goes-away) shows a restart.
 
 Over UDP the sender cannot tell.
 
@@ -19713,7 +19864,8 @@ The rules:
   - a link,
   - a device node,
   - a sparse file,
-  - a format sipnab does not unwrap, such as 7-Zip, `zstd`, `xz` or `bzip2`.
+  - a format sipnab does not unwrap: `zstd`, `xz`, `bzip2` or LZ4, or ZIP and
+    7z in a build without the `archive` feature.
 
   The closing `-I resolved to` line counts them.
 
@@ -19764,7 +19916,9 @@ A run may die without cleaning up, from a crash or `kill -9`.
 ## Archives
 
 Captures often travel as password-protected ZIP files. They carry subscriber
-identities, numbers and credentials.
+identities, numbers and credentials. [Read captures from tar, ZIP and 7z
+archives](archives.md) gives the steps for each password source, with the
+output of each.
 
 - Unpacking one by hand leaves a decrypted copy on disk. That defeats the
   password.
@@ -20107,7 +20261,7 @@ See the [Name Resolution](keybindings.md#name-resolution) keys for in-TUI naming
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `--strip-secrets` | `<OUTPUT>` | -- | 0.4.3 | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. sipnab never touches the input and writes the output atomically. |
+| `--strip-secrets` | `<OUTPUT>` | -- | 0.4.3 | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. sipnab never touches the input and writes the output atomically. Steps: [Share a capture without its keys](tls-capture.md#share-a-capture-without-its-keys). |
 | `--show-frame` | `<POINTER>` | -- | 0.5.77 | Resolve a frame pointer from a previous run, print that frame, then exit. Takes `<source>#<ordinal>` or `<source>#<ordinal>@<digest>` — the form the `frame` field of `--json-dialogs`, `--report`, the REST API and MCP carries. With a digest, sipnab checks the bytes against it and refuses a capture that changed after sipnab minted the pointer, writing nothing to stdout. Without one, sipnab prints the frame and marks it `UNVERIFIED`. |
 
 Note: with resolution active, sipnab saves name mappings into a pcapng Name
@@ -21332,8 +21486,8 @@ It also refuses a boundary that is not a finite number of 0 or more, such as
 | `-K`, `--kill-target` | `<ADDR[:PORT-RANGE]>` | -- | 0.5.7 | Targeted kill: send the kill response to any SIP request whose source matches ADDR and an optional port range (`192.0.2.1:5060-5090`, `[::1]:5060`), regardless of UA/behavioral detection. Repeatable; spawns the kill worker on its own (no `--kill-scanner` needed). Refused (exit 2) together with `--kill-scanner-detect-only` or `[security] kill_scanner_detect_only = true` |
 | `--kill-spoof` | `<MODE>` | `auto` | 0.5.12 | Source-address strategy for the kill response (Linux only; other platforms always `ephemeral`). `auto` forges the victim's ip:port via a raw socket when `CAP_NET_RAW` is available (so the reply appears to come from the targeted SIP port), falling back to an ephemeral source otherwise; `raw` requires the spoof and errors when it cannot open the raw socket; `ephemeral` never spoofs |
 | `--kill-rate-limit` | `<N>` | `10` | 0.5.96 | Scanner-kill responses per second sipnab may put on the wire. There is no unlimited setting: sipnab rejects `0`. A per-destination cap of 3 per minute applies underneath, so raising this widens how many distinct hosts sipnab answers, never how hard it hits one. Config: `[security] kill_rate_limit` |
-| `--sandbox` | `<MODE>` | `off` | 0.5.164 | Bound which files this process may reach, using Landlock. `best-effort` installs what the kernel supports and captures either way; `required` refuses to capture when no sandbox is in force. Reads and writes outside the input set, the output directory, the keylog and the crash directory come back `EACCES`. **Sockets are not bounded**: the ruleset governs the filesystem only. A denied open fails with `EACCES` and does not end the run, and a kernel without Landlock degrades to a warning unless `required` says otherwise |
-| `--seccomp` | `<MODE>` | `off` | 0.5.165 | Record every system call (`log`), or refuse the ones outside a host-derived allowlist (`enforce`). `log` installs a seccomp filter whose only action is `SECCOMP_RET_LOG`. **It denies nothing and protects nothing**: use it to record which calls a run makes, as the input to an allowlist. `enforce` kills the process on a call outside the allowlist `SIPNAB_SECCOMP_ALLOWLIST` names, derived on the capture host with [`scripts/derive-seccomp-allowlist.sh`](https://github.com/NormB/sipnab/blob/main/scripts/derive-seccomp-allowlist.sh); when sipnab cannot install an enforcing filter (no list named, a list it cannot read, a kernel that refuses), it refuses to start, exit status 1. Where the records land depends on the host: `auditctl -s` prints a connected audit daemon's pid and the records are then in `ausearch -m SECCOMP`; a pid of 0 means no daemon and they are in `dmesg \| grep 'type=1326'`. Point it at a bounded offline run — a live capture emits one record per received packet and floods the log |
+| `--sandbox` | `<MODE>` | `off` | 0.5.164 | Bound which files this process may reach, using Landlock. `best-effort` installs what the kernel supports and captures either way; `required` refuses to capture when no sandbox is in force. Reads and writes outside the input set, the output directory, the keylog and the crash directory come back `EACCES`. **Sockets are not bounded**: the ruleset governs the filesystem only. A denied open fails with `EACCES` and does not end the run, and a kernel without Landlock degrades to a warning unless `required` says otherwise Steps: [Capture with the least privilege](least-privilege.md). |
+| `--seccomp` | `<MODE>` | `off` | 0.5.165 | Record every system call (`log`), or refuse the ones outside a host-derived allowlist (`enforce`). `log` installs a seccomp filter whose only action is `SECCOMP_RET_LOG`. **It denies nothing and protects nothing**: use it to record which calls a run makes, as the input to an allowlist. `enforce` kills the process on a call outside the allowlist `SIPNAB_SECCOMP_ALLOWLIST` names, derived on the capture host with [`scripts/derive-seccomp-allowlist.sh`](https://github.com/NormB/sipnab/blob/main/scripts/derive-seccomp-allowlist.sh); when sipnab cannot install an enforcing filter (no list named, a list it cannot read, a kernel that refuses), it refuses to start, exit status 1. Where the records land depends on the host: `auditctl -s` prints a connected audit daemon's pid and the records are then in `ausearch -m SECCOMP`; a pid of 0 means no daemon and they are in `dmesg \| grep 'type=1326'`. Point it at a bounded offline run — a live capture emits one record per received packet and floods the log Steps: [Capture with the least privilege](least-privilege.md). |
 | `--fraud-detect` | -- | off | 0.3.0 | Enable fraud detection heuristics. Config: `[security] fraud_detect` |
 | `--no-fraud-detect` | -- | off | 0.5.204 | Do not run fraud detection even when `[security] fraud_detect = true`. The last of `--fraud-detect` / `--no-fraud-detect` typed wins. Config: `[security] fraud_detect` |
 | `--evidence-out` | `<PATH\|->` | off | 0.5.148 | Publish every security finding that names a source as JSON Lines, for a system that decides what to do with it. `-` is standard output, for a pipe, and `--mcp` refuses it; a path receives one appended line per finding, and sipnab opens it at startup, so a path it cannot write is an error before the first packet. sipnab takes no action on these lines: the system reading them decides. A finding carried by HEP publishes nothing without `--hep-allow-kill`, for the reason `--fail2ban` gives: the inner address is the sender's claim |
@@ -21531,8 +21685,8 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-accept-archive-passwords` | -- | off | 0.5.187 | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: making sure it does is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`, also when `--api-tls-cert` serves HTTPS. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | 0.5.177 | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..`, an absolute prefix or a control character before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | 0.5.100 | Metrics scrapes served at once before further ones get `503`. Sixteen suits one Prometheus server; raise it when an HA pair, a federating parent, `remote_write` shards or sidecars scrape the same endpoint. A refused scrape leaves a gap in the series. Config: `[limits] metrics_max_conn` Feature: `metrics` |
-| `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling; an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](examples.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). A UDP listener also takes the OpenSIPS `E_SIPNAB_TH_MAP` event, a change to the OpenSIPS script only, from a sender `--hep-allow` lists ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Feature: `hep` |
-| `-H`, `--hep-send` | `<ADDR>` | -- | 0.3.0 | Send captured packets via HEP to a remote collector: SIP as protocol type 1, and RTCP as type 5 in the JSON form heplify sends, carrying the Call-ID of the call whose SDP set up that media. RTCP for a call whose SDP sipnab never saw is not sent, since Homer stores none of it. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message sipnab reads out of the capture goes to `<ADDR>` as recorded, and every RTCP report of a call in it as JSON, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). **A headless run ends with one line saying what it exported**: packets sent, queued, replayed after an outage, dropped by reason (`queue_full`, `stopped`, `unsent_at_exit`), still queued, failed attempts by kind (`connect`, `tls_handshake`, `write`) and reconnects, at `warn` when anything failed or sipnab dropped a packet. Over UDP "sent" means handed to the kernel, and a collector that is down produces no failure; the line says so. `runtime_stats`, `GET /v1/runtime` (`hep_export`) and the Prometheus `sipnab_hep_export_*` series carry the same counts while it runs. Feature: `hep` |
+| `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling; an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](examples.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). A UDP listener also takes the OpenSIPS `E_SIPNAB_TH_MAP` event, a change to the OpenSIPS script only, from a sender `--hep-allow` lists ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Steps for each SIP server, a shared secret, TCP and TLS: [Collect and forward HEP](hep.md). Feature: `hep` |
+| `-H`, `--hep-send` | `<ADDR>` | -- | 0.3.0 | Send captured packets via HEP to a remote collector: SIP as protocol type 1, and RTCP as type 5 in the JSON form heplify sends, carrying the Call-ID of the call whose SDP set up that media. RTCP for a call whose SDP sipnab never saw is not sent, since Homer stores none of it. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message sipnab reads out of the capture goes to `<ADDR>` as recorded, and every RTCP report of a call in it as JSON, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). **A headless run ends with one line saying what it exported**: packets sent, queued, replayed after an outage, dropped by reason (`queue_full`, `stopped`, `unsent_at_exit`), still queued, failed attempts by kind (`connect`, `tls_handshake`, `write`) and reconnects, at `warn` when anything failed or sipnab dropped a packet. Over UDP "sent" means handed to the kernel, and a collector that is down produces no failure; the line says so. `runtime_stats`, `GET /v1/runtime` (`hep_export`) and the Prometheus `sipnab_hep_export_*` series carry the same counts while it runs. Steps for each SIP server, a shared secret, TCP and TLS: [Collect and forward HEP](hep.md). Feature: `hep` |
 | `--hep-send-transport` | `<udp\|tcp\|tls>` | `udp` | 0.5.150 | Transport `--hep-send` uses to reach the collector. Homer's collectors accept all three. HEP v3 carries its own total length, so a `tcp` or `tls` feed is packets laid end to end with no extra framing, and sipnab sets `TCP_NODELAY` because these are small packets whose value is timeliness. sipnab opens the first connection at startup: when the collector refuses it, or it does not complete within `--hep-send-timeout` (default 3 seconds), sipnab stops with exit `2` and names the error, such as `Failed to connect HEP sender to '127.0.0.1:9061' over TCP: Connection refused (os error 111)`. After that, a write that fails keeps its packet queued and drops the connection, and the sending thread dials again with backoff, never in a tight loop. Each dial gives up after `--hep-send-timeout` and counts as a `connect` failure, as a refused one does. See [When the `--hep-send` collector goes away](#when-the---hep-send-collector-goes-away). Refused without `--hep-send`, which is the side it governs. Feature: `hep` |
 | `--hep-send-queue` | `<MIB>` | `64` | 0.5.226 | How many MiB of HEP packets `--hep-send` holds while the collector is unreachable, 1 to 4096. Sending runs on its own thread behind this queue, so a slow or dead collector never slows the capture, and sipnab replays the queue in capture order when the collector answers. At the bound sipnab drops the **oldest** packet and counts it as `queue_full`. A stop (SIGINT/SIGTERM) discards the queue and counts it as `stopped`: sipnab flushes nothing at shutdown. Refused without `--hep-send`; `[hep] send_queue_mib` on a run without `--hep-send` gets a startup warning naming it instead. Config: `[hep] send_queue_mib`. Feature: `hep` |
 | `--hep-send-timeout` | `<SECS>` | `3` | 0.5.226 | Seconds one TCP dial or stalled write to the `--hep-send` collector may take before the collector counts as unreachable, 1 to 300. It also bounds the first connection at startup, which fails the run with exit `2`. A TLS handshake keeps its own 10-second bound. Retries back off from 0.1 s, doubling, to at most 5 s. A file read to its end waits for the queue to drain, and gives up after two timeouts plus 5 s with no delivery. Refused without `--hep-send`; `[hep] send_timeout_secs` on a run without `--hep-send` gets a startup warning naming it instead. Config: `[hep] send_timeout_secs`. Feature: `hep` |
@@ -21897,8 +22051,8 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 | `--keylog-watch` | -- | off | 0.3.0 | Watch the key log for new entries (live decryption). Feature: `tls` |
 | `--tls-lockon-window` | `<RECORDS>` | 1048576 | 0.5.115 | How far into an established TLS connection a capture may start and still be readable. No TLS version puts the record number on the wire, so a capture that joined a running connection searches for it, widening only as records fail to open — raising this costs nothing on a connection captured from its handshake, because the search stops at the first candidate that authenticates. Raise it for a carrier trunk held open for days; lower it where key material for unrelated connections is common. At least 1: `0` would turn the search off, so sipnab refuses it with exit 2. Feature: `tls` |
 | `--dtls-keylog` | `<FILE>` | -- | 0.3.0 | DTLS key log (NSS `SSLKEYLOGFILE`); extracts SRTP keys from DTLS-SRTP handshakes ([RFC 5764](https://www.rfc-editor.org/rfc/rfc5764.html) exporter, AES-CM profiles). sipnab does not treat a record declaring more than 2^14 + 2048 bytes as DTLS (the ciphertext limit TLS sets and DTLS inherits). Feature: `tls` |
-| `--srtp-keys` | `<FILE>` | -- | 0.3.0 | SRTP master-keys file for media decryption (AES-CM, [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html)); also honors SDES `a=crypto` keys from SDP. Feature: `tls` |
-| `--pcap-export-mode` | `<MODE>` | `raw` | 0.3.0 | `raw` writes original packets without TLS keys. `encrypted+dsb` explicitly embeds TLS keys in PCAP-NG for Wireshark. `decrypted` writes what sipnab decrypted as plaintext, and no keys: SIP from TLS and WSS as plain TCP frames and SRTP as plain RTP, on the captured addresses, ports and times, with everything else as captured. The file can hold readable signaling and listenable audio. Frames wait up to 5 s of capture time for a late decryption, and a stop discards what is still waiting. The TUI's live `-O` rewrites SRTP only, because the TUI does not decrypt TLS |
+| `--srtp-keys` | `<FILE>` | -- | 0.3.0 | SRTP master-keys file for media decryption (AES-CM, [RFC 3711](https://www.rfc-editor.org/rfc/rfc3711.html)); also honors SDES `a=crypto` keys from SDP. Feature: `tls` The file format, with an example: [The `--srtp-keys` file](tls-capture.md#the---srtp-keys-file). |
+| `--pcap-export-mode` | `<MODE>` | `raw` | 0.3.0 | `raw` writes original packets without TLS keys. `encrypted+dsb` explicitly embeds TLS keys in PCAP-NG for Wireshark. `decrypted` writes what sipnab decrypted as plaintext, and no keys: SIP from TLS and WSS as plain TCP frames and SRTP as plain RTP, on the captured addresses, ports and times, with everything else as captured. The file can hold readable signaling and listenable audio. Frames wait up to 5 s of capture time for a late decryption, and a stop discards what is still waiting. The TUI's live `-O` rewrites SRTP only, because the TUI does not decrypt TLS What each mode writes, with output: [Write the decrypted call to a file](tls-capture.md#write-the-decrypted-call-to-a-file). |
 | `--allow-coredump` | -- | off | 0.3.0 | Allow core dumps (do not call `prctl` to disable them) |
 | `--uprobe-tls` | -- | off | 0.5.102 | Read SIP plaintext straight out of the TLS libraries this host is running, using kernel uprobes. **No certificate, no private key, no keylog and no restart** of the process it observes. Probes **every** mapped TLS library rather than one, because an ordinary host runs OpenSSL and wolfSSL together. Needs root (or `CAP_SYS_ADMIN` + `CAP_PERFMON`) and a mounted `tracefs`. Linux only. **Read [the walkthrough](uprobe-walkthrough.md) before using this**: it reads the plaintext of every SIP session on the host, and states what that means. Feature: `native` |
 | `--uprobe-library` | `<PATH>` | discovered | 0.5.102 | Probe this library instead of discovering them; repeatable. Bypasses discovery, so it also reaches a library nothing has mapped **yet**. For a process inside a container, give the path as sipnab sees it: `/proc/<pid>/root/usr/lib/libssl.so.3`. Feature: `native` |
@@ -21981,8 +22135,8 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 | `--user` | `<USER>` | -- | 0.3.0 | Drop privileges to this user after opening capture devices. **Only takes effect when the process is root** — see the note below. Config: `[privilege] user` |
 | `--no-priv-drop` | -- | off | 0.3.0 | Do not drop privileges after opening capture devices. Config: `[privilege] no_priv_drop` |
 | `--priv-drop` | -- | off | 0.5.204 | Drop privileges even when `[privilege] no_priv_drop = true`. The last of `--no-priv-drop` / `--priv-drop` typed wins. Config: `[privilege] no_priv_drop` |
-| `--chroot` | `<DIR>` | -- | 0.3.0 | Chroot to this directory after initialization. It applies to `-I` file runs too, and needs root privileges: as an ordinary user the run exits `1`, and `--chroot /tmp` fails with `Failed to chroot: chroot(/tmp) failed: Operation not permitted (os error 1)`. Config: `[privilege] chroot` |
-| `--setup-caps` | -- | off | 0.4.3 | Grant this binary the Linux capabilities for live capture (`cap_net_raw,cap_net_admin+ep` via `setcap`) so it runs without `sudo`, then exit. Re-invokes through `sudo` when not already root. Linux only. |
+| `--chroot` | `<DIR>` | -- | 0.3.0 | Chroot to this directory after initialization. It applies to `-I` file runs too, and needs root privileges: as an ordinary user the run exits `1`, and `--chroot /tmp` fails with `Failed to chroot: chroot(/tmp) failed: Operation not permitted (os error 1)`. Config: `[privilege] chroot` Steps: [Capture with the least privilege](least-privilege.md). |
+| `--setup-caps` | -- | off | 0.4.3 | Grant this binary the Linux capabilities for live capture (`cap_net_raw,cap_net_admin+ep` via `setcap`) so it runs without `sudo`, then exit. Re-invokes through `sudo` when not already root. Linux only. Steps: [Capture with the least privilege](least-privilege.md). |
 
 **`--user` does nothing unless the process is root.**
 
@@ -35495,6 +35649,9 @@ one of these:
 - a source allowlist (`--hep-allow`),
 - a shared secret (`--hep-auth-file`).
 
+[Collect and forward HEP](hep.md) gives the lines each SIP server needs, the
+shared secret, and HEP over TCP or TLS.
+
 Then start it, in this order:
 
 - Reload systemd so it reads the new unit:
@@ -36076,6 +36233,9 @@ sees calls from the whole estate. The HEP listener is a plain UDP socket:
    `"[sipnab]uri=hep:capture01.example.net:9063;version=3;transport=udp"` with
    `Invalid key <version> in trace id!`: put the address in `hep_id` as above.
    [Add Homer to your voice stack](homer.md) explains each line.
+   [Collect and forward HEP](hep.md#have-your-sip-server-send-hep) shows the
+   OpenSIPS 4.0 form, which traces each call's whole dialog, and the page
+   gives the TCP and TLS forms.
 
    Kamailio (tested with 6.1.4) — `kamailio.cfg`:
 
@@ -36185,7 +36345,9 @@ sipnab can run there. Arrange two things:
 - **Port**: heplify-server owns udp/9060. So sipnab takes its own
   (udp/9063 above), and each proxy mirrors to **both** destinations.
   - OpenSIPS: add a second `trace_id` and a second `trace()` call.
-  - Kamailio: add a second duplicate destination.
+  - Kamailio's `siptrace` sends to one `duplicate_uri`, and a second one
+    replaces the first. [Connect sipnab to Homer](homer-sipnab.md#sipnab-as-a-second-receiver)
+    gives the two ways to run sipnab beside Homer with Kamailio.
   - If a sender can't dup, put a small UDP fan-out (e.g. socat) in front.
 - **Budget**: cap sipnab's footprint with `[limits]` (see
   [Understand the load on a busy server](mcp-deploy.md#understand-the-load-on-a-busy-server)).
@@ -48165,7 +48327,15 @@ drop counters, and set -B/--buffer explicitly to pin a size.
 ```
 
 sipnab honors an explicit small `-B` exactly and never promotes it upward.
-`-B 1` on a constrained box means 1 MiB.
+`-B 1` on a constrained box means 1 MiB. It refuses `-B 0` and `--snaplen 0`,
+which would capture nothing, with exit `2`:
+
+```text
+error: invalid value '0' for '--buffer <MIB>': 0 is not in 1..=4294967295
+```
+
+The same values in `[capture]` stop the run with exit `1`:
+`invalid config value: [capture] snaplen must be > 0`.
 
 ### Request a buffer larger than 2047 MiB
 
@@ -48256,6 +48426,38 @@ sudo sipnab -N -d eth0 "host 203.0.113.10"
 Use a narrower filter first when drops persist while a core is at 100%. A
 larger buffer does not raise the rate at which sipnab reads packets. A filter
 lowers the number it has to read.
+
+**Keep the filter in `sipnab.toml`** for a capture you run often. A positional
+filter or `--bpf-file` replaces it for one run:
+
+```toml
+[capture]
+bpf_filter = "port 5060"
+```
+
+**The same filter applies to a capture file.** `-I` reads through it too: the
+sample capture's 633 packets came down to its 33 SIP messages, with the filter
+given either way:
+
+```bash
+sipnab -N -I sample-call.pcap --report --no-cli-print 'port 5060'
+```
+
+```text
+INFO sipnab::app::batch: sipnab: 33 packets captured, 33 SIP messages, 0 RTP packets across 0 streams
+```
+
+**Put the filter last.** Everything after the first word sipnab does not
+recognize as an option becomes the filter, options included. A SIP word there,
+as `sngrep` and `sipgrep` take, does not compile:
+
+```text
+Capture source failed to open: Failed to compile BPF filter 'INVITE --config /dev/null' against 'website/static/demos/sample-call.pcap'. sipnab reads only a capture (BPF) filter after its options. To match SIP text, use -e '<pattern>': sngrep and sipgrep take a match expression there first, and sipnab does not.: libpcap error: can't parse filter expression: syntax error
+```
+
+**Change it while the TUI runs.** `B` opens the
+[Capture filter editor](keybindings.md#capture-filter-editor), which narrows or
+widens the running filter and re-reads a capture file under the new one.
 
 > **Careful with RTP.**
 >
@@ -48543,6 +48745,50 @@ irrelevant. Look outside sipnab:
   - If the mirror source is dropping, nothing on the capture host can recover
     it.
 
+### Read the interface's own counters
+
+sipnab's two drop counters describe its capture handle. The interface keeps
+counters of its own in `/sys/class/net`, and sipnab reports them beside its
+own on the runtime surface: REST `GET /v1/runtime` and the MCP `runtime_stats`
+tool. Start the capture with the REST API on:
+
+```bash
+sudo sipnab -N -d eth0 --api 127.0.0.1:8080
+```
+
+Then, from another terminal:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/runtime | jq .interfaces
+```
+
+A run on a lab bridge, `hepx`, answered:
+
+```json
+[
+  {
+    "mtu": 1500,
+    "name": "hepx",
+    "operstate": "down",
+    "rx_bytes": 771185,
+    "rx_dropped": 0,
+    "rx_errors": 0,
+    "rx_missed_errors": 0,
+    "rx_packets": 1469,
+    "speed_mbps": null
+  }
+]
+```
+
+- `interface/driver` drops that climb with `rx_missed_errors` are the NIC
+  running out of ring: raise it with `ethtool -G`, or spread the load with RSS.
+- `kernel buffer` drops that climb while these stay flat are sipnab's own
+  ring: go back to [The kernel capture buffer](#the-kernel-capture-buffer--b----buffer).
+- A run with `--api` keeps serving after the capture ends, until you stop it
+  with Ctrl-C, so the numbers stay readable.
+- In the TUI, `h` opens [Capture health](keybindings.md#capture-health), with
+  the same loss counters.
+
 ### A different capture backend: `netmap:`
 
 libpcap can read through netmap instead of the kernel's packet socket.
@@ -48680,6 +48926,968 @@ Then read the drop line at the end.
 - [Configuration](config-reference.md#capture) — the `[capture]` section
 - [Benchmarks](benchmarks.md) — measured throughput and method
 - [Troubleshooting](troubleshooting.md)
+
+---
+
+<!-- source: docs/least-privilege.md -->
+
+# Capture with the least privilege
+
+A live capture needs raw-socket rights for one moment: opening the interface.
+Everything after that, the parsing of untrusted packets included, needs none.
+This page takes the rights away as early as sipnab allows, and narrows what the
+process can reach after that.
+
+| Step | What it takes away | Needs |
+|---|---|---|
+| [Grant capture rights to the binary](#grant-capture-rights-to-the-binary) | Running as root at all | Linux, `setcap` |
+| [Let sipnab drop root](#let-sipnab-drop-root-after-opening-the-interface) | Root after the interface opens | Started as root |
+| [Confine it to a directory](#confine-it-to-a-directory) | The rest of the file system | Started as root |
+| [Bound the files it can open](#bound-the-files-it-can-open-landlock) | Files outside the paths the run names | A kernel with Landlock |
+| [Bound the system calls it makes](#bound-the-system-calls-it-makes-seccomp) | System calls outside a derived list | A kernel with seccomp, a list derived on that host |
+
+Reading a capture file needs none of this: it is reading a file.
+
+What ran: every command and output on this page ran on 2026-11-03 with sipnab
+0.5.232 built from source, on Ubuntu 24.04 with Linux 6.8 (aarch64). That
+kernel has seccomp and no Landlock, so [Bound the files it can
+open](#bound-the-files-it-can-open-landlock) shows the refusal and not a
+confined run.
+
+## Grant capture rights to the binary
+
+```bash
+sipnab --setup-caps
+```
+
+It sets `cap_net_raw,cap_net_admin+ep` on the binary with `setcap`,
+re-running itself through `sudo` when it is not root, and exits. It prints
+nothing. Check the result:
+
+```bash
+getcap "$(command -v sipnab)"
+```
+
+It prints the binary's path followed by `cap_net_admin,cap_net_raw=ep`.
+
+Then capture as your own user:
+
+```bash
+sipnab -N -d eth0 --duration 3 --no-cli-print
+```
+
+On a lab bridge, `hepx`, that printed:
+
+```text
+INFO sipnab::capture::live: Capturing on 'hepx' (link_type=1, snaplen=65535)
+INFO sipnab::capture::live: Live capture on 'hepx' finished: 0 packets, no drops
+```
+
+- Replacing the binary clears its capabilities: an upgrade, a rebuild, a
+  package update. Run `--setup-caps` again after each.
+- A file system mounted `nosuid` ignores file capabilities.
+- macOS and other systems without file capabilities run live capture under
+  `sudo`.
+- Under systemd, `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` grants the
+  same to a unit that runs as an ordinary user ([Run sipnab as a
+  service](examples.md#run-sipnab-as-a-service)).
+
+## Let sipnab drop root after opening the interface
+
+Started as root, sipnab opens the interface, then switches to an unprivileged
+user: `nobody` unless you name another with `--user` or `[privilege] user`.
+
+```bash
+sudo sipnab -N -d eth0 --duration 3 --no-cli-print
+```
+
+The log says which user it became. On the lab bridge:
+
+```text
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+```
+
+- sipnab opens what the run reads by path before the drop: the capture
+  device, a keylog file or FIFO, the config. A file the dropped user cannot
+  reach is unreachable after that.
+- It creates `-O` and `--split` files after the drop, as the dropped user, so
+  that user must be able to write their directory ([An output file sipnab
+  cannot create](troubleshooting.md#an-output-file-sipnab-cannot-create)).
+- The dropped user usually cannot read your home directory, so the TUI's file
+  browser (`O`) shows nothing there. Capture with capabilities instead.
+- `--no-priv-drop` (or `[privilege] no_priv_drop = true`) keeps root for the
+  whole run, and the log says `Privilege drop disabled (--no-priv-drop)`.
+  `--priv-drop` turns the drop back on for one run when the file turns it off.
+  The scanner-kill worker does not need either: sipnab opens its raw socket
+  before the drop.
+
+## Confine it to a directory
+
+`--chroot DIR` (or `[privilege] chroot`) changes the root directory to `DIR`
+after the interface opens and before the drop.
+
+sipnab looks the user up after it changes root, so `DIR` must hold an
+`etc/passwd` that names that user. A directory without one stops the run with
+exit `1`:
+
+```text
+Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>
+```
+
+A directory that does not exist stops it too: `Failed to chroot:
+chroot(/var/empty) failed: No such file or directory (os error 2)`. Debian and
+Ubuntu have no `/var/empty`. Make a directory with only the user's entries:
+
+```bash
+# Run all of these, in order.
+sudo mkdir -p /var/lib/sipnab/jail/etc
+grep '^nobody:' /etc/passwd | sudo tee /var/lib/sipnab/jail/etc/passwd >/dev/null
+grep '^nogroup:' /etc/group | sudo tee /var/lib/sipnab/jail/etc/group >/dev/null
+```
+
+```bash
+sudo sipnab -N -d eth0 --user nobody --chroot /var/lib/sipnab/jail --duration 3 --no-cli-print
+```
+
+```text
+INFO sipnab::privilege: Chrooted to /var/lib/sipnab/jail
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+```
+
+Any file the run writes after this, `-O` included, is a path inside `DIR`.
+
+## Bound the files it can open (Landlock)
+
+`--sandbox` uses Linux's Landlock to limit which paths the process can open
+once startup is over, to the ones the run names: its inputs, outputs, key
+files and configuration.
+
+- `--sandbox best-effort` confines the run where the kernel has Landlock, and
+  warns and runs unconfined where it does not.
+- `--sandbox required` refuses to capture without it, with exit `1`.
+
+On a kernel built without Landlock:
+
+```bash
+sipnab -N -I sample-call.pcap --sandbox required --report --no-cli-print
+```
+
+```text
+WARN sipnab::app::bootstrap: path sandbox NOT active: this kernel has no Landlock (needs 5.13 or newer). The capture is running unsandboxed; `--sandbox required` refuses instead of continuing.
+`--sandbox required` was given and no path sandbox is in force: this kernel has no Landlock (needs 5.13 or newer). Refusing to capture. Use `--sandbox best-effort` to capture without one.
+```
+
+That kernel was 6.8 built without `CONFIG_SECURITY_LANDLOCK`. Check yours:
+
+```bash
+cat /sys/kernel/security/lsm
+```
+
+`landlock` must be in the list. Not run for this page: a run with Landlock in
+force.
+
+## Bound the system calls it makes (seccomp)
+
+`--seccomp` installs a seccomp filter. Its two modes are two steps:
+
+1. **`--seccomp log`** allows every system call and records each one. It
+   protects nothing. It exists to find out which calls your runs make.
+2. **`--seccomp enforce`** kills the process on a call outside an allowlist,
+   which you derive on the host that runs the capture and name with
+   `SIPNAB_SECCOMP_ALLOWLIST`: a file of syscall numbers, one per line, `#`
+   comments allowed.
+
+Without a list, `enforce` refuses to start, with exit `1`:
+
+```text
+`--seccomp enforce` was given and no syscall filter is in force: enforcement needs an allowlist derived ON THIS HOST, named by SIPNAB_SECCOMP_ALLOWLIST. The list that ships in this binary settled across sixteen shapes on one machine and killed the process on another of the same architecture, so it is a worked example rather than a list to enforce. Produce yours with scripts/derive-seccomp-allowlist.sh. Refusing to capture. Use `--seccomp off` to capture without one.
+```
+
+`scripts/derive-seccomp-allowlist.sh <sipnab> <interface>`, run as root, runs
+sipnab in sixteen shapes under `--seccomp log`, streams the kernel log, and
+says whether the set of calls stopped growing. It reads the records from the
+kernel log, so it needs a host where no audit daemon takes them.
+
+On this host an audit daemon was running, and the script found nothing:
+
+```text
+NO RECORDS: nothing in this log is a seccomp audit record.
+  Either the filter never installed, or the log was collected
+  after the run rather than streamed during it.
+```
+
+The records were in the audit log instead, where `--seccomp log` says to look:
+
+```bash
+sudo auditctl -s
+```
+
+```bash
+sudo ausearch -m SECCOMP -ts recent
+```
+
+A non-zero `pid` from `auditctl -s` means a daemon takes the records. A
+single `--report` run over the sample capture left 5,896 records there, naming
+13 distinct system calls. Not run for this page: an enforcing filter, because
+the script derived no allowlist here.
+
+## When something does not work
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Permission denied on 'eth0'. Grant capture capabilities once`, exit 1 | The binary has no capabilities, or something replaced it since | `sipnab --setup-caps` again |
+| `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | `--chroot` without an `etc/passwd` for the user, or a user that does not exist | Add the entries to the directory, or create the user |
+| `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
+| `--sandbox required` refuses | No Landlock in this kernel | `best-effort`, or a kernel with Landlock |
+| `--seccomp enforce` refuses | No `SIPNAB_SECCOMP_ALLOWLIST`, or one it cannot read | Derive a list on this host |
+
+[Privilege](cli-reference.md#privilege) and [`[privilege]`](config-reference.md#privilege)
+list every flag and key. The [threat model](threat-model.md) says what each
+step defends against.
+
+---
+
+<!-- source: docs/hep.md -->
+
+# Collect and forward HEP
+
+HEP (the Homer Encapsulation Protocol) carries a copy of each SIP message, with
+its addresses and the time the sender saw it, from a SIP server to a collector.
+sipnab works on both ends of it:
+
+- **As a collector** (`--hep-listen`), sipnab receives the copies your SIP
+  servers send and analyzes the calls. It needs no packet capture and no
+  privileges.
+- **As a capture agent** (`--hep-send`), sipnab captures SIP off an interface
+  and forwards it, with the RTCP of each call, to Homer or to another sipnab.
+
+This page sets up both ends, adds the shared secret, TCP and TLS that a feed
+across a network needs, and shows how to check each step.
+
+## Before you start
+
+- **A build with HEP.** Every release package and binary has it. Check the
+  `features:` list:
+
+  ```bash
+  sipnab --version
+  ```
+
+  ```text
+  sipnab 0.5.232 (0d8eea19) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729
+  libpcap version 1.10.4 (with TPACKET_V3); alternate capture backends named: none
+  ```
+
+  `hep` must be in it. TCP and TLS also need `tls`.
+- **No privileges for a collector.** A listener on a port above 1023 runs as
+  an ordinary user. Only `--hep-send` from a live interface needs capture
+  rights ([Install](install.md#capture-live-traffic-without-root)).
+- **A firewall rule on the collector** for the port and transport you choose,
+  open only to your SIP servers.
+- **On the SIP server**, the lines in
+  [Have your SIP server send HEP](#have-your-sip-server-send-hep). They are the
+  only change another system needs.
+
+What ran: every command and output on this page ran on 2026-11-03 with sipnab
+0.5.232 built from source, OpenSIPS 4.0.2, Kamailio 6.1.4 and heplify-server
+1.60.10, in containers on one Linux host. The SIP server was at
+`198.51.100.10` and sipnab at `198.51.100.1`. SIPp placed one call through the
+SIP server for each test.
+
+## Receive HEP from a SIP server
+
+### Start the listener
+
+```bash
+sipnab -N -L 198.51.100.1:9061 --hep-allow 198.51.100.10 \
+  --duration 15 --report --hep-senders --no-cli-print
+```
+
+- `-L` (`--hep-listen`) binds the UDP port. It decodes HEP on its own.
+  `--hep-parse` is not needed, and changes nothing on a listener.
+- `--hep-allow` names the senders it accepts: an address, or a range such as
+  `198.51.100.0/24`. Repeat it for each.
+- sipnab refuses to bind a listener to a routable address with neither
+  `--hep-allow` nor `--hep-auth-file`, because an open HEP port accepts forged
+  calls from anyone who reaches it. A loopback bind needs neither.
+- `--duration` stops after that long, then `--report` and `--hep-senders`
+  print what arrived. Leave `--duration` out for a collector that runs until
+  you stop it, or run it as a service ([Run sipnab as a
+  service](examples.md#run-sipnab-as-a-service)).
+
+### Have your SIP server send HEP
+
+**OpenSIPS 4.0.** `proto_hep` defines the destination and `tracer` sends every
+message of each call to it. These are the lines that ran. Give OpenSIPS a
+`hep_udp` socket to send from, and call `trace()` for each new call:
+
+```cfg
+socket=hep_udp:198.51.100.10:6061
+
+loadmodule "dialog.so"
+loadmodule "proto_hep.so"
+modparam("proto_hep", "hep_id", "[sipnab] 198.51.100.1:9061; transport=udp; version=3")
+modparam("proto_hep", "hep_capture_id", 101)
+loadmodule "tracer.so"
+modparam("tracer", "trace_id", "[tid]uri=hep:sipnab")
+
+route {
+	# Your checks and record_route() come first.
+	create_dialog();
+	trace("tid", "d");
+	# Then t_relay(), as before.
+}
+```
+
+- Without `transport=udp`, OpenSIPS uses HEP over TCP, its default, and sends
+  nothing unless it also has a `hep_tcp` socket.
+- `"d"` traces the whole dialog, both legs, in both directions. `"m"` traces
+  only the message the script runs on: a run with `"m"` received one INVITE per
+  call and nothing after it.
+- [Use OpenSIPS as your voice stack's SIP server](opensips.md) and
+  [Add Homer to your voice stack](homer.md) show the complete script.
+
+**Kamailio 6.1.** `siptrace` sends a copy of every message to one destination:
+
+```cfg
+loadmodule "siptrace.so"
+modparam("siptrace", "duplicate_uri", "sip:198.51.100.1:9061")
+modparam("siptrace", "hep_mode_on", 1)
+modparam("siptrace", "hep_version", 3)
+modparam("siptrace", "hep_capture_id", 102)
+modparam("siptrace", "trace_to_database", 0)
+modparam("siptrace", "trace_on", 1)
+modparam("siptrace", "trace_mode", 1)
+```
+
+A second `duplicate_uri` line replaces the first rather than adding a
+destination. [Connect sipnab to Homer](homer-sipnab.md#sipnab-as-a-second-receiver)
+gives the two ways to run sipnab beside Homer with Kamailio.
+
+**Asterisk, FreeSWITCH and rtpengine** have their own sections:
+[Run sipnab beside Asterisk](asterisk-sipnab.md),
+[Run sipnab beside FreeSWITCH](freeswitch-sipnab.md#receive-freeswitchs-own-copy-of-its-sip-hep)
+and [Let sipnab name rtpengine's media](rtpengine-sipnab.md).
+
+### Check that it works
+
+The OpenSIPS run above ended with the call and the one sender:
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+1-hep@example.com                sipp           echo           Completed    200    0s         13     0.0s     -
+HEP senders (trust unauthenticated, silent after 30s)
+  received 13  admitted 13  refused 0  from untracked senders 0
+
+  SOURCE                                PACKETS  LAST SEEN                    IDLE  STATE
+  hep:101@198.51.100.10                      13  2026-11-03T14:59:20.783Z       5s  sending
+  1 of 1 tracked sender(s) shown, 0 silent, limit 4096. Capture ids are claimed by the sender, not proven.
+
+Refused sources (0 of 0 tracked shown, limit 256, 0 evicted)
+```
+
+- `hep:101` is the `hep_capture_id` OpenSIPS stamps on each copy. Kamailio's
+  run showed `hep:102`. Give each sender its own id, because the roster keys
+  on it.
+- The start of the run warns that the listener is `non-loopback and
+  unauthenticated`. [Require a shared secret](#require-a-shared-secret) is the
+  fix.
+- HEP carries no RTP, so `--report` shows no streams. [Take signaling from HEP
+  and media from the wire](#take-signaling-from-hep-and-media-from-the-wire)
+  adds them.
+
+## See who feeds the listener
+
+With twenty SIP servers sending, the listener answers three questions: which
+are sending, which stopped, and which send while the listener turns them away.
+
+- At the end of a bounded run: `--hep-senders`, as above. With `--json`, the
+  same roster is one JSON object on the last line of stdout.
+- While sipnab runs as a server: `GET /v1/hep/senders`, or the MCP
+  `hep_senders` tool.
+- In the TUI: `h` for capture health, then `s`.
+
+[Find who feeds the collector and who it refuses](examples.md#find-who-feeds-the-collector-and-who-it-refuses)
+reads each column. A sender that stops while others keep sending gets a log
+line of its own, and another when it comes back. `--hep-silence-warn` sets how
+long it may stay quiet first (30 seconds).
+
+## Require a shared secret
+
+`--hep-allow` trusts an address. A shared secret also proves the sender holds
+the key. sipnab checks it in one of two modes:
+
+| Mode | What travels | Who can send it |
+|---|---|---|
+| `plain` (default) | The secret itself, in the HEP auth-key chunk (`0x000e`) | Kamailio `siptrace`, another sipnab. A sniffer on the path can read and replay it |
+| `hmac` | A per-packet HMAC-SHA256 token over the whole packet, with a timestamp and a nonce | Another sipnab only |
+
+### Create the key
+
+```bash
+# Run all of these, in order.
+printf '%s\n' 'replace-with-a-long-random-string' | sudo tee /etc/sipnab/hep.key >/dev/null
+sudo chmod 600 /etc/sipnab/hep.key
+```
+
+sipnab reads the file and trims the line ending. Give the same string to the
+sender.
+
+### From Kamailio (plain)
+
+Add the key to the `siptrace` lines above:
+
+```cfg
+modparam("siptrace", "auth_key", "replace-with-a-long-random-string")
+```
+
+Start the listener with the file. A listener with a key needs no
+`--hep-allow` to bind a routable address, and can still have one:
+
+```bash
+sipnab -N -L 198.51.100.1:9061 --hep-auth-file /etc/sipnab/hep.key \
+  --duration 15 --report --hep-senders --no-cli-print
+```
+
+The Kamailio run admitted every packet, and the roster names the mode:
+
+```text
+HEP senders (trust shared_secret_plain, silent after 30s)
+  received 13  admitted 13  refused 0  from untracked senders 0
+
+  SOURCE                                PACKETS  LAST SEEN                    IDLE  STATE
+  hep:102@198.51.100.10                      13  2026-11-03T15:00:41.979Z       5s  sending
+```
+
+The same run with a different key in the file refused all 13, and 30 seconds in
+the listener said why:
+
+```text
+WARN sipnab::capture::hep: HEP listener on 198.51.100.1:9061: no packets admitted for 30s — 13 arrived and every one was refused, mostly auth_mismatch (the auth key does not match this listener's secret), the last of those from 198.51.100.10; the sender is reaching this port and being turned away; capture is still listening
+```
+
+### OpenSIPS sends no key
+
+`proto_hep` has no parameter for the auth-key chunk. Its documentation lists
+`hep_id` keys `uri`, `transport` and `version` only
+([`proto_hep` 4.0](https://docs.opensips.org/docs/modules/4.0.x/proto_hep.html),
+read 2026-11-03). A listener with a key therefore refuses every OpenSIPS copy:
+
+```text
+Refused sources (1 of 1 tracked shown, limit 256, 0 evicted)
+  PEER                                        PACKETS  REASONS
+  198.51.100.10                                    13  auth_missing=13
+```
+
+Guard an OpenSIPS feed with `--hep-allow` and a firewall instead, and carry it
+over TLS when it crosses a network you do not control.
+
+### Between two sipnabs (hmac)
+
+Both ends take the same file and `--hep-auth-mode hmac`:
+
+```bash
+sipnab -N -L 127.0.0.1:9071 --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac \
+  --duration 4 --hep-senders --no-cli-print
+```
+
+```bash
+sipnab -N -I sample-call.pcap --hep-send 127.0.0.1:9071 \
+  --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac --hep-id 2002 --no-cli-print
+```
+
+The listener admitted all 33 packets under `trust shared_secret_hmac`. The same
+sender in `plain` mode met a refusal on every packet, as `hmac_bad_format`.
+
+- The token's timestamp must fall within `--hep-hmac-window` seconds of the
+  listener's clock (30 by default, at most 300). A sender with a wrong clock is
+  refused as `hmac_timestamp_out_of_window`. Fix its NTP rather than widen the
+  window: the window is how long a captured packet stays replayable.
+- `heplify-server` has no option that checks a key, so Homer accepts a feed
+  with or without one.
+
+## Carry HEP over TCP or TLS
+
+UDP gives a sender no sign that the collector is down, and leaves the copies
+readable on the path. Each end of sipnab names its own transport, so a relay
+can take one in and send another out.
+
+### A TCP or TLS listener
+
+```bash
+sipnab -N -L 198.51.100.1:9062 --hep-listen-transport tcp --hep-allow 198.51.100.10 \
+  --duration 15 --report --hep-senders --no-cli-print
+```
+
+For TLS, give the listener a certificate and its key. sipnab refuses a key
+other users can read:
+
+```bash
+chmod 600 /etc/sipnab/collector.key
+```
+
+```bash
+sipnab -N -L 198.51.100.1:9063 --hep-listen-transport tls \
+  --hep-tls-cert /etc/sipnab/collector.pem --hep-tls-key /etc/sipnab/collector.key \
+  --hep-allow 198.51.100.10 --duration 15 --report --hep-senders --no-cli-print
+```
+
+The start of the run names the transport, as in `HEP listener started on
+198.51.100.1:9063 (tls)`. A key with mode `0644` stops it instead:
+`the HEP TLS private key is world-readable (mode 0644); chmod 600 it`.
+
+- A TCP or TLS listener reads HEP v3 only. HEP v1 and v2 carry no length, so
+  they work over UDP only.
+- TLS proves the path is private, not who the sender is: sipnab asks senders
+  for no certificate. Keep `--hep-allow`, a key, or both.
+
+### OpenSIPS over TCP and TLS
+
+Each transport needs its own socket and `transport=` key. For TCP:
+
+```cfg
+socket=hep_tcp:198.51.100.10:6062
+modparam("proto_hep", "hep_id", "[sipnab] 198.51.100.1:9062; transport=tcp; version=3")
+```
+
+For TLS, add `tls_mgm` with a client domain that checks the collector's
+certificate against your CA:
+
+```cfg
+socket=hep_tls:198.51.100.10:6063
+loadmodule "tls_openssl.so"
+loadmodule "tls_mgm.so"
+modparam("tls_mgm", "client_domain", "hep")
+modparam("tls_mgm", "match_ip_address", "[hep]198.51.100.1:9063")
+modparam("tls_mgm", "ca_list", "[hep]/etc/opensips/hep-ca.pem")
+modparam("tls_mgm", "verify_cert", "[hep]1")
+modparam("tls_mgm", "require_cert", "[hep]1")
+modparam("proto_hep", "hep_id", "[sipnab] 198.51.100.1:9063; transport=tls; version=3")
+```
+
+Both runs delivered all 13 messages of the call, as `hep:101@198.51.100.10`.
+
+### Kamailio over TCP and TLS
+
+Put the transport on `duplicate_uri`, and give Kamailio a socket of that
+transport:
+
+```cfg
+listen=tcp:198.51.100.10:5060
+modparam("siptrace", "duplicate_uri", "sip:198.51.100.1:9062;transport=tcp")
+```
+
+For TLS, load `tls.so`. Kamailio's TLS module refuses to start without a server
+certificate, even when it only connects out, so its configuration file needs
+both halves:
+
+```cfg
+listen=tls:198.51.100.10:5061
+enable_tls=yes
+loadmodule "tls.so"
+modparam("tls", "config", "/etc/kamailio/tls.cfg")
+modparam("siptrace", "duplicate_uri", "sip:198.51.100.1:9063;transport=tls")
+```
+
+```ini
+[server:default]
+method = TLSv1.2+
+certificate = /etc/kamailio/kamailio.pem
+private_key = /etc/kamailio/kamailio.key
+
+[client:default]
+method = TLSv1.2+
+verify_certificate = yes
+require_certificate = yes
+ca_list = /etc/kamailio/hep-ca.pem
+```
+
+Both runs delivered all 13 messages, as `hep:102@198.51.100.10`. Without the
+`[server:default]` certificate, Kamailio exited at startup with
+`init_mod_child(): error while initializing module tls`.
+
+## Forward what sipnab captures to Homer
+
+On a machine whose SIP server sends no HEP, sipnab captures the SIP and
+forwards it. Name the interface the SIP crosses:
+
+```bash
+sudo sipnab -N -d eth0 --hep-send 198.51.100.30:9060 --hep-id 2002
+```
+
+- SIP goes as HEP type 1. RTCP goes as type 5, as the JSON heplify-server
+  stores, with the call's Call-ID, and only for calls whose SDP sipnab saw.
+  RTP is never forwarded.
+- `--hep-id` is the capture id Homer shows. Give each agent its own.
+- `--hep-send-transport tcp` or `tls` picks the transport. For TLS, the
+  collector's certificate must name the address or host name you send to.
+  `--hep-tls-ca` names the CA that signs it and replaces the host's CA bundle. `--hep-tls-extra-ca` adds a CA to the bundle
+  instead. `[hep]` in [`sipnab.toml`](config-reference.md#hep) takes the same
+  settings.
+
+heplify-server 1.60.10 accepted all three transports, started with
+`-hepaddr 0.0.0.0:9060 -heptcpaddr 0.0.0.0:9061 -heptlsaddr 0.0.0.0:9062`,
+`-tlscertfile` and `-tlskeyfile`. The test read the sample capture rather than
+an interface, one run per transport:
+
+```bash
+sipnab -N -I sample-call.pcap --hep-send 198.51.100.30:9062 --hep-send-transport tls \
+  --hep-tls-ca /etc/sipnab/collector-ca.pem --hep-id 2002 --no-cli-print
+```
+
+Each run ended with a line such as:
+
+```text
+INFO sipnab::app::batch: HEP export to 198.51.100.30:9062 over tls: 33 packet(s) sent, 33 queued, 0 replayed after an outage, none dropped, 0 still queued, none failed, 0 reconnect(s); sent means written to the connection: a write that fails is counted, the packet stays queued, and the sender dials again with backoff
+```
+
+heplify-server's own counter then read `heplify_packets_total{node_id="2002",type="sip"} 99`:
+33 packets from each of the three runs. A run reading a capture file also warns
+that the file's signaling leaves the machine. [Connect sipnab to
+Homer](homer-sipnab.md#sipnab-as-a-source-for-homer) finds the call in Homer
+afterwards.
+
+## When the collector goes away
+
+Over TCP or TLS, sending runs on its own thread behind a queue, so a collector
+that stops never slows the capture:
+
+- **At startup**, a collector that refuses the first connection stops the run
+  with exit `2`:
+
+  ```text
+  Failed to create HEP sender: Failed to connect HEP sender to '127.0.0.1:9079' over TCP: Connection refused (os error 111)
+  ```
+
+- **After that**, packets queue, up to `--hep-send-queue` MiB (64 by default),
+  the oldest dropped first at the bound. The sender redials with backoff, each
+  attempt bounded by `--hep-send-timeout` seconds (3 by default), and replays
+  the queue in capture order when the collector answers.
+- **Over UDP**, sipnab cannot see an outage, so it holds nothing and replays
+  nothing.
+
+A live run that captured 25 calls showed it. sipnab sent over TCP to a second
+sipnab on `127.0.0.1:9070`. SIGTERM stopped the collector 12 seconds in, and
+a new one started 20 seconds later:
+
+```bash
+sudo sipnab -N -d hepx --hep-send 127.0.0.1:9070 --hep-send-transport tcp \
+  --hep-id 2002 --duration 60 --no-cli-print 'udp port 5060'
+```
+
+```text
+WARN sipnab::capture::hep_delivery: HEP collector 127.0.0.1:9070 unreachable (write: the collector closed the connection); queueing up to 65536 KiB and retrying
+INFO sipnab::capture::hep_delivery: HEP collector 127.0.0.1:9070 is reachable again; replaying 143 queued packet(s)
+WARN sipnab::app::batch: HEP export to 127.0.0.1:9070 over tcp: 325 packet(s) sent, 325 queued, 143 replayed after an outage, none dropped, 0 still queued, 9 failed attempt(s) (connect 8, write 1), 1 reconnect(s); sent means written to the connection: a write that fails is counted, the packet stays queued, and the sender dials again with backoff
+```
+
+The first collector admitted 65 packets and the second 260: all 325. A failed
+attempt keeps its packet queued, so `9 failed attempt(s)` lost nothing. What
+a run loses is the `dropped` count, by reason: `queue_full`, `stopped` (sipnab
+itself stopped with packets still queued) and `unsent_at_exit`. The same
+counts are in `runtime_stats`, `GET /v1/runtime` and the Prometheus series.
+[When the `--hep-send` collector goes away](cli-reference.md#when-the---hep-send-collector-goes-away)
+gives every rule.
+
+## Read a HEP mirror off the wire instead
+
+A SIP server may already send HEP to an address where nothing listens for it,
+or to Homer on the same machine. sipnab can read those packets off the
+interface rather than take the port, so Homer keeps its feed. `-E`
+(`--hep-parse`) unwraps HEP inside ordinary captured UDP.
+
+Put it in a configuration file, so that a plain `sipnab` does it. In this run
+OpenSIPS sent to `198.51.100.1:9061`, where nothing listened, and the file
+named the interface the copies crossed and their port:
+
+```toml
+[capture]
+device = "hepx"
+hep_parse = true
+bpf_filter = "udp port 9061"
+```
+
+For a SIP server that sends to Homer on the same machine, the interface is
+`lo` and the port Homer's.
+
+```bash
+sudo sipnab -N --config mirror.toml --duration 15 --report --no-cli-print
+```
+
+```text
+1-hep@example.com                sipp           echo           Completed    200    0s         13     0.0s     -
+INFO sipnab::capture::live: Live capture on 'hepx' finished: 13 packets, no drops
+INFO sipnab::app::batch: sipnab: 13 packets captured, 13 SIP messages, 0 RTP packets across 0 streams
+```
+
+- A sniffed copy reaches no socket, so `--hep-allow` and a key do not apply to
+  it.
+- `--no-hep-parse` turns it off for one run when the file turns it on.
+- [Use `--hep-parse` on a relay capture](rtpengine.md#use---hep-parse-on-a-relay-capture)
+  covers rtpengine's mirrored control plane.
+
+## Take signaling from HEP and media from the wire
+
+HEP carries no RTP. One sipnab can take the SIP from the listener and the
+media from an interface, and bind each stream to its call by the SDP:
+
+```bash
+sudo sipnab -N -d hepx --hep-listen 198.51.100.1:9061 --hep-allow 198.51.100.10 \
+  --duration 15 --json-dialogs --no-cli-print 'udp port 5060'
+```
+
+That run's filter also took the SIP off the bridge, to compare the two. To take
+only media from the interface, give it your media ports instead, such as
+`"udp portrange 10000-20000"`. The run states both sources at startup:
+`Capturing from two sources in one process: device 'hepx' + HEP listener
+198.51.100.1:9061`. It also warns that two clocks stamp the two sources.
+
+When the interface also sees the SIP, sipnab compares the two accounts of each
+call. Agreement prints nothing. A disagreement is a finding in the call's
+diagnosis, under `source_disagreement` in `--json-dialogs` and in
+`--call-report`. With OpenSIPS tracing `"m"` instead of `"d"`, the mirror
+reported only the INVITE, and the call said:
+
+```text
+Capture sources disagree about this call: the wire carried 12 messages the mirror never reported (100 Giving it a try #2, INVITE (SDP) #3, 180 Ringing #4, and 9 more). 1 message matched on both.
+```
+
+[Take signaling from HEP and media off the wire, in one process](examples.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process)
+explains each kind of finding, and the combinations sipnab refuses (`-I`,
+`--multi-device` or `-O` with the pair).
+
+## When something does not work
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `received 0` and `no packets for 30s` | Nothing reaches the port | The SIP server's address and port, its transport, the firewall |
+| Refused, `auth_missing` | The listener has a key and the sender sends none (OpenSIPS never does) | Drop the key and use `--hep-allow`, or send from Kamailio with `auth_key` |
+| Refused, `auth_mismatch` | Different keys on the two ends | Compare the strings. sipnab trims the file's line ending |
+| Refused, `hmac_bad_format` | The listener is in `hmac` mode and the sender in `plain` | Set `--hep-auth-mode hmac` on both |
+| Refused, `allowlist` | The sender's address is outside `--hep-allow` | Add it, as an address or a range |
+| `Failed to create HEP sender` and exit 2 | The TCP or TLS collector refused the first connection | Start the collector first |
+| The TLS listener does not start: `world-readable` | The key file's mode | `chmod 600` the key |
+| OpenSIPS sends nothing | `hep_id` without `transport=udp` and no `hep_tcp` socket | Add `transport=udp`, or the socket |
+| Kamailio exits at startup with TLS | No `[server:default]` certificate | Add one, as above |
+
+[A HEP collector that receives nothing](troubleshooting.md#a-hep-collector-that-receives-nothing)
+lists every refusal reason, and [Error messages](errors.md) every startup
+refusal.
+
+---
+
+<!-- source: docs/archives.md -->
+
+# Read captures from tar, ZIP and 7z archives
+
+Captures often arrive packed: a `.tgz` of a ring buffer, a password-protected
+ZIP from a carrier, a 7z from an incident-response team. Point `-I` at the
+archive and sipnab reads every capture inside, in capture order, as if you had
+unpacked it into a directory. It leaves no decrypted copy behind.
+
+## Before you start
+
+- **A build with `archive`** for ZIP and 7z. Every release binary and package
+  has it, the static musl tarballs and the `-noaudio` packages included. Check
+  that `archive` is in the `features:` list of `sipnab --version`. tar, `.tgz`
+  and gzip need no feature.
+- **No privileges.** Reading an archive is reading a file.
+- **No change on any other system.** sipnab reads the archive as it arrived.
+
+What ran: every command and output on this page ran on 2026-11-03 with sipnab
+0.5.232 built from source. GNU tar, Info-ZIP `zip -e` and 7-Zip 25.01
+(`7z a -tzip -mem=AES256`, `7z a -mhe=on`) made the archives from two captures:
+`sample-call.pcap` (see [Triage a capture from the command
+line](first-cli-triage.md)) and a second one-call capture, `sip-call.pcap`.
+
+## Read a tar or a `.tgz`
+
+```bash
+sipnab -N -I session.tgz --report --no-cli-print
+```
+
+Read the lines sipnab prints before the report. They account for every member:
+
+```text
+WARN sipnab::capture::input_set: Skipping 'session.tgz/notes.txt': not a capture (starts with 63 61 6c 6c, which is not pcap or pcapng)
+WARN sipnab::capture::input_set: Skipping 'session.tgz/evidence.zip/sample-call.pcap': encrypted, and no password was supplied (--archive-password-file, --archive-password-command, --archive-password-stdin, or the prompt)
+WARN sipnab::capture::input_set: Skipping 'session.tgz/evidence.zip/sip-call.pcap': encrypted, and no password was supplied (--archive-password-file, --archive-password-command, --archive-password-stdin, or the prompt)
+INFO sipnab::capture::input_set: 'session.tgz' unpacked (gzip > tar > gzip): 2 capture(s) to read, 3 member(s) not read, 1 directory entr(ies)
+WARN sipnab::capture::input_set: -I resolved to 2 capture file(s), 3 archive member(s) not read (each named above with its reason)
+```
+
+This archive held a ring buffer of two captures, one of them gzip-compressed, a
+text note, and a password-protected ZIP:
+
+- The two captures joined the set, and sipnab read them in capture order,
+  whatever their names.
+- `gzip > tar > gzip` names the layers sipnab unwrapped, outermost first. It
+  goes up to four layers deep and recognizes each by its bytes, not its name.
+- sipnab names the note and the locked ZIP's members with the reason it did
+  not read them. The run went on with the rest.
+- `--input-name` reads only the members whose file name matches, as it does in
+  a directory: `--input-name 'a.pcap'`.
+
+## Read a password-protected ZIP or 7z
+
+Give sipnab the password, and it reads the members as it reads a tar's. Keep
+the password off the command line: this section lists the sources best first.
+
+### From a file
+
+The file holds one password per line. sipnab refuses a file that other users
+can read:
+
+```bash
+sipnab -N -I evidence.zip --archive-password-file pcaps.pw --report --no-cli-print
+```
+
+```text
+--archive-password-file 'pcaps.pw' can be read or written by other users (mode 0644); chmod 600 it
+```
+
+That run exited `2`. After `chmod 600 pcaps.pw`, the same command read both
+members:
+
+```text
+INFO sipnab::privilege: Core dumps disabled (decryption active)
+INFO sipnab::capture::input_set: 'evidence.zip' unpacked (zip): 2 capture(s) to read, 0 member(s) not read, 0 directory entr(ies)
+INFO sipnab::app::batch: sipnab: 640 packets captured, 40 SIP messages, 600 RTP packets across 2 streams
+```
+
+sipnab accepts a file another user owns, such as a Kubernetes secret mount.
+`--archive-password-file <(pass show pcaps/lab)` keeps the password off the
+disk.
+
+### From a password manager
+
+sipnab runs the command without a shell and uses the first line it prints:
+
+```bash
+sipnab -N -I evidence.7z --archive-password-command 'pass show pcaps/lab' --report --no-cli-print
+```
+
+A run whose command printed the 7z's password read both members:
+
+```text
+INFO sipnab::capture::input_set: 'evidence.7z' unpacked (7z): 2 capture(s) to read, 0 member(s) not read, 0 directory entr(ies)
+```
+
+### From stdin, for a CI job
+
+```bash
+printf '%s\n' "$PCAP_PW" | sipnab -N -I evidence.zip --archive-password-stdin --report --no-cli-print
+```
+
+### From a systemd credential, for a service
+
+When `$CREDENTIALS_DIRECTORY/archive-password` exists, sipnab reads it as a
+password file. In a unit, that is one line:
+
+```ini
+LoadCredential=archive-password:/etc/sipnab/pcaps.pw
+```
+
+The same setting on a transient unit read the ZIP with no password flag at
+all:
+
+```bash
+systemd-run --user --wait --pipe -p LoadCredential=archive-password:/etc/sipnab/pcaps.pw \
+  sipnab -N -I /srv/captures/evidence.zip --no-password-prompt --report --no-cli-print
+```
+
+```text
+INFO sipnab::capture::input_set: '/srv/captures/evidence.zip' unpacked (zip): 2 capture(s) to read, 0 member(s) not read, 0 directory entr(ies)
+```
+
+### From the environment, or the command line
+
+`SIPNAB_ARCHIVE_PASSWORD` works, but every child process inherits it.
+`--archive-password` works too, and sipnab warns on every use, because other
+users can read it in `ps`:
+
+```text
+WARN sipnab::capture::archive::password: WARNING! Using --archive-password on the command line is insecure: other local users can read it in `ps`, and it is saved in shell history. Use --archive-password-stdin, --archive-password-file or --archive-password-command.
+```
+
+### At the terminal
+
+With no password configured, or none that opens a member, sipnab asks on the
+terminal, three times per archive:
+
+```bash
+sipnab -N -I evidence.7z --report --no-cli-print
+```
+
+```text
+Password for evidence.7z (member (the archive), attempt 1 of 3):
+Wrong password. Password for evidence.7z (member (the archive), attempt 2 of 3):
+```
+
+- It reads `/dev/tty`, so it asks even with stdin redirected, and echoes
+  nothing.
+- An empty entry skips that archive's locked members. Ctrl-C stops the run
+  with exit `130`.
+- A 7z made with `-mhe=on` encrypts its member list too, so the prompt names
+  the archive rather than a member.
+- With no terminal (cron, CI, an agent), or with `--no-password-prompt`,
+  sipnab never asks and never waits.
+- The TUI asks in a popup instead
+  ([Archive password popup](keybindings.md#archive-password-popup)).
+
+### Over REST
+
+A client of the REST API's capture comparison may send a password for one
+request in a header. sipnab accepts it from a client on the same host only,
+unless you start sipnab with `--api-accept-archive-passwords`:
+
+```bash
+printf 'Sipnab-Archive-Password: %s\n' "$(pass show pcaps/lab)" \
+  | curl -s -H @- "http://127.0.0.1:18080/v1/captures/compare?a=evidence.zip&b=sample-call.pcap" | jq .a
+```
+
+```json
+{"filename":"evidence.zip","packets":640,"dialogs":8,"streams":2,"dialogs_dropped":0}
+```
+
+Without the header, the same request answered that the archive had no readable
+capture, naming each member `encrypted_no_password`.
+[`GET /v1/captures/compare`](rest-api.md#get-v1capturescompare) gives the
+rules. MCP takes no archive password on any tool: an agent's
+`open_capture` uses the passwords the operator configured.
+
+## Check that it worked
+
+- The `unpacked` line counts what sipnab reads and what it does not.
+- Every member it did not read has its own `Skipping` line.
+- A run that read nothing from an archive named with `-I` exits `1`, naming
+  each member with its reason code:
+
+  ```text
+  -I/--input: cannot read capture 'evidence.7z' named with -I: no readable capture in it (evidence.7z: encrypted_wrong_password)
+  ```
+
+- A run that read some members exits `0`. The closing `-I resolved to` line
+  counts the rest.
+
+## When something does not work
+
+| What sipnab says | Why | What to do |
+|---|---|---|
+| `encrypted, and no password was supplied` | No source gave a password, and there was no terminal to ask on | Add `--archive-password-file` or another source |
+| `encrypted, and no password supplied opens it` | Every password tried was wrong | Check the password. For a ZIP from an old Windows tool, try `--archive-password-encoding cp437` |
+| `can be read or written by other users (mode 0644); chmod 600 it`, exit 2 | The password file is not private | `chmod 600` it |
+| `uses ZipCrypto, which does not protect its contents` | The ZIP uses the legacy cipher (Info-ZIP's `zip -e` does) | sipnab reads it. Ask the sender to re-encrypt with AES-256 |
+| `xz data, which sipnab does not unwrap` (or `zstd`, `bzip2`, `LZ4`) | A compression sipnab does not read | Unpack that member with its own tool, then point `-I` at the result |
+| `decompressing reached the N-byte ceiling` | The archive inflates past `--max-gunzip-bytes` (1 GiB) | For an archive you trust, raise it |
+| `could not be read past this point`, `INCOMPLETE RUN`, exit 1 | The archive stops early | sipnab kept what arrived. Fetch the archive again |
+| `has link type N, which sipnab does not decode` | A member is not an IP capture, such as an LTE MAC log | Nothing: its frames count as not decoded |
+
+[Archives](cli-reference.md#archives) and [Archives read like
+directories](cli-reference.md#archives-read-like-directories) give every rule:
+nesting, member names, ceilings, and where the unpacked copies live while a run
+reads them.
 
 ---
 
@@ -51566,7 +52774,9 @@ stop, such as what leaves the host over the network.
   serves the API.
 
 **Steps.** This run takes its calls from a HEP listener, so it keeps
-running while calls come and go:
+running while calls come and go. [Collect and forward
+HEP](hep.md#have-your-sip-server-send-hep) has the lines a SIP server needs to
+send it:
 
 ```sh
 # Run all of these, in order.
@@ -54624,6 +55834,7 @@ after it give:
 | GTP-U, VXLAN or GENEVE | yes | add `--capture-tunnels` |
 | Teredo or L2TPv2 | yes (L2TPv2 data messages only) | add `--capture-tunnels=3544` or `--capture-tunnels=1701` |
 | ESP | only when NULL-encrypted | pass your own BPF filter that adds it, such as `portrange 5060-5061 or ip proto 50` |
+| SCTP | yes, including a message split across DATA chunks | yes: the generated filter's `portrange` matches SCTP as well as UDP and TCP |
 | UDP-encapsulated ESP, or L2TPv3 over UDP | no | no |
 | anything else | no | no |
 
@@ -54930,6 +56141,35 @@ sipnab unwraps SIP carried over WebSocket
 sipnab reassembles IP fragments and TCP segments before it parses.
 So a SIP message split across packets reads as one message.
 `--no-reassembly` turns this off and parses every packet on its own.
+
+## SIP over SCTP
+
+sipnab reads SIP carried in SCTP DATA chunks ([RFC 4168](https://www.rfc-editor.org/rfc/rfc4168.html)),
+as it reads UDP and TCP, and needs no flag for it. It puts a message split
+across DATA chunks in separate packets back together before it parses it.
+
+```bash
+sipnab -N -I sip-over-sctp.pcap --report
+```
+
+A five-message call over SCTP, built with [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737.html) addresses, read as:
+
+```text
+22:13:20.000 192.0.2.10:5060 -> 192.0.2.20:5060 INVITE (SDP) SCTP
+22:13:20.500 192.0.2.20:5060 -> 192.0.2.10:5060 200 OK (SDP) SCTP
+22:13:21.000 192.0.2.10:5060 -> 192.0.2.20:5060 ACK SCTP
+22:13:21.500 192.0.2.10:5060 -> 192.0.2.20:5060 BYE SCTP
+22:13:22.000 192.0.2.20:5060 -> 192.0.2.10:5060 200 OK SCTP
+```
+
+The same capture with the INVITE split into two DATA chunks in two packets read
+6 packets as the same 5 SIP messages.
+
+- The transport column says `SCTP`.
+- `--portrange` applies to SCTP ports as it does to UDP and TCP.
+- A live capture needs nothing extra: libpcap compiles the generated filter's
+  `portrange 5060-5061` to match SCTP too (`tcpdump -d 'portrange 5060-5061'`
+  shows the comparison against IP protocol 132).
 
 ## STUN and TURN
 
@@ -64172,6 +65412,9 @@ from anyone who can reach port 9060. So open that port only to:
   - sipnab's capture saw the call. Run it with `--report` and look for the
     Call-ID.
 
+[Collect and forward HEP](hep.md) adds a shared secret, HEP over TCP and TLS,
+and what a collector outage costs a `--hep-send` agent.
+
 ---
 
 <!-- source: docs/prometheus.md -->
@@ -70168,6 +71411,52 @@ SRTP keys arrive two ways, and sipnab reads both:
 handshakes. If you already hold SRTP master keys rather than a handshake,
 `--srtp-keys` takes them directly.
 
+A run that loaded the keys says so, with a count: `DTLS-SRTP active: N keylog
+entr(ies) from <file>` for `--dtls-keylog`, and `SRTP decryption active: N
+key(s) from <file>` for `--srtp-keys`.
+
+### The `--srtp-keys` file
+
+```text
+# One line per SRTP stream. ssrc= is the stream's SSRC in decimal.
+# key= is the master key and salt together, base64.
+ssrc=439041101 key=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0e
+# Or the key and the salt apart, and the crypto suite by its SDES name.
+ssrc=1584364171 key=AQIDBAUGBwgJCgsMDQ4PEA== salt=ERITFBUWFxgZGhscHR4= suite=AES_CM_128_HMAC_SHA1_80
+```
+
+- One key per line, as space-separated `name=value` fields in any order.
+  sipnab skips blank lines and lines starting with `#`.
+- Every line needs `key=`, in base64. Without `salt=` it holds the master key
+  followed by the master salt: 30 bytes for the 128-bit suites, 46 for
+  `AES_256_CM_HMAC_SHA1_80`. With `salt=`, each holds its own half.
+- `ssrc=` ties the key to one stream, by its SSRC as a decimal number (a
+  stream sipnab lists as `0x1a2b3c4d` is `439041101`). Without it, sipnab tries
+  the key on every stream, after the keys that name that stream.
+- `suite=` takes `AES_CM_128_HMAC_SHA1_80` (the default),
+  `AES_CM_128_HMAC_SHA1_32` or `AES_256_CM_HMAC_SHA1_80`.
+- A line sipnab cannot read stops the run with exit `1`, naming the file and
+  the line.
+
+```bash
+sipnab -N -I srtp-call.pcap --srtp-keys srtp.keys --export-audio call-2c9d47@192.0.2.10
+```
+
+```text
+INFO sipnab::app::batch: SRTP decryption active: 2 key(s) from srtp.keys
+WARN sipnab::app::batch: manual SRTP keys loaded from srtp.keys — use only in test environments
+Exported 6.0s stereo audio (300 + 300 frames, 8000Hz) to call-2c9d47_192.0.2.10.wav
+```
+
+That capture was the sample call with both RTP streams encrypted as SRTP
+(AES-CM-128, HMAC-SHA1-80) under the keys above. The WAV sipnab wrote matched,
+byte for byte, the one it writes from the unencrypted capture. Without
+`--srtp-keys`, the same export decoded the ciphertext as noise.
+
+Not run for this page: a DTLS-SRTP call with `--dtls-keylog`. No harness here
+produces one. The repository's test suite decrypts a synthetic DTLS-SRTP
+exchange ([`tests/decryption_wrapper_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/decryption_wrapper_matrix_test.rs)).
+
 Without a key, SRTP media is still measured.
 
 - Packet counts, loss, jitter and timing come from the RTP header. SRTP leaves
@@ -70181,6 +71470,57 @@ Without a key, SRTP media is still measured.
     many packets sipnab could not decrypt.
   - If sipnab decrypted only some packets, it marks the audio PARTIAL and
     counts the others.
+
+## Share a capture without its keys
+
+A pcapng can carry the TLS keys inside it, in a Decryption Secrets Block:
+eCapture writes one, and so does `--pcap-export-mode encrypted+dsb`. Anyone
+with the file can then read the calls. `--strip-secrets` writes a copy without
+them, and leaves the original as it was:
+
+```bash
+sipnab --strip-secrets shareable.pcapng -I with-keys.pcapng
+```
+
+It prints nothing and exits `0`. Check the copy by reading both:
+
+```bash
+sipnab -N -I with-keys.pcapng --portrange 1-65535 --report --no-cli-print
+```
+
+```text
+INFO sipnab::app::batch: TLS decryption active: 5 secret(s) from embedded DSB in with-keys.pcapng
+INFO sipnab::app::batch: sipnab: 25 packets captured, 7 SIP messages, 0 RTP packets across 0 streams
+```
+
+The same command on `shareable.pcapng` finds no secrets and reads `0 SIP
+messages` from the same 25 packets. The capture was a TLS 1.3 SIP call on port
+15061, made with [`harness/tls/make-tls-call.py`](https://github.com/NormB/sipnab/blob/main/harness/tls/make-tls-call.py).
+
+## Write the decrypted call to a file
+
+`--pcap-export-mode` decides what `-O` writes for traffic sipnab decrypted:
+
+| Mode | The file holds | Keys in the file |
+|---|---|---|
+| `raw` (default) | The packets as captured, still encrypted | None |
+| `encrypted+dsb` | The packets as captured, and the keys in a Decryption Secrets Block, so Wireshark decrypts them | Yes |
+| `decrypted` | One plain TCP frame per SIP message from TLS or WSS, and plain RTP for SRTP, on the captured addresses and times | None, but the content is readable |
+
+```bash
+sipnab -N -I tlscall.pcap --keylog tlscall.keylog --pcapng -O plain.pcapng --pcap-export-mode decrypted --no-cli-print
+```
+
+A `decrypted` run ends with a line of counts:
+
+```text
+sipnab: decrypted export: 7 SIP from TLS, 0 SIP from WSS, 0 RTP from SRTP; 0 TLS segments copied as captured, 25 captured segments replaced, 0 SRTCP copied as captured, 0 not rebuildable, 0 out of order, 0 discarded at stop
+```
+
+An `encrypted+dsb` run logs `Wrote DSB (992 bytes of key material)` instead.
+Treat a `decrypted` or `encrypted+dsb` file like the call itself.
+[Export encrypted packets for Wireshark](examples.md#export-encrypted-packets-for-wireshark)
+has the three commands side by side.
 
 ## When the keys arrive after the call starts
 

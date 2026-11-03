@@ -69,6 +69,16 @@ Each answers one "how do I" question and assumes you already know what you want.
 - **[Read SIP inside a tunnel or tag](encapsulations.md)**: whether sipnab
   can read SIP wrapped in MPLS, PPPoE, GTP-U or VXLAN, and what it says when it
   cannot.
+- **[Capture with the least privilege](least-privilege.md)**: capture rights
+  without root, the privilege drop and a chroot, and the Landlock and seccomp
+  confinement, with what this kernel supports.
+- **[Collect and forward HEP](hep.md)**: receive HEP from OpenSIPS or
+  Kamailio, require a shared secret, carry it over TCP or TLS, and forward what
+  sipnab captures to Homer.
+- **[Read captures from tar, ZIP and 7z archives](archives.md)**: a `.tgz` of a
+  ring buffer or a password-protected ZIP or 7z, read where it is, with the
+  password from a file, a password manager, a systemd credential or the
+  terminal.
 - **[Capture SIP over TLS](tls-capture.md)**: pick a method by the access
   you have, whether a key log, the process itself, or eBPF.
 - **[Read SIP over TLS without keys](uprobe-walkthrough.md)**: the uprobe and

@@ -2331,6 +2331,9 @@ one of these:
 - a source allowlist (`--hep-allow`),
 - a shared secret (`--hep-auth-file`).
 
+[Collect and forward HEP](@/docs/hep.md) gives the lines each SIP server needs, the
+shared secret, and HEP over TCP or TLS.
+
 Then start it, in this order:
 
 - Reload systemd so it reads the new unit:

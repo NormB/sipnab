@@ -1635,7 +1635,27 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // +1 (the how-to) and rtpengine.md +1 (to the route). Counted per page
     // against origin/main 706e0e087; the train's other pages held their
     // counts.
-    const EXPECTED_WIKI_LINKS: usize = 2247;
+    // 2247 -> 2326 (#640, the capture how-tos, one change): docs/hep.md +19,
+    // docs/least-privilege.md +11, docs/archives.md +5 (the three new pages:
+    // their tables of contents, step and troubleshooting cross-references, and
+    // the reference sections they point at); docs/examples.md +15 (the HEP
+    // server blocks, pitfalls and restart lines link hep.md or
+    // freeswitch-sipnab.md; the root recipe links least-privilege.md; two
+    // goal-table rows and the new live-capture and replay recipes' links);
+    // cli-reference.md +10 (the `-L`, `-H`, `--sandbox`, `--seccomp`,
+    // `--setup-caps`, `--chroot`, `--srtp-keys`, `--strip-secrets` and
+    // `--pcap-export-mode` rows and the Archives section link the task pages);
+    // README.md +3 (the three index entries); troubleshooting.md +3 (the
+    // export line and the two archive lines); tuning-capture.md +3; install.md
+    // +2; mcp-estate.md +2; homer-sipnab.md +1; tls-capture.md +1; and the
+    // pages that already discussed HEP now link hep.md: rest-api.md +2 (the
+    // export counts and the sender roster), mcp-deploy.md +1 (the listener
+    // guard) and vcon.md +1 (the HEP-fed live run). Counted per page against
+    // origin/main 9124a6f08, and again on the train's tree, where
+    // least-privilege.md has one more: its link to troubleshooting.md's
+    // output-file section, from the correction that `-O` is created after the
+    // drop.
+    const EXPECTED_WIKI_LINKS: usize = 2326;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2898,7 +2918,9 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // from docs/README.md's How-to list.
     // 103 -> 104 (#638): docs/run-as-a-service.md, linked from
     // docs/README.md.
-    const EXPECTED_DOCS_PAGES: usize = 104;
+    // 104 -> 107 (#640): docs/hep.md, docs/archives.md and docs/least-privilege.md,
+    // the capture how-tos, each reached from docs/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 107;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

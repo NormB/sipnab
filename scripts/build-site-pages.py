@@ -478,6 +478,45 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "counters, tell the two apart, and decide between the any device "
         "and a named interface.",
     ),
+    # The least-privilege how-to (2026-11-03). Weight 85: it took 68 on its
+    # branch while docs/relay-statistics.md took 68 on main; they met in the
+    # 2026-11-04 merge train, where 83-85 were the next free weights.
+    (
+        "docs/least-privilege.md",
+        "least-privilege.md",
+        "Capture with the least privilege",
+        "Capture with the least privilege",
+        85,
+        "Grant capture rights without root, let sipnab drop root and confine "
+        "itself to a directory, and bound its files with Landlock and its "
+        "system calls with seccomp.",
+    ),
+    # The HEP how-to (2026-11-03): both directions, the shared secret, TCP and
+    # TLS, and a collector outage. Weight 83: it took 66 on its branch while
+    # docs/fleet.md took 66 on main; see the least-privilege entry.
+    (
+        "docs/hep.md",
+        "hep.md",
+        "Collect and forward HEP",
+        "Collect and forward HEP",
+        83,
+        "Receive HEP from OpenSIPS or Kamailio, require a shared secret, carry "
+        "it over TCP or TLS, forward what sipnab captures to Homer, and read "
+        "what a collector outage cost.",
+    ),
+    # The archives how-to (2026-11-03). Weight 84: it took 67 on its branch
+    # while docs/run-as-a-service.md took 67 on main; see the least-privilege
+    # entry.
+    (
+        "docs/archives.md",
+        "archives.md",
+        "Read captures from tar, ZIP and 7z archives",
+        "Read captures from archives",
+        84,
+        "Read a compressed tar of captures or a password-protected ZIP or 7z "
+        "where it is, give sipnab the password from a file, a password manager, a "
+        "systemd credential or the terminal, and read what it skipped.",
+    ),
     # Registered with the page itself, for the reason the two entries above
     # record. `docs/vcon.md` is the operator page for the vCon exporter and it
     # links `docs/internals/vcon.md`, `docs/library.md` and the three surface

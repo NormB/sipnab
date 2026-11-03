@@ -348,6 +348,9 @@ pages = [
   { path = "docs/uprobe-walkthrough.md", menu = true },
   { path = "docs/tuning-capture.md", menu = true },
   { path = "docs/encapsulations.md", menu = true },
+  { path = "docs/least-privilege.md", menu = true },
+  { path = "docs/hep.md", menu = true },
+  { path = "docs/archives.md", menu = true },
   { path = "docs/rtpengine.md", menu = true },
   { path = "docs/relay-statistics.md", menu = true },
 ]

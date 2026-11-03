@@ -1,0 +1,213 @@
+# Capture with the least privilege
+
+A live capture needs raw-socket rights for one moment: opening the interface.
+Everything after that, the parsing of untrusted packets included, needs none.
+This page takes the rights away as early as sipnab allows, and narrows what the
+process can reach after that.
+
+| Step | What it takes away | Needs |
+|---|---|---|
+| [Grant capture rights to the binary](#grant-capture-rights-to-the-binary) | Running as root at all | Linux, `setcap` |
+| [Let sipnab drop root](#let-sipnab-drop-root-after-opening-the-interface) | Root after the interface opens | Started as root |
+| [Confine it to a directory](#confine-it-to-a-directory) | The rest of the file system | Started as root |
+| [Bound the files it can open](#bound-the-files-it-can-open-landlock) | Files outside the paths the run names | A kernel with Landlock |
+| [Bound the system calls it makes](#bound-the-system-calls-it-makes-seccomp) | System calls outside a derived list | A kernel with seccomp, a list derived on that host |
+
+Reading a capture file needs none of this: it is reading a file.
+
+What ran: every command and output on this page ran on 2026-11-03 with sipnab
+0.5.232 built from source, on Ubuntu 24.04 with Linux 6.8 (aarch64). That
+kernel has seccomp and no Landlock, so [Bound the files it can
+open](#bound-the-files-it-can-open-landlock) shows the refusal and not a
+confined run.
+
+## Grant capture rights to the binary
+
+```bash
+sipnab --setup-caps
+```
+
+It sets `cap_net_raw,cap_net_admin+ep` on the binary with `setcap`,
+re-running itself through `sudo` when it is not root, and exits. It prints
+nothing. Check the result:
+
+```bash
+getcap "$(command -v sipnab)"
+```
+
+It prints the binary's path followed by `cap_net_admin,cap_net_raw=ep`.
+
+Then capture as your own user:
+
+```bash
+sipnab -N -d eth0 --duration 3 --no-cli-print
+```
+
+On a lab bridge, `hepx`, that printed:
+
+```text
+INFO sipnab::capture::live: Capturing on 'hepx' (link_type=1, snaplen=65535)
+INFO sipnab::capture::live: Live capture on 'hepx' finished: 0 packets, no drops
+```
+
+- Replacing the binary clears its capabilities: an upgrade, a rebuild, a
+  package update. Run `--setup-caps` again after each.
+- A file system mounted `nosuid` ignores file capabilities.
+- macOS and other systems without file capabilities run live capture under
+  `sudo`.
+- Under systemd, `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` grants the
+  same to a unit that runs as an ordinary user ([Run sipnab as a
+  service](examples.md#run-sipnab-as-a-service)).
+
+## Let sipnab drop root after opening the interface
+
+Started as root, sipnab opens the interface, then switches to an unprivileged
+user: `nobody` unless you name another with `--user` or `[privilege] user`.
+
+```bash
+sudo sipnab -N -d eth0 --duration 3 --no-cli-print
+```
+
+The log says which user it became. On the lab bridge:
+
+```text
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+```
+
+- sipnab opens what the run reads by path before the drop: the capture
+  device, a keylog file or FIFO, the config. A file the dropped user cannot
+  reach is unreachable after that.
+- It creates `-O` and `--split` files after the drop, as the dropped user, so
+  that user must be able to write their directory ([An output file sipnab
+  cannot create](troubleshooting.md#an-output-file-sipnab-cannot-create)).
+- The dropped user usually cannot read your home directory, so the TUI's file
+  browser (`O`) shows nothing there. Capture with capabilities instead.
+- `--no-priv-drop` (or `[privilege] no_priv_drop = true`) keeps root for the
+  whole run, and the log says `Privilege drop disabled (--no-priv-drop)`.
+  `--priv-drop` turns the drop back on for one run when the file turns it off.
+  The scanner-kill worker does not need either: sipnab opens its raw socket
+  before the drop.
+
+## Confine it to a directory
+
+`--chroot DIR` (or `[privilege] chroot`) changes the root directory to `DIR`
+after the interface opens and before the drop.
+
+sipnab looks the user up after it changes root, so `DIR` must hold an
+`etc/passwd` that names that user. A directory without one stops the run with
+exit `1`:
+
+```text
+Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>
+```
+
+A directory that does not exist stops it too: `Failed to chroot:
+chroot(/var/empty) failed: No such file or directory (os error 2)`. Debian and
+Ubuntu have no `/var/empty`. Make a directory with only the user's entries:
+
+```bash
+# Run all of these, in order.
+sudo mkdir -p /var/lib/sipnab/jail/etc
+grep '^nobody:' /etc/passwd | sudo tee /var/lib/sipnab/jail/etc/passwd >/dev/null
+grep '^nogroup:' /etc/group | sudo tee /var/lib/sipnab/jail/etc/group >/dev/null
+```
+
+```bash
+sudo sipnab -N -d eth0 --user nobody --chroot /var/lib/sipnab/jail --duration 3 --no-cli-print
+```
+
+```text
+INFO sipnab::privilege: Chrooted to /var/lib/sipnab/jail
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+```
+
+Any file the run writes after this, `-O` included, is a path inside `DIR`.
+
+## Bound the files it can open (Landlock)
+
+`--sandbox` uses Linux's Landlock to limit which paths the process can open
+once startup is over, to the ones the run names: its inputs, outputs, key
+files and configuration.
+
+- `--sandbox best-effort` confines the run where the kernel has Landlock, and
+  warns and runs unconfined where it does not.
+- `--sandbox required` refuses to capture without it, with exit `1`.
+
+On a kernel built without Landlock:
+
+```bash
+sipnab -N -I sample-call.pcap --sandbox required --report --no-cli-print
+```
+
+```text
+WARN sipnab::app::bootstrap: path sandbox NOT active: this kernel has no Landlock (needs 5.13 or newer). The capture is running unsandboxed; `--sandbox required` refuses instead of continuing.
+`--sandbox required` was given and no path sandbox is in force: this kernel has no Landlock (needs 5.13 or newer). Refusing to capture. Use `--sandbox best-effort` to capture without one.
+```
+
+That kernel was 6.8 built without `CONFIG_SECURITY_LANDLOCK`. Check yours:
+
+```bash
+cat /sys/kernel/security/lsm
+```
+
+`landlock` must be in the list. Not run for this page: a run with Landlock in
+force.
+
+## Bound the system calls it makes (seccomp)
+
+`--seccomp` installs a seccomp filter. Its two modes are two steps:
+
+1. **`--seccomp log`** allows every system call and records each one. It
+   protects nothing. It exists to find out which calls your runs make.
+2. **`--seccomp enforce`** kills the process on a call outside an allowlist,
+   which you derive on the host that runs the capture and name with
+   `SIPNAB_SECCOMP_ALLOWLIST`: a file of syscall numbers, one per line, `#`
+   comments allowed.
+
+Without a list, `enforce` refuses to start, with exit `1`:
+
+```text
+`--seccomp enforce` was given and no syscall filter is in force: enforcement needs an allowlist derived ON THIS HOST, named by SIPNAB_SECCOMP_ALLOWLIST. The list that ships in this binary settled across sixteen shapes on one machine and killed the process on another of the same architecture, so it is a worked example rather than a list to enforce. Produce yours with scripts/derive-seccomp-allowlist.sh. Refusing to capture. Use `--seccomp off` to capture without one.
+```
+
+`scripts/derive-seccomp-allowlist.sh <sipnab> <interface>`, run as root, runs
+sipnab in sixteen shapes under `--seccomp log`, streams the kernel log, and
+says whether the set of calls stopped growing. It reads the records from the
+kernel log, so it needs a host where no audit daemon takes them.
+
+On this host an audit daemon was running, and the script found nothing:
+
+```text
+NO RECORDS: nothing in this log is a seccomp audit record.
+  Either the filter never installed, or the log was collected
+  after the run rather than streamed during it.
+```
+
+The records were in the audit log instead, where `--seccomp log` says to look:
+
+```bash
+sudo auditctl -s
+```
+
+```bash
+sudo ausearch -m SECCOMP -ts recent
+```
+
+A non-zero `pid` from `auditctl -s` means a daemon takes the records. A
+single `--report` run over the sample capture left 5,896 records there, naming
+13 distinct system calls. Not run for this page: an enforcing filter, because
+the script derived no allowlist here.
+
+## When something does not work
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Permission denied on 'eth0'. Grant capture capabilities once`, exit 1 | The binary has no capabilities, or something replaced it since | `sipnab --setup-caps` again |
+| `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | `--chroot` without an `etc/passwd` for the user, or a user that does not exist | Add the entries to the directory, or create the user |
+| `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
+| `--sandbox required` refuses | No Landlock in this kernel | `best-effort`, or a kernel with Landlock |
+| `--seccomp enforce` refuses | No `SIPNAB_SECCOMP_ALLOWLIST`, or one it cannot read | Derive a list on this host |
+
+[Privilege](cli-reference.md#privilege) and [`[privilege]`](config-reference.md#privilege)
+list every flag and key. The [threat model](threat-model.md) says what each
+step defends against.

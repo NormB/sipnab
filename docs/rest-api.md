@@ -2956,7 +2956,9 @@ Every failure kind and every drop reason appears, zeros included.
   `queue_depth`.
 
 See [When the `--hep-send` collector goes
-away](cli-reference.md#when-the---hep-send-collector-goes-away).
+away](cli-reference.md#when-the---hep-send-collector-goes-away), and [When the
+collector goes away](hep.md#when-the-collector-goes-away) for the counts a
+collector restart left.
 
 **Over UDP, `packets_sent` means handed to
 the kernel.** A collector that is down produces no failure at all. `delivery` says
@@ -3172,7 +3174,8 @@ sending".
 The MCP tool `hep_senders` returns the same fields and values for the same
 roster, with its keys in alphabetical order and `source_exhausted` and
 `source_stopped_early` added.
-`--hep-senders` prints it at the end of a headless run. Prometheus carries only
+`--hep-senders` prints it at the end of a headless run ([See who feeds the
+listener](hep.md#see-who-feeds-the-listener)). Prometheus carries only
 the aggregate counts, with no per-sender label. See
 [Metrics](prometheus-metrics.md).
 
