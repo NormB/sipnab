@@ -41,8 +41,8 @@ sees calls from the whole estate. The HEP listener is a plain UDP socket:
 
 - **[server]** Do [Install sipnab](@/docs/mcp-deploy.md#install-sipnab-every-server-once)
    and create the user as in the create-the-unprivileged-user step of
-   [Keep a capture running between agent sessions](@/docs/mcp-deploy.md#keep-a-capture-running-between-agent-sessions),
-   *without* the `setcap`.
+   [Keep a capture running between agent sessions](@/docs/mcp-deploy.md#keep-a-capture-running-between-agent-sessions).
+   The unit below has no `AmbientCapabilities=` line: a HEP listener needs none.
 
 - **[server]** Install `/etc/systemd/system/sipnab-mcp.service`.
    - This variant listens for HEP on udp/9063 and serves MCP on loopback.
@@ -454,7 +454,10 @@ binds its own loopback. Then register the three, in this order:
 Give each node a `--node-name` that matches how you think of it.
 
 - That string is what comes back in `capture_identity.node`.
-- It is the only thing that attributes a fact to a box:
+- It is the only thing that attributes a fact to a box.
+- This `ExecStart=` captures `eth0`, so it belongs in a unit that grants
+  capture, such as the one in
+  [Keep a capture running between agent sessions](@/docs/mcp-deploy.md#keep-a-capture-running-between-agent-sessions):
 
 ```ini
 ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \

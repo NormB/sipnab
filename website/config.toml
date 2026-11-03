@@ -331,6 +331,7 @@ id = "start"
 title = "Start here"
 pages = [
   { path = "docs/install.md", menu = true },
+  { path = "docs/run-as-a-service.md", menu = false },
   { path = "docs/first-cli-triage.md", menu = true },
   { path = "docs/cookbook.md", menu = true },
   { path = "docs/troubleshooting.md", menu = true },

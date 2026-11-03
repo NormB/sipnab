@@ -262,14 +262,21 @@ with the number of tracked dialogs (see `sipnab_diagnosis_total`).
 
 ## Metrics TLS
 
+[Secure every listener](auth.md#secure-every-listener) makes the certificate,
+serves all four listeners over TLS, and scrapes the result from Prometheus.
+
 Give sipnab a certificate and its private key. Then the standalone metrics
 server (`--metrics`) serves HTTPS instead of plain HTTP on its port:
 
 ```bash
-sudo sipnab -N -d eth0 --metrics 0.0.0.0:9090 \
+sudo sipnab -N -d eth0 --user sipnab --metrics 0.0.0.0:9090 \
   --metrics-auth-file /etc/sipnab/metrics.auth \
   --metrics-tls-cert /etc/sipnab/metrics.pem --metrics-tls-key /etc/sipnab/metrics.key
 ```
+
+A root run reads the credential file, the certificate and the key after it
+drops to `--user`, so make them readable by that account (`chown
+root:sipnab`, `chmod 640`). See [Make a certificate](auth.md#make-a-certificate).
 
 Check it with curl, trusting the CA that issued the certificate. The
 credential file holds `user:pass`. That is what `curl -u` takes:

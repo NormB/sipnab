@@ -1235,8 +1235,7 @@ persist_to_config = true
 
 What happens when sipnab panics. The panic hook:
 
-- restores the terminal (release builds abort without unwinding, so raw mode /
-  mouse capture would otherwise stay on);
+- restores the terminal, so raw mode and mouse capture do not stay on;
 - writes a crash report;
 - then either exits cleanly or aborts so the OS can produce a core dump.
 
@@ -1251,9 +1250,14 @@ What happens when sipnab panics. The panic hook:
 [crash]
 reports = true
 backtrace = true
-report_dir = "/var/log/sipnab"
+report_dir = "/var/lib/sipnab"
 core = false
 ```
+
+Under the unit the `.deb` and `.rpm` packages install, the default
+`report_dir` is not writable and sipnab prints `failed to write crash report:
+Read-only file system (os error 30)`. `/var/lib/sipnab`, the unit's state
+directory, is. See [Keep crash reports](@/docs/run-as-a-service.md#keep-crash-reports).
 
 ### `[g729]`
 

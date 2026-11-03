@@ -29,7 +29,10 @@ sipnab supports two token kinds, checked with a constant-time comparison:
 The steps below set up signed tokens from scratch. After the steps, this page covers:
 
 - what a token contains,
-- how its audience binds it to one server.
+- how its audience binds it to one server,
+- [the credential and TLS of every listener](#secure-every-listener),
+  including the metrics endpoint and the HEP listener, which use no bearer
+  token.
 
 ## Configure a signing key
 
@@ -166,7 +169,7 @@ A failure is not automatically a `401`:
 | Status | What happened |
 |---|---|
 | `403` | The `Host` header names a host that is not on the allowlist (`--api-allowed-host` / `--mcp-allowed-host`). sipnab checks it before the rate limiter and authentication, so the credential was never read. |
-| `503` | The client is over its per-IP rate budget (100 requests/second) or the in-flight cap (`--api-max-conn`). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md#bind-address--connection-limits). |
+| `503` | The client is over its per-IP rate budget (`--api-rate-limit-per-peer`, 100 requests a second by default) or the in-flight cap (`--api-max-conn`, 100 by default). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md#bind-address--connection-limits). |
 | `401` | Missing, non-Bearer, malformed, expired, revoked, wrong-audience, or wrong-key credential — **or a good credential scoped too narrowly for the route**. A `metrics` token verifies fine and still gets `401` on `/v1/dialogs`, because that route demands `full`. |
 | `404` | The credential passed, but nothing matches: no dialog carries that Call-ID on `/v1/dialogs/{call_id}`, or no stream carries that SSRC on `/v1/streams/{id}`. |
 | `400` | The credential passed, but the request does not parse: `/v1/streams/{id}` got an id that is not hexadecimal. |
@@ -184,7 +187,9 @@ challenge:
 So the two read differently in a log. The REST API answers with the status alone. See
 [the MCP security model](mcp-protocol.md#security-model).
 
-`/health` needs no credential and skips the rate limiter entirely.
+On the REST API, `/health` needs no credential and skips the rate limiter
+entirely. On the HTTP MCP server, `/health` takes the bearer token like every
+other route, and answers `401` without it.
 
 ## Expiry
 
@@ -232,6 +237,22 @@ Both steps matter. An id in a file no server reads revokes nothing:
    sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-signing-key "$KEY" --api-revoked-file /etc/sipnab/revoked.txt
    ```
 
+The HTTP MCP server takes `--mcp-revoked-file` the same way. This run minted
+an MCP token with `--token-id ci-runner-1`, started the server with an empty
+denylist, and appended the id while the server ran:
+
+```bash
+sipnab -N -I capture.pcap --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
+  --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/revoked.txt
+```
+
+The same token got `200` from `/health` before the append and `401` after it,
+with this challenge:
+
+```text
+www-authenticate: Bearer realm="sipnab", error="invalid_token", error_description="The access token is invalid or has expired"
+```
+
 The file is one token `id` per line (blank lines and `#` comments ignored).
 
 It is **re-read when its mtime changes**.
@@ -240,6 +261,198 @@ It is **re-read when its mtime changes**.
 - It needs no restart.
 - (Signed tokens are otherwise valid until `exp`. So a denylist is the revocation mechanism for the
   stateless model.)
+
+## Secure every listener
+
+sipnab has four network listeners. Each takes its own credential and its own
+certificate, and each refuses a routable bind that has no credential:
+
+| Listener | Credential | TLS flags | Config keys | Routable bind with no credential |
+|---|---|---|---|---|
+| REST API (`--api`) | bearer token: `--api-key` or `--api-signing-key[-file]` | `--api-tls-cert`, `--api-tls-key` | `[api] tls_cert`, `tls_key` | refused, exit 2 |
+| MCP over HTTP (`--mcp-transport http`) | bearer token: `--mcp-token[-file]` or `--mcp-signing-key[-file]` | `--mcp-tls-cert`, `--mcp-tls-key` | `[mcp] tls_cert`, `tls_key` | refused, exit 2 |
+| Metrics (`--metrics`) | HTTP Basic: `--metrics-auth-file` holding `user:password` | `--metrics-tls-cert`, `--metrics-tls-key` | `[metrics] tls_cert`, `tls_key` | refused, exit 2 |
+| HEP (`--hep-listen`) | source allowlist `--hep-allow`, or shared secret `--hep-auth-file` | `--hep-listen-transport tls`, `--hep-tls-cert`, `--hep-tls-key` | `[hep] tls_cert`, `tls_key` | refused, exit 1 |
+
+The exact refusal messages are in [A service that does not
+start](run-as-a-service.md#a-service-that-does-not-start).
+
+None of the four asks a client for a certificate. TLS encrypts the path, and
+the credential in the second column says who the client is.
+
+### Make a certificate
+
+Clients check the certificate against the name they connect to. For a private
+deployment, make a small CA and sign one certificate for the capture host:
+
+- Make the CA:
+
+  ```bash
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout ca.key -out ca.pem -days 365 -subj "/CN=sipnab example CA"
+  ```
+
+- Make the host's key and request:
+
+  ```bash
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout capture01.key -out capture01.csr -subj "/CN=capture01.example.net"
+  ```
+
+- Sign it, naming the host in `subjectAltName`:
+
+  ```bash
+  # Run all of these, in order.
+  printf 'subjectAltName=DNS:capture01.example.net\nextendedKeyUsage=serverAuth\n' > ext.cnf
+  openssl x509 -req -in capture01.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+    -days 365 -extfile ext.cnf -out capture01.pem
+  ```
+
+- Restrict the key. sipnab refuses a key any other user can read, with
+  `the API TLS private key is world-readable (mode 0644); chmod 600 it` and
+  exit status 2:
+
+  ```bash
+  chmod 600 capture01.key
+  ```
+
+Clients need `ca.pem`. Keep `ca.key` off the capture host.
+
+**sipnab reads most of these files after it drops root.** A run started as
+root, under `sudo` or as a root service, opens the capture, drops to `nobody`
+(or the `--user` account), and only then reads the REST and MCP signing keys
+and token files, the metrics credential, the REST and MCP certificates and
+keys, and a HEP sender's `--hep-auth-file`. A file only root can read then
+stops the run with exit status 2:
+
+```text
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+metrics auth: --metrics-auth-file '/root/metrics.auth': Permission denied (os error 13)
+```
+
+For an MCP key the message is the path alone, such as `/etc/sipnab/mcp.key`,
+with no reason. sipnab reads the HEP listener's certificate, key and secret
+before the drop. So give the service its own account and its group read
+access, and name that account with `--user` on a root run:
+
+```bash
+# Run all of these, in order.
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
+sudo chown root:sipnab capture01.key api-signing.key mcp-signing.key metrics.auth
+sudo chmod 640 capture01.key api-signing.key mcp-signing.key metrics.auth
+```
+
+A systemd unit with `User=sipnab` starts as `sipnab` and drops nothing, so the
+same `640` files work there.
+
+### Serve all four over TLS
+
+One run can serve all four, with one certificate:
+
+```bash
+sipnab -N \
+  --hep-listen 0.0.0.0:9063 --hep-listen-transport tls \
+    --hep-tls-cert capture01.pem --hep-tls-key capture01.key --hep-allow 192.0.2.0/24 \
+  --api 0.0.0.0:8443 --api-signing-key-file api-signing.key \
+    --api-tls-cert capture01.pem --api-tls-key capture01.key --api-allowed-host capture01.example.net \
+  --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-signing-key-file mcp-signing.key \
+    --mcp-tls-cert capture01.pem --mcp-tls-key capture01.key --mcp-allowed-host capture01.example.net \
+  --metrics 0.0.0.0:9443 --metrics-auth-file metrics.auth \
+    --metrics-tls-cert capture01.pem --metrics-tls-key capture01.key
+```
+
+Make the three credential files first:
+
+```bash
+# Run all of these, in order.
+umask 077
+openssl rand -hex 32 > api-signing.key
+openssl rand -hex 32 > mcp-signing.key
+printf 'scraper:%s\n' "$(openssl rand -hex 16)" > metrics.auth
+```
+
+The startup lines confirm each one:
+
+```text
+INFO sipnab::capture::hep: HEP listener started on 0.0.0.0:9063 (tls)
+INFO sipnab::output::prometheus_server: Prometheus metrics server serves HTTPS only (TLS 1.2/1.3)
+INFO sipnab::output::api: REST API serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)
+INFO sipnab::mcp::transport::http: MCP HTTP serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)
+```
+
+With `--hep-allow` and no secret, the HEP listener also warns that it trusts
+the addresses each sender claims: add `--hep-auth-file` to remove that.
+
+Check each listener from a client that holds `ca.pem`:
+
+```bash
+# Run all of these, in order.
+TOKEN="$(SIPNAB_API_SIGNING_KEY="$(cat api-signing.key)" sipnab --mint-token)"
+curl --cacert ca.pem https://capture01.example.net:8443/health
+curl --cacert ca.pem -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" https://capture01.example.net:8443/v1/stats
+curl --cacert ca.pem -u "$(cat metrics.auth)" -s https://capture01.example.net:9443/metrics | head -1
+```
+
+```text
+ok
+200
+# HELP sipnab_responses_total Total SIP responses by code class
+```
+
+What a client sees when something is missing:
+
+| Request | Answer |
+|---|---|
+| no `--cacert` | curl exits 60: `SSL certificate problem: unable to get local issuer certificate` |
+| plain `http://` to a TLS port | no HTTP answer; curl exits 1 |
+| metrics without `-u` | `401` |
+| a `metrics`-scope token on `/v1/stats` | `401` |
+
+[Run sipnab as a HEP relay](examples.md#carry-the-feed-over-tcp-and-tls) shows
+the HEP sender's side. A sender that does not trust the collector's issuer
+stops at startup with exit status 2:
+
+```text
+Failed to create HEP sender: Failed to establish a TLS session with '127.0.0.1:19063': invalid peer certificate: UnknownIssuer
+```
+
+The listener logs nothing for that failed handshake at the default level, so
+read the sender's side. The release container image holds no CA bundle: a
+sender in it needs `--hep-tls-ca` even for a collector with a public
+certificate, and stops with `no system CA bundle found; name the collector's
+issuer with --hep-tls-ca` without it.
+
+### Scrape the HTTPS metrics endpoint from Prometheus
+
+Prometheus needs the user name, the password, and the CA. Put the password
+alone in a file Prometheus can read, then add the job:
+
+```yaml
+scrape_configs:
+  - job_name: sipnab
+    scheme: https
+    basic_auth:
+      username: scraper
+      password_file: /etc/prometheus/sipnab.pass
+    tls_config:
+      ca_file: /etc/prometheus/sipnab-ca.pem
+    static_configs:
+      - targets: ["capture01.example.net:9443"]
+```
+
+Prometheus 3.5.0 with that job reported the target up:
+
+```bash
+curl -s -G http://localhost:9090/api/v1/query --data-urlencode 'query=up{job="sipnab"}'
+```
+
+```text
+{'__name__': 'up', 'instance': 'capture01.example.net:9443', 'job': 'sipnab'} 1
+```
+
+That line is the query's result, printed from its JSON. The REST API also
+serves the metrics, on `/metrics`, to a token minted with `--token-scope
+metrics`.
 
 ## Token format
 

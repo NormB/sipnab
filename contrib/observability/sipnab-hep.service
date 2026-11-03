@@ -54,7 +54,8 @@ ExecStart=/usr/local/bin/sipnab \
 User=root
 Group=root
 
-# Privilege drop happens internally; HEP listen on :9060 (>1024) needs no caps.
+# --no-priv-drop above keeps root for the whole run: sipnab does not drop to
+# another user. HEP listen on :9060 (>1024) needs no capabilities.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

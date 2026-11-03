@@ -39,6 +39,12 @@ pages use.
 
 Each answers one "how do I" question and assumes you already know what you want.
 
+**Run sipnab in production**
+
+- **[Run sipnab as a service](run-as-a-service.md)**: the packaged systemd
+  unit and one of your own, drop-ins, the log, signals, crash reports, audit
+  file rotation, and a service that does not start.
+
 **Find out what went wrong**
 
 - **[Troubleshooting](troubleshooting.md)**: symptom to command. Failed calls,

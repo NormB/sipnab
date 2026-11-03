@@ -2831,6 +2831,15 @@ Then neither report holds the whole call.
 
 **Problem:** The capture should survive a reboot and an SSH disconnect, and write somewhere you can find it.
 
+The `.deb` and `.rpm` packages install a unit already: `sudo systemctl enable --now sipnab` starts it.
+For an install from the installer or a tarball, create the user first:
+
+```bash
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
+```
+
+Then write the unit. This one captures `eth0` as the `sipnab` user:
+
 ```ini
 # /etc/systemd/system/sipnab.service
 [Unit]
@@ -2843,14 +2852,17 @@ Type=simple
 ExecStart=/usr/bin/sipnab -N -d eth0 --syslog \
   --metrics 127.0.0.1:9100 \
   --alert-json
-Restart=on-failure
-RestartSec=5
-# sipnab drops privileges itself after opening the capture socket.
+User=sipnab
+Group=sipnab
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+StateDirectory=sipnab
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -2878,14 +2890,23 @@ WantedBy=multi-user.target
   journalctl -u sipnab -f
   ```
 
+**What to look for:**
+
+- `ps -o user= -C sipnab` prints `sipnab`.
+- The journal has `Capturing on 'eth0'` and `Prometheus metrics server listening on 127.0.0.1:9100`.
+
 **Pitfalls:**
 
-- `--syslog` is what makes `journalctl` useful.
-  - Without it, the interesting output goes to stdout. journald merges it there without structure.
-- Granting `CAP_NET_RAW` via `AmbientCapabilities` is what lets the unit run without being root at all.
-  - Do not add `User=root` back "to be safe". That undoes it.
+- sipnab writes its log to stderr, and systemd puts that in the journal with or without `--syslog`.
+  - `--syslog` sends the security alerts, and only those, to syslog with facility `local0`.
+  - `--alert-json` adds each alert as a JSON line on stderr.
+- `AmbientCapabilities=` with `User=sipnab` is what lets the unit capture without being root.
+  - Leave `User=` out and the unit starts as root. sipnab then drops to `nobody` after it opens the capture.
+  - `setcap` on the binary does not work in this unit: `NoNewPrivileges=yes` stops a file capability taking effect.
 - A live run with no `-O` writes no capture file.
-  - If you want the packets kept, say where.
+  - If you want the packets kept, say where, in a directory the `sipnab` user can write, such as `/var/lib/sipnab`.
+
+[Run sipnab as a service](@/docs/run-as-a-service.md) covers the packaged unit, drop-ins, signals, crash reports, log rotation and a service that does not start.
 
 ---
 
@@ -3763,21 +3784,28 @@ Grant the binary the two capabilities live capture needs, once:
 sipnab --setup-caps
 ```
 
-Then run it as an ordinary user.
-sipnab opens its capture devices first, and drops privileges afterwards.
-So name the user, and a directory to confine it to:
+Then run it as an ordinary user, with no `sudo`:
 
 ```bash
-sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
+sipnab -N -d eth0 --duration 60
+```
+
+Where a run must start as root, for example from a script that already runs under `sudo`, name the user sipnab drops to after it opens the capture:
+
+```bash
+sudo sipnab -N -d eth0 --user sipnab
 ```
 
 **What to look for:**
 
 - `--setup-caps` sets `cap_net_raw,cap_net_admin+ep` via `setcap`, and exits.
   - It re-invokes itself through `sudo` when it is not already root.
-  - After it, `sudo` is no longer part of the daily command.
-- Under systemd, `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` does the same job for the unit ([28. Run sipnab as a service](#run-sipnab-as-a-service)).
-  - Do not add `User=root` back "to be safe". That undoes it.
+  - `getcap "$(command -v sipnab)"` then prints `cap_net_admin,cap_net_raw=ep`.
+- The capability run logs `Capturing on 'eth0'` and nothing about privileges: it never had root to drop.
+- The `--user` run logs `Dropped privileges to user 'sipnab' (uid=996, gid=996)`, with your host's ids.
+  - With no `--user`, a root run drops to `nobody`.
+  - The user must exist. The `.deb` and `.rpm` packages create `sipnab`; otherwise `sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab`.
+- Under systemd, `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` with `User=sipnab` does the job for the unit ([28. Run sipnab as a service](#run-sipnab-as-a-service)).
 
 **Pitfalls:**
 
@@ -3785,9 +3813,19 @@ sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
   - Every upgrade, every rebuild, every package update drops it.
   - The failure looks like a permissions problem that appeared from nowhere.
   - Re-run `--setup-caps` after an upgrade.
-- sipnab opens anything it must reach by path **before** the drop and the chroot.
-  - That includes a keylog file or FIFO, an output file, a config.
-  - A path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#decrypt-without-writing-the-keys-to-disk)).
+- **`--chroot` stops a root run at the privilege drop.**
+  - sipnab chroots first, then looks the drop user up, inside the new root. A directory with no `etc/passwd` has no such user:
+
+    ```text
+    INFO sipnab::privilege: Chrooted to /var/empty
+    Failed to drop privileges: User 'sipnab' not found. Create it with 'useradd -r -s /usr/sbin/nologin sipnab' or use --user <name>
+    ```
+
+  - It exits 1, with or without `--user`: the default `nobody` is not found either.
+  - Debian 13 has no `/var/empty` at all. There `--chroot /var/empty` fails before that, with `chroot(/var/empty) failed: No such file or directory`.
+- sipnab opens its capture device, keylog file or FIFO and config **before** the drop.
+  - A keylog path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#decrypt-without-writing-the-keys-to-disk)).
+  - It creates `-O` and `--split` files **after** the drop, as the drop user. See [An output file sipnab cannot create](@/docs/troubleshooting.md#an-output-file-sipnab-cannot-create).
 - `--no-priv-drop` keeps the privileges for the rest of the run.
   - It is not the way to fix a permissions error.
   - Forging kill responses does not need it.

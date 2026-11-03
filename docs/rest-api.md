@@ -413,16 +413,22 @@ with no `--metrics-auth` / `--metrics-auth-file` refuses to start.
 
 ## API TLS
 
+[Secure every listener](auth.md#secure-every-listener) makes the certificate,
+serves all four listeners over TLS, and scrapes the result from Prometheus.
+
 Give sipnab a certificate and its private key. Then the REST API serves
 HTTPS instead of plain HTTP on the `--api` port:
 
 ```bash
-sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-key "secret" \
+sudo sipnab -N -d eth0 --user sipnab --api 0.0.0.0:8443 --api-key "secret" \
   --api-allowed-host capture.example.net \
   --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key
 ```
 
-`--api-allowed-host` names the host clients use in the URL.
+`--api-allowed-host` names the host clients use in the URL. A root run reads
+the certificate and key after it drops to `--user`, so make them readable by
+that account (`chown root:sipnab`, `chmod 640`). See [Make a
+certificate](auth.md#make-a-certificate).
 
 - On a `0.0.0.0` bind, sipnab answers any IP address but no name it was not given.
 - Without it, sipnab refuses the request below with `403`

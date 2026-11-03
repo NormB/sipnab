@@ -47,6 +47,7 @@ PAGES: dict[str, str] = {
     "troubleshooting.md": "Troubleshooting",
     "call-quality.md": "Measure-Call-Quality",
     "tuning-capture.md": "Tuning-Capture",
+    "run-as-a-service.md": "Run-as-a-Service",
     "encapsulations.md": "Encapsulations",
     "rtpengine.md": "Rtpengine-Relays",
     "vcon.md": "vCon-Export",
@@ -148,6 +149,7 @@ PAGES: dict[str, str] = {
 # install first, internals last. Order within a group is the reading order.
 GROUPS: list[tuple[str, list[str]]] = [
     ("Getting started", ["install.md", "first-cli-triage.md", "glossary.md", "examples.md", "client-examples.md", "real-world-captures.md", "troubleshooting.md", "call-quality.md",
+                         "run-as-a-service.md",
                          "tuning-capture.md", "encapsulations.md",
                          "rtpengine.md", "relay-statistics.md",
                          "backers.md"]),

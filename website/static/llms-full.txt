@@ -4104,6 +4104,15 @@ Then neither report holds the whole call.
 
 **Problem:** The capture should survive a reboot and an SSH disconnect, and write somewhere you can find it.
 
+The `.deb` and `.rpm` packages install a unit already: `sudo systemctl enable --now sipnab` starts it.
+For an install from the installer or a tarball, create the user first:
+
+```bash
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
+```
+
+Then write the unit. This one captures `eth0` as the `sipnab` user:
+
 ```ini
 # /etc/systemd/system/sipnab.service
 [Unit]
@@ -4116,14 +4125,17 @@ Type=simple
 ExecStart=/usr/bin/sipnab -N -d eth0 --syslog \
   --metrics 127.0.0.1:9100 \
   --alert-json
-Restart=on-failure
-RestartSec=5
-# sipnab drops privileges itself after opening the capture socket.
+User=sipnab
+Group=sipnab
 AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
+StateDirectory=sipnab
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
@@ -4151,14 +4163,23 @@ WantedBy=multi-user.target
   journalctl -u sipnab -f
   ```
 
+**What to look for:**
+
+- `ps -o user= -C sipnab` prints `sipnab`.
+- The journal has `Capturing on 'eth0'` and `Prometheus metrics server listening on 127.0.0.1:9100`.
+
 **Pitfalls:**
 
-- `--syslog` is what makes `journalctl` useful.
-  - Without it, the interesting output goes to stdout. journald merges it there without structure.
-- Granting `CAP_NET_RAW` via `AmbientCapabilities` is what lets the unit run without being root at all.
-  - Do not add `User=root` back "to be safe". That undoes it.
+- sipnab writes its log to stderr, and systemd puts that in the journal with or without `--syslog`.
+  - `--syslog` sends the security alerts, and only those, to syslog with facility `local0`.
+  - `--alert-json` adds each alert as a JSON line on stderr.
+- `AmbientCapabilities=` with `User=sipnab` is what lets the unit capture without being root.
+  - Leave `User=` out and the unit starts as root. sipnab then drops to `nobody` after it opens the capture.
+  - `setcap` on the binary does not work in this unit: `NoNewPrivileges=yes` stops a file capability taking effect.
 - A live run with no `-O` writes no capture file.
-  - If you want the packets kept, say where.
+  - If you want the packets kept, say where, in a directory the `sipnab` user can write, such as `/var/lib/sipnab`.
+
+[Run sipnab as a service](run-as-a-service.md) covers the packaged unit, drop-ins, signals, crash reports, log rotation and a service that does not start.
 
 ---
 
@@ -5036,21 +5057,28 @@ Grant the binary the two capabilities live capture needs, once:
 sipnab --setup-caps
 ```
 
-Then run it as an ordinary user.
-sipnab opens its capture devices first, and drops privileges afterwards.
-So name the user, and a directory to confine it to:
+Then run it as an ordinary user, with no `sudo`:
 
 ```bash
-sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
+sipnab -N -d eth0 --duration 60
+```
+
+Where a run must start as root, for example from a script that already runs under `sudo`, name the user sipnab drops to after it opens the capture:
+
+```bash
+sudo sipnab -N -d eth0 --user sipnab
 ```
 
 **What to look for:**
 
 - `--setup-caps` sets `cap_net_raw,cap_net_admin+ep` via `setcap`, and exits.
   - It re-invokes itself through `sudo` when it is not already root.
-  - After it, `sudo` is no longer part of the daily command.
-- Under systemd, `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` does the same job for the unit ([28. Run sipnab as a service](#run-sipnab-as-a-service)).
-  - Do not add `User=root` back "to be safe". That undoes it.
+  - `getcap "$(command -v sipnab)"` then prints `cap_net_admin,cap_net_raw=ep`.
+- The capability run logs `Capturing on 'eth0'` and nothing about privileges: it never had root to drop.
+- The `--user` run logs `Dropped privileges to user 'sipnab' (uid=996, gid=996)`, with your host's ids.
+  - With no `--user`, a root run drops to `nobody`.
+  - The user must exist. The `.deb` and `.rpm` packages create `sipnab`; otherwise `sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab`.
+- Under systemd, `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` with `User=sipnab` does the job for the unit ([28. Run sipnab as a service](#run-sipnab-as-a-service)).
 
 **Pitfalls:**
 
@@ -5058,9 +5086,19 @@ sudo sipnab -N -d eth0 --user sipnab --chroot /var/empty
   - Every upgrade, every rebuild, every package update drops it.
   - The failure looks like a permissions problem that appeared from nowhere.
   - Re-run `--setup-caps` after an upgrade.
-- sipnab opens anything it must reach by path **before** the drop and the chroot.
-  - That includes a keylog file or FIFO, an output file, a config.
-  - A path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#decrypt-without-writing-the-keys-to-disk)).
+- **`--chroot` stops a root run at the privilege drop.**
+  - sipnab chroots first, then looks the drop user up, inside the new root. A directory with no `etc/passwd` has no such user:
+
+    ```text
+    INFO sipnab::privilege: Chrooted to /var/empty
+    Failed to drop privileges: User 'sipnab' not found. Create it with 'useradd -r -s /usr/sbin/nologin sipnab' or use --user <name>
+    ```
+
+  - It exits 1, with or without `--user`: the default `nobody` is not found either.
+  - Debian 13 has no `/var/empty` at all. There `--chroot /var/empty` fails before that, with `chroot(/var/empty) failed: No such file or directory`.
+- sipnab opens its capture device, keylog file or FIFO and config **before** the drop.
+  - A keylog path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#decrypt-without-writing-the-keys-to-disk)).
+  - It creates `-O` and `--split` files **after** the drop, as the drop user. See [An output file sipnab cannot create](troubleshooting.md#an-output-file-sipnab-cannot-create).
 - `--no-priv-drop` keeps the privileges for the rest of the run.
   - It is not the way to fix a permissions error.
   - Forging kill responses does not need it.
@@ -6679,14 +6717,21 @@ with the number of tracked dialogs (see `sipnab_diagnosis_total`).
 
 ## Metrics TLS
 
+[Secure every listener](auth.md#secure-every-listener) makes the certificate,
+serves all four listeners over TLS, and scrapes the result from Prometheus.
+
 Give sipnab a certificate and its private key. Then the standalone metrics
 server (`--metrics`) serves HTTPS instead of plain HTTP on its port:
 
 ```bash
-sudo sipnab -N -d eth0 --metrics 0.0.0.0:9090 \
+sudo sipnab -N -d eth0 --user sipnab --metrics 0.0.0.0:9090 \
   --metrics-auth-file /etc/sipnab/metrics.auth \
   --metrics-tls-cert /etc/sipnab/metrics.pem --metrics-tls-key /etc/sipnab/metrics.key
 ```
+
+A root run reads the credential file, the certificate and the key after it
+drops to `--user`, so make them readable by that account (`chown
+root:sipnab`, `chmod 640`). See [Make a certificate](auth.md#make-a-certificate).
 
 Check it with curl, trusting the CA that issued the certificate. The
 credential file holds `user:pass`. That is what `curl -u` takes:
@@ -7174,16 +7219,22 @@ with no `--metrics-auth` / `--metrics-auth-file` refuses to start.
 
 ## API TLS
 
+[Secure every listener](auth.md#secure-every-listener) makes the certificate,
+serves all four listeners over TLS, and scrapes the result from Prometheus.
+
 Give sipnab a certificate and its private key. Then the REST API serves
 HTTPS instead of plain HTTP on the `--api` port:
 
 ```bash
-sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-key "secret" \
+sudo sipnab -N -d eth0 --user sipnab --api 0.0.0.0:8443 --api-key "secret" \
   --api-allowed-host capture.example.net \
   --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key
 ```
 
-`--api-allowed-host` names the host clients use in the URL.
+`--api-allowed-host` names the host clients use in the URL. A root run reads
+the certificate and key after it drops to `--user`, so make them readable by
+that account (`chown root:sipnab`, `chmod 640`). See [Make a
+certificate](auth.md#make-a-certificate).
 
 - On a `0.0.0.0` bind, sipnab answers any IP address but no name it was not given.
 - Without it, sipnab refuses the request below with `403`
@@ -12683,6 +12734,29 @@ sipnab --version
 
 If that prints a version, the install worked.
 
+When the installer stops, its last line names the reason:
+
+| The installer prints | Cause | Fix |
+|---|---|---|
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.232` |
+| `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
+| `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
+| `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
+| `sipnab-install: /tmp/bin is not writable — using sudo`, then `sudo: not found` and `sipnab-install: error: install to /tmp/bin failed` | `SIPNAB_INSTALL_DIR` names a directory you cannot write, and there is no `sudo` | Create the directory as your user first, or run as root |
+
+Each of these exits with status 1 and installs nothing.
+
+**The installer does not install libpcap.** On a glibc host it installs the
+`-gnu` build, which loads libpcap at startup. Without it, the first run
+fails:
+
+```text
+sipnab: error while loading shared libraries: libpcap.so.0.8: cannot open shared object file: No such file or directory
+```
+
+Install `libpcap0.8` (Debian, Ubuntu) or `libpcap` (Fedora, RHEL) and run it
+again.
+
 - Go to [Check it worked](#check-it-worked) for the fuller checks, or
   [Next steps](#next-steps) to start reading captures.
 - If the shell cannot find `sipnab`, the install directory is not on your
@@ -12725,8 +12799,8 @@ Substitute the release version for `<version>` throughout.
 | `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
 | `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
 | `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
-| `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features including audio |
-| `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features including audio |
+| `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
+| `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
 | `sipnab-<version>-aarch64-apple-darwin.tar.gz` | Apple Silicon | macOS 11.0+ | M-series Macs |
 | `sipnab-<version>-<target>.debug` | per target | — | Linux symbol file for the binary of the same name, for reading a [crash report](troubleshooting.md#send-us-a-crash-report) or a core dump. One per tarball, plus `-noaudio` ones for the `-noaudio` packages |
@@ -12829,6 +12903,34 @@ Later releases fix three `netmap:` failures. Check your release with
 | On a musl tarball, a `netmap:` open fails with `nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`, and the kernel log says `Minimum supported API is 14 (requested 13)` | 0.5.183 and earlier, musl tarballs | 0.5.184 |
 | The capture stops, often while idle, and the kernel log records a segfault at address 0 in the `capture-netmap` thread | 0.5.188 and earlier | 0.5.189 |
 | A `netmap:` capture on a link with no traffic does not stop on SIGTERM or at the end of `--duration` | 0.5.189 and earlier | 0.5.190 |
+
+### The audio plugin in Linux packages
+
+Live audio playback in the TUI loads a separate plugin,
+`libsipnab_audio.so` on Linux and `libsipnab_audio.dylib` on macOS. The
+packaging scripts intend the gnu tarballs and the standard packages to carry
+it. From 0.5.118 to 0.5.232 at least, the Linux ones do not:
+
+| Artifact (0.5.232) | Plugin | `Recommends` |
+|---|---|---|
+| `sipnab_<version>_<arch>.deb` | none | none |
+| `sipnab-<version>-1.<arch>.rpm` | none | none |
+| `sipnab-<version>-<arch>-unknown-linux-gnu.tar.gz` | none | — |
+| `sipnab-<version>-aarch64-apple-darwin.tar.gz` | `libsipnab_audio.dylib` | — |
+
+0.5.117 is the last release whose arm64 `.deb` held the plugin, at
+`/usr/lib/sipnab/libsipnab_audio.so`, with `Recommends: libasound2 |
+libasound2t64`. `sipnab --version` still lists `audio`, because the release
+builds the binary with the feature. Every other part of `audio`, WAV export included,
+is in the binary and works without the plugin.
+
+Check what a package holds before you install it:
+
+```bash
+dpkg-deb -c "sipnab_${VERSION}_amd64.deb" | grep libsipnab_audio
+```
+
+No output means no plugin.
 
 ### Architecture naming
 
@@ -12936,8 +13038,11 @@ A manual download of the gnu build that checks the checksum before installing.
    sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
    ```
 
-The dynamic builds, whose names end in `-unknown-linux-gnu.tar.gz`, add TUI
-audio playback.
+The dynamic builds, whose names end in `-unknown-linux-gnu.tar.gz`, are the
+ones meant to add TUI audio playback. From 0.5.118 to 0.5.232 at least, they
+ship without the playback plugin (`libsipnab_audio.so`): the tarball holds the
+binary, the man page and the license files only. See
+[The audio plugin in Linux packages](#the-audio-plugin-in-linux-packages).
 
 - They require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap.
 - On an older distribution they fail with
@@ -13020,22 +13125,25 @@ The unit is not started for you. `sudo systemctl enable --now sipnab` starts a
 capture on every interface as the `sipnab` user. The unit:
 
 - uses only the two capabilities live capture needs,
-- logs to syslog,
+- writes its log to the journal, and sends security alerts to syslog
+  (`--syslog`),
 - keeps the per-message stream out of the journal,
 - serves metrics on `127.0.0.1:9090`.
 
 The REST API stays off. Change any of that with a drop-in
 (`sudo systemctl edit sipnab`). A package upgrade leaves the drop-in alone.
+[Run sipnab as a service](run-as-a-service.md) shows how to check the unit
+came up, drop-ins, and what to do when it does not start.
 
-The standard package ships the audio playback plugin. It therefore
-*Recommends* `libasound2`.
+Each release publishes a standard package and a **`-noaudio`** package.
 
-- apt installs it by default. That pulls the ALSA stack (~500 kB)
-  onto the system.
-- For headless servers, each release also publishes a **`-noaudio`** package.
-  It has no plugin and no ALSA dependency.
+- The `-noaudio` package has no audio plugin and no ALSA dependency.
   - Everything else, WAV export included, works the same.
   - Only live playback in the TUI is unavailable.
+- The packaging scripts intend the standard package to ship the plugin and
+  *Recommend* `libasound2`. Releases from 0.5.118 to 0.5.232 at least do neither, so today
+  the two packages differ only in name. See
+  [The audio plugin in Linux packages](#the-audio-plugin-in-linux-packages).
 
 The headless amd64 (x86_64) package:
 
@@ -13080,29 +13188,54 @@ standard and a `-noaudio` variant.
   dependency.
 - It is for headless servers, mirroring the `.deb` variants.
 
+Download the package for your architecture and variant from the
+[latest release](https://github.com/NormB/sipnab/releases/latest), then install
+it with `dnf`, which also installs the `libpcap` it needs. Pick the line that
+matches `uname -m` (`x86_64` or `aarch64`).
+
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.232-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.232-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.232-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.232-1.x86_64-noaudio.rpm
 ```
 
-The standard package on an aarch64 (arm64) host. Pick the variant matching
-`uname -m`:
+The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo rpm -i sipnab-0.5.232-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.232-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.232-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.232-1.aarch64-noaudio.rpm
+```
+
+`rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
+
+```text
+error: Failed dependencies:
+	libpcap is needed by sipnab-0.5.232-1.aarch64
+	libpcap.so.1()(64bit) is needed by sipnab-0.5.232-1.aarch64
+```
+
+`dnf` prints `Warning: skipped OpenPGP checks for 1 package from repository:
+@commandline`: the packages carry no OpenPGP signature. Check the download
+against `SHA256SUMS.txt` and its attestation instead, as in
+[Verify a download is genuine](#verify-a-download-is-genuine).
+
+The package installs `/usr/bin/sipnab`, the man page and the systemd unit, and
+creates the `sipnab` user. It creates no `/etc/sipnab` directory. On Fedora
+42, `sipnab --version` then prints:
+
+```text
+sipnab 0.5.232 (v0.5.232 a62a3ac2) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 ```
 
 ### Homebrew (macOS)
@@ -13110,6 +13243,10 @@ sudo rpm -i sipnab-0.5.232-1.aarch64-noaudio.rpm
 ```bash
 brew install NormB/tap/sipnab
 ```
+
+Nobody ran this command for this page: no Mac was available to test it. The tap exists, as `NormB/homebrew-tap` with
+`Formula/sipnab.rb`. Live capture on macOS needs root: see
+[macOS](#macos).
 
 ## Build it from source
 
@@ -13124,6 +13261,15 @@ packages all ship a finished binary.
 - **pkg-config** — how the build finds libpcap.
 - **cmake and a C compiler** — for `--features full`, whose `opus` feature
   compiles libopus from source and links it into the binary.
+
+Two missing prerequisites stop the build late, after the dependencies have
+compiled. Each failure below came from building tag v0.5.232 in the
+`rust:1.99-slim-trixie` image:
+
+| The build stops with | Missing | Fix |
+|---|---|---|
+| ``error: linking with `cc` failed: exit status: 1`` and, in the notes, `/usr/bin/ld: cannot find -lpcap: No such file or directory` | libpcap headers | `sudo apt install libpcap-dev pkg-config` (Debian, Ubuntu). On Fedora and RHEL the headers are `libpcap-devel` |
+| ``error: failed to run custom build command for `opusic-sys v0.7.5` `` and ``is `cmake` not installed?`` | cmake, for `--features full` | `sudo apt install cmake` (Debian, Ubuntu) |
 
 ### Install from a checkout, with capabilities
 
@@ -13225,6 +13371,26 @@ gh attestation verify "sipnab-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
 This is what detects a rehosted or tampered copy, including one served with a
 matching checksum file.
 
+On a terminal it ends with these lines, among others:
+
+```text
+✓ Verification succeeded!
+The following 1 attestation matched the policy criteria
+  - Signer workflow: .github/workflows/release.yml@refs/tags/v0.5.232
+```
+
+`gh` 2.102.0 printed nothing at all when its output went to a pipe or a file,
+for a pass and for a failure alike. In a script, read the exit status instead:
+`0` for a pass, `1` otherwise. A file whose bytes differ from the release has
+no attestation at all, and `gh` reports that as a lookup failure:
+
+```text
+Error: HTTP 404: Not Found (https://api.github.com/repos/NormB/sipnab/attestations/sha256:9e7d72812c6ebd32e06af390adf104898dbc65c423c1ffa56ef58f0d4903a06b?per_page=30&predicate_type=https%3A%2F%2Fslsa.dev%2Fprovenance%2Fv1)
+```
+
+The `.deb` and `.rpm` packages carry the same attestation: run the command on
+the package file.
+
 **This needs `gh` 2.49 or newer.** Check with `gh --version`.
 
 - The subcommand did not exist before then, and distributions lag.
@@ -13256,7 +13422,17 @@ cosign verify-blob SHA256SUMS.txt \
 ```
 
 `Verified OK` means the list is genuine, and `sha256sum -c` above then
-extends that to your download. With `--bundle`, `gh` reads the provenance
+extends that to your download. That command works as written with cosign
+3.1.4. cosign 2.4.1 rejects the bundle with `bundle does not contain cert for
+verification, please provide public key`. Add `--new-bundle-format` there.
+
+cosign names what failed:
+
+- a list that differs from the one the release signed:
+  `failed to verify signature: could not verify message: invalid signature when validating ASN.1 encoded signature`;
+- a signature from another workflow or repository:
+  `failed to verify certificate identity: no matching CertificateIdentity found`,
+  followed by the identity it found. With `--bundle`, `gh` reads the provenance
 from the file instead of from GitHub's attestation API, so you can check a
 copy of the release kept anywhere:
 
@@ -13515,18 +13691,80 @@ The cross images automatically install the required `libpcap-dev` headers for th
 
 ## Run it in Docker
 
-### Run from pre-built image
+### Run from a pre-built image
+
+The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker run --rm --net=host ghcr.io/normb/sipnab:latest -N -d eth0
+docker pull ghcr.io/normb/sipnab:0.5.232
 ```
 
-Live capture needs `--net=host`. For reading pcap files, mount the file into the container:
+The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
+
+| Tag | Points at |
+|---|---|
+| `0.5.232` | That release |
+| `0.5` | The newest release in the 0.5 series |
+| `sha-<commit>` | The image built from that commit |
+| `latest` | The newest commit on `main`, which can be ahead of every release |
+
+`latest` is not a release. On 2026-11-03 it was the image of main commit
+`0d8eea1`, which the workflow built after the 0.5.232 tag.
+
+**The image is `linux/amd64` only.** On an arm64 host `docker pull` fails with
+`no matching manifest for linux/arm64/v8 in the manifest list entries`. Use a
+[release tarball](#download-a-release-binary-yourself) or a package there.
+
+Read a capture file by mounting it:
 
 ```bash
-docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
-  ghcr.io/normb/sipnab:latest -N -I /data/capture.pcap
+docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
+  ghcr.io/normb/sipnab:0.5.232 -N -I /data/capture.pcap
 ```
+
+**Live capture needs `--user root`.** The image runs as the unprivileged user
+`sipnab`, and a non-root user in a container gets no capabilities, whatever
+`--cap-add` grants. Started as root, sipnab opens the capture and then drops
+to `nobody`:
+
+```bash
+docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.232 -N -d eth0
+```
+
+```text
+INFO sipnab::capture::live: Capturing on 'lo' (link_type=1, snaplen=65535)
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+```
+
+Without `--user root`, with or without `--cap-add NET_RAW --cap-add
+NET_ADMIN`, the capture fails and the container exits with status 1:
+
+```text
+Permission denied on 'lo'. Grant capture capabilities once (Linux), then re-run without sudo:
+```
+
+The outputs above came from an arm64 image built from the
+[`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
+stage with the 0.5.232 `.deb` binary, capturing `lo`, because the published
+image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.232`
+shows the same `"User": "sipnab"` for the published image.
+
+- `--net=host` lets the container see the host's interfaces.
+- A listener (`-L`, `--metrics`, `--api`) needs its port published, for
+  example `-p 9060:9060/udp`, or `--net=host`.
+- Mount a `sipnab.toml` at `/etc/sipnab/sipnab.toml` to configure it.
+- The image holds the binary only. It carries no audio plugin, so live playback
+  is unavailable; WAV export works.
+
+Check where an image came from before you run it:
+
+```bash
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.232 --repo NormB/sipnab
+```
+
+It names the workflow and the ref that built the image. For `0.5.232` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.232`. For `latest` it is
+`.github/workflows/docker.yml@refs/heads/main`.
 
 ### Build the Docker image locally
 
@@ -13536,8 +13774,10 @@ docker build -t sipnab .
 
 The multi-stage Dockerfile uses `rust:1.99-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image.
 
-- The runtime image includes only `libpcap0.8t64`.
+- The runtime image adds `libpcap0.8t64` and `libasound2t64`.
 - It runs as a non-root `sipnab` user.
+- It builds for the host's own architecture, so this is also how to get an
+  arm64 image.
 
 ## Platform notes
 
@@ -13807,11 +14047,14 @@ git pull
 
 ### In Docker
 
-Pull the new image. The next `docker run` uses it:
+Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:latest
+docker pull ghcr.io/normb/sipnab:0.5.232
 ```
+
+Pulling `latest` gives the newest `main` commit, not the newest release. See
+[Run from a pre-built image](#run-from-a-pre-built-image).
 
 ### What an upgrade keeps, and what to redo
 
@@ -13867,15 +14110,41 @@ answers where it actually is, which beats guessing:
 command -v sipnab
 ```
 
-On Debian or Ubuntu, remove the package:
+On Debian or Ubuntu, stop and disable the service first, then remove the
+package:
 
 ```bash
+# Run all of these, in order.
+sudo systemctl disable --now sipnab
 sudo apt remove sipnab
 ```
 
-On RHEL or Fedora:
+The package does not stop the service itself. A running sipnab survives
+`apt remove` with its binary deleted, and the unit's enable link stays behind,
+pointing at a file that no longer exists.
+
+What `apt remove` and `apt purge` both leave in place:
+
+- the `sipnab` user;
+- `/etc/sipnab` and anything in it;
+- `/var/lib/sipnab`, the unit's state directory;
+- drop-ins in `/etc/systemd/system/sipnab.service.d`.
+
+Remove them yourself when you no longer need them:
 
 ```bash
+# Run all of these, in order.
+sudo rm -rf /etc/sipnab /var/lib/sipnab /etc/systemd/system/sipnab.service.d
+sudo systemctl daemon-reload
+sudo userdel sipnab
+```
+
+On RHEL or Fedora, the same: stop and disable the service, remove the
+package, and remove what the package leaves:
+
+```bash
+# Run all of these, in order.
+sudo systemctl disable --now sipnab
 sudo dnf remove sipnab
 ```
 
@@ -14708,6 +14977,13 @@ the cause from there.
 | `Failed to create output file` for a `-O` path, or for a `--split` file mid-run | [An output file sipnab cannot create](#an-output-file-sipnab-cannot-create) |
 | sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
 | sipnab refused to start, or stopped with an error message | [Error messages](errors.md): look up the message by its text |
+| The systemd service does not start, or stops and stays down | [A service that does not start](#a-service-that-does-not-start) |
+| `Permission denied on 'eth0'` on a live capture | [Live capture says Permission denied](#live-capture-says-permission-denied) |
+| A run under `sudo` stops with `Permission denied` on a key, token or certificate file | [A key file sipnab cannot read after the drop](#a-key-file-sipnab-cannot-read-after-the-drop) |
+| A client of the REST API, MCP or metrics gets `401`, `403`, `404` or `503` | [A client the listener turns away](#a-client-the-listener-turns-away) |
+| A client or HEP sender fails the TLS handshake | [A TLS handshake that fails](#a-tls-handshake-that-fails) |
+| A setting in `sipnab.toml` has no effect | [A setting that has no effect](#a-setting-that-has-no-effect) |
+| The disk fills, or memory grows, on a long run | [A long run that fills the disk or the memory](#a-long-run-that-fills-the-disk-or-the-memory) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
 Whatever the symptom, three things decide whether the answer is in the capture
@@ -16290,6 +16566,143 @@ reason.
   - A run without it may still say `Permission denied`.
   - That means your own account may not write there.
 
+## A service that does not start
+
+`systemctl status sipnab` names the exit status, and `journalctl -u sipnab -n
+20` the reason. sipnab prints that reason at every log level.
+
+- **Exit status 2**: a flag, or a pair of flags, sipnab refuses. The usual one
+  on a service is a listener bound to a routable address with no credential:
+
+  ```text
+  REST API refuses to start: --api 0.0.0.0:18080 is non-loopback but no --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was supplied. Bind 127.0.0.1, or configure authentication.
+  ```
+
+- **Exit status 1**: a runtime failure, or a value in `sipnab.toml` it
+  refuses. A HEP listener with no allowlist or secret also exits 1.
+- **Exit status 101**: sipnab panicked. See
+  [Send us a crash report](#send-us-a-crash-report).
+- **Active, then `inactive` with `Result=success`**: something sent `SIGHUP`.
+  sipnab does not handle it, systemd counts it as a clean stop, and
+  `Restart=on-failure` leaves the service down. Start it again.
+
+[A service that does not start](run-as-a-service.md#a-service-that-does-not-start)
+lists each refusal message with its fix.
+
+## Live capture says Permission denied
+
+```text
+Permission denied on 'eth0'. Grant capture capabilities once (Linux), then re-run without sudo:
+```
+
+The process lacks `CAP_NET_RAW` and `CAP_NET_ADMIN`. Which fix applies
+depends on how sipnab runs:
+
+| How it runs | Cause | Fix |
+|---|---|---|
+| From a shell, as your user | The binary has no file capabilities, or an upgrade replaced it and cleared them | `sudo sipnab --setup-caps` |
+| Under systemd with `NoNewPrivileges=true` | `NoNewPrivileges` stops file capabilities taking effect, so `setcap` cannot help | `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` in the unit ([Write a unit of your own](run-as-a-service.md#write-a-unit-of-your-own)) |
+| In the release container image | The image runs as the non-root user `sipnab`, which gets no capabilities, even with `--cap-add` | `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
+
+The lines under the message suggest `--setup-caps`, `sudo` and `setcap`
+whatever the cause. In the last two rows none of them helps.
+
+## A key file sipnab cannot read after the drop
+
+```text
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+metrics auth: --metrics-auth-file '/root/metrics.auth': Permission denied (os error 13)
+```
+
+A run started as root drops to `nobody`, or to the `--user` account, right
+after it opens the capture. It reads these files after the drop, as that
+account:
+
+- `--api-signing-key-file`, `--mcp-signing-key-file`, `--mcp-token-file`;
+- `--metrics-auth-file`;
+- the REST, MCP and metrics certificates and keys;
+- a HEP sender's `--hep-auth-file`.
+
+A file only root can read stops the run with exit status 2. For an MCP
+certificate or key the message is the path alone, such as
+`/etc/sipnab/mcp.key`. Run with `--user sipnab` and make the files
+`root:sipnab` mode `640`, as [Make a certificate](auth.md#make-a-certificate)
+shows. A systemd unit with `User=sipnab` reads them as `sipnab` from the
+start.
+
+## A client the listener turns away
+
+| Answer | Listener | Cause |
+|---|---|---|
+| `401` | REST API, MCP | No bearer token, an expired or revoked one, one from the other surface's key, or one scoped too narrowly for the route. A `metrics` token gets `401` on `/v1/stats` |
+| `401` | MCP `/health` | No token: on MCP, `/health` needs one. The REST API's `/health` does not |
+| `401` | metrics | No HTTP Basic credential, on a routable bind |
+| `403` | REST API, MCP | The `Host` header names a host not on `--api-allowed-host` or `--mcp-allowed-host` |
+| `404` | metrics `/health` | The standalone metrics server has no `/health`. Check `/metrics` instead |
+| `503` | REST API, MCP, metrics | The client is over its rate limit or the in-flight cap. The limiter runs before authentication, so `503` says nothing about the credential |
+
+[Use a token](auth.md#use-a-token) explains each REST and MCP status, and how
+to read the `WWW-Authenticate` challenge MCP adds to a `401`.
+
+## A TLS handshake that fails
+
+- **curl exits 60 with `SSL certificate problem: unable to get local issuer
+  certificate`.** The client does not trust the issuer of sipnab's
+  certificate. Pass it with `--cacert ca.pem`.
+- **curl exits 1, or a client reports a reset, against an `http://` URL.** The
+  listener serves HTTPS only once it has a certificate. Use `https://`.
+- **A HEP sender stops at startup with exit status 2:**
+
+  ```text
+  Failed to create HEP sender: Failed to establish a TLS session with '127.0.0.1:19063': invalid peer certificate: UnknownIssuer
+  ```
+
+  The sender does not trust the collector's issuer. Name it with
+  `--hep-tls-ca`. The listener logs nothing for the failed handshake at the
+  default level, so this line on the sender is the evidence.
+- **A HEP sender in the release container image stops with `no system CA
+  bundle found; name the collector's issuer with --hep-tls-ca`.** The image
+  has no CA bundle. Mount the issuer's certificate and name it.
+
+[API TLS](rest-api.md#api-tls), [MCP TLS](mcp-deploy.md#mcp-tls) and
+[Carry the feed over TCP and TLS](examples.md#carry-the-feed-over-tcp-and-tls)
+set each listener up.
+
+## A setting that has no effect
+
+Ask sipnab which file it read and what it made of it:
+
+```bash
+sipnab -D --config /etc/sipnab/sipnab.toml
+```
+
+Then check, in order:
+
+- **A misspelled key.** sipnab ignores an unknown key and warns:
+  `WARN sipnab::config: Unknown config key: capture.snaplenn`. In the terminal
+  interface that warning does not show unless you set `SIPNAB_LOG`: a TUI run
+  logs errors only by default.
+- **Another file.** sipnab reads only the first file it finds. `-D` prints
+  `# Loaded from:` and, when a later candidate also exists, `# Also present
+  and NOT read:`. See [File Locations](config-reference.md#file-locations).
+- **A flag.** A flag beats the same key in the file. A systemd unit or drop-in
+  may pass one.
+- **A running service.** sipnab reads the file at startup only. Restart it.
+
+## A long run that fills the disk or the memory
+
+- **Disk.** A live run with `-O` writes one file until it stops. Add
+  `--split filesize:N` and `--split-keep N` to keep a fixed number of files
+  ([Run a capture that stops on its own](examples.md#run-a-capture-that-stops-on-its-own)).
+  The audit and provenance files grow without limit: rotate them with
+  `logrotate` and `copytruncate`
+  ([Rotate the audit and provenance files](run-as-a-service.md#rotate-the-audit-and-provenance-files)).
+- **Memory.** sipnab holds the dialogs, streams and findings of the whole run,
+  up to caps that evict the oldest
+  ([Keep a long-running capture inside a memory
+  budget](examples.md#keep-a-long-running-capture-inside-a-memory-budget)).
+  A restart empties them.
+
 ## Send us a crash report
 
 When sipnab hits a bug it cannot recover from, it stops. It prints two lines
@@ -16331,6 +16744,17 @@ ls -t ~/.local/state/sipnab/sipnab-crash-*.log | head -1
 - **Send it.** [Open an issue](https://github.com/NormB/sipnab/issues/new/choose).
   - Attach the `.log` file.
   - Add the output of `sipnab --version` and the command you ran.
+
+Under a systemd unit, the default report directory may not be writable. The
+journal then holds the report's text and the line `failed to write crash
+report: Read-only file system (os error 30)`. Copy the text from the journal,
+and see [Keep crash reports](run-as-a-service.md#keep-crash-reports).
+
+A panic in the parser of one input does not stop the run. sipnab drops that
+frame, packet, record or archive member, logs one warning such as
+`contained a panic at <location>: <message>`, and goes on. It writes no
+crash report for it. Send that line, with `sipnab --version` and the input if
+you can share it.
 
 A core dump is not needed, and it is not safe to share.
 
@@ -31980,8 +32404,7 @@ persist_to_config = true
 
 What happens when sipnab panics. The panic hook:
 
-- restores the terminal (release builds abort without unwinding, so raw mode /
-  mouse capture would otherwise stay on);
+- restores the terminal, so raw mode and mouse capture do not stay on;
 - writes a crash report;
 - then either exits cleanly or aborts so the OS can produce a core dump.
 
@@ -31996,9 +32419,14 @@ What happens when sipnab panics. The panic hook:
 [crash]
 reports = true
 backtrace = true
-report_dir = "/var/log/sipnab"
+report_dir = "/var/lib/sipnab"
 core = false
 ```
+
+Under the unit the `.deb` and `.rpm` packages install, the default
+`report_dir` is not writable and sipnab prints `failed to write crash report:
+Read-only file system (os error 30)`. `/var/lib/sipnab`, the unit's state
+directory, is. See [Keep crash reports](run-as-a-service.md#keep-crash-reports).
 
 ### `[g729]`
 
@@ -33109,15 +33537,10 @@ whenever they ask.
    sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
    ```
 
-   Then grant the binary capture rights.
-   - Skip this second command if you'll feed HEP instead
-     ([Collect captures from several SIP servers in one place](mcp-estate.md#collect-captures-from-several-sip-servers-in-one-place)).
-   - A HEP listener is a plain UDP socket. So `cap_net_raw` would be
-     privilege the service never uses.
-
-   ```bash
-   sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
-   ```
+   The unit below grants capture rights itself, with
+   `AmbientCapabilities=`. Do not use `setcap` for it: the unit sets
+   `NoNewPrivileges=true`, which stops a file capability taking effect, and the
+   capture then fails with `Permission denied on 'eth0'`.
 
 - **[server]** Generate the bearer token file, in this order:
 
@@ -33133,10 +33556,15 @@ whenever they ask.
       head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
       ```
 
-   - Make the token file readable by root only:
+   - Make the token file readable by root and the `sipnab` group only.
+     The service reads it as the `sipnab` user, and a file only root can read
+     stops it with `--mcp-token-file '/etc/sipnab/mcp.token': Permission denied
+     (os error 13)`:
 
       ```bash
-      sudo chmod 600 /etc/sipnab/mcp.token
+      # Run all of these, in order.
+      sudo chown root:sipnab /etc/sipnab/mcp.token
+      sudo chmod 640 /etc/sipnab/mcp.token
       ```
 
 - **[server]** Install the systemd unit as
@@ -33160,6 +33588,8 @@ whenever they ask.
        -d eth0
    User=sipnab
    Group=sipnab
+   AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+   CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
    NoNewPrivileges=true
    ProtectSystem=strict
    ProtectHome=true
@@ -34539,14 +34969,20 @@ Use HTTP when the capture must keep running between agent sessions.
 This listens:
 
 ```bash
-sipnab --mcp -N --mcp-transport http \
+sudo sipnab --mcp -N --mcp-transport http --user sipnab \
        --mcp-bind 127.0.0.1:8731 \
        --mcp-token-file /etc/sipnab/mcp.token \
        -I capture.pcap
 ```
 
-The agent then connects to `https://your-host/mcp` with a `Bearer
-<token>` header.
+sipnab reads the capture as root, drops to `sipnab`, and then reads the token
+file, so the file must be readable by the `sipnab` group, as the next section
+sets it up.
+
+That binds loopback only, so an agent on another host reaches it through a
+proxy that terminates TLS (`https://your-host/mcp`) or an SSH tunnel, with a
+`Bearer <token>` header. To serve the agent directly, bind a routable address
+and give sipnab a certificate, as in [MCP TLS](#mcp-tls).
 
 - The default bind is loopback.
 - Non-loopback binds **must** supply a credential, either:
@@ -34583,10 +35019,15 @@ Non-loopback binds require a bearer token. Generate one once, in this order.
    head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
    ```
 
-- Make the token file readable by root only:
+- Make the token file readable by root and the `sipnab` group only. sipnab
+  reads it as the user it runs as, `sipnab` in the units on this page. A file
+  only root can read stops it with `--mcp-token-file '/etc/sipnab/mcp.token':
+  Permission denied (os error 13)` and exit status 2:
 
    ```bash
-   sudo chmod 600 /etc/sipnab/mcp.token
+   # Run all of these, in order.
+   sudo chown root:sipnab /etc/sipnab/mcp.token
+   sudo chmod 640 /etc/sipnab/mcp.token
    ```
 
 Give the client the token:
@@ -34606,11 +35047,16 @@ Give sipnab a certificate and its private key.
 - You need no proxy in front:
 
 ```bash
-sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 \
+sudo sipnab -N -d eth0 --user sipnab --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 \
   --mcp-token-file /etc/sipnab/mcp.token \
   --mcp-allowed-host capture01.example.net \
   --mcp-tls-cert /etc/sipnab/mcp.pem --mcp-tls-key /etc/sipnab/mcp.key
 ```
+
+A root run drops to `--user` before it reads the token, the certificate and
+the key, so make all three `root:sipnab` mode `640`. With a file only root
+can read, the run stops with exit status 2. For the key the message is the
+path alone, `/etc/sipnab/mcp.key`.
 
 `--mcp-allowed-host` names the host clients use in the URL. Without it, the
 request below gets `403` ([Stop a browser reaching your
@@ -34913,9 +35359,11 @@ crate sipnab uses (3.8.0) marks its sampling types deprecated.
 
 Create `/etc/systemd/system/sipnab-mcp.service` using this example, fed by a
 HEP listener.
-The packaged
-[`packaging/sipnab.service`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service)
-starts REST and metrics, not MCP:
+The unit the `.deb` and `.rpm` packages install,
+[`packaging/sipnab.service`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service),
+starts a capture with the metrics endpoint on loopback, and neither MCP nor the
+REST API. Its token file must be readable by the `sipnab` user, as in [Issue a
+token the client can present](#issue-a-token-the-client-can-present):
 
 ```ini
 [Unit]
@@ -34964,11 +35412,18 @@ Then start it, in this order:
 
 The HEP listener needs no capture privileges (plain UDP socket). So the
 unit runs as an unprivileged user. For live interface capture instead of
-HEP, grant the binary `CAP_NET_RAW`:
+HEP, replace `-L 0.0.0.0:9060 --hep-allow 192.0.2.0/24` with `-d eth0` and
+grant the capabilities in the unit,
+after `Group=sipnab`:
 
-```bash
-sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
+```ini
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 ```
+
+`setcap` on the binary does not work here: `NoNewPrivileges=true` stops a file
+capability taking effect. [Run sipnab as a service](run-as-a-service.md)
+covers signals, crash reports, log rotation and a unit that does not start.
 
 
 ## Build a binary with MCP support
@@ -35436,8 +35891,8 @@ sees calls from the whole estate. The HEP listener is a plain UDP socket:
 
 - **[server]** Do [Install sipnab](mcp-deploy.md#install-sipnab-every-server-once)
    and create the user as in the create-the-unprivileged-user step of
-   [Keep a capture running between agent sessions](mcp-deploy.md#keep-a-capture-running-between-agent-sessions),
-   *without* the `setcap`.
+   [Keep a capture running between agent sessions](mcp-deploy.md#keep-a-capture-running-between-agent-sessions).
+   The unit below has no `AmbientCapabilities=` line: a HEP listener needs none.
 
 - **[server]** Install `/etc/systemd/system/sipnab-mcp.service`.
    - This variant listens for HEP on udp/9063 and serves MCP on loopback.
@@ -35849,7 +36304,10 @@ binds its own loopback. Then register the three, in this order:
 Give each node a `--node-name` that matches how you think of it.
 
 - That string is what comes back in `capture_identity.node`.
-- It is the only thing that attributes a fact to a box:
+- It is the only thing that attributes a fact to a box.
+- This `ExecStart=` captures `eth0`, so it belongs in a unit that grants
+  capture, such as the one in
+  [Keep a capture running between agent sessions](mcp-deploy.md#keep-a-capture-running-between-agent-sessions):
 
 ```ini
 ExecStart=/usr/local/bin/sipnab --mcp -N --mcp-transport http \
@@ -56086,7 +56544,10 @@ sipnab supports two token kinds, checked with a constant-time comparison:
 The steps below set up signed tokens from scratch. After the steps, this page covers:
 
 - what a token contains,
-- how its audience binds it to one server.
+- how its audience binds it to one server,
+- [the credential and TLS of every listener](#secure-every-listener),
+  including the metrics endpoint and the HEP listener, which use no bearer
+  token.
 
 ## Configure a signing key
 
@@ -56223,7 +56684,7 @@ A failure is not automatically a `401`:
 | Status | What happened |
 |---|---|
 | `403` | The `Host` header names a host that is not on the allowlist (`--api-allowed-host` / `--mcp-allowed-host`). sipnab checks it before the rate limiter and authentication, so the credential was never read. |
-| `503` | The client is over its per-IP rate budget (100 requests/second) or the in-flight cap (`--api-max-conn`). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md#bind-address--connection-limits). |
+| `503` | The client is over its per-IP rate budget (`--api-rate-limit-per-peer`, 100 requests a second by default) or the in-flight cap (`--api-max-conn`, 100 by default). **The rate limiter runs before authentication**, so this answer arrives whether the credential is good, bad, or missing — see [rest-api.md](rest-api.md#bind-address--connection-limits). |
 | `401` | Missing, non-Bearer, malformed, expired, revoked, wrong-audience, or wrong-key credential — **or a good credential scoped too narrowly for the route**. A `metrics` token verifies fine and still gets `401` on `/v1/dialogs`, because that route demands `full`. |
 | `404` | The credential passed, but nothing matches: no dialog carries that Call-ID on `/v1/dialogs/{call_id}`, or no stream carries that SSRC on `/v1/streams/{id}`. |
 | `400` | The credential passed, but the request does not parse: `/v1/streams/{id}` got an id that is not hexadecimal. |
@@ -56241,7 +56702,9 @@ challenge:
 So the two read differently in a log. The REST API answers with the status alone. See
 [the MCP security model](mcp-protocol.md#security-model).
 
-`/health` needs no credential and skips the rate limiter entirely.
+On the REST API, `/health` needs no credential and skips the rate limiter
+entirely. On the HTTP MCP server, `/health` takes the bearer token like every
+other route, and answers `401` without it.
 
 ## Expiry
 
@@ -56289,6 +56752,22 @@ Both steps matter. An id in a file no server reads revokes nothing:
    sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-signing-key "$KEY" --api-revoked-file /etc/sipnab/revoked.txt
    ```
 
+The HTTP MCP server takes `--mcp-revoked-file` the same way. This run minted
+an MCP token with `--token-id ci-runner-1`, started the server with an empty
+denylist, and appended the id while the server ran:
+
+```bash
+sipnab -N -I capture.pcap --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 \
+  --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/revoked.txt
+```
+
+The same token got `200` from `/health` before the append and `401` after it,
+with this challenge:
+
+```text
+www-authenticate: Bearer realm="sipnab", error="invalid_token", error_description="The access token is invalid or has expired"
+```
+
 The file is one token `id` per line (blank lines and `#` comments ignored).
 
 It is **re-read when its mtime changes**.
@@ -56297,6 +56776,198 @@ It is **re-read when its mtime changes**.
 - It needs no restart.
 - (Signed tokens are otherwise valid until `exp`. So a denylist is the revocation mechanism for the
   stateless model.)
+
+## Secure every listener
+
+sipnab has four network listeners. Each takes its own credential and its own
+certificate, and each refuses a routable bind that has no credential:
+
+| Listener | Credential | TLS flags | Config keys | Routable bind with no credential |
+|---|---|---|---|---|
+| REST API (`--api`) | bearer token: `--api-key` or `--api-signing-key[-file]` | `--api-tls-cert`, `--api-tls-key` | `[api] tls_cert`, `tls_key` | refused, exit 2 |
+| MCP over HTTP (`--mcp-transport http`) | bearer token: `--mcp-token[-file]` or `--mcp-signing-key[-file]` | `--mcp-tls-cert`, `--mcp-tls-key` | `[mcp] tls_cert`, `tls_key` | refused, exit 2 |
+| Metrics (`--metrics`) | HTTP Basic: `--metrics-auth-file` holding `user:password` | `--metrics-tls-cert`, `--metrics-tls-key` | `[metrics] tls_cert`, `tls_key` | refused, exit 2 |
+| HEP (`--hep-listen`) | source allowlist `--hep-allow`, or shared secret `--hep-auth-file` | `--hep-listen-transport tls`, `--hep-tls-cert`, `--hep-tls-key` | `[hep] tls_cert`, `tls_key` | refused, exit 1 |
+
+The exact refusal messages are in [A service that does not
+start](run-as-a-service.md#a-service-that-does-not-start).
+
+None of the four asks a client for a certificate. TLS encrypts the path, and
+the credential in the second column says who the client is.
+
+### Make a certificate
+
+Clients check the certificate against the name they connect to. For a private
+deployment, make a small CA and sign one certificate for the capture host:
+
+- Make the CA:
+
+  ```bash
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout ca.key -out ca.pem -days 365 -subj "/CN=sipnab example CA"
+  ```
+
+- Make the host's key and request:
+
+  ```bash
+  openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout capture01.key -out capture01.csr -subj "/CN=capture01.example.net"
+  ```
+
+- Sign it, naming the host in `subjectAltName`:
+
+  ```bash
+  # Run all of these, in order.
+  printf 'subjectAltName=DNS:capture01.example.net\nextendedKeyUsage=serverAuth\n' > ext.cnf
+  openssl x509 -req -in capture01.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+    -days 365 -extfile ext.cnf -out capture01.pem
+  ```
+
+- Restrict the key. sipnab refuses a key any other user can read, with
+  `the API TLS private key is world-readable (mode 0644); chmod 600 it` and
+  exit status 2:
+
+  ```bash
+  chmod 600 capture01.key
+  ```
+
+Clients need `ca.pem`. Keep `ca.key` off the capture host.
+
+**sipnab reads most of these files after it drops root.** A run started as
+root, under `sudo` or as a root service, opens the capture, drops to `nobody`
+(or the `--user` account), and only then reads the REST and MCP signing keys
+and token files, the metrics credential, the REST and MCP certificates and
+keys, and a HEP sender's `--hep-auth-file`. A file only root can read then
+stops the run with exit status 2:
+
+```text
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+metrics auth: --metrics-auth-file '/root/metrics.auth': Permission denied (os error 13)
+```
+
+For an MCP key the message is the path alone, such as `/etc/sipnab/mcp.key`,
+with no reason. sipnab reads the HEP listener's certificate, key and secret
+before the drop. So give the service its own account and its group read
+access, and name that account with `--user` on a root run:
+
+```bash
+# Run all of these, in order.
+sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
+sudo chown root:sipnab capture01.key api-signing.key mcp-signing.key metrics.auth
+sudo chmod 640 capture01.key api-signing.key mcp-signing.key metrics.auth
+```
+
+A systemd unit with `User=sipnab` starts as `sipnab` and drops nothing, so the
+same `640` files work there.
+
+### Serve all four over TLS
+
+One run can serve all four, with one certificate:
+
+```bash
+sipnab -N \
+  --hep-listen 0.0.0.0:9063 --hep-listen-transport tls \
+    --hep-tls-cert capture01.pem --hep-tls-key capture01.key --hep-allow 192.0.2.0/24 \
+  --api 0.0.0.0:8443 --api-signing-key-file api-signing.key \
+    --api-tls-cert capture01.pem --api-tls-key capture01.key --api-allowed-host capture01.example.net \
+  --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-signing-key-file mcp-signing.key \
+    --mcp-tls-cert capture01.pem --mcp-tls-key capture01.key --mcp-allowed-host capture01.example.net \
+  --metrics 0.0.0.0:9443 --metrics-auth-file metrics.auth \
+    --metrics-tls-cert capture01.pem --metrics-tls-key capture01.key
+```
+
+Make the three credential files first:
+
+```bash
+# Run all of these, in order.
+umask 077
+openssl rand -hex 32 > api-signing.key
+openssl rand -hex 32 > mcp-signing.key
+printf 'scraper:%s\n' "$(openssl rand -hex 16)" > metrics.auth
+```
+
+The startup lines confirm each one:
+
+```text
+INFO sipnab::capture::hep: HEP listener started on 0.0.0.0:9063 (tls)
+INFO sipnab::output::prometheus_server: Prometheus metrics server serves HTTPS only (TLS 1.2/1.3)
+INFO sipnab::output::api: REST API serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)
+INFO sipnab::mcp::transport::http: MCP HTTP serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)
+```
+
+With `--hep-allow` and no secret, the HEP listener also warns that it trusts
+the addresses each sender claims: add `--hep-auth-file` to remove that.
+
+Check each listener from a client that holds `ca.pem`:
+
+```bash
+# Run all of these, in order.
+TOKEN="$(SIPNAB_API_SIGNING_KEY="$(cat api-signing.key)" sipnab --mint-token)"
+curl --cacert ca.pem https://capture01.example.net:8443/health
+curl --cacert ca.pem -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" https://capture01.example.net:8443/v1/stats
+curl --cacert ca.pem -u "$(cat metrics.auth)" -s https://capture01.example.net:9443/metrics | head -1
+```
+
+```text
+ok
+200
+# HELP sipnab_responses_total Total SIP responses by code class
+```
+
+What a client sees when something is missing:
+
+| Request | Answer |
+|---|---|
+| no `--cacert` | curl exits 60: `SSL certificate problem: unable to get local issuer certificate` |
+| plain `http://` to a TLS port | no HTTP answer; curl exits 1 |
+| metrics without `-u` | `401` |
+| a `metrics`-scope token on `/v1/stats` | `401` |
+
+[Run sipnab as a HEP relay](examples.md#carry-the-feed-over-tcp-and-tls) shows
+the HEP sender's side. A sender that does not trust the collector's issuer
+stops at startup with exit status 2:
+
+```text
+Failed to create HEP sender: Failed to establish a TLS session with '127.0.0.1:19063': invalid peer certificate: UnknownIssuer
+```
+
+The listener logs nothing for that failed handshake at the default level, so
+read the sender's side. The release container image holds no CA bundle: a
+sender in it needs `--hep-tls-ca` even for a collector with a public
+certificate, and stops with `no system CA bundle found; name the collector's
+issuer with --hep-tls-ca` without it.
+
+### Scrape the HTTPS metrics endpoint from Prometheus
+
+Prometheus needs the user name, the password, and the CA. Put the password
+alone in a file Prometheus can read, then add the job:
+
+```yaml
+scrape_configs:
+  - job_name: sipnab
+    scheme: https
+    basic_auth:
+      username: scraper
+      password_file: /etc/prometheus/sipnab.pass
+    tls_config:
+      ca_file: /etc/prometheus/sipnab-ca.pem
+    static_configs:
+      - targets: ["capture01.example.net:9443"]
+```
+
+Prometheus 3.5.0 with that job reported the target up:
+
+```bash
+curl -s -G http://localhost:9090/api/v1/query --data-urlencode 'query=up{job="sipnab"}'
+```
+
+```text
+{'__name__': 'up', 'instance': 'capture01.example.net:9443', 'job': 'sipnab'} 1
+```
+
+That line is the query's result, printed from its JSON. The REST API also
+serves the metrics, on `/metrics`, to a token minted with `--token-scope
+metrics`.
 
 ## Token format
 
@@ -56367,6 +57038,554 @@ audience and gets `401` on both surfaces. Mint a replacement with
   - Passing only one of a pair stops sipnab at startup.
     It does not serve plain HTTP on a port meant for HTTPS.
   - See [API TLS](rest-api.md#api-tls) and [MCP TLS](mcp-deploy.md#mcp-tls).
+
+---
+
+<!-- source: docs/run-as-a-service.md -->
+
+# Run sipnab as a service
+
+Use this page to keep sipnab running under systemd on a Linux server: a capture
+that survives a reboot and an SSH disconnect, or a listener that other tools
+reach over the network.
+
+It covers:
+
+- the unit the `.deb` and `.rpm` packages install, and how to change it;
+- a unit of your own, for an install from the installer or a tarball;
+- where the log goes, and what `--syslog` sends;
+- what each signal does, and how a change to the configuration takes effect;
+- where a crash report goes under a service;
+- rotating the audit and provenance files;
+- reading a service that does not start;
+- checking that a running service is healthy.
+
+Every output on this page comes from sipnab 0.5.232 from the arm64 `.deb`,
+installed with `apt` on Debian 13 with systemd 257, unless a section
+says otherwise.
+
+## Before you start
+
+- **A Linux host with systemd.** macOS and other platforms are not covered here.
+- **sipnab installed.** See [Installing sipnab](install.md). The `.deb` and
+  `.rpm` packages install the unit and create the `sipnab` user. The installer
+  and the tarballs install the binary only.
+- **Nothing to change on the SIP server** for a capture of the host's own
+  interfaces. A HEP listener needs the SIP server's HEP tracing pointed at it:
+  see [Wire HEP from your SIP stack to a central
+  sipnab](examples.md#wire-hep-from-your-sip-stack-to-a-central-sipnab).
+- **A firewall rule** for any port you bind to a routable address. A unit that
+  binds only `127.0.0.1` needs none.
+
+## Start the packaged unit
+
+The `.deb` and `.rpm` packages install `sipnab.service` and leave it stopped.
+It runs:
+
+```text
+/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090
+```
+
+- `-N -d any` captures on every interface, headless.
+- `--no-cli-print` keeps the per-message stream out of the journal.
+- `--syslog` sends security alerts to syslog. See [Where the log goes](#where-the-log-goes).
+- `--metrics 127.0.0.1:9090` serves Prometheus metrics on loopback.
+- The unit runs as the `sipnab` user, with `CAP_NET_RAW` and `CAP_NET_ADMIN`
+  as ambient capabilities. Nothing in it runs as root.
+- It may write only to `/var/lib/sipnab` (`StateDirectory=sipnab`, mode 0700).
+
+Enable it and start it:
+
+```bash
+sudo systemctl enable --now sipnab
+```
+
+### Check it worked
+
+Ask systemd for its state:
+
+```bash
+systemctl status sipnab --no-pager
+```
+
+```text
+● sipnab.service - sipnab SIP/RTP capture and analysis daemon
+     Loaded: loaded (/usr/lib/systemd/system/sipnab.service; enabled; preset: enabled)
+     Active: active (running) since Tue 2026-11-03 14:34:43 UTC; 3s ago
+   Main PID: 218 (sipnab)
+     CGroup: /system.slice/sipnab.service
+             └─218 /usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090
+```
+
+Read its startup lines. The first line, the generated capture filter, is long
+and left out here:
+
+```bash
+journalctl -u sipnab --no-pager -o cat
+```
+
+```text
+INFO sipnab::capture::live: Capturing on 'any' (link_type=113, snaplen=65535)
+INFO sipnab::security::alerting: Syslog output enabled (facility=LOCAL0)
+INFO sipnab::output::prometheus_server: Prometheus metrics server listening on 127.0.0.1:9090
+```
+
+Scrape the metrics endpoint:
+
+```bash
+curl -s 127.0.0.1:9090/metrics | head -3
+```
+
+```text
+# HELP sipnab_responses_total Total SIP responses by code class
+# TYPE sipnab_responses_total counter
+sipnab_responses_total{code="1xx"} 0
+```
+
+Confirm it runs as `sipnab` and holds only the two capabilities:
+
+```bash
+# Run all of these, in order.
+ps -o user=,args= -C sipnab
+grep CapEff "/proc/$(pgrep -x sipnab)/status"
+```
+
+```text
+sipnab   /usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090
+CapEff:	0000000000003000
+```
+
+`0x3000` is bit 12 (`CAP_NET_ADMIN`) and bit 13 (`CAP_NET_RAW`).
+
+Prometheus also listens on port 9090 by default. On a host that runs both,
+move one of them, for example with `--metrics 127.0.0.1:9100` in a drop-in.
+
+## Change the packaged unit with a drop-in
+
+A package upgrade replaces `/usr/lib/systemd/system/sipnab.service`. Put your
+changes in a drop-in, which the upgrade leaves alone. A drop-in that changes the
+command clears `ExecStart=` first, then gives the whole new command.
+
+This drop-in turns on the REST API on every address. sipnab refuses a routable
+`--api` with no credential, so the signing key comes from a file that only root
+reads. systemd reads that file before it starts sipnab, so the key never
+appears in the process list.
+
+- Write the signing key:
+
+  ```bash
+  sudo sh -c 'umask 077; printf "SIPNAB_API_SIGNING_KEY=%s\n" "$(openssl rand -hex 32)" > /etc/sipnab/api.env'
+  ```
+
+- Create the drop-in. `sudo systemctl edit sipnab` writes the same lines to
+  a drop-in named `override.conf`, through an editor:
+
+  ```bash
+  # Run all of these, in order.
+  sudo mkdir -p /etc/systemd/system/sipnab.service.d
+  sudo tee /etc/systemd/system/sipnab.service.d/api.conf >/dev/null <<'EOF'
+  [Service]
+  EnvironmentFile=/etc/sipnab/api.env
+  ExecStart=
+  ExecStart=/usr/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090 \
+      --api 0.0.0.0:8080 --api-allowed-host capture01.example.net
+  EOF
+  ```
+
+- Load it and restart:
+
+  ```bash
+  # Run all of these, in order.
+  sudo systemctl daemon-reload
+  sudo systemctl restart sipnab
+  ```
+
+Check it: mint a token from the same key, then ask for the statistics with
+and without it.
+
+```bash
+# Run all of these, in order.
+TOKEN="$(sudo sh -c 'set -a; . /etc/sipnab/api.env; sipnab --mint-token')"
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: capture01.example.net' http://127.0.0.1:8080/v1/stats
+curl -s -o /dev/null -w '%{http_code}\n' -H 'Host: capture01.example.net' -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/stats
+```
+
+```text
+401
+200
+```
+
+[Bearer-token authentication](auth.md#use-a-token) covers token lifetimes, scopes and
+revocation. Serve the API over HTTPS before you hand a token to a client on
+another host: see [Secure every listener](auth.md#secure-every-listener).
+
+## Write a unit of your own
+
+The installer and the release tarballs install `/usr/local/bin/sipnab` and
+nothing else. Give the service its own user and grant the capabilities in the
+unit.
+
+- Create the user:
+
+  ```bash
+  sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
+  ```
+
+- Write the unit. It is the packaged unit with the path changed:
+
+  ```bash
+  sudo tee /etc/systemd/system/sipnab.service >/dev/null <<'EOF'
+  [Unit]
+  Description=sipnab SIP/RTP capture and analysis daemon
+  After=network-online.target
+  Wants=network-online.target
+
+  [Service]
+  Type=simple
+  ExecStart=/usr/local/bin/sipnab -N -d any --no-cli-print --syslog --metrics 127.0.0.1:9090
+  User=sipnab
+  Group=sipnab
+  AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+  CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+  NoNewPrivileges=true
+  ProtectSystem=strict
+  ProtectHome=true
+  PrivateTmp=true
+  StateDirectory=sipnab
+  StateDirectoryMode=0700
+  LimitNOFILE=65535
+  Restart=on-failure
+  RestartSec=5
+
+  [Install]
+  WantedBy=multi-user.target
+  EOF
+  ```
+
+- Start it:
+
+  ```bash
+  # Run all of these, in order.
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now sipnab
+  ```
+
+Then run the checks in [Check it worked](#check-it-worked).
+
+Two rules decide whether such a unit can capture and read its files:
+
+- **Grant capture in the unit, with `AmbientCapabilities=`, not with
+  `setcap`.** `NoNewPrivileges=true` stops a file capability taking effect when
+  systemd starts the binary. A unit with `NoNewPrivileges=true`, `User=sipnab`
+  and `setcap cap_net_raw+ep` on the binary fails to capture:
+
+  ```text
+  Permission denied on 'any'. Grant capture capabilities once (Linux), then re-run without sudo:
+  sipnab.service: Main process exited, code=exited, status=1/FAILURE
+  ```
+
+  The lines after the first suggest `sipnab --setup-caps`, `sudo` or
+  `setcap`, none of which helps under `NoNewPrivileges=true`. Add the `AmbientCapabilities=` and
+  `CapabilityBoundingSet=` lines instead.
+- **Every file the unit names must be readable by the unit's user.** sipnab
+  reads token, key and certificate files as `sipnab`, not as root. A token file
+  that root owns with mode 0600 stops the run with exit status 2:
+
+  ```text
+  --mcp-token-file '/etc/sipnab/mcp.token': Permission denied (os error 13)
+  sipnab.service: Main process exited, code=exited, status=2/INVALIDARGUMENT
+  ```
+
+  Give the group read access and keep everyone else out:
+
+  ```bash
+  # Run all of these, in order.
+  sudo chown root:sipnab /etc/sipnab/mcp.token
+  sudo chmod 640 /etc/sipnab/mcp.token
+  ```
+
+  A file systemd reads itself, such as an `EnvironmentFile=`, can stay
+  `root:root` mode 0600.
+
+To confine the process further, sipnab has a Landlock file sandbox
+(`--sandbox`) and a seccomp filter (`--seccomp`). Their reference rows are in
+the [Security section of the CLI reference](cli-reference.md#security).
+
+## Where the log goes
+
+- **sipnab writes its log to stderr.** systemd puts stderr in the journal, so
+  `journalctl -u sipnab` shows it.
+- **`SIPNAB_LOG` sets the level.** It takes `error`, `warn`, `info`, `debug`,
+  `trace`, or a filter such as `sipnab::capture=debug`. A headless run logs at
+  `info` when the variable is unset, and at `warn` with `--quiet`.
+- **`--syslog` sends security alerts, not the log.** Each alert goes to syslog
+  with facility `local0`, priority `warning`, and the identifier `sipnab`:
+
+  ```text
+  facility=local0 identifier=sipnab priority=4 [ALERT] scanner src=127.0.0.1 method="REGISTER" ua="friendly-scanner" detection=ua_pattern
+  ```
+
+  The alert also appears in the log on stderr. Every detector is off by
+  default and the packaged unit names none, so it sends no alert until a
+  drop-in or `sipnab.toml` turns one on.
+- **sipnab colors its log lines even when stderr is not a terminal.** The
+  journal then stores the escape sequences, and `journalctl -o cat` or a
+  `grep` over an export shows them as `[2m` and `[32m`. Set `NO_COLOR` to turn
+  them off:
+
+  ```ini
+  [Service]
+  Environment=NO_COLOR=1
+  Environment=SIPNAB_LOG=info
+  ```
+
+## Stop, rotate and reconfigure
+
+sipnab handles three signals:
+
+| Signal | What sipnab does |
+|---|---|
+| `SIGTERM` (`systemctl stop`) | Stops capturing, flushes the open `-O` file, prints the end-of-run summary, and exits 0. |
+| `SIGINT` (Ctrl-C) | The same as `SIGTERM`. |
+| `SIGUSR1` | Starts a new `-O` file at the next captured packet. |
+
+A stop under systemd ends with lines such as these:
+
+```text
+INFO sipnab::capture::live: Live capture on 'any' finished: 0 packets, no drops
+INFO sipnab::app::batch: sipnab: 0 packets captured, 0 SIP messages, 0 RTP packets across 0 streams
+sipnab.service: Deactivated successfully.
+```
+
+**`SIGHUP` is not handled.** It ends the process at once, with no summary and
+no flush. systemd counts a process ended by `SIGHUP` as a clean exit, so
+`Restart=on-failure` does not restart it, and the service stays down:
+
+```bash
+# Run all of these, in order.
+sudo kill -HUP "$(systemctl show -p MainPID --value sipnab)"
+systemctl show -p ActiveState,Result,ExecMainCode,ExecMainStatus sipnab
+```
+
+```text
+Result=success
+ExecMainCode=2
+ExecMainStatus=1
+ActiveState=inactive
+```
+
+That state held past the unit's `RestartSec=5`. `ExecMainCode=2` means a signal ended the process, and `ExecMainStatus=1` is
+`SIGHUP`. The packaged unit has no `ExecReload=`, so `systemctl reload`
+refuses:
+
+```text
+Failed to reload sipnab.service: Job type reload is not applicable for unit sipnab.service.
+```
+
+**A configuration change takes effect at the next start.** sipnab reads
+`sipnab.toml` once, at startup, and reads its flags once. After you edit the
+file or a drop-in, restart:
+
+```bash
+# Run all of these, in order.
+sudo systemctl daemon-reload
+sudo systemctl restart sipnab
+```
+
+A restart starts a new capture: sipnab no longer holds the dialogs, streams
+and findings of the previous one. Two files sipnab does re-read while it runs: a token revocation list
+(`--api-revoked-file`, `--mcp-revoked-file`), when its modification time
+changes, and a key log named by `--keylog` with `--keylog-watch`.
+
+### Rotate a capture file on demand
+
+`SIGUSR1` closes the current `-O` file and starts the next, numbered after the
+first. In this run, sipnab wrote three packets, received `SIGUSR1`, wrote two,
+received it again, and wrote one:
+
+```bash
+sudo kill -USR1 "$(pgrep -x sipnab)"
+```
+
+```text
+INFO sipnab::capture::writer: Writing packets to '/root/cap/sip.pcap' (pcap, mode=raw)
+INFO sipnab::capture::writer: Rotating output to '/root/cap/sip_00001.pcap' (seq=1, wrote 867 bytes in 2.035899678s)
+INFO sipnab::capture::writer: Rotating output to '/root/cap/sip_00002.pcap' (seq=2, wrote 578 bytes in 2.027884822s)
+```
+
+- The new file opens when the next packet arrives, not when the signal does.
+  On an idle link the file named in the last line appears later.
+- sipnab buffers the open file. It can read as 0 bytes until sipnab flushes it at
+  the next rotation or at the stop.
+- To rotate by size or time instead, use `--split filesize:N` or
+  `--split duration:N`, and `--split-keep N` to delete the oldest files. See
+  [Run a capture that stops on its own](examples.md#run-a-capture-that-stops-on-its-own).
+
+## Keep crash reports
+
+When sipnab panics it writes a crash report. The default directory is
+`$HOME/.local/state/sipnab`. The packaged `sipnab` user's home is
+`/nonexistent`, and `ProtectSystem=strict` makes the rest of the file system
+read-only, so under the packaged unit sipnab cannot write the report:
+
+```text
+sipnab panicked at src/main.rs:297:9:
+panic-selftest: intentional panic to verify crash handling
+failed to write crash report: Read-only file system (os error 30)
+sipnab.service: Main process exited, code=exited, status=101/n/a
+```
+
+The report's text still reaches the journal. To keep the file as well, point
+`report_dir` at the unit's state directory in `/etc/sipnab/sipnab.toml`:
+
+```toml
+[crash]
+report_dir = "/var/lib/sipnab"
+```
+
+After a restart the same panic writes the file:
+
+```text
+crash report written to /var/lib/sipnab/sipnab-crash-20261103-143506-290-0.log
+```
+
+To check this on your own unit, add `--panic-selftest` to a drop-in's
+`ExecStart=` and set `Restart=no` in it, restart, read the journal, and then
+remove the drop-in. `--help` does not list `--panic-selftest`: it panics as
+soon as sipnab starts. [Send us a crash
+report](troubleshooting.md#send-us-a-crash-report) says what the report holds
+and where to send it.
+
+## Rotate the audit and provenance files
+
+Three flags append one JSON line per event to a file and never truncate it:
+
+- `--mcp-audit-file`: every MCP tool call;
+- `--tui-audit-file`: every operator action in the terminal interface;
+- `--run-provenance-file`: one line per run, at startup.
+
+The two audit files stay open for the whole run. Rename one, and sipnab keeps
+writing to the renamed file until it restarts. Rotate them with
+`copytruncate`, which copies the file and then empties it in place:
+
+```text
+/var/log/sipnab/*.jsonl {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+}
+```
+
+Save that as `/etc/logrotate.d/sipnab`. `ProtectSystem=strict` leaves the unit
+no writable directory outside `/var/lib/sipnab`, so add `LogsDirectory=sipnab`
+to a drop-in. systemd then creates `/var/log/sipnab` for the `sipnab` user. An
+audit file in a directory the unit cannot write stops the run with exit
+status 2:
+
+```text
+--mcp-audit-file /var/log/sipnab2/mcp-audit.jsonl: Read-only file system (os error 30). sipnab refuses to serve MCP without the audit trail it was asked for
+```
+
+This run used the unit from [Write a unit of your own](#write-a-unit-of-your-own)
+with a drop-in adding `LogsDirectory=sipnab` and
+`--mcp-audit-file /var/log/sipnab/mcp-audit.jsonl`. After one tool call,
+`logrotate -f /etc/logrotate.d/sipnab`, and a second tool call, the second
+record landed in the emptied file as a complete line:
+
+```text
+-rw------- 1 sipnab sipnab 195 Nov  3 14:43 mcp-audit.jsonl
+-rw------- 1 sipnab sipnab 195 Nov  3 14:43 mcp-audit.jsonl.1
+{"args":"{}","caller":"127.0.0.1:38978 bearer-verified scope=full","elapsed_ms":0,"error":null,"id":"2","outcome":"ok","seq":2,"tool":"capture_status","ts":"2026-11-03T14:43:22.918525017+00:00"}
+```
+
+- `seq` continues across the rotation, so the new file starts at `seq` 2 here,
+  not at 1. A gap is still a gap: compare the last `seq` of the old file with
+  the first of the new.
+- `copytruncate` loses a record that sipnab writes between the copy and the
+  truncation. The window is the time `logrotate` takes to copy the file.
+- sipnab writes the provenance file once per run, at startup, so any rotation
+  method works for it.
+
+## A service that does not start
+
+`systemctl status sipnab` names the exit status, and the journal names the
+reason:
+
+```bash
+# Run all of these, in order.
+systemctl status sipnab --no-pager | sed -n 3p
+journalctl -u sipnab -n 20 --no-pager -o cat
+```
+
+sipnab prints the reason it stops on stderr at every log level, so the journal
+has it even with `SIPNAB_LOG=off`.
+
+| Exit status | Meaning |
+|---|---|
+| `1` | A runtime failure, or a value in the config file that sipnab refuses |
+| `2` | A flag sipnab refuses, or a pair of flags it refuses together |
+| `101` | sipnab panicked. See [Keep crash reports](#keep-crash-reports) |
+
+[Exit codes](cli-reference.md#exit-codes) lists every code.
+[Error messages](errors.md) explains each message and what to do about it.
+
+The refusals a service meets most often:
+
+| The journal says | Exit | Fix |
+|---|---|---|
+| `REST API refuses to start: --api 0.0.0.0:18080 is non-loopback but no --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was supplied.` | 2 | Bind `127.0.0.1`, or give a key as in [Change the packaged unit with a drop-in](#change-the-packaged-unit-with-a-drop-in) |
+| `MCP HTTP refuses to start: --mcp-bind 0.0.0.0:18731 is non-loopback but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / --mcp-signing-key / --mcp-signing-key-file / SIPNAB_MCP_SIGNING_KEY was supplied. Bind 127.0.0.1, or supply one of them.` | 2 | Bind `127.0.0.1`, or give a token file |
+| `metrics server refuses to start: --metrics 0.0.0.0:19090 is non-loopback but no --metrics-auth / --metrics-auth-file was supplied.` | 2 | Bind `127.0.0.1`, or give `--metrics-auth-file` |
+| `HEP listener refuses to start: --hep-listen 0.0.0.0:19060 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured.` | 1 | Add `--hep-allow` with your SIP servers' addresses, or a secret |
+| `--api-tls-cert (or [api] tls_cert) c.pem was given without --api-tls-key (or [api] tls_key)` | 2 | Give both halves of the pair |
+| `k.pem: the API TLS private key is world-readable (mode 0644); chmod 600 it` | 2 | `chmod 600` the key, or `640` with the `sipnab` group |
+| `failed to bind API to 127.0.0.1:18081: Address already in use (os error 98)` | 2 | Another process holds the port. `ss -ltnp` names it |
+| `Permission denied on 'eth0'. Grant capture capabilities once (Linux), then re-run without sudo:` | 1 | Grant capture in the unit, as in [Write a unit of your own](#write-a-unit-of-your-own) |
+| `--mcp-token-file '/etc/sipnab/mcp.token': Permission denied (os error 13)` | 2 | Make the file readable by the unit's user |
+| `--mcp-audit-file /var/log/sipnab2/mcp-audit.jsonl: Read-only file system (os error 30)` | 2 | Add `LogsDirectory=sipnab` and write under `/var/log/sipnab` |
+| `invalid config value: [capture] snaplen must be > 0` | 1 | Correct the key the message names in `sipnab.toml` |
+
+The HEP listener's refusal exits 1 where the other three listeners exit 2.
+
+**A misspelled key in `sipnab.toml` does not stop the run.** sipnab logs a
+warning and ignores the key:
+
+```text
+WARN sipnab::config: Unknown config key: capture.snaplenn
+```
+
+Run `sipnab -D --config /etc/sipnab/sipnab.toml` after each edit. It prints the
+same warning and the configuration sipnab would use, then exits.
+
+## Check that a running service is healthy
+
+| Listener | Route | Credential | Answer |
+|---|---|---|---|
+| REST API (`--api`) | `GET /health` | none | `200`, body `ok` |
+| MCP over HTTP (`--mcp-transport http`) | `GET /health` | the bearer token | `200`, body `ok`; `401` without it |
+| Metrics (`--metrics`) | `GET /metrics` | the Basic credential, on a routable bind | `200` and the metrics |
+
+The standalone metrics server has no `/health` route: it answers `404` there.
+Use `/metrics` as its check.
+
+A capture that runs but sees nothing is not a failed service. See [A live
+capture that sees nothing](troubleshooting.md#a-live-capture-that-sees-nothing)
+and [A HEP collector that receives
+nothing](troubleshooting.md#a-hep-collector-that-receives-nothing).
+
+## Related
+
+- [Installing sipnab](install.md): packages, upgrades, and what an upgrade keeps.
+- [Bearer-token authentication](auth.md#use-a-token): tokens for the REST API and MCP.
+- [Connect an AI agent to sipnab](mcp-deploy.md): an MCP server as a service.
+- [Run a live capture without giving sipnab
+  root](examples.md#run-a-live-capture-without-giving-sipnab-root).
+- [Config reference](config-reference.md): `[crash]`, `[privilege]` and every
+  other key.
 
 ---
 
@@ -73895,8 +75114,9 @@ It never moves while cutting one.
 
 The same split applies to the docs.
 
-- `docs/install.md`'s `SIPNAB_VERSION=`, `e.g. <version>` and `rpm -i sipnab-<v>`
-  lines are download instructions.
+- `docs/install.md`'s `SIPNAB_VERSION=`, `VERSION=`, `e.g. <version>`,
+  `dnf install ./sipnab-<v>` and `ghcr.io/normb/sipnab:<v>` lines are download
+  instructions: 2, 2, 2, 4 and 6 of them.
   - So they track `published_version` too.
   - They must NOT move when the crate version does.
 - A blanket `sed s/<old>/<new>/g` over `docs/install.md` at a release commit is exactly the mistake.

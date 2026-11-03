@@ -77,6 +77,29 @@ sipnab --version
 
 If that prints a version, the install worked.
 
+When the installer stops, its last line names the reason:
+
+| The installer prints | Cause | Fix |
+|---|---|---|
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.232` |
+| `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
+| `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
+| `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
+| `sipnab-install: /tmp/bin is not writable — using sudo`, then `sudo: not found` and `sipnab-install: error: install to /tmp/bin failed` | `SIPNAB_INSTALL_DIR` names a directory you cannot write, and there is no `sudo` | Create the directory as your user first, or run as root |
+
+Each of these exits with status 1 and installs nothing.
+
+**The installer does not install libpcap.** On a glibc host it installs the
+`-gnu` build, which loads libpcap at startup. Without it, the first run
+fails:
+
+```text
+sipnab: error while loading shared libraries: libpcap.so.0.8: cannot open shared object file: No such file or directory
+```
+
+Install `libpcap0.8` (Debian, Ubuntu) or `libpcap` (Fedora, RHEL) and run it
+again.
+
 - Go to [Check it worked](#check-it-worked) for the fuller checks, or
   [Next steps](#next-steps) to start reading captures.
 - If the shell cannot find `sipnab`, the install directory is not on your
@@ -119,8 +142,8 @@ Substitute the release version for `<version>` throughout.
 | `sipnab-<version>-1.aarch64-noaudio.rpm` | aarch64 / arm64 | RHEL/Fedora, glibc >= 2.36 | no ALSA weak dependency |
 | `sipnab-<version>-x86_64-unknown-linux-musl.tar.gz` | x86_64 / amd64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
 | `sipnab-<version>-aarch64-unknown-linux-musl.tar.gz` | aarch64 / arm64 | any Linux, any glibc, Alpine | static — no TUI audio playback, WASM plugins, vCon export or eBPF uprobe backend |
-| `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features including audio |
-| `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features including audio |
+| `sipnab-<version>-x86_64-unknown-linux-gnu.tar.gz` | x86_64 / amd64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
+| `sipnab-<version>-aarch64-unknown-linux-gnu.tar.gz` | aarch64 / arm64 | glibc >= 2.36 + libpcap | full features; no audio plugin in 0.5.118 to 0.5.232 ([why](#the-audio-plugin-in-linux-packages)) |
 | `sipnab-<version>-x86_64-apple-darwin.tar.gz` | Intel | macOS 10.12+ | Intel Macs |
 | `sipnab-<version>-aarch64-apple-darwin.tar.gz` | Apple Silicon | macOS 11.0+ | M-series Macs |
 | `sipnab-<version>-<target>.debug` | per target | — | Linux symbol file for the binary of the same name, for reading a [crash report](@/docs/troubleshooting.md#send-us-a-crash-report) or a core dump. One per tarball, plus `-noaudio` ones for the `-noaudio` packages |
@@ -223,6 +246,34 @@ Later releases fix three `netmap:` failures. Check your release with
 | On a musl tarball, a `netmap:` open fails with `nm_open [948] NIOCREGIF failed: Invalid argument netmap:<iface>`, and the kernel log says `Minimum supported API is 14 (requested 13)` | 0.5.183 and earlier, musl tarballs | 0.5.184 |
 | The capture stops, often while idle, and the kernel log records a segfault at address 0 in the `capture-netmap` thread | 0.5.188 and earlier | 0.5.189 |
 | A `netmap:` capture on a link with no traffic does not stop on SIGTERM or at the end of `--duration` | 0.5.189 and earlier | 0.5.190 |
+
+### The audio plugin in Linux packages
+
+Live audio playback in the TUI loads a separate plugin,
+`libsipnab_audio.so` on Linux and `libsipnab_audio.dylib` on macOS. The
+packaging scripts intend the gnu tarballs and the standard packages to carry
+it. From 0.5.118 to 0.5.232 at least, the Linux ones do not:
+
+| Artifact (0.5.232) | Plugin | `Recommends` |
+|---|---|---|
+| `sipnab_<version>_<arch>.deb` | none | none |
+| `sipnab-<version>-1.<arch>.rpm` | none | none |
+| `sipnab-<version>-<arch>-unknown-linux-gnu.tar.gz` | none | — |
+| `sipnab-<version>-aarch64-apple-darwin.tar.gz` | `libsipnab_audio.dylib` | — |
+
+0.5.117 is the last release whose arm64 `.deb` held the plugin, at
+`/usr/lib/sipnab/libsipnab_audio.so`, with `Recommends: libasound2 |
+libasound2t64`. `sipnab --version` still lists `audio`, because the release
+builds the binary with the feature. Every other part of `audio`, WAV export included,
+is in the binary and works without the plugin.
+
+Check what a package holds before you install it:
+
+```bash
+dpkg-deb -c "sipnab_${VERSION}_amd64.deb" | grep libsipnab_audio
+```
+
+No output means no plugin.
 
 ### Architecture naming
 
@@ -330,8 +381,11 @@ A manual download of the gnu build that checks the checksum before installing.
    sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
    ```
 
-The dynamic builds, whose names end in `-unknown-linux-gnu.tar.gz`, add TUI
-audio playback.
+The dynamic builds, whose names end in `-unknown-linux-gnu.tar.gz`, are the
+ones meant to add TUI audio playback. From 0.5.118 to 0.5.232 at least, they
+ship without the playback plugin (`libsipnab_audio.so`): the tarball holds the
+binary, the man page and the license files only. See
+[The audio plugin in Linux packages](#the-audio-plugin-in-linux-packages).
 
 - They require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap.
 - On an older distribution they fail with
@@ -414,22 +468,25 @@ The unit is not started for you. `sudo systemctl enable --now sipnab` starts a
 capture on every interface as the `sipnab` user. The unit:
 
 - uses only the two capabilities live capture needs,
-- logs to syslog,
+- writes its log to the journal, and sends security alerts to syslog
+  (`--syslog`),
 - keeps the per-message stream out of the journal,
 - serves metrics on `127.0.0.1:9090`.
 
 The REST API stays off. Change any of that with a drop-in
 (`sudo systemctl edit sipnab`). A package upgrade leaves the drop-in alone.
+[Run sipnab as a service](@/docs/run-as-a-service.md) shows how to check the unit
+came up, drop-ins, and what to do when it does not start.
 
-The standard package ships the audio playback plugin. It therefore
-*Recommends* `libasound2`.
+Each release publishes a standard package and a **`-noaudio`** package.
 
-- apt installs it by default. That pulls the ALSA stack (~500 kB)
-  onto the system.
-- For headless servers, each release also publishes a **`-noaudio`** package.
-  It has no plugin and no ALSA dependency.
+- The `-noaudio` package has no audio plugin and no ALSA dependency.
   - Everything else, WAV export included, works the same.
   - Only live playback in the TUI is unavailable.
+- The packaging scripts intend the standard package to ship the plugin and
+  *Recommend* `libasound2`. Releases from 0.5.118 to 0.5.232 at least do neither, so today
+  the two packages differ only in name. See
+  [The audio plugin in Linux packages](#the-audio-plugin-in-linux-packages).
 
 The headless amd64 (x86_64) package:
 
@@ -474,29 +531,54 @@ standard and a `-noaudio` variant.
   dependency.
 - It is for headless servers, mirroring the `.deb` variants.
 
+Download the package for your architecture and variant from the
+[latest release](https://github.com/NormB/sipnab/releases/latest), then install
+it with `dnf`, which also installs the `libpcap` it needs. Pick the line that
+matches `uname -m` (`x86_64` or `aarch64`).
+
 The standard package on an x86_64 host:
 
 ```bash
-sudo rpm -i sipnab-0.5.232-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.232-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo rpm -i sipnab-0.5.232-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.232-1.x86_64-noaudio.rpm
 ```
 
-The standard package on an aarch64 (arm64) host. Pick the variant matching
-`uname -m`:
+The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo rpm -i sipnab-0.5.232-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.232-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo rpm -i sipnab-0.5.232-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.232-1.aarch64-noaudio.rpm
+```
+
+`rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
+
+```text
+error: Failed dependencies:
+	libpcap is needed by sipnab-0.5.232-1.aarch64
+	libpcap.so.1()(64bit) is needed by sipnab-0.5.232-1.aarch64
+```
+
+`dnf` prints `Warning: skipped OpenPGP checks for 1 package from repository:
+@commandline`: the packages carry no OpenPGP signature. Check the download
+against `SHA256SUMS.txt` and its attestation instead, as in
+[Verify a download is genuine](#verify-a-download-is-genuine).
+
+The package installs `/usr/bin/sipnab`, the man page and the systemd unit, and
+creates the `sipnab` user. It creates no `/etc/sipnab` directory. On Fedora
+42, `sipnab --version` then prints:
+
+```text
+sipnab 0.5.232 (v0.5.232 a62a3ac2) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 ```
 
 ### Homebrew (macOS)
@@ -504,6 +586,10 @@ sudo rpm -i sipnab-0.5.232-1.aarch64-noaudio.rpm
 ```bash
 brew install NormB/tap/sipnab
 ```
+
+Nobody ran this command for this page: no Mac was available to test it. The tap exists, as `NormB/homebrew-tap` with
+`Formula/sipnab.rb`. Live capture on macOS needs root: see
+[macOS](#macos).
 
 ## Build it from source
 
@@ -518,6 +604,15 @@ packages all ship a finished binary.
 - **pkg-config** — how the build finds libpcap.
 - **cmake and a C compiler** — for `--features full`, whose `opus` feature
   compiles libopus from source and links it into the binary.
+
+Two missing prerequisites stop the build late, after the dependencies have
+compiled. Each failure below came from building tag v0.5.232 in the
+`rust:1.99-slim-trixie` image:
+
+| The build stops with | Missing | Fix |
+|---|---|---|
+| ``error: linking with `cc` failed: exit status: 1`` and, in the notes, `/usr/bin/ld: cannot find -lpcap: No such file or directory` | libpcap headers | `sudo apt install libpcap-dev pkg-config` (Debian, Ubuntu). On Fedora and RHEL the headers are `libpcap-devel` |
+| ``error: failed to run custom build command for `opusic-sys v0.7.5` `` and ``is `cmake` not installed?`` | cmake, for `--features full` | `sudo apt install cmake` (Debian, Ubuntu) |
 
 ### Install from a checkout, with capabilities
 
@@ -619,6 +714,26 @@ gh attestation verify "sipnab-$VERSION-x86_64-unknown-linux-gnu.tar.gz" \
 This is what detects a rehosted or tampered copy, including one served with a
 matching checksum file.
 
+On a terminal it ends with these lines, among others:
+
+```text
+✓ Verification succeeded!
+The following 1 attestation matched the policy criteria
+  - Signer workflow: .github/workflows/release.yml@refs/tags/v0.5.232
+```
+
+`gh` 2.102.0 printed nothing at all when its output went to a pipe or a file,
+for a pass and for a failure alike. In a script, read the exit status instead:
+`0` for a pass, `1` otherwise. A file whose bytes differ from the release has
+no attestation at all, and `gh` reports that as a lookup failure:
+
+```text
+Error: HTTP 404: Not Found (https://api.github.com/repos/NormB/sipnab/attestations/sha256:9e7d72812c6ebd32e06af390adf104898dbc65c423c1ffa56ef58f0d4903a06b?per_page=30&predicate_type=https%3A%2F%2Fslsa.dev%2Fprovenance%2Fv1)
+```
+
+The `.deb` and `.rpm` packages carry the same attestation: run the command on
+the package file.
+
 **This needs `gh` 2.49 or newer.** Check with `gh --version`.
 
 - The subcommand did not exist before then, and distributions lag.
@@ -650,7 +765,17 @@ cosign verify-blob SHA256SUMS.txt \
 ```
 
 `Verified OK` means the list is genuine, and `sha256sum -c` above then
-extends that to your download. With `--bundle`, `gh` reads the provenance
+extends that to your download. That command works as written with cosign
+3.1.4. cosign 2.4.1 rejects the bundle with `bundle does not contain cert for
+verification, please provide public key`. Add `--new-bundle-format` there.
+
+cosign names what failed:
+
+- a list that differs from the one the release signed:
+  `failed to verify signature: could not verify message: invalid signature when validating ASN.1 encoded signature`;
+- a signature from another workflow or repository:
+  `failed to verify certificate identity: no matching CertificateIdentity found`,
+  followed by the identity it found. With `--bundle`, `gh` reads the provenance
 from the file instead of from GitHub's attestation API, so you can check a
 copy of the release kept anywhere:
 
@@ -909,18 +1034,80 @@ The cross images automatically install the required `libpcap-dev` headers for th
 
 ## Run it in Docker
 
-### Run from pre-built image
+### Run from a pre-built image
+
+The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker run --rm --net=host ghcr.io/normb/sipnab:latest -N -d eth0
+docker pull ghcr.io/normb/sipnab:0.5.232
 ```
 
-Live capture needs `--net=host`. For reading pcap files, mount the file into the container:
+The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
+
+| Tag | Points at |
+|---|---|
+| `0.5.232` | That release |
+| `0.5` | The newest release in the 0.5 series |
+| `sha-<commit>` | The image built from that commit |
+| `latest` | The newest commit on `main`, which can be ahead of every release |
+
+`latest` is not a release. On 2026-11-03 it was the image of main commit
+`0d8eea1`, which the workflow built after the 0.5.232 tag.
+
+**The image is `linux/amd64` only.** On an arm64 host `docker pull` fails with
+`no matching manifest for linux/arm64/v8 in the manifest list entries`. Use a
+[release tarball](#download-a-release-binary-yourself) or a package there.
+
+Read a capture file by mounting it:
 
 ```bash
-docker run --rm -v /path/to/capture.pcap:/data/capture.pcap \
-  ghcr.io/normb/sipnab:latest -N -I /data/capture.pcap
+docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
+  ghcr.io/normb/sipnab:0.5.232 -N -I /data/capture.pcap
 ```
+
+**Live capture needs `--user root`.** The image runs as the unprivileged user
+`sipnab`, and a non-root user in a container gets no capabilities, whatever
+`--cap-add` grants. Started as root, sipnab opens the capture and then drops
+to `nobody`:
+
+```bash
+docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.232 -N -d eth0
+```
+
+```text
+INFO sipnab::capture::live: Capturing on 'lo' (link_type=1, snaplen=65535)
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+```
+
+Without `--user root`, with or without `--cap-add NET_RAW --cap-add
+NET_ADMIN`, the capture fails and the container exits with status 1:
+
+```text
+Permission denied on 'lo'. Grant capture capabilities once (Linux), then re-run without sudo:
+```
+
+The outputs above came from an arm64 image built from the
+[`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
+stage with the 0.5.232 `.deb` binary, capturing `lo`, because the published
+image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.232`
+shows the same `"User": "sipnab"` for the published image.
+
+- `--net=host` lets the container see the host's interfaces.
+- A listener (`-L`, `--metrics`, `--api`) needs its port published, for
+  example `-p 9060:9060/udp`, or `--net=host`.
+- Mount a `sipnab.toml` at `/etc/sipnab/sipnab.toml` to configure it.
+- The image holds the binary only. It carries no audio plugin, so live playback
+  is unavailable; WAV export works.
+
+Check where an image came from before you run it:
+
+```bash
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.232 --repo NormB/sipnab
+```
+
+It names the workflow and the ref that built the image. For `0.5.232` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.232`. For `latest` it is
+`.github/workflows/docker.yml@refs/heads/main`.
 
 ### Build the Docker image locally
 
@@ -930,8 +1117,10 @@ docker build -t sipnab .
 
 The multi-stage Dockerfile uses `rust:1.99-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image.
 
-- The runtime image includes only `libpcap0.8t64`.
+- The runtime image adds `libpcap0.8t64` and `libasound2t64`.
 - It runs as a non-root `sipnab` user.
+- It builds for the host's own architecture, so this is also how to get an
+  arm64 image.
 
 ## Platform notes
 
@@ -1201,11 +1390,14 @@ git pull
 
 ### In Docker
 
-Pull the new image. The next `docker run` uses it:
+Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:latest
+docker pull ghcr.io/normb/sipnab:0.5.232
 ```
+
+Pulling `latest` gives the newest `main` commit, not the newest release. See
+[Run from a pre-built image](#run-from-a-pre-built-image).
 
 ### What an upgrade keeps, and what to redo
 
@@ -1261,15 +1453,41 @@ answers where it actually is, which beats guessing:
 command -v sipnab
 ```
 
-On Debian or Ubuntu, remove the package:
+On Debian or Ubuntu, stop and disable the service first, then remove the
+package:
 
 ```bash
+# Run all of these, in order.
+sudo systemctl disable --now sipnab
 sudo apt remove sipnab
 ```
 
-On RHEL or Fedora:
+The package does not stop the service itself. A running sipnab survives
+`apt remove` with its binary deleted, and the unit's enable link stays behind,
+pointing at a file that no longer exists.
+
+What `apt remove` and `apt purge` both leave in place:
+
+- the `sipnab` user;
+- `/etc/sipnab` and anything in it;
+- `/var/lib/sipnab`, the unit's state directory;
+- drop-ins in `/etc/systemd/system/sipnab.service.d`.
+
+Remove them yourself when you no longer need them:
 
 ```bash
+# Run all of these, in order.
+sudo rm -rf /etc/sipnab /var/lib/sipnab /etc/systemd/system/sipnab.service.d
+sudo systemctl daemon-reload
+sudo userdel sipnab
+```
+
+On RHEL or Fedora, the same: stop and disable the service, remove the
+package, and remove what the package leaves:
+
+```bash
+# Run all of these, in order.
+sudo systemctl disable --now sipnab
 sudo dnf remove sipnab
 ```
 

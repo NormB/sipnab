@@ -1392,8 +1392,9 @@ It never moves while cutting one.
 
 The same split applies to the docs.
 
-- `docs/install.md`'s `SIPNAB_VERSION=`, `e.g. <version>` and `rpm -i sipnab-<v>`
-  lines are download instructions.
+- `docs/install.md`'s `SIPNAB_VERSION=`, `VERSION=`, `e.g. <version>`,
+  `dnf install ./sipnab-<v>` and `ghcr.io/normb/sipnab:<v>` lines are download
+  instructions: 2, 2, 2, 4 and 6 of them.
   - So they track `published_version` too.
   - They must NOT move when the crate version does.
 - A blanket `sed s/<old>/<new>/g` over `docs/install.md` at a release commit is exactly the mistake.

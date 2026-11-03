@@ -249,6 +249,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/vcon.md",
             "website/content/docs/vcon.md",
+            "docs/auth.md",
+            "website/content/docs/auth.md",
+            "docs/troubleshooting.md",
+            "website/content/docs/troubleshooting.md",
             "docs/rest-api.md",
             "website/content/docs/api.md",
             "docs/mcp-deploy.md",
@@ -882,7 +886,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // it would read as a sipnab flag and must still fail this guard.
     (
         "now",
-        &["docs/examples.md", "website/content/docs/cookbook.md"],
+        &[
+            "docs/examples.md",
+            "website/content/docs/cookbook.md",
+            "docs/run-as-a-service.md",
+            "website/content/docs/run-as-a-service.md",
+        ],
     ),
     // `--data-urlencode` (with `-G`) is curl's. The REST page's `filter`
     // example uses it because a filter expression carries spaces and quotes
@@ -891,7 +900,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // generated mirror.
     (
         "data-urlencode",
-        &["docs/rest-api.md", "website/content/docs/api.md"],
+        &[
+            "docs/rest-api.md",
+            "website/content/docs/api.md",
+            "docs/auth.md",
+            "website/content/docs/auth.md",
+        ],
     ),
     // `--example` is cargo's, on `cargo run --example <name>`. It appears
     // only on the library page, which is the one page whose runnable
@@ -1278,19 +1292,76 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // wiki and the site with this suite green.
     (
         "system",
-        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
+        &[
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
+            "docs/examples.md",
+            "website/content/docs/cookbook.md",
+            "docs/run-as-a-service.md",
+            "website/content/docs/run-as-a-service.md",
+            "docs/auth.md",
+            "website/content/docs/auth.md",
+        ],
     ),
     (
         "home",
-        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
+        &[
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
+            "docs/examples.md",
+            "website/content/docs/cookbook.md",
+            "docs/run-as-a-service.md",
+            "website/content/docs/run-as-a-service.md",
+            "docs/auth.md",
+            "website/content/docs/auth.md",
+        ],
     ),
     (
         "shell",
-        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
+        &[
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
+            "docs/examples.md",
+            "website/content/docs/cookbook.md",
+            "docs/run-as-a-service.md",
+            "website/content/docs/run-as-a-service.md",
+            "docs/auth.md",
+            "website/content/docs/auth.md",
+        ],
     ),
     (
         "no-pager",
-        &["docs/mcp-deploy.md", "website/content/docs/mcp-deploy.md"],
+        &[
+            "docs/mcp-deploy.md",
+            "website/content/docs/mcp-deploy.md",
+            "docs/run-as-a-service.md",
+            "website/content/docs/run-as-a-service.md",
+        ],
+    ),
+    // docker's `--cap-add`, on the pages that say it does not let the
+    // release image's non-root user capture.
+    (
+        "cap-add",
+        &[
+            "docs/install.md",
+            "website/content/docs/install.md",
+            "docs/troubleshooting.md",
+            "website/content/docs/troubleshooting.md",
+        ],
+    ),
+    // cosign 2.x's `--new-bundle-format`, which the install page's signature
+    // check needs there and cosign 3 does not.
+    (
+        "new-bundle-format",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
+    // `systemctl show --value`, in the service page's SIGHUP measurement.
+    (
+        "value",
+        &[
+            "docs/run-as-a-service.md",
+            "website/content/docs/run-as-a-service.md",
+        ],
     ),
     (
         "nginx",
@@ -2469,10 +2540,11 @@ fn no_cut_marker_pattern_also_matches_a_published_marker() -> Result<(), TestErr
     let published = r#"published_version = "0.4.1""#;
     let release_date = r#"release_date = "2026-01-01""#;
     let download = "curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.4.1 sh";
-    let rpm = "sudo rpm -i sipnab-0.4.1-1.x86_64.rpm";
+    let rpm = "sudo dnf install ./sipnab-0.4.1-1.x86_64.rpm";
+    let image = "docker pull ghcr.io/normb/sipnab:0.4.1";
     for (file, pattern) in CUT_MARKER_SITES {
         let re = regex::Regex::new(pattern)?;
-        for line in [published, release_date, download, rpm] {
+        for line in [published, release_date, download, rpm, image] {
             assert!(
                 !re.is_match(line),
                 "{file}'s cut pattern matches {line:?}, which is a PUBLISHED \
@@ -2588,7 +2660,9 @@ fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
         // least one" assertion fires the moment a recipe disappears -- and each
         // still tracks published_version like every other download marker. Add
         // one whenever the release workflow grows a package flavor, and add the
-        // `rpm -i` line it gates.
+        // `dnf install` line it gates. The recipes moved from `rpm -i` to
+        // `dnf install ./<file>`: `rpm -i` refuses the package on a host without
+        // libpcap ("Failed dependencies"), measured on Fedora 42.
         //
         // Only docs/install.md is listed: website/content/docs/install.md is
         // generated from it, and site_pages_mirror_is_current compares the two
@@ -2596,27 +2670,35 @@ fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
         (
             "docs/install.md",
             include_str!("../docs/install.md"),
-            r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.x86_64\.rpm",
+            r"dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.x86_64\.rpm",
         ),
         (
             "docs/install.md",
             include_str!("../docs/install.md"),
-            r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.x86_64-noaudio\.rpm",
+            r"dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.x86_64-noaudio\.rpm",
         ),
         (
             "docs/install.md",
             include_str!("../docs/install.md"),
-            r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.aarch64\.rpm",
+            r"dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.aarch64\.rpm",
         ),
         (
             "docs/install.md",
             include_str!("../docs/install.md"),
-            r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.aarch64-noaudio\.rpm",
+            r"dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.aarch64-noaudio\.rpm",
         ),
         (
             "website/content/docs/install.md",
             include_str!("../website/content/docs/install.md"),
             r"e\.g\. (\d+\.\d+\.\d+)",
+        ),
+        // The Docker recipes pin a release tag, because `latest` follows main,
+        // not releases. A pinned tag names a release a reader pulls, so it
+        // tracks published_version like the download markers above.
+        (
+            "docs/install.md",
+            include_str!("../docs/install.md"),
+            r"ghcr\.io/normb/sipnab:(\d+\.\d+\.\d+)",
         ),
     ];
     for (path, text, pattern) in download_markers {
@@ -4006,7 +4088,7 @@ fn install_docs_say_how_to_upgrade_every_install_route() -> Result<(), TestError
             "sipnab_<version>_amd64.deb",
             "sudo dpkg -i",
         ),
-        (".rpm", "sudo rpm -i sipnab-", "sudo rpm -U"),
+        (".rpm", "sudo dnf install ./sipnab-", "sudo rpm -U"),
         (".rpm with dnf", "dnf", "sudo dnf upgrade"),
         (
             "Homebrew",
@@ -4025,8 +4107,8 @@ fn install_docs_say_how_to_upgrade_every_install_route() -> Result<(), TestError
         ),
         (
             "Docker",
-            "ghcr.io/normb/sipnab:latest",
-            "docker pull ghcr.io/normb/sipnab:latest",
+            "docker pull ghcr.io/normb/sipnab:0.",
+            "docker pull ghcr.io/normb/sipnab:0.",
         ),
     ];
     for (route, installed_by, upgrade) in routes {
@@ -4998,7 +5080,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/call-quality.md, and their generated site mirrors under
     // website/content/docs/. Attributed against the staged diff:
     // `--diff-filter=A` lists those four markdown files.
-    const EXPECTED_MARKDOWN_FILES: usize = 328;
+    // 328 -> 330 (#638): docs/run-as-a-service.md, the systemd service page,
+    // and its generated site mirror website/content/docs/run-as-a-service.md.
+    const EXPECTED_MARKDOWN_FILES: usize = 330;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5762,7 +5846,14 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // the sizing step, and its site mirror website/content/docs/mcp-estate.md
     // +1. No other changed page gained or lost a table, against origin/main
     // 9124a6f08.
-    const EXPECTED_TABLES: usize = 1337;
+    // 1337 -> 1361 (#638) by the operations pages, counted per file against
+    // origin/main 9124a6f08: docs/run-as-a-service.md +4 (new),
+    // docs/install.md +4 (installer failures, the audio plugin per artifact,
+    // the image tags, source build failures), docs/auth.md +2 (the four
+    // listeners, what a client sees), docs/troubleshooting.md +2 (live
+    // capture causes, listener answers), and the site mirror of each, +4, +4,
+    // +2 and +2. No other changed page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1361;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

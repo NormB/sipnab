@@ -1612,7 +1612,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // to homer.md for the OpenSIPS tracer lines, +1 to the cookbook's memory
     // budget recipe from the sizing step. Counted against origin/main
     // 9124a6f08.
-    const EXPECTED_WIKI_LINKS: usize = 2168;
+    // 2168 -> 2234 (#638) by the operations pages, counted per file against
+    // origin/main 9124a6f08: docs/run-as-a-service.md +22 (new),
+    // docs/troubleshooting.md +20 (the operations sections), docs/install.md
+    // +10, docs/auth.md +3, docs/examples.md +2, docs/mcp-deploy.md +2,
+    // docs/prometheus-metrics.md +2, docs/rest-api.md +2, docs/README.md +1,
+    // docs/config-reference.md +1 and docs/mcp-estate.md +1.
+    const EXPECTED_WIKI_LINKS: usize = 2234;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2873,7 +2879,9 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 101 -> 103 (#634): docs/relay-statistics.md, "Ask a media relay about
     // itself", and docs/call-quality.md, "Measure call quality", each reached
     // from docs/README.md's How-to list.
-    const EXPECTED_DOCS_PAGES: usize = 103;
+    // 103 -> 104 (#638): docs/run-as-a-service.md, linked from
+    // docs/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 104;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

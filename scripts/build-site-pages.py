@@ -592,6 +592,21 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "format, audience binding, configuring a signing key, minting tokens, "
         "expiry and key rotation.",
     ),
+    # Registered with the page itself, for the reason the tuning-capture entry
+    # records: install.md, examples.md and mcp-deploy.md link it, and an
+    # unregistered page would exist only on the wiki. Weight 67: this page
+    # took 66 on its branch while docs/fleet.md took 66 on its own; the two
+    # met in the 2026-11-04 merge train and 67 was the next free weight.
+    (
+        "docs/run-as-a-service.md",
+        "run-as-a-service.md",
+        "Run sipnab as a service",
+        "Run sipnab as a service",
+        67,
+        "Start and change the packaged systemd unit, write one of your own, "
+        "read the log, signals and crash reports, rotate the audit files, and "
+        "read a service that does not start.",
+    ),
     # The four "add it to your voice stack" guides (2026-09-25). 40-43 were
     # the next free weights on the SITE side; sidebar order comes from the
     # nav group in website/config.toml.
