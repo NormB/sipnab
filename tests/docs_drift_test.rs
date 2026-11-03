@@ -5758,7 +5758,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // variables), and their site mirrors under website/content/docs/ +4 and
     // +1. Attributed per file against origin/main 9124a6f08: no other changed
     // page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1335;
+    // 1335 -> 1337 (#632): docs/mcp-estate.md +1, the HEP listener limits in
+    // the sizing step, and its site mirror website/content/docs/mcp-estate.md
+    // +1. No other changed page gained or lost a table, against origin/main
+    // 9124a6f08.
+    const EXPECTED_TABLES: usize = 1337;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

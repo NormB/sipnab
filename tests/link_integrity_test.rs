@@ -1608,7 +1608,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // rest-api.md, rtpengine-sipnab.md and tui-walkthrough.md +1 each.
     // Counted per page against origin/main 9124a6f08: every other changed page
     // held its count.
-    const EXPECTED_WIKI_LINKS: usize = 2166;
+    // 2166 -> 2168 (#632) by docs/mcp-estate.md's HEP collection steps: +1
+    // to homer.md for the OpenSIPS tracer lines, +1 to the cookbook's memory
+    // budget recipe from the sizing step. Counted against origin/main
+    // 9124a6f08.
+    const EXPECTED_WIKI_LINKS: usize = 2168;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

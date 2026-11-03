@@ -85,43 +85,110 @@ sees calls from the whole estate. The HEP listener is a plain UDP socket:
    sudo systemctl daemon-reload && sudo systemctl enable --now sipnab-mcp
    ```
 
-- **[server]** Open udp/9063 from the proxies' addresses in the host
-   firewall.
-
-- **[proxy]** Point each proxy's HEP mirror at the capture host.
-
-   OpenSIPS (3.x) — `opensips.cfg`:
-
-   ```text
-   loadmodule "proto_hep.so"
-   loadmodule "tracer.so"
-   modparam("tracer", "trace_id",
-       "[sipnab]uri=hep:capture01.example.net:9063;version=3;transport=udp")
-   ```
-
-   and in the main route (traces the dialog's SIP both ways):
-
-   ```text
-   trace("sipnab", "t", "sip");
-   ```
-
-   Kamailio: use the `siptrace` module with `duplicate_uri` pointed at
-   `sip:capture01.example.net:9063` and HEP mode enabled. See the
-   [siptrace docs](https://kamailio.org/docs/modules/stable/modules/siptrace.html)
-   for the handful of modparams.
-
-- **[server]** Verify HEP is arriving. Place a test call through a
-   proxy, then:
+- **[server]** Open udp/9063 to the proxies' addresses in the host
+   firewall. With nftables, on a host whose `table inet filter` has an `input`
+   chain (Debian's default `/etc/nftables.conf` has one):
 
    ```bash
-   curl -sS http://127.0.0.1:8731/mcp \
-     -H "Content-Type: application/json" \
-     -H "Accept: application/json, text/event-stream" \
-     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
+   sudo nft add rule inet filter input ip saddr 192.0.2.0/24 udp dport 9063 accept
    ```
 
-   Then watch `journalctl -u sipnab-mcp -f`. The listener warns when it
-   admits nothing for 30 seconds. The wording tells you which of two
+   Add the same rule to `/etc/nftables.conf` to keep it after a reboot. A
+   packet the firewall drops never reaches sipnab, so the sender roster below
+   does not list it, not even as refused. This rule ran on Debian 13 with
+   nftables 1.1.3, with the chain's policy set to `drop`: the allowed sender's
+   packets arrived, and a sender outside the range sent 10 that never appeared.
+   This page tested no other firewall.
+
+- **[proxy]** Point each proxy's HEP mirror at the capture host. Give each
+   proxy its own capture id, so the roster tells them apart.
+
+   OpenSIPS (tested with 3.6.9) — `opensips.cfg`. OpenSIPS needs a `hep_udp`
+   socket to send HEP from, and refuses to start without one (`No HEP
+   listener defined!`):
+
+   ```text
+   socket=hep_udp:0.0.0.0:6061
+
+   loadmodule "proto_hep.so"
+   modparam("proto_hep", "hep_id", "[sipnab] capture01.example.net:9063; transport=udp; version=3")
+   modparam("proto_hep", "hep_capture_id", 102)
+   loadmodule "tracer.so"
+   modparam("tracer", "trace_id", "[tid]uri=hep:sipnab")
+   ```
+
+   and in the main route, to send each transaction's requests and replies:
+
+   ```text
+   trace("tid", "t", "sip");
+   ```
+
+   OpenSIPS 3.6.9 refuses the one-line form
+   `"[sipnab]uri=hep:capture01.example.net:9063;version=3;transport=udp"` with
+   `Invalid key <version> in trace id!`: put the address in `hep_id` as above.
+   [Add Homer to your voice stack](@/docs/homer.md) explains each line.
+
+   Kamailio (tested with 6.1.4) — `kamailio.cfg`:
+
+   ```text
+   loadmodule "siptrace.so"
+   modparam("siptrace", "duplicate_uri", "sip:192.0.2.50:9063")
+   modparam("siptrace", "hep_mode_on", 1)
+   modparam("siptrace", "hep_version", 3)
+   modparam("siptrace", "hep_capture_id", 101)
+   modparam("siptrace", "trace_to_database", 0)
+   modparam("siptrace", "trace_on", 1)
+   modparam("siptrace", "trace_mode", 1)
+   ```
+
+   Put the capture host's address in `duplicate_uri`, `192.0.2.50` here.
+   Kamailio resolves a name there through DNS: with
+   `sip:capture01.example.net:9063` and the name only in `/etc/hosts`, it sent
+   nothing and logged `could not resolve hostname: "capture01.example.net"`.
+   `trace_mode 1` sends every message with no call in the script. Kamailio
+   sends to one `duplicate_uri`: with two lines, only the last one received
+   anything in the test.
+
+- **[server]** Verify HEP is arriving. Send any request through a proxy,
+   then ask the MCP `hep_senders` tool which senders the listener admitted.
+   MCP over HTTP needs a session, so this takes three requests:
+
+   ```bash
+   # Run all of these, in order.
+   U=http://127.0.0.1:8731/mcp
+   H='Accept: application/json, text/event-stream'
+   SID=$(curl -sS -D - -o /dev/null "$U" -H 'Content-Type: application/json' -H "$H" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}' \
+     | tr -d '\r' | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}')
+   curl -sS -o /dev/null "$U" -H 'Content-Type: application/json' -H "$H" -H "Mcp-Session-Id: $SID" \
+     -d '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+   curl -sS "$U" -H 'Content-Type: application/json' -H "$H" -H "Mcp-Session-Id: $SID" \
+     -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hep_senders","arguments":{}}}' \
+     | sed -n 's/^data: //p' | jq -c '.result.structuredContent.senders[] | {source, packets, silent}'
+   ```
+
+   One line per proxy that reached the listener, named by the capture id it
+   claims and its address. With the Kamailio and OpenSIPS above, each sent one
+   OPTIONS and its reply:
+
+   ```text
+   {"source":"hep:101@172.31.250.20","packets":2,"silent":true}
+   {"source":"hep:102@172.31.250.21","packets":2,"silent":false}
+   ```
+
+   The capture id in `source` is the one the sender claims: `hep_capture_id`
+   on OpenSIPS and Kamailio, `--hep-id` on a sipnab sender. It is not the
+   capture host's `--node-name`, which names the box sipnab runs on in its own
+   answers (`capture_identity.node`).
+
+   `silent` is `true` for a sender that has sent nothing for 30 seconds. The
+   same answer lists every address the listener refused, under
+   `refused_sources`, with the reason. A proxy missing from both lists did not
+   reach the port: check its configuration and the firewall.
+
+   The journal says the same in one line when the whole listener goes quiet.
+   The listener warns when it admits nothing for 30 seconds
+   (`journalctl -u sipnab-mcp -f`), and the wording tells you which of two
    problems you have:
 
    - `no packets for 30s` means nothing arrived at all.
@@ -137,10 +204,20 @@ sees calls from the whole estate. The HEP listener is a plain UDP socket:
 
    `--hep-silence-warn` changes the 30 seconds.
 
-   To see each proxy on its own, ask the MCP `hep_senders` tool. It lists:
+- **[server]** Size the listener for the estate. These are the limits a
+   busy estate meets first, with their defaults:
 
-   - every sender, with its packet count and whether it went silent,
-   - every address the listener refused, with the reason.
+   | Limit | Default | Where it shows when reached |
+   |---|---|---|
+   | `--hep-rate-limit` | 50000 packets a second, all senders together | `refused_by_reason.rate_limit_global` |
+   | `--hep-rate-limit-per-peer` | off | `refused_by_reason.rate_limit_per_peer` |
+   | `[limits] max_tracked_peers` | 4096 distinct sender addresses in one second | `refused_by_reason.peer_tracking_full` |
+
+   All three counters are in the `hep_senders` answer above. This page
+   measured no packet rate a listener sustains: watch the counters on your
+   own traffic, and see [Keep a long-running capture inside a memory
+   budget](@/docs/cookbook.md#keep-a-long-running-capture-inside-a-memory-budget)
+   for what the run holds in memory.
 
 - **[laptop]** Wire up exactly as the open-the-tunnel and
    register-against-localhost steps of
