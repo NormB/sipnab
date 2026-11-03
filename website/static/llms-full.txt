@@ -70634,6 +70634,19 @@ The causes:
   - mimalloc's `options.c` prints `__DATE__` and `__TIME__`.
   - GCC takes both from `SOURCE_DATE_EPOCH` when the environment sets it.
   - The script sets it to the time of the commit.
+- **A compiler wrapper.** Found 2026-11-02, after the host that runs the check set `sccache` as its
+  `build.rustc-wrapper`.
+  - The two builds of one commit differed in a clock time, `14:59:26` against `15:11:02`
+    (run 41514782899).
+  - The `cc` crate routes C compiles through `sccache` when `RUSTC_WRAPPER` names it.
+    mimalloc's `__DATE__` and `__TIME__` then came from the `sccache` server, which never saw
+    `SOURCE_DATE_EPOCH`.
+  - The script's `build` sets `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER` and their
+    `CARGO_BUILD_` forms to the empty string. An empty value overrides a config file's
+    `build.rustc-wrapper`; removing the variable from the environment does not.
+  - [`tests/reproducible_build_test.rs`](../../tests/reproducible_build_test.rs) checks both: that
+    `build` runs cargo with each one empty, and that real cargo skips a configured wrapper when
+    `RUSTC_WRAPPER` is empty.
 
 Two more inputs needed pinning rather than fixing.
 They move with time rather than with the builder.

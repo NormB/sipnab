@@ -117,6 +117,15 @@ cmd_build() {
   # workflow-wide, and a set RUSTFLAGS replaces build.rustflags entirely.
   export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$split $remap"
   export CFLAGS="${CFLAGS:+$CFLAGS }$cmap"
+  # No compiler wrapper. On 2026-11-02 sccache configured as
+  # build.rustc-wrapper made two builds of one commit differ in a clock time
+  # (run 41514782899): the cc crate routes C compiles through sccache when
+  # RUSTC_WRAPPER names it, so mimalloc's __DATE__ and __TIME__ came from the
+  # sccache server, which never saw SOURCE_DATE_EPOCH. Set EMPTY, not unset:
+  # an empty value overrides a config file's build.rustc-wrapper, and
+  # unsetting it does not.
+  export RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= \
+    RUSTC_WORKSPACE_WRAPPER= CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=
   if [ "$tool" = cross ]; then
     # cross may not forward RUSTFLAGS into its container, so the split flags
     # also go as --config (see split-debuginfo.sh). The container mounts its
