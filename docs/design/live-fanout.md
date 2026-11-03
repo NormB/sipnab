@@ -1,7 +1,7 @@
 # Making `PACKET_FANOUT` reachable
 
 **Status:** WIRED. `--cores N` on a live device now asks for N capture sockets
-([`bootstrap.rs:1956`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1956)), so the "no caller" table
+([`bootstrap.rs:2009`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2009)), so the "no caller" table
 row in [section 1, "What exists, and the one thing that does not"](#1-what-exists-and-the-one-thing-that-does-not)
 and the flag argument in [section 2, "The flag surface"](#2-the-flag-surface)
 are history rather than proposals. What remains open is
@@ -49,7 +49,7 @@ narrower and more interesting:
 | Plan / group id | [`live.rs:194`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L194), [`:209`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L209) | pure, tested without a device |
 | Kernel probe | [`live.rs:293`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L293) | throwaway handle, so refusal is discovered once |
 | N-socket driver | `capture_live_fanout`, [`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291) | complete, joins all threads, first error wins |
-| **A caller** | [`bootstrap.rs:1956`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1956), [`native.rs:397`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L397) | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
+| **A caller** | [`bootstrap.rs:2009`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2009), [`native.rs:397`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L397) | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
 
 That last row is the one thing this section got to change. When the page was
 written the `Live` arm spawned exactly one thread running `capture_live`, a
@@ -79,13 +79,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:6867`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6867)),
+- `cores_ignored_warning` ([`bootstrap.rs:6920`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6920)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:8666`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8666)), which asserts the warning
+  ([`bootstrap.rs:8770`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8770)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -123,7 +123,7 @@ that is a log line and a help-text sentence, not a second noun.
    thread either way, live".
 2. **`cores_ignored_warning` loses its live branch and keeps its
    `--multi-device` branch.** The `--multi-device` reason
-   ([`bootstrap.rs:2991`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2991)) stays true; see [section 2.1, "The resource change nobody would expect"](#21-the-resource-change-nobody-would-expect).
+   ([`bootstrap.rs:3044`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3044)) stays true; see [section 2.1, "The resource change nobody would expect"](#21-the-resource-change-nobody-would-expect).
    `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it` must be rewritten
    in the same commit, not after — it is currently the gate that would catch the
    two conditions drifting, and a half-updated complement is worse than none.
@@ -579,6 +579,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:6257`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6257)) returns true only for the
+  ([`bootstrap.rs:6310`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6310)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

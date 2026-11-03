@@ -711,6 +711,13 @@ pub fn run_tui_mode(
                 servers.as_ref().and_then(|h| h.mcp_http_addr),
                 cli.mcp_tls_files(&config).0.is_some(),
             ),
+            // The same notice the plan logged: the TUI writes no container
+            // for the config's `[[vcon.rule]]`.
+            vcon_rules_unrun: crate::app::bootstrap::tui_export_notice(
+                &cli,
+                &config,
+                &crate::app::bootstrap::RunMode::Tui,
+            ),
             visible_columns: config.display.visible_columns.clone(),
             name_setup,
             from_to_mode,
@@ -1096,10 +1103,11 @@ fn start_tui_servers(
             scanner_response: detections.scanner_response,
             pipeline_options: crate::app::server_pipeline_options(cli, config),
             alias_thresholds: cli.alias_thresholds(config),
-            // The TUI loop runs no vCon exporter: an export flag sends the run
-            // to the headless mode (`Cli::normalize`), and a `[[vcon.rule]]`
-            // is not run here. A gate reporting `authorized: true` would name
-            // a writer this run does not have.
+            // The TUI loop runs no vCon exporter, so it writes none of the
+            // content the gate governs: an export flag sends the run headless
+            // (`Cli::normalize`), and a `[[vcon.rule]]` writes nothing here
+            // (`bootstrap::tui_export_notice` says so). `persists_content`
+            // would count the rule and report a writer this run lacks.
             persists_content: false,
             vcon_spools: crate::app::vcon_spool::spools(cli, config),
             vcon_fetch: config.vcon_fetch.clone(),

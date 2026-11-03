@@ -6244,6 +6244,19 @@ impl Cli {
     /// that reports no authority over a run that is writing.
     #[must_use]
     pub fn persists_content(&self, config: &crate::config::Config) -> bool {
+        self.exports_vcon(config)
+    }
+
+    /// Whether this run writes vCon containers: `--export-vcon`,
+    /// `--export-vcon-when`, or a `[[vcon.rule]]` in the config file.
+    ///
+    /// The part of [`Self::persists_content`] that only the vCon exporter
+    /// carries out. Asked on its own where the answer depends on that
+    /// exporter: the `--redact` refusal (redaction rewrites a container) and
+    /// the TUI refusal (the TUI loop runs no exporter). A rule counts only in
+    /// a build with the exporter, for the reason `persists_content` gives.
+    #[must_use]
+    pub fn exports_vcon(&self, config: &crate::config::Config) -> bool {
         self.output_args.export_vcon.is_some()
             || self.output_args.export_vcon_when.is_some()
             || (cfg!(feature = "vcon") && !config.vcon.rule.is_empty())
@@ -6251,7 +6264,7 @@ impl Cli {
 
     /// Whether this run redacts what it exports.
     ///
-    /// The companion of [`Self::persists_content`], which names the flags and
+    /// The companion of [`Self::exports_vcon`], which names the flags and
     /// rules that write a container: redaction acts on what that writes, so a
     /// run where one is true and the other false is an operator asking for a
     /// guarantee over nothing.
@@ -8312,7 +8325,7 @@ impl Cli {
     }
 
     /// The refusal for a redaction flag on a run that exports no container,
-    /// or `None`. Whether the run exports is [`Self::persists_content`]'s
+    /// or `None`. Whether the run exports is [`Self::exports_vcon`]'s
     /// answer, which counts a `[[vcon.rule]]` in `config` as the flags.
     ///
     /// Refused rather than ignored, because the failure it prevents is the one
@@ -8322,7 +8335,7 @@ impl Cli {
     /// disclosure.
     #[must_use]
     pub fn inert_redaction_refusal(&self, config: &crate::config::Config) -> Option<crate::Error> {
-        (self.redacting() && !self.persists_content(config)).then(|| {
+        (self.redacting() && !self.exports_vcon(config)).then(|| {
             crate::Error::CliValidation(
                 "--redact rewrites an EXPORTED container and this run exports \
                  none. Pair it with --export-vcon, --export-vcon-when or a \

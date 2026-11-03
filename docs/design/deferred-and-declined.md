@@ -173,7 +173,7 @@ retains no record of which capture anything came from.**
   `load_pcap_file` is documented as *"replacing all existing data."* There is no
   merge-on-open branch anywhere in that path.
 
-The `View` enum ([`state.rs:1036-1084`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L1036-L1084)) reflects the
+The `View` enum ([`state.rs:1042-1090`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L1042-L1090)) reflects the
 same absence: every data-bearing variant is keyed on a Call-ID or a `StreamKey`
 and nothing else, so two dialogs from two captures would be
 indistinguishable at the routing layer even before they reached a renderer.

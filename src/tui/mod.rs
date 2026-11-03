@@ -423,6 +423,9 @@ pub struct App {
     syntax_highlight: bool,
     /// Whether packet processing is paused (TUI-local flag).
     paused: bool,
+    /// The config file defines a `[[vcon.rule]]`, which this TUI run does not
+    /// carry out: status line 1 says so for the whole session.
+    pub vcon_rules_unrun: bool,
     /// Shared pause flag for the processing thread.
     /// When `true`, the processing thread skips `process_message()`.
     paused_flag: Arc<AtomicBool>,
@@ -620,6 +623,7 @@ impl App {
             from_to_mode: FromToMode::default(),
             syntax_highlight: true,
             paused: false,
+            vcon_rules_unrun: false,
             paused_flag: Arc::new(AtomicBool::new(false)),
             theme,
             keymap,
@@ -2553,6 +2557,27 @@ mod tests {
             options.into_app(d, s).status_error.as_deref(),
             Some("Reading A. Also present and NOT read: B.")
         );
+        Ok(())
+    }
+
+    /// A config whose `[[vcon.rule]]` this TUI run does not carry out opens
+    /// the session with its notice on the status line, beside any other, and
+    /// sets the marker status line 1 keeps for the whole session.
+    #[test]
+    fn an_unrun_vcon_rule_is_announced_and_marked_for_the_session() -> Result<(), TestError> {
+        let (d, s) = stores();
+        let options = TuiOptions {
+            startup_notice: Some("Reading A.".into()),
+            vcon_rules_unrun: Some("[[vcon.rule]] 'support' writes nothing here".into()),
+            ..TuiOptions::default()
+        };
+        let app = options.into_app(d, s);
+        assert_eq!(
+            app.status_error.as_deref(),
+            Some("Reading A. | [[vcon.rule]] 'support' writes nothing here"),
+            "the notice opens the session beside the config notice"
+        );
+        assert!(app.vcon_rules_unrun, "the marker is set for the session");
         Ok(())
     }
 

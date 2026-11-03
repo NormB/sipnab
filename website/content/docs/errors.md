@@ -2068,6 +2068,23 @@ The `when` of the [`[[vcon.rule]]`](@/docs/vcon.md#write-calls-by-rule) named `{
 
 **Exit code:** 1.
 
+### `[[vcon.rule]] {} writes no vCon container in this run: the terminal UI does not run the exporter. Add -N (--no-tui) to write the rule's containers; the TUI goes on without them`
+
+A warning, not a refusal: the run goes on. The run starts the terminal UI,
+and the config file defines a `[[vcon.rule]]`. The TUI does not run the vCon
+exporter, so the rule writes no container while it runs. The TUI opens with
+this notice on its status line, and status line 1 shows
+`vCon rules: not written here, use -N` for the whole session.
+
+- `{}` names each rule, such as `'support'`.
+- A run that finds no config file earlier in the
+  [search order](@/docs/config.md#file-locations) reads
+  `/etc/sipnab/sipnab.toml`. So a service's rules also apply to a run you
+  start to watch the TUI.
+
+**What to do:** Nothing, if you only meant to watch. To write the rule's
+containers, run with `-N`.
+
 ### `[[vcon.rule]] with live_audio = true serves call audio on the REST API, and --api {addr} is not a loopback address. Off loopback, live audio needs TLS (--api-tls-cert and --api-tls-key) and a signing key (--api-signing-key or --api-signing-key-file) to mint tokens with the audio scope; or bind --api to 127.0.0.1`
 
 A rule with `live_audio = true` serves call audio on the REST API. `--api` binds to an address other than loopback, without TLS and a signing key.

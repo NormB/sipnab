@@ -385,6 +385,35 @@ mod tui_e2e {
         Ok(())
     }
 
+    /// A TUI run whose config defines a `[[vcon.rule]]` starts, and status
+    /// line 1 says the rule writes nothing here for the whole session: the
+    /// TUI loop runs no vCon exporter. The run used to say nothing at all.
+    #[cfg(feature = "vcon")]
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    fn tui_marks_a_config_vcon_rule_it_does_not_run() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("out");
+        let config = dir.path().join("rule.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "[[vcon.rule]]\nname = \"support\"\nwhen = \"call_id =~ '.'\"\ndir = \"{}\"\n",
+                out.display()
+            ),
+        )?;
+        let s = TuiSession::launch(
+            150,
+            40,
+            fixtures_dir(),
+            &["-I", "sip_call.pcap", "--config", &config.to_string_lossy()],
+        )?;
+        // The call list proves the run went on; the marker is on line 1.
+        s.wait_for("INVITE")?;
+        s.wait_for("vCon rules: not written here, use -N")?;
+        Ok(())
+    }
+
     /// `-c` applies the F7 filter, and status line 3 shows it as the dialog's
     /// summary with the key that expands it; `F` shows the full expression
     /// and `F` again returns to the summary.

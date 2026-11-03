@@ -182,7 +182,7 @@ pair of stores, which puts it under
 treatment the in-TUI `pcap-load` path already got.
 
 **`View` cannot address a second session.** Every data-bearing variant of the
-`View` enum ([`state.rs:1039-1087`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L1039-L1087)) is keyed on a
+`View` enum ([`state.rs:1045-1093`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L1045-L1093)) is keyed on a
 Call-ID or a `StreamKey` and nothing else: `CallFlow(String)`,
 `CallTimeline(String)`, `RawMessage { call_id, message_index }`, `MessageDiff {
 call_id, msg1_idx, msg2_idx }`, `StreamDetail(StreamKey)`. Two dialogs from two

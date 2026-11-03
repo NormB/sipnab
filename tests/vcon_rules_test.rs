@@ -880,3 +880,40 @@ fn a_cc_header_that_is_not_a_header_name_is_refused() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// A run that starts the terminal UI with a `[[vcon.rule]]` says, before the
+/// capture opens, that the TUI writes no vCon container for the rule, names
+/// it, and continues.
+///
+/// The TUI loop runs no exporter, and the export flags have always sent a run
+/// headless for that reason; a configured rule did not, so the TUI ran and the
+/// rule wrote nothing and said nothing. No terminal is attached here, so the
+/// run goes on to fail starting the TUI, which is how it shows it was not
+/// refused.
+#[cfg(feature = "tui")]
+#[test]
+fn a_tui_run_with_a_configured_rule_says_so_and_continues() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let out = home.path().join("out");
+    let path = home.path().join("rules.toml");
+    std::fs::write(&path, rule("to-disk", CALL, &out, "omit"))?;
+    let run = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-I", CAPTURE])
+        .arg("--config")
+        .arg(&path)
+        .env("HOME", home.path())
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    for needle in ["[[vcon.rule]] 'to-disk'", "-N", "writes no vCon container"] {
+        assert!(
+            stderr.contains(needle),
+            "the notice names {needle}: {stderr}"
+        );
+    }
+    assert!(
+        stderr.contains("the terminal UI could not start"),
+        "the run continued to the TUI rather than being refused: {stderr}"
+    );
+    Ok(())
+}

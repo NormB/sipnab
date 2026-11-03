@@ -288,6 +288,13 @@ Other options work with rules:
 
 A rule runs the same way as `--export-vcon-when`.
 
+- It writes only in a run without the terminal UI, as the flags do. A run
+  that starts the TUI with a `[[vcon.rule]]` in its config file goes on, and
+  says so: it logs a warning that names the rule, opens with the same notice
+  on the status line, and status line 1 shows
+  `vCon rules: not written here, use -N` for the whole session. Add `-N` to
+  write the rule's containers.
+
 - With `-I`, sipnab writes every matching call at the end of the run.
 - On a live capture, sipnab writes each call on the timing described under
   [When a container appears](#the-spool-contract-for-a-bridge-that-consumes-it).
@@ -828,13 +835,17 @@ A [`[[vcon.enrich]]`](#enrich-a-call-before-it-is-written) service on the same
 rule can return, at the call's end, what a transcriber produces during the call.
 So the transcript is in the call's container.
 
-> **Known defect.** In sipnab 0.5.232 a run that writes through `[[vcon.rule]]`
-> and serves `--api` writes no container for its rules: the live audio is
-> served, and the rule's `dir` stays empty. `GET /v1/persistence` on such a run
-> answers `{"authorized":false,"enabled":false}`. A fix is in progress. Until
-> it lands, add `--export-vcon-when` with the rule's filter and a directory of
-> its own, as the run below does. The rule then writes its containers, and
-> the flag writes a second copy into its own directory.
+> **Defect in 0.5.232 and earlier.** In sipnab 0.5.232 and earlier, a run
+> that writes through `[[vcon.rule]]` and serves `--api` writes no container
+> for its rules: sipnab serves the live audio, and the rule's `dir` stays empty.
+> `GET /v1/persistence` on such a run answers
+> `{"authorized":false,"enabled":false}`.
+> [#630](https://github.com/NormB/sipnab/pull/630) fixes it in the next
+> release. On 0.5.232 and earlier, use the workaround the run below shows:
+> add `--export-vcon-when` with the rule's filter and a directory of its own.
+> On 0.5.232 the rule then writes its containers, and the flag writes a
+> second copy into its own directory. On a release before 0.5.232 only the
+> flag's directory receives the container (checked on 0.5.203).
 
 **Try it on one machine.** This listens on the loopback interface and replays
 a capture onto it, so it needs root for the capture and for `tcpreplay`. The
@@ -842,6 +853,17 @@ client needs Python 3 and the `websockets` package (`pip install websockets`).
 
 Write the rule and the directories. sipnab drops to the `nobody` user after it
 opens the capture, so the directories must be writable by that user:
+
+```sh
+# Run all of these, in order.
+printf '[[vcon.rule]]\nname = "support"\nwhen = "method == %s"\ndir = "support"\naudio = "inline"\nlive_audio = true\n' "'INVITE'" > sipnab.toml
+mkdir -m 777 support
+sudo sipnab -N --no-cli-print -d lo --config sipnab.toml \
+  --api 127.0.0.1:18080 &
+SIPNAB_PID=$!
+```
+
+On sipnab 0.5.232 and earlier, start it with the workaround instead:
 
 ```sh
 # Run all of these, in order.
@@ -910,8 +932,12 @@ call 1-1968@10.0.2.20 InCall
 
 - 68000 samples at 8000 per second is 8.5 seconds of the first call's audio.
 - The second call has no `end`: the capture stops before it hangs up.
-- About ten seconds after the first call ended, `support` and `extra` each
-  held its container, `1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json`.
+- About ten seconds after the first call ended, `support` held its
+  container, `1-1966_10.0.2.20-1cc03f180ff8a774.vcon.json`. With the
+  workaround on 0.5.232, `extra` also held it; on a release before 0.5.232,
+  only `extra` did.
+- `curl -s 127.0.0.1:18080/v1/persistence` answers
+  `{"authorized":true,"enabled":true}`: the rule may write.
 
 Stop both by the process IDs the commands recorded: `kill -INT "$SIPNAB_PID"` and `kill "$LISTEN_PID"`. `sudo` passes the interrupt on to sipnab, which stops the capture and exits.
 
@@ -933,7 +959,10 @@ Stop both by the process IDs the commands recorded: `kill -INT "$SIPNAB_PID"` an
 - The client connects and no call appears: nothing on the capture
   interface matched the rule's `when`, or the capture saw no SIP. Run the
   same capture with `--report` and check the call is there.
-- The rule's `dir` stays empty while audio arrives: the known defect above.
+- The rule's `dir` stays empty while audio arrives, and
+  `GET /v1/persistence` answers `{"authorized":false,"enabled":false}`: the
+  run is sipnab 0.5.232 or earlier, which has the defect noted above. Upgrade
+  to the release after 0.5.232, or start sipnab with the workaround.
 
 ### Send a call's audio as RTP
 
@@ -1809,18 +1838,20 @@ the capture itself must go on.
 
 **Before you start.**
 
-- The run writes containers with `--export-vcon-when` or `--export-vcon`, and
-  serves the REST API (`--api`). The `api` and `vcon` features are in every
+- The run writes containers with `--export-vcon-when`, `--export-vcon` or a
+  `[[vcon.rule]]`, and serves the REST API (`--api`). The `api` and `vcon` features are in every
   release package.
 - The control is `GET` and `POST /v1/persistence`. Any token the API accepts
   can use it.
-- It only narrows. A run started without `--export-vcon-when` or
-  `--export-vcon` reports `"authorized": false`, and no request makes it
-  write.
-- Known defect: a run that writes through `[[vcon.rule]]` and serves `--api`
-  reports `"authorized": false` from the start, and its rules write no
-  container. A defect fix is in progress. Until it lands, use
-  `--export-vcon-when` on a run that serves the API.
+- It only narrows. A run started without `--export-vcon-when`,
+  `--export-vcon` or a `[[vcon.rule]]` reports `"authorized": false`, and no
+  request makes it write.
+- In sipnab 0.5.232 and earlier, a run that writes through `[[vcon.rule]]`
+  and serves `--api` reports `"authorized": false` from the start, and its
+  rules write no container.
+  [#630](https://github.com/NormB/sipnab/pull/630) fixes it in the next
+  release. On 0.5.232 and earlier, use `--export-vcon-when` on a run that
+  serves the API.
 
 **Steps.** This run takes its calls from a HEP listener, so it keeps
 running while calls come and go:
@@ -1874,8 +1905,9 @@ A run that ends before you turn writing back on writes none of them.
 **When it does not work.**
 
 - `{"authorized":false,"enabled":false}`, and `{"enabled":true}` changes
-  nothing: the run started without `--export-vcon-when` or
-  `--export-vcon`. Restart it with one. See also the known defect above.
+  nothing: the run started without `--export-vcon-when`, `--export-vcon` or
+  a `[[vcon.rule]]`. Restart it with one. On sipnab 0.5.232 and earlier a
+  `[[vcon.rule]]` does not count; see the note above.
 - `400`: the body is not exactly `{"enabled": true}` or `{"enabled": false}`.
 - `401`: the token is missing, wrong or expired.
   [POST /v1/persistence](@/docs/api.md#post-v1-persistence) lists every answer.
