@@ -273,6 +273,7 @@ DOCS_TO_SITE = {
     "mcp.md": "mcp.md",
     "mcp-deploy.md": "mcp-deploy.md",
     "mcp-estate.md": "mcp-estate.md",
+    "fleet.md": "fleet.md",
     "mcp-tools.md": "mcp-tools.md",
     "mcp-tools-core.md": "mcp-tools-core.md",
     "mcp-tools-signaling.md": "mcp-tools-signaling.md",

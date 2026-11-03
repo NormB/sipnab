@@ -8,9 +8,11 @@
 
 pub mod batch;
 pub mod bootstrap;
+#[cfg(feature = "api")]
+pub mod fleet;
 #[cfg(feature = "g729")]
 pub mod g729_install;
-#[cfg(any(feature = "vcon", feature = "g729"))]
+#[cfg(any(feature = "vcon", feature = "g729", feature = "api"))]
 pub mod https_client;
 #[cfg(all(unix, any(feature = "api", feature = "mcp")))]
 pub mod journal_cli;

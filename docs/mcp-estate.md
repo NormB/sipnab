@@ -7,9 +7,11 @@ is what comes after that:
 - an agent that has to reach it from somewhere else,
 - one agent holding several capture hosts at once,
 - the hardest of them: following a single call as it crosses an SBC, a proxy
-  and a PBX that each see a different Call-ID.
+  and a PBX that each see a different Call-ID,
+- managing the sipnab instances themselves: which build and configuration
+  each one runs, and which ones do not answer.
 
-These four build on each other in that order. Each one names the SINGLE
+The first four build on each other in that order. Each one names the SINGLE
 sipnab it starts from. So you can stop at whichever answers your question.
 Every scenario assumes you have already done
 [Install sipnab](mcp-deploy.md#install-sipnab-every-server-once).
@@ -709,3 +711,31 @@ To centralize, see
 sipnab can run beside a Homer installation, as
 [Coexisting with Homer](#coexisting-with-homer-or-any-observability-host)
 describes.
+
+---
+
+## Manage the fleet
+
+Federation and the central collector both answer questions about calls.
+Neither says which build each node runs or which configuration it loaded.
+`sipnab fleet inventory` does. [Manage many sipnab instances](fleet.md) is the
+full how-to.
+
+- **[each node]** Run the REST API (`--api`) and mint a token with
+  `--token-scope inventory`. That token reads `GET /v1/inventory` and nothing
+  else: no dialogs, no messages, no audio.
+- **[controller]** List the nodes in a hosts file and run
+  `sipnab fleet inventory --hosts fleet.toml`. It prints one row per node: the
+  build, the SHA-256 of the binary, the effective configuration digest, the
+  user id and the uptime. It marks a node that did not answer and exits `1`.
+- **[controller]** Include the central collector in the hosts file. The
+  report then names every HEP sender the collector receives from whose
+  address is not in the hosts file, as the finding `unlisted_hep_sender`.
+- **[agent]** An agent connected to one node asks the MCP tool
+  `fleet_inventory`. It returns the same record as `GET /v1/inventory` on
+  that node.
+
+Every field is the node's own claim. `signature.state` is always `unverified`:
+compare `binary.sha256` with the release's attested `SHA256SUMS.txt`, as
+[Check a binary against its release](fleet.md#check-a-binary-against-its-release)
+shows.

@@ -741,6 +741,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
         "find_in_captures",
         "find_in_captures_status",
         "find_problems",
+        "fleet_inventory",
         "generate_fail2ban_rule",
         "generate_repro",
         "generate_wireshark_filter",
@@ -810,7 +811,8 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     }
     expected.sort();
     assert_eq!(names, expected, "MCP tool set drifted");
-    let want = 69 + if cfg!(feature = "vcon") { 6 } else { 0 } + usize::from(cfg!(feature = "hep"));
+    // 69 -> 70: `fleet_inventory`, in every build with the MCP server.
+    let want = 70 + if cfg!(feature = "vcon") { 6 } else { 0 } + usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // Wait for the replay to be read to its end. Until then the store-reading

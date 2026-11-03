@@ -13,6 +13,7 @@ use clap::Parser;
 mod aggregate_args;
 mod call_query_args;
 mod file_job_args;
+pub mod fleet_args;
 pub mod g729_args;
 mod gate_args;
 pub mod one_shot;
@@ -4879,8 +4880,8 @@ pub struct TokenArgs {
     #[arg(help_heading = "Token minting", long = "token-id", value_name = "ID")]
     pub token_id: Option<String>,
 
-    /// Scope for --mint-token: `full` (default), `metrics`, `read`, `actions`
-    /// or `audio`.
+    /// Scope for --mint-token: `full` (default), `metrics`, `read`, `actions`,
+    /// `admin`, `audio` or `inventory`.
     ///
     /// A `metrics` token reaches `GET /metrics` and nothing else — mint one for
     /// a scrape job rather than handing it a credential that also reads
@@ -4904,12 +4905,16 @@ pub struct TokenArgs {
     /// /v1/calls/live`, `GET /v1/calls/live/events` and `GET
     /// /v1/calls/{call_id}/audio`, and nothing else; no other scope reaches
     /// them. REST API tokens only.
+    ///
+    /// An `inventory` token reaches `GET /v1/inventory` and nothing else —
+    /// mint one for `sipnab fleet inventory` rather than handing a fleet
+    /// controller a credential that reads every call. REST API tokens only.
     #[arg(
         help_heading = "Token minting",
         long = "token-scope",
         value_name = "SCOPE",
         default_value = "full",
-        value_parser = ["full", "metrics", "read", "actions", "admin", "audio"]
+        value_parser = ["full", "metrics", "read", "actions", "admin", "audio", "inventory"]
     )]
     pub token_scope: String,
 }

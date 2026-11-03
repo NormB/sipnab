@@ -165,6 +165,7 @@ pub const BUNDLES: &[(&str, &[&str])] = &[
         "server",
         &[
             "capture_health",
+            "fleet_inventory",
             "hep_senders",
             "runtime_stats",
             "server_capabilities",

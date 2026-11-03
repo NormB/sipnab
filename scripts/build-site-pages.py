@@ -301,6 +301,18 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "following one call across an SBC, a proxy and a PBX.",
     ),
     (
+        "docs/fleet.md",
+        "fleet.md",
+        "Manage many sipnab instances",
+        "Manage many sipnab instances",
+        # 66: the first weight free on the SITE side, which
+        # `docs_page_weights_are_unique_and_descriptions_present` reads.
+        66,
+        "One table of every sipnab instance's build, binary and "
+        "configuration digests, privilege and uptime, the instances that "
+        "did not answer, and HEP senders nobody listed.",
+    ),
+    (
         "docs/mcp-tools.md",
         "mcp-tools.md",
         "MCP tool reference",

@@ -318,6 +318,8 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // `note` the schema must describe, since a live roster never sends
         // them absent.
         ("hep_senders", json!({})),
+        // The test server's own process record.
+        ("fleet_inventory", json!({})),
         ("find_correlated", json!({"call_id": call_id})),
         // One second, and the filter is allowed to match nothing: the
         // deadline path is a SUCCESSFUL answer, so it exercises the same

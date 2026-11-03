@@ -216,7 +216,7 @@ only.
 | `--api-token-ttl <SECS>` | Lifetime of a minted token. Default `3600`. |
 | `--mint-token` | Sign a token with the first configured key, print it, and exit. Starts no capture and no server. |
 | `--token-id <ID>` | The token's `id` (`jti`), used later for revocation. Defaults to a generated id. |
-| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions`, `admin` or `audio` for the REST API. See **Scope** below. |
+| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions`, `admin`, `audio` or `inventory` for the REST API. See **Scope** below. |
 | `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
 
 **Scope.** Mint each client a token for the routes it needs:
@@ -228,6 +228,7 @@ only.
 | `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. It lifts only the bans it placed. | The system that decides to block a source. |
 | `admin` | Everything `actions` reaches, and it also lifts a ban another caller placed. | An operator who must be able to lift any ban. |
 | `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
+| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
 
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
 refuses.
@@ -3221,6 +3222,103 @@ reach](install.md#which-capture-backends-an-artifact-can-reach).
 The MCP tool `server_capabilities` returns the same feature set and the same
 `libpcap` block. The second line of `sipnab --version` prints the same
 library banner.
+
+### GET /v1/inventory
+
+What this sipnab process is, for managing many instances as one fleet:
+
+- its build: version, git commit and tag, target and compiled features,
+- SHA-256 of the binary it is running,
+- its configuration, as digests only,
+- its user id and privilege drop, its pid, start time and uptime,
+- its capture interfaces' error and drop counters, its capture and HEP export
+  counters, and the addresses its HEP listener receives from.
+
+It needs a token with scope `inventory`, or `full`. [`sipnab fleet
+inventory`](fleet.md) reads it from every instance in a hosts file.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_INVENTORY_TOKEN" http://127.0.0.1:8080/v1/inventory | jq .
+```
+
+**Response** (from a run on 2026-11-03 of a development build, with the config path replaced by `/etc/sipnab/sipnab.toml`):
+
+```json
+{
+  "schema_version": 1,
+  "node_name": "edge-a",
+  "build": {
+    "version": "0.5.232",
+    "commit": "29204db7",
+    "tag": "",
+    "dirty": true,
+    "target": "aarch64-unknown-linux-gnu",
+    "features": ["api", "archive", "audio", "g729", "hep", "mcp", "mcp-http", "metrics",
+                 "native", "opus", "plugins", "tls", "tui", "vcon"],
+    "version_line": "0.5.232 (29204db7-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729"
+  },
+  "binary": {
+    "sha256": "3242a3324b1c3ac762ba15d4f2eec3789a995533540b8aee56ec087afdc51ea8",
+    "error": null
+  },
+  "signature": {
+    "state": "unverified",
+    "note": "sipnab does not verify its own binary. Compare binary.sha256 with SHA256SUMS.txt of the release, after `gh attestation verify SHA256SUMS.txt --repo NormB/sipnab`."
+  },
+  "config": {
+    "recorded": true,
+    "source": "/etc/sipnab/sipnab.toml",
+    "shadowed": [],
+    "file_sha256": "703493b6b6bdef18b62090d6452a2bd9fc72de264d4b97822cb0b7763697fca6",
+    "parsed_sha256": "1849a6ee687ec0b1394f2d305198c638bca159e7aa032911156074b8d11f4044",
+    "argv_sha256": "d5c72de2bcf085f7d8ca9884bed30027d7504215d507b04f6be16ecc063194e0",
+    "effective_sha256": "31e67effe25101b07a2c7942f05b83d568816bf81a1769d65ab8396c8e89705a"
+  },
+  "privilege": { "uid": 1000, "root": false, "dropped_to": null },
+  "process": { "pid": 3983974, "started": "2026-11-03T13:26:05Z", "uptime_seconds": 17 },
+  "interfaces": [],
+  "counters": {
+    "capture_packets_total": 852,
+    "capture_sources_refused_total": 0,
+    "capture_backpressure_blocks_total": 0,
+    "hep_export_failures_total": null,
+    "hep_export_dropped_total": null,
+    "hep_export_queue_depth": null
+  },
+  "hep_listener": { "listening": false, "packets_refused": 0, "senders": [] }
+}
+```
+
+**No configuration value is in the answer.**
+
+- `file_sha256` is SHA-256 of the config file's bytes as this run read them.
+- `parsed_sha256` is SHA-256 of the configuration as sipnab parsed it, after
+  `${NAME}` expansion, with every object's keys sorted. Two files that differ
+  only in comments, whitespace, key order or an unknown key give one value.
+- `argv_sha256` is SHA-256 of the command line, without the program path.
+- `effective_sha256` is SHA-256 over `parsed_sha256` and `argv_sha256`. A flag
+  overrides the file, so this is the digest to compare across instances.
+  `sipnab fleet inventory` shows it as `CONFIG`.
+- A secret in the file or on the command line changes a digest, and its value
+  never appears. A secret held in a file the configuration names, such as
+  `--api-signing-key-file`, reaches the digests by its path only.
+
+**`signature.state` is always `unverified`.** A process cannot prove which
+binary it is. Compare `binary.sha256` with the release's `SHA256SUMS.txt`,
+after verifying that file's attestation with `gh attestation verify`.
+sipnab reads `binary.sha256` from `/proc/self/exe` on Linux, so after an upgrade
+replaces the file it still names the binary that is running.
+
+**Every field is the process's own claim.** An attacker who controls a host
+can report anything.
+
+`hep_listener.senders` lists at most `MAX_HEP_PEERS` (256) senders.
+
+`config.recorded` is `false`, and every digest `null`, for a server that did not
+record its configuration at start. The MCP tool `fleet_inventory` returns the
+same fields and values.
 
 ### GET /v1/stats
 

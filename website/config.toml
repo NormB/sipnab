@@ -401,6 +401,7 @@ pages = [
   { path = "docs/mcp-tools-tls.md", menu = false },
   { path = "docs/mcp-deploy.md", menu = false },
   { path = "docs/mcp-estate.md", menu = false },
+  { path = "docs/fleet.md", menu = false },
   { path = "docs/mcp-protocol.md", menu = false },
   { path = "docs/vcon-harness.md", menu = false },
   { path = "docs/g729.md", menu = false },

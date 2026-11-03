@@ -163,8 +163,8 @@ lines on stdin, the way a client does.
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content. They
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 76 carry MCP annotations, so a host
-  can decide what to call without asking. Sixty-three are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 77 carry MCP annotations, so a host
+  can decide what to call without asking. Sixty-four are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
 
@@ -618,7 +618,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions. There,
 
 ## What the write verbs do
 
-Sixty-three of the 76 tools are `readOnlyHint: true`. These thirteen are not.
+Sixty-four of the 77 tools are `readOnlyHint: true`. These thirteen are not.
 Each declares what kind of change it makes, so a host can decide which need
 confirmation:
 

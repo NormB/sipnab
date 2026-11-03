@@ -1141,6 +1141,14 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "SECURITY.md",
             "docs/install.md",
             "website/content/docs/install.md",
+            // `gh attestation verify --repo`, in the fleet inventory's
+            // signature note and its how-to.
+            "docs/fleet.md",
+            "website/content/docs/fleet.md",
+            "docs/rest-api.md",
+            "website/content/docs/api.md",
+            "docs/mcp-tools-server.md",
+            "website/content/docs/mcp-tools-server.md",
         ],
     ),
     // `cosign verify-blob --bundle --certificate-identity-regexp
@@ -1960,6 +1968,16 @@ fn cli_long_flags() -> BTreeSet<String> {
     // clap definition; the pages that document it name its flags.
     let g729 = sipnab::cli::g729_args::G729Cli::command();
     for sub in std::iter::once(&g729).chain(g729.get_subcommands()) {
+        for arg in sub.get_arguments() {
+            if let Some(long) = arg.get_long() {
+                flags.insert(long.to_string());
+            }
+        }
+    }
+    // `sipnab fleet inventory` likewise: its own clap definition, dispatched
+    // on the first argument, documented in docs/fleet.md and the CLI reference.
+    let fleet = sipnab::cli::fleet_args::FleetCli::command();
+    for sub in std::iter::once(&fleet).chain(fleet.get_subcommands()) {
         for arg in sub.get_arguments() {
             if let Some(long) = arg.get_long() {
                 flags.insert(long.to_string());
@@ -4210,9 +4228,13 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // directory of the file root, reads files and changes nothing, so the
     // split moves to 63 read-only of 76 and the thirteen write-capable
     // tools are unchanged.
+    // 76 -> 77 by `fleet_inventory` (src/mcp/tools/inventory.rs), the
+    // process's fleet inventory record, the same document as GET
+    // /v1/inventory. It reads and changes nothing, so the split moves to 64
+    // read-only of 77 and the thirteen write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        76,
+        77,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -4958,13 +4980,17 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // scripts/build-site-internals.py. Attributed with
     // `git ls-files -o --exclude-standard` before they were staged.
     // 320 -> 321: website/brand/README.md, the logo's files and terms of use.
+    // 321 -> 323: docs/fleet.md, the fleet inventory how-to, and its site
+    // mirror website/content/docs/fleet.md.
     // Attributed against the staged diff: `--diff-filter=A` lists it as the
     // one markdown file added.
     // 321 -> 322: docs/integrations.md, the event-hook and alert page that
     // was hand-written for the site alone and is now its source. Attributed
     // against the staged diff: `--diff-filter=A` lists it as the one
     // markdown file added.
-    const EXPECTED_MARKDOWN_FILES: usize = 322;
+    // 322 -> 324: docs/fleet.md, the fleet inventory how-to, and its site
+    // mirror website/content/docs/fleet.md.
+    const EXPECTED_MARKDOWN_FILES: usize = 324;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5707,7 +5733,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // plugin load failures, and its site mirror website/content/docs/plugins.md
     // +1. Attributed per file against origin/main ffd06bfb1: no other changed
     // page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1311;
+    // 1311 -> 1318 (the fleet inventory): docs/fleet.md +3 (exit status,
+    // host states, findings), its site mirror website/content/docs/fleet.md
+    // +3, and docs/design/surface-capability-matrix.md +1, the "Fleet
+    // inventory" capability row. Attributed per file against origin/main.
+    const EXPECTED_TABLES: usize = 1318;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

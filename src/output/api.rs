@@ -1103,6 +1103,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/relay/holdings/{call_id}", get(get_relay_holdings_call))
         .route("/v1/runtime", get(get_runtime))
         .route("/v1/capabilities", get(get_capabilities))
+        .route("/v1/inventory", get(get_inventory))
         .route("/metrics", get(get_metrics))
         .with_state(state)
         // Request hardening on every route.
@@ -1783,6 +1784,57 @@ fn guard_scoped(
 )]
 async fn health_check() -> &'static str {
     "ok"
+}
+
+/// `GET /v1/inventory` — what this sipnab process is, for a fleet controller.
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (for the meter, the interfaces and
+///   the guard).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+///
+/// # Returns
+///
+/// 200 with the [`crate::output::inventory::Inventory`] record; 401/503 from
+/// the guard.
+///
+/// # Side effects
+///
+/// The first call hashes the running binary; every call reads the capture
+/// interfaces' counters. Mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/inventory",
+    tag = "operations",
+    summary = "Fleet inventory of this process",
+    description = "What this sipnab process is, for managing many instances as one fleet: the build (version, git commit and tag, dirty flag, target, compiled features, the `--version` line), SHA-256 of the running binary, the signature state, the configuration as digests only, the user id and privilege drop, pid, start time and uptime, the capture interfaces' error and drop counters, capture and HEP export counters, and the HEP listener's sender addresses.\n\nNo configuration value and no command-line argument is in the answer, only their SHA-256 digests, so a secret in either changes a digest and never appears. `signature.state` is always `unverified`: compare `binary.sha256` with the release's attested `SHA256SUMS.txt`. Every field is the process's own claim.\n\nReached by a token with scope `inventory`, or `full` and the broader scopes. The MCP tool `fleet_inventory` returns the same fields and values.",
+    responses(
+        (status = 200, description = "The inventory record.", body = crate::output::inventory::Inventory),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 500, description = "The task that builds the record failed.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_inventory(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard_scoped(&state, &headers, addr.ip(), crate::auth::SCOPE_INVENTORY)?;
+    // The builder the MCP tool calls, so the two surfaces cannot disagree.
+    // Hashing the binary reads a file, so it runs off the async workers.
+    let inventory = tokio::task::spawn_blocking(move || {
+        crate::output::inventory::current(
+            state.capture_meter.as_ref(),
+            &state.capture_interfaces,
+            state.started_at.elapsed().as_secs(),
+        )
+    })
+    .await
+    .map_err(|e| Problem::detailed(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(inventory))
 }
 
 /// `GET /v1/capabilities` — what this build can do and what the operator turned
@@ -7572,10 +7624,22 @@ impl utoipa::Modify for BearerAuth {
         get_relay_holdings_call,
         get_runtime,
         get_capabilities,
+        get_inventory,
         get_metrics,
     ),
     components(schemas(
         schema::ProblemJson,
+        crate::output::inventory::Inventory,
+        crate::output::inventory::BuildInfo,
+        crate::output::inventory::BinaryInfo,
+        crate::output::inventory::SignatureInfo,
+        crate::output::inventory::ConfigInfo,
+        crate::output::inventory::PrivilegeInfo,
+        crate::output::inventory::ProcessInfo,
+        crate::output::inventory::InterfaceCounters,
+        crate::output::inventory::Counters,
+        crate::output::inventory::HepListenerInfo,
+        crate::output::inventory::HepPeer,
         schema::Capabilities,
         schema::CapabilitiesRuntime,
         schema::Libpcap,
@@ -12244,6 +12308,143 @@ mod tests {
             .await
             .map_err(|e| format!("oneshot: {e:?}"))?;
         assert_eq!(resp.status(), StatusCode::OK);
+        Ok(())
+    }
+
+    /// The status `uri` answers a bearer token minted with `key` and `scope`,
+    /// expiring `ttl` seconds from now, on a fresh router over `state`.
+    async fn inventory_status(
+        state: ApiState,
+        key: &[u8],
+        uri: &str,
+        scope: &str,
+        ttl: i64,
+    ) -> Result<StatusCode, TestError> {
+        let token = crate::auth::mint(
+            key,
+            "fleet-test",
+            chrono::Utc::now().timestamp() + ttl,
+            crate::auth::AUDIENCE_API,
+            scope,
+        );
+        let req = test_request_with_header(uri, "Authorization", &format!("Bearer {token}"))?;
+        let resp = build_router(state)
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        Ok(resp.status())
+    }
+
+    /// An `inventory` token reads `/v1/inventory` and nothing that holds
+    /// call content or process internals; `full` reads it too; `metrics`
+    /// does not.
+    #[tokio::test]
+    async fn the_inventory_scope_reaches_the_inventory_and_nothing_else() -> Result<(), TestError> {
+        let key = crate::test_material::key_bytes("rest-router-signing");
+        let s = || make_state_with_signing_key(key);
+        let inv = crate::auth::SCOPE_INVENTORY;
+        assert_eq!(
+            inventory_status(s(), key, "/v1/inventory", inv, 3600).await?,
+            StatusCode::OK,
+            "an inventory token must read the inventory"
+        );
+        for uri in ["/v1/dialogs", "/v1/runtime", "/v1/streams", "/metrics"] {
+            assert_eq!(
+                inventory_status(s(), key, uri, inv, 3600).await?,
+                StatusCode::UNAUTHORIZED,
+                "an inventory token reached {uri}"
+            );
+        }
+        assert_eq!(
+            inventory_status(s(), key, "/v1/inventory", crate::auth::SCOPE_FULL, 3600).await?,
+            StatusCode::OK,
+            "a full token reaches every narrow read scope, the inventory included"
+        );
+        for scope in [crate::auth::SCOPE_METRICS, crate::auth::SCOPE_AUDIO] {
+            assert_eq!(
+                inventory_status(s(), key, "/v1/inventory", scope, 3600).await?,
+                StatusCode::UNAUTHORIZED,
+                "a {scope} token reached the inventory"
+            );
+        }
+        Ok(())
+    }
+
+    /// An expired token is refused, and a source over its rate is refused
+    /// before its credential is looked at: the second wrong-token request
+    /// from one address, on a limiter of one request per second, is 503 and
+    /// not 401.
+    #[tokio::test]
+    async fn the_inventory_refuses_expired_tokens_and_rate_limits_first() -> Result<(), TestError> {
+        let key = crate::test_material::key_bytes("rest-router-signing");
+        let inv = crate::auth::SCOPE_INVENTORY;
+        assert_eq!(
+            inventory_status(
+                make_state_with_signing_key(key),
+                key,
+                "/v1/inventory",
+                inv,
+                -1
+            )
+            .await?,
+            StatusCode::UNAUTHORIZED,
+            "an expired token is refused"
+        );
+        let mut state = make_state_with_signing_key(key);
+        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::new(1, 1024)));
+        let wrong = crate::test_material::key_bytes("rest-router-not-the-signing-key");
+        let first = inventory_status(state.clone(), wrong, "/v1/inventory", inv, 3600).await?;
+        let second = inventory_status(state, wrong, "/v1/inventory", inv, 3600).await?;
+        assert_eq!(
+            first,
+            StatusCode::UNAUTHORIZED,
+            "a wrong token under the rate is refused as unauthenticated"
+        );
+        assert_eq!(
+            second,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rate limit after auth"
+        );
+        Ok(())
+    }
+
+    /// The route's body is the shared builder's record, with this build's
+    /// version line.
+    #[tokio::test]
+    async fn the_inventory_route_returns_the_shared_record() -> Result<(), TestError> {
+        let key = crate::test_material::key_bytes("rest-router-signing");
+        let token = crate::auth::mint(
+            key,
+            "fleet-test",
+            chrono::Utc::now().timestamp() + 3600,
+            crate::auth::AUDIENCE_API,
+            crate::auth::SCOPE_INVENTORY,
+        );
+        let req =
+            test_request_with_header("/v1/inventory", "Authorization", &format!("Bearer {token}"))?;
+        let resp = build_router(make_state_with_signing_key(key))
+            .oneshot(req)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "an inventory token must read the inventory"
+        );
+        let bytes = resp
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| format!("body: {e:?}"))?
+            .to_bytes();
+        let v: Value = serde_json::from_slice(&bytes)?;
+        assert_eq!(v["schema_version"], 1, "{v}");
+        assert_eq!(
+            v["build"]["version_line"],
+            crate::cli::build_version(),
+            "{v}"
+        );
+        assert_eq!(v["signature"]["state"], "unverified", "{v}");
         Ok(())
     }
 

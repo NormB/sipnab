@@ -375,7 +375,8 @@ impl SipnabMcp {
             + Self::endpoints_router()
             + Self::relay_router()
             + Self::tfps_router()
-            + Self::await_condition_router();
+            + Self::await_condition_router()
+            + Self::inventory_router();
         // Shadowed rather than a `+ vcon_router()` term, because the module
         // itself is absent without the feature. A mismatch between the two is
         // a compile error rather than a tool that lists and cannot run.
@@ -13257,7 +13258,9 @@ mod tests {
             ("media", 3_500),
             ("relay", 4_500),
             ("tfps", 6_000),
-            ("server", 5_500),
+            // 5_500 -> 6_000: `fleet_inventory`, the fleet inventory record,
+            // joins the server bundle; server measured 5,976 over six tools.
+            ("server", 6_000),
             // 5_000 -> 7_000 and full 81_000 -> 83_500 by `vcon_spool_status`
             // and `export_vcon`'s `cursor`, `media` and `next_cursor` (vcon
             // measured 6,627, full 83,052).
@@ -13296,7 +13299,9 @@ mod tests {
             // `filter` parameters, once bare filter values parse (measured:
             // full 89,667; core 12,316, signaling 22,474 and security 9,954
             // stay under theirs).
-            ("full", 90_000),
+            // full 90_000 -> 90_500: `fleet_inventory`, as the server row
+            // above says; full measured 90,456 over 77 tools.
+            ("full", 90_500),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

@@ -79,6 +79,13 @@ fn main() {
         std::process::exit(run_g729_command());
     }
 
+    // 0c. `sipnab fleet inventory`: read the inventory of many instances.
+    //     Dispatched before the capture command line is parsed, for the
+    //     reason `g729` is. It opens no capture and exits.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "fleet") {
+        std::process::exit(run_fleet_command());
+    }
+
     // 1. Parse CLI arguments and set up logging.
     let cli = Cli::parse_args();
     bootstrap::init_logging(&cli);
@@ -93,6 +100,19 @@ fn main() {
         Ok(loaded) => loaded,
         Err(e) => e.exit(),
     };
+
+    // 5a. What this run loaded, as digests, for the fleet inventory
+    //     (`GET /v1/inventory`, `fleet_inventory`). Taken once, here, so the
+    //     answer describes the configuration this run applied.
+    #[cfg(any(feature = "api", feature = "mcp"))]
+    {
+        let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+        sipnab::output::inventory::record_run(sipnab::output::inventory::RunRecord::of(
+            &loaded,
+            &argv,
+            chrono::Utc::now(),
+        ));
+    }
 
     // 5b-6b. The crash policy, and the commands that need only the config.
     run_config_steps(&cli, &loaded);
@@ -139,6 +159,27 @@ fn main() {
     // A run that ends by returning, rather than through
     // `release_run_and_exit`, releases what `-I` extracted here.
     sipnab::capture::archive::release_run();
+}
+
+/// Step 0c of [`main`]: `sipnab fleet ...`, with `sipnab fleet` as the
+/// command's own name in its help and errors.
+fn run_fleet_command() -> i32 {
+    #[cfg(feature = "api")]
+    {
+        let args = std::iter::once(std::ffi::OsString::from("sipnab fleet"))
+            .chain(std::env::args_os().skip(2));
+        sipnab::app::fleet::main(args)
+    }
+    #[cfg(not(feature = "api"))]
+    {
+        use std::io::Write as _;
+        // `writeln!`, not `eprintln!`: a closed stderr must not panic.
+        let _ = writeln!(
+            std::io::stderr(),
+            "sipnab fleet needs a build with the api feature"
+        );
+        1
+    }
 }
 
 /// Step 0b of [`main`]: `sipnab g729 ...`, with `sipnab g729` as the

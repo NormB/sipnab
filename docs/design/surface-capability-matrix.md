@@ -611,6 +611,17 @@ What did this build compile in, and what did the operator turn on?
 | REST | `/v1/capabilities` |
 | MCP | `server_capabilities` |
 
+### Fleet inventory
+
+Which build, binary and configuration is this process running, as one record a fleet controller compares across instances?
+
+| Surface | Detail |
+|---|---|
+| CLI | decision: `sipnab fleet inventory` reads this record from each instance's REST API, and an instance has no reason to print its own when `--version` names its build |
+| TUI | decision: a fleet controller is a program that polls many instances, not a human at one instance's screen |
+| REST | `/v1/inventory` |
+| MCP | `fleet_inventory` |
+
 ### Remote lifecycle stop
 
 Stop this process, or remove the uprobes, from a caller with no OS signal.

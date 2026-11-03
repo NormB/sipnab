@@ -56,6 +56,9 @@ enum Mode {
     Stun,
     /// `--json-analyze`: one object for the whole capture analysis.
     Analyze,
+    /// `sipnab fleet inventory --json`: one report over many instances, a
+    /// different document from a capture run's `--json`.
+    Fleet,
 }
 
 /// Fields that are legitimately absent from a flat key scan.
@@ -131,7 +134,9 @@ fn recipes() -> Result<Vec<Recipe>, TestError> {
                     .split_whitespace()
                     .any(|w| w.split('=').next() == Some(*q))
             });
-            let mode = if let Some(flag) = query {
+            let mode = if block.contains("sipnab fleet") {
+                Mode::Fleet
+            } else if let Some(flag) = query {
                 Mode::Query(flag)
             } else if block.contains("--json-dialogs") {
                 Mode::Dialogs
@@ -321,6 +326,7 @@ fn harvest(v: &serde_json::Value, depth: usize, keys: &mut BTreeSet<String>) {
 fn keys_for(mode: Mode) -> Result<BTreeSet<String>, TestError> {
     let flag = match mode {
         Mode::Query(flag) => return Err(format!("{flag}: a query runs its own command").into()),
+        Mode::Fleet => return fleet_keys(),
         Mode::Messages => "--json",
         Mode::Dialogs => "--json-dialogs",
         Mode::Stun => "--json-stun",
@@ -331,6 +337,7 @@ fn keys_for(mode: Mode) -> Result<BTreeSet<String>, TestError> {
     let fixtures: &[&str] = match mode {
         Mode::Messages | Mode::Dialogs | Mode::Query(_) => FIXTURES,
         Mode::Stun | Mode::Analyze => STUN_FIXTURES,
+        Mode::Fleet => return fleet_keys(),
     };
     let mut keys = BTreeSet::new();
     for pcap in fixtures {
@@ -377,6 +384,34 @@ fn keys_for(mode: Mode) -> Result<BTreeSet<String>, TestError> {
     Ok(keys)
 }
 
+/// The keys of a `sipnab fleet inventory --json` report: the command's own
+/// `merge` over this process's real inventory record, the one
+/// `GET /v1/inventory` returns. A live report needs instances on the network;
+/// `tests/fleet_inventory_test.rs` runs the command against real ones, and
+/// this builds the same document from the same two functions. Walked to depth
+/// 6, which reaches `hosts[].inventory.hep_listener.senders[].peer`.
+#[cfg(feature = "api")]
+fn fleet_keys() -> Result<BTreeSet<String>, TestError> {
+    use sipnab::app::fleet::{Answer, HostResult, merge};
+    let inventory = serde_json::to_value(sipnab::output::inventory::current(None, &[], 0))?;
+    let report = merge(vec![HostResult {
+        name: "edge-a".into(),
+        url: "https://192.0.2.11:8443".into(),
+        addresses: vec!["192.0.2.11".parse()?],
+        answer: Answer::Inventory(inventory),
+    }]);
+    let mut keys = BTreeSet::new();
+    harvest(&serde_json::to_value(&report)?, 6, &mut keys);
+    Ok(keys)
+}
+
+/// Without the `api` feature there is no `sipnab fleet`, and so no key a
+/// fleet recipe could read.
+#[cfg(not(feature = "api"))]
+fn fleet_keys() -> Result<BTreeSet<String>, TestError> {
+    Ok(BTreeSet::new())
+}
+
 /// Every documented `jq` field exists in the output its own block produces.
 #[test]
 fn documented_jq_fields_exist_in_the_output() -> Result<(), TestError> {
@@ -392,9 +427,14 @@ fn documented_jq_fields_exist_in_the_output() -> Result<(), TestError> {
     let dialogs = keys_for(Mode::Dialogs)?;
     let stun = keys_for(Mode::Stun)?;
     let analyze = keys_for(Mode::Analyze)?;
+    let fleet = keys_for(Mode::Fleet)?;
 
     let mut bad = Vec::new();
     for r in &recipes {
+        // A build without `api` has no `sipnab fleet` to check against.
+        if r.mode == Mode::Fleet && !cfg!(feature = "api") {
+            continue;
+        }
         let own;
         let keys = match r.mode {
             Mode::Query(flag) => {
@@ -409,6 +449,7 @@ fn documented_jq_fields_exist_in_the_output() -> Result<(), TestError> {
             Mode::Dialogs => &dialogs,
             Mode::Stun => &stun,
             Mode::Analyze => &analyze,
+            Mode::Fleet => &fleet,
         };
         for f in &r.fields {
             if !keys.contains(f) {
@@ -421,6 +462,7 @@ fn documented_jq_fields_exist_in_the_output() -> Result<(), TestError> {
                         Mode::Dialogs => "--json-dialogs",
                         Mode::Stun => "--json-stun",
                         Mode::Analyze => "--json-analyze",
+                        Mode::Fleet => "sipnab fleet inventory --json",
                     }
                 ));
             }

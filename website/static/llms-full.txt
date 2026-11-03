@@ -6870,7 +6870,7 @@ only.
 | `--api-token-ttl <SECS>` | Lifetime of a minted token. Default `3600`. |
 | `--mint-token` | Sign a token with the first configured key, print it, and exit. Starts no capture and no server. |
 | `--token-id <ID>` | The token's `id` (`jti`), used later for revocation. Defaults to a generated id. |
-| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions`, `admin` or `audio` for the REST API. See **Scope** below. |
+| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions`, `admin`, `audio` or `inventory` for the REST API. See **Scope** below. |
 | `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
 
 **Scope.** Mint each client a token for the routes it needs:
@@ -6882,6 +6882,7 @@ only.
 | `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. It lifts only the bans it placed. | The system that decides to block a source. |
 | `admin` | Everything `actions` reaches, and it also lifts a ban another caller placed. | An operator who must be able to lift any ban. |
 | `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
+| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
 
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
 refuses.
@@ -9876,6 +9877,103 @@ The MCP tool `server_capabilities` returns the same feature set and the same
 `libpcap` block. The second line of `sipnab --version` prints the same
 library banner.
 
+### GET /v1/inventory
+
+What this sipnab process is, for managing many instances as one fleet:
+
+- its build: version, git commit and tag, target and compiled features,
+- SHA-256 of the binary it is running,
+- its configuration, as digests only,
+- its user id and privilege drop, its pid, start time and uptime,
+- its capture interfaces' error and drop counters, its capture and HEP export
+  counters, and the addresses its HEP listener receives from.
+
+It needs a token with scope `inventory`, or `full`. [`sipnab fleet
+inventory`](fleet.md) reads it from every instance in a hosts file.
+
+**curl:**
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_INVENTORY_TOKEN" http://127.0.0.1:8080/v1/inventory | jq .
+```
+
+**Response** (from a run on 2026-11-03 of a development build, with the config path replaced by `/etc/sipnab/sipnab.toml`):
+
+```json
+{
+  "schema_version": 1,
+  "node_name": "edge-a",
+  "build": {
+    "version": "0.5.232",
+    "commit": "29204db7",
+    "tag": "",
+    "dirty": true,
+    "target": "aarch64-unknown-linux-gnu",
+    "features": ["api", "archive", "audio", "g729", "hep", "mcp", "mcp-http", "metrics",
+                 "native", "opus", "plugins", "tls", "tui", "vcon"],
+    "version_line": "0.5.232 (29204db7-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729"
+  },
+  "binary": {
+    "sha256": "3242a3324b1c3ac762ba15d4f2eec3789a995533540b8aee56ec087afdc51ea8",
+    "error": null
+  },
+  "signature": {
+    "state": "unverified",
+    "note": "sipnab does not verify its own binary. Compare binary.sha256 with SHA256SUMS.txt of the release, after `gh attestation verify SHA256SUMS.txt --repo NormB/sipnab`."
+  },
+  "config": {
+    "recorded": true,
+    "source": "/etc/sipnab/sipnab.toml",
+    "shadowed": [],
+    "file_sha256": "703493b6b6bdef18b62090d6452a2bd9fc72de264d4b97822cb0b7763697fca6",
+    "parsed_sha256": "1849a6ee687ec0b1394f2d305198c638bca159e7aa032911156074b8d11f4044",
+    "argv_sha256": "d5c72de2bcf085f7d8ca9884bed30027d7504215d507b04f6be16ecc063194e0",
+    "effective_sha256": "31e67effe25101b07a2c7942f05b83d568816bf81a1769d65ab8396c8e89705a"
+  },
+  "privilege": { "uid": 1000, "root": false, "dropped_to": null },
+  "process": { "pid": 3983974, "started": "2026-11-03T13:26:05Z", "uptime_seconds": 17 },
+  "interfaces": [],
+  "counters": {
+    "capture_packets_total": 852,
+    "capture_sources_refused_total": 0,
+    "capture_backpressure_blocks_total": 0,
+    "hep_export_failures_total": null,
+    "hep_export_dropped_total": null,
+    "hep_export_queue_depth": null
+  },
+  "hep_listener": { "listening": false, "packets_refused": 0, "senders": [] }
+}
+```
+
+**No configuration value is in the answer.**
+
+- `file_sha256` is SHA-256 of the config file's bytes as this run read them.
+- `parsed_sha256` is SHA-256 of the configuration as sipnab parsed it, after
+  `${NAME}` expansion, with every object's keys sorted. Two files that differ
+  only in comments, whitespace, key order or an unknown key give one value.
+- `argv_sha256` is SHA-256 of the command line, without the program path.
+- `effective_sha256` is SHA-256 over `parsed_sha256` and `argv_sha256`. A flag
+  overrides the file, so this is the digest to compare across instances.
+  `sipnab fleet inventory` shows it as `CONFIG`.
+- A secret in the file or on the command line changes a digest, and its value
+  never appears. A secret held in a file the configuration names, such as
+  `--api-signing-key-file`, reaches the digests by its path only.
+
+**`signature.state` is always `unverified`.** A process cannot prove which
+binary it is. Compare `binary.sha256` with the release's `SHA256SUMS.txt`,
+after verifying that file's attestation with `gh attestation verify`.
+sipnab reads `binary.sha256` from `/proc/self/exe` on Linux, so after an upgrade
+replaces the file it still names the binary that is running.
+
+**Every field is the process's own claim.** An attacker who controls a host
+can report anything.
+
+`hep_listener.senders` lists at most `MAX_HEP_PEERS` (256) senders.
+
+`config.recorded` is `false`, and every digest `null`, for a server that did not
+record its configuration at start. The MCP tool `fleet_inventory` returns the
+same fields and values.
+
 ### GET /v1/stats
 
 Aggregate statistics across all dialogs and streams, including PDD percentiles.
@@ -11999,7 +12097,7 @@ it does these things:
 It does for this surface what <https://sipnab.com/api-reference/> does for the
 [REST API](rest-api.md).
 
-sipnab registers 76 MCP tools. That is more than anyone reads in a table. The
+sipnab registers 77 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
 The MCP project maintains Inspector, not sipnab. When a tool
@@ -20217,7 +20315,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--syslog` | -- | off | 0.3.0 | Send alerts to syslog. Config: `[security] alert` |
 | `--mint-token` | -- | off | 0.4.3 | Mint a signed bearer token from the first configured signing key (API or MCP), print it to stdout, and exit (no capture/servers). See [`auth.md`](./auth.md). |
 | `--token-id` | `<ID>` | -- | 0.4.3 | Token id (`jti`) for `--mint-token`, used for revocation. Defaults to a generated id. |
-| `--token-scope` | `<full\|metrics\|read\|actions\|admin\|audio>` | `full` | 0.5.59 | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the tools annotated read-only and refuses every tool that writes or replaces state (`export_capture`, `open_capture`, `shutdown_server`, `tfps_ban` and the rest; `tools/list` marks each one with `readOnlyHint: false`). `actions` reaches everything `full` does plus the actions that change another system, such as TFPS ban and unban, where the server enabled them with [`--allow-action`](#security); a `full` token never reaches an action. A ban belongs to the caller that placed it, so an `actions` token lifts only its own bans; `admin` reaches everything `actions` does and also lifts a ban another caller placed. `audio` reaches the REST API's live call audio routes (`GET /v1/calls/live`, `GET /v1/calls/live/events` and `GET /v1/calls/{call_id}/audio`) and nothing else, and no other scope reaches them. A cross-surface mint fails at mint time, so sipnab refuses `metrics` and `audio` with MCP and `read` with the REST API rather than issuing them and then rejecting them. |
+| `--token-scope` | `<full\|metrics\|read\|actions\|admin\|audio\|inventory>` | `full` | 0.5.59 | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the tools annotated read-only and refuses every tool that writes or replaces state (`export_capture`, `open_capture`, `shutdown_server`, `tfps_ban` and the rest; `tools/list` marks each one with `readOnlyHint: false`). `actions` reaches everything `full` does plus the actions that change another system, such as TFPS ban and unban, where the server enabled them with [`--allow-action`](#security); a `full` token never reaches an action. A ban belongs to the caller that placed it, so an `actions` token lifts only its own bans; `admin` reaches everything `actions` does and also lifts a ban another caller placed. `audio` reaches the REST API's live call audio routes (`GET /v1/calls/live`, `GET /v1/calls/live/events` and `GET /v1/calls/{call_id}/audio`) and nothing else, and no other scope reaches them. `inventory` reaches the REST API's `GET /v1/inventory` and nothing else, for [`sipnab fleet inventory`](fleet.md). A cross-surface mint fails at mint time, so sipnab refuses `metrics`, `audio` and `inventory` with MCP and `read` with the REST API rather than issuing them and then rejecting them. |
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-hep-parse --report` — read HEP datagrams as plain UDP when your config file sets `[capture] hep_parse = true`
@@ -20878,6 +20976,16 @@ each recording the container names by `url`, and captures nothing.
 - `sipnab --vcon-audio-fetch call.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-extra-ca media-ca.pem` — trust that CA as well as the host's bundle
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-ca media-ca.pem` — decrypt the audio of an encrypted vCon from storage whose certificate only that CA issued
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-extra-ca media-ca.pem --vcon-audio-fetch-max-size 1073741824` — the same, trusting the host's bundle too, for a recording up to 1 GiB
+
+## Fleet inventory (`sipnab fleet`)
+
+`sipnab fleet inventory` asks every sipnab instance in a hosts file for its inventory (`GET /v1/inventory`) and prints one row per instance and the findings across them. It opens no capture. [Manage many sipnab instances](fleet.md) is the full how-to.
+
+- `--hosts <FILE>`: the hosts file, one `[[host]]` table per instance with `name`, `url`, `token_file` and an optional `ca_file`.
+- `--json`: print the report as JSON instead of a table.
+- `--timeout <SECS>`: seconds to wait for each instance to connect and answer, 1 to 300. Default `10`.
+
+It exits `0` when every instance answered and there is no finding, `1` when an instance did not answer or there is a finding, and `2` when it cannot use the hosts file.
 
 ## G.729 tables (`sipnab g729`)
 
@@ -25935,6 +26043,55 @@ package. It is part of the `Downloading {url} failed` message.
 install it with `--from`.
 
 **Exit code:** 1.
+
+## Fleet inventory (`sipnab fleet`)
+
+`sipnab fleet inventory` prints these messages.
+[Manage many sipnab instances](fleet.md) describes the command. A problem with
+the hosts file stops the command with exit code 2. The command prints its
+name, the hosts file's path and then the message. A problem with one instance goes in that
+instance's row as `unreachable`, and the command still asks every other
+instance.
+
+### `host '{}' has an empty url`
+
+The `[[host]]` table named in the message has `url = ""`.
+
+**What to do:** Give the instance's REST API URL, such as
+`url = "https://192.0.2.11:8443"`.
+
+**Exit code:** 2.
+
+### `host '{}' is named twice`
+
+Two `[[host]]` tables have the same `name`. The report shows one row per name,
+so a repeated name would hide an instance.
+
+**What to do:** Give each instance its own `name`.
+
+**Exit code:** 2.
+
+### `token_file '{}' does not hold one token on one line`
+
+The instance's token file is empty, or holds whitespace inside the token, such
+as two tokens or a token split over lines. The row shows the message, and the
+file's path in place of the braces. The token itself is never printed.
+
+**What to do:** Put the one token that `sipnab --mint-token --token-scope
+inventory` printed on that instance in the file, and nothing else.
+
+**Exit code:** 1. The other instances are still in the report.
+
+### `the answer is larger than {MAX_ANSWER_BYTES} bytes`
+
+The instance's answer to `GET /v1/inventory` is longer than
+`{MAX_ANSWER_BYTES}`, 4194304 bytes (4 MiB). sipnab stops reading it. An
+inventories in the [fleet how-to](fleet.md)'s run measured under 2 KB each,
+so the URL most likely names something that is not a sipnab REST API.
+
+**What to do:** Check the instance's `url` in the hosts file.
+
+**Exit code:** 1. The other instances are still in the report.
 
 ## Startup, privileges and the process
 
@@ -34476,9 +34633,11 @@ is what comes after that:
 - an agent that has to reach it from somewhere else,
 - one agent holding several capture hosts at once,
 - the hardest of them: following a single call as it crosses an SBC, a proxy
-  and a PBX that each see a different Call-ID.
+  and a PBX that each see a different Call-ID,
+- managing the sipnab instances themselves: which build and configuration
+  each one runs, and which ones do not answer.
 
-These four build on each other in that order. Each one names the SINGLE
+The first four build on each other in that order. Each one names the SINGLE
 sipnab it starts from. So you can stop at whichever answers your question.
 Every scenario assumes you have already done
 [Install sipnab](mcp-deploy.md#install-sipnab-every-server-once).
@@ -35181,6 +35340,367 @@ describes.
 
 ---
 
+## Manage the fleet
+
+Federation and the central collector both answer questions about calls.
+Neither says which build each node runs or which configuration it loaded.
+`sipnab fleet inventory` does. [Manage many sipnab instances](fleet.md) is the
+full how-to.
+
+- **[each node]** Run the REST API (`--api`) and mint a token with
+  `--token-scope inventory`. That token reads `GET /v1/inventory` and nothing
+  else: no dialogs, no messages, no audio.
+- **[controller]** List the nodes in a hosts file and run
+  `sipnab fleet inventory --hosts fleet.toml`. It prints one row per node: the
+  build, the SHA-256 of the binary, the effective configuration digest, the
+  user id and the uptime. It marks a node that did not answer and exits `1`.
+- **[controller]** Include the central collector in the hosts file. The
+  report then names every HEP sender the collector receives from whose
+  address is not in the hosts file, as the finding `unlisted_hep_sender`.
+- **[agent]** An agent connected to one node asks the MCP tool
+  `fleet_inventory`. It returns the same record as `GET /v1/inventory` on
+  that node.
+
+Every field is the node's own claim. `signature.state` is always `unverified`:
+compare `binary.sha256` with the release's attested `SHA256SUMS.txt`, as
+[Check a binary against its release](fleet.md#check-a-binary-against-its-release)
+shows.
+
+---
+
+<!-- source: docs/fleet.md -->
+
+# Manage many sipnab instances
+
+`sipnab fleet inventory` asks every sipnab instance you list for its
+inventory, and prints one table of the fleet. Use it to answer "which build
+and which configuration does each instance run, and which ones are down?"
+before and after an upgrade or a configuration change.
+
+The table shows, for each instance:
+
+- the build it runs, and the SHA-256 of its binary,
+- the digest of its effective configuration: the file it loaded and its
+  command line,
+- the user it runs as, and how long it has been up.
+
+Below the table it names the instances that did not answer, the instances on
+a different build from the rest, and the HEP senders a collector receives from
+that are not in your list. It reports. It changes nothing on any instance.
+
+Some upgrades need every sender and its collector on the same build, such as
+the HEP HMAC version 2 change in
+[Upgrade a fleet that uses HMAC authentication](config-reference.md#upgrade-a-fleet-that-uses-hmac-authentication).
+The report shows which instances are still on the old build.
+
+The commands and output on this page come from a run on 2026-11-03: four
+instances in containers on the network `192.0.2.0/24`, and the controller on
+the host. The instances ran a development build of 0.5.232 with this feature,
+and one ran release 0.5.130.
+
+## How it works
+
+- Each instance serves `GET /v1/inventory` on its REST API (`--api`). See
+  [GET /v1/inventory](rest-api.md#get-v1inventory) for every field.
+- `sipnab fleet inventory` runs on one machine, the controller. It reads a
+  hosts file and asks every instance in it at once. The instances never
+  connect to the controller.
+- Each request carries a bearer token with scope `inventory`. That token reads
+  the inventory and nothing else: no dialogs, no messages, no audio.
+- The answer holds no configuration value and no command-line argument, only
+  their SHA-256 digests.
+- The command reads at most 16 KiB of each answer's status line and headers
+  (`MAX_HEAD_BYTES`) and at most 4 MiB of its body (`MAX_ANSWER_BYTES`). The
+  inventories in this page's run were under 2 KB each.
+
+## Before you start
+
+- **sipnab on each instance.** A build whose `sipnab --version` lists the
+  `api` feature, and that serves `GET /v1/inventory`. An older build answers
+  `404` there, and the report marks it `refused`.
+- **sipnab on the controller.** Any build with the `api` feature. It needs no
+  capture privilege: it opens no capture.
+- **TLS for each instance's API.** A certificate whose subject alternative
+  name is the address or name in the instance's URL, its key readable by the
+  sipnab user only, and the certificate of the issuing CA on the controller.
+  Plain `http://` works too, and sends the token in clear text.
+- **A signing key on each instance**, in a file only the sipnab user can read.
+  [Set up authentication](auth.md) shows how to create one.
+- **Network.** The controller reaches each instance's API port over TCP, 8443
+  in this page's examples. Open that port to the controller's address only.
+  The instances need no route to the controller.
+- **Other systems.** No change. OpenSIPS, Kamailio, Homer and a HEP collector
+  keep their configuration. A collector that runs sipnab joins the list like
+  any other instance.
+
+## Step 1: run each instance with the REST API over TLS
+
+- **[each instance]** Add `--api`, the TLS certificate and key, the signing key
+  and a node name to the instance's command line. This is the instance
+  `edge-a` from the run, which reads a capture file and sends HEP to the
+  collector `hub`:
+
+  ```bash
+  sipnab -N -I /var/lib/sipnab/sample.pcap --config /etc/sipnab/edge-a.toml \
+    --hep-send 192.0.2.10:9060 --hep-auth-mode hmac --hep-auth-file /etc/sipnab/hep.key \
+    --api 192.0.2.11:8443 --api-tls-cert /etc/sipnab/edge-a.crt --api-tls-key /etc/sipnab/edge-a.key \
+    --api-signing-key-file /etc/sipnab/edge-a.signing --node-name edge-a
+  ```
+
+  The collector ran with the same API flags and its HEP listener:
+
+  ```bash
+  sipnab -N --config /etc/sipnab/hub.toml \
+    --hep-listen 192.0.2.10:9060 --hep-auth-mode hmac --hep-auth-file /etc/sipnab/hep.key \
+    --api 192.0.2.10:8443 --api-tls-cert /etc/sipnab/hub.crt --api-tls-key /etc/sipnab/hub.key \
+    --api-signing-key-file /etc/sipnab/hub.signing --node-name hub
+  ```
+
+  Each instance logs `REST API listening on <address>` when its API is up.
+
+## Step 2: mint an inventory token on each instance
+
+- **[each instance]** Mint a token with that instance's signing key:
+
+  ```bash
+  sipnab --mint-token --token-scope inventory --token-id fleet-controller \
+    --api-signing-key-file /etc/sipnab/edge-a.signing --api-token-ttl 2592000
+  ```
+
+  It prints one token, starting `s2.`, and exits. `--api-token-ttl 2592000`
+  makes it valid for 30 days.
+
+- **[controller]** Save each token in its own file, readable by the
+  controller's user only:
+
+  ```bash
+  install -m 600 /dev/null /etc/sipnab/fleet/edge-a.token
+  ```
+
+  Then paste the token into it. sipnab refuses a token file that other users
+  can read.
+
+## Step 3: write the hosts file
+
+- **[controller]** Write `/etc/sipnab/fleet/fleet.toml`, one `[[host]]` table
+  per instance. This is the file from the run:
+
+  ```toml
+  [[host]]
+  name = "hub"
+  url = "https://192.0.2.10:8443"
+  token_file = "/etc/sipnab/fleet/hub.token"
+  ca_file = "/etc/sipnab/fleet/internal-ca.pem"
+
+  [[host]]
+  name = "edge-a"
+  url = "https://192.0.2.11:8443"
+  token_file = "/etc/sipnab/fleet/edge-a.token"
+  ca_file = "/etc/sipnab/fleet/internal-ca.pem"
+
+  [[host]]
+  name = "edge-b"
+  url = "https://192.0.2.12:8443"
+  token_file = "/etc/sipnab/fleet/edge-b.token"
+  ca_file = "/etc/sipnab/fleet/internal-ca.pem"
+  ```
+
+  - `name` is the name the report shows. Each name appears once.
+  - `url` is the instance's REST API, `https://` or `http://`.
+  - `token_file` holds the instance's `inventory` token on one line.
+  - `ca_file` is optional: a PEM CA file to trust instead of the host's CA
+    bundle.
+
+  sipnab refuses an unknown key, an empty name, an empty URL and a name used
+  twice, with exit `2`.
+
+## Step 4: read the fleet
+
+- **[controller]** Run:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml
+  ```
+
+  Output from the run:
+
+  ```text
+  NAME             STATE        VERSION      COMMIT       BINARY       CONFIG          UID   UPTIME_S
+  hub              ok           0.5.232      29204db7     6bba53867ecd ec09522b49b4   1000         54
+  edge-a           ok           0.5.232      29204db7     6bba53867ecd 6a434df0c5e2   1000         40
+  edge-b           ok           0.5.232      29204db7     6bba53867ecd f63dfdce2c9d   1000         39
+  ```
+
+  It exited `0`.
+
+  - `BINARY` and `CONFIG` are the first 12 hex digits of `binary.sha256` and
+    `config.effective_sha256`. The three instances run one binary and three
+    configurations: each has its own config file and node name.
+  - `--json` prints the whole report, with every instance's full inventory.
+  - `--timeout <SECS>` sets how long each instance has to answer. Default `10`.
+
+## Verify
+
+- **Every instance is `ok`, and there is no `finding` line.** That is exit
+  `0`.
+- **Two instances you expect to match show one `CONFIG`.** Two instances with
+  the same `CONFIG` loaded the same configuration values and run the same
+  command line. A different `--node-name` alone gives a different `CONFIG`.
+- **The exit status** says the same for a script:
+
+  | Code | Meaning |
+  |---|---|
+  | `0` | Every instance answered and there is no finding. |
+  | `1` | An instance did not answer, refused the token, or sent an inventory this build cannot read; or there is a finding. |
+  | `2` | sipnab cannot read or use the hosts file. |
+
+## Troubleshoot
+
+Each output below comes from the same run, with one thing changed.
+
+- **`unreachable` and `connection timed out`.** Nothing answered at that
+  address within `--timeout`: the instance is down, the URL names the wrong
+  address or port, or a firewall drops the controller's packets. The other
+  instances are still listed:
+
+  ```text
+  edge-c           unreachable  192.0.2.14:8443: connection timed out
+  ```
+
+  `Connection refused` instead means the host answered and nothing listens on
+  that port: check `--api` on the instance.
+
+- **`unreachable` and `invalid peer certificate: UnknownIssuer`.** The
+  controller does not trust the CA that issued the instance's certificate. Set
+  `ca_file` for that host:
+
+  ```text
+  hub              unreachable  sending: invalid peer certificate: UnknownIssuer
+  ```
+
+- **`refused` with HTTP `401`.** The instance did not accept the token: it was
+  minted with another instance's signing key, it expired, someone revoked it, or
+  its scope is not `inventory`, `full`, `actions` or `admin`. Mint a new one
+  on that instance (step 2). This run gave `edge-b` the hub's token:
+
+  ```text
+  edge-b           refused      the instance answered HTTP 401
+  ```
+
+- **`refused` with HTTP `404`.** The instance runs a build without
+  `GET /v1/inventory`. Upgrade it. Release 0.5.130 answered:
+
+  ```text
+  edge-old         refused      the instance answered HTTP 404
+  ```
+
+  Release 0.5.130 also refuses `--token-scope inventory` at mint time, with
+  `invalid value 'inventory' for '--token-scope <SCOPE>'`.
+
+- **`unreachable` and `can be read or written by other users`.** The token
+  file's mode lets other users read it. Run `chmod 600` on it:
+
+  ```text
+  edge-a           unreachable  token_file '/etc/sipnab/fleet/open.token' can be read or written by other users (mode 0644); chmod 600 it
+  ```
+
+- **A mixed HEP HMAC version.** A sender on 0.5.130 or earlier signs HEP with
+  HMAC version 1, and a collector on 0.5.131 or later drops every packet it
+  sends. In the run, `edge-old` (0.5.130) sent to `hub`. Listed in the hosts
+  file, `edge-old`'s row is `refused` with HTTP `404`, as above. The collector
+  logs `HEP HMAC auth is REFUSING version-1 tokens` once, and counts the
+  dropped packets. Read the count from the JSON report:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml --json \
+    | jq -c '.hosts[] | {name, refused: .inventory.hep_listener.packets_refused, senders: [.inventory.hep_listener.senders[].peer]}'
+  ```
+
+  ```text
+  {"name":"hub","refused":10,"senders":["192.0.2.11","192.0.2.12"]}
+  {"name":"edge-a","refused":0,"senders":[]}
+  {"name":"edge-b","refused":0,"senders":[]}
+  ```
+
+  The hub refused 10 packets, and `192.0.2.13` is not among its senders. The
+  report itself is `ok` when the old sender is not in the hosts file: a
+  refused packet is not a finding. Upgrade the sender, as
+  [Upgrade a fleet that uses HMAC authentication](config-reference.md#upgrade-a-fleet-that-uses-hmac-authentication)
+  describes.
+
+- **`finding unlisted_hep_sender`.** A collector in the list receives HEP
+  from an address that no listed instance's URL resolves to. Add that sender
+  to the hosts file, or find out why it sends. With `edge-b` left out of the
+  file:
+
+  ```text
+  finding unlisted_hep_sender: hub receives HEP from 192.0.2.12, which is no instance in the hosts file
+  ```
+
+  The check compares addresses only. A sender whose packets leave from a
+  different address than its API URL names shows up as unlisted.
+
+- **`incompatible` and a `schema_version`.** The instance answered an
+  inventory format newer than the controller reads. Upgrade the controller's
+  sipnab. No release answers a newer format yet, so this output comes from a
+  test server that answered `schema_version` 2:
+
+  ```text
+  edge-next        incompatible the instance answered inventory schema_version 2; this sipnab reads up to 1
+  ```
+
+## States and findings
+
+**State of each instance:**
+
+| State | Meaning |
+|---|---|
+| `ok` | It answered with an inventory. |
+| `refused` | It answered with an HTTP status other than 200, such as `401` for a wrong, expired or narrower token, or `404` for a build without the inventory. |
+| `unreachable` | No answer: no connection, a timeout, a TLS failure, a token file sipnab would not read, or an answer that is not JSON. |
+| `incompatible` | Its inventory has a `schema_version` newer than this build reads, or none. Upgrade the controller's sipnab. |
+
+**Findings across the fleet:**
+
+| Finding | Meaning |
+|---|---|
+| `version_mismatch` | The instances that answered do not all run the same build. The finding names each build and the instances on it. |
+| `unlisted_hep_sender` | A HEP collector in the list receives from an address that no listed instance's URL resolves to. |
+
+## Check a binary against its release
+
+Every instance reports `signature.state` as `unverified`. A process cannot
+prove which binary it is, and one that someone had tampered with would report
+"verified" too.
+
+- Download `SHA256SUMS.txt` from the release the instance claims, and verify
+  it:
+
+  ```bash
+  gh attestation verify SHA256SUMS.txt --repo NormB/sipnab
+  ```
+
+- Compare the instance's `binary.sha256` with the line for its artifact. On
+  Linux the instance hashes `/proc/self/exe`, so after an upgrade replaces the
+  file the digest still names the binary that is running.
+
+## What it cannot tell you
+
+- Every field is the instance's own claim. An attacker who controls a host can make
+  it report anything.
+- For a secret held in a file, the digests cover its path only. The configuration and
+  the command line name key, token and password files by path, so replacing
+  the contents of such a file, for example rotating the key in
+  `--api-signing-key-file`, changes no digest. A secret given as a value, such
+  as `--api-signing-key` or a `${NAME}` the configuration expands, changes
+  `config.effective_sha256`.
+- It reads only the instances in your hosts file. An instance nobody listed is
+  invisible to it, unless it sends HEP to a listed collector.
+- It changes nothing. Pushing a configuration, upgrading and restarting are not
+  part of it.
+
+---
+
 <!-- source: docs/mcp-tools.md -->
 
 # MCP tool reference
@@ -35237,7 +35757,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | [`media`](mcp-tools-media.md) | 4 | Where a call's media endpoints came from, why a stream has no dialog, the facts under a quality score, and audio export. |
 | [`relay`](mcp-tools-relay.md) | 4 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
 | [`tfps`](mcp-tools-tfps.md) | 7 | The toll-fraud prevention peer (TFPS): what it blocks and logs, and the operator's ban, unban and revert actions. |
-| [`server`](mcp-tools-server.md) | 5 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, and shutdown. |
+| [`server`](mcp-tools-server.md) | 6 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, the fleet inventory record, and shutdown. |
 | [`vcon`](mcp-tools-vcon.md) | 7 | vCon conversation containers, exported, validated and analyzed, one at a time or a directory at once, read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
 | [`tls`](mcp-tools-tls.md) | 3 | Reading SIP inside TLS without keys through kernel uprobes, and which TLS libraries this host runs. |
 
@@ -35311,22 +35831,22 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,316 | 54,624 |
-| signaling | 20 | 22,474 | 58,619 |
-| captures | 11 | 12,723 | 30,211 |
-| security | 6 | 9,954 | 9,954 |
-| media | 4 | 3,480 | 16,048 |
-| relay | 4 | 4,199 | 19,988 |
-| tfps | 7 | 5,563 | 15,947 |
-| server | 5 | 5,394 | 27,452 |
-| vcon | 7 | 10,714 | 33,024 |
-| tls | 3 | 2,850 | 4,943 |
-| full | 76 | 89,667 | 270,810 |
+| core | 9 | 12,308 | 58,240 |
+| signaling | 20 | 22,452 | 66,162 |
+| captures | 11 | 12,709 | 30,189 |
+| security | 6 | 9,944 | 9,944 |
+| media | 4 | 3,478 | 16,042 |
+| relay | 4 | 4,199 | 20,607 |
+| tfps | 7 | 5,717 | 16,101 |
+| server | 6 | 5,972 | 35,126 |
+| vcon | 7 | 10,710 | 34,428 |
+| tls | 3 | 2,899 | 4,990 |
+| full | 77 | 90,388 | 291,829 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.222** on a build with every feature.
+> **Measured on sipnab 0.5.232** (a development build of this change, 2026-11-03) on a build with every feature.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -35366,6 +35886,7 @@ links to its section on the bundle's page.
 | [`find_in_captures`](mcp-tools-captures.md#find_in_captures) | [captures](mcp-tools-captures.md) | Which capture files hold dialogs matching a filter, without opening any of them; a sweep that outlasts its wait returns a job |
 | [`find_in_captures_status`](mcp-tools-captures.md#find_in_captures_status) | [captures](mcp-tools-captures.md) | A `find_in_captures` job's progress, or its result once it finishes |
 | [`find_problems`](mcp-tools-core.md#find_problems) | [core](mcp-tools-core.md) | A page of dialogs matching one or more diagnostic alias names |
+| [`fleet_inventory`](mcp-tools-server.md#fleet_inventory) | [server](mcp-tools-server.md) | What this process is, for a fleet controller: build, binary SHA-256, signature state, configuration digests, privilege, uptime and counters |
 | [`generate_fail2ban_rule`](mcp-tools-security.md#generate_fail2ban_rule) | [security](mcp-tools-security.md) | A fail2ban filter and jail derived from ONE recorded finding, with that finding attached as the evidence |
 | [`generate_repro`](mcp-tools-signaling.md#generate_repro) | [signaling](mcp-tools-signaling.md) | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](mcp-tools-signaling.md#generate_wireshark_filter) | [signaling](mcp-tools-signaling.md) | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
@@ -35637,13 +36158,15 @@ When `source_exhausted` is `false`, `total_matched` counts only what had
 loaded. Repeat the call, or poll `capture_status` until `source_exhausted`
 reads `true`, before treating a count as final.
 
-Twenty-one tools are the exception, because their answer cannot move with
+Twenty-two tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Twelve read something other than the capture store:
+- Thirteen read something other than the capture store:
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;
+  - `fleet_inventory`, which describes the process and returns the same
+    document as the REST inventory route;
   - `vcon_spool_status`, which counts the vCon export spool that the
     forwarder drains;
   - `compare_captures`, which reads two files and never the loaded capture;
@@ -42109,6 +42632,7 @@ the other bundles and finds any tool by name.
 |---|---|---|
 | [`runtime_stats`](#runtime_stats) | `sample_seconds?` | What sipnab is doing and what it costs the host: its own memory, threads, descriptors and CPU; the host's totals and the basis they came from; its share of them and whether that share is load-bearing; per-interface counters; store occupancy against the caps |
 | [`capture_health`](#capture_health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
+| [`fleet_inventory`](#fleet_inventory) | -- | What this process is, for a fleet controller: build, binary SHA-256, signature state, configuration digests, privilege, uptime, interface, capture and HEP counters, and HEP sender addresses |
 | [`hep_senders`](#hep_senders) | `limit?` | Who feeds this run's HEP listener: each sender, its count, when it was last heard and whether it went silent, and every address the listener refused, by reason |
 | [`server_capabilities`](#server_capabilities) | -- | sipnab version, the optional features this binary carries, and the libpcap it runs |
 | [`shutdown_server`](#shutdown_server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
@@ -42526,6 +43050,69 @@ roster. The MCP answer differs in two ways: its keys are in alphabetical order,
 and it adds `source_exhausted` and `source_stopped_early`. `--hep-senders`
 prints the roster at the end of a headless run.
 
+### `fleet_inventory`
+
+What this sipnab process is, for a fleet controller that manages many
+instances: its build, the SHA-256 of its binary, its configuration as digests,
+its privilege, its uptime and its counters. Starts nothing and waits for
+nothing.
+
+**Parameters:** none.
+
+The example ran on 2026-11-03 with a development build, against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap)
+with `--node-name edge-a --no-config`:
+
+```jsonc
+// fleet_inventory {}
+{
+  "schema_version": 1,
+  "node_name": "edge-a",
+  "build": {
+    "version": "0.5.232", "commit": "29204db7", "tag": "", "dirty": true,
+    "target": "aarch64-unknown-linux-gnu",
+    "features": ["api", "archive", "audio", "g729", "hep", "mcp", "mcp-http", "metrics",
+                 "native", "opus", "plugins", "tls", "tui", "vcon"],
+    "version_line": "0.5.232 (29204db7-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729"
+  },
+  "binary": {
+    "sha256": "3242a3324b1c3ac762ba15d4f2eec3789a995533540b8aee56ec087afdc51ea8",
+    "error": null
+  },
+  "signature": {
+    "state": "unverified",
+    "note": "sipnab does not verify its own binary. Compare binary.sha256 with SHA256SUMS.txt of the release, after `gh attestation verify SHA256SUMS.txt --repo NormB/sipnab`."
+  },
+  "config": {
+    "recorded": true, "source": null, "shadowed": [], "file_sha256": null,
+    "parsed_sha256": "afa5e308cbb51683fe7ac0ca79e2a33f601530f33439211dd29586c9db0c7d75",
+    "argv_sha256": "cb86e74e2f7d2f54c2e75c3cb01976de06c9658406112c318c5f290cf606418d",
+    "effective_sha256": "aee2e58c08b314be6538cf9ccf1dfddb992992c4e7336a4d256373b67be72130"
+  },
+  "privilege": { "uid": 1000, "root": false, "dropped_to": null },
+  "process": { "pid": 3985285, "started": "2026-11-03T13:26:30Z", "uptime_seconds": 1 },
+  "interfaces": [],
+  "counters": {
+    "capture_packets_total": 852, "capture_sources_refused_total": 0,
+    "capture_backpressure_blocks_total": 0, "hep_export_failures_total": null,
+    "hep_export_dropped_total": null, "hep_export_queue_depth": null
+  },
+  "hep_listener": { "listening": false, "packets_refused": 0, "senders": [] }
+}
+```
+
+- No configuration value and no command-line argument is in the answer, only
+  their SHA-256 digests. A secret in either changes a digest and never appears.
+- `signature.state` is always `unverified`. Compare `binary.sha256` with the
+  release's attested `SHA256SUMS.txt`.
+- Every field is the process's own claim.
+
+`GET /v1/inventory` returns the same document, from the same builder. Unlike
+most tools, the answer carries no `source_exhausted` or `source_stopped_early`:
+it describes the process, not a result read from the capture. A `read` token
+reaches this tool. [Manage many
+sipnab instances](fleet.md) reads the REST route from every instance.
+
 ### `server_capabilities`
 
 What this binary can do, what this server permits and loaded, the limits it
@@ -42577,7 +43164,7 @@ opt-in flags:
     "evaluate_expectations", "explain_attribution", "explain_response_code",
     "explain_rule", "export_audio", "export_capture", "export_vcon", "fetch_vcon",
     "find_correlated", "find_in_captures", "find_in_captures_status", "find_problems",
-    "generate_fail2ban_rule", "generate_repro", "generate_wireshark_filter",
+    "fleet_inventory", "generate_fail2ban_rule", "generate_repro", "generate_wireshark_filter",
     "get_call_tree", "get_capture_report", "get_dialog", "get_dialog_report",
     "get_message", "get_sdp_timeline", "group_dialogs", "hep_senders", "lint_dialog",
     "list_captures", "list_dialogs", "list_tls_libraries", "media_diagnostics",
@@ -44681,8 +45268,8 @@ lines on stdin, the way a client does.
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content. They
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 76 carry MCP annotations, so a host
-  can decide what to call without asking. Sixty-three are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 77 carry MCP annotations, so a host
+  can decide what to call without asking. Sixty-four are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
 
@@ -45136,7 +45723,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions. There,
 
 ## What the write verbs do
 
-Sixty-three of the 76 tools are `readOnlyHint: true`. These thirteen are not.
+Sixty-four of the 77 tools are `readOnlyHint: true`. These thirteen are not.
 Each declares what kind of change it makes, so a host can decide which need
 confirmation:
 
@@ -54608,7 +55195,7 @@ Distribute the printed token to clients.
 ### Scope: what a token may reach
 
 `--token-scope` sets what a token may reach. It takes `full` (the default),
-`metrics`, `read`, `actions`, `admin` or `audio`:
+`metrics`, `read`, `actions`, `admin`, `audio` or `inventory`:
 
 | Scope | Surface | What it reaches |
 |---|---|---|
@@ -54618,6 +55205,7 @@ Distribute the printed token to clients.
 | `actions` | either | Everything `full` reaches, plus the actions that change another system, such as a TFPS ban, where the server enables them with `--allow-action`. It lifts only the bans it placed. |
 | `admin` | either | Everything `actions` reaches, and it also lifts a ban another caller placed, for example one placed by a token since lost. |
 | `audio` | REST API | The live-audio routes under `/v1/calls/`, and nothing else. No other scope reaches them. |
+| `inventory` | REST API | `GET /v1/inventory`, and nothing else. `full`, `actions` and `admin` reach it too. For [`sipnab fleet inventory`](fleet.md). |
 
 Give each client the narrowest scope that does its job:
 

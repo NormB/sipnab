@@ -4916,6 +4916,55 @@ install it with `--from`.
 
 **Exit code:** 1.
 
+## Fleet inventory (`sipnab fleet`)
+
+`sipnab fleet inventory` prints these messages.
+[Manage many sipnab instances](@/docs/fleet.md) describes the command. A problem with
+the hosts file stops the command with exit code 2. The command prints its
+name, the hosts file's path and then the message. A problem with one instance goes in that
+instance's row as `unreachable`, and the command still asks every other
+instance.
+
+### `host '{}' has an empty url`
+
+The `[[host]]` table named in the message has `url = ""`.
+
+**What to do:** Give the instance's REST API URL, such as
+`url = "https://192.0.2.11:8443"`.
+
+**Exit code:** 2.
+
+### `host '{}' is named twice`
+
+Two `[[host]]` tables have the same `name`. The report shows one row per name,
+so a repeated name would hide an instance.
+
+**What to do:** Give each instance its own `name`.
+
+**Exit code:** 2.
+
+### `token_file '{}' does not hold one token on one line`
+
+The instance's token file is empty, or holds whitespace inside the token, such
+as two tokens or a token split over lines. The row shows the message, and the
+file's path in place of the braces. The token itself is never printed.
+
+**What to do:** Put the one token that `sipnab --mint-token --token-scope
+inventory` printed on that instance in the file, and nothing else.
+
+**Exit code:** 1. The other instances are still in the report.
+
+### `the answer is larger than {MAX_ANSWER_BYTES} bytes`
+
+The instance's answer to `GET /v1/inventory` is longer than
+`{MAX_ANSWER_BYTES}`, 4194304 bytes (4 MiB). sipnab stops reading it. An
+inventories in the [fleet how-to](@/docs/fleet.md)'s run measured under 2 KB each,
+so the URL most likely names something that is not a sipnab REST API.
+
+**What to do:** Check the instance's `url` in the hosts file.
+
+**Exit code:** 1. The other instances are still in the report.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`

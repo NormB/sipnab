@@ -7284,6 +7284,16 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
                 .to_string(),
         );
     }
+    // Nor an inventory route: MCP serves `fleet_inventory` to a `read` token.
+    if cli.token_args.token_scope == crate::auth::SCOPE_INVENTORY
+        && audience == crate::auth::AUDIENCE_MCP
+    {
+        return Err(
+            "--token-scope inventory applies to the REST API only; on the MCP surface \
+             a `read` token reaches the fleet_inventory tool"
+                .to_string(),
+        );
+    }
     // And the REST API has no read-only scope: its routes are one trust
     // domain apart from /metrics, so a `read` API token would verify and then
     // be refused by every scope check — worse than failing at mint time,

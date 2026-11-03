@@ -155,6 +155,26 @@
         ],
         "type": "object"
       },
+      "BinaryInfo": {
+        "description": "The running binary.",
+        "properties": {
+          "error": {
+            "description": "Why it could not be read.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sha256": {
+            "description": "SHA-256 of the running image, lowercase hex; absent when it could\nnot be read.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "BucketDeltaView": {
         "description": "One value's movement between the two captures. `value` is raw.",
         "properties": {
@@ -183,6 +203,52 @@
           "a",
           "b",
           "delta"
+        ],
+        "type": "object"
+      },
+      "BuildInfo": {
+        "description": "The build, as `sipnab --version` reports it.",
+        "properties": {
+          "commit": {
+            "description": "The git commit the build recorded; empty when it recorded none.",
+            "type": "string"
+          },
+          "dirty": {
+            "description": "Whether the working tree had uncommitted changes.",
+            "type": "boolean"
+          },
+          "features": {
+            "description": "The compiled feature set, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tag": {
+            "description": "The git tag at that commit; empty when there was none.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The target triple.",
+            "type": "string"
+          },
+          "version": {
+            "description": "The crate version.",
+            "type": "string"
+          },
+          "version_line": {
+            "description": "The whole `--version` line.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "commit",
+          "tag",
+          "dirty",
+          "target",
+          "features",
+          "version_line"
         ],
         "type": "object"
       },
@@ -2220,6 +2286,62 @@
         ],
         "type": "object"
       },
+      "ConfigInfo": {
+        "description": "The configuration, as digests only.",
+        "properties": {
+          "argv_sha256": {
+            "description": "SHA-256 of the command line, without the program path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_sha256": {
+            "description": "SHA-256 over `parsed_sha256` and `argv_sha256`: what decides the\neffective configuration. The one configuration digest to compare\nacross instances.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file_sha256": {
+            "description": "SHA-256 of the file's bytes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parsed_sha256": {
+            "description": "SHA-256 of the parsed configuration, canonically serialized.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recorded": {
+            "description": "Whether this run recorded its configuration. `false` means every\ndigest below is unknown, not empty.",
+            "type": "boolean"
+          },
+          "shadowed": {
+            "description": "Default-location files present but not read.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "description": "The file read, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "recorded",
+          "shadowed"
+        ],
+        "type": "object"
+      },
       "ContainerFinding": {
         "description": "One schema finding against an invalid container.",
         "properties": {
@@ -2346,6 +2468,64 @@
           "strategy",
           "method",
           "identifier_match"
+        ],
+        "type": "object"
+      },
+      "Counters": {
+        "description": "Capture-path and HEP export counters, cumulative.",
+        "properties": {
+          "capture_backpressure_blocks_total": {
+            "description": "Times the capture path blocked on a full queue; absent with no queue.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "capture_packets_total": {
+            "description": "Packets the capture path received.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "capture_sources_refused_total": {
+            "description": "Capture sources refused past the source-table cap.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hep_export_dropped_total": {
+            "description": "HEP export packets dropped of every kind; absent with no exporter.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hep_export_failures_total": {
+            "description": "HEP export failures of every kind; absent with no exporter.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hep_export_queue_depth": {
+            "description": "HEP export packets queued now; absent with no exporter.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "capture_packets_total",
+          "capture_sources_refused_total"
         ],
         "type": "object"
       },
@@ -3040,6 +3220,61 @@
         ],
         "type": "object"
       },
+      "HepListenerInfo": {
+        "description": "The HEP listener's senders, by address only.",
+        "properties": {
+          "listening": {
+            "description": "Whether this run has a HEP listener.",
+            "type": "boolean"
+          },
+          "packets_refused": {
+            "description": "Packets the listener refused, for any reason.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "senders": {
+            "description": "The senders it tracks, at most [`MAX_HEP_PEERS`].",
+            "items": {
+              "$ref": "#/components/schemas/HepPeer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "listening",
+          "packets_refused",
+          "senders"
+        ],
+        "type": "object"
+      },
+      "HepPeer": {
+        "description": "One HEP sender.",
+        "properties": {
+          "capture_id": {
+            "description": "The capture id it claims; never proven.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "peer": {
+            "description": "The address its packets came from.",
+            "type": "string"
+          },
+          "silent": {
+            "description": "Whether it has been silent past the warning threshold.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "peer",
+          "silent"
+        ],
+        "type": "object"
+      },
       "HepRefusedSourceRow": {
         "description": "One address the listener has been turning away.\n\nKeyed by address alone, never by the capture id a refused packet claimed:\na packet that failed authentication has proven nothing, including its id.",
         "properties": {
@@ -3344,6 +3579,121 @@
         ],
         "type": "object"
       },
+      "InterfaceCounters": {
+        "description": "One capture interface's error and drop counters, read from the interface.",
+        "properties": {
+          "name": {
+            "description": "The interface name.",
+            "type": "string"
+          },
+          "operstate": {
+            "description": "Link state; absent when not readable on this platform.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rx_dropped": {
+            "description": "Packets the kernel dropped on receive.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rx_errors": {
+            "description": "Receive errors.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rx_missed_errors": {
+            "description": "Packets the NIC missed for lack of ring space.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Inventory": {
+        "description": "One inventory record.",
+        "properties": {
+          "binary": {
+            "$ref": "#/components/schemas/BinaryInfo",
+            "description": "The running binary."
+          },
+          "build": {
+            "$ref": "#/components/schemas/BuildInfo",
+            "description": "The build."
+          },
+          "config": {
+            "$ref": "#/components/schemas/ConfigInfo",
+            "description": "The configuration this run loaded, as digests."
+          },
+          "counters": {
+            "$ref": "#/components/schemas/Counters",
+            "description": "Capture-path and HEP export counters."
+          },
+          "hep_listener": {
+            "$ref": "#/components/schemas/HepListenerInfo",
+            "description": "The HEP listener, when this run has one."
+          },
+          "interfaces": {
+            "description": "The capture interfaces and their error and drop counters.",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceCounters"
+            },
+            "type": "array"
+          },
+          "node_name": {
+            "description": "The node name this process reports (`--node-name`,\n`[capture] node_name`, else the host name).",
+            "type": "string"
+          },
+          "privilege": {
+            "$ref": "#/components/schemas/PrivilegeInfo",
+            "description": "The privilege the process holds."
+          },
+          "process": {
+            "$ref": "#/components/schemas/ProcessInfo",
+            "description": "The process."
+          },
+          "schema_version": {
+            "description": "Wire-format version of this envelope, [`SCHEMA_VERSION`].",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signature": {
+            "$ref": "#/components/schemas/SignatureInfo",
+            "description": "What this process can say about its release signature."
+          }
+        },
+        "required": [
+          "schema_version",
+          "node_name",
+          "build",
+          "binary",
+          "signature",
+          "config",
+          "privilege",
+          "process",
+          "interfaces",
+          "counters",
+          "hep_listener"
+        ],
+        "type": "object"
+      },
       "LadderRow": {
         "description": "One message of a dialog's ladder.",
         "properties": {
@@ -3612,6 +3962,35 @@
         ],
         "type": "object"
       },
+      "PrivilegeInfo": {
+        "description": "The privilege the process holds.",
+        "properties": {
+          "dropped_to": {
+            "description": "The user a privilege drop switched to; absent when none happened.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root": {
+            "description": "Whether that is root.",
+            "type": "boolean"
+          },
+          "uid": {
+            "description": "The user id the process runs as.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      },
       "Problem": {
         "description": "An RFC 9457 `application/problem+json` body: what every 4xx and 5xx\ncarries.\n\nSerialized by [`super::Problem`]'s `IntoResponse`, so this is the wire\ntype itself rather than a description of one.",
         "properties": {
@@ -3644,6 +4023,35 @@
           "type",
           "title",
           "status"
+        ],
+        "type": "object"
+      },
+      "ProcessInfo": {
+        "description": "The process.",
+        "properties": {
+          "pid": {
+            "description": "The process id.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started": {
+            "description": "When the configuration was recorded, RFC 3339; absent when it was\nnot.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uptime_seconds": {
+            "description": "Seconds this process has been serving.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "uptime_seconds"
         ],
         "type": "object"
       },
@@ -4910,6 +5318,24 @@
           "seen",
           "unestablished",
           "detail"
+        ],
+        "type": "object"
+      },
+      "SignatureInfo": {
+        "description": "The release signature, as far as the process can speak to it.",
+        "properties": {
+          "note": {
+            "description": "How to verify the binary.",
+            "type": "string"
+          },
+          "state": {
+            "description": "Always [`SIGNATURE_STATE`].",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "note"
         ],
         "type": "object"
       },
@@ -8522,6 +8948,58 @@
         "summary": "`GET /v1/hep/senders` — who is feeding this run's HEP listener, who went\nsilent, and who it is turning away.",
         "tags": [
           "capture"
+        ]
+      }
+    },
+    "/v1/inventory": {
+      "get": {
+        "description": "What this sipnab process is, for managing many instances as one fleet: the build (version, git commit and tag, dirty flag, target, compiled features, the `--version` line), SHA-256 of the running binary, the signature state, the configuration as digests only, the user id and privilege drop, pid, start time and uptime, the capture interfaces' error and drop counters, capture and HEP export counters, and the HEP listener's sender addresses.\n\nNo configuration value and no command-line argument is in the answer, only their SHA-256 digests, so a secret in either changes a digest and never appears. `signature.state` is always `unverified`: compare `binary.sha256` with the release's attested `SHA256SUMS.txt`. Every field is the process's own claim.\n\nReached by a token with scope `inventory`, or `full` and the broader scopes. The MCP tool `fleet_inventory` returns the same fields and values.",
+        "operationId": "get_inventory",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Inventory"
+                }
+              }
+            },
+            "description": "The inventory record."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The task that builds the record failed."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "summary": "Fleet inventory of this process",
+        "tags": [
+          "operations"
         ]
       }
     },

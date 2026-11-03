@@ -313,6 +313,13 @@ fn classify(cmd: &str) -> Result<Plan, TestError> {
     if g729_command.is_match(cmd) {
         return Ok(Plan::SideEffects);
     }
+    // `sipnab fleet inventory` connects to every instance its hosts file
+    // names, on other hosts. `tests/fleet_inventory_test.rs` runs it against
+    // instances of its own.
+    let fleet_command = regex::Regex::new(r"(^|\s)sipnab\s+fleet(\s|$)")?;
+    if fleet_command.is_match(cmd) {
+        return Ok(Plan::SideEffects);
+    }
     // `$(…)`, `$VAR`, or a line that opens a loop: the shell is doing the work.
     let shell_var = regex::Regex::new(r"\$[A-Za-z_(]")?;
     // Process substitution, `<(…)`, and a numbered redirection, `3< file`, are
@@ -1604,6 +1611,11 @@ fn privilege_escalation_is_never_run_but_printing_a_filter_is() -> Result<(), Te
             "{cmd:?} would be RUN by this gate, and it acts on the host"
         );
     }
+    assert_eq!(
+        classify("sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml")?,
+        Plan::SideEffects,
+        "sipnab fleet connects to other hosts and is never run by this gate"
+    );
     // An ordinary read beside them is not swept up.
     assert_eq!(classify("sipnab -N -I capture.pcap --report")?, Plan::Reads);
     assert_eq!(

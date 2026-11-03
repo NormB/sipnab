@@ -2395,7 +2395,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--syslog` | -- | off | 0.3.0 | Send alerts to syslog. Config: `[security] alert` |
 | `--mint-token` | -- | off | 0.4.3 | Mint a signed bearer token from the first configured signing key (API or MCP), print it to stdout, and exit (no capture/servers). See [`auth.md`](./auth.md). |
 | `--token-id` | `<ID>` | -- | 0.4.3 | Token id (`jti`) for `--mint-token`, used for revocation. Defaults to a generated id. |
-| `--token-scope` | `<full\|metrics\|read\|actions\|admin\|audio>` | `full` | 0.5.59 | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the tools annotated read-only and refuses every tool that writes or replaces state (`export_capture`, `open_capture`, `shutdown_server`, `tfps_ban` and the rest; `tools/list` marks each one with `readOnlyHint: false`). `actions` reaches everything `full` does plus the actions that change another system, such as TFPS ban and unban, where the server enabled them with [`--allow-action`](#security); a `full` token never reaches an action. A ban belongs to the caller that placed it, so an `actions` token lifts only its own bans; `admin` reaches everything `actions` does and also lifts a ban another caller placed. `audio` reaches the REST API's live call audio routes (`GET /v1/calls/live`, `GET /v1/calls/live/events` and `GET /v1/calls/{call_id}/audio`) and nothing else, and no other scope reaches them. A cross-surface mint fails at mint time, so sipnab refuses `metrics` and `audio` with MCP and `read` with the REST API rather than issuing them and then rejecting them. |
+| `--token-scope` | `<full\|metrics\|read\|actions\|admin\|audio\|inventory>` | `full` | 0.5.59 | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the tools annotated read-only and refuses every tool that writes or replaces state (`export_capture`, `open_capture`, `shutdown_server`, `tfps_ban` and the rest; `tools/list` marks each one with `readOnlyHint: false`). `actions` reaches everything `full` does plus the actions that change another system, such as TFPS ban and unban, where the server enabled them with [`--allow-action`](#security); a `full` token never reaches an action. A ban belongs to the caller that placed it, so an `actions` token lifts only its own bans; `admin` reaches everything `actions` does and also lifts a ban another caller placed. `audio` reaches the REST API's live call audio routes (`GET /v1/calls/live`, `GET /v1/calls/live/events` and `GET /v1/calls/{call_id}/audio`) and nothing else, and no other scope reaches them. `inventory` reaches the REST API's `GET /v1/inventory` and nothing else, for [`sipnab fleet inventory`](fleet.md). A cross-surface mint fails at mint time, so sipnab refuses `metrics`, `audio` and `inventory` with MCP and `read` with the REST API rather than issuing them and then rejecting them. |
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-hep-parse --report` — read HEP datagrams as plain UDP when your config file sets `[capture] hep_parse = true`
@@ -3056,6 +3056,16 @@ each recording the container names by `url`, and captures nothing.
 - `sipnab --vcon-audio-fetch call.vcon.json --vcon-audio-fetch-out audio --vcon-audio-fetch-extra-ca media-ca.pem` — trust that CA as well as the host's bundle
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-ca media-ca.pem` — decrypt the audio of an encrypted vCon from storage whose certificate only that CA issued
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-extra-ca media-ca.pem --vcon-audio-fetch-max-size 1073741824` — the same, trusting the host's bundle too, for a recording up to 1 GiB
+
+## Fleet inventory (`sipnab fleet`)
+
+`sipnab fleet inventory` asks every sipnab instance in a hosts file for its inventory (`GET /v1/inventory`) and prints one row per instance and the findings across them. It opens no capture. [Manage many sipnab instances](fleet.md) is the full how-to.
+
+- `--hosts <FILE>`: the hosts file, one `[[host]]` table per instance with `name`, `url`, `token_file` and an optional `ca_file`.
+- `--json`: print the report as JSON instead of a table.
+- `--timeout <SECS>`: seconds to wait for each instance to connect and answer, 1 to 300. Default `10`.
+
+It exits `0` when every instance answered and there is no finding, `1` when an instance did not answer or there is a finding, and `2` when it cannot use the hosts file.
 
 ## G.729 tables (`sipnab g729`)
 

@@ -1578,7 +1578,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // the site alone; docs/plugins.md +2, docs/README.md +1, docs/examples.md
     // +1, docs/fail2ban-sipnab.md +1 and docs/library.md +1. Counted per page
     // against origin/main ffd06bfb1; every other page held its count.
-    const EXPECTED_WIKI_LINKS: usize = 2079;
+    // 2079 -> 2097 (the fleet inventory): docs/fleet.md +4, its new how-to;
+    // README.md, auth.md +1 each and cli-reference.md, errors.md,
+    // mcp-estate.md, mcp-tools-server.md, mcp-tools.md and rest-api.md +2
+    // each, links to fleet.md and its sections or, in mcp-tools.md, to the
+    // new tool's section. Counted per page against origin/main.
+    const EXPECTED_WIKI_LINKS: usize = 2097;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2835,7 +2840,8 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // operator-guide-notes.md.
     // 99 -> 100: docs/integrations.md, reached through the How-to list in
     // docs/README.md.
-    const EXPECTED_DOCS_PAGES: usize = 100;
+    // 100 -> 101: docs/fleet.md, reached from docs/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 101;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

@@ -3793,6 +3793,20 @@ pub fn parse_keycode(s: &str) -> Option<crossterm::event::KeyCode> {
     }
 }
 
+/// The text of the config file at `path`.
+///
+/// One reader for every load, so the text a run records is the text it
+/// parsed.
+///
+/// # Errors
+/// `crate::Error::ConfigRead` when `path` cannot be read.
+fn read_config_text(path: &Path) -> Result<String, crate::Error> {
+    std::fs::read_to_string(path).map_err(|e| crate::Error::ConfigRead {
+        path: path.display().to_string(),
+        source: e,
+    })
+}
+
 /// The path from which a config was loaded.
 #[derive(Debug, Clone)]
 pub struct LoadedConfig {
@@ -3804,6 +3818,10 @@ pub struct LoadedConfig {
     /// an earlier one in the search order was. Empty for `--config`,
     /// `$SIPNAB_CONFIG` and `--no-config`, which are choices.
     pub shadowed: Vec<PathBuf>,
+    /// The text of `source` exactly as it was read, so a digest of it
+    /// describes the bytes this run parsed and not a later edit of the file.
+    /// `None` when no file was read.
+    pub file_text: Option<String>,
 }
 
 impl LoadedConfig {
@@ -3813,6 +3831,7 @@ impl LoadedConfig {
             config: Config::default(),
             source: None,
             shadowed: Vec::new(),
+            file_text: None,
         }
     }
 }
@@ -4031,7 +4050,7 @@ impl Config {
             tracing::debug!("No config file found, using defaults");
             return Ok(LoadedConfig::defaults());
         };
-        let config = Self::load_file(&p)?;
+        let (config, text) = Self::load_file(&p)?;
         if !shadowed.is_empty() {
             tracing::warn!("{}", shadowing_note(&p, &shadowed));
         }
@@ -4039,6 +4058,7 @@ impl Config {
             config,
             source: Some(p),
             shadowed,
+            file_text: Some(text),
         })
     }
 
@@ -4048,11 +4068,12 @@ impl Config {
     /// # Errors
     /// As for `load_file`.
     fn load_unshadowed(p: PathBuf) -> Result<LoadedConfig, crate::Error> {
-        let config = Self::load_file(&p)?;
+        let (config, text) = Self::load_file(&p)?;
         Ok(LoadedConfig {
             config,
             source: Some(p),
             shadowed: Vec::new(),
+            file_text: Some(text),
         })
     }
 
@@ -4093,8 +4114,11 @@ impl Config {
     /// # Side effects
     /// Reads `path` from the filesystem; unknown keys are logged as
     /// warnings via `parse_toml_with_env`.
-    fn load_file(path: &Path) -> Result<Config, crate::Error> {
-        Self::load_file_with_env(path, &|name| std::env::var(name).ok())
+    fn load_file(path: &Path) -> Result<(Config, String), crate::Error> {
+        let content = read_config_text(path)?;
+        let config =
+            Self::parse_toml_with_env(&content, Some(path), &|name| std::env::var(name).ok())?;
+        Ok((config, content))
     }
 
     /// `load_file`, with the environment supplied rather than read.
@@ -4124,11 +4148,7 @@ impl Config {
         path: &Path,
         lookup: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Config, crate::Error> {
-        let content = std::fs::read_to_string(path).map_err(|e| crate::Error::ConfigRead {
-            path: path.display().to_string(),
-            source: e,
-        })?;
-
+        let content = read_config_text(path)?;
         Self::parse_toml_with_env(&content, Some(path), lookup)
     }
 
@@ -5108,6 +5128,27 @@ filter = "/"
         let loaded = Config::load(Some(path.to_str().ok_or("utf-8 path")?), true)?;
         assert_eq!(loaded.source, None);
         assert_eq!(loaded.config, Config::default());
+        Ok(())
+    }
+
+    /// Every way of finding a file records the text it parsed, byte for
+    /// byte, and reading no file records none. The fleet inventory's file
+    /// digest is taken over this text, so it must be what was parsed.
+    #[test]
+    fn every_loaded_file_records_the_text_it_parsed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let body = "# comment\n[capture]\ndevice = \"lo\"\n";
+        let path = dir.path().join("sipnab.toml");
+        std::fs::write(&path, body)?;
+        let explicit = Config::load(Some(path.to_str().ok_or("utf-8 path")?), false)?;
+        assert_eq!(explicit.file_text.as_deref(), Some(body), "--config");
+        let env = Config::load_from_env(Some(path.display().to_string()))?
+            .ok_or("an existing file is loaded")?;
+        assert_eq!(env.file_text.as_deref(), Some(body), "$SIPNAB_CONFIG");
+        let default = Config::load_default_location(std::slice::from_ref(&path))?;
+        assert_eq!(default.file_text.as_deref(), Some(body), "default location");
+        let none = Config::load(None, true)?;
+        assert_eq!(none.file_text, None, "--no-config");
         Ok(())
     }
 
