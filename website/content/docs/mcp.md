@@ -433,6 +433,57 @@ Invariant "Operator notes are output, never input" in
 [the invariants page](https://github.com/NormB/sipnab/blob/main/docs/internals/invariants.md#operator-notes-are-output-never-input)
 states the rule and why it holds.
 
+## Read resources and run prompts
+
+Besides tools, the server offers two other MCP primitives. A client that
+supports them shows them by name. They need no flag beyond `--mcp`.
+
+- **Resources** are documents the client reads by URI: reference pages, one
+  call's live state, one call's vCon. `resources/list` names the fixed ones,
+  and `resources/templates/list` the patterns, such as
+  `sipnab://live/dialogs/{call_id}`. `completion/complete` fills in a
+  template's argument from what the capture holds.
+- **Prompts** are procedures an agent follows, each naming the tools
+  it calls in order. `prompts/list` names them, and `prompts/get` returns the
+  text.
+
+Over the stdio wire, these lines ask for each list, complete a Call-ID and
+read one call:
+
+```sh
+# Run all of these, in order.
+{ printf '%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"doc","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"prompts/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"resources/list"}' \
+  '{"jsonrpc":"2.0","id":4,"method":"resources/templates/list"}' \
+  '{"jsonrpc":"2.0","id":5,"method":"completion/complete","params":{"ref":{"type":"ref/resource","uri":"sipnab://live/dialogs/{call_id}"},"argument":{"name":"call_id","value":"1-19"}}}' \
+  '{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"sipnab://live/dialogs/1-1966@10.0.2.20"}}'
+  sleep 3; } | sipnab -N --mcp -I tests/pcap-samples/sip-rtp-g711.pcap --quiet > mcp.out
+```
+
+Against the sample capture, the answers named:
+
+| `id` | Answer |
+|---|---|
+| 2 | prompts `triage-outage`, `carrier-escalation`, `codec-interop-audit`, `post-change-verification`, `vcon-handoff` |
+| 3 | resources `sipnab://reference/filter-dsl`, `sipnab://reference/sip-response-codes`, `sipnab://reference/mos-and-codecs`, `sipnab://live/dialogs` |
+| 4 | templates `sipnab://live/dialogs/{call_id}`, `sipnab://lint/{rule_id}`, `sipnab://filter/{alias}`, `sipnab://reference/{topic}`, `sipnab://schema/{tool}`, `sipnab://vcon/{call_id}` |
+| 5 | `{"completion": {"values": ["1-1966@10.0.2.20", "1-1968@10.0.2.20"], "total": 2, "hasMore": false}}` |
+| 6 | the call's live state, as JSON text in `contents[0].text` |
+
+[The prompts](@/docs/mcp-tools.md#prompts) lists what each prompt is for, and
+[Resources](@/docs/mcp-protocol.md#resources) defines each URI.
+[Export a call as a vCon](@/docs/vcon.md) covers the export the `vcon-handoff` prompt drives.
+
+When it does not work:
+
+- A prompt is missing from `prompts/list`: the server did not load a bundle
+  one of its tools is in. `prompts/get` for it names the bundles to add.
+- `resources/read` answers `call_id '<id>' not found`, with `reason`
+  `not_found`: the capture holds no such call. Complete the Call-ID first.
+
 ## Where to go next
 
 | You want to | Page |

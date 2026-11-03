@@ -44,6 +44,21 @@ That run predates the RTCP form described in the sipnab as a source for Homer
 step: sipnab 0.5.199 sent RTCP without the call's Call-ID, and Homer stored
 none of it.
 
+On 2026-11-03 the sipnab as a source for Homer step ran again, with sipnab
+0.5.232 built from source, on Ubuntu 24.04.5 (aarch64, kernel 6.8.12) with
+Docker 29.9.2:
+
+- Homer was the stack from [Start Homer](homer.md#start-homer), unchanged:
+  heplify-server 1.60.9, homer-app 1.5.21 and PostgreSQL 17.11.
+- No SIP server or SIPp ran. sipnab captured the loopback interface while
+  `tcpreplay` replayed [`tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap), a call
+  with SDP and RTCP, and sent HEP to heplify-server on the Docker bridge
+  address.
+- Homer stored the call's 13 SIP messages under capture id 2002, and 7 RTCP
+  reports in `hep_proto_5_default` with the call's Call-ID as their `sid`.
+- The sipnab as a second receiver step did not run again: it needs a SIP
+  server sending HEP to two places.
+
 On both systems, causing the first fault under
 [When something does not work](#when-something-does-not-work) produced what
 it describes. The second needs a firewall between two machines, and did not
@@ -243,6 +258,23 @@ The test call gave 13 messages under capture id 101 and 7 under 2002.
   That is the caller's leg.
 - sipnab saw the call's audio there too, 246 RTP packets each way, and
   forwarded none of it.
+
+**Find the call's RTCP.** heplify-server stores RTCP in its own table, under
+the call's Call-ID:
+
+```bash
+# Run all of these, in order.
+# On 192.0.2.10:
+cd /opt/homer
+docker compose exec -T db psql -U root -d homer_data -c \
+  "select protocol_header->>'captureId' as capture_id, count(*)
+     from hep_proto_5_default where sid = '$CALL' group by 1"
+```
+
+The SIPp call above sends no RTCP, so this finds no row for it. For a call
+between phones that send RTCP it counts the reports sipnab forwarded. The
+2026-11-03 run under [Tested on](#tested-on), a replayed call with RTCP,
+counted 7 under capture id 2002.
 
 HEP over UDP carries no authentication of its own. heplify-server accepts it
 from anyone who can reach port 9060. So open that port only to:

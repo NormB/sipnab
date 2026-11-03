@@ -83,6 +83,34 @@ The process stays alive serving the API until you press Ctrl-C.
 curl -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs
 ```
 
+### Check that it answers
+
+`/health` needs no credential. Any other route needs the key:
+
+```bash
+# Run all of these, in order.
+curl -s http://127.0.0.1:8080/health; echo
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs | jq -c '{total, first: .dialogs[0].call_id}'
+```
+
+Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), the two calls print:
+
+```text
+ok
+{"total":2,"first":"1-1966@10.0.2.20"}
+```
+
+### When it does not answer
+
+| What you see | Cause and fix |
+|---|---|
+| `curl` exits `7`, `Failed to connect` | Nothing listens there. sipnab is not running, or it stopped at startup: read its standard error. |
+| `{"status":401,"title":"Unauthorized","type":"https://sipnab.com/problems/unauthorized"}` | The request carries no key, or not the one sipnab holds. Under `sudo`, pass the variable with `--preserve-env=SIPNAB_API_KEY`. |
+| `403` with `Forbidden: Host header is not allowed: <name>. If clients reach this server by that name, start sipnab with --api-allowed-host <name>.` | The client reaches the server by a name sipnab was not given. Add `--api-allowed-host <name>` ([Which `Host` names the API answers](#which-host-names-the-api-answers)). |
+| sipnab prints `server error: failed to bind API to 127.0.0.1:8080: Address already in use (os error 98)` and exits `1` | Another program holds the port. Choose another port for `--api`. |
+| sipnab prints `server error: REST API refuses to start: --api 0.0.0.0:8080 is non-loopback but no --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was supplied. Bind 127.0.0.1, or configure authentication.` and exits `2` | A routable bind needs a credential. Set `SIPNAB_API_KEY`, or a signing key ([Set up authentication](auth.md)). |
+| `503` | Over the per-address rate or the in-flight cap, whatever the credential ([Bind address & connection limits](#bind-address--connection-limits)). |
+
 > **More client code and integrations:**
 >
 > - For ready-to-adapt clients in several languages, read [Call the REST API from code](https://sipnab.com/docs/api-clients/).
@@ -1853,6 +1881,9 @@ apart:
 ### POST /v1/persistence
 
 Stop writing content, or start again up to what the command line allowed.
+[Stop writing containers partway through a run](vcon.md#stop-writing-containers-partway-through-a-run)
+walks through it on a live run, and says what happens to the calls that end
+while writing is off.
 
 ```bash
 curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" \

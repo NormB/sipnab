@@ -45,7 +45,7 @@ the one most people use the question dissolves:
 | Setup | What is running | How it stops today |
 |---|---|---|
 | **SSH-launched stdio** | sipnab is a child of your SSH session | **It already exits.** End the agent session and the process is gone |
-| Persistent HTTP service | A long-lived service on the server | `systemctl stop sipnab-mcp`, or `ssh server pkill sipnab` |
+| Persistent HTTP service | A long-lived service on the server | `systemctl stop sipnab-mcp`, or `ssh server sudo systemctl stop sipnab-mcp` |
 | Local stdio | A child of your local agent | Ends with the session |
 
 So if you used the SSH recipe, closing Claude Code stops it. `claude mcp remove

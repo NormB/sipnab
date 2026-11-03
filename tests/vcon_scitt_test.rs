@@ -437,7 +437,7 @@ fn open(bytes: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Statement), TestError> {
 ///
 /// The protected header carries what
 /// [section 6 of draft-ietf-scitt-architecture-22](https://datatracker.ietf.org/doc/html/draft-ietf-scitt-architecture-22#section-6)
-/// requires: `alg`, the CWT Claims (label 15) with `iss` (1) and `sub` (2),
+/// requires: `alg`, the CWT Claims (label 15, registered by RFC 9597) with `iss` (1) and `sub` (2),
 /// and, with X.509, `x5chain` (33) in the protected header.
 #[test]
 fn a_delivery_registers_created_and_sent() -> Result<(), TestError> {

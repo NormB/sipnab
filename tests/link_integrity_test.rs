@@ -1551,7 +1551,34 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // cli-reference.md +1 (the `--hep-listen` row) and config-reference.md +1
     // (the `th_callid_secret_file` row). Counted per page against origin/main
     // e019a2d55: every other changed page held its count.
-    const EXPECTED_WIKI_LINKS: usize = 2020;
+    // 2020 -> 2027 (REST and authentication how-to steps): docs/README.md +2,
+    // the How-to entry for the REST API and API TLS; docs/rest-api.md +3, the
+    // failure table linking the Host, auth and limits sections; and
+    // docs/tfps-sipnab.md +2, linking its own "Tested on" and "Check that
+    // TFPS answers in JSON". Counted per page against origin/main ffd06bfb1;
+    // every other page held its count.
+    // 2027 -> 2039 (vCon how-to steps): docs/vcon.md +5, docs/vcon-sipnab.md
+    // +4, docs/examples.md +1, docs/rest-api.md +1 and docs/vcon-store.md +1,
+    // each a link to a new vCon task section or to the page that explains
+    // what the step relies on. Counted per page against origin/main
+    // ffd06bfb1; every other page held its count.
+    // 2039 -> 2055 (MCP how-to steps): docs/examples.md +11, the new recipe 68
+    // and its index row linking each tool it runs; docs/mcp-deploy.md +2 and
+    // docs/mcp.md +3, linking the bundle, audit, prompt and resource
+    // references. Counted per page against origin/main ffd06bfb1; every other
+    // page held its count.
+    // 2055 -> 2062 (Prometheus and Homer how-to steps):
+    // docs/prometheus-sipnab.md +5: the remote-scrape section links Metrics
+    // TLS and Scrape sipnab, and its Tested on links Start Prometheus and
+    // Grafana, Place a call and the remote-scrape section; docs/homer-sipnab.md +2,
+    // linking Start Homer and its own Tested on. Counted per page against
+    // origin/main ffd06bfb1; every other page held its count.
+    // 2062 -> 2079 (event hooks, plugins and library how-to steps):
+    // docs/integrations.md +11, a new page in docs/ that was hand-written for
+    // the site alone; docs/plugins.md +2, docs/README.md +1, docs/examples.md
+    // +1, docs/fail2ban-sipnab.md +1 and docs/library.md +1. Counted per page
+    // against origin/main ffd06bfb1; every other page held its count.
+    const EXPECTED_WIKI_LINKS: usize = 2079;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2806,7 +2833,9 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // through docs/internals/README.md: code-map.md, encapsulation-decoding.md,
     // lint-rules.md, mcp.md, metrics-and-output-notes.md and
     // operator-guide-notes.md.
-    const EXPECTED_DOCS_PAGES: usize = 99;
+    // 99 -> 100: docs/integrations.md, reached through the How-to list in
+    // docs/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 100;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

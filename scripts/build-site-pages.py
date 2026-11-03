@@ -825,6 +825,20 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "a sandboxed WebAssembly plugin can and cannot do, what trusting one "
         "costs you, and a worked example from crate to finding.",
     ),
+    # Hand-written for the site alone until 0.5.232, so docs/ and the wiki
+    # had no page for the event hooks and alert channels. docs/ is now the
+    # source; the site URL, /docs/integrations/, stays, because the homepage
+    # links its HEP section.
+    (
+        "docs/integrations.md",
+        "integrations.md",
+        "Run commands and send alerts on sipnab's events",
+        "Connect sipnab to Homer, fail2ban, syslog and your own scripts",
+        13,
+        "Run your own command when a call changes state or its audio quality "
+        "drops, send security alerts to syslog, JSON or a command, and feed "
+        "fail2ban, each with the output it produced.",
+    ),
     (
         "docs/tls-capture.md",
         "tls-capture.md",

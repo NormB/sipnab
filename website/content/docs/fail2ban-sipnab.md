@@ -90,6 +90,21 @@ command in the table in "Operate it".
   - Debian 13's `iptables` package is 1.8.11 and reports `(nf_tables)`.
 - A capture on both showed the answer `--kill-scanner` sends.
 
+On 2026-11-03 the filter and the jail ran again against sipnab 0.5.232, built
+from source, without the rest of the page:
+
+- in a Debian 13 container on an aarch64 host, with fail2ban 1.1.0 and
+  nftables from Debian's packages, and the `contrib/fail2ban` files fetched
+  at the `v0.5.232` tag as [Install sipnab's filter and jail](#install-sipnab-s-filter-and-jail)
+  does;
+- sipnab read [`tests/fixtures/sip-scanner-and-register-flood.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/sip-scanner-and-register-flood.pcap) with
+  `--kill-scanner --fail2ban` and appended its lines to `/var/log/sipnab.log`.
+
+After four `scanner_detected src=203.0.113.42` lines the jail counted
+`Total failed: 4` and banned nobody. The fifth banned `203.0.113.42`, and
+nftables held the set `addr-set-sipnab`. No SIP server, phone or network
+namespace took part.
+
 ## Install sipnab
 
 ```bash

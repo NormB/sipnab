@@ -75,6 +75,11 @@ Each answers one "how do I" question and assumes you already know what you want.
 - **[Run MCP across an estate](mcp-estate.md)**: several SIP servers feeding
   one capture host, agents outside the network, and one call followed across
   an SBC, a proxy and a PBX.
+- **[Query sipnab over the REST API](rest-api.md#getting-started)**: start
+  the API with a key, check that it answers, and read what each refusal
+  means. [API TLS](rest-api.md#api-tls) serves it over HTTPS, and
+  [Call the REST API from code](https://sipnab.com/docs/api-clients/) has
+  clients in Python, TypeScript, Rust and Go, and curl one-liners.
 - **[Set up authentication](auth.md)**: signed bearer tokens for the API and
   MCP, with lifetimes, key rotation and revocation.
 - **[Export a call as a vCon](vcon.md)**: write one observed dialog as a
@@ -141,6 +146,9 @@ Each answers one "how do I" question and assumes you already know what you want.
   OpenSIPS's or Kamailio's statistics, stored and graphed. No sipnab involved.
 - **[Add sipnab's metrics to Prometheus](prometheus-sipnab.md)**: sipnab's call
   and media series beside the proxy's, with sipnab's dashboard.
+- **[Run commands and send alerts on sipnab's events](integrations.md)**: a
+  script of yours on each call or quality event, security alerts to syslog,
+  JSON or a command, and fail2ban.
 - **[Write a WASM plugin](plugins.md)**: add your own detection to sipnab's
   diagnosis without forking it.
 - **[Recolor the TUI](theme-guide.md)**: colors and preset palettes.

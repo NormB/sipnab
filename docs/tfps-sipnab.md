@@ -58,6 +58,11 @@ sipnab reads `tfps_ctl`'s answers as JSON. It asks with `--json`.
 - That option is on TFPS's master branch, merged 2026-09-18 as
   [`984577dc`](https://github.com/sippulse/tfps/commit/984577dc).
 - It is in no release yet. v0.2.1 answers `unknown option: --json`.
+- sipnab needs a TFPS built at or after the JSON contract, which landed on
+  2026-09-16 (`e7ee57a`). A `tfps_ctl` that predates the JSON contract can
+  answer `--json` and still not in that form: a build installed on 2026-09-03
+  answered `status`, but its `ban` gave `expires` as a date string, which
+  sipnab cannot read. Build `984577dc` or later.
 - [Add TFPS to your voice stack](tfps.md) builds that commit.
 - If your TFPS is a release, run its
   [Install TFPS](tfps.md#install-tfps) step.
@@ -220,6 +225,72 @@ What you see:
 
 The API key alone cannot ban. Try the ban with `$KEY` and it answers `401`.
 
+**A ban belongs to the token that placed it.** Since sipnab 0.5.231, another
+`actions` token cannot lift it. Mint each operator their own token, so the
+journal and the refusals name a person:
+
+```bash
+# Run all of these, in order.
+OPS=$(sudo sh -c 'set -a; . /etc/sipnab/api.env; sipnab --mint-token --token-scope actions --token-id ops-console')
+NIGHT=$(sudo sh -c 'set -a; . /etc/sipnab/api.env; sipnab --mint-token --token-scope actions --token-id night-shift')
+LEAD=$(sudo sh -c 'set -a; . /etc/sipnab/api.env; sipnab --mint-token --token-scope admin --token-id ops-lead')
+sleep 60
+curl -s -w '\n' -X POST -H "Authorization: Bearer $OPS" -H 'Content-Type: application/json' \
+  -d '{"ip":"198.51.100.20","ttl_secs":600}' 127.0.0.1:8080/v1/tfps/ban
+curl -s -w '\n' -X POST -H "Authorization: Bearer $NIGHT" -H 'Content-Type: application/json' \
+  -d '{"ip":"198.51.100.20"}' 127.0.0.1:8080/v1/tfps/unban
+```
+
+The second token's unban answers `403`:
+
+```json
+{"detail":"this ban was placed by token:ops-console; only that caller, or a token with the admin scope, may lift it","status":403,"title":"Forbidden","type":"https://sipnab.com/problems/forbidden"}
+```
+
+- The token that placed the ban can lift it.
+- A token minted with `--token-scope admin`, here `$LEAD`, can lift any ban
+  sipnab placed. It reaches everything an `actions` token does.
+- `POST /v1/actions/revert` with `"all"` lifts only the caller's own bans,
+  unless the caller holds `admin`.
+- `sipnab --revert-actions all` at the command line lifts every ban sipnab
+  placed, whoever placed it.
+- `sipnab --journal-show` counts the refusal, for example
+  `1  token:night-shift  ownership`.
+
+**From an agent over MCP.** The MCP tools `tfps_ban`, `tfps_unban` and
+`actions_revert` act only when the server enables them for MCP, with
+`--allow-action tfps:mcp` (or `tfps = ["mcp"]` under `[actions]`). Both
+surfaces at once take `--allow-action tfps:rest,mcp`.
+
+- Over MCP stdio, the enabling is the only lock, because the agent is a
+  local process you started.
+- Over MCP HTTP, the token must also have the `actions` scope, minted with
+  `--mcp-signing-key`. sipnab refuses a `full` token, or a static `--mcp-token`:
+
+  ```text
+  tool tfps_ban changes a system outside sipnab and this token's scope is "full" — calling it requires an "actions"-scope token, and the server must enable the action
+  ```
+
+- Without `--allow-action tfps:mcp`, the tool answers `reason`
+  `not_enabled`:
+
+  ```text
+  tfps actions are not enabled for mcp: sipnab changes no external system unless the operator enables it. Start sipnab with --allow-action tfps:mcp, or add tfps = ["mcp"] under [actions] in the config file.
+  ```
+
+- The ownership rule is the same as over REST. A refused unban carries
+  `refusal` `not_yours`, and the message names the owner.
+
+The ownership, `admin` and MCP behavior above ran on 2026-11-03 with sipnab
+0.5.232 built from source, against a stand-in `tfps_ctl` that answered `ban`,
+`unban` and `banned` in TFPS's JSON form, as sipnab's own tests do. The
+refusals come from sipnab and do not depend on TFPS. The same day, the
+0.5.232 release package ran against a real TFPS on a Debian 13 host, but that
+host's `tfps_ctl` predates the JSON contract: its `status` worked and its
+`ban` answered `expires` as a date string, so sipnab answered `502` and the
+ownership steps could not run there. The TFPS side of this page was last run
+end to end with sipnab 0.5.194, as [Tested on](#tested-on) says.
+
 **Undo everything sipnab did.** Someone may misuse a credential that may act.
 Then:
 
@@ -353,6 +424,26 @@ The `curl` commands from the same-machine section work unchanged.
   Either TFPS is not running, or sipnab lacks `CAP_BPF` and `CAP_SYS_ADMIN`.
 - **`reading /etc/tfps/config.json: Permission denied`.** Give the file to the
   `sipnab` group, as in the same-machine section.
+- **A ban answers `502` with `TFPS could not be asked: /usr/local/bin/tfps_ctl
+  ban answered something this sipnab cannot read: line 1: invalid type:
+  string "<date>", expected u64 at line 1 column <n>`.** A `tfps_ctl` that predates the JSON
+  contract answers `expires` as a date string. Upgrade it, as
+  [Check that TFPS answers in JSON](#check-that-tfps-answers-in-json) says.
+  - TFPS may have applied the ban anyway: `sudo tfps_ctl banned --json` lists
+    the address.
+  - In 0.5.232 sipnab records no such ban, not even as in doubt. So its
+    unban answers `409`, `sipnab holds no ban on this address`, and
+    `--revert-actions` does not lift it. A fix is in progress.
+  - Lift it on the TFPS host: `sudo tfps_ctl unban 198.51.100.20 --json`.
+- **An unban answers `403` with `this ban was placed by token:<id>; only that
+  caller, or a token with the admin scope, may lift it`.** Another token
+  placed the ban. Use that token, or one minted with `--token-scope admin`.
+  Over MCP the same refusal is `refusal` `not_yours`.
+- **A ban or unban answers `429` with `this address was acted on moments ago;
+  it rests for the cooldown, retry in 59 s`.** sipnab acts on one address once
+  a minute. Wait the seconds it names.
+- **sipnab refuses an MCP `tfps_ban` call with `reason` `scope_refused`.** The
+  HTTP token has the `full` scope. Mint one with `--token-scope actions`.
 - **`/v1/tfps/dropped` answers `502`.** Expected: no TFPS build has `dropped`
   yet.
 - **`installed: false`, and the reason says `tfps_ctl` was not found on

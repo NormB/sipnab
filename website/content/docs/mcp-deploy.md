@@ -2168,6 +2168,110 @@ sipnab --mcp -N --mcp-transport http --mcp-bind 0.0.0.0:8731 \
        --mcp-resource-url https://capture.example.com/mcp -d eth0
 ```
 
+### Load only the tools an agent needs
+
+By default the server loads all ten bundles, 76 tools. Each tool's schema
+costs the agent context on every turn, and an agent cannot call a tool the
+server did not load. `--mcp-tools` (or `[mcp] tools` in the config file) names the
+bundles, or single tools, to load:
+
+```bash
+sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:8731 \
+       --mcp-token-file /etc/sipnab/mcp.token --mcp-tools core,vcon \
+       -I capture.pcap
+```
+
+Check what a client sees with `tools/list`. Against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap), the number of tools listed was:
+
+| `--mcp-tools` | Tools listed |
+|---|---|
+| not given | 76 |
+| `core` | 9 |
+| `core,vcon` | 16 |
+
+[Choosing which tools load](@/docs/mcp-tools.md#choosing-which-tools-load) lists
+what each bundle holds.
+
+When it does not work:
+
+- A tool the server did not load answers `tool not found`, with `reason`
+  `unknown_tool` and the loaded names in `valid_values`. Add its bundle.
+- A prompt whose tools are not loaded is not listed, and `prompts/get` names
+  the bundles to add, for example
+  `prompt 'vcon-handoff' is not served: it calls validate_filter, export_vcon, validate_vcon, which this server does not load. Add the bundle(s) signaling, vcon with --mcp-tools or [mcp] tools.`
+- A name that is neither a bundle nor a tool stops sipnab at startup with exit
+  `2`:
+  `--mcp-tools: unknown tool or bundle 'nosuch'; bundles: core, signaling, captures, security, media, relay, tfps, server, vcon, tls, or full; tool names are listed in the MCP tool reference`
+
+### Record every tool call, and bound what one client can ask
+
+A service that agents reach over the network should keep a record of what
+they asked, and limit how much one of them can ask at once.
+
+- `--mcp-audit-file <FILE>` appends one JSON line per tool call: the tool,
+  its arguments, the caller and its token's scope, the outcome and the time.
+  sipnab creates the file with mode `0600` and never truncates it.
+- `--mcp-rate-limit-per-peer <N>` caps calls per second from one address. It
+  is 100 when not given. `0` removes the cap.
+- `--mcp-max-concurrent <N>` caps the calls running at once.
+- `--mcp-max-response-bytes` and `--mcp-max-body-bytes` cap one answer and one
+  request.
+
+[MCP protocol](@/docs/mcp-protocol.md#read-the-audit-log) describes every field of an
+audit line. This run set a limit of 2 calls a second and made four
+`capture_status` calls at once:
+
+```bash
+sipnab --mcp -N --mcp-transport http --mcp-bind 127.0.0.1:8731 \
+       --mcp-token-file /etc/sipnab/mcp.token \
+       --mcp-audit-file /var/log/sipnab/mcp-audit.jsonl \
+       --mcp-rate-limit-per-peer 2 -I capture.pcap
+```
+
+The third and fourth calls answered:
+
+```json
+{"code":-32000,"message":"sipnab MCP server is at its per-peer rate limit of 2 call(s)/s; retry shortly","data":{"reason":"rate_limited","retry_after_ms":972}}
+```
+
+and the audit file held one line for each of the four calls, the refused
+ones included:
+
+```json
+{"args":"{}","caller":"127.0.0.1:54868 bearer-verified scope=full","elapsed_ms":0,"error":null,"id":"11","outcome":"ok","seq":1,"tool":"capture_status","ts":"2026-11-03T15:04:06.639556559+00:00"}
+{"args":"{}","caller":"127.0.0.1:54888 bearer-verified scope=full","elapsed_ms":0,"error":"rate limited (1 refused since start)","id":"13","outcome":"refused","seq":3,"tool":"capture_status","ts":"2026-11-03T15:04:06.667966010+00:00"}
+```
+
+- `seq` increases by one per line. A gap means sipnab lost a line.
+- A client that reads `retry_after_ms` can wait that long and call again.
+- An audit file that sipnab cannot open stops it at startup with exit `2`, for
+  example `mcp-audit-file /nonexistent-dir/audit.jsonl: No such file or directory (os error 2). sipnab refuses to serve MCP without the audit trail it was asked for`.
+
+### Sampling: what `--mcp-sampling-budget` does today
+
+MCP lets a server ask the client's model to write text, a request called
+sampling. In sipnab 0.5.232 the server sends no sampling request. The budget
+flag parses and sipnab records it, and sipnab reads whether the client advertised
+the capability, but no feature uses it: the code that would narrate a finding
+through the client's model is not armed ([`src/mcp/server.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs), the comment on
+`on_initialized`). The MCP project merged
+[SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577),
+"Deprecate Roots, Sampling, and Logging", on 2026-05-15, and the `rmcp`
+crate sipnab uses (3.8.0) marks its sampling types deprecated.
+
+- Setting `--mcp-sampling-budget` changes nothing an agent sees.
+- `--mcp-sampling-budget 0` records a policy of no sampling, which is also
+  what happens without it.
+- This page names no third-party client as supporting sampling, because no
+  test here ran one. sipnab's own tests,
+  [`tests/mcp_sampling_wiring_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/mcp_sampling_wiring_test.rs), check that the flag reaches the budget
+  and that a client which did not advertise sampling is never asked. They
+  build the server in-process and set the client's advertised capability
+  directly. No MCP client takes part in them.
+- The CLI reference describes the flag as narrating alerts. That description
+  is a known defect, and a fix is in progress.
+
 ### Start it at boot with systemd
 
 Create `/etc/systemd/system/sipnab-mcp.service` using this example, fed by a

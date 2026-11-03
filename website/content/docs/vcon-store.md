@@ -17,6 +17,38 @@ describes.
 The forwarder sends each container byte for byte: it does not change what
 sipnab wrote.
 
+## What this page's check covered
+
+The hosted vcon.store service was not used to check this page. On 2026-11-03
+the sipnab commands on it ran with sipnab 0.5.232, built from source, on
+Ubuntu 24.04.5 (aarch64), against a local stand-in on `127.0.0.1:18777`. The
+stand-in is a short test server that answers the four routes this page uses
+the way it describes vcon.store doing: `POST /v1/vcons` (`201`, or `409` for a
+uuid it holds), `PUT /v1/vcons/{uuid}`, `GET /v1/vcons/{uuid}` with a `_meta`
+member, and `401` for a wrong token. The log lines on this page have the form that run
+printed, and name `127.0.0.1:18777`. The response bodies quoted in them, such
+as `{"error":"unauthorized"}` and `{"error": "vCon already exists"}`, are a
+test server's, not the hosted service's. Against the hosted service the lines
+name `https://api.vcon.store`.
+
+What that run checked is sipnab's side:
+
+- the `vcon-store` kind adds `/v1/vcons` to the base URL and sends the token
+  as `Authorization: Bearer <token>`;
+- the forwarder refuses a token file other users can read, and exits `2`;
+- the exit status for each answer, and where each container goes;
+- `--vcon-forward-replace-url` sends a `PUT` after a `409`;
+- the fetcher removes `_meta`.
+
+What it did not check is the hosted service's side: its real answers, its
+error bodies, and the Cloudflare `403` with `error code: 1010` under
+[When something does not work](#when-something-does-not-work). Those come
+from the service and were not observed in this check. The routes and the
+container shape the service documents are in its OpenAPI document, vendored
+as [`tests/schemas/vcon-store-openapi.json`](https://github.com/NormB/sipnab/blob/main/tests/schemas/vcon-store-openapi.json) (vcon.store API 0.1.0), and
+[`tests/vcon_ingest_contract_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/vcon_ingest_contract_test.rs) checks sipnab's containers against the
+`VCon` schema in it. That document lists no `409` and no `401`.
+
 ## Before you send anything
 
 A capture carries personal data:
@@ -121,7 +153,7 @@ auth_file = "/etc/sipnab/vcon-store.key"
 
 For each container the forwarder logs a `delivered` line with the store's
 status and moves the file to `spool/delivered`. The log line has this form
-(here from a run against a store on `127.0.0.1:18777`):
+(here from the local stand-in on `127.0.0.1:18777`, not the hosted store):
 
 ```text
 INFO sipnab::app::vcon_forward: vCon forwarder watching 'spool', delivering to http://127.0.0.1:18777/v1/vcons

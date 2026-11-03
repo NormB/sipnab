@@ -291,6 +291,7 @@ DOCS_TO_SITE = {
     "plugins.md": "plugins.md",
     "auth.md": "auth.md",
     "tls-capture.md": "tls-capture.md",
+    "integrations.md": "integrations.md",
     "internals/profiling.md": "internals/profiling.md",
     # Registering the page in build-site-pages.py's PAGES only makes the page
     # exist; this map is what makes other site pages LINK to it. Missing here,

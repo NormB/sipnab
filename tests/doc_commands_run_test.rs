@@ -1727,18 +1727,17 @@ fn the_documented_commands_in_indented_fences_are_walked() -> Result<(), TestErr
 
 /// The hand-written site pages are in the walk; the generated ones are not.
 ///
-/// `website/content/docs/integrations.md`, the docs index and the
-/// engineering notes are written for the site directly, so no page under
-/// `docs/` carries their commands and nothing ran them. The site's
-/// `tls-capture.md` and `plugins.md` became mirrors of the pages of the same
-/// name under `docs/`, so their commands are walked there, under the docs
-/// page's name.
+/// The docs index and the engineering notes are written for the site
+/// directly, so no page under `docs/` carries their commands and nothing ran
+/// them. The site's `tls-capture.md`, `plugins.md` and, since 0.5.232,
+/// `integrations.md` became mirrors of the pages of the same name under
+/// `docs/`, so their commands are walked there, under the docs page's name.
 #[test]
 fn the_hand_written_site_pages_are_walked_and_the_mirrors_are_not() -> Result<(), TestError> {
     let all = documented_invocations()?;
     let on = |page: &str| all.iter().filter(|i| i.page == page).count();
     for (page, at_least) in [
-        ("website/content/docs/integrations.md", 9),
+        ("integrations.md", 4),
         ("website/content/docs/_index.md", 3),
         ("tls-capture.md", 8),
         ("website/content/docs/api-clients.md", 1),

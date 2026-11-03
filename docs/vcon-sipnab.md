@@ -58,6 +58,21 @@ On Debian 13, causing each fault under
 [When something does not work](#when-something-does-not-work) produced what
 it describes.
 
+On 2026-11-03 the blocks under
+[Or deliver them with sipnab's own forwarder](#or-deliver-them-with-sipnabs-own-forwarder),
+and the forwarder entries under
+[When something does not work](#when-something-does-not-work), ran again:
+
+- with sipnab 0.5.232 built from source,
+- on Ubuntu 24.04.5 (aarch64, kernel 6.8.12) with Docker 29.9.2,
+- against vcon-server `d441470b` set up as
+  [Install the vCon server](vcon-server.md#install-the-vcon-server) says, with
+  its API published on `127.0.0.1:18000` instead of port 8000, and the
+  `sipnab` ingress list from the first step.
+
+No live call ran in that check. It exported the containers from
+`sip_call.pcap`, as the forwarder section does.
+
 ## Add an ingress list and a chain for sipnab
 
 Add a key, a tag and a table for sipnab to `/opt/vcon/config.yml`. Leave the
@@ -520,6 +535,25 @@ On the vCon server, port 8000 is now reachable from the network.
 - **The forwarder stops with `answered 403`.** The key in
   `/etc/sipnab/vcon-forward.env` does not match the `sipnab` key in
   `config.yml`.
+- **`sipnab --vcon-forward` stops and exits `3`.** vcon-server answered `403`,
+  and the log line quotes its reason. sipnab sends nothing more and leaves
+  every container in the spool:
+  - `{"detail":"Invalid API Key for ingress list 'sipnab'"}`: the key in the
+    auth file is not the `sipnab` key in `config.yml`.
+  - `{"detail":"Ingress list 'sipnabx' not configured"}`: the
+    `ingress_list` in the URL is not a list in `config.yml`.
+
+  Fix the file or the URL and run it again.
+- **`sipnab --vcon-forward` logs `not reached`, and a line that ends
+  `Connection refused (os error 111); will retry`.** Nothing listens at the URL: vcon-server is down, or the
+  port is wrong. The container stays in the spool. With
+  `--vcon-forward-once` the run exits `1`; without it, the forwarder tries again.
+- **A container lands in `spool/failed` with `answered 422`.** vcon-server
+  refused the container itself. The `.error.json` record beside it holds the
+  server's reason, for example `"loc":["body","uuid"],"msg":"Field required"`.
+  `sipnab --vcon-spool-status spool` lists every refusal and its record.
+  Check the file with `sipnab --vcon-validate` before sending it again
+  ([Check a container before a store gets it](vcon.md#check-a-container-before-a-store-gets-it)).
 - **Files pile up in `rejected/`.**
   - vcon-server refused them with a `4xx` other than `401`, `403` or `404`.
   - The forwarder's journal names each file it moved there.
