@@ -3585,7 +3585,7 @@
         "description": "The body `POST /v1/persistence` accepts.\n\n`deny_unknown_fields` so a caller who misspells the key is told, rather\nthan getting a 200 that moved nothing. The field is required and typed:\nserde refuses a string, a number, and a missing key alike, and every one of\nthose refusals leaves the gate where it was.",
         "properties": {
           "enabled": {
-            "description": "What the caller wants the gate to be, narrowed by the command line.",
+            "description": "What the caller wants the gate to be, narrowed by the command line and\nconfig file.",
             "type": "boolean"
           }
         },
@@ -3598,7 +3598,7 @@
         "description": "The body both doors of `/v1/persistence` answer with.",
         "properties": {
           "authorized": {
-            "description": "The command line's ceiling. A caller that asked to enable an\nunauthorized run reads `enabled: false, authorized: false` rather\nthan a bare 200 it would take for success.",
+            "description": "The ceiling the command line and config file set. A caller that\nasked to enable an unauthorized run reads `enabled: false,\nauthorized: false` rather than a bare 200 it would take for\nsuccess.",
             "type": "boolean"
           },
           "enabled": {
@@ -8527,7 +8527,7 @@
     },
     "/v1/persistence": {
       "get": {
-        "description": "Whether this capture is writing content to disk, and whether the command line allows it to.\n\nBehind the same guard as every other route: what a capture is keeping is not a public fact, and a reader who can see the answer is one step from a writer who can change it.",
+        "description": "Whether this capture is writing content to disk, and whether its command line and config file allow it to.\n\nBehind the same guard as every other route: what a capture is keeping is not a public fact, and a reader who can see the answer is one step from a writer who can change it.",
         "operationId": "get_persistence",
         "responses": {
           "200": {
@@ -8538,7 +8538,7 @@
                 }
               }
             },
-            "description": "Whether this capture is writing content, and whether the command line allows it to."
+            "description": "Whether this capture is writing content, and whether its command line and config file allow it to."
           },
           "401": {
             "content": {
@@ -8572,7 +8572,7 @@
         ]
       },
       "post": {
-        "description": "Close the gate, or open it as far as the command line allows.\n\nAnswers with the same shape `GET` does, carrying both the gate's state and the ceiling. A caller that asked to enable an unauthorized run therefore reads `enabled: false, authorized: false` rather than a bare 200 it would take for success.",
+        "description": "Close the gate, or open it as far as the command line and config file allow.\n\nAnswers with the same shape `GET` does, carrying both the gate's state and the ceiling. A caller that asked to enable an unauthorized run therefore reads `enabled: false, authorized: false` rather than a bare 200 it would take for success.",
         "operationId": "set_persistence",
         "requestBody": {
           "content": {
@@ -8594,7 +8594,7 @@
                 }
               }
             },
-            "description": "The gate as it now stands, narrowed by the command line. A caller that asked to enable an unauthorized run reads `enabled: false, authorized: false` here rather than a bare 200 it would take for success."
+            "description": "The gate as it now stands, narrowed by the command line and config file. A caller that asked to enable an unauthorized run reads `enabled: false, authorized: false` here rather than a bare 200 it would take for success."
           },
           "400": {
             "content": {

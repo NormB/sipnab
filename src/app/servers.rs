@@ -163,6 +163,15 @@ pub struct Selection {
     /// Without them the doors compared against the shipped figures, and a
     /// `--pdd-threshold` reached the command line and stopped there.
     pub alias_thresholds: crate::sip::dsl::AliasThresholds,
+    /// Whether this run writes call content, resolved by the caller with
+    /// `cli.persists_content(config)`: the persistence gate's ceiling.
+    ///
+    /// Carried here because the answer needs the config, which is in scope at
+    /// the caller and not in `start_servers`. Reading the flags alone there
+    /// gave a run whose only writer was a `[[vcon.rule]]` a gate that was
+    /// never authorized, and the rule wrote nothing once `--api` or `--mcp`
+    /// was added.
+    pub persists_content: bool,
     /// Every export rule's spool, by rule name, which `GET /v1/vcon/spool`
     /// and `vcon_spool_status` read.
     pub vcon_spools: Vec<crate::app::vcon_spool::Spool>,
@@ -627,10 +636,10 @@ pub fn start_servers(
     // there is no state in which it is absent.
     #[cfg(any(feature = "api", feature = "mcp"))]
     let source_exhausted = Some(Arc::clone(&exhausted));
-    // The gate the REST door moves and the exporter reads, built from the
-    // command line ONCE. Its ceiling is what the operator asked for, and no
-    // later reader recomputes it: two readings of `persists_content` could
-    // disagree after a flag was added to one of them.
+    // The gate the REST door moves and the exporter reads, built ONCE from
+    // `persists_content`: the flags and the config file. Its ceiling is what
+    // the operator asked for, and no later reader recomputes it: two readings
+    // could disagree after a writer was added to one of them.
     //
     // Gated like `source_exhausted` above, and for the same reason: it is
     // carried out on `ServerHandles`, which does not exist in a build with
@@ -638,7 +647,7 @@ pub fn start_servers(
     // binding is a hard error there and merely an unused value here.
     #[cfg(any(feature = "api", feature = "mcp"))]
     let persistence_gate = Arc::new(crate::output::persistence::PersistenceGate::new(
-        cli.persists_content(),
+        selection.persists_content,
     ));
 
     // Each door is `Some` when it is compiled, selected and configured.
@@ -1226,6 +1235,7 @@ mod tests {
             scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
+            persists_content: false,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),

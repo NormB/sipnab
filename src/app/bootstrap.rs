@@ -5557,7 +5557,7 @@ pub(crate) fn vcon_rules(
         RuleAdditions, RuleAudio, RuleAudioFormat, RuleGrouping, RuleTags, VconRule,
     };
     let refuse = |message: String| PlanError::refused(crate::settings::Origin::ConfigFile, message);
-    if let Some(e) = cli.inert_redaction_refusal(!config.vcon.rule.is_empty()) {
+    if let Some(e) = cli.inert_redaction_refusal(config) {
         return Err(PlanError::arg(e.to_string()));
     }
     if let Some(message) = cli.live_export_refusal(

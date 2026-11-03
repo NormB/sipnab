@@ -4387,7 +4387,8 @@ async fn get_dialog_vcon(
 #[derive(Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct PersistenceRequest {
-    /// What the caller wants the gate to be, narrowed by the command line.
+    /// What the caller wants the gate to be, narrowed by the command line and
+    /// config file.
     enabled: bool,
 }
 
@@ -4409,11 +4410,11 @@ fn persistence_body(gate: &crate::output::persistence::PersistenceGate) -> Json<
     path = "/v1/persistence",
     tag = "operations",
     summary = "Read the persistence gate",
-    description = "Whether this capture is writing content to disk, and whether the command line allows it to.\n\nBehind the same guard as every other route: what a capture is keeping is not a public fact, and a reader who can see the answer is one step from a writer who can change it.",
+    description = "Whether this capture is writing content to disk, and whether its command line and config file allow it to.\n\nBehind the same guard as every other route: what a capture is keeping is not a public fact, and a reader who can see the answer is one step from a writer who can change it.",
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "Whether this capture is writing content, and whether the \
-                                      command line allows it to.", body = schema::PersistenceState),
+        (status = 200, description = "Whether this capture is writing content, and whether its \
+                                      command line and config file allow it to.", body = schema::PersistenceState),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
@@ -4438,14 +4439,14 @@ async fn get_persistence(
     path = "/v1/persistence",
     tag = "operations",
     summary = "Set the persistence gate",
-    description = "Close the gate, or open it as far as the command line allows.\n\nAnswers with the same shape `GET` does, carrying both the gate's state and the ceiling. A caller that asked to enable an unauthorized run therefore reads `enabled: false, authorized: false` rather than a bare 200 it would take for success.",
+    description = "Close the gate, or open it as far as the command line and config file allow.\n\nAnswers with the same shape `GET` does, carrying both the gate's state and the ceiling. A caller that asked to enable an unauthorized run therefore reads `enabled: false, authorized: false` rather than a bare 200 it would take for success.",
     request_body(content = PersistenceRequest, description = "What the caller wants the gate to \
                                                               be. Unknown keys are refused, and \
                                                               so is a JSON array — `[true]` is \
                                                               not `{\"enabled\": true}`."),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "The gate as it now stands, narrowed by the command line. \
+        (status = 200, description = "The gate as it now stands, narrowed by the command line and config file. \
                                       A caller that asked to enable an unauthorized run reads \
                                       `enabled: false, authorized: false` here rather than a \
                                       bare 200 it would take for success.", body = schema::PersistenceState),
@@ -7123,9 +7124,10 @@ pub mod schema {
     pub struct PersistenceState {
         /// Whether content may reach disk on this run right now.
         pub enabled: bool,
-        /// The command line's ceiling. A caller that asked to enable an
-        /// unauthorized run reads `enabled: false, authorized: false` rather
-        /// than a bare 200 it would take for success.
+        /// The ceiling the command line and config file set. A caller that
+        /// asked to enable an unauthorized run reads `enabled: false,
+        /// authorized: false` rather than a bare 200 it would take for
+        /// success.
         pub authorized: bool,
     }
 

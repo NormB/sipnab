@@ -12,6 +12,7 @@ entry that carries them.
 
 ### Fixed
 
+- **A `[[vcon.rule]]` writes its containers on a run that also serves `--api` or `--mcp`.** The persistence gate both doors share took its ceiling from the export flags alone (`--export-vcon`, `--export-vcon-when`), so on a run whose only writer was a configured rule the gate was never authorized. The exporter consults that gate, so the rule wrote nothing and printed nothing, and `GET /v1/persistence` answered `{"authorized":false,"enabled":false}`; the same config and capture without a door wrote the call. `Cli::persists_content` now reads the config file as well as the flags, and it is the one answer the gate and the `--redact` refusal both use. A rule authorizes the gate as a flag does, so `POST /v1/persistence` can close and reopen it. Found during the 2026-11-03 documentation review.
 - **A release build stays reproducible on a host that configures a compiler wrapper.** With sccache set as `build.rustc-wrapper`, the `cc` crate routed mimalloc's C compile through the sccache server, whose clock, not `SOURCE_DATE_EPOCH`, set `__DATE__` and `__TIME__`, so two builds of one commit differed (run 41514782899). `scripts/reproducible-build.sh build` now runs cargo with `RUSTC_WRAPPER`, `RUSTC_WORKSPACE_WRAPPER` and their `CARGO_BUILD_` forms set to the empty string, which overrides a configured wrapper.
 
 ## [0.5.232] - 2026-11-03

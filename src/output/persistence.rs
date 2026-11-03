@@ -2,10 +2,11 @@
 // SPDX-FileCopyrightText: The sipnab contributors
 //! Whether content may still reach disk on this run.
 //!
-//! The command line decides what a run is allowed to persist. This gate lets
-//! an operator take that back mid-run without stopping capture, and it moves
-//! in one direction only: it can close what the command line opened, and it
-//! can never open what the command line never authorized.
+//! The command line and the config file decide what a run is allowed to
+//! persist (`Cli::persists_content`). This gate lets an operator take that
+//! back mid-run without stopping capture, and it moves in one direction only:
+//! it can close what they opened, and it can never open what they never
+//! authorized.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
