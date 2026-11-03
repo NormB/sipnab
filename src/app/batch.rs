@@ -1496,6 +1496,38 @@ fn report_th_callid(dialogs: &DialogStore) {
     for line in th_callid_guidance(&dialogs.th_callid_summary()) {
         tracing::warn!("{line}");
     }
+    if let Some(line) = th_mapping_summary(&dialogs.th_mapping_counts()) {
+        tracing::info!("{line}");
+    }
+}
+
+/// The OpenSIPS `E_SIPNAB_TH_MAP` line for the end of a run, or `None` when
+/// no event arrived.
+fn th_mapping_summary(t: &crate::sip::th_mapping::ThMappingCounts) -> Option<String> {
+    let events = t.accepted + t.duplicate + t.conflict + t.malformed + t.refused_full;
+    (events > 0).then(|| {
+        let waiting = if t.pending > 0 {
+            " A mapping waits until both of its legs are captured. With --hep-listen \
+             and -d and no filter of your own, the interface takes media only, so SIP \
+             on the wire is never seen (docs/opensips-sipnab.md, \"Have OpenSIPS send \
+             the mapping\")."
+        } else {
+            ""
+        };
+        format!(
+            "Topology hiding: {events} E_SIPNAB_TH_MAP event(s): {} accepted, {} duplicate, \
+             {} conflicting, {} malformed, {} refused (table full); {} expired; {} held \
+             now, {} waiting for their SIP.{waiting}",
+            t.accepted,
+            t.duplicate,
+            t.conflict,
+            t.malformed,
+            t.refused_full,
+            t.expired,
+            t.held,
+            t.pending
+        )
+    })
 }
 
 /// The topology-hiding lines for `summary`: empty when no hidden leg was
@@ -5509,6 +5541,16 @@ fn process_parsed_packet(
         crate::pipeline::PacketAction::None => {}
         crate::pipeline::PacketAction::Sip { msg, sdp_links } => {
             packet.on_sip(pp, &msg, &sdp_links);
+        }
+        crate::pipeline::PacketAction::ThMapping(event) => {
+            // A mapping is call association, so `--no-dialog` opts out of it
+            // as it opts out of SIP.
+            if !packet.ctx.cli.dialog_args.no_dialog {
+                packet
+                    .state
+                    .dialog_store
+                    .apply_th_mapping(event, pp.timestamp);
+            }
         }
         crate::pipeline::PacketAction::RelayControl(message) => {
             // A standalone media relay carries no SIP, so on that host this is
@@ -15745,6 +15787,55 @@ mod tests {
     /// The topology-hiding report at the end of a run: nothing when no hidden
     /// leg was seen or every one joined; otherwise the count, the cause and
     /// the settings to check, and never a value.
+    /// The end-of-run line for mapping events: nothing when none arrived,
+    /// and every count, each named, when any did.
+    #[test]
+    fn th_mapping_summary_names_every_count() {
+        use crate::sip::th_mapping::ThMappingCounts;
+        assert_eq!(
+            th_mapping_summary(&ThMappingCounts::default()),
+            None,
+            "a run with no event says nothing about them"
+        );
+        let counts = ThMappingCounts {
+            accepted: 7,
+            duplicate: 2,
+            conflict: 1,
+            malformed: 3,
+            refused_full: 4,
+            expired: 5,
+            held: 6,
+            pending: 1,
+        };
+        let line = th_mapping_summary(&counts).unwrap_or_default();
+        assert!(
+            line.contains("media only") && line.contains("opensips-sipnab.md"),
+            "a mapping still waiting names the filter that drops wire SIP: {line}"
+        );
+        let settled = ThMappingCounts {
+            pending: 0,
+            ..counts
+        };
+        let quiet = th_mapping_summary(&settled).unwrap_or_default();
+        assert!(
+            !quiet.contains("media only"),
+            "with nothing waiting there is no cause to name: {quiet}"
+        );
+        for part in [
+            "E_SIPNAB_TH_MAP",
+            "7 accepted",
+            "2 duplicate",
+            "1 conflicting",
+            "3 malformed",
+            "4 refused",
+            "5 expired",
+            "6 held",
+            "1 waiting",
+        ] {
+            assert!(line.contains(part), "`{part}` missing from: {line}");
+        }
+    }
+
     #[test]
     fn th_callid_guidance_names_the_count_the_cause_and_the_settings() {
         use crate::sip::dialog_store::ThCallidSummary;

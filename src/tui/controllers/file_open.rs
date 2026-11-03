@@ -755,6 +755,11 @@ fn load_one_capture(
                     }
                 }
             }
+            crate::pipeline::PacketAction::ThMapping(event) => {
+                dialog_store
+                    .write()
+                    .apply_th_mapping(event, parsed.timestamp);
+            }
             crate::pipeline::PacketAction::RelayControl(message) => {
                 if message.carries_anything() {
                     // Read off the wire: unauthenticated, and the relay this run watches.

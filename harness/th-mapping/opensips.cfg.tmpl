@@ -1,0 +1,70 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+#
+# Topology hiding with Call-ID hiding ("C"), plus one E_SIPNAB_TH_MAP event
+# per call to sipnab, for the sipnab th-mapping fixtures. Rendered by
+# capture.sh, which replaces @SIPNAB@ with the address sipnab listens on.
+# docs/opensips-sipnab.md shows the event lines of this file character for
+# character, with @SIPNAB@ as 127.0.0.1:9060 (tests/th_mapping_test.rs checks
+# it).
+log_level=3
+stderror_enabled=yes
+udp_workers=2
+socket=udp:192.0.2.10:5060
+mpath="/usr/local/lib64/opensips/modules/"
+
+loadmodule "signaling.so"
+loadmodule "sl.so"
+loadmodule "tm.so"
+loadmodule "sipmsgops.so"
+loadmodule "dialog.so"
+loadmodule "topology_hiding.so"
+loadmodule "maxfwd.so"
+loadmodule "rr.so"
+loadmodule "proto_udp.so"
+loadmodule "event_datagram.so"
+
+startup_route {
+	subscribe_event("E_SIPNAB_TH_MAP", "udp:@SIPNAB@");
+}
+
+route {
+	if (!mf_process_maxfwd_header(10)) {
+		send_reply(483, "Too Many Hops");
+		exit;
+	}
+	if (has_totag()) {
+		if (is_method("ACK") && t_check_trans()) {
+			t_relay();
+			exit;
+		}
+		if (!loose_route() && !topology_hiding_match()) {
+			send_reply(404, "Not here");
+			exit;
+		}
+		t_relay();
+		exit;
+	}
+	if (is_method("CANCEL")) {
+		if (t_check_trans())
+			t_relay();
+		exit;
+	}
+	if (!is_method("INVITE")) {
+		send_reply(503, "Service Unavailable");
+		exit;
+	}
+	if (!create_dialog() || !topology_hiding("C")) {
+		send_reply(500, "Internal Server Error");
+		exit;
+	}
+	$avp(th_keys) = "caller_call_id";
+	$avp(th_vals) = $ci;
+	$avp(th_keys) = "callee_call_id";
+	$avp(th_vals) = $TH_callee_callid;
+	raise_event("E_SIPNAB_TH_MAP", $avp(th_keys), $avp(th_vals));
+	$du = "sip:192.0.2.1:5070";
+	if (!t_relay())
+		send_reply(500, "Internal Error");
+	exit;
+}

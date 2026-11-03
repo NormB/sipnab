@@ -875,7 +875,10 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 539 -> 540: src/config.rs, `[sip] th_callid_secret_file must not be
 // empty`, which `config_cli_key_values_test` found refused only as a file
 // that could not be opened, under no key. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 540;
+// 540 -> 542: src/config.rs, the refusals of 0 for `[sip] th_mapping_max`
+// and `[sip] th_mapping_ttl_secs`, the OpenSIPS E_SIPNAB_TH_MAP table's
+// bound and lifetime (#617). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 542;
 
 // ---------------------------------------------------------------------------
 // The page gates

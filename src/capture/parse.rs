@@ -5721,6 +5721,7 @@ mod tests {
                     protocol: 1,
                     correlation_id: None,
                     sniffed_on_port: None,
+                    json_event: false,
                 }),
                 vcon: None,
             },

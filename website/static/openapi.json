@@ -5126,6 +5126,10 @@
             "$ref": "#/components/schemas/StatsStreams",
             "description": "Stream counts."
           },
+          "th_mappings": {
+            "$ref": "#/components/schemas/ThMappingCounts",
+            "description": "OpenSIPS `E_SIPNAB_TH_MAP` mapping events the HEP listener\nreceived: running totals by outcome, and the mappings held and\npending now. All zero when none arrived."
+          },
           "timing": {
             "$ref": "#/components/schemas/StatsTiming",
             "description": "Post-dial-delay percentiles."
@@ -5181,6 +5185,7 @@
           "schema_version",
           "dialogs",
           "streams",
+          "th_mappings",
           "caveats",
           "source",
           "source_exhausted",
@@ -6412,9 +6417,75 @@
           "decoded",
           "no_secret",
           "undecodable",
-          "unmatched"
+          "unmatched",
+          "mapped",
+          "conflict"
         ],
         "type": "string"
+      },
+      "ThMappingCounts": {
+        "description": "Counts a table keeps, for the status surfaces and metrics. Every field is\na running total since the process started, except where noted.",
+        "properties": {
+          "accepted": {
+            "description": "Events that added a mapping.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "conflict": {
+            "description": "Events refused because a Call-ID was already mapped to another\npartner.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "duplicate": {
+            "description": "Events that repeated a mapping already held.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expired": {
+            "description": "Mappings dropped because neither leg was in the store for the\nconfigured lifetime.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "held": {
+            "description": "Mappings held now (not a running total).",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "malformed": {
+            "description": "Event datagrams that were not a valid mapping event.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "pending": {
+            "description": "Of `held`, mappings the store does not yet hold both legs of (not a\nrunning total). Filled in by the store, which knows the legs.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refused_full": {
+            "description": "Events refused because the table was full.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "accepted",
+          "duplicate",
+          "conflict",
+          "malformed",
+          "refused_full",
+          "expired",
+          "held",
+          "pending"
+        ],
+        "type": "object"
       },
       "Timeline": {
         "description": "Call volume over time, in fixed-width buckets.",

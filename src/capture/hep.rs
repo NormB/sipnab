@@ -160,6 +160,7 @@ fn hep_to_packet(hep: HepPacket, source: &str, received: DateTime<Utc>) -> Packe
                 protocol: hep.protocol.to_byte(),
                 correlation_id: hep.correlation_id.clone(),
                 sniffed_on_port: None,
+                json_event: false,
             }),
             vcon: None,
         },
@@ -2284,6 +2285,11 @@ impl<'a> HepIngest<'a> {
     /// counted against its sender and restarts both watches; a refused one is
     /// counted against its address and its reason.
     fn receive(&mut self, datagram: &[u8], peer: IpAddr, now: Instant) -> Received {
+        // A JSON body is an OpenSIPS E_SIPNAB_TH_MAP event, not HEP: HEP v3
+        // starts with "HEP3", and HEP v1/v2 with a version byte of 1 or 2.
+        if datagram.first() == Some(&b'{') {
+            return self.receive_event(datagram, peer, now);
+        }
         match self.admit(datagram, peer) {
             Ok(hep) => {
                 // Provenance is the SENDER, not this listener — see
@@ -2316,6 +2322,72 @@ impl<'a> HepIngest<'a> {
                     sender_resumed: None,
                 }
             }
+        }
+    }
+
+    /// One JSON event datagram (`E_SIPNAB_TH_MAP`), through the checks an
+    /// event can be put to.
+    ///
+    /// An event carries no HEP auth chunk, so `--hep-auth` cannot vouch for
+    /// it, and the allowlist is the only check of who sent it: a listener
+    /// with no `--hep-allow` refuses every event
+    /// ([`HepRefusal::EventSenderNotListed`]), even when it admits HEP from
+    /// anyone holding the key. The rate limiter applies as to any packet. An
+    /// admitted event is traffic from its sender, so it restarts the silence
+    /// watch: on a host that captures SIP off the wire, the events may be
+    /// all the listener receives. The body is not parsed here; the pipeline
+    /// parses and counts it (`crate::sip::th_mapping`).
+    fn receive_event(&mut self, datagram: &[u8], peer: IpAddr, now: Instant) -> Received {
+        let refusal = if self.allowlist.is_empty() {
+            Some(HepRefusal::EventSenderNotListed)
+        } else if !self.peer_allowed(peer) {
+            Some(HepRefusal::Allowlist)
+        } else {
+            self.rate_limiter.allow(peer).err().map(HepRefusal::from)
+        };
+        if let Some(reason) = refusal {
+            tracing::debug!(
+                "Dropping E_SIPNAB_TH_MAP datagram from {peer}: {}",
+                reason.as_str()
+            );
+            self.roster.lock().refused(reason, peer, now);
+            return Received {
+                packet: None,
+                resumed_after: None,
+                sender_resumed: None,
+            };
+        }
+        let source = hep_source_label(None, peer);
+        let admission = self.roster.lock().admitted(None, peer, &source, now);
+        let mut packet = Packet::with_pre_parsed(
+            Utc::now(),
+            datagram.to_vec(),
+            Some(format!("hep:{source}")),
+            PreParsed {
+                src_addr: peer,
+                // The listener's own address is not asserted by anything
+                // the datagram carries; the unspecified address says so.
+                dst_addr: match peer {
+                    IpAddr::V4(_) => IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                    IpAddr::V6(_) => IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+                },
+                src_port: 0,
+                dst_port: 0,
+                ip_protocol: 17,
+                hep: Some(crate::capture::packet::HepOrigin {
+                    protocol: 0,
+                    correlation_id: None,
+                    sniffed_on_port: None,
+                    json_event: true,
+                }),
+                vcon: None,
+            },
+        );
+        packet.origin = admission.origin;
+        Received {
+            packet: Some(packet),
+            resumed_after: admission.listener_resumed,
+            sender_resumed: admission.sender_resumed.map(|d| (source, d)),
         }
     }
 
@@ -9980,6 +10052,116 @@ mod tests {
         }
     }
 
+    /// The OpenSIPS `E_SIPNAB_TH_MAP` datagram, byte for byte as OpenSIPS
+    /// 4.0.2's `event_datagram` sent it in
+    /// `tests/fixtures/th-mapping/opensips-4.0-events.pcap`.
+    const TH_MAP_EVENT: &[u8] = br#"{"jsonrpc":"2.0","method":"E_SIPNAB_TH_MAP","params":{"callee_call_id":"DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-","caller_call_id":"1-th-map@example.com"}}"#;
+
+    /// Listener options with an allowlist and no secret.
+    fn unkeyed_allowlisted_opts(allowlist: &[CidrRange]) -> HepListenerOpts<'_> {
+        HepListenerOpts {
+            allowlist,
+            auth_key: None,
+            ..keyed_opts(right_key(), Duration::from_secs(30))
+        }
+    }
+
+    /// Whether `packet` is one the listener marked as a JSON event.
+    fn marked_as_event(packet: &Packet) -> bool {
+        packet
+            .pre_parsed
+            .as_ref()
+            .and_then(|p| p.hep.as_ref())
+            .is_some_and(|h| h.json_event)
+    }
+
+    /// An `E_SIPNAB_TH_MAP` event from a sender `--hep-allow` lists goes on
+    /// to the pipeline unchanged, marked as an event, under its sender's
+    /// address.
+    #[test]
+    fn a_mapping_event_from_a_listed_sender_is_handed_on_marked() -> Result<(), TestError> {
+        let allow = [CidrRange::parse("192.0.2.0/24").map_err(|e| format!("cidr: {e:?}"))?];
+        let opts = unkeyed_allowlisted_opts(&allow);
+        let t0 = Instant::now();
+        let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
+        let peer: IpAddr = "192.0.2.10"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
+        let packet = ingest
+            .receive(TH_MAP_EVENT, peer, t0)
+            .packet
+            .ok_or("an event from a listed sender must reach the pipeline")?;
+        assert!(
+            marked_as_event(&packet),
+            "the listener marks it as an event"
+        );
+        assert_eq!(&packet.data[..], TH_MAP_EVENT, "the bytes go on unchanged");
+        assert_eq!(
+            packet.pre_parsed.as_ref().map(|p| p.src_addr),
+            Some(peer),
+            "the event carries its sender's address"
+        );
+        Ok(())
+    }
+
+    /// An event carries no HEP auth chunk, so only the allowlist vouches for
+    /// it: a listener with no `--hep-allow` refuses every event, even one
+    /// that admits HEP from anyone with the key, and says why. A sender
+    /// outside a list is refused as any packet from it is.
+    #[test]
+    fn a_mapping_event_needs_a_listed_sender() -> Result<(), TestError> {
+        let open = keyed_opts(right_key(), Duration::from_secs(30));
+        let t0 = Instant::now();
+        let mut ingest = HepIngest::new(&open, listener_roster(&open, t0, Utc::now()));
+        let peer: IpAddr = "192.0.2.10"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
+        assert!(
+            ingest.receive(TH_MAP_EVENT, peer, t0).packet.is_none(),
+            "a listener with no allowlist must refuse an event"
+        );
+        let counts = ingest.roster.lock().counters();
+        assert_eq!(
+            counts.refused_by_reason[HepRefusal::EventSenderNotListed.index()],
+            1,
+            "the refusal is counted under its own reason"
+        );
+
+        let allow = [CidrRange::parse("198.51.100.0/24").map_err(|e| format!("cidr: {e:?}"))?];
+        let listed = unkeyed_allowlisted_opts(&allow);
+        let mut ingest = HepIngest::new(&listed, listener_roster(&listed, t0, Utc::now()));
+        assert!(
+            ingest.receive(TH_MAP_EVENT, peer, t0).packet.is_none(),
+            "a sender outside the list is refused"
+        );
+        let counts = ingest.roster.lock().counters();
+        assert_eq!(
+            counts.refused_by_reason[HepRefusal::Allowlist.index()],
+            1,
+            "as any packet from outside the list is"
+        );
+        Ok(())
+    }
+
+    /// HEP from a listed sender is still HEP: not marked as an event.
+    #[test]
+    fn hep_from_a_listed_sender_is_not_marked_as_an_event() -> Result<(), TestError> {
+        let allow = [CidrRange::parse("192.0.2.0/24").map_err(|e| format!("cidr: {e:?}"))?];
+        let opts = unkeyed_allowlisted_opts(&allow);
+        let t0 = Instant::now();
+        let mut ingest = HepIngest::new(&opts, listener_roster(&opts, t0, Utc::now()));
+        let peer: IpAddr = "192.0.2.10"
+            .parse()
+            .map_err(|e| format!("literal: {e:?}"))?;
+        let hep = hep3_from(7, None, b"OPTIONS sip:x SIP/2.0\r\n\r\n");
+        let packet = ingest
+            .receive(&hep, peer, t0)
+            .packet
+            .ok_or("HEP from a listed sender is admitted")?;
+        assert!(!marked_as_event(&packet), "a HEP packet is not an event");
+        Ok(())
+    }
+
     /// **A sender whose every packet is refused does not keep the silence
     /// warning quiet.**
     ///
@@ -10250,7 +10432,7 @@ mod tests {
 
     /// **Every reason the rate limiter or the HMAC verifier can give lands
     /// under a roster reason of its own, and the roster's vocabulary is
-    /// exactly those plus the listener's own four checks.**
+    /// exactly those plus the listener's own five checks.**
     ///
     /// Derived from the two enums' own variant lists rather than a list typed
     /// here, so a variant added to either is covered — or refused — the day it
@@ -10269,13 +10451,14 @@ mod tests {
         image.extend(Refusal::ALL.iter().map(|r| HepRefusal::from(*r)));
         image.extend(HmacAuthError::ALL.iter().map(|e| HepRefusal::from(*e)));
         let mapped = image.len();
-        // The four checks the listener makes itself, which no source enum
+        // The five checks the listener makes itself, which no source enum
         // carries.
         image.extend([
             HepRefusal::Allowlist,
             HepRefusal::Malformed,
             HepRefusal::AuthMissing,
             HepRefusal::AuthMismatch,
+            HepRefusal::EventSenderNotListed,
         ]);
         let distinct: std::collections::BTreeSet<HepRefusal> = image.iter().copied().collect();
         assert_eq!(
@@ -10288,7 +10471,7 @@ mod tests {
         assert_eq!(
             distinct, vocabulary,
             "the roster vocabulary is exactly the {mapped} mapped reasons and the \
-             listener's own four"
+             listener's own five"
         );
         Ok(())
     }

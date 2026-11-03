@@ -626,6 +626,11 @@ fn reconstruct(
                 learn_links(ss, pp, &sdp_links);
             }
         }
+        PacketAction::ThMapping(event) => {
+            if !cfg.no_dialog {
+                ds.apply_th_mapping(event, pp.timestamp);
+            }
+        }
         PacketAction::RelayControl(message) => {
             if !cfg.no_dialog && (message.carries_anything()) {
                 crate::pipeline::apply_relay_control(ss, &message, pp.input_origin, pp.timestamp);

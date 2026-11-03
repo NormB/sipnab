@@ -822,6 +822,25 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
         }
     }
 
+    // OpenSIPS E_SIPNAB_TH_MAP events, once any has arrived: the same counts
+    // REST /v1/stats and MCP capture_status return.
+    let t = ds.th_mapping_counts();
+    if t.accepted + t.duplicate + t.conflict + t.malformed + t.refused_full > 0 {
+        text.push_str("\nTopology hiding (E_SIPNAB_TH_MAP):\n");
+        for (label, n) in [
+            ("Accepted", t.accepted),
+            ("Duplicate", t.duplicate),
+            ("Conflicting", t.conflict),
+            ("Malformed", t.malformed),
+            ("Refused (full)", t.refused_full),
+            ("Expired", t.expired),
+            ("Held now", t.held),
+            ("Waiting for SIP", t.pending),
+        ] {
+            text.push_str(&format!("  {label:<16}  {n}\n"));
+        }
+    }
+
     text.push_str("\nPress Esc to return.");
     text
 }
@@ -2528,6 +2547,40 @@ pub(crate) mod test_support {
             make_response("call-1@test", 200, "OK", t0 + TimeDelta::seconds(2))?,
             make_bye("call-1@test", t0 + TimeDelta::seconds(62))?,
         ]))
+    }
+
+    /// The statistics view lists the OpenSIPS E_SIPNAB_TH_MAP counts once an
+    /// event has arrived, and says nothing about them before.
+    #[test]
+    fn statistics_list_the_mapping_counts_once_an_event_arrives() {
+        use crate::sip::th_mapping::ThMapping;
+        let ss = StreamStore::new(10);
+        let mut ds = DialogStore::new(10, false);
+        assert!(
+            !statistics_text(&ds, &ss).contains("Topology hiding"),
+            "no event, no section"
+        );
+        let now = chrono::Utc::now();
+        for callee in ["DLGCH_a", "DLGCH_a", "DLGCH_b"] {
+            ds.apply_th_mapping(
+                Ok(ThMapping {
+                    caller_call_id: "a@example.com".into(),
+                    callee_call_id: callee.into(),
+                }),
+                now,
+            );
+        }
+        let text = statistics_text(&ds, &ss);
+        for line in [
+            "Topology hiding (E_SIPNAB_TH_MAP):",
+            "  Accepted          1",
+            "  Duplicate         1",
+            "  Conflicting       1",
+            "  Held now          1",
+            "  Waiting for SIP   1",
+        ] {
+            assert!(text.contains(line), "`{line}` missing from:\n{text}");
+        }
     }
 
     /// Below the minimum size the layout collapses to nothing usable; the

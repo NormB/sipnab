@@ -2793,7 +2793,7 @@ The MCP `get_capture_report` tool answers the same question, with the same
 
 What sipnab is doing, and what it is costing the host it runs on.
 
-sipnab exports 45 Prometheus metrics. The listener that serves them is off
+sipnab exports 49 Prometheus metrics. The listener that serves them is off
 by default.
 
 - This endpoint answers the same questions without that listener.
@@ -3005,7 +3005,8 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/hep/
   "packets_admitted": 1829,
   "packets_refused": 14,
   "refused_by_reason": {
-    "allowlist": 0, "auth_missing": 0, "auth_mismatch": 14, "hmac_bad_format": 0,
+    "allowlist": 0, "auth_missing": 0, "auth_mismatch": 14, "event_sender_not_listed": 0,
+    "hmac_bad_format": 0,
     "hmac_bad_mac": 0, "hmac_replay": 0, "hmac_timestamp_out_of_window": 0,
     "hmac_unsupported_version": 0, "malformed": 0, "peer_tracking_full": 0,
     "rate_limit_global": 0, "rate_limit_per_peer": 0
@@ -3267,6 +3268,10 @@ console.log(`PDD p50: ${timing.pdd_p50_ms}ms, p95: ${timing.pdd_p95_ms}ms`);
     "total": 46,
     "orphaned": 3
   },
+  "th_mappings": {
+    "accepted": 0, "duplicate": 0, "conflict": 0, "malformed": 0,
+    "refused_full": 0, "expired": 0, "held": 0, "pending": 0
+  },
   "caveats": {
     "media_creating_commands": 0
   },
@@ -3431,6 +3436,25 @@ Read `unsaved` before you stop a capture.
   on disk, so it is never unsaved.
 - A live capture with an output file is safe to
   stop.
+
+### Count the OpenSIPS topology-hiding mappings
+
+`th_mappings` counts the OpenSIPS `E_SIPNAB_TH_MAP` events the HEP listener
+accepted from a `--hep-allow` sender, and the mappings they hold. The MCP tool
+`capture_status` returns the same object.
+
+| Key | Meaning |
+|-----|---------|
+| `accepted` | events that added a mapping |
+| `duplicate` | events that repeated a mapping already held |
+| `conflict` | events refused because a Call-ID was already mapped to another partner; the held mapping stops joining |
+| `malformed` | event datagrams that were not a valid event |
+| `refused_full` | events refused because the table held `[sip] th_mapping_max` mappings |
+| `expired` | mappings dropped after `[sip] th_mapping_ttl_secs` with neither leg in the store |
+| `held` | mappings held now |
+| `pending` | mappings held now whose two legs are not both captured |
+
+See [Have OpenSIPS send the mapping](@/docs/opensips-sipnab.md#have-opensips-send-the-mapping).
 
 ### Find SIP that `--portrange` excluded
 

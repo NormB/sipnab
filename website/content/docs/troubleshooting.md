@@ -1308,6 +1308,7 @@ no sender row. Its address appears under `refused_sources` with the reason:
 | `rate_limit_global`, `rate_limit_per_peer` | Traffic above `--hep-rate-limit` or `--hep-rate-limit-per-peer` |
 | `peer_tracking_full` | More senders at once than `[limits] max_tracked_peers` |
 | `malformed` | The bytes are not HEP; check the sender speaks HEP v3, or v2 over UDP |
+| `event_sender_not_listed` | An OpenSIPS `E_SIPNAB_TH_MAP` event on a listener with no `--hep-allow`; list OpenSIPS's address there ([Have OpenSIPS send the mapping](@/docs/opensips-sipnab.md#have-opensips-send-the-mapping)) |
 
 The roster names senders by the capture id each claims and the address it
 sends from. Give each sender its own id (`--hep-id` on a sipnab agent). Then

@@ -965,7 +965,7 @@ Parse incoming HEP packets (enable HEP decoding). Config: \fB[capture] hep_parse
 Do not unwrap HEP found in the capture, even when \fB[capture] hep_parse = true\fR says to. The last of \fB\-E\fR / \fB\-\-no\-hep\-parse\fR typed wins.
 .TP
 \fB\-\-hep\-allow\fR \fIADDR\fR
-Allowed source addresses for HEP input (repeatable). Refused without \fB\-\-hep\-listen\fR, which is the side it governs.
+Allowed source addresses for HEP input (repeatable), and the only senders whose OpenSIPS \fBE_SIPNAB_TH_MAP\fR events the listener accepts. Refused without \fB\-\-hep\-listen\fR, which is the side it governs.
 .TP
 \fB\-\-hep\-rate\-limit\fR \fIN\fR
 Maximum HEP packets per second (global ceiling across all senders). \fB0\fR disables the global ceiling (consistent with \fBoff\fR on the per\-peer knob); the per\-peer cap, if set, still applies. Refused without \fB\-\-hep\-listen\fR, which is the side it governs.

@@ -4471,8 +4471,9 @@ pub struct HepArgs {
     )]
     pub no_hep_parse: bool,
 
-    /// Allowed source addresses for HEP input (repeatable). Refused without
-    /// `--hep-listen`, which is the side it governs.
+    /// Allowed source addresses for HEP input (repeatable), and the only
+    /// senders whose OpenSIPS `E_SIPNAB_TH_MAP` events the listener accepts.
+    /// Refused without `--hep-listen`, which is the side it governs.
     #[arg(
         help_heading = "HEP",
         long,

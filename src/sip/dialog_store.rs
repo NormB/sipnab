@@ -106,9 +106,14 @@ pub enum CorrelationReason {
     TimingHeuristic,
     /// One leg's Call-ID is the other's, encoded by OpenSIPS
     /// `topology_hiding("C")`, decoded with the configured secret, and the From
-    /// tags agree. See [`crate::sip::th_callid`] for the encoding and for why
-    /// the tag check, not the decode, is what rules out a false join.
+    /// tags agree. See `crate::sip::th_callid` (`tls` builds) for the encoding
+    /// and for why the tag check, not the decode, is what rules out a false
+    /// join.
     TopologyHidingCallid,
+    /// OpenSIPS named the two Call-IDs as one call's two legs, in an
+    /// `E_SIPNAB_TH_MAP` event sent to the HEP listener. See
+    /// [`crate::sip::th_mapping`].
+    TopologyHidingMapping,
 }
 
 impl CorrelationReason {
@@ -155,6 +160,8 @@ impl CorrelationReason {
             // The decoded value is compared exactly, and the From tags must
             // match as well, so it is an identifier comparison.
             Self::TopologyHidingCallid => ("th_callid_decoded", true),
+            // OpenSIPS stated the pair; both Call-IDs are compared exactly.
+            Self::TopologyHidingMapping => ("th_callid_mapping", true),
             // NO CATCH-ALL, deliberately. `CorrelationReason` is
             // `#[non_exhaustive]` for external crates, but this match lives in
             // the defining crate, so it is checked exhaustively: a new strategy
@@ -173,6 +180,7 @@ impl CorrelationReason {
     pub fn method(&self) -> CorrelationMethod {
         match self {
             Self::TopologyHidingCallid => CorrelationMethod::Decoded,
+            Self::TopologyHidingMapping => CorrelationMethod::Mapping,
             // Each compares a value carried in a SIP header both legs have:
             // a header the operator named, `Session-ID`, `P-Charging-Vector`
             // or `Via`.
@@ -198,6 +206,9 @@ pub enum CorrelationMethod {
     /// An OpenSIPS topology-hiding Call-ID, decoded with the configured
     /// secret, equals the other leg's Call-ID, and the From tags agree.
     Decoded,
+    /// OpenSIPS named the two Call-IDs as one call's legs in an
+    /// `E_SIPNAB_TH_MAP` event.
+    Mapping,
     /// The two legs carry the same value in a SIP header: a header named in
     /// `[sip] xcid_headers`, `Session-ID`, `P-Charging-Vector` or a `Via`
     /// branch.
@@ -209,11 +220,12 @@ pub enum CorrelationMethod {
 }
 
 impl CorrelationMethod {
-    /// The wire name: `decoded`, `header`, `sdp` or `timing`.
+    /// The wire name: `decoded`, `mapping`, `header`, `sdp` or `timing`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Decoded => "decoded",
+            Self::Mapping => "mapping",
             Self::Header => "header",
             Self::Sdp => "sdp",
             Self::Timing => "timing",
@@ -451,6 +463,11 @@ pub struct DialogStore {
     /// `--cores` shard) decodes alike.
     #[cfg(feature = "tls")]
     th_callid: Option<std::sync::Arc<crate::sip::th_callid::ThCallid>>,
+    /// OpenSIPS topology-hiding Call-ID mappings received as
+    /// `E_SIPNAB_TH_MAP` events.
+    th_mappings: crate::sip::th_mapping::ThMappingTable,
+    /// When the mapping table was last swept for expiry, in capture time.
+    th_mappings_swept: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// The process-wide topology-hiding decoder; see [`set_th_callid`].
@@ -492,6 +509,12 @@ pub enum ThCallidStatus {
     /// side was not captured, or the secret is wrong and its output happened
     /// to look like a Call-ID.
     Unmatched,
+    /// OpenSIPS named this leg's caller-side Call-ID in an `E_SIPNAB_TH_MAP`
+    /// event, and the caller leg is captured: the legs joined.
+    Mapped,
+    /// Two `E_SIPNAB_TH_MAP` events named this Call-ID with different
+    /// partners, so neither mapping joins.
+    Conflict,
 }
 
 impl ThCallidStatus {
@@ -503,6 +526,8 @@ impl ThCallidStatus {
             Self::NoSecret => "no_secret",
             Self::Undecodable => "undecodable",
             Self::Unmatched => "unmatched",
+            Self::Mapped => "mapped",
+            Self::Conflict => "conflict",
         }
     }
 
@@ -523,6 +548,13 @@ impl ThCallidStatus {
                 "decoded, but no captured leg has that Call-ID and From tag: the caller \
                  side was not captured, or the secret is wrong"
             }
+            Self::Mapped => {
+                "OpenSIPS named the caller leg in an E_SIPNAB_TH_MAP event, and it is captured"
+            }
+            Self::Conflict => {
+                "two E_SIPNAB_TH_MAP events named this Call-ID with different partners, so \
+                 neither joins; check the OpenSIPS script that raises them"
+            }
         }
     }
 }
@@ -531,6 +563,21 @@ impl std::fmt::Display for ThCallidStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// The `[sip] th_mapping_max` and `th_mapping_ttl_secs` every store is built
+/// with; see [`set_th_mapping_limits`].
+static TH_MAPPING_LIMITS: std::sync::OnceLock<(usize, u64)> = std::sync::OnceLock::new();
+
+/// Set the mapping table's bound and lifetime for every [`DialogStore`] built
+/// after this call. Call once at startup; a second call is ignored.
+///
+/// Process-wide for the reason [`set_active_idle_window_secs`] is: the batch
+/// run, the terminal interface and each `--cores` shard build their own
+/// stores, and a limit threaded to some of them would hold mappings on one
+/// surface and drop them on another.
+pub fn set_th_mapping_limits(max: usize, ttl_secs: u64) {
+    let _ = TH_MAPPING_LIMITS.set((max, ttl_secs));
 }
 
 /// Counts of hidden dialogs by [`ThCallidStatus`], from
@@ -545,6 +592,10 @@ pub struct ThCallidSummary {
     pub undecodable: usize,
     /// Hidden legs decoded to no observed caller leg.
     pub unmatched: usize,
+    /// Hidden legs joined by an `E_SIPNAB_TH_MAP` event.
+    pub mapped: usize,
+    /// Hidden legs whose mapping a conflicting event stopped.
+    pub conflict: usize,
     /// Undecodable or unmatched hidden legs whose From tag IS on an observed
     /// non-hidden leg: the caller side was captured, so the secret (or the
     /// prefix) is the likely fault.
@@ -873,7 +924,73 @@ impl DialogStore {
             leg_correlation_window_ms: DEFAULT_LEG_CORRELATION_WINDOW_MS,
             #[cfg(feature = "tls")]
             th_callid: TH_CALLID.get().cloned(),
+            th_mappings: TH_MAPPING_LIMITS.get().map_or_else(
+                crate::sip::th_mapping::ThMappingTable::default,
+                |&(max, ttl)| crate::sip::th_mapping::ThMappingTable::new(max, ttl),
+            ),
+            th_mappings_swept: None,
         }
+    }
+
+    /// Apply one `E_SIPNAB_TH_MAP` event datagram, parsed or refused,
+    /// received at `now`. See [`crate::sip::th_mapping`].
+    ///
+    /// A refused datagram is counted as malformed. A conflict is logged at
+    /// `warn`, naming both Call-IDs, because it means the OpenSIPS script
+    /// raises the event where it should not, and the two legs it names will
+    /// not be joined.
+    pub fn apply_th_mapping(
+        &mut self,
+        event: Result<crate::sip::th_mapping::ThMapping, crate::sip::th_mapping::EventRefusal>,
+        now: chrono::DateTime<chrono::Utc>,
+    ) {
+        use crate::sip::th_mapping::Insert;
+        self.generation += 1;
+        match event {
+            Err(refusal) => {
+                self.th_mappings.note_malformed();
+                tracing::debug!("E_SIPNAB_TH_MAP datagram refused ({})", refusal.as_str());
+            }
+            Ok(m) => {
+                let (caller, callee) = (m.caller_call_id.clone(), m.callee_call_id.clone());
+                match self.th_mappings.insert(m, now) {
+                    Insert::Conflict => tracing::warn!(
+                        "E_SIPNAB_TH_MAP: {caller} -> {callee} conflicts with a mapping \
+                         already held for one of them; neither joins"
+                    ),
+                    Insert::Full => tracing::warn!(
+                        "E_SIPNAB_TH_MAP: the mapping table is full ([sip] \
+                         th_mapping_max); {caller} -> {callee} refused"
+                    ),
+                    Insert::Added | Insert::Duplicate => {}
+                }
+            }
+        }
+        self.sweep_th_mappings(now);
+    }
+
+    /// Expire mappings neither of whose legs the store has held for the
+    /// configured lifetime, at most once a second of capture time.
+    fn sweep_th_mappings(&mut self, now: chrono::DateTime<chrono::Utc>) {
+        if self.th_mappings.is_empty()
+            || self
+                .th_mappings_swept
+                .is_some_and(|t| now - t < chrono::TimeDelta::seconds(1))
+        {
+            return;
+        }
+        let dialogs = &self.dialogs;
+        self.th_mappings
+            .sweep(now, |call_id| dialogs.contains_key(call_id));
+        self.th_mappings_swept = Some(now);
+    }
+
+    /// The mapping table's counts, with `pending` the mappings whose two legs
+    /// the store does not both hold.
+    #[must_use]
+    pub fn th_mapping_counts(&self) -> crate::sip::th_mapping::ThMappingCounts {
+        self.th_mappings
+            .counts(|call_id| self.dialogs.contains_key(call_id))
     }
 
     /// Set (or clear, with `None`) the topology-hiding Call-ID decoder,
@@ -915,22 +1032,46 @@ impl DialogStore {
     }
 
     /// The topology-hiding state of the dialog `call_id`: `None` when it is
-    /// not a hidden leg, is not in the store, or the build has no `tls` and
-    /// so cannot decode.
+    /// not in the store or not a hidden leg.
+    ///
+    /// A mapping event decides first: a leg OpenSIPS named as the callee side
+    /// of a call is `mapped` once its caller leg is captured, or `conflict`
+    /// when two events disagree about it. Otherwise a build with `tls`
+    /// decodes; one without has nothing more to say.
     #[must_use]
     pub fn th_callid_status(&self, call_id: &str) -> Option<ThCallidStatus> {
+        let d = self.get(call_id)?;
+        if let Some(status) = self.th_mapping_status(call_id) {
+            return Some(status);
+        }
         #[cfg(feature = "tls")]
         {
-            self.th_status_of(self.get(call_id)?)
+            self.th_status_of(d)
         }
         #[cfg(not(feature = "tls"))]
         {
-            let _ = call_id;
+            let _ = d;
             None
         }
     }
 
-    /// [`Self::th_callid_status`] for a dialog already looked up.
+    /// The status a mapping event gives `call_id`, when it names it as a
+    /// callee-side leg and that settles it.
+    fn th_mapping_status(&self, call_id: &str) -> Option<ThCallidStatus> {
+        if !self.th_mappings.is_callee(call_id) {
+            return None;
+        }
+        if self.th_mappings.is_conflicted(call_id) {
+            return Some(ThCallidStatus::Conflict);
+        }
+        let caller = self.th_mappings.partner(call_id)?;
+        self.dialogs
+            .contains_key(caller)
+            .then_some(ThCallidStatus::Mapped)
+    }
+
+    /// [`Self::th_callid_status`]'s decode half, for a dialog already looked
+    /// up.
     #[cfg(feature = "tls")]
     fn th_status_of(&self, d: &SipDialog) -> Option<ThCallidStatus> {
         use crate::sip::th_callid::{Decode, is_hidden};
@@ -950,36 +1091,24 @@ impl DialogStore {
         })
     }
 
-    /// Counts of every hidden dialog in the store by status, and how many of
-    /// the undecoded ones share a From tag with an observed non-hidden leg.
-    /// Never carries a secret or a decoded value. All zero in a build
-    /// without `tls`, which cannot decode.
+    /// Counts of every hidden dialog in the store by status, and, in a build
+    /// that can decode, how many of the undecoded ones share a From tag with
+    /// an observed non-hidden leg. Never carries a secret or a decoded value.
     #[must_use]
     pub fn th_callid_summary(&self) -> ThCallidSummary {
         #[cfg(feature = "tls")]
-        {
-            self.th_summary_tls()
-        }
-        #[cfg(not(feature = "tls"))]
-        {
-            ThCallidSummary::default()
-        }
-    }
-
-    /// [`Self::th_callid_summary`] in a build that can decode.
-    #[cfg(feature = "tls")]
-    fn th_summary_tls(&self) -> ThCallidSummary {
-        use crate::sip::th_callid::is_hidden;
-        let prefix = self.th_prefix();
-        let peer_tags: std::collections::HashSet<&str> = self
-            .dialogs
-            .values()
-            .filter(|d| !is_hidden(&d.call_id, prefix))
-            .filter_map(|d| d.from_tag.as_deref())
-            .collect();
+        let peer_tags: std::collections::HashSet<&str> = {
+            use crate::sip::th_callid::is_hidden;
+            let prefix = self.th_prefix();
+            self.dialogs
+                .values()
+                .filter(|d| !is_hidden(&d.call_id, prefix))
+                .filter_map(|d| d.from_tag.as_deref())
+                .collect()
+        };
         let mut s = ThCallidSummary::default();
         for d in self.dialogs.values() {
-            let Some(status) = self.th_status_of(d) else {
+            let Some(status) = self.th_callid_status(&d.call_id) else {
                 continue;
             };
             match status {
@@ -987,7 +1116,10 @@ impl DialogStore {
                 ThCallidStatus::NoSecret => s.no_secret += 1,
                 ThCallidStatus::Undecodable => s.undecodable += 1,
                 ThCallidStatus::Unmatched => s.unmatched += 1,
+                ThCallidStatus::Mapped => s.mapped += 1,
+                ThCallidStatus::Conflict => s.conflict += 1,
             }
+            #[cfg(feature = "tls")]
             if matches!(
                 status,
                 ThCallidStatus::Undecodable | ThCallidStatus::Unmatched
@@ -1231,6 +1363,7 @@ impl DialogStore {
     /// updates to existing dialogs still land.
     pub fn process_message(&mut self, mut msg: SipMessage) {
         self.generation += 1;
+        self.sweep_th_mappings(msg.timestamp);
         // Look up by the borrowed Call-ID (str is Equivalent<String> for
         // IndexMap); the owned key is allocated only when a new dialog is
         // actually inserted — not once per message on the hot path.
@@ -1826,6 +1959,18 @@ impl DialogStore {
                     });
                     continue;
                 }
+            }
+
+            // Strategy 0.4: OpenSIPS named the pair in an E_SIPNAB_TH_MAP event
+            // (score=100). Checked before the decode, because it is what
+            // OpenSIPS stated rather than what sipnab worked out.
+            if self.th_mappings.links(call_id, &candidate.call_id) {
+                results.push(CorrelationResult {
+                    dialog: candidate,
+                    score: 100,
+                    reason: CorrelationReason::TopologyHidingMapping,
+                });
+                continue;
             }
 
             // Strategy 0.5: OpenSIPS topology-hiding Call-ID (score=100). Either
@@ -6347,7 +6492,6 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     // ---- OPENSIPS topology hiding ("C" flag): decoded Call-ID correlation ----
 
     /// An INVITE with `call_id` and From tag `from_tag` at `ts`.
-    #[cfg(feature = "tls")]
     fn make_invite_tagged(
         call_id: &str,
         from_tag: &str,
@@ -6688,6 +6832,191 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             store.th_callid_summary().decoded,
             50,
             "every one of the fifty hidden legs decoded and joined"
+        );
+        Ok(())
+    }
+
+    // ---- OpenSIPS topology hiding: E_SIPNAB_TH_MAP mapping events ----
+
+    /// The caller-side Call-ID of call 1 in the th-mapping capture.
+    const MAP_CALLER: &str = "1-th-map@example.com";
+    /// The callee-side Call-ID OpenSIPS 4.0.2 wrote for it.
+    const MAP_CALLEE: &str = "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-";
+
+    fn mapping(
+        caller: &str,
+        callee: &str,
+    ) -> Result<crate::sip::th_mapping::ThMapping, crate::sip::th_mapping::EventRefusal> {
+        Ok(crate::sip::th_mapping::ThMapping {
+            caller_call_id: caller.into(),
+            callee_call_id: callee.into(),
+        })
+    }
+
+    /// The legs `call_id` is joined to by a mapping event.
+    fn mapped_to<'a>(store: &'a DialogStore, call_id: &str) -> Vec<&'a str> {
+        store
+            .find_correlated_scored(call_id)
+            .into_iter()
+            .filter(|r| r.reason == CorrelationReason::TopologyHidingMapping)
+            .map(|r| r.dialog.call_id.as_str())
+            .collect()
+    }
+
+    /// A mapping joins the two legs exactly, at 100, as `mapping`, whether
+    /// the event arrives before the SIP or after it. The legs carry different
+    /// From tags here, so nothing but the mapping can join them.
+    #[test]
+    fn a_mapping_joins_the_legs_whichever_arrives_first() -> Result<(), TestError> {
+        let t0 = base_ts()?;
+        let invites = || -> Result<[SipMessage; 2], TestError> {
+            Ok([
+                make_invite_tagged(MAP_CALLER, "fa", t0)?,
+                make_invite_tagged(MAP_CALLEE, "fb", t0 + TimeDelta::milliseconds(3))?,
+            ])
+        };
+        let mut before = DialogStore::new(100, false);
+        before.apply_th_mapping(mapping(MAP_CALLER, MAP_CALLEE), t0);
+        for m in invites()? {
+            before.process_message(m);
+        }
+        let mut after = DialogStore::new(100, false);
+        for m in invites()? {
+            after.process_message(m);
+        }
+        after.apply_th_mapping(mapping(MAP_CALLER, MAP_CALLEE), t0 + TimeDelta::seconds(1));
+        for (when, store) in [("before", &before), ("after", &after)] {
+            assert_eq!(
+                mapped_to(store, MAP_CALLER),
+                [MAP_CALLEE],
+                "event {when} the SIP"
+            );
+            assert_eq!(
+                mapped_to(store, MAP_CALLEE),
+                [MAP_CALLER],
+                "event {when} the SIP"
+            );
+            let r = store.find_correlated_scored(MAP_CALLEE);
+            assert_eq!(r[0].score, 100, "a stated mapping scores 100 ({when})");
+            assert_eq!(
+                r[0].reason.method(),
+                CorrelationMethod::Mapping,
+                "the join says it came from a mapping ({when})"
+            );
+            assert_eq!(
+                store.th_callid_status(MAP_CALLEE),
+                Some(ThCallidStatus::Mapped),
+                "the callee leg reports that it was mapped ({when})"
+            );
+            assert_eq!(
+                store.th_callid_status(MAP_CALLER),
+                None,
+                "the caller leg is not a hidden leg ({when})"
+            );
+            let c = store.th_mapping_counts();
+            assert_eq!((c.accepted, c.held, c.pending), (1, 1, 0), "{when}: {c:?}");
+        }
+        Ok(())
+    }
+
+    /// A repeated event, as a retransmitted INVITE raises, changes nothing.
+    #[test]
+    fn a_repeated_mapping_event_is_harmless() -> Result<(), TestError> {
+        let t0 = base_ts()?;
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_tagged(MAP_CALLER, "fa", t0)?);
+        store.process_message(make_invite_tagged(MAP_CALLEE, "fb", t0)?);
+        for _ in 0..3 {
+            store.apply_th_mapping(mapping(MAP_CALLER, MAP_CALLEE), t0);
+        }
+        assert_eq!(
+            mapped_to(&store, MAP_CALLER),
+            [MAP_CALLEE],
+            "one join, not three"
+        );
+        let c = store.th_mapping_counts();
+        assert_eq!(
+            (c.accepted, c.duplicate, c.held),
+            (1, 2, 1),
+            "the repeats are counted as duplicates: {c:?}"
+        );
+        Ok(())
+    }
+
+    /// A Call-ID mapped to two partners joins neither, and the hidden leg
+    /// says why.
+    #[test]
+    fn a_conflicting_mapping_joins_nothing_and_is_reported() -> Result<(), TestError> {
+        let t0 = base_ts()?;
+        let other = "DLGCH_other";
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_tagged(MAP_CALLER, "fa", t0)?);
+        store.process_message(make_invite_tagged(MAP_CALLEE, "fb", t0)?);
+        store.process_message(make_invite_tagged(other, "fc", t0)?);
+        store.apply_th_mapping(mapping(MAP_CALLER, MAP_CALLEE), t0);
+        store.apply_th_mapping(mapping(MAP_CALLER, other), t0);
+        for cid in [MAP_CALLER, MAP_CALLEE, other] {
+            assert!(
+                mapped_to(&store, cid).is_empty(),
+                "{cid} must not be joined by a mapping a conflict contradicts"
+            );
+        }
+        assert_eq!(
+            store.th_callid_status(MAP_CALLEE),
+            Some(ThCallidStatus::Conflict),
+            "the held mapping's callee leg reports the conflict"
+        );
+        assert_eq!(
+            store.th_mapping_counts().conflict,
+            1,
+            "one conflict counted"
+        );
+        Ok(())
+    }
+
+    /// With no mapping event, correlation is what it was: no mapping join,
+    /// no status, all counts zero.
+    #[test]
+    fn without_a_mapping_nothing_changes() -> Result<(), TestError> {
+        let t0 = base_ts()?;
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_tagged(MAP_CALLER, "fa", t0)?);
+        store.process_message(make_invite_tagged(MAP_CALLEE, "fb", t0)?);
+        assert!(
+            mapped_to(&store, MAP_CALLER).is_empty(),
+            "no event, no mapping join"
+        );
+        assert_eq!(
+            store.th_mapping_counts(),
+            crate::sip::th_mapping::ThMappingCounts::default(),
+            "no event, no counts"
+        );
+        Ok(())
+    }
+
+    /// A mapping whose legs never arrive is pending, then expires once the
+    /// configured lifetime of capture time has passed with neither leg in
+    /// the store; refused datagrams are counted as malformed.
+    #[test]
+    fn a_mapping_with_no_legs_is_pending_then_expires() -> Result<(), TestError> {
+        use crate::sip::th_mapping::{DEFAULT_TTL_SECS, EventRefusal};
+        let t0 = base_ts()?;
+        let mut store = DialogStore::new(100, false);
+        store.apply_th_mapping(mapping(MAP_CALLER, MAP_CALLEE), t0);
+        store.apply_th_mapping(Err(EventRefusal::NotJson), t0);
+        let c = store.th_mapping_counts();
+        assert_eq!(
+            (c.held, c.pending, c.malformed),
+            (1, 1, 1),
+            "held and waiting for its legs: {c:?}"
+        );
+        let later = t0 + TimeDelta::seconds(i64::try_from(DEFAULT_TTL_SECS)? + 1);
+        store.process_message(make_invite_tagged("unrelated@example.com", "fu", later)?);
+        let c = store.th_mapping_counts();
+        assert_eq!(
+            (c.held, c.pending, c.expired),
+            (0, 0, 1),
+            "the store's traffic past the lifetime expires it: {c:?}"
         );
         Ok(())
     }

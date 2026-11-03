@@ -1539,7 +1539,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // rest-api.md +1, each a link to opensips-sipnab.md's "Calls through
     // topology hiding"; opensips-sipnab.md +1, its "Tested on" pointing at
     // that section. Counted per page against origin/main 8a7b78ab5.
-    const EXPECTED_WIKI_LINKS: usize = 1998;
+    // 1998 -> 2004 (#617, the OpenSIPS mapping event): cli-reference.md,
+    // config-reference.md, mcp-tools-core.md, prometheus-metrics.md,
+    // rest-api.md and troubleshooting.md +1 each, each a link to
+    // opensips-sipnab.md's "Have OpenSIPS send the mapping". Counted per page
+    // against origin/main 23eb5a0bc.
+    const EXPECTED_WIKI_LINKS: usize = 2004;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

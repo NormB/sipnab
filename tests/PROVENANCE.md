@@ -332,3 +332,18 @@ leaves it by gaining a real entry here, or by the file being deleted.
   is what the tests decode. Running the generator again writes the same
   messages with other timestamps and From tags (SIPp puts its process ID
   in the tag), so the hash changes with each run.
+
+### tests/fixtures/th-mapping/opensips-4.0-events.pcap
+
+- **Category:** synthetic
+- **Generator:** `harness/th-mapping/capture.sh`
+- **SHA-256:** `267660f7fb2d3b8cbc5bb02c21a2732812eaa7bfdb33bcb095bf4ce34ec83ca8`
+- **Holds:** three calls placed by SIPp through OpenSIPS 4.0.2 running
+  `topology_hiding("C")`, and the `E_SIPNAB_TH_MAP` event OpenSIPS's
+  `event_datagram` sent for each to 192.0.2.1:9060. SIPp, OpenSIPS and the
+  capture ran on a private Docker network with RFC 5737 addresses only
+  (192.0.2.1 and 192.0.2.10), and every Call-ID and URI host is
+  `example.com` or one of those addresses. `tests/th_mapping_test.rs`
+  replays it into a live listener. Running the generator again writes the
+  same messages with other timestamps and From tags (SIPp puts its process
+  ID in the tag), so the hash changes with each run.

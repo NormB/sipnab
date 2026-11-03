@@ -29,7 +29,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 What sipnab is doing, and what it is costing the host it runs on.
 
 Use it to answer "is this server healthy" without a metrics listener. sipnab
-exports 45 Prometheus metrics, and the listener that serves them is off by
+exports 49 Prometheus metrics, and the listener that serves them is off by
 default. This tool reports process, host and store state over MCP without
 that listener.
 
@@ -347,6 +347,7 @@ Both senders share the address `127.0.0.1`:
     "allowlist": 0,
     "auth_mismatch": 10,
     "auth_missing": 0,
+    "event_sender_not_listed": 0,
     "hmac_bad_format": 0,
     "hmac_bad_mac": 0,
     "hmac_replay": 0,

@@ -2769,6 +2769,11 @@ pub struct CaptureStatusResponse {
     /// Zero on live capture, where BPF filtered before the pipeline saw
     /// anything and there is nothing to under-report.
     pub unanalysed_sip_messages: u64,
+    /// OpenSIPS `E_SIPNAB_TH_MAP` mapping events the HEP listener received:
+    /// running totals by outcome (`accepted`, `duplicate`, `conflict`,
+    /// `malformed`, `refused_full`, `expired`), and the mappings `held` and
+    /// `pending` now. The same object REST `/v1/stats` returns.
+    pub th_mappings: crate::sip::th_mapping::ThMappingCounts,
     /// Cleartext Asterisk Manager Interface credentials seen on the wire.
     ///
     /// Reported HERE, on the tool whose `unanalysed_sip_messages: 0` was the
@@ -6783,6 +6788,7 @@ impl SipnabMcp {
                 unsaved: live && writing_to.is_none(),
                 capture_identity: state.identity.etag(ds.generation(), ss.generation()),
                 unanalysed_sip_messages: skipped.messages,
+                th_mappings: ds.th_mapping_counts(),
                 // Read from the recorder, the way `icmp_media_findings` is
                 // read by the dialog report: the packet path notices and the
                 // surface reports, with no shared state threaded between them.
@@ -9264,7 +9270,7 @@ impl SipnabMcp {
     ///
     /// # Why this is a tool rather than a metrics scrape
     ///
-    /// sipnab exports 45 Prometheus metrics and the listener that serves them
+    /// sipnab exports 49 Prometheus metrics and the listener that serves them
     /// is off by default, so on most deployments those numbers exist in-process
     /// and nothing can read them. An agent asked "is this server healthy"
     /// cannot enable a listener to find out.
@@ -12602,6 +12608,41 @@ mod tests {
     /// whatever this test's process happens to have skipped is not the point —
     /// the defect was a field that did not exist, and a client that cannot see
     /// the key cannot see the loss whatever number would have been in it.
+    #[tokio::test]
+    async fn capture_status_carries_the_topology_hiding_mapping_counts() -> Result<(), TestError> {
+        use crate::sip::th_mapping::ThMapping;
+        let mut ds = DialogStore::new(100, false);
+        let now = chrono::Utc::now();
+        for callee in ["DLGCH_a", "DLGCH_a", "DLGCH_other"] {
+            ds.apply_th_mapping(
+                Ok(ThMapping {
+                    caller_call_id: "a@example.com".into(),
+                    callee_call_id: callee.into(),
+                }),
+                now,
+            );
+        }
+        let server = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let result = server
+            .capture_status()
+            .await
+            .map_err(|e| format!("capture_status: {e:?}"))?;
+        let v: serde_json::Value = serde_json::from_str(&text_of(&result)?)?;
+        let t = &v["th_mappings"];
+        for (key, want) in [
+            ("accepted", 1),
+            ("duplicate", 1),
+            ("conflict", 1),
+            ("held", 1),
+        ] {
+            assert_eq!(t[key], want, "th_mappings.{key}, as on /v1/stats: {v}");
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn capture_status_carries_the_unanalyzed_sip_count() -> Result<(), TestError> {
         let result = empty_server()

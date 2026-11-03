@@ -1661,6 +1661,22 @@ Both keys name a secret, and sipnab would have to choose one. The printed line s
 
 **Exit code:** 1.
 
+### `[sip] th_mapping_max must be > 0 (0 would refuse every E_SIPNAB_TH_MAP mapping; to receive none, leave the sender out of --hep-allow)`
+
+`[sip] th_mapping_max` is how many OpenSIPS `E_SIPNAB_TH_MAP` mappings sipnab holds at once. A value of 0 would refuse every one. The printed line starts with `invalid config value: `.
+
+**What to do:** Set a whole number of 1 or more, for example the default `100000`, or remove the key. To receive no events, leave OpenSIPS's address out of `--hep-allow`.
+
+**Exit code:** 1.
+
+### `[sip] th_mapping_ttl_secs must be > 0 (0 would expire a mapping before the SIP it names could arrive)`
+
+`[sip] th_mapping_ttl_secs` is how many seconds sipnab keeps an `E_SIPNAB_TH_MAP` mapping after the store last held either of its legs. A value of 0 would drop a mapping before its SIP could arrive. The printed line starts with `invalid config value: `.
+
+**What to do:** Set a whole number of 1 or more, for example the default `300`, or remove the key.
+
+**Exit code:** 1.
+
 ### `sipnabrc is not valid TOML: {e}`
 
 While saving from the terminal UI, sipnab found that the existing configuration file is not valid TOML (the configuration file format).

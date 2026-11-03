@@ -5665,7 +5665,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1283 -> 1285: docs/errors.md +1, the `## Exit codes` list, and its site
     // mirror website/content/docs/errors.md +1. Attributed per file against
     // HEAD: no other changed page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1285;
+    // 1285 -> 1287 (#617): docs/rest-api.md +1, the `th_mappings` keys of
+    // `/v1/stats`, and its site mirror website/content/docs/api.md +1.
+    // Attributed per file against origin/main 23eb5a0bc.
+    const EXPECTED_TABLES: usize = 1287;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

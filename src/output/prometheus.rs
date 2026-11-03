@@ -251,6 +251,56 @@ impl McpToolTally {
     }
 }
 
+/// The OpenSIPS `E_SIPNAB_TH_MAP` families: events by outcome, mappings
+/// expired, and mappings held and pending now. Every outcome is written on
+/// every scrape, zeros included, so an alert on one reads 0 rather than no
+/// data.
+fn write_th_mappings(out: &mut String, t: &crate::sip::th_mapping::ThMappingCounts) {
+    write_help_type(
+        out,
+        "sipnab_th_mapping_events_total",
+        "OpenSIPS E_SIPNAB_TH_MAP events received, by outcome",
+        "counter",
+    );
+    for (outcome, n) in [
+        ("accepted", t.accepted),
+        ("duplicate", t.duplicate),
+        ("conflict", t.conflict),
+        ("malformed", t.malformed),
+        ("refused_full", t.refused_full),
+    ] {
+        let _ = writeln!(
+            out,
+            "sipnab_th_mapping_events_total{{outcome=\"{outcome}\"}} {n}"
+        );
+    }
+    out.push('\n');
+    write_help_type(
+        out,
+        "sipnab_th_mappings_expired_total",
+        "E_SIPNAB_TH_MAP mappings dropped after their lifetime with neither leg held",
+        "counter",
+    );
+    let _ = writeln!(out, "sipnab_th_mappings_expired_total {}", t.expired);
+    out.push('\n');
+    write_help_type(
+        out,
+        "sipnab_th_mappings_held",
+        "E_SIPNAB_TH_MAP mappings held now",
+        "gauge",
+    );
+    let _ = writeln!(out, "sipnab_th_mappings_held {}", t.held);
+    out.push('\n');
+    write_help_type(
+        out,
+        "sipnab_th_mappings_pending",
+        "E_SIPNAB_TH_MAP mappings held whose two legs are not both captured",
+        "gauge",
+    );
+    let _ = writeln!(out, "sipnab_th_mappings_pending {}", t.pending);
+    out.push('\n');
+}
+
 /// Collected metrics for Prometheus exposition.
 ///
 /// All counters use monotonically increasing values. Histograms store
@@ -277,6 +327,9 @@ pub struct PrometheusMetrics {
     /// The concurrent-call figure — channels in use. By construction never
     /// greater than [`Self::dialogs_active`].
     pub calls_active: u64,
+    /// OpenSIPS `E_SIPNAB_TH_MAP` mapping events and the mappings held, from
+    /// [`crate::sip::dialog_store::DialogStore::th_mapping_counts`].
+    pub th_mappings: crate::sip::th_mapping::ThMappingCounts,
     /// RTP stream counts by status (e.g., `"established"`, `"orphaned"`).
     pub rtp_streams_total: HashMap<String, u64>,
     /// Total captured packets.
@@ -801,6 +854,7 @@ pub fn format_metrics(metrics: &PrometheusMetrics) -> String {
     );
     let _ = writeln!(out, "sipnab_calls_active {}", metrics.calls_active);
     out.push('\n');
+    write_th_mappings(&mut out, &metrics.th_mappings);
 
     // Active streams (gauge)
     write_help_type(
@@ -1330,6 +1384,7 @@ pub fn populate_from_stores(
     // drift from the definitions every other surface publishes.
     metrics.dialogs_active = dialogs.active_dialog_count() as u64;
     metrics.calls_active = dialogs.active_call_count() as u64;
+    metrics.th_mappings = dialogs.th_mapping_counts();
 
     let mut established = 0u64;
     let mut orphaned = 0u64;
@@ -1553,6 +1608,43 @@ mod tests {
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
     // ── HEP listener series ──────────────────────────────────────────
+
+    /// The OpenSIPS `E_SIPNAB_TH_MAP` counts reach the scrape from the
+    /// store, every outcome on every scrape, zeros included, so an alert on
+    /// `conflict` reads 0 rather than no data.
+    #[test]
+    fn th_mapping_counts_reach_the_scrape() -> Result<(), Box<dyn std::error::Error>> {
+        use crate::sip::th_mapping::{EventRefusal, ThMapping};
+        let mut ds = crate::sip::dialog_store::DialogStore::new(100, false);
+        let now = chrono::Utc::now();
+        let m = |callee: &str| {
+            Ok(ThMapping {
+                caller_call_id: "a@example.com".into(),
+                callee_call_id: callee.into(),
+            })
+        };
+        ds.apply_th_mapping(m("DLGCH_a"), now);
+        ds.apply_th_mapping(m("DLGCH_a"), now);
+        ds.apply_th_mapping(m("DLGCH_b"), now);
+        ds.apply_th_mapping(Err(EventRefusal::BadCallId), now);
+        let ss = crate::rtp::stream_store::StreamStore::new(10);
+        let mut metrics = PrometheusMetrics::default();
+        populate_from_stores(&mut metrics, &ds, &ss);
+        let text = format_metrics(&metrics);
+        for line in [
+            "sipnab_th_mapping_events_total{outcome=\"accepted\"} 1",
+            "sipnab_th_mapping_events_total{outcome=\"duplicate\"} 1",
+            "sipnab_th_mapping_events_total{outcome=\"conflict\"} 1",
+            "sipnab_th_mapping_events_total{outcome=\"malformed\"} 1",
+            "sipnab_th_mapping_events_total{outcome=\"refused_full\"} 0",
+            "sipnab_th_mappings_expired_total 0",
+            "sipnab_th_mappings_held 1",
+            "sipnab_th_mappings_pending 1",
+        ] {
+            assert!(text.contains(line), "`{line}` missing from the scrape");
+        }
+        Ok(())
+    }
 
     /// A meter carrying a roster with two senders, and refusals under two
     /// reasons: two for a wrong key, one for the allowlist.

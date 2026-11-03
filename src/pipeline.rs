@@ -2151,6 +2151,7 @@ pub fn unwrap_hep(pp: &ParsedPacket) -> Option<Result<ParsedPacket, crate::error
         // The OUTER port, read before the inner addressing replaced it: the
         // sniffed-`ng` gate is about where the wrapper was going.
         sniffed_on_port: Some(pp.dst_port),
+        json_event: false,
     });
     // The inner addressing was asserted by the HEP sender, not observed on the
     // wire, so it is Hep however the wrapper arrived. Under --hep-parse the
@@ -2256,6 +2257,9 @@ pub enum PacketAction {
     /// relay provenance (`SdpProvenance::relay_asserted`) rather than the
     /// signaled provenance an SDP body on the wire would get.
     RelayControl(RelayControlMessage),
+    /// An OpenSIPS `E_SIPNAB_TH_MAP` event the HEP listener received, parsed
+    /// or refused, for [`DialogStore::apply_th_mapping`].
+    ThMapping(Result<crate::sip::th_mapping::ThMapping, crate::sip::th_mapping::EventRefusal>),
     /// Parsed RTCP compound-packet reports, to feed to `process_rtcp`.
     Rtcp(Vec<rtp::rtcp::RtcpPacket>),
     /// An RTP packet to record. `decrypted_payload` is `Some` only when SRTP
@@ -2299,6 +2303,9 @@ pub fn classify_packet(
     opts: &PipelineOptions,
     decrypt: &mut MediaDecrypt<'_>,
 ) -> PacketAction {
+    if let Some(action) = claim_th_mapping(pp) {
+        return action;
+    }
     // Try WebSocket unwrapping for TCP on common WS ports
     let ws_payload = try_websocket_unwrap(pp);
     let effective_transport = if ws_payload.is_some() {
@@ -2328,6 +2335,22 @@ pub fn classify_packet(
         return PacketAction::None;
     }
     classify_media(pp, rtp_heuristic, opts, decrypt)
+}
+
+/// An OpenSIPS `E_SIPNAB_TH_MAP` event, claimed before anything else looks
+/// at the bytes; `None` for every other packet.
+///
+/// Only a datagram the HEP listener marked (`HepOrigin::json_event`) is one:
+/// the listener checks the sender against `--hep-allow` before it marks it,
+/// and the same bytes from anywhere else are not believed. A marked datagram
+/// that does not parse is still claimed, as a refused mapping, so it is
+/// counted rather than offered to the SIP or RTP detectors.
+#[inline]
+fn claim_th_mapping(pp: &ParsedPacket) -> Option<PacketAction> {
+    pp.hep
+        .as_ref()
+        .filter(|h| h.json_event)
+        .map(|_| PacketAction::ThMapping(crate::sip::th_mapping::parse_event(&pp.payload)))
 }
 
 /// The payload and transport SIP detection runs on: the WebSocket frame's
@@ -2994,6 +3017,13 @@ pub fn process_packet(
                     ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
                 }
             }
+        }
+        PacketAction::ThMapping(event) => {
+            // Same gate as the SIP arm: a mapping is call association.
+            if opts.no_dialog {
+                return;
+            }
+            dialog_store.write().apply_th_mapping(event, pp.timestamp);
         }
         PacketAction::RelayControl(message) => {
             // Same gate the SIP arm uses: `--no-dialog` opts out of call
@@ -5541,6 +5571,7 @@ mod hep_parse_trust_tests {
                     protocol: crate::rtpengine::NG_HEP_CAPTURE_PROTO,
                     correlation_id: Some(CALL.to_string()),
                     sniffed_on_port: None,
+                    json_event: false,
                 }),
                 vcon: None,
             },

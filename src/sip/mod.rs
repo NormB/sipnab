@@ -40,6 +40,7 @@ pub mod talkers;
 pub mod termination;
 #[cfg(feature = "tls")]
 pub mod th_callid;
+pub mod th_mapping;
 pub mod timing;
 
 pub use message::{SipHeader, SipMessage};

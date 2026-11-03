@@ -960,6 +960,8 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("sip", "th_callid_secret_file", FileOnly::Tuning),
     ("sip", "th_callid_secret", FileOnly::Tuning),
     ("sip", "th_callid_prefix", FileOnly::Tuning),
+    ("sip", "th_mapping_max", FileOnly::Tuning),
+    ("sip", "th_mapping_ttl_secs", FileOnly::Tuning),
     ("pbx", "addresses", FileOnly::Table),
     ("vcon", "rule", FileOnly::Table),
     ("vcon", "enrich", FileOnly::Table),
