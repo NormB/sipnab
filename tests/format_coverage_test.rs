@@ -280,8 +280,17 @@ fn is_shell(path: &str) -> bool {
     path.ends_with(".sh") || (path.starts_with(".githooks/") && !name.contains('.'))
 }
 
-/// The files that run the format gate: the script itself, and every shell
-/// script or hook whose call lines run one that does, to a fixed point.
+/// Whether a Python line names `runner` as a whole string literal, the way a
+/// test that runs it does (`REPO / "scripts/prepare-commit.sh"`). Prose in a
+/// docstring that mentions a script is not a literal of exactly its path.
+fn names_as_literal(line: &str, runner: &str) -> bool {
+    line.contains(&format!("\"{runner}\"")) || line.contains(&format!("'{runner}'"))
+}
+
+/// The files that run the format gate: the script itself, every shell script
+/// or hook whose call lines run one that does, and every Python file that names
+/// one as a string literal (scripts/tests/test_prepare_commit.py runs
+/// prepare-commit.sh), to a fixed point.
 ///
 /// Pure, over `(path, body)` pairs, so both sides have a test.
 fn format_gate_runners(files: &BTreeMap<String, String>) -> BTreeSet<String> {
@@ -289,10 +298,14 @@ fn format_gate_runners(files: &BTreeMap<String, String>) -> BTreeSet<String> {
     loop {
         let before = runners.len();
         for (path, body) in files {
-            if !runners.contains(path)
-                && is_shell(path)
-                && call_lines(body).any(|l| runners.iter().any(|r| l.contains(r.as_str())))
-            {
+            let runs_one = if is_shell(path) {
+                call_lines(body).any(|l| runners.iter().any(|r| l.contains(r.as_str())))
+            } else if path.ends_with(".py") {
+                code_lines(body).any(|l| runners.iter().any(|r| names_as_literal(l, r)))
+            } else {
+                false
+            };
+            if !runners.contains(path) && runs_one {
                 runners.insert(path.clone());
             }
         }
@@ -300,6 +313,19 @@ fn format_gate_runners(files: &BTreeMap<String, String>) -> BTreeSet<String> {
             return runners;
         }
     }
+}
+
+/// Whether a workflow line runs the directory that holds `runner`, as
+/// `python3 -m pytest scripts/tests -q` runs every test in scripts/tests: one
+/// of its words is exactly that directory. Only a path with a `/` counts, so
+/// the bare word `scripts` in a job name ("Ops scripts") is not a run.
+fn runs_dir_of(line: &str, runner: &str) -> bool {
+    runner.rsplit_once('/').is_some_and(|(dir, _)| {
+        dir.contains('/')
+            && line
+                .split_whitespace()
+                .any(|w| w.trim_end_matches('/') == dir)
+    })
 }
 
 /// The jobs of a workflow that run the format gate, directly or through a
@@ -330,10 +356,23 @@ fn jobs_missing_the_pin(workflow: &str, runners: &BTreeSet<String>) -> Vec<Strin
     }
     jobs.into_iter()
         .filter(|(_, body)| {
+            // The pin must be installed BEFORE the first line that runs the
+            // gate: on #603 the Check job installed it in its Format step,
+            // after the Python tests that run prepare-commit.sh.
             let text = body.join("\n");
-            let runs_gate =
-                call_lines(&text).any(|l| runners.iter().any(|r| l.contains(r.as_str())));
-            runs_gate && !code_lines(&text).any(|l| l.contains(PIN_INSTALL))
+            let first_run = call_lines(&text).position(|l| {
+                runners
+                    .iter()
+                    .any(|r| l.contains(r.as_str()) || runs_dir_of(l, r))
+            });
+            let first_pin = code_lines(&text)
+                .filter(|l| !l.starts_with("echo ") && !l.starts_with("printf "))
+                .position(|l| l.contains(PIN_INSTALL));
+            match (first_run, first_pin) {
+                (None, _) => false,
+                (Some(_), None) => true,
+                (Some(run), Some(pin)) => pin > run,
+            }
         })
         .map(|(name, _)| name)
         .collect()
@@ -417,6 +456,10 @@ fn the_runner_scan_follows_calls_and_skips_comments() {
             "fixture/e.sh".to_string(),
             "echo \"then run fixture/a.sh\"\n".to_string(),
         ),
+        (
+            "fixture/t/test_x.py".to_string(),
+            "SWEEP = REPO / \"fixture/a.sh\"\n".to_string(),
+        ),
         (".githooks/pre-x".to_string(), "fixture/b.sh\n".to_string()),
         (
             ".githooks/pre-x.sample".to_string(),
@@ -429,21 +472,23 @@ fn the_runner_scan_follows_calls_and_skips_comments() {
         "fixture/a.sh",
         "fixture/b.sh",
         ".githooks/pre-x",
+        "fixture/t/test_x.py",
     ]
     .iter()
     .map(ToString::to_string)
     .collect();
     assert_eq!(
         runners, want,
-        "a direct call, a call through a script and a hook count; a comment, a Python \
-         docstring, an echo and a hook sample do not"
+        "a direct call, a call through a script, a hook and a Python test that names a \
+         runner as a whole string literal count; a comment, a Python docstring, an echo \
+         and a hook sample do not"
     );
 }
 
 /// The job scan names a job that runs a runner without the pin, and only it.
 #[test]
 fn the_job_scan_names_only_jobs_without_the_pin() {
-    let runners: BTreeSet<String> = [FMT_SCRIPT, "fixture/a.sh"]
+    let runners: BTreeSet<String> = [FMT_SCRIPT, "fixture/a.sh", "fixture/t/test_x.py"]
         .iter()
         .map(ToString::to_string)
         .collect();
@@ -451,12 +496,24 @@ fn the_job_scan_names_only_jobs_without_the_pin() {
         "name: x\non: push\njobs:\n  bare:\n    steps:\n      - run: sh fixture/a.sh\n  \
          pinned:\n    steps:\n      - run: |\n          {PIN_INSTALL}\n          \
          scripts/check-rustfmt.sh\n  commented:\n    steps:\n      # fixture/a.sh\n      \
-         - run: echo\n  unrelated:\n    steps:\n      - run: cargo test\n"
+         - run: echo\n  unrelated:\n    steps:\n      - run: cargo test\n  \
+         pytests:\n    steps:\n      - run: python3 -m pytest fixture/t -q\n  \
+         prefix:\n    steps:\n      - run: python3 -m pytest fixture/tt -q\n  \
+         named:\n    name: Ops scripts (verdict.sh)\n    steps:\n      - run: bash ops/x.sh\n  \
+         late:\n    steps:\n      - run: python3 -m pytest fixture/t -q\n      - run: {PIN_INSTALL}\n"
     );
     assert_eq!(
         jobs_missing_the_pin(&workflow, &runners),
-        vec!["bare".to_string()],
-        "only the job that runs the gate without installing the pin is named"
+        vec![
+            "bare".to_string(),
+            "pytests".to_string(),
+            "late".to_string()
+        ],
+        "a job that runs the gate, directly or by running the directory that holds a \
+         runner, without installing the pin is named; a directory that only shares a \
+         prefix is not, and neither is a bare word such as `scripts` in a job's name; \
+         installing the pin only after the gate ran (the Check job on #603) still counts as \
+         missing"
     );
 }
 

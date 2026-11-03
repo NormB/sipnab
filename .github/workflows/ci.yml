@@ -132,6 +132,14 @@ jobs:
           restore-keys: |
             cargo-check-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
+      - name: Install the pinned rustfmt for the scripts' tests
+        if: runner.os == 'Linux'
+        # scripts/tests/test_prepare_commit.py runs scripts/prepare-commit.sh,
+        # whose formatting fixer runs scripts/check-rustfmt.sh, which needs the
+        # dated nightly rustfmt in .rustfmt-toolchain. The Format step below
+        # installs it too, but only after this test has run.
+        run: rustup toolchain install "$(cat .rustfmt-toolchain)" --profile minimal --component rustfmt
+
       - name: Test Python examples and documentation tooling
         if: runner.os == 'Linux'
         run: |
