@@ -101,7 +101,7 @@ AssertWithoutMessage	src/crash.rs	42
 AssertWithoutMessage	src/crash/frames.rs	16
 AssertWithoutMessage	src/crypto.rs	16
 AssertWithoutMessage	src/cursor.rs	15
-AssertWithoutMessage	src/expect.rs	88
+AssertWithoutMessage	src/expect.rs	87
 AssertWithoutMessage	src/host_allowlist.rs	19
 AssertWithoutMessage	src/journal.rs	4
 AssertWithoutMessage	src/llmnr/mod.rs	9
