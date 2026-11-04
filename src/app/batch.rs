@@ -7173,31 +7173,46 @@ impl EndOfRunReports<'_> {
 /// `--json-analyze`: the analysis as one JSON line. `false` only when the
 /// line could not be written.
 fn write_json_analysis(analysis: &crate::analysis::CaptureAnalysis) -> bool {
-    match serde_json::to_string(analysis) {
-        Ok(mut line) => {
+    emit_analysis_line(
+        serde_json::to_string(analysis).map(|mut line| {
             line.push('\n');
-            write_stdout(&line)
-        }
+            line
+        }),
+        write_stdout,
         // An analysis that will not serialize is a bug in the type, not
         // a reason to fail the whole run silently.
-        Err(e) => {
-            tracing::error!("analysis serialization failed: {e}");
-            true
-        }
-    }
+        |e| stderr_line!("analysis serialization failed: {e}"),
+    )
 }
 
 /// `--yang-analyze`: the same analysis, RFC 7951-encoded against
 /// `sipnab-diagnosis`: a transform of the serialization just written, never a
 /// second reading. `false` only when the line could not be written.
 fn write_yang_analysis(analysis: &crate::analysis::CaptureAnalysis) -> bool {
-    match crate::analysis::yang::to_rfc7951(analysis)
-        .and_then(|doc| crate::analysis::yang::to_line(&doc))
-    {
-        Ok(line) => write_stdout(&line),
+    emit_analysis_line(
+        crate::analysis::yang::to_rfc7951(analysis)
+            .and_then(|doc| crate::analysis::yang::to_line(&doc)),
+        write_stdout,
+        |e| stderr_line!("RFC 7951 encoding failed: {e}"),
+    )
+}
+
+/// The one rule for an analysis line: write a line that was produced with
+/// `write`, and give the reason a line was not produced to `report`. Each
+/// caller keeps its message as a literal, so the error reference reads it.
+fn emit_analysis_line<E>(
+    rendered: Result<String, E>,
+    write: impl FnOnce(&str) -> bool,
+    report: impl FnOnce(E),
+) -> bool {
+    match rendered {
+        Ok(line) => write(&line),
+        // A line that could not be produced fails the run, as one that could
+        // not be written does: the reports after it are not written, and the
+        // run exits 1.
         Err(e) => {
-            tracing::error!("RFC 7951 encoding failed: {e}");
-            true
+            report(e);
+            false
         }
     }
 }
@@ -7302,33 +7317,58 @@ fn write_redaction_map(
     path: &std::path::Path,
     redactor: &crate::output::redact::Redactor<'_>,
 ) -> Result<usize, String> {
-    use std::io::Write as _;
-    if std::fs::symlink_metadata(path).is_ok() {
-        return Err(format!(
-            "--redact-map '{}' already exists and sipnab will not write over it. \
-             That file may be the only way back from tokens already sent somewhere",
-            path.display()
-        ));
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        // Set at CREATION, not with a chmod afterwards. Between an open and a
-        // chmod the file exists at whatever the umask allows, and this file is
-        // the reversal of every pseudonym in the export.
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .map_err(|e| format!("cannot create --redact-map '{}': {e}", path.display()))?;
-    let table = redactor.mappings();
-    for (token, original) in &table {
-        writeln!(file, "{token}\t{original}")
-            .map_err(|e| format!("writing --redact-map '{}': {e}", path.display()))?;
-    }
+    write_mapping_table(path, &redactor.mappings())
+}
+
+/// Writes `table` to `path` as `token<TAB>original` lines, the file
+/// `--redact-map` names, owner-only. The table goes to a temporary file in
+/// the same directory and takes the path's name only once all of it is on
+/// disk ([`crate::capture::atomic::write_atomic_new`]), so a failure part way
+/// leaves no map at the path, whole or partial. That publish is also the one
+/// check for a path already taken: it never replaces anything there.
+#[cfg(feature = "vcon")]
+fn write_mapping_table(
+    path: &std::path::Path,
+    table: &[(String, String)],
+) -> Result<usize, String> {
+    // Whether the temporary file was made: an error before then is the
+    // creation's, an error after it is the writing's.
+    let created = std::cell::Cell::new(false);
+    crate::capture::atomic::write_atomic_new(path, |w| {
+        created.set(true);
+        for (token, original) in table {
+            writeln!(w, "{token}\t{original}")?;
+        }
+        Ok(())
+    })
+    .map_err(|e| redact_map_failure(path, &e, created.get()))?;
     Ok(table.len())
+}
+
+/// The refusal for a `--redact-map` path where something already is.
+#[cfg(feature = "vcon")]
+fn redact_map_exists(path: &std::path::Path) -> String {
+    format!(
+        "--redact-map '{}' already exists and sipnab will not write over it. \
+         That file may be the only way back from tokens already sent somewhere",
+        path.display()
+    )
+}
+
+/// The refusal an operator reads when writing `path` as the `--redact-map`
+/// failed with `e`; `created` says whether the temporary file had been made.
+#[cfg(feature = "vcon")]
+fn redact_map_failure(path: &std::path::Path, e: &std::io::Error, created: bool) -> String {
+    // The name taken by the time the map was published: the same refusal as
+    // for a file there from the start.
+    if e.kind() == std::io::ErrorKind::AlreadyExists {
+        return redact_map_exists(path);
+    }
+    if created {
+        format!("writing --redact-map '{}': {e}", path.display())
+    } else {
+        format!("cannot create --redact-map '{}': {e}", path.display())
+    }
 }
 
 /// How often the receive loop sweeps its stores, and how long a finished call
@@ -19916,6 +19956,92 @@ mod run_state_builder_tests {
         assert!(none.armed_kinds().is_empty());
     }
 
+    /// Every flag the empty `--recommend-block` answer tells the operator to
+    /// arm a detector with does arm one on its own: following the advice
+    /// never meets a refusal or an empty run.
+    #[test]
+    fn every_flag_the_advice_names_arms_a_detector_alone() -> Result<(), TestError> {
+        for flag in crate::security::recommend::ARMING_FLAGS {
+            // A flag that takes a value is given one, as an operator would
+            // write it; parse errors are reported, not a process exit.
+            let parsed = <Cli as clap::Parser>::try_parse_from(["sipnab", flag])
+                .or_else(|_| <Cli as clap::Parser>::try_parse_from(["sipnab", flag, "x"]))
+                .map_err(|e| format!("{flag} does not parse alone: {e}"))?;
+            let engines = build_detection_engines(&parsed, &Config::default(), None, None);
+            assert!(
+                !engines.armed_kinds().is_empty(),
+                "{flag} is named as arming a detector, and alone it arms none"
+            );
+        }
+        Ok(())
+    }
+
+    /// The advice names every flag that arms a detector on its own: each
+    /// switch under the Security heading of the help is tried alone, and the
+    /// ones that arm a detector are exactly the ones named.
+    #[test]
+    fn every_switch_that_arms_a_detector_alone_is_named() -> Result<(), TestError> {
+        use clap::CommandFactory as _;
+        let mut arming = std::collections::BTreeSet::new();
+        for arg in Cli::command().get_arguments() {
+            let security = arg.get_help_heading() == Some("Security");
+            let switch = matches!(arg.get_action(), clap::ArgAction::SetTrue);
+            let Some(long) = arg.get_long() else { continue };
+            if !(security && switch) {
+                continue;
+            }
+            let flag = format!("--{long}");
+            let Ok(parsed) = <Cli as clap::Parser>::try_parse_from(["sipnab", flag.as_str()])
+            else {
+                continue;
+            };
+            if !build_detection_engines(&parsed, &Config::default(), None, None)
+                .armed_kinds()
+                .is_empty()
+            {
+                arming.insert(flag);
+            }
+        }
+        let named: std::collections::BTreeSet<String> = crate::security::recommend::ARMING_FLAGS
+            .iter()
+            .map(|f| (*f).to_owned())
+            .collect();
+        assert!(
+            !arming.is_empty(),
+            "no Security switch arms a detector: the census found nothing"
+        );
+        assert_eq!(
+            named, arming,
+            "the advice names exactly the switches that arm a detector alone"
+        );
+        Ok(())
+    }
+
+    /// The `--recommend-block` help names the same flags as the empty answer.
+    #[test]
+    fn the_recommend_block_help_names_the_arming_flags() -> Result<(), TestError> {
+        use clap::CommandFactory as _;
+        let command = Cli::command();
+        let arg = command
+            .get_arguments()
+            .find(|a| a.get_long() == Some("recommend-block"))
+            .ok_or("no --recommend-block argument")?;
+        let help = arg.get_long_help().ok_or("no long help")?.to_string();
+        let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+        let listed = help
+            .split("Needs a detector to have been armed (")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .ok_or_else(|| format!("the help names no arming flags: {help}"))?;
+        let listed: Vec<&str> = listed.split(", ").map(|f| f.trim_matches('`')).collect();
+        assert_eq!(
+            listed,
+            crate::security::recommend::ARMING_FLAGS,
+            "the --recommend-block help names the arming flags"
+        );
+        Ok(())
+    }
+
     /// `--kill-scanner-detect-only` builds the scanner detector on its own,
     /// from the flag or the config key, exactly as `--kill-scanner` does.
     #[test]
@@ -20211,5 +20337,235 @@ mod run_end_tests {
             "5070 (10), 5071 (9), 5072 (8), 5073 (7), 5074 (6)"
         );
         assert_eq!(busiest_skipped_ports(&ports[..1]), "5070 (10)");
+    }
+}
+
+/// `--json-analyze` and `--yang-analyze` turn the analysis into one line
+/// each. A line that could not be produced fails the run: logged and exiting
+/// 0, it left the operator at `SIPNAB_LOG=off` with no analysis, no reason
+/// and a success code. Both serializations of the derived `CaptureAnalysis`
+/// cannot fail on any capture a test can build, so the rule is tested on the
+/// conversion itself, with the failure given as input.
+#[cfg(test)]
+mod analysis_line_tests {
+    use super::*;
+
+    /// A line that could not be produced is not written, its reason is
+    /// reported, and the run is told it failed.
+    #[test]
+    fn a_line_that_could_not_be_produced_fails_the_run_and_writes_nothing() {
+        let wrote = std::cell::Cell::new(false);
+        let reported = std::cell::RefCell::new(None);
+        let ok = emit_analysis_line(
+            Err::<String, _>("boom"),
+            |_| {
+                wrote.set(true);
+                true
+            },
+            |e| *reported.borrow_mut() = Some(e),
+        );
+        assert!(!ok, "a failed serialization must not report success");
+        assert!(
+            !wrote.get(),
+            "nothing is written for a line that was not produced"
+        );
+        assert_eq!(*reported.borrow(), Some("boom"), "the reason is reported");
+    }
+
+    /// A produced line is written unchanged, nothing is reported, and the
+    /// write's own result is the line's result.
+    #[test]
+    fn a_produced_line_is_written_as_is_and_its_result_kept() {
+        for result in [true, false] {
+            let seen = std::cell::RefCell::new(String::new());
+            let reported = std::cell::Cell::new(false);
+            let ok = emit_analysis_line(
+                Ok::<_, String>("{}\n".to_owned()),
+                |line| {
+                    seen.borrow_mut().push_str(line);
+                    result
+                },
+                |_| reported.set(true),
+            );
+            assert_eq!(ok, result, "the write result is the line's result");
+            assert_eq!(*seen.borrow(), "{}\n", "the line is written as produced");
+            assert!(!reported.get(), "nothing is reported for a produced line");
+        }
+    }
+}
+
+/// `--redact-map` is the one way back from the tokens in an export, so it
+/// is written whole or not at all, never over a file already there.
+#[cfg(all(test, feature = "vcon"))]
+mod redaction_map_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn table(rows: usize) -> Vec<(String, String)> {
+        (0..rows)
+            .map(|i| {
+                (
+                    format!("198.51.100.{}", i % 250),
+                    format!("192.0.2.{}", i % 250),
+                )
+            })
+            .collect()
+    }
+
+    /// The table is written as `token<TAB>original` lines, owner-only.
+    #[test]
+    fn the_table_is_written_whole_and_owner_only() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("map.tsv");
+        assert_eq!(
+            write_mapping_table(&path, &table(3))?,
+            3,
+            "three rows are written"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path)?,
+            "198.51.100.0\t192.0.2.0\n198.51.100.1\t192.0.2.1\n198.51.100.2\t192.0.2.2\n",
+            "one token<TAB>original line per row"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                std::fs::metadata(&path)?.permissions().mode() & 0o777,
+                0o600,
+                "the map is owner-only"
+            );
+        }
+        Ok(())
+    }
+
+    /// A file already at the path is refused with the reason, and kept.
+    /// The refusal comes from the no-replace publish, which is the one check.
+    #[test]
+    fn a_file_already_there_is_refused_and_kept() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("map.tsv");
+        std::fs::write(&path, "earlier map\n")?;
+        let reason = write_mapping_table(&path, &table(2))
+            .err()
+            .ok_or("an existing map was written over")?;
+        assert!(reason.contains("already exists"), "{reason}");
+        assert_eq!(
+            std::fs::read_to_string(&path)?,
+            "earlier map\n",
+            "the earlier map is kept"
+        );
+        Ok(())
+    }
+
+    /// A name already taken makes the publish fail with `AlreadyExists`, and
+    /// the operator must read the already-exists refusal, not a write error.
+    /// The test above drives that end to end with the temporary file made;
+    /// a file that appears after the temporary file was made cannot be
+    /// arranged from a test, since nothing yields between the write and the
+    /// rename. So the conversion is also tested directly, for both states of
+    /// the temporary file.
+    #[test]
+    fn a_name_taken_at_publish_is_refused_as_already_there() {
+        let path = std::path::Path::new("/srv/out/map.tsv");
+        let taken = std::io::Error::from(std::io::ErrorKind::AlreadyExists);
+        for created in [true, false] {
+            assert_eq!(
+                redact_map_failure(path, &taken, created),
+                redact_map_exists(path),
+                "a name taken at publish (temporary file made: {created}) gets the already-exists refusal"
+            );
+        }
+    }
+
+    /// Any other failure before the temporary file exists is the creation's.
+    #[test]
+    fn a_failure_before_the_temporary_file_says_cannot_create() {
+        let path = std::path::Path::new("/srv/out/map.tsv");
+        let denied = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        let reason = redact_map_failure(path, &denied, false);
+        assert!(
+            reason.starts_with("cannot create --redact-map '/srv/out/map.tsv': "),
+            "{reason}"
+        );
+        let reason = redact_map_failure(path, &denied, true);
+        assert!(
+            reason.starts_with("writing --redact-map '/srv/out/map.tsv': "),
+            "{reason}"
+        );
+    }
+
+    /// Set by [`a_write_that_fails_part_way_leaves_no_map`] for the
+    /// child it starts; unset, the child test below does nothing.
+    const CHILD_DIR: &str = "SIPNAB_REDACT_MAP_FSIZE_CHILD";
+
+    /// The child half of the test below: run under a file-size limit with
+    /// SIGXFSZ ignored, so a write past the limit fails with EFBIG part way
+    /// through the table, as a full disk would.
+    #[test]
+    fn redaction_map_fsize_child() -> Result<(), TestError> {
+        let Some(dir) = std::env::var_os(CHILD_DIR) else {
+            return Ok(());
+        };
+        let path = std::path::Path::new(&dir).join("map.tsv");
+        let reason = write_mapping_table(&path, &table(20_000))
+            .err()
+            .ok_or("the write did not fail under the file-size limit")?;
+        assert!(reason.contains("writing --redact-map"), "{reason}");
+        Ok(())
+    }
+
+    /// A write that fails part way, as on a full disk, leaves no map at
+    /// the path and no temp file beside it. A partial map would look like
+    /// the way back from the tokens and silently lack some of them.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_write_that_fails_part_way_leaves_no_map() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let coverage = tempfile::tempdir()?;
+        let me = std::env::current_exe()?;
+        // `trap ""` ignores SIGXFSZ in the shell, and an ignored signal
+        // stays ignored across exec, so the write fails instead of the
+        // process being killed. 4096 bytes is well below the table.
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(r#"trap "" XFSZ; exec prlimit --fsize=4096 "$0" "$@""#)
+            .arg(&me)
+            .args([
+                "--exact",
+                "app::batch::redaction_map_tests::redaction_map_fsize_child",
+                "--nocapture",
+            ])
+            .env(CHILD_DIR, dir.path())
+            // The file-size limit cuts off the child's own coverage profile
+            // too, and a truncated profile beside the good ones fails the
+            // Coverage job's merge ("file header is corrupt"). The child's
+            // profile goes to a directory of its own, removed with it.
+            .env(
+                "LLVM_PROFILE_FILE",
+                coverage.path().join("discarded-%p.profraw"),
+            )
+            .output()?;
+        assert!(
+            out.status.success(),
+            "child failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("1 passed"),
+            "the child test did not run: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let left: Vec<_> = std::fs::read_dir(dir.path())?
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name())
+            .collect();
+        assert!(
+            left.is_empty(),
+            "left behind after the failed write: {left:?}"
+        );
+        Ok(())
     }
 }

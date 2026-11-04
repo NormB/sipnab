@@ -106,7 +106,7 @@ a=ptime:20
 14:53:08.290 10.0.2.20:5060 -> 10.0.2.15:5060 ACK UDP
 # sipnab: no source was accused in this capture, so no block rule is
 # recommended. If no detector was armed, that silence means nothing was
-# LOOKED FOR, not that nothing happened -- arm one with --kill-scanner,
-# --kill-ua, --fraud-detect, --reg-flood or --digest-leak.
+# LOOKED FOR, not that nothing happened -- arm one with
+# --kill-scanner, --kill-scanner-detect-only, --fraud-detect, --reg-flood or --digest-leak.
 
 ```

@@ -3014,10 +3014,10 @@ pub struct SecurityArgs {
     /// block would disconnect, so the address-specific dialects comment their
     /// commands out for it and the fail2ban dialect puts it in `ignoreip`.
     ///
-    /// Needs a detector to have been armed (`--kill-scanner`, `--kill-ua`,
-    /// `--fraud-detect`, `--reg-flood`, `--digest-leak`); with none of them
-    /// nothing is ever accused, and the empty output says so rather than
-    /// reading as an all-clear.
+    /// Needs a detector to have been armed (`--kill-scanner`,
+    /// `--kill-scanner-detect-only`, `--fraud-detect`, `--reg-flood`,
+    /// `--digest-leak`); with none of them nothing is ever accused, and the
+    /// empty output says so rather than reading as an all-clear.
     #[arg(
         help_heading = "Security",
         long = "recommend-block",

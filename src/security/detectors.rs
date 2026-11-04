@@ -36,7 +36,8 @@ use super::{DigestLeakDetector, FraudDetector, RegFloodDetector, ScannerDetector
 /// `None` is "not armed", and an unarmed detector runs no check at all: the
 /// batch loop builds each one from its flag and leaves the rest absent.
 pub struct Detectors<'a> {
-    /// UA/behavioral scanner detector (`--kill-scanner`, `--kill-ua`).
+    /// UA/behavioral scanner detector (`--kill-scanner`,
+    /// `--kill-scanner-detect-only`; `--kill-ua` adds a User-Agent to it).
     pub scanner: Option<&'a mut ScannerDetector>,
     /// Toll-fraud pattern detector (`--fraud-detect`).
     pub fraud: Option<&'a mut FraudDetector>,
