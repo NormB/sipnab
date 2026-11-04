@@ -11,8 +11,9 @@
 # ci.yml's `features` job runs these in a few jobs, through
 # `scripts/check-feature-matrix.py --group I --groups N`, and the same script
 # with no arguments lints them all locally. Format: the features, then
-# optionally `suite` (run the whole test suite with them) or `test=NAME` (run
-# that test target with them). A `test=` is a test that exists only where a
+# optionally `suite` (run the whole test suite with them), `lib` (run the
+# library's unit tests with them) or `test=NAME` (run that test target with
+# them). A `test=` is a test that exists only where a
 # feature is ABSENT: `--all-features` and the pre-commit hook's
 # `--features full` compile it out, and the lint builds it without running
 # it, so this is the one place it runs.
@@ -36,8 +37,10 @@ tls,api
 native,tui,audio
 # The crate's default features, what a bare `cargo build` produces.
 # the_feature_matrix_includes_the_default_feature_set keeps this equal to
-# Cargo.toml's `default = [...]`.
-native,tui,audio,metrics
+# Cargo.toml's `default = [...]`. `lib`, because a bare `cargo test` runs the
+# library's unit tests with these features and CI ran them only with every
+# feature on: a popup gate that failed without `archive` sat on main unseen.
+native,tui,audio,metrics lib
 # TUI snapshots without audio.
 native,tui,tls,hep,api test=tui_snapshot_test
 # The eBPF uprobe backend, which every published *-linux-gnu binary carries.
