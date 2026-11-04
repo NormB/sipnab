@@ -5,9 +5,8 @@
 
 `.github/feature-combos.txt` lists the combinations, the tests that run only
 where a feature is absent beside the combination that lacks it, and what a
-combination needs from the machine. ci.yml's `features` and `features-x64`
-jobs run `scripts/check-feature-matrix.py --group I --pool P`, one group
-each; `partition` in that script decides which group runs what, given the
+combination needs from the machine. ci.yml's `features` job runs
+`scripts/check-feature-matrix.py --group I --pool P`, one group per leg; `partition` in that script decides which group runs what, given the
 pool each group runs on (`GROUPS`) and what each pool can run (`POOLS`).
 These hold the rule complete, disjoint and deterministic, and hold the real
 file and ci.yml to it, so no combination can drop out of CI unnoticed.
@@ -151,7 +150,7 @@ def ci_groups():
     values its `group:` matrix list gives.
     """
     out = []
-    for job_id in ("features", "features-x64"):
+    for job_id in ("features",):
         job = ci_job(job_id)
         m = re.search(r"python3 scripts/check-feature-matrix.py --group (\$\{\{ matrix.group \}\}|\d+) --pool (\S+)", job)
         assert m, f"ci.yml's {job_id} job does not run check-feature-matrix.py --group I --pool P"
@@ -290,12 +289,11 @@ def test_a_failing_command_fails_the_group_and_the_rest_still_run(tmp_path):
     assert len(calls(log)) == len(fm.group_commands(group))
 
 
-def test_a_group_on_the_wrong_pool_is_refused(tmp_path):
-    bindir, log = fake_tools(tmp_path)
-    wrong = next(p for p in fm.POOLS if p != fm.GROUPS[0])
-    proc = run_group(tmp_path, bindir, 0, wrong, SAMPLE)
-    assert proc.returncode == 2
-    assert calls(log) == []
+def test_a_group_on_the_wrong_pool_is_refused(capsys):
+    # In process: with one pool, the command line's `--pool` choices admit
+    # no other name, so run_group is called with one directly.
+    assert fm.run_group(0, "not-" + fm.GROUPS[0]) == 2
+    assert "ci.yml and GROUPS disagree" in capsys.readouterr().out
 
 
 def test_a_group_index_outside_the_groups_is_refused(tmp_path):

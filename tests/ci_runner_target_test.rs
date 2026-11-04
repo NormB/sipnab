@@ -559,10 +559,7 @@ fn a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host()
     assert!(
         pooled
             .iter()
-            .any(|j| j.workflow == "ci.yml" && j.id == "features")
-            && pooled
-                .iter()
-                .any(|j| j.workflow == "ci.yml" && j.id == "features-x64"),
+            .any(|j| j.workflow == "ci.yml" && j.id == "features"),
         "the feature combinations must run on the pooled runners"
     );
     Ok(())
@@ -650,8 +647,8 @@ fn an_x64_job_refuses_to_start_with_less_than_25_gb_free() -> Result<(), TestErr
         );
     }
     assert!(
-        checked >= 2,
-        "only {checked} job(s) on the x86_64 runner found"
+        checked >= 1,
+        "no job on the x86_64 runner found; the scan is wrong"
     );
     // The floor itself, driven: a floor no disk meets refuses, zero admits.
     let run = |gb: &str| -> Result<std::process::Output, TestError> {
@@ -711,7 +708,7 @@ fn a_pooled_job_builds_in_its_own_directory_and_removes_it() -> Result<(), TestE
             "{label}: the last step must remove $CARGO_TARGET_DIR `if: always()`:\n{last}"
         );
     }
-    assert!(checked >= 2, "only {checked} pooled cargo job(s) found");
+    assert!(checked >= 1, "no pooled cargo job found; the scan is wrong");
     Ok(())
 }
 

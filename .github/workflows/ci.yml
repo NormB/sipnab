@@ -445,7 +445,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -911,7 +911,7 @@ jobs:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
       # The runner is a virtual machine on a host that runs other virtual
-      # machines; see features-x64.
+      # machines, and a job that filled its disk would stop them as well.
       - name: Refuse to start with less than 25 GB free
         run: bash scripts/ci-disk-floor.sh 25
       - name: Install rpmbuild and patchelf
@@ -1107,14 +1107,13 @@ jobs:
     # hosted jobs at once, across every workflow, and on pull request #626's
     # runs those legs, two to four minutes each of which about 1.5 was setup,
     # queued for up to 29 minutes and held the runners the long jobs waited
-    # for (runs 41640843394 and 41729921358). Now three groups build them one
-    # after another: two here, on the two aarch64 runners labeled `overflow`,
-    # whose services run at CPUWeight=1, IOWeight=1 and Nice=19, so they use
-    # only the CPU and I/O the host's local gates leave idle; and one on the
-    # x86_64 runner (`features-x64`). scripts/check-feature-matrix.py's
-    # `partition` decides which group runs which, and
-    # scripts/tests/test_feature_matrix_groups.py holds it to every
-    # combination.
+    # for (runs 41640843394 and 41729921358). Now two groups build them one
+    # after another, on the two aarch64 runners labeled `overflow`, whose
+    # services run at CPUWeight=1, IOWeight=1 and Nice=19, so they use only
+    # the CPU and I/O the host's local gates leave idle.
+    # scripts/check-feature-matrix.py's `partition` decides which group runs
+    # which, and scripts/tests/test_feature_matrix_groups.py holds it to every
+    # combination. The script says why the x86_64 runner is not a third pool.
     #
     # Pull requests reach a self-hosted runner here. The repository's fork
     # pull request approval policy is `all_external_contributors` (checked
@@ -1160,34 +1159,6 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
         run: env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/check-feature-matrix.py --group ${{ matrix.group }} --pool overflow
 
-      - name: Remove the build directory
-        if: always()
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
-        run: rm -rf "$CARGO_TARGET_DIR"
-
-  # The third group of feature combinations, lint only, on the x86_64 runner:
-  # the same script as `features`, which gives this pool only combinations
-  # that need neither tests nor a tool the runner lacks (it has clippy, and
-  # neither cmake nor the wasm32 target). The runner is a virtual machine on
-  # a host that runs other virtual machines, so the job refuses to start
-  # short of disk. The fork approval policy above covers it too.
-  features-x64:
-    # Not yet observed; bounded like the aarch64 groups.
-    timeout-minutes: 45
-    name: Features (group 2, x86_64)
-    # Self-hosted because: the 21 feature combinations queued for GitHub's 20 concurrent hosted jobs, and the x86_64 runner had no CI work routed to it.
-    runs-on: [self-hosted, X64]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - name: Refuse to start with less than 25 GB free
-        run: bash scripts/ci-disk-floor.sh 25
-      - name: Lint the feature combinations
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
-        run: env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/check-feature-matrix.py --group 2 --pool x64
       - name: Remove the build directory
         if: always()
         env:
@@ -1331,7 +1302,7 @@ jobs:
 
   ci-success:
     # Bounds how long this job can hold the main-branch concurrency
-    # group, which never supersedes. Observed: 0.0 min, but it waits on 17 needs.
+    # group, which never supersedes. Observed: 0.0 min, but it waits on 16 needs.
     timeout-minutes: 10
     name: CI success
     if: always()
@@ -1350,7 +1321,7 @@ jobs:
     # holds it.
     needs: [check, test, test-results, install-sh, deb-package, rpm-packaging,
             homebrew-formula, tsan-verdict, bench-scripts, features,
-            features-x64, crate-package, audit, fuzz-check,
+            crate-package, audit, fuzz-check,
             code-scanning-clean, symbol-split, pre-push-scenarios]
     runs-on: ubuntu-latest
     steps:

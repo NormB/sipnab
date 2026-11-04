@@ -509,14 +509,9 @@ fn ci_job(id: &str) -> Result<String, TestError> {
     Ok(body.lines().take(end).collect::<Vec<_>>().join("\n"))
 }
 
-/// ci.yml's two feature jobs, `features` (the aarch64 groups) and
-/// `features-x64` (the x86_64 group), one after the other.
+/// ci.yml's `features` job, which runs the feature-combination groups.
 fn ci_features_job() -> Result<String, TestError> {
-    Ok(format!(
-        "{}\n{}",
-        ci_job("features")?,
-        ci_job("features-x64")?
-    ))
+    ci_job("features")
 }
 
 /// Every leg of the feature matrix is LINTED, not only compiled.
@@ -536,7 +531,6 @@ fn ci_features_job() -> Result<String, TestError> {
 /// `lint_command`, and the job must reach it on every group, unguarded.
 #[test]
 fn the_feature_matrix_lints_every_leg_with_its_tests() -> Result<(), TestError> {
-    // Both feature jobs: the aarch64 groups and the x86_64 group.
     let job = ci_features_job()?;
     let want = "run: env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/check-feature-matrix.py --group ";
     let lines: Vec<&str> = job.lines().map(str::trim).collect();
@@ -548,9 +542,9 @@ fn the_feature_matrix_lints_every_leg_with_its_tests() -> Result<(), TestError> 
         .collect();
     assert_eq!(
         runs.len(),
-        2,
-        "ci.yml's feature jobs must each run `{want}...` once, so every group \
-         is linted:\n{job}"
+        1,
+        "ci.yml's features job must run `{want}...` once, on every group, so \
+         every combination is linted:\n{job}"
     );
     for at in runs {
         let guard = lines[..at]

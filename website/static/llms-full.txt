@@ -77160,7 +77160,7 @@ Their contents are worth spelling out.
   - plus the `--ignored` PTY TUI end-to-end tests
   - On Linux it also compiles the Python clients under `clients/python/`.
     It runs `pytest` over their tests and `scripts/tests`.
-- **`features`** and **`features-x64`**: `cargo clippy --no-default-features --features X --tests
+- **`features`**: `cargo clippy --no-default-features --features X --tests
   -- -D warnings` across twenty-one feature sets.
   - [`.github/feature-combos.txt`](../../.github/feature-combos.txt) lists the sets, the tests that run beside them, and what each needs from the machine.
   - The sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
@@ -77169,15 +77169,17 @@ Their contents are worth spelling out.
     `native,hep,api,mcp,mcp-http`, each of `bpf`, `vcon`, `opus`, `audio`,
     `plugins`, `archive` and `g729`, the two reduced sets the release
     publishes, and `wasm`.
-  - Three jobs build them one after another, through [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py) `--group I --pool P`.
+  - Two groups build them one after another, through [`scripts/check-feature-matrix.py`](../../scripts/check-feature-matrix.py) `--group I --pool P`.
     Until 2026-11-03 each set was a hosted job of its own, and those 21 jobs queued for the account's 20 concurrent hosted jobs: on pull request #626's runs they queued up to 29 minutes.
-    - Two groups run on the two aarch64 runners labeled `overflow`, whose services run at CPUWeight=1, IOWeight=1 and Nice=19, so they use only the CPU and I/O the local gates leave idle.
-    - One group runs on the x86_64 runner (`X64`) and lints only: that runner has clippy, and neither cmake nor the wasm32 target.
+    - The groups run on the two aarch64 runners labeled `overflow`, whose services run at CPUWeight=1, IOWeight=1 and Nice=19, so they use only the CPU and I/O the local gates leave idle.
+    - The x86_64 runner ran a third, lint-only group on pull request #626's run 41768214411 and does not now.
+      A 4-core virtual machine with about 2.5 GB of memory in use and up to 2.2 GB swapped, it took 19 minutes for its first set from a cold build directory, and its 45-minute timeout canceled it during the eighth of its ten.
+      The two `overflow` groups finished theirs in 12.3 and 13.6 minutes.
     - `partition` in the script decides which group runs which set, given each group's pool (`GROUPS`) and what each pool has (`POOLS`).
       [`scripts/tests/test_feature_matrix_groups.py`](../../scripts/tests/test_feature_matrix_groups.py) holds it to every set and test CI checked on 2026-11-03.
     - The jobs install nothing. A group first checks that the machine has what its pool promises, and stops with the name of anything missing.
     - Each job builds in its own directory under the runner's per-job temporary directory, and its last step removes it, `if: always()`.
-    - The x86_64 job, and the RPM packaging job on the same runner, refuse to start with less than 25 GiB free ([`scripts/ci-disk-floor.sh`](../../scripts/ci-disk-floor.sh)).
+    - The RPM packaging job, on the x86_64 runner, refuses to start with less than 25 GiB free ([`scripts/ci-disk-floor.sh`](../../scripts/ci-disk-floor.sh)).
     - The repository's fork pull request approval policy is `all_external_contributors`, so no workflow from a fork reaches these runners before a maintainer approves it.
   - `wasm` is lib-only, and gets a `cargo check` of the library for the
     `wasm32-unknown-unknown` target instead.
@@ -77212,7 +77214,7 @@ Their contents are worth spelling out.
 
 #### The suite in shards
 
-The `test` job runs the Linux suite on four runners at once.
+The `test` job runs the Linux suite on two runners at once.
 
 - Measured on run 41620629642 (2026-11-03), before the split:
   - Check (ubuntu-latest) took 20.3 minutes, 12.3 of them in its Test step.
@@ -77228,7 +77230,7 @@ The `test` job runs the Linux suite on four runners at once.
 - The `shard:` matrix list is the only place that states N.
   The step reads its index and count from `strategy.job-index` and `strategy.job-total`.
 - Each shard uploads its output, a manifest of what it ran and the YANG exports.
-- `test-results` runs once all four pass.
+- `test-results` runs once both pass.
   - `parallel-tests.py merge` refuses the set unless every shard reported exactly once and every target ran in exactly one shard.
   - It writes the outputs in shard order as one `test-output.txt`.
     The published test count is a sum over every binary's `test result` line, so it equals the count of the same suite run in one job.
@@ -77577,7 +77579,7 @@ The workflow-shape test holds each job's runner.
 - On the aarch64 runners: `memcheck.yml` (those runners have valgrind), `bench.yml` (its baseline is a property of that hardware),
   `reproducible.yml` (those runners have bpf-linker) and `self-hosted-smoke.yml` (it exists to prove that runner works).
 - On the `overflow` runners: two groups of the feature combinations.
-- On the x86_64 runner: the RPM packaging job and the third group of the feature combinations.
+- On the x86_64 runner: the RPM packaging job.
   The RPM job builds no Rust, and the runner has every package it names, so it installs nothing there.
 - Only the four jobs above may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
   `a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host` holds that, `an_x64_job_refuses_to_start_with_less_than_25_gb_free` the disk floor, and `a_pooled_job_builds_in_its_own_directory_and_removes_it` the build directory.

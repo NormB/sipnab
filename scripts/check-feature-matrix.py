@@ -19,8 +19,8 @@ of combos is worse than none: it reports a pass CI will contradict.
     check-feature-matrix.py                         lint every combo
     check-feature-matrix.py --group I --pool P      CI: run group I on pool P
 
-CI folds the combos into a few groups (ci.yml's `features` and
-`features-x64` jobs), each on a pool of self-hosted runners. `GROUPS` names
+CI folds the combos into a few groups (ci.yml's `features` job), each on a
+pool of self-hosted runners. `GROUPS` names
 each group's pool, `POOLS` what each pool can run, and `partition` is the
 one rule for which group runs what: every combo in exactly one group, with
 the tests the file lists beside it, on a pool that has what it needs. A
@@ -72,17 +72,22 @@ SUITE_WEIGHT = 8
 # What each pool of runners can run beyond a lint: `tests` (test targets
 # and the full suite), and the tools a combination may need. `overflow` is
 # the aarch64 host's two lowest-priority runners, with clippy, the wasm32
-# target and cmake installed. `x64` is the x86_64 runner, a 4-core virtual
-# machine with clippy and neither the wasm32 target nor cmake, so it lints
-# only. Nothing is installed on either: a group that finds a tool missing
-# stops and says which.
+# target and cmake installed. Nothing is installed: a group that finds a
+# tool missing stops and says which.
+#
+# The x86_64 runner was a third pool for one lint-only group on PR #626's
+# run 41768214411 (2026-11-04), and is not one now. A 4-core virtual
+# machine with about 2.5 GB of memory in use and up to 2.2 GB swapped while
+# it built, it took 19 minutes for its first combination from a cold build
+# directory and was canceled at its 45-minute timeout during the eighth of
+# its ten, while the two overflow groups finished theirs (23 weight units)
+# in 12.3 and 13.6 minutes.
 POOLS: dict[str, set[str]] = {
     "overflow": {"tests", "wasm32", "cmake"},
-    "x64": set(),
 }
 # The pool each group runs on, by index; ci.yml runs each index once, on
-# that pool. Two overflow groups, because two runners carry `overflow`.
-GROUPS: list[str] = ["overflow", "overflow", "x64"]
+# that pool. Two groups, because two runners carry `overflow`.
+GROUPS: list[str] = ["overflow", "overflow"]
 
 
 @dataclass

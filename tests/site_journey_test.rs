@@ -6617,12 +6617,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // scripts' tests" step names scripts/tests/test_prepare_commit.py,
     // scripts/prepare-commit.sh and scripts/check-rustfmt.sh. Measurement:
     // with the previous commit's ci.yml swapped back in, the scan reads 210.
-    // 213 -> 224: `.github/workflows/ci.yml` splits the Linux suite into the
+    // 213 -> 222: `.github/workflows/ci.yml` splits the Linux suite into the
     // `test` job's shards and the `test-results` job, gives the macOS legs of
-    // Check and Symbol split jobs of their own, and folds the feature matrix
-    // into the self-hosted `features` and `features-x64` jobs:
-    // scripts/parallel-tests.py +3, scripts/check-feature-matrix.py +3,
-    // scripts/ci-disk-floor.sh +2, .github/feature-combos.txt +1,
+    // Check and Symbol split jobs of their own, folds the feature matrix into
+    // the self-hosted `features` job, and puts a disk floor on the RPM job:
+    // scripts/parallel-tests.py +3, scripts/check-feature-matrix.py +2,
+    // scripts/ci-disk-floor.sh +1, .github/feature-combos.txt +1,
     // scripts/tests/test_parallel_tests_shards.py +1,
     // scripts/tests/test_feature_matrix_groups.py +1,
     // tests/site_journey_test.rs +1 (check-macos's comment) and
@@ -6630,8 +6630,8 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // matrix's comments and cache steps took .cargo/config.toml -1 and
     // tests/ci_cache_policy_test.rs -1. Measurement: with origin/main's
     // ci.yml swapped back in, the scan reads 213; ci.yml's references go
-    // from 63 to 74, and pages.yml holds at 53.
-    const EXPECTED_REFERENCES: usize = 224;
+    // from 63 to 72, and pages.yml holds at 53.
+    const EXPECTED_REFERENCES: usize = 222;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
