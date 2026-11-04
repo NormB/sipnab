@@ -1086,7 +1086,9 @@ pub fn start_servers(
 /// file is always fatal.
 #[cfg(any(feature = "api", feature = "mcp"))]
 fn read_signing_key_file(path: &str, flag: &str) -> Vec<u8> {
-    match std::fs::read_to_string(path) {
+    // Through `secret_files`: a run that drops privileges read this file
+    // before the drop, and a root-only key is not readable after it.
+    match crate::secret_files::read_to_string(std::path::Path::new(path)) {
         Ok(s) => s.trim().as_bytes().to_vec(),
         Err(e) => {
             stderr_line!("{flag} '{path}': {e}");
@@ -1164,7 +1166,8 @@ pub fn resolve_mcp_verifier_config(cli: &Cli) -> crate::auth::VerifierConfig {
             static_keys.push(t.to_string());
         }
     } else if let Some(path) = cli.mcp_args.mcp_token_file.as_ref() {
-        match std::fs::read_to_string(path) {
+        // Read before the privilege drop; see `crate::secret_files`.
+        match crate::secret_files::read_to_string(std::path::Path::new(path)) {
             Ok(s) => {
                 let s = s.trim();
                 if !s.is_empty() {

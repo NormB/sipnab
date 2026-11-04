@@ -269,7 +269,9 @@ pub(crate) fn pem_blocks(pem: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
 pub(crate) fn pem_certificates(
     path: &std::path::Path,
 ) -> Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
-    let pem = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
+    // Read before the privilege drop when this run drops; see
+    // `crate::secret_files`.
+    let pem = crate::secret_files::read(path).with_context(|| format!("{}", path.display()))?;
     let certs: Vec<_> = pem_blocks(&pem)
         .with_context(|| format!("{}", path.display()))?
         .into_iter()
@@ -306,11 +308,13 @@ pub(crate) fn pem_private_key(
     path: &std::path::Path,
     surface: &str,
 ) -> Result<rustls::pki_types::PrivateKeyDer<'static>> {
+    // The mode and the bytes as the read before the privilege drop found
+    // them, when this run drops: a root-only key is unreadable after it. The
+    // world-readable refusal applies to that mode. See `crate::secret_files`.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let meta = std::fs::metadata(path).with_context(|| format!("{}", path.display()))?;
-        let mode = meta.permissions().mode();
+        let mode =
+            crate::secret_files::mode(path).with_context(|| format!("{}", path.display()))?;
         ensure!(
             mode & 0o004 == 0,
             "{}: the {surface} private key is world-readable (mode {:04o}); chmod 600 it",
@@ -318,7 +322,7 @@ pub(crate) fn pem_private_key(
             mode & 0o7777
         );
     }
-    let pem = std::fs::read(path).with_context(|| format!("{}", path.display()))?;
+    let pem = crate::secret_files::read(path).with_context(|| format!("{}", path.display()))?;
     for (label, der) in pem_blocks(&pem).with_context(|| format!("{}", path.display()))? {
         let key = match label.as_str() {
             "PRIVATE KEY" => rustls::pki_types::PrivateKeyDer::Pkcs8(der.into()),

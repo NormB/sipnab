@@ -326,6 +326,14 @@ A secret file given with `--hep-auth-file` or `--metrics-auth-file` is empty or 
 
 **Exit code:** 2.
 
+### `{flag} '{path}': {e}. {who} cannot read it, and a revocation list sipnab cannot read revokes nothing. Make it readable by that user (for example root:<its group> 0640)`
+
+A run started as root dropped privileges, and the user it dropped to cannot open the revocation list named by `--api-revoked-file` or `--mcp-revoked-file`. `{flag}` is the flag, `{path}` the path and `{e}` the reason, such as `Permission denied (os error 13)`. `{who}` names the user, for example `user 'nobody', which this run dropped privileges to,`. sipnab reads the list again whenever it changes, as that user, and a list it cannot read revokes nothing, so sipnab would accept a revoked token. sipnab accepts a list that does not exist yet: it revokes nothing until you write it.
+
+**What to do:** Make the file readable by the `--user` account, for example `chown root:sipnab` and `chmod 640` with `--user sipnab`.
+
+**Exit code:** 2.
+
 ### `--fraud-destination {bad:?} is not a destination sipnab can match: give ISO 3166-1 alpha-2 codes the dial plan labels (NANP for +1 numbers), comma-separated`
 
 One entry in the comma-separated `--fraud-destination` list is not a destination label sipnab knows.

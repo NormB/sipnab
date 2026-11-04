@@ -247,9 +247,11 @@ not name, add `server_name: capture01.example.net` under `tls_config`.
 
 sipnab itself stops at startup, naming the file, when:
 
-- it cannot read the credential file after dropping privileges, for example
+- it cannot read the credential file, for example
   `metrics auth: --metrics-auth-file '/etc/sipnab/metrics.auth': Permission denied (os error 13)`.
-  Make the file the service user's, as above.
+  A root run reads it before it drops privileges, so this means the user
+  sipnab starts as cannot read it: under the packaged unit, `sipnab`. Make
+  the file the service user's, as above.
 - other users can read the key, or the key does not match the certificate.
   [Metrics TLS](@/docs/metrics.md#metrics-tls) lists every refusal.
 

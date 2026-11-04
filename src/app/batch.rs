@@ -7271,7 +7271,8 @@ fn redaction_policy(cli: &Cli) -> Result<Option<crate::output::redact::Redaction
     }
     let key = match cli.output_args.redact_key_file.as_deref() {
         Some(path) => {
-            let secret = std::fs::read(path)
+            // Read before the privilege drop; see `crate::secret_files`.
+            let secret = crate::secret_files::read(path)
                 .map_err(|e| format!("cannot read --redact-key-file '{}': {e}", path.display()))?;
             RedactionKey::from_secret(&secret)
         }

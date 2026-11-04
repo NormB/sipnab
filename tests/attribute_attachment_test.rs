@@ -346,6 +346,24 @@ fn module_target(file: &Path, name: &str, cfgs_and_attrs: &[String]) -> Option<P
     None
 }
 
+/// The first line of the outer attribute whose last line is `end - 1`, or
+/// `None` when the line above `end` does not close one.
+fn attribute_ending_at(lines: &[&str], end: usize) -> Option<usize> {
+    let mut k = end.checked_sub(1)?;
+    loop {
+        let t = lines[k].trim();
+        if is_outer_attr(t) {
+            return (attribute_end(lines, k) == end).then_some(k);
+        }
+        // An attribute's continuation lines are never blank and never end an
+        // item, so either one means no attribute closes at `end - 1`.
+        if t.is_empty() || t.ends_with(';') || t.ends_with('{') || t.ends_with('}') || k == 0 {
+            return None;
+        }
+        k -= 1;
+    }
+}
+
 /// Every `mod NAME;` declared in one file, with its attributes and the comment
 /// block above them.
 fn mod_decls(path: &Path) -> Result<Vec<ModDecl>, TestError> {
@@ -361,9 +379,13 @@ fn mod_decls(path: &Path) -> Result<Vec<ModDecl>, TestError> {
         };
         let mut attrs: Vec<String> = Vec::new();
         let mut j = i;
-        while j > 0 && is_outer_attr(lines[j - 1].trim()) {
-            attrs.push(lines[j - 1].trim().to_string());
-            j -= 1;
+        // Each attribute that ends on the line above, read whole. rustfmt
+        // breaks a long `#[cfg(any(...))]` across lines, as it does for
+        // `tls_files`; read one line at a time, that gate was invisible and the
+        // module counted as compiled everywhere.
+        while let Some(start) = attribute_ending_at(&lines, j) {
+            attrs.push(lines[start..j].iter().map(|l| l.trim()).collect::<String>());
+            j = start;
         }
         let mut comment: Vec<String> = Vec::new();
         while j > 0 {
@@ -813,6 +835,15 @@ fn wasm_dead_lines(lines: &[&str]) -> Result<Vec<bool>, TestError> {
 #[test]
 fn no_module_the_wasm_build_compiles_reaches_a_module_it_excludes() -> Result<(), TestError> {
     let (tree, _) = wasm_module_tree()?;
+    // `tls_files` is gated by a `#[cfg(any(...))]` that rustfmt writes over
+    // seven lines. A tree that counts it as compiled cannot read multi-line
+    // gates, and would report every gated module it names.
+    assert_eq!(
+        tree.get("tls_files").map(|(_, c)| *c),
+        Some(Some(false)),
+        "the wasm build does not compile `tls_files`; the module walk must read \
+         its multi-line `#[cfg]`"
+    );
     let excluded: BTreeSet<String> = tree
         .iter()
         .filter(|(k, (_, c))| !k.is_empty() && !k.contains("::") && *c == Some(false))

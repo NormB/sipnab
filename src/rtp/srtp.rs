@@ -259,7 +259,9 @@ fn split_key_salt(suite: &SrtpSuite, material: &[u8]) -> Result<(Vec<u8>, Vec<u8
 ///
 /// Returns an error if the file cannot be read or contains invalid entries.
 pub fn parse_srtp_key_file(path: &Path) -> Result<Vec<SrtpKeyMaterial>> {
-    let contents = std::fs::read_to_string(path)
+    // Read before the privilege drop when this run drops; see
+    // `crate::secret_files`.
+    let contents = crate::secret_files::read_to_string(path)
         .with_context(|| format!("Failed to read SRTP key file: {}", path.display()))?;
 
     let mut entries = Vec::new();

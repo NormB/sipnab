@@ -8776,7 +8776,9 @@ pub fn resolve_named_secret(
 ) -> Result<Option<String>, String> {
     let flag = file_flag;
     if let Some(path) = file {
-        let contents = std::fs::read_to_string(path)
+        // Through `secret_files`: a run that drops privileges read the file
+        // before the drop, so a root-only secret still resolves after it.
+        let contents = crate::secret_files::read_to_string(path)
             .map_err(|e| format!("{flag} '{}': {e}", path.display()))?;
         let trimmed = contents.trim();
         if trimmed.is_empty() {

@@ -420,6 +420,12 @@ pub mod host_allowlist;
     feature = "g729"
 ))]
 pub(crate) mod tls_files;
+// Secret and credential files read before the chroot and the privilege drop,
+// and the readers that answer from that read (OPS-11). Its readers are
+// called from `native` builds (the CLI, the servers, the TLS listeners) and
+// from `tls` builds (the RSA key, SRTP key and keylog parsers).
+#[cfg(any(feature = "native", feature = "tls"))]
+pub(crate) mod secret_files;
 // The HTTPS accept loop the axum servers share: the REST API and MCP over
 // HTTP (which needs `api`).
 #[cfg(feature = "api")]

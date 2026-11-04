@@ -401,6 +401,15 @@
         "[[vcon.rule]] with live_audio = true serves call audio on the REST API, and --api {addr} is not a loopback address. Off loopback, live audio needs TLS (--api-tls-cert and --api-tls-key) and a signing key (--api-signing-key or --api-signing-key-file) to mint tokens with the audio scope; or bind --api to 127.0.0.1"
       ],
       "why": "vcon_rules in bootstrap.rs: live_audio_listener_refusal's format! literal."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
+      "call": "PlanError::new(2, refusal)",
+      "count": 1,
+      "carries": [
+        "{flag} '{path}': {e}. {who} cannot read it, and a revocation list sipnab cannot read revokes nothing. Make it readable by that user (for example root:<its group> 0640)"
+      ],
+      "why": "revocation_file_refusal in bootstrap.rs returns revocation_refusal's one format! literal."
     }
   ],
   "unresolved": [

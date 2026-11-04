@@ -39,7 +39,7 @@ the cause from there.
 | sipnab refused to start, or stopped with an error message | [Error messages](errors.md): look up the message by its text |
 | The systemd service does not start, or stops and stays down | [A service that does not start](#a-service-that-does-not-start) |
 | `Permission denied on 'eth0'` on a live capture | [Live capture says Permission denied](#live-capture-says-permission-denied) |
-| A run under `sudo` stops with `Permission denied` on a key, token or certificate file | [A key file sipnab cannot read after the drop](#a-key-file-sipnab-cannot-read-after-the-drop) |
+| A run stops with `Permission denied` on a key, token, certificate or revocation file | [A key file sipnab cannot read](#a-key-file-sipnab-cannot-read) |
 | A client of the REST API, MCP or metrics gets `401`, `403`, `404` or `503` | [A client the listener turns away](#a-client-the-listener-turns-away) |
 | A client or HEP sender fails the TLS handshake | [A TLS handshake that fails](#a-tls-handshake-that-fails) |
 | A setting in `sipnab.toml` has no effect | [A setting that has no effect](#a-setting-that-has-no-effect) |
@@ -1681,28 +1681,29 @@ depends on how sipnab runs:
 The lines under the message suggest `--setup-caps`, `sudo` and `setcap`
 whatever the cause. In the last two rows none of them helps.
 
-## A key file sipnab cannot read after the drop
+## A key file sipnab cannot read
 
 ```text
-INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
-metrics auth: --metrics-auth-file '/root/metrics.auth': Permission denied (os error 13)
+metrics auth: --metrics-auth-file '/etc/sipnab/metrics.auth': Permission denied (os error 13)
 ```
 
-A run started as root drops to `nobody`, or to the `--user` account, right
-after it opens the capture. It reads these files after the drop, as that
-account:
-
-- `--api-signing-key-file`, `--mcp-signing-key-file`, `--mcp-token-file`;
-- `--metrics-auth-file`;
-- the REST, MCP and metrics certificates and keys;
-- a HEP sender's `--hep-auth-file`.
-
-A file only root can read stops the run with exit status 2. For an MCP
-certificate or key the message is the path alone, such as
-`/etc/sipnab/mcp.key`. Run with `--user sipnab` and make the files
+A run started as root reads its key, token, credential and certificate files
+before it drops to `nobody` (or the `--user` account), so a file only root can
+read works there. This message means the user sipnab started as cannot read
+the file. Under the packaged unit that user is `sipnab`: make the file
 `root:sipnab` mode `640`, as [Make a certificate](auth.md#make-a-certificate)
-shows. A systemd unit with `User=sipnab` reads them as `sipnab` from the
-start.
+shows. For an MCP certificate or key the message is the path alone, such as
+`/etc/sipnab/mcp.key`.
+
+A revocation list is different, because sipnab reads it again whenever it
+changes, as the user it dropped to:
+
+```text
+--api-revoked-file '/etc/sipnab/revoked': Permission denied (os error 13). user 'nobody', which this run dropped privileges to, cannot read it, and a revocation list sipnab cannot read revokes nothing. Make it readable by that user (for example root:<its group> 0640)
+```
+
+The run stops with exit status 2. Make the file readable by the `--user`
+account, for example `root:sipnab` mode `640` with `--user sipnab`.
 
 ## A client the listener turns away
 

@@ -326,22 +326,24 @@ deployment, make a small CA and sign one certificate for the capture host:
 
 Clients need `ca.pem`. Keep `ca.key` off the capture host.
 
-**sipnab reads most of these files after it drops root.** A run started as
-root, under `sudo` or as a root service, opens the capture, drops to `nobody`
-(or the `--user` account), and only then reads the REST and MCP signing keys
-and token files, the metrics credential, the REST and MCP certificates and
-keys, and a HEP sender's `--hep-auth-file`. A file only root can read then
-stops the run with exit status 2:
+**sipnab reads these files before it drops root.** A run started as root,
+under `sudo` or as a root service, opens the capture, reads its key and
+credential files, and then drops to `nobody` (or the `--user` account). So a
+file only root can read (`chmod 600`) works on a root run. That covers the
+REST and MCP signing keys and token files, the metrics credential, the REST,
+MCP, metrics and HEP certificates and keys, the HEP CA files and
+`--hep-auth-file`, `--tls-key`, `--srtp-keys`, `--dtls-keylog` and
+`--redact-key-file`.
 
-```text
-INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
-metrics auth: --metrics-auth-file '/root/metrics.auth': Permission denied (os error 13)
-```
+The exception is a revocation list, `--api-revoked-file` or
+`--mcp-revoked-file`. sipnab reads it again whenever it changes, as the user
+it dropped to, so that user must be able to read it. When it cannot, the run
+stops with exit status 2 right after the drop, because a list sipnab cannot
+read revokes nothing.
 
-For an MCP key the message is the path alone, such as `/etc/sipnab/mcp.key`,
-with no reason. sipnab reads the HEP listener's certificate, key and secret
-before the drop. So give the service its own account and its group read
-access, and name that account with `--user` on a root run:
+A systemd unit with `User=sipnab` starts as `sipnab` and drops nothing, so
+there every file must be readable by `sipnab`. Give the service its own
+account and its group read access:
 
 ```bash
 # Run all of these, in order.
@@ -349,9 +351,6 @@ sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
 sudo chown root:sipnab capture01.key api-signing.key mcp-signing.key metrics.auth
 sudo chmod 640 capture01.key api-signing.key mcp-signing.key metrics.auth
 ```
-
-A systemd unit with `User=sipnab` starts as `sipnab` and drops nothing, so the
-same `640` files work there.
 
 ### Serve all four over TLS
 
