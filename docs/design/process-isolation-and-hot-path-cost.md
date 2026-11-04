@@ -77,10 +77,14 @@ substitution was never argued; it just happened.
 
 ### One consequence is a security claim that is not true
 
-[`docs/architecture.md:149-150`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md#L149-L150) still says:
+[`docs/architecture.md`](../architecture.md), at lines 149-150 of `f158afd`, said:
 
 > **D15/D16 — Privilege drop + process isolation.** sipnab drops root right
 > after socket open; active responses run in an isolated child.
+
+That bullet is no longer in `architecture.md`. The commit that added this page
+(`a58bd7b55`) replaced it, and the D15 and D16 entries now live in
+[`docs/internals/code-map.md:231-239`](https://github.com/NormB/sipnab/blob/main/docs/internals/code-map.md#L231-L239).
 
 Active responses do not run in an isolated child. They run in the
 `scanner-kill` thread, in the same address space as the parsers, the stores,

@@ -61,6 +61,17 @@ The LABEL is authoritative and `--apply` moves the fragment onto it. That is
 not a coin toss: the label is what a human wrote, and it is the half the drift
 rule above validates against the source, so the two rules cannot pull a
 citation in opposite directions.
+
+# The third rule: the cited line exists
+
+Agreement never opened the file both halves name, so `[`mcp.md:1268`](...
+#L1268)` passed on a 486-line page: label and fragment agreed on a line that
+does not exist. On 2026-11-04 five citations in docs/design/ pointed past the
+end of their target, and the drift rule could not see them because `CITE`
+reads `.rs` labels only. `check_anchors` now resolves the file the LINK opens
+(`link_target`) and refuses any cited line past its end, through
+`beyond_eof`, the predicate the drift rule uses too. `--apply` leaves these
+alone: the label is the authority, and here the label is what is wrong.
 """
 
 import pathlib
@@ -265,7 +276,16 @@ def source_for(page: pathlib.Path, path: str, target: str):
     direct = REPO / path
     if direct.is_file():
         return direct
+    return link_target(page, target)
 
+
+def link_target(page: pathlib.Path, target: str):
+    """The repository file a link's href lands on, or `None`.
+
+    The CLICK's file, from the href alone. `source_for` falls back to it when
+    the label names no file; `check_anchors` asks it directly, because the line
+    a reader lands on is in the file the link opens, whatever the label says.
+    """
     href = target.split("#", 1)[0].strip()
     if not href:
         return None
@@ -287,6 +307,22 @@ def source_for(page: pathlib.Path, path: str, target: str):
     except ValueError:
         return None
     return cand if cand.is_file() else None
+
+
+def beyond_eof(length: int, *cited: int | None) -> int | None:
+    """The first cited line a `length`-line file does not have, or `None`.
+
+    The one past-the-end rule, shared by both scans. `check` applied it to
+    `.rs` citations only, through `CITE`; `check_anchors` compared a label
+    with its own fragment and never opened the file, so
+    [`mcp.md:1268`](...#L1268) passed on a 486-line page because both halves
+    agreed on a line that does not exist. `None` entries are the absent end
+    of a single-line citation.
+    """
+    for n in cited:
+        if n is not None and n > length:
+            return n
+    return None
 
 
 def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
@@ -336,7 +372,7 @@ def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
             sym = resolve_symbol(lines, qual) if qual else None
 
             # Out of range is wrong whether or not a symbol is named.
-            if line > len(lines):
+            if beyond_eof(len(lines), line) is not None:
                 where = definition_lines(lines, sym) if sym else []
                 if apply and len(where) == 1:
                     edits.append((m.start(), m.end(), _repoint(m.group(0), where[0])))
@@ -417,7 +453,8 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
     """The label and the `#L` fragment of one citation must name one line."""
     page_list = anchor_pages() if pages is None else pages
     problems: list[str] = []
-    fixed = examined = both = fenced = 0
+    fixed = examined = both = fenced = resolved = past_eof = disagreeing = 0
+    lengths: dict[pathlib.Path, int] = {}
 
     for md in page_list:
         text = md.read_text()
@@ -445,6 +482,27 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
             for m in ANCHORED.finditer(line):
                 examined += 1
                 start, end, href = m.group(2), m.group(3), m.group(4)
+                # The cited line must EXIST, in the file the click opens.
+                # Agreement alone passed `mcp.md:1268` -> `#L1268` on a
+                # 486-line page. Checked before the fragment: a label with no
+                # fragment still promises a line. Never fixed by `--apply`:
+                # the label is the authority below, and here it is the label
+                # that is wrong, so only a human knows what was meant.
+                target = link_target(md, href)
+                if target is not None:
+                    resolved += 1
+                    if target not in lengths:
+                        lengths[target] = len(target.read_text().splitlines())
+                    over = beyond_eof(
+                        lengths[target], int(start), int(end) if end else None
+                    )
+                    if over is not None:
+                        past_eof += 1
+                        shown = target.relative_to(REPO).as_posix()
+                        problems.append(
+                            f"{rel}:{i + 1}: cites {shown}:{over} but that "
+                            f"file has {lengths[target]} lines"
+                        )
                 frag = FRAGMENT.search(href)
                 if frag is None:
                     # A label with no fragment at all is a different failure
@@ -464,6 +522,7 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
                     edits.append((at + frag.start(), at + frag.end(), want))
                     fixed += 1
                 else:
+                    disagreeing += 1
                     problems.append(
                         f"{rel}:{i + 1}: the label promises `{label}` and the "
                         f"link lands at `{have}` -- expected `{want}`"
@@ -482,10 +541,14 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
         print(f"re-anchored {fixed} citation(s)")
     # One machine-readable line, because every number here is load-bearing:
     # `examined=0` is how this scanner goes blind, and `disagreeing=0` reads
-    # identically whether it examined 781 citations or none.
+    # identically whether it examined 781 citations or none. `resolved` is the
+    # same guard for `past_eof`: a resolver that stopped resolving would
+    # report `past_eof=0` exactly like a clean tree.
     print(
         f"two-part references: pages={len(page_list)} examined={examined} "
-        f"both_halves={both} fenced={fenced} disagreeing={len(problems)}"
+        f"both_halves={both} fenced={fenced} "
+        f"disagreeing={disagreeing} resolved={resolved} "
+        f"past_eof={past_eof}"
     )
     for p in problems:
         print(f"  {p}")
