@@ -2660,6 +2660,37 @@ fn the_cut_list_covers_every_file_a_bespoke_version_gate_already_polices() -> Re
 /// keeps website/config.toml in sync, so they rot on every release without
 /// this guard. Historical references (e.g. the benchmark provenance
 /// "0.4.16") are deliberately NOT matched.
+/// The `sipnab --version` sample a doc shows for a build of this tree, which
+/// must name the crate version.
+const VERSION_LINE_SAMPLE: &str = r"sipnab (\d+\.\d+\.\d+) \(<hash>\) features:";
+
+/// A `--version` line captured from a real build is provenance, not a sample.
+///
+/// `docs/install.md` shows what the installed 0.5.232 rpm printed on Fedora 42,
+/// with that build's tag and commit in the parentheses. That line says which
+/// build produced the output, so a cut must not move it, and the crate-version
+/// marker must not demand it. The sample that follows the crate writes the
+/// placeholder `<hash>`, as `CUT_MARKER_SITES` already requires.
+#[test]
+fn a_captured_version_line_is_not_a_crate_version_sample() -> Result<(), TestError> {
+    let re = regex::Regex::new(VERSION_LINE_SAMPLE)?;
+    let captured = "sipnab 0.5.232 (v0.5.232 a62a3ac2) features: native,tui,audio";
+    assert!(
+        !re.is_match(captured),
+        "VERSION_LINE_SAMPLE matches real captured output '{captured}', so a cut \
+         would have to rewrite the version of a build that was really run"
+    );
+    let sample = "   sipnab 0.5.233 (<hash>) features: native,tui,audio";
+    let cap = re
+        .captures(sample)
+        .ok_or("VERSION_LINE_SAMPLE no longer matches the <hash> sample")?;
+    assert_eq!(
+        &cap[1], "0.5.233",
+        "VERSION_LINE_SAMPLE must capture the version of the <hash> sample '{sample}'"
+    );
+    Ok(())
+}
+
 #[test]
 fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
     let version = env!("CARGO_PKG_VERSION");
@@ -2795,12 +2826,12 @@ fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
         (
             "docs/install.md",
             include_str!("../docs/install.md"),
-            r"sipnab (\d+\.\d+\.\d+) \(",
+            VERSION_LINE_SAMPLE,
         ),
         (
             "website/content/docs/install.md",
             include_str!("../website/content/docs/install.md"),
-            r"sipnab (\d+\.\d+\.\d+) \(",
+            VERSION_LINE_SAMPLE,
         ),
         // The benchmarks pages deliberately have NO current-version marker.
         //
@@ -2827,12 +2858,12 @@ fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
         (
             "docs/mcp-deploy.md",
             include_str!("../docs/mcp-deploy.md"),
-            r"sipnab (\d+\.\d+\.\d+) \(",
+            VERSION_LINE_SAMPLE,
         ),
         (
             "website/content/docs/mcp-deploy.md",
             include_str!("../website/content/docs/mcp-deploy.md"),
-            r"sipnab (\d+\.\d+\.\d+) \(",
+            VERSION_LINE_SAMPLE,
         ),
         // `website/content/docs/api.md` used to be gated here on an
         // `as of <version>` marker, and the entry is gone for the same reason

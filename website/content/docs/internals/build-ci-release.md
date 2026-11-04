@@ -1477,6 +1477,8 @@ The same split applies to the docs.
   - It fails the commit rather than shipping a documented `curl` that 404s.
 - The `sipnab <version> (<hash>)` samples in the same file are the opposite case.
   - They show what a build *of this tree* prints, so they follow `Cargo.toml`.
+  - A `--version` line captured from a real build carries that build's tag and commit
+    instead of `<hash>`. It says which build produced the output, so it never moves.
 - `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag.
   So getting this wrong fails the suite instead of the visitor.
 
