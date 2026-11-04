@@ -257,6 +257,13 @@ fn every_published_crate_ships_its_readme_and_both_licenses() -> Result<(), Test
              shows none"
         );
     }
+    // sipnab also ships DUAL-LICENSE, the notice that states the grant.
+    let sipnab = crate_entries(&crate_file(&dir, "sipnab", env!("CARGO_PKG_VERSION")))?;
+    assert!(
+        sipnab.contains("DUAL-LICENSE"),
+        "sipnab {} would be published without DUAL-LICENSE",
+        env!("CARGO_PKG_VERSION")
+    );
     // One license text, not two that drift: the crate's copies are the root's.
     for file in ["LICENSE-MIT", "LICENSE-APACHE"] {
         let root = std::fs::read(repo().join(file))?;

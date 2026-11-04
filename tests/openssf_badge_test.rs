@@ -21,6 +21,8 @@
 
 use std::path::{Path, PathBuf};
 
+use regex::Regex;
+
 type TestError = Box<dyn std::error::Error>;
 
 fn repo() -> &'static Path {
@@ -50,6 +52,158 @@ fn license_claims_hold() -> Result<(), TestError> {
         read("Cargo.toml")?.contains("MIT OR Apache-2.0"),
         "the sheet answers `floss_license` with a dual MIT/Apache-2.0 grant"
     );
+    Ok(())
+}
+
+/// The smallest file the Best Practices site counts as a license file
+/// (`NONTRIVIAL_MIN_SIZE` in its `repo_files_examine_detective.rb`).
+const NONTRIVIAL_MIN_SIZE: u64 = 40;
+
+/// The root names GitHub's license detection (licensee) reads before
+/// `LICENSE-MIT` and `LICENSE-APACHE`.
+const PREFERRED_BY_LICENSEE: [&str; 4] = ["LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING"];
+
+/// Whether the Best Practices site takes a root file named `name` as a
+/// license file. Its detector accepts
+/// `/\A([A-Za-z0-9]+-)?(license|copying)(\.md|\.txt)?\Z/i`: a prefix is
+/// allowed and a suffix is not, so `LICENSE-MIT` and `LICENSE-APACHE` never
+/// match and the site reported "No license location file found".
+fn best_practices_license_name(name: &str) -> Result<bool, TestError> {
+    Ok(Regex::new(r"(?i)\A([A-Za-z0-9]+-)?(license|copying)(\.md|\.txt)?\z")?.is_match(name))
+}
+
+/// The names of the regular files in the repository root.
+fn root_files() -> Result<Vec<String>, TestError> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(repo())? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    Ok(names)
+}
+
+/// The lines of `text` that name `LICENSE-MIT` but not `DUAL-LICENSE`.
+fn lines_shipping_mit_without_notice(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| l.contains("LICENSE-MIT") && !l.contains("DUAL-LICENSE"))
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn the_best_practices_name_rule_takes_a_prefix_but_not_a_suffix() -> Result<(), TestError> {
+    for name in ["LICENSE", "COPYING.txt", "license.md", "DUAL-LICENSE"] {
+        assert!(best_practices_license_name(name)?, "{name} should match");
+    }
+    for name in [
+        "LICENSE-MIT",
+        "LICENSE-APACHE",
+        "LICENSES",
+        "A-B-LICENSE",
+        "LICENSE.rst",
+    ] {
+        assert!(
+            !best_practices_license_name(name)?,
+            "{name} should not match"
+        );
+    }
+    Ok(())
+}
+
+/// `license_location`: the site finds a license file only by its root name.
+#[test]
+fn a_root_file_is_one_best_practices_counts_as_a_license() -> Result<(), TestError> {
+    let mut found = Vec::new();
+    for name in root_files()? {
+        if best_practices_license_name(&name)?
+            && std::fs::metadata(repo().join(&name))?.len() >= NONTRIVIAL_MIN_SIZE
+        {
+            found.push(name);
+        }
+    }
+    assert!(
+        !found.is_empty(),
+        "no root file of {NONTRIVIAL_MIN_SIZE} bytes or more has a name the Best \
+         Practices site reads as a license, so `license_location` is unmet there"
+    );
+    Ok(())
+}
+
+/// A root `LICENSE` would satisfy the site too, but licensee scores it above
+/// `LICENSE-APACHE` and would report the dual-license notice as NOASSERTION.
+#[test]
+fn no_root_file_takes_license_detection_from_the_license_texts() -> Result<(), TestError> {
+    let names = root_files()?;
+    for name in PREFERRED_BY_LICENSEE {
+        assert!(
+            !names.iter().any(|n| n == name),
+            "{name} in the root would be read by GitHub before LICENSE-APACHE"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn the_dual_license_notice_names_the_manifest_license() -> Result<(), TestError> {
+    let text = read("DUAL-LICENSE")?;
+    let tag = format!("SPDX-License-Identifier: {}", env!("CARGO_PKG_LICENSE"));
+    assert!(
+        text.lines().any(|l| l == tag),
+        "DUAL-LICENSE has no line {tag:?}"
+    );
+    for name in ["LICENSE-APACHE", "LICENSE-MIT", "LICENSES/"] {
+        assert!(text.contains(name), "DUAL-LICENSE does not name {name}");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_sheet_cites_the_dual_license_notice_for_license_location() -> Result<(), TestError> {
+    let sheet = sheet()?;
+    let row = sheet
+        .lines()
+        .find(|l| l.starts_with("| `license_location` |"))
+        .ok_or("the answer sheet has no `license_location` row")?;
+    assert!(
+        row.contains("https://github.com/NormB/sipnab/blob/main/DUAL-LICENSE"),
+        "the `license_location` row does not cite DUAL-LICENSE: {row}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_notice_check_flags_only_a_line_without_the_notice() -> Result<(), TestError> {
+    let text = "cp LICENSE-MIT LICENSE-APACHE DUAL-LICENSE dir/\ncp LICENSE-MIT dir/\nother\n";
+    assert_eq!(
+        lines_shipping_mit_without_notice(text),
+        ["cp LICENSE-MIT dir/"],
+        "the check should flag the one line that ships LICENSE-MIT alone"
+    );
+    Ok(())
+}
+
+/// The release tarballs and the .deb copy the license texts; the notice goes
+/// with them. (The crate is checked in `tests/crate_package_test.rs`, and the
+/// built .deb in `packaging/deb/test-build-deb.sh`.)
+#[test]
+fn every_package_that_ships_license_mit_ships_the_notice() -> Result<(), TestError> {
+    for file in [
+        ".github/workflows/release.yml",
+        "packaging/deb/build-deb.sh",
+    ] {
+        let text = read(file)?;
+        assert!(
+            text.contains("LICENSE-MIT"),
+            "{file} no longer copies LICENSE-MIT"
+        );
+        let missing = lines_shipping_mit_without_notice(&text);
+        assert!(
+            missing.is_empty(),
+            "{file} copies LICENSE-MIT without DUAL-LICENSE: {missing:?}"
+        );
+    }
     Ok(())
 }
 

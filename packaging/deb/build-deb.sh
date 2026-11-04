@@ -80,7 +80,7 @@ gzip -9 "$PKG_DIR/usr/share/man/man1/sipnab.1"
 # with the binary, and libasound (reached via the audio plugin) is
 # LGPL-2.1-or-later, so the third-party notices are an obligation rather than a
 # nicety. The package shipped none of this before.
-cp LICENSE-MIT LICENSE-APACHE THIRD-PARTY-NOTICES.md "$PKG_DIR/usr/share/doc/sipnab/"
+cp LICENSE-MIT LICENSE-APACHE DUAL-LICENSE THIRD-PARTY-NOTICES.md "$PKG_DIR/usr/share/doc/sipnab/"
 cp packaging/sipnab.service "$PKG_DIR/lib/systemd/system/"
 
 # Audio plugin (optional): install the cdylib and add libasound Recommends.
