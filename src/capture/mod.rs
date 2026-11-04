@@ -134,7 +134,7 @@ pub use native::{
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use smallvec::{SmallVec, smallvec};
 
 use crate::error::CaptureError;
@@ -1795,35 +1795,14 @@ fn parse_content_length(headers: &[u8]) -> usize {
 /// Parse a duration string like "30s", "5m", "1h" into a [`Duration`].
 ///
 /// Supported suffixes: `s` (seconds), `m` (minutes), `h` (hours).
-/// A bare number is treated as seconds.
+/// A bare number is treated as seconds. The rule is
+/// [`crate::duration::parse`]'s, shared with the `--alert-rule` fields.
+///
+/// # Errors
+///
+/// As [`crate::duration::parse`].
 pub fn parse_duration(s: &str) -> Result<Duration> {
-    let s = s.trim();
-    if s.is_empty() {
-        anyhow::bail!("Empty duration string");
-    }
-
-    let (num_str, multiplier) = if let Some(n) = s.strip_suffix('h') {
-        (n, 3600u64)
-    } else if let Some(n) = s.strip_suffix('m') {
-        (n, 60u64)
-    } else if let Some(n) = s.strip_suffix('s') {
-        (n, 1u64)
-    } else {
-        (s, 1u64) // Bare number = seconds
-    };
-
-    let value: u64 = num_str
-        .parse()
-        .with_context(|| format!("Invalid duration value: '{num_str}'"))?;
-
-    // `value * multiplier` panicked in debug and wrapped in release on a value
-    // large enough to overflow `u64` seconds (e.g. `18446744073709551615m`).
-    // `--duration` takes this string straight from the command line, so reject
-    // the overflow instead of aborting.
-    let secs = value
-        .checked_mul(multiplier)
-        .with_context(|| format!("Duration too large: '{s}'"))?;
-    Ok(Duration::from_secs(secs))
+    crate::duration::parse(s, crate::duration::BareNumber::Seconds)
 }
 
 /// Unit tests for duration parsing, TCP SIP framing, and the
@@ -1843,47 +1822,33 @@ mod tests {
         Ok(())
     }
 
-    /// "5m" parses as 300 seconds.
+    /// A refusal quotes the value exactly as the operator gave it, never the
+    /// text left once a unit suffix was taken off.
     #[test]
-    fn parse_duration_minutes() -> Result<(), TestError> {
-        assert_eq!(parse_duration("5m")?, Duration::from_secs(300));
-        Ok(())
-    }
-
-    /// "2h" parses as 7200 seconds.
-    #[test]
-    fn parse_duration_hours() -> Result<(), TestError> {
-        assert_eq!(parse_duration("2h")?, Duration::from_secs(7200));
-        Ok(())
-    }
-
-    /// Empty strings, non-numeric values, and unknown suffixes are errors.
-    #[test]
-    fn parse_duration_invalid() -> Result<(), TestError> {
-        assert!(parse_duration("").is_err());
-        assert!(parse_duration("abc").is_err());
-        assert!(parse_duration("5x").is_err());
-        Ok(())
-    }
-
-    /// A duration whose value overflows `u64` seconds once the suffix
-    /// multiplier is applied is rejected, not a panic. `value * multiplier`
-    /// panicked in debug and wrapped in release; `--duration` takes this
-    /// string straight from the command line, so an operator typo (or a
-    /// hostile config) must not abort the process.
-    #[test]
-    fn parse_duration_overflow_is_rejected_not_panic() -> Result<(), TestError> {
-        // u64::MAX minutes/hours both overflow the *60 / *3600 multiply.
-        assert!(parse_duration("18446744073709551615m").is_err());
-        assert!(parse_duration("18446744073709551615h").is_err());
-        // The largest hour count that still fits (u64::MAX / 3600, floored)
-        // must keep working — the guard rejects overflow, not large values.
+    fn a_refused_duration_is_quoted_as_typed() -> Result<(), TestError> {
+        let refusal = |s: &str| parse_duration(s).err().map(|e| e.to_string());
         assert_eq!(
-            parse_duration("5124095576030431h")?,
-            Duration::from_secs(18_446_744_073_709_551_600)
+            refusal("five-minutes").as_deref(),
+            Some("Invalid duration value: 'five-minutes'"),
+            "the value is quoted as typed"
         );
-        // One hour more overflows and is rejected.
-        assert!(parse_duration("5124095576030432h").is_err());
+        // A unit with no number before it.
+        assert_eq!(
+            refusal("m").as_deref(),
+            Some("Invalid duration value: 'm'"),
+            "a unit with no number is refused, quoted as typed"
+        );
+        assert_eq!(
+            refusal("18446744073709551615m").as_deref(),
+            Some("Duration too large: '18446744073709551615m'"),
+            "an overflow is refused, quoted as typed"
+        );
+        // The negative control: a valid value still parses.
+        assert_eq!(
+            parse_duration("5m")?,
+            Duration::from_secs(300),
+            "a valid value still parses"
+        );
         Ok(())
     }
 

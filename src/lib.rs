@@ -345,6 +345,7 @@ pub mod config;
 pub mod crash;
 pub mod crypto;
 pub mod cursor;
+pub mod duration;
 pub mod error;
 pub mod expect;
 pub mod llmnr;

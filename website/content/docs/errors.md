@@ -579,7 +579,7 @@ A `--hep-allow` entry is not a valid address or CIDR range. That flag is the lis
 
 ### `Invalid --duration: {e}`
 
-sipnab could not parse the `--duration` value. `{e}` is the reason: the value is empty, the number is not a whole number, or the result is too large. The accepted forms are a whole number of seconds, optionally followed by `s`, `m` or `h`.
+sipnab could not parse the `--duration` value. `{e}` is the reason: the value is empty, the number is not a whole number, or the result is too large. It quotes the value exactly as you typed it, for example `Invalid duration value: 'five-minutes'`. The accepted forms are a whole number of seconds, optionally followed by `s`, `m` or `h`.
 
 **What to do:** Use a form such as `--duration 30`, `--duration 30s`, `--duration 5m` or `--duration 1h`.
 

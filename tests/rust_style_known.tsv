@@ -63,7 +63,7 @@ AssertWithoutMessage	src/capture/libpcap.rs	15
 AssertWithoutMessage	src/capture/live.rs	53
 AssertWithoutMessage	src/capture/mapped.rs	20
 AssertWithoutMessage	src/capture/merged.rs	2
-AssertWithoutMessage	src/capture/mod.rs	87
+AssertWithoutMessage	src/capture/mod.rs	78
 AssertWithoutMessage	src/capture/native.rs	26
 AssertWithoutMessage	src/capture/next_ex.rs	6
 AssertWithoutMessage	src/capture/output_guard.rs	21
@@ -221,7 +221,7 @@ AssertWithoutMessage	src/rtpengine/control.rs	20
 AssertWithoutMessage	src/rtpengine/ng.rs	13
 AssertWithoutMessage	src/sandbox.rs	30
 AssertWithoutMessage	src/seccomp.rs	30
-AssertWithoutMessage	src/security/alerting.rs	48
+AssertWithoutMessage	src/security/alerting.rs	41
 AssertWithoutMessage	src/security/ami.rs	9
 AssertWithoutMessage	src/security/destination.rs	17
 AssertWithoutMessage	src/security/detectors.rs	16
@@ -246,7 +246,7 @@ AssertWithoutMessage	src/sip/diagnosis.rs	68
 AssertWithoutMessage	src/sip/dialog.rs	74
 AssertWithoutMessage	src/sip/dialog_state_machine.rs	2
 AssertWithoutMessage	src/sip/dialog_store.rs	147
-AssertWithoutMessage	src/sip/dsl.rs	291
+AssertWithoutMessage	src/sip/dsl.rs	290
 AssertWithoutMessage	src/sip/endpoint.rs	14
 AssertWithoutMessage	src/sip/group_metrics.rs	16
 AssertWithoutMessage	src/sip/lint/dialog.rs	20

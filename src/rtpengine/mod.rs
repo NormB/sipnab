@@ -107,12 +107,6 @@ pub fn sniffed_ng_refused_off_port() -> u64 {
     SNIFFED_NG_OFF_PORT.load(Ordering::Relaxed)
 }
 
-/// Reset the off-port tally. Test-only: the count is process-global.
-#[cfg(test)]
-pub fn reset_sniffed_ng_off_port_count() {
-    SNIFFED_NG_OFF_PORT.store(0, Ordering::Relaxed);
-}
-
 /// Decode a SNIFFED HEP datagram — one read off the wire on its way to
 /// somebody else's collector, wrapper intact — as rtpengine control plane.
 ///
@@ -165,30 +159,143 @@ pub fn sniffed_ng_sdp_links(
 #[cfg(feature = "hep")]
 #[must_use]
 pub fn sniffed_mirror_port_believed(dst_port: u16) -> bool {
-    if !sniffed_mirror_port_allowed(dst_port) {
-        SNIFFED_NG_OFF_PORT.fetch_add(1, Ordering::Relaxed);
-        static OFF_PORT_WARNED: std::sync::atomic::AtomicBool =
-            std::sync::atomic::AtomicBool::new(false);
-        if !OFF_PORT_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            tracing::warn!(
-                "ignoring a sniffed rtpengine ng datagram addressed to UDP port \
-                 {dst_port}: sniffed control plane is unauthenticated input, so it \
-                 is only believed on the HEP port ({}). Anything may put a \
-                 datagram on this segment, and a believed one names a call and \
-                 binds media to an address of the sender's choosing. If your \
-                 collector really is on {dst_port}, have rtpengine deliver to \
-                 sipnab instead: --hep-listen, with --hep-auth --hep-auth-mode \
-                 hmac.",
-                HEP_MIRROR_PORTS
-                    .iter()
-                    .map(u16::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            );
+    static OFF_PORT_WARNED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    match port_gate(dst_port, &SNIFFED_NG_OFF_PORT, &OFF_PORT_WARNED) {
+        PortGate::Believed => true,
+        PortGate::Refused { warn } => {
+            if warn {
+                tracing::warn!(
+                    "ignoring a sniffed rtpengine ng datagram addressed to UDP port \
+                     {dst_port}: sniffed control plane is unauthenticated input, so it \
+                     is only believed on the HEP port ({}). Anything may put a \
+                     datagram on this segment, and a believed one names a call and \
+                     binds media to an address of the sender's choosing. If your \
+                     collector really is on {dst_port}, have rtpengine deliver to \
+                     sipnab instead: --hep-listen, with --hep-auth --hep-auth-mode \
+                     hmac.",
+                    HEP_MIRROR_PORTS
+                        .iter()
+                        .map(u16::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+            false
         }
-        return false;
     }
-    true
+}
+
+/// What the port gate decided for one sniffed `ng` datagram.
+#[cfg(feature = "hep")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PortGate {
+    /// On a port in [`HEP_MIRROR_PORTS`]: believed.
+    Believed,
+    /// Off it: refused.
+    Refused {
+        /// Whether this is the first refusal `warned` has seen, so the
+        /// warning is logged once.
+        warn: bool,
+    },
+}
+
+/// The port gate's decision for `dst_port`, counting a refusal in `refused`.
+/// The counter and the warned flag are arguments so a test can give each case
+/// its own; the process uses [`SNIFFED_NG_OFF_PORT`] and one flag.
+#[cfg(feature = "hep")]
+fn port_gate(
+    dst_port: u16,
+    refused: &AtomicU64,
+    warned: &std::sync::atomic::AtomicBool,
+) -> PortGate {
+    if sniffed_mirror_port_allowed(dst_port) {
+        return PortGate::Believed;
+    }
+    refused.fetch_add(1, Ordering::Relaxed);
+    PortGate::Refused {
+        warn: !warned.swap(true, Ordering::Relaxed),
+    }
+}
+
+/// The off-port tally: each refusal counted once, the warning due once, and
+/// nothing counted for a datagram on the HEP port.
+#[cfg(all(test, feature = "hep"))]
+mod off_port_tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    /// A port that is not in [`HEP_MIRROR_PORTS`].
+    const OFF_PORT: u16 = 5070;
+
+    /// Each off-port datagram adds one to the tally; one on the HEP port
+    /// adds nothing.
+    #[test]
+    fn an_off_port_datagram_is_counted_once_and_an_on_port_one_not_at_all() {
+        let (refused, warned) = (AtomicU64::new(0), AtomicBool::new(false));
+        assert_eq!(
+            port_gate(HEP_MIRROR_PORTS[0], &refused, &warned),
+            PortGate::Believed,
+            "a datagram on the HEP port is believed"
+        );
+        assert_eq!(
+            refused.load(Ordering::Relaxed),
+            0,
+            "an on-port datagram is not counted"
+        );
+        for n in 1..=3 {
+            assert!(
+                matches!(
+                    port_gate(OFF_PORT, &refused, &warned),
+                    PortGate::Refused { .. }
+                ),
+                "an off-port datagram is refused"
+            );
+            assert_eq!(refused.load(Ordering::Relaxed), n, "one count per refusal");
+        }
+    }
+
+    /// The warning is logged once, for the first refusal, whatever port
+    /// later refusals arrive on.
+    #[test]
+    fn the_warning_is_due_on_the_first_refusal_only() {
+        let (refused, warned) = (AtomicU64::new(0), AtomicBool::new(false));
+        assert_eq!(
+            port_gate(OFF_PORT, &refused, &warned),
+            PortGate::Refused { warn: true },
+            "the first refusal warns"
+        );
+        assert_eq!(
+            port_gate(OFF_PORT, &refused, &warned),
+            PortGate::Refused { warn: false },
+            "a second refusal does not warn"
+        );
+        assert_eq!(
+            port_gate(OFF_PORT + 1, &refused, &warned),
+            PortGate::Refused { warn: false },
+            "a refusal on another port does not warn again"
+        );
+    }
+
+    /// The process-wide gate refuses an off port and raises the public
+    /// tally. Other tests in this process may refuse datagrams at the same
+    /// time, so the tally is checked to have risen, not by how much.
+    #[test]
+    fn the_process_gate_refuses_an_off_port_and_raises_the_public_tally() {
+        let before = sniffed_ng_refused_off_port();
+        assert!(
+            !sniffed_mirror_port_believed(OFF_PORT),
+            "the process gate refuses an off port"
+        );
+        assert!(
+            sniffed_ng_refused_off_port() > before,
+            "the public tally rose"
+        );
+        assert!(
+            sniffed_mirror_port_believed(HEP_MIRROR_PORTS[0]),
+            "the HEP port is believed"
+        );
+    }
 }
 
 /// The SDP media endpoints an `ng` message asserts, tied to their call.

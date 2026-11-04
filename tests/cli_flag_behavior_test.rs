@@ -752,9 +752,10 @@ fn duration_rejects_an_unparseable_value() -> Result<(), TestError> {
         Some("error"),
     )?;
     assert_ne!(code, Some(0), "--duration must reject 'five-minutes'");
+    // The whole reason, quoting the value as the operator typed it.
     assert!(
-        err.to_lowercase().contains("duration"),
-        "rejecting --duration must say what was wrong:\n{err}"
+        err.contains("Invalid --duration: Invalid duration value: 'five-minutes'"),
+        "rejecting --duration must say what was wrong, quoting what was typed:\n{err}"
     );
     Ok(())
 }
