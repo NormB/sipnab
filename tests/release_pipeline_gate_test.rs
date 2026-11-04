@@ -1165,3 +1165,85 @@ fn ci_compiles_every_reduced_feature_set_the_release_publishes() -> Result<(), T
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// OPS-9: every build that compiles `audio` ships the playback plugin.
+// ---------------------------------------------------------------------------
+
+/// The audio plugin ships with every dynamic build whose feature set enables
+/// `audio`, and with no other build.
+///
+/// The `.deb`, the `.rpm` and the tarball steps add `libsipnab_audio` (and
+/// the libasound / alsa-lib Recommends) only when the feature step says
+/// `audio_plugin=yes`. That decision compared the whole feature string to
+/// `"full"`. From 0.5.118 the gnu builds append `,bpf`, the string became
+/// `full,bpf`, the comparison went false, and every gnu tarball, `.deb` and
+/// `.rpm` shipped without the plugin while macOS, still plain `full`, kept it.
+///
+/// The expected answer is derived from the feature set the step computes,
+/// expanded through `Cargo.toml`, so a later addition to the list (another
+/// `,bpf`) cannot silently change it. The fixed count pins the shape: the two
+/// gnu default builds and the two macOS builds ship the plugin, the two gnu
+/// `noaudio` builds and the two static musl builds do not.
+#[test]
+fn every_build_that_compiles_audio_ships_the_audio_plugin() -> Result<(), TestError> {
+    let table = feature_table()?;
+    let mut with_plugin: Vec<String> = Vec::new();
+    let mut without_plugin: Vec<String> = Vec::new();
+    for (target, variant) in release_matrix()? {
+        let outputs = feature_step_outputs(&target, &variant)?;
+        let features = &outputs["features"];
+        let has_audio = expand(features, &table).contains("audio");
+        // musl is static: dlopen cannot load a plugin there, so even a musl
+        // build with `audio` must not ship one.
+        let expected = has_audio && !target.ends_with("-linux-musl");
+        let got = outputs.get("audio_plugin").map(String::as_str);
+        assert_eq!(
+            got,
+            Some(if expected { "yes" } else { "no" }),
+            "release.yml builds {target} (variant {variant:?}) with \
+             `--features {features}`, which {} `audio`, but the feature step \
+             wrote audio_plugin={got:?}. A build with audio and no plugin \
+             ships a --play that cannot load its backend, and its .deb/.rpm \
+             drop the libasound Recommends.",
+            if has_audio {
+                "enables"
+            } else {
+                "does not enable"
+            }
+        );
+        let label = if variant.is_empty() {
+            target.clone()
+        } else {
+            format!("{target}-{variant}")
+        };
+        if expected {
+            with_plugin.push(label);
+        } else {
+            without_plugin.push(label);
+        }
+    }
+    with_plugin.sort();
+    without_plugin.sort();
+    assert_eq!(
+        with_plugin,
+        [
+            "aarch64-apple-darwin",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+        ],
+        "the builds that ship the audio plugin"
+    );
+    assert_eq!(
+        without_plugin,
+        [
+            "aarch64-unknown-linux-gnu-noaudio",
+            "aarch64-unknown-linux-musl",
+            "x86_64-unknown-linux-gnu-noaudio",
+            "x86_64-unknown-linux-musl",
+        ],
+        "the builds that ship no audio plugin"
+    );
+    Ok(())
+}

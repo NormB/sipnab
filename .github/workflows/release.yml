@@ -338,12 +338,24 @@ jobs:
           esac
 
           # The audio plugin (libsipnab_audio cdylib) ships only on dynamic
-          # builds that include audio: gnu + macOS with audio == "full".
-          # musl (static, no-audio) and -noaudio builds skip the plugin.
+          # builds that include audio: gnu + macOS, whose lists name `full`
+          # (which enables `audio`) or `audio` itself. musl (static, no-audio)
+          # and -noaudio builds skip the plugin.
+          #
+          # MEMBERSHIP of the comma list, never equality with "full". The gnu
+          # list is "full,bpf" since 0.5.118, and `[ "$features" = "full" ]`
+          # was false for it: every gnu tarball, .deb and .rpm from 0.5.118
+          # to 0.5.232 shipped no plugin and no libasound Recommends.
+          # tests/release_pipeline_gate_test.rs runs this step for every
+          # matrix entry and derives the expected answer from Cargo.toml.
           audio_plugin="no"
           case "${{ matrix.target }}" in
             *-linux-musl) audio_plugin="no" ;;
-            *) [ "$features" = "full" ] && audio_plugin="yes" ;;
+            *)
+              case ",${features}," in
+                *,full,*|*,audio,*) audio_plugin="yes" ;;
+              esac
+              ;;
           esac
 
           echo "features=$features" >> "$GITHUB_OUTPUT"
