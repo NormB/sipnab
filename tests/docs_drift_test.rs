@@ -660,6 +660,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/contributing.md",
         ],
     ),
+    // git's `--no-verify`, which skips the commit-msg hook: the pre-push
+    // message gate exists for a commit made that way.
+    (
+        "no-verify",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
     // `rustup toolchain install ... --component rustfmt`, the command that
     // installs the pinned rustfmt the format gate runs.
     (
@@ -7615,6 +7621,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         14 => "fourteen",
         15 => "fifteen",
         16 => "sixteen",
+        17 => "seventeen",
         n => {
             return Err(format!(
                 "no spelling for {n} gates; add one rather than dropping the check"
@@ -7638,7 +7645,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         // spelled number next to "hard gate" is the drift this catches.
         for wrong in [
             "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
-            "fourteen", "fifteen",
+            "fourteen", "fifteen", "sixteen",
         ] {
             if wrong == spelled {
                 continue;
@@ -8586,6 +8593,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() -> Result<(), Test
         (14, "fourteen"),
         (15, "fifteen"),
         (16, "sixteen"),
+        (17, "seventeen"),
     ];
     let want = spellings
         .iter()

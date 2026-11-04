@@ -63,7 +63,7 @@ with no `mod.rs` chain. Each test binary compiles its own copy.
 | Helper | Provides |
 |---|---|
 | [`mod.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/mod.rs) | Shared normalization (`normalize()`) used to compare output across platforms; self-tested by `support_selftest`. |
-| [`run.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/run.rs) | The canonical binary-spawn helper for CLI/output/config integration tests — one place that knows how to find and invoke the built binary. |
+| [`run.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/run.rs) | The canonical binary-spawn helper for CLI/output/config integration tests — one place that knows how to find and invoke the built binary. It runs the binary with `HOME`, `XDG_CONFIG_HOME` and `SIPNAB_CONFIG` pointed into an empty directory, so no developer's own config reaches a test. `config_isolation` is that list, and `cli_goldens` uses it too. |
 | [`server.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/server.rs) | REST API spawn harness: start the server on an ephemeral port, wait for readiness, tear down. |
 | [`mcp.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/mcp.rs) | The same for HTTP MCP, including the JSON-RPC framing. |
 | [`teardown.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/teardown.rs) | `terminate()`, the one way a harness stops the binary it spawned: SIGTERM, a bounded wait, and SIGKILL only for a child still running after it. `Child::kill()` is SIGKILL, and a process killed that way never writes its coverage profile. Pulled in with `include!` rather than `#[path]`. |

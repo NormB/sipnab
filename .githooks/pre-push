@@ -127,6 +127,20 @@ if [ -n "$SIG_OUT" ]; then
 fi
 printf '%b  every pushed commit is signed%b\n' "$GREEN" "$NC"
 
+# -- Hard gate: no pushed commit message names a private identity ------------
+# The commit-msg hook judges a message as it is written; a commit made with
+# --no-verify, or before the hook knew a form, still leaves the machine here
+# unless its stored message is read again. scripts/commit-message-check.sh
+# reads each commit this push sends, whole, through the same rule the
+# commit-msg hook and CI's pull-request check run.
+if ! MSG_GATE_OUT=$(printf '%s\n' "$PUSH_REFS" \
+	| bash "$(dirname "$0")/../scripts/commit-message-check.sh" 2>&1); then
+	printf '%bPush blocked:%b a pushed commit message names a private identity or credits an AI assistant.\n%s\n' \
+		"$RED" "$NC" "$MSG_GATE_OUT"
+	exit 1
+fi
+printf '%b  every pushed commit message names no private identity%b\n' "$GREEN" "$NC"
+
 # cargo must be available; if it is not, fail closed (better to block than to
 # let unformatted code slip past unchecked).
 if ! command -v cargo >/dev/null 2>&1; then

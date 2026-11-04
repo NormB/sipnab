@@ -934,7 +934,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/site_journey_test.rs a second time each.
     // 751 -> 753: docs/internals/profiling.md links scripts/bench-quiet.py
     // and scripts/bench-verdict.py from the throughput gate's section.
-    const EXPECTED_CODE_LINKS: usize = 753;
+    // 753 -> 754 (ATTRIBUTION-DETECTOR-DRIFT): docs/internals/build-ci-release.md
+    // links scripts/commit-message-check.sh from the pre-push gate list.
+    // Counted against origin/main 03d904afa.
+    const EXPECTED_CODE_LINKS: usize = 754;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
