@@ -961,8 +961,9 @@ fn a_keylog_that_cannot_be_read_names_the_cause() -> Result<(), TestError> {
 /// Root-owned 0600 copies of `files`, as an operator protects a secret.
 ///
 /// Each `(name, bytes)` is written into `dir` by this runner and then handed
-/// to root with `sudo -n install -m 0600 -o root -g root`, so only root can
-/// read it. `dir` itself stays this runner's, so the tempdir can still delete
+/// to root with `sudo -n install -m 0600 -o 0 -g 0`, so only root can
+/// read it. The owner and group are numeric because macOS has no group named
+/// `root` (gid 0 is `wheel` there), and `install -g root` fails on it. `dir` itself stays this runner's, so the tempdir can still delete
 /// the files.
 #[cfg(any(all(feature = "hep", feature = "tls"), feature = "api"))]
 fn root_only_files(
@@ -975,7 +976,7 @@ fn root_only_files(
         let path = dir.join(name);
         std::fs::write(&staged, bytes)?;
         let status = Command::new("sudo")
-            .args(["-n", "install", "-m", "0600", "-o", "root", "-g", "root"])
+            .args(["-n", "install", "-m", "0600", "-o", "0", "-g", "0"])
             .arg(&staged)
             .arg(&path)
             .status()?;
@@ -988,6 +989,25 @@ fn root_only_files(
         out.push(path);
     }
     Ok(out)
+}
+
+/// A working directory that `nobody` can write, for a root run that drops to
+/// it.
+///
+/// `sudo` resets the environment, so a coverage-instrumented sipnab gets no
+/// `LLVM_PROFILE_FILE` and writes its `.profraw` into its working directory
+/// when it exits, as `nobody`. The test's own working directory is the
+/// checkout, which `nobody` cannot write, so the profiler prints `LLVM Profile
+/// Error: Failed to write file ...: Permission denied` on stderr. That line is
+/// the profiler's, not sipnab's, and it would fail every assertion that no
+/// secret read was refused. sipnab changes its working directory only when it
+/// chroots, which these runs do not.
+#[cfg(any(all(feature = "hep", feature = "tls"), feature = "api"))]
+fn dir_nobody_can_write() -> Result<tempfile::TempDir, TestError> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777))?;
+    Ok(dir)
 }
 
 /// A self-signed certificate for `localhost` and its private key, as PEM.
@@ -1038,7 +1058,9 @@ fn a_root_run_reads_its_root_only_hep_and_key_files_before_the_drop() -> Result<
         ],
     )?;
     let fixture = world_readable_fixture("secret-before-drop")?;
+    let run_dir = dir_nobody_can_write()?;
     let out = Command::new("sudo")
+        .current_dir(run_dir.path())
         .arg("-n")
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
@@ -1129,7 +1151,9 @@ fn a_root_run_reads_its_root_only_server_credentials_before_the_drop() -> Result
         return Err("expected six files".into());
     };
     let fixture = world_readable_fixture("server-secrets-before-drop")?;
+    let run_dir = dir_nobody_can_write()?;
     let child = Command::new("sudo")
+        .current_dir(run_dir.path())
         .arg("-n")
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
@@ -1208,7 +1232,9 @@ fn a_root_only_revocation_list_stops_a_root_run_after_the_drop() -> Result<(), T
     let dir = tempfile::tempdir()?;
     let files = root_only_files(dir.path(), &[("revoked", b"tok-1\n")])?;
     let fixture = world_readable_fixture("revoked-after-drop")?;
+    let run_dir = dir_nobody_can_write()?;
     let child = Command::new("sudo")
+        .current_dir(run_dir.path())
         .arg("-n")
         .arg(env!("CARGO_BIN_EXE_sipnab"))
         .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
