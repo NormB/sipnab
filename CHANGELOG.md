@@ -10,6 +10,8 @@ entry that carries them.
 
 ## [Unreleased]
 
+**Held:** until the TUI `[[vcon.rule]]` warning (#639) and the persistence gate that stops every writer of call content (#642) land; 0.5.233 is cut right after them.
+
 ### Added
 
 - **A how-to for asking a media relay about itself: [docs/relay-statistics.md](docs/relay-statistics.md).** The relay surfaces on `main` had only reference rows: `--relay-stats`, `--relay-stats-call`, `--relay-stats-list`, `--relay-stats-interval`, `--relay-compare`, `--relay-holdings`, the six `/v1/relay/` routes, the MCP tools `query_relay`, `relay_stats` and `relay_compare`, and the TUI relay view (`S`, `?`, `H`, `K`). The page shows each in use against rtpengine 12.5.1, with what to check first and a troubleshooting list of the refusals and their exit codes. The relay rows of the CLI reference, the REST and MCP references, the key reference, `docs/rtpengine.md` and `docs/rtpengine-sipnab.md` link to it.
