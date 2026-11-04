@@ -568,6 +568,49 @@ fn a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host()
     Ok(())
 }
 
+/// A job-level `env:` names no `runner` context.
+///
+/// GitHub evaluates a job's `env:` before it assigns a runner, so the
+/// `runner` context does not exist there, and a workflow that uses it is
+/// invalid as a whole: every job of the run is refused, the required check
+/// with them. The first push of the pooled feature jobs set
+/// `CARGO_TARGET_DIR: ${{ runner.temp }}/...` at job level and CI refused
+/// the file (run 41763896012, "Unrecognized named-value: 'runner'"). A
+/// step's `env:` may use it.
+#[test]
+fn no_job_level_env_reads_the_runner_context() -> Result<(), TestError> {
+    let mut defects = Vec::new();
+    let mut envs = 0;
+    for job in all_jobs()? {
+        let mut in_env = false;
+        for line in job.body.lines() {
+            if line == "    env:" {
+                in_env = true;
+                envs += 1;
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+            if in_env && !line.trim().is_empty() && indent <= 4 {
+                in_env = false;
+            }
+            if in_env && line.contains("runner.") && line.contains("${{") {
+                defects.push(format!("{}:{}: {}", job.workflow, job.id, line.trim()));
+            }
+        }
+    }
+    assert!(
+        envs >= 1,
+        "no job-level env: block found; the scan is wrong"
+    );
+    assert!(
+        defects.is_empty(),
+        "a job-level env: uses the runner context, which does not exist there, \
+         so GitHub refuses the whole workflow; set it on the steps instead:\n{}",
+        defects.join("\n")
+    );
+    Ok(())
+}
+
 const DISK_FLOOR_SCRIPT: &str = "scripts/ci-disk-floor.sh";
 
 /// A job on the x86_64 runner refuses to start short of disk.

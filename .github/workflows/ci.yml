@@ -1127,8 +1127,6 @@ jobs:
     # missing. The build directory is the job's own, under the runner's
     # per-job temporary directory, and is removed however the job ends.
     runs-on: [self-hosted, overflow]
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
     strategy:
       fail-fast: false
       matrix:
@@ -1155,11 +1153,17 @@ jobs:
       # removed so no test reads captures outside the checkout. The pre-push
       # hook leaves this to CI; the same script with no arguments runs every
       # lint locally.
+      # The build directory is set per step: the `runner` context exists in
+      # a step's env, not in the job's.
       - name: Lint and test the feature combinations
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
         run: env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/check-feature-matrix.py --group ${{ matrix.group }} --pool overflow
 
       - name: Remove the build directory
         if: always()
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
         run: rm -rf "$CARGO_TARGET_DIR"
 
   # The third group of feature combinations, lint only, on the x86_64 runner:
@@ -1174,8 +1178,6 @@ jobs:
     name: Features (group 2, x86_64)
     # Self-hosted because: the 21 feature combinations queued for GitHub's 20 concurrent hosted jobs, and the x86_64 runner had no CI work routed to it.
     runs-on: [self-hosted, X64]
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -1183,9 +1185,13 @@ jobs:
       - name: Refuse to start with less than 25 GB free
         run: bash scripts/ci-disk-floor.sh 25
       - name: Lint the feature combinations
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
         run: env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/check-feature-matrix.py --group 2 --pool x64
       - name: Remove the build directory
         if: always()
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
         run: rm -rf "$CARGO_TARGET_DIR"
 
   # What `cargo publish` would upload, built from its own files alone.
