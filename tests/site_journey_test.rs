@@ -6631,7 +6631,12 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // tests/ci_cache_policy_test.rs -1. Measurement: with origin/main's
     // ci.yml swapped back in, the scan reads 213; ci.yml's references go
     // from 63 to 72, and pages.yml holds at 53.
-    const EXPECTED_REFERENCES: usize = 222;
+    // 222 -> 223: the audio-plugin rule's comment in
+    // `.github/workflows/release.yml` names
+    // `tests/release_pipeline_gate_test.rs`, the test that runs the rule for
+    // every release build (OPS-9). Measurement: with origin/main's
+    // release.yml swapped back in, the scan reads 222.
+    const EXPECTED_REFERENCES: usize = 223;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
