@@ -17985,6 +17985,12 @@ In the Save dialog, `Tab` cycles the format:
 `Enter` writes the file. `Shift+Tab` or `Up` / `Down` cycle the same list. With
 nothing selected, it saves everything.
 
+**sipnab saves a CSV cell that would start a spreadsheet formula as text.**
+
+- Whoever places the call chooses a From or To user such as `=1+1`.
+- sipnab writes it as `"'=1+1"`, so a spreadsheet shows it rather than running it.
+- [Keybindings](keybindings.md) lists the characters it guards.
+
 **The HTML diagram draws at most 200 messages.**
 
 - A call with more exports its first 200 as arrows.
@@ -18701,6 +18707,15 @@ The help text can run past the screen, so it scrolls.
 | (any char) | Insert character |
 
 Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **Mermaid/HTML**, **Markdown**, **WAV**, **SIPp XML**, **RTP JSON**
+
+**sipnab writes a CSV cell that a spreadsheet would run as a formula as text.**
+
+- The From and To users come from the SIP messages, so whoever places a call chooses them.
+- sipnab adds a leading `'` to a text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return, and quotes it.
+  - A spreadsheet then shows `=1+1` as text instead of running it (CWE-1236).
+- sipnab quotes a cell holding a comma, a double quote, a line feed or a carriage return, as [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180.html) requires.
+- sipnab writes the numeric and time columns (`messages`, `pdd_ms`, `setup_ms`, `created_at`) as it formats them.
+  - They hold no caller text, and a negative `pdd_ms` stays a number.
 
 ## Filter popup
 

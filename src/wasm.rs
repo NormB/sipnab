@@ -259,24 +259,7 @@ impl SipnabSession {
 
     /// Export as CSV.
     pub fn export_csv(&self) -> String {
-        let mut out =
-            String::from("call_id,method,state,from,to,src_ip,dst_ip,messages,pdd_ms,created_at\n");
-        for d in self.dialog_store.iter() {
-            out.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{}\n",
-                d.call_id,
-                d.method,
-                d.state(),
-                d.from_user.as_deref().unwrap_or("-"),
-                d.to_user.as_deref().unwrap_or("-"),
-                d.src_addr,
-                d.dst_addr,
-                d.messages.len(),
-                d.timing.pdd_ms().unwrap_or(-1),
-                d.created_at.to_rfc3339(),
-            ));
-        }
-        out
+        crate::csv::session_export(&self.dialog_store)
     }
 
     /// Export as Mermaid sequence diagram for a specific dialog.

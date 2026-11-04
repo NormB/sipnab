@@ -371,6 +371,12 @@ In the Save dialog, `Tab` cycles the format:
 `Enter` writes the file. `Shift+Tab` or `Up` / `Down` cycle the same list. With
 nothing selected, it saves everything.
 
+**sipnab saves a CSV cell that would start a spreadsheet formula as text.**
+
+- Whoever places the call chooses a From or To user such as `=1+1`.
+- sipnab writes it as `"'=1+1"`, so a spreadsheet shows it rather than running it.
+- [Keybindings](@/docs/keybindings.md) lists the characters it guards.
+
 **The HTML diagram draws at most 200 messages.**
 
 - A call with more exports its first 200 as arrows.

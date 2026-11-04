@@ -395,15 +395,8 @@ pub(super) fn format_dialog_state(state: &crate::sip::dialog::DialogState) -> &'
     crate::tui::call_list::state_display_labeled(state, "Failed")
 }
 
-/// Escape a field for CSV output: if it contains commas, quotes, or newlines,
-/// wrap in double quotes and double any existing quotes.
-pub(super) fn csv_escape(field: &str) -> String {
-    if field.contains(',') || field.contains('"') || field.contains('\n') {
-        format!("\"{}\"", field.replace('"', "\"\""))
-    } else {
-        field.to_string()
-    }
-}
+/// Escape a field for CSV output, by the one rule in [`crate::csv`].
+pub(super) use crate::csv::escape_field as csv_escape;
 
 /// Export all dialogs as pretty-printed JSON with parsed headers, timing, and state.
 ///
@@ -1588,6 +1581,40 @@ mod tests {
             let _: serde_json::Value =
                 serde_json::from_str(line).map_err(|e| format!("valid json line: {e:?}"))?;
         }
+        Ok(())
+    }
+
+    /// A From user that a spreadsheet would run as a formula is saved as text.
+    ///
+    /// The From user comes from the INVITE, so whoever places the call
+    /// chooses it; `=1+1` opened in a spreadsheet was a live formula
+    /// (CWE-1236). The save must write it with the single-quote prefix.
+    #[test]
+    fn csv_save_writes_a_formula_from_user_as_text() -> Result<(), TestError> {
+        let t0 = base_ts()?;
+        let app = App::with_processed_messages(vec![
+            make_invite("call-f@test", "=1+1", "1002", t0)?,
+            make_ok("call-f@test", t0 + TimeDelta::seconds(1))?,
+        ]);
+        {
+            let store = app.dialog_store.read();
+            let d = store
+                .get("call-f@test")
+                .ok_or("the dialog was not tracked")?;
+            assert_eq!(
+                d.from_user.as_deref(),
+                Some("=1+1"),
+                "the fixture's From user did not parse as written, so this test \
+                 would not exercise the guard"
+            );
+        }
+        let p = tmp_path("formula.csv")?;
+        let msg = save_to_csv_path(&app, p.to_str().ok_or("to_str() returned None")?);
+        assert!(msg.contains("Saved"), "got: {msg}");
+        let content = std::fs::read_to_string(&p)?;
+        let row = content.lines().nth(1).ok_or("no data row")?;
+        let from = row.split(',').nth(3).ok_or("no from column")?;
+        assert_eq!(from, "\"'=1+1\"", "the from column of {row:?}");
         Ok(())
     }
 

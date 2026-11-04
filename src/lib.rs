@@ -374,6 +374,7 @@ pub use chrono;
 
 pub use error::{CaptureError, Error, ParseError};
 pub mod clock;
+pub mod csv;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod mcp_profile;

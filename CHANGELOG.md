@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **A saved CSV no longer carries a caller's formula into a spreadsheet (CWE-1236).** The terminal UI's CSV save and the browser analyzer's CSV export wrote the From and To users as they arrived, and whoever places a call chooses them. A From user such as `=1+1`, or a `HYPERLINK` formula, became a live formula when the file was opened in a spreadsheet. A text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is now written with a leading `'` and quoted, by one rule in `src/csv.rs` that both writers use. The numeric and time columns are written as sipnab formats them. The browser export had escaped nothing, so a comma in a From user also split its row there. A field holding a bare carriage return is now quoted too: written unquoted, it split the row for [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180.html) readers.
+
 ## [0.5.233] - 2026-11-04
 
 ### Added
