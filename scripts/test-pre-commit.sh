@@ -37,6 +37,13 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 HOOK="$REPO_ROOT/.githooks/pre-commit"
 
+# Every git command below must act on a throwaway repository, never on the one
+# whose hook (or whose GIT_DIR-carrying shell) runs this script: see
+# scripts/lib-git-sandbox.sh. Cleared once, here, for the whole script and the
+# hooks it runs.
+. "$REPO_ROOT/scripts/lib-git-sandbox.sh"
+clear_git_env
+
 PASS=0
 FAIL=0
 # A scenario whose ASSERTION is only true on one platform. Counted separately
@@ -267,7 +274,9 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		<tr><td>{{ suite.automated_tests }} automated tests.</td></tr>
 	EOF
 
-	( cd "$_d" && git init -q . && git config user.email t@t && git config user.name t \
+	( cd "$_d" && git init -q . ) >&2
+	require_own_git_dir "$_d"
+	( cd "$_d" && git config user.email t@t && git config user.name t \
 		&& git add -A && git commit -qm base )
 	echo "$_d"
 }

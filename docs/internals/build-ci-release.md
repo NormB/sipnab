@@ -970,10 +970,13 @@ Four places pulled from it, and each now does something else:
 - no Docker Hub image in what `cross` builds in
 - one codespell pin that CI and the hooks share
 
-[`pre-push`](../../.githooks/pre-push) adds fifteen hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds sixteen hard gates that `cargo test`
 does not cover:
 
 - a check that every pushed commit carries a good signature
+- a check that no pushed commit message names a private identity or credits
+  an AI assistant, read whole through
+  [`scripts/commit-message-check.sh`](../../scripts/commit-message-check.sh)
 - [`scripts/check-rustfmt.sh`](../../scripts/check-rustfmt.sh)
 - `cargo clippy --workspace --all-features --all-targets
   -D warnings`
@@ -1247,7 +1250,7 @@ The hook greps the tree for that list instead of carrying its own copy.
 - The first draft did hand-keep the list.
   It went stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the fifteen hard gates.
+**When it runs.** Last, after the sixteen hard gates.
 
 - Each of those fails in seconds.
 - Spending a minute on the corpus only to hear that the tree does not

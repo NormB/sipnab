@@ -8,6 +8,14 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **No AI credit gets past the commit hooks or CI.** The commit-msg hook and CI's pull-request check named only Claude and Anthropic, so a `Co-Authored-By:` trailer naming GitHub Copilot or another assistant passed both. The recent-commits gate named more assistants, but only on a line that began with the trailer key, so the same trailer behind a leading `#`, which `git commit -m` keeps, passed it. The commit-msg hook also stopped reading at a scissors line, which git cuts only from a message opened in an editor: with `-m` a credit below one reached the commit. One detector, `tests/support/ai_attribution.rs`, now serves every gate and names every assistant either copy did and more. The commit-msg hook reads a message whole unless git will open it in an editor, and the pre-push hook now reads every outgoing commit's stored message through the same check (`scripts/commit-message-check.sh`), before any cargo gate.
+- **The hook test scripts no longer write into the repository that runs them.** `scripts/test-pre-commit.sh` and `scripts/test-pre-push.sh` built their throwaway repositories with every `GIT_*` variable inherited. Run from a hook of a linked worktree, where git exports an absolute `GIT_DIR`, their `git init`, `git config` and `git commit` acted on that repository: they rewrote its shared `.git/config`, committed the fixture into it, and `test-pre-push.sh` re-entered the repository's own pre-commit hook. Both now clear every `GIT_*` variable first and refuse a sandbox whose git directory is outside it, through `scripts/lib-git-sandbox.sh`. No sipnab hook runs these scripts; CI does. The gate that requires a fixture-building test to handle the hook environment now accepts a test that removes every `GIT_*` variable, which removes `GIT_DIR` too.
+- **The integration tests no longer read the developer's own sipnab config.** `tests/support/run.rs::run` passed no `-f` and pinned neither `HOME` nor `SIPNAB_CONFIG`, so every caller without `-f` loaded whatever `~/.sipnabrc`, `~/.config/sipnab/sipnab.toml`, `$XDG_CONFIG_HOME/sipnab/sipnab.toml` or `$SIPNAB_CONFIG` the machine running it held. A result then depended on whose machine ran it. `run()` now points `HOME`, `XDG_CONFIG_HOME` and `SIPNAB_CONFIG` into an empty directory made for the run. `cli_goldens` takes the same pins from the same list, which adds `XDG_CONFIG_HOME`: it had pinned only `HOME` and `SIPNAB_CONFIG`.
+
 ## [0.5.233] - 2026-11-04
 
 ### Added

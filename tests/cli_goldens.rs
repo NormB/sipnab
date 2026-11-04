@@ -27,6 +27,8 @@
 
 use support::TestError;
 
+#[path = "support/run.rs"]
+mod run_support;
 #[path = "support/mod.rs"]
 mod support;
 
@@ -60,6 +62,9 @@ fn cli_goldens() -> Result<(), TestError> {
     // `$SIPNAB_CONFIG` is pointed inside it at a file that is never created --
     // an exported `SIPNAB_CONFIG` outranks `$HOME` in the search, so pinning
     // one without the other would leave the same hole one entry higher up.
+    // `$XDG_CONFIG_HOME` is pinned inside it too, for the same reason: it
+    // outranks `$HOME/.config`. All three come from
+    // `run_support::config_isolation`, the list `run()` uses.
     // A miss there logs at `debug!`, which `SIPNAB_LOG=off` already silences.
     //
     // CARGO_TARGET_TMPDIR rather than the process-wide system temp directory:
@@ -113,14 +118,13 @@ fn pinned_cases(home: &std::path::Path) -> trycmd::TestCases {
         .env("LINES", support::FIXED_ROWS.to_string())
         // trycmd merges stderr; sipnab's tracing logs carry wall-clock
         // timestamps. Silence them so goldens pin only deterministic stdout.
-        .env("SIPNAB_LOG", "off")
-        .env("HOME", home.to_string_lossy().into_owned())
-        .env(
-            "SIPNAB_CONFIG",
-            home.join("no-such-config.toml")
-                .to_string_lossy()
-                .into_owned(),
-        );
+        .env("SIPNAB_LOG", "off");
+    // The same pins `run_support::run` applies, from the one list: this copy
+    // used to pin HOME and SIPNAB_CONFIG only, so an exported
+    // XDG_CONFIG_HOME/sipnab/sipnab.toml still reached every golden.
+    for (key, value) in run_support::config_isolation(home) {
+        cases.env(key, value.to_string_lossy().into_owned());
+    }
     cases
 }
 

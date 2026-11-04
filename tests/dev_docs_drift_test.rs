@@ -932,7 +932,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/tests/test_parallel_tests_shards.py, and
     // scripts/check-feature-matrix.py, scripts/parallel-tests.py and
     // tests/site_journey_test.rs a second time each.
-    const EXPECTED_CODE_LINKS: usize = 751;
+    // 751 -> 752 (ATTRIBUTION-DETECTOR-DRIFT): docs/internals/build-ci-release.md
+    // links scripts/commit-message-check.sh from the pre-push gate list.
+    // Counted against origin/main 2c0d0c2c0.
+    const EXPECTED_CODE_LINKS: usize = 752;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
