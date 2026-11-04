@@ -932,7 +932,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/tests/test_parallel_tests_shards.py, and
     // scripts/check-feature-matrix.py, scripts/parallel-tests.py and
     // tests/site_journey_test.rs a second time each.
-    const EXPECTED_CODE_LINKS: usize = 751;
+    // 751 -> 753: docs/internals/profiling.md links scripts/bench-quiet.py
+    // and scripts/bench-verdict.py from the throughput gate's section.
+    const EXPECTED_CODE_LINKS: usize = 753;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

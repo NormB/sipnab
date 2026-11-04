@@ -535,8 +535,17 @@ rebuild, so nothing after them compares to them.
 ### Why the throughput gate runs nightly, not per push
 
 - The `Throughput` workflow runs [`bench/regression-gate.sh`](../../bench/regression-gate.sh) at 03:29 UTC daily.
-- It runs against the figure committed in [`bench/baseline.json`](../../bench/baseline.json).
-- It fails below a stated floor.
+- It measures the candidate and the latest release's binary alternately, five rounds, and prints the load average beside each round.
+- [`scripts/bench-verdict.py`](../../scripts/bench-verdict.py) judges the median candidate/reference ratio against the floor in [`bench/baseline.json`](../../bench/baseline.json).
+- When the reference itself measures under that floor of the baseline, the gate exits 3: the host was too loaded to judge.
+  That is a refusal, not a regression, which exits 1.
+- Before it measures, [`scripts/bench-quiet.py`](../../scripts/bench-quiet.py) waits up to 20 minutes for the host processor to be at least 90% idle.
+  The gate prints the host's state either way.
+
+Why a reference: measured alone, the gate read load as a regression.
+It measured 30.7% of baseline on 2026-10-15, 34.7% on 2026-10-28 and 54.5% on 2026-11-04.
+Each time an interleaved A/B on the same host measured the commit level with its predecessor.
+Load slows both binaries of a round. A regression slows only the candidate.
 
 It is nightly on purpose:
 

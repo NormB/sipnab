@@ -64,8 +64,33 @@ jobs:
         # optimization, and the baseline was recorded from a release build.
         run: cargo build --features full --release
 
-      - name: Measure against the committed baseline
-        run: bench/regression-gate.sh "${CARGO_TARGET_DIR:-target}/release/sipnab"
+      # The reference: the latest release's aarch64 binary, measured in the
+      # same run, alternately with the candidate. This host is shared with
+      # three other runners and the local gates, and measured alone the gate
+      # read their load as a regression (30.7% of baseline on 2026-10-15,
+      # 34.7% on 10-28, 54.5% on 11-04, each for a commit an interleaved A/B
+      # measured level with its predecessor). Load slows both binaries of a
+      # round; a regression slows only the candidate. The artifact is
+      # checksum-verified before it runs.
+      - name: Fetch the reference binary (latest release)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          name="sipnab-${tag#v}-aarch64-unknown-linux-gnu"
+          dir="$RUNNER_TEMP/bench-reference"
+          rm -rf "$dir" && mkdir -p "$dir" && cd "$dir"
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" \
+            -p "$name.tar.gz" -p "$name.tar.gz.sha256"
+          sha256sum -c "$name.tar.gz.sha256"
+          tar xzf "$name.tar.gz"
+          echo "SIPNAB_BENCH_REFERENCE=$dir/$name/sipnab" >> "$GITHUB_ENV"
+
+      - name: Measure against the reference and the committed baseline
+        run: >-
+          bench/regression-gate.sh --reference "$SIPNAB_BENCH_REFERENCE"
+          "${CARGO_TARGET_DIR:-target}/release/sipnab"
 
       - name: Record what was measured
         if: always()

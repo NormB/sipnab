@@ -20,6 +20,7 @@ number on the benchmarks page.
 | `scaling.sh` | sipnab throughput + peak RSS across `--cores` values |
 | `compare.sh` | sipnab against the terminal viewer / the CLI matcher / voipmonitor on one corpus |
 | `live-capture.sh` | live-capture loss under synthetic load in a private netns (root) |
+| `regression-gate.sh` | the nightly throughput gate: a build against the latest release, measured alternately |
 
 ## Reproducing the published tables
 
@@ -71,6 +72,40 @@ bench/scaling.sh "$BIN" sweep-20000.pcap 2140000 --cores 4 --runs 5
 - peak RSS from GNU `time -f %M`
 - `pkts/s = packets ÷ wall-clock seconds`, startup included
 - output is deterministic: same arguments in, byte-identical pcap out
+
+## The nightly throughput gate
+
+`regression-gate.sh` is what the `Throughput` workflow runs. Use it the same
+way locally to check a build against the latest release before you push a
+change to the packet path.
+
+Prerequisites: an aarch64 Linux host (the baseline belongs to the reference
+host), `gh`, Python 3, and GNU `time`.
+
+```sh
+# Run all of these, in order.
+cargo build --features full --release
+tag=$(gh release view -R NormB/sipnab --json tagName --jq .tagName)
+name="sipnab-${tag#v}-aarch64-unknown-linux-gnu"
+gh release download "$tag" -R NormB/sipnab -p "$name.tar.gz" -p "$name.tar.gz.sha256"
+sha256sum -c "$name.tar.gz.sha256" && tar xzf "$name.tar.gz"
+bench/regression-gate.sh --reference "$name/sipnab" target/release/sipnab
+```
+
+Verify: the last line is `OK`, and every `round` line shows the load average
+it ran at.
+
+| exit | meaning | what to do |
+|---|---|---|
+| 0 | the candidate is within the floor of the reference | nothing |
+| 1 | the candidate is slower than the floor ratio, or the harness produced no figure | bisect; do not lower the baseline |
+| 2 | usage error | read the usage line |
+| 3 | the reference measured under the floor of the baseline: too loaded to judge | re-run on a quieter host; if the load was low, the release itself is slow |
+
+`SIPNAB_BENCH_ROUNDS` (default 5) sets the rounds. `SIPNAB_BENCH_QUIET_WAIT`
+(default 1200 s) and `SIPNAB_BENCH_IDLE_PCT` (default 90) bound the wait for a
+quiet host; `SIPNAB_BENCH_QUIET_WAIT=0` skips it. Without `--reference` the
+gate compares the candidate against the baseline alone.
 
 ## Live capture
 
