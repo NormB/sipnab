@@ -5103,7 +5103,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/least-privilege.md, and their site mirrors under
     // website/content/docs/. Attributed against the staged diff:
     // `--diff-filter=A` lists those six.
-    const EXPECTED_MARKDOWN_FILES: usize = 336;
+    // 336 -> 342 (#641): docs/capture-queries.md, docs/follow-a-call.md and
+    // docs/expectations.md, the query, multi-leg and expectation-suite
+    // how-tos, and their three generated mirrors under website/content/docs/.
+    // Attributed against the staged diff: `--diff-filter=A` lists those six
+    // as the markdown files added.
+    const EXPECTED_MARKDOWN_FILES: usize = 342;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5883,7 +5888,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // `--pcap-export-mode` table), and each one's site mirror the same.
     // Attributed per file against origin/main 9124a6f08: no other changed page
     // gained or lost a table.
-    const EXPECTED_TABLES: usize = 1374;
+    // 1374 -> 1396 (#641): capture-queries.md +2, follow-a-call.md +3,
+    // expectations.md +3, tui-walkthrough.md +1, examples.md +1 and
+    // plugins.md +1, and the site mirror of each of those six pages the same
+    // (+11). No other changed page gained or lost a table. Counted against
+    // origin/main 9124a6f08.
+    const EXPECTED_TABLES: usize = 1396;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

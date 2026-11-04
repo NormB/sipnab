@@ -390,7 +390,7 @@ directly. Threads, not processes: there is nothing to isolate.
 **Open risk that must be settled first.** Packets would reach a worker
 interleaved across files and therefore out of timestamp order.
 `DialogStore::merge` is order-tolerant — `absorb_messages`
-([`dialog_store.rs:1089-1106`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1089-L1106)) sorts by
+([`dialog_store.rs:1129-1146`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1129-L1146)) sorts by
 timestamp and `replay_message_derived_state` re-runs the state machine — but a
 *live* worker store is fed by `process_message` in arrival order. **I could not
 determine whether out-of-order arrival within a single worker changes the

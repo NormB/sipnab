@@ -287,6 +287,9 @@ The answer is a Mermaid `sequenceDiagram` of the caller's leg.
 - The MCP tool `find_correlated` returns the same legs as the `/correlated`
   route.
 
+To tie the legs on an identifier instead of their timing, see
+[Follow one call across its legs](follow-a-call.md#make-the-match-exact).
+
 ## Receive FreeSWITCH's own copy of its SIP (HEP)
 
 FreeSWITCH's SIP stack can send a HEP copy of every SIP message it sends and

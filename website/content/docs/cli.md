@@ -856,7 +856,7 @@ To see the log lines:
 | `--contact` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP Contact header (regex pattern) |
 | `--ua` | `<PATTERN>` | -- | 0.3.0 | Filter by User-Agent header (regex pattern) |
 | `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](@/docs/filter-dsl.md). A value may be bare or quoted: `method == INVITE` and `method == 'INVITE'` are the same filter. The expression may use a [named filter](@/docs/filter-dsl.md#named-filters) from `[filters]` as `@name`. Config: `[filter] expression` |
-| `--since` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window). ANDed with `--filter`. Needs `-N` |
+| `--since` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window), and the recipe [Narrow a capture to when the problem happened](@/docs/cookbook.md#narrow-a-capture-to-when-the-problem-happened). ANDed with `--filter`. Needs `-N` |
 | `--until` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is before this instant; a dialog at exactly `--until` belongs to the next window. Must be after `--since`. ANDed with `--filter`. Needs `-N` |
 
 **Examples**
@@ -1146,7 +1146,8 @@ Multiple diagnostic flags combine with OR.
 ## Queries
 
 A query flag answers one question about the capture after sipnab has read
-it, then exits. Each one:
+it, then exits. [Answer questions about a capture](@/docs/capture-queries.md) shows
+which flag answers which question, and how to read each answer. Each one:
 
 - counts only the dialogs the run's filter admits: `--filter`, the
   [diagnostic aliases](#diagnostic-aliases) and `--since`/`--until`;
@@ -1177,7 +1178,7 @@ out the end-of-run summary on stderr.
 | `--compare-captures` | `<A> <B>` | | 0.5.231 | Compare two capture files: for each dimension, the dialogs per value in A (the baseline) and B, and the change, largest movement first. Needs no `-I`. `--json` prints the shape of `GET /v1/captures/compare`. The same file twice exits 2; a file that yields no dialogs exits 1 |
 | `--compare-dimensions` | `<DIMENSIONS>` | `state,response_code` | 0.5.231 | The dimensions `--compare-captures` diffs, comma-separated, from the `--count-by` set. Any other exits 2. Needs `--compare-captures` |
 | `--find-in-files` | `<PATH>...` | | 0.5.231 | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
-| `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns |
+| `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns. See [Fail a build on what a capture shows](@/docs/expectations.md) |
 | `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native`. How-to: [Ask a media relay about itself](@/docs/relay-statistics.md#list-the-calls-the-relay-holds) |
 | `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Needs `--relay-holdings`; `0` exits 2 |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
@@ -1451,11 +1452,12 @@ b2bua-caller-synth@203.0.113.1        root              -       -      -      ye
 ```
 
 - Each hop indents the leg two more spaces.
-- `Match` is `identifier` when the legs share an identifier (`X-Call-ID`,
-  `Session-ID`, the SDP origin, P-Charging-Vector or a Via branch, or a
-  topology-hidden Call-ID that decodes to the other leg's or that OpenSIPS
-  named in an `E_SIPNAB_TH_MAP` event), and `guess` when
-  only their timing ties them.
+- `Match` is `identifier` when the legs share an identifier (a header named
+  in `[sip] xcid_headers`, `Session-ID`, the SDP origin, P-Charging-Vector or
+  a Via branch, or a topology-hidden Call-ID that decodes to the other leg's
+  or that OpenSIPS named in an `E_SIPNAB_TH_MAP` event), and `guess` when
+  only their timing ties them. [Follow one call across its legs](@/docs/follow-a-call.md)
+  shows how to get an identifier match.
 - `Method` says how sipnab made the link: `mapping` (an OpenSIPS
   topology-hiding leg the OpenSIPS script named in an `E_SIPNAB_TH_MAP`
   event), `decoded` (an OpenSIPS
@@ -1881,6 +1883,9 @@ sipnab --find-in-files tests/pcap-samples/sip-problem-call.pcap tests/pcap-sampl
 The MCP tool `find_in_captures` runs the same search over its file root.
 
 ### Fail a build on what a capture shows
+
+[Fail a build on what a capture shows](@/docs/expectations.md) walks through writing a
+suite, running it in a pipeline and reading its failures.
 
 Write the thresholds the traffic must meet in a suite file, and let the exit
 status fail the CI step that runs it. Each rule names a metric (`count`,

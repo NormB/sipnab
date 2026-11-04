@@ -1,0 +1,7 @@
+```
+$ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --count-by response_code --filter "state == 'Failed'" --no-cli-print --quiet
+Dialogs by response_code: 0 values, 0 dialogs
+Value  Dialogs
+--------------
+
+```

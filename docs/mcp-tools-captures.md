@@ -159,7 +159,7 @@ timestamp of the file's first record, in whole seconds. Among forty rotated
 captures, it narrows the search for a call from 14:02 to the two files that
 could hold it, without opening any. [`open_capture`](#open_capture) replaces
 the loaded capture, and [`find_in_captures`](#find_in_captures) searches files
-without doing so.
+without doing so. [Which file holds the call](capture-queries.md#which-file-holds-the-call) walks through such a search.
 
 The key
 reads `null` whenever sipnab got no first packet out of the file — a rotated
@@ -175,12 +175,14 @@ with no `--vcon-key`.
 
 The listing carries no dialog count and no last-packet time, because both
 need the whole file parsed. To learn which file holds a call, use
-[`find_in_captures`](#find_in_captures).
+[`find_in_captures`](#find_in_captures), as
+[Which file holds the call](capture-queries.md#which-file-holds-the-call) shows.
 
 ### `find_in_captures`
 
 **Which of these files holds the call**, asked without giving up the one you
-are working in.
+are working in. [Which file holds the call](capture-queries.md#which-file-holds-the-call) shows the search from the command
+line and over MCP, with its background job.
 
 Use it to find which file in `--mcp-file-root` holds a call, for example a
 Call-ID across rotated captures. [`open_capture`](#open_capture) would replace
@@ -391,7 +393,8 @@ most one packet.
 
 ### `find_in_captures_status`
 
-Polls a [`find_in_captures`](#find_in_captures) job. It waits up to
+Polls a [`find_in_captures`](#find_in_captures) job ([Which file holds the call](capture-queries.md#which-file-holds-the-call) shows a
+search that finished and one stopped early). It waits up to
 `wait_seconds` for the job to finish and answers with the same shape
 `find_in_captures` returns: `status: "running"` with `progress`, or `done` or
 `canceled` with the `sweep` result. It hands the result over once, and sipnab
@@ -442,7 +445,7 @@ A second poll of the same id fails, because the first poll took the result:
 ### `cancel_find_in_captures`
 
 Stops a running [`find_in_captures`](#find_in_captures) job before its next
-packet. It returns at once, with `progress.cancel_requested: true`. A
+packet ([Which file holds the call](capture-queries.md#which-file-holds-the-call) shows one canceled). It returns at once, with `progress.cancel_requested: true`. A
 following [`find_in_captures_status`](#find_in_captures_status) poll reports
 `status: "canceled"`, with `stopped_because: "canceled"`, `complete: false`,
 and the files read to the end before the cancel. For a job that had already

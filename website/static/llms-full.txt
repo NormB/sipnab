@@ -1310,6 +1310,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 | Read a load test that reuses one Call-ID | [47. Follow a load generator's traffic by transaction, not by call](#follow-a-load-generators-traffic-by-transaction-not-by-call) |
 | Settle "we sent it" / "we never got it" | [27. Compare the same call at two nodes](#compare-the-same-call-at-two-nodes) |
 | Look only at the hour the problem happened | [67. Narrow a capture to when the problem happened](#narrow-a-capture-to-when-the-problem-happened) |
+| Find the calls someone transferred | [69. Find the transferred calls](#find-the-transferred-calls) |
 
 **Chase audio and quality complaints**
 
@@ -1611,7 +1612,32 @@ sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --jso
 
 **Commands:**
 
-`sipnab -N --json` emits per-message records, not per-dialog summaries.
+Count the failed calls by their final response code. Each call counts once,
+under the code that ended it:
+
+```bash
+sipnab -N -I capture.pcap --count-by response_code --filter "state == 'Failed'" --no-cli-print --quiet
+```
+
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap):
+
+```text
+Dialogs by response_code: 4 values, 4 dialogs
+Value  Dialogs
+--------------
+404    1
+486    1
+503    1
+603    1
+```
+
+[Answer questions about a capture](capture-queries.md) covers `--count-by`
+and the other counts: by user, address or codec, carrier metrics, and calls
+over time.
+
+To see every response the failed calls drew, provisional ones included, read
+the messages instead. `sipnab -N --json` emits per-message records, not
+per-dialog summaries.
 
 - It writes one JSON line per SIP message.
 - The `status_code` field is on response messages.
@@ -1657,13 +1683,13 @@ The histogram output looks like (`uniq -c` count, then status code):
 
 **Pitfalls:**
 
-- The histogram counts *all* response codes seen in messages of failed dialogs.
+- The `jq` histogram counts *all* response codes seen in messages of failed dialogs.
   - So a single failed call with `100 Trying → 488` contributes both 100 and 488.
-  - For just the final response per call, use `--call-report <id>` per dialog.
-- The dialog summary returned by the REST API (`/v1/dialogs`) has no `status_code` field.
-  - That's a per-message field.
-  - It is only available in CLI `--json` output, or via `/v1/dialogs/{id}`.
-  - That endpoint includes the full message list.
+  - For the final response per call, use `--count-by response_code`.
+- `status_code` is a per-message field, on `--json` lines and in the message
+  list of `/v1/dialogs/{id}`.
+  - The per-call field is `final_status_code`. `--json-dialogs` and every row
+    of the REST API's `/v1/dialogs` carry it.
 
 **Runnable example:** [Group failed calls by response code](client-examples.md#group-failed-calls-by-response-code) works over REST. It:
 
@@ -3259,7 +3285,7 @@ It asks them beside the call's one-way diagnosis.
 In `-N` (non-interactive) mode, sipnab normally prints each captured SIP message to stdout. Then it emits the report.
 
 - Pass `--no-cli-print` to suppress the per-message dump. Then only the report reaches stdout.
-- (`-N` is not optional. Without it, sipnab tries to start the TUI, and the report output never reaches stdout.)
+- `--call-report` implies `-N`, so the TUI never starts. The commands below keep `-N` anyway. `--report` does not imply it, so a `--report` run needs `-N`.
 
 Markdown, to paste into a ticket or a markdown editor:
 
@@ -3289,7 +3315,7 @@ The report covers:
 
 **Tip:** combine with the filter from [3. Find every failed call, grouped by response code](#find-every-failed-call-grouped-by-response-code).
 That bulk-generates reports for every failed call.
-The CLI `--filter` outputs per-message records. So deduplicate to call_ids first:
+`--json-dialogs` prints one line per call, so each `call_id` appears once:
 
 - Create the reports directory:
 
@@ -3301,10 +3327,9 @@ The CLI `--filter` outputs per-message records. So deduplicate to call_ids first
 
   ```bash
   # Run all of these, in order.
-  # First pass: enumerate matching calls (no --no-cli-print here — we want the
-  # per-message JSON so jq can extract call_id).
-  sipnab -N -I capture.pcap --filter "state == 'Failed'" --json 2>/dev/null \
-    | jq -r '.call_id' | sort -u \
+  # First pass: one line per failed call.
+  sipnab -N -I capture.pcap --filter "state == 'Failed'" --json-dialogs --no-cli-print --quiet \
+    | jq -r '.call_id' \
     | while read cid; do
         # Second pass per call: --no-cli-print so only the report is written.
         sipnab -N -I capture.pcap --call-report "$cid" --markdown --no-cli-print \
@@ -3516,7 +3541,7 @@ Keyboard shortcuts match the TUI (`?` opens the help popup).
 
 **Problem:** A call works "most of the time". Nothing in the ladder looks wrong, and both vendors say their side is fine.
 
-`--lint` reads the signaling against RFC 3261. It reports what violates it, citing the section:
+`--lint` reads the signaling against the RFC sections it must obey: RFC 3261 and the RFCs on session timers ([RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)), `Session-ID` ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)) and SDP offer/answer. It reports what violates them, citing the section:
 
 ```bash
 sipnab -N -I capture.pcap --lint
@@ -3569,6 +3594,25 @@ sipnab -N -I capture.pcap --analyze
 sipnab -N -I capture.pcap --json-analyze
 ```
 
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap),
+`--analyze --no-cli-print --quiet` prints:
+
+```text
+Capture analysis: 2 finding(s) across 5 dialog(s), 0 stream(s), 23 frame(s) read.
+
+1. [MAJOR] Call failed 5xx/6xx — 2 call(s)
+   The call ended on a server-class or global failure (RFC 3261 §21.5, §21.6). Unlike a 4xx these are never an ordinary call outcome: something on the path or at the far end was unable to serve the request.
+   Evidence:
+     - Call-ID decline-7c6d5e@198.51.100.30 | 198.51.100.30:5060 -> 198.51.100.40 | 2023-11-14 22:13:26.000 UTC | status_code=603 | Decline
+     - Call-ID unavail-4e5f60@192.0.2.50 | 192.0.2.50:5060 -> 192.0.2.60 | 2023-11-14 22:13:32.000 UTC | status_code=503 | Service Unavailable
+
+2. [MINOR] Call failed 4xx — 2 call(s)
+   The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy Here, 404 for a misdialled number, 480 for a phone that is off — so this is listed to be ruled out rather than acted on. The codes are named below; a run of 403 or 408 is not an ordinary outcome.
+   Evidence:
+     - Call-ID busy-3a2b1c@192.0.2.30 | 192.0.2.30:5060 -> 192.0.2.40 | 2023-11-14 22:13:23.000 UTC | status_code=486 | Busy Here
+     - Call-ID notfound-1b2c3d@203.0.113.30 | 203.0.113.30:5060 -> 203.0.113.40 | 2023-11-14 22:13:29.000 UTC | status_code=404 | Not Found
+```
+
 `--json-analyze` emits **one object**, not one line per finding.
 
 - The frames read and the dialogs examined are properties of the run, not of any finding.
@@ -3580,8 +3624,9 @@ sipnab -N -I capture.pcap --json-analyze
 
 - This is a summary, not a substitute for `--report`.
   - It tells you the capture's verdict, not each stream's jitter.
-- A capture whose SIP sits outside `--portrange` analyzes cleanly, because it saw no SIP.
-  - Check the packet counts in the same object before trusting a green result.
+- SIP outside `--portrange` is never counted, but the analysis says so.
+  - It opens with `THIS ANALYSIS IS INCOMPLETE` and a `[BLIND] SIP discarded by --portrange` finding that counts the messages, so such a capture never reads as clean.
+  - Widen the range, `--portrange 1-65535`, and read the capture again.
 
 **Runnable example:** [Triage a capture to one verdict](client-examples.md#triage-a-capture-to-one-verdict) reads this object. It exits:
 
@@ -4158,7 +4203,9 @@ What the difference tells you:
   - Check NTP before reading timing differences as evidence.
 - A B2BUA **changes the `Call-ID`** between its legs by design.
   - So this recipe compares a proxy's two sides, not a B2BUA's.
-  - Correlate those by `From`/`To` and time instead.
+  - For a B2BUA, find the other leg's Call-ID first with
+    `--correlate <CALL-ID>`, then report each leg. See
+    [Follow one call across its legs](follow-a-call.md).
 
 **Runnable example:** one node may see the signaling and another the media, as a proxy and an rtpengine relay do.
 Then neither report holds the whole call.
@@ -4363,6 +4410,38 @@ sipnab -N -I capture.pcap --one-way-delay 40 --report --no-cli-print
 - `--pdd-threshold` defaults to ITU-T E.721's target for an **international** connection.
   - A capture does not say what kind of call it holds.
   - A network that knows its traffic is local or toll wants a tighter number.
+
+The signaling and media findings have thresholds of their own, under
+`[diagnosis]` in the configuration file. Each finding and the setting that
+moves it:
+
+| Finding | Flag | Config key under `[diagnosis]` | Default |
+|---|---|---|---|
+| Slow post-dial delay, and the `pdd` term of `--problems` and `--slow-setup` | `--pdd-threshold` | `post_dial_delay_secs` | 11.0 s |
+| A `2xx` never acknowledged | `--ack-timeout` | `ack_timeout_secs` | 32.0 s |
+| An `INVITE` with no final response | `--no-final-response-timeout` | `no_final_response_secs` | 180.0 s |
+| Duration asymmetry between the two legs | `--duration-asymmetry-pct` and `--duration-asymmetry-secs` (a call must clear both) | `duration_asymmetry_pct`, `duration_asymmetry_secs` | 5.0 %, 2.0 s |
+| Late media after the `200 OK` | `--late-media-ms` | `late_media_ms` | 500 ms |
+| One-way audio withheld when comfort noise explains it | `--cn-suppression-ratio` | `cn_suppression_ratio` | 0.3 |
+
+A tighter late-media threshold reports a delay the default lets pass:
+
+```bash
+sipnab -N -I capture.pcap --late-media-ms 40 --json-dialogs --no-cli-print --quiet | jq -c '.diagnosis.hints'
+```
+
+Against [`tests/pcap-samples/sip-over-tcp.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-over-tcp.pcap),
+whose media starts 47 ms after the answer, the default prints `[]` and this
+prints:
+
+```json
+["Late media: RTP started 47 ms after 200 OK — far end was slow to send, or the media path wasn't ready when signaling completed."]
+```
+
+A looser duration threshold quiets a B2BUA whose legs never end together.
+[`tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap)
+reports `Duration asymmetry: A leg lasted 15.8s, B leg 11.5s (Δ 4.4s)` at the
+defaults, and nothing with `--duration-asymmetry-secs 5`.
 
 **Pitfalls:**
 
@@ -6467,6 +6546,58 @@ Without a file root it answers `"status":"unresolvable"`, with the reason
   instructions ([Untrusted capture text](mcp-protocol.md#untrusted-capture-text)).
 - A tool from a bundle the server did not load answers `unknown_tool`
   ([Load only the tools an agent needs](mcp-deploy.md#load-only-the-tools-an-agent-needs)).
+
+---
+
+## Find the transferred calls
+
+**Problem:** "Someone transferred the caller and then the call dropped." You need
+the calls that carried a transfer, and whether each transfer finished.
+
+A blind or attended transfer is a REFER inside the call
+([RFC 3515](https://www.rfc-editor.org/rfc/rfc3515.html)). The `Refer-To` header of the REFER names where the call should go. sipnab
+keeps the call in the state `Transferring` from the REFER until the NOTIFY
+that ends the transfer's subscription, then returns it to the call's own
+state. It needs no setting, and nothing changes on the PBX.
+
+List the calls whose messages carry a `Refer-To`:
+
+```bash
+sipnab -N -I capture.pcap --filter "header.Refer-To =~ '.'" --report --no-cli-print --quiet
+```
+
+Against [`tests/fixtures/refer/refer-transfer.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/refer/refer-transfer.pcap),
+two calls through a proxy in which Alice asks Bob to call Carol:
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+refer-done-1@example.com         alice          bob            Completed    200    0s         25     0.0s     -
+refer-pending-1@example.com      alice          bob            Transferring 200    0s         17     0.0s     -
+```
+
+- `refer-done-1@example.com` ran its transfer to the end: Bob reported
+  `200 OK` in a NOTIFY that terminated the subscription, and Alice hung up.
+- `refer-pending-1@example.com` is still `Transferring`: the capture ended
+  after a NOTIFY reporting `100 Trying`. A call left in this state at the end of
+  a long capture is a transfer that never reported its result.
+
+Narrow to one destination by matching the target, for example
+`--filter "header.Refer-To =~ 'carol'"`. Count the outcomes with
+`--count-by state` and the same filter.
+
+An exported vCon records the transfer as a `transfer` dialog object, with the
+party who asked for it, the party it moved and the target. For
+`refer-done-1@example.com`, `--export-vcon` writes
+`{"transferor":0,"transferee":1,"transfer_target":2}` in it. See
+[Export a call as a vCon](vcon.md).
+
+**Pitfalls:**
+
+- `method` in the filter language is the method that opened the call, so
+  `method == 'REFER'` does not find a REFER inside an INVITE call. Match the
+  header instead.
+- A REFER outside an established call moves no call to `Transferring`.
 
 ---
 
@@ -17607,10 +17738,18 @@ Suspect a header changed across a retransmit or a proxy hop?
 
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
 - `F7` opens the **Filter dialog**.
-  - It offers From/To, source/destination, payload, time bounds and method fields.
-  - These fields build a filter.
-  - There is no free-form expression field.
-  - Pass the full [Filter DSL](filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
+  - Its fields are From user, To user, Source IP, Destination IP, Text in
+    message, Header, After, Before and Named filter, and a box per method.
+  - After and Before take an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html)
+    time, such as `2023-11-14T22:13:25Z`, and keep the calls that started in
+    between.
+  - Header takes `Name: text`, or a bare header name to keep the calls that
+    carry it.
+  - Named filter takes the names of the `[filters]` entries in your
+    configuration file. Through them, the dialog applies any
+    [Filter DSL](filter-dsl.md#named-filters) expression, for example
+    `rtp.mos < 3.0`. Without a configuration file, it shows
+    `none in [filters]`.
 - Status line 3 shows the filter the dialog built as a summary, such as
   `F7: 7 methods, From~alice · F full`.
   - `F` switches between the summary and the full expression, in every view.
@@ -17620,6 +17759,87 @@ Suspect a header changed across a retransmit or a proxy hop?
 - `F9` clears the view filter and any kept search.
 - `i` prunes the dialogs that do *not* match, keeping only the matches.
 - `I` prunes the ones that do.
+
+## Find the calls sipnab diagnosed
+
+The Call List marks a call sipnab diagnosed as broken. Open
+[`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap) from a source checkout to see it:
+
+```bash
+sipnab -I tests/pcap-samples/sip-problem-call.pcap
+```
+
+```text
+  # ▲    Method    From  To    Source              Destination         State      Msgs +Prev    PDD
+> [ ] 1  INVITE    alice bob   192.0.2.10          192.0.2.20          Completed  7    +0.000s  850ms
+  [ ] 2  INVITE    carol dave  192.0.2.30          192.0.2.40          FAILED ⚠   4    +3.000s
+  [ ] 3  INVITE    erin  frank 198.51.100.30       198.51.100.40       FAILED ⚠   4    +3.000s
+```
+
+- `⚠` beside the state marks a call with a diagnosis.
+- Open the call with `Enter`. The ladder tags the message the diagnosis rests
+  on. For the busy call it is `486 Busy Here [FAILURE]`.
+- The same diagnosis is in `--report` and `--json-dialogs`, and in the
+  `signaling_diagnosis` of every dialog sipnab reports over REST and MCP. See
+  [Output formats](output-formats.md).
+
+## Ask questions about the whole capture
+
+From the Call List, one key opens a view that answers a question about every
+call the list holds:
+
+| Key | View | What it answers |
+|---|---|---|
+| `g` | Top talkers | Which source addresses took part in the most calls, and how many of their INVITEs the far end answered or failed |
+| `m` | Carrier metrics | ASR, NER and ACD for each destination address |
+| `b` | Call volume | How many calls started in each minute |
+| `e` | Endpoint | Everything the selected call's source address did |
+| `c` | Compare two calls | How two calls differ. Star exactly two with `Space` first |
+| `o` | SDP offer/answer timeline | Each offer and answer of the selected call, with codecs, address and direction |
+| `f` | RFC conformance | The conformance findings of the selected call |
+| `a` | Security findings | The alerts of the detectors the run armed |
+| `h` | Capture health | Drops, undecodable frames, and the HEP listener's senders |
+
+`Esc` returns to the Call List.
+
+With the calls from `sip-problem-call.pcap`, `m` shows:
+
+```text
+┌ Carrier metrics (by destination IP) ───────────────────────────────────────────────────────────────────────┐
+│Destination IP            Calls      ASR      NER       ACD                                                 │
+│192.0.2.20                    1   100.0%   100.0%     17.9s                                                 │
+│192.0.2.40                    1     0.0%   100.0%         —                                                 │
+│192.0.2.60                    1     0.0%     0.0%         —                                                 │
+│198.51.100.40                 1     0.0%   100.0%         —                                                 │
+│203.0.113.40                  1     0.0%     0.0%         —                                                 │
+```
+
+The callee at `192.0.2.40` refused the call as busy, which counts toward NER and not
+ASR. The calls to `192.0.2.60` and `203.0.113.40` failed with `503` and `404`,
+which count toward neither.
+
+Star the answered call and the busy one, then press `c`:
+
+```text
+┌ Compare two calls ─────────────────────────────────────────────────────────────────────────────────────────┐
+│  A: completed-9f8e7d@192.0.2.10                                                                            │
+│  B: busy-3a2b1c@192.0.2.30                                                                                 │
+│                                                                                                            │
+│  State         A: Completed                   B: Failed  (differs)                                         │
+│  Final status  A: 200                         B: 486  (differs)                                            │
+│  Messages      A: 7                           B: 4  (differs)                                              │
+│  Methods       A: ACK,BYE,INVITE              B: ACK,INVITE  (differs)                                     │
+│                                                                                                            │
+│  Differences: state, final status, message count, methods                                                  │
+│  B hints:                                                                                                  │
+│    - Call failed: 486 Busy Here.                                                                           │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+These views answer about the calls the terminal holds. The command-line
+flags answer the same questions from a script, with more dimensions to group
+by. See [Answer questions about a capture](capture-queries.md).
+[Keybindings](keybindings.md) lists the keys inside each view.
 
 ## Inspect RTP quality
 
@@ -17719,13 +17939,24 @@ A call may cross a [B2BUA](glossary.md#b2bua) or [SBC](glossary.md#sbc).
 
 - That is a box that ends the call on one side and starts a new one on the
   other.
-- So each side has its own Call-ID.
+- So each side has its own Call-ID, and the call list shows one row per side.
 
 Then press `x` (or `F4`) in the Call Flow to toggle **extended multi-leg
 flow**.
 
 - The related legs render together in one ladder.
 - So you can follow the call end-to-end through the middle boxes.
+- The legs are the ones `--correlate` lists for the call. When the B2BUA
+  writes no identifier into the far leg, sipnab ties the legs by their timing
+  only, and a busy server can put an unrelated call in the ladder.
+  [Follow one call across its legs](follow-a-call.md) shows how to read the tie
+  and how to make it exact.
+- A leg that stays out of the ladder is not tied to the call. Check with
+  `--correlate <CALL-ID>` from the command line.
+
+To put any calls in one ladder yourself, whether sipnab ties them or not, star
+each with `Space` in the Call List and press `Enter`. sipnab opens one flow of
+all of them, in time order.
 
 ## Save what you found
 
@@ -20156,7 +20387,7 @@ To see the log lines:
 | `--contact` | `<PATTERN>` | -- | 0.3.0 | Filter by SIP Contact header (regex pattern) |
 | `--ua` | `<PATTERN>` | -- | 0.3.0 | Filter by User-Agent header (regex pattern) |
 | `--filter` | `<EXPR>` | -- | 0.3.0 | Filter DSL expression OR a diagnostic alias name (`codec-asym`, `late-media`, etc.) — see [filter-dsl.md](filter-dsl.md). A value may be bare or quoted: `method == INVITE` and `method == 'INVITE'` are the same filter. The expression may use a [named filter](filter-dsl.md#named-filters) from `[filters]` as `@name`. Config: `[filter] expression` |
-| `--since` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window). ANDed with `--filter`. Needs `-N` |
+| `--since` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is at or after this instant (`2026-10-09T10:00:00Z`). The window is half-open, `[--since, --until)`: see [Scope a run to a time window](#scope-a-run-to-a-time-window), and the recipe [Narrow a capture to when the problem happened](examples.md#narrow-a-capture-to-when-the-problem-happened). ANDed with `--filter`. Needs `-N` |
 | `--until` | `<RFC3339>` | -- | 0.5.214 | Keep only dialogs whose first message is before this instant; a dialog at exactly `--until` belongs to the next window. Must be after `--since`. ANDed with `--filter`. Needs `-N` |
 
 **Examples**
@@ -20446,7 +20677,8 @@ Multiple diagnostic flags combine with OR.
 ## Queries
 
 A query flag answers one question about the capture after sipnab has read
-it, then exits. Each one:
+it, then exits. [Answer questions about a capture](capture-queries.md) shows
+which flag answers which question, and how to read each answer. Each one:
 
 - counts only the dialogs the run's filter admits: `--filter`, the
   [diagnostic aliases](#diagnostic-aliases) and `--since`/`--until`;
@@ -20477,7 +20709,7 @@ out the end-of-run summary on stderr.
 | `--compare-captures` | `<A> <B>` | | 0.5.231 | Compare two capture files: for each dimension, the dialogs per value in A (the baseline) and B, and the change, largest movement first. Needs no `-I`. `--json` prints the shape of `GET /v1/captures/compare`. The same file twice exits 2; a file that yields no dialogs exits 1 |
 | `--compare-dimensions` | `<DIMENSIONS>` | `state,response_code` | 0.5.231 | The dimensions `--compare-captures` diffs, comma-separated, from the `--count-by` set. Any other exits 2. Needs `--compare-captures` |
 | `--find-in-files` | `<PATH>...` | | 0.5.231 | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
-| `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns |
+| `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns. See [Fail a build on what a capture shows](expectations.md) |
 | `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-calls-the-relay-holds) |
 | `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Needs `--relay-holdings`; `0` exits 2 |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
@@ -20751,11 +20983,12 @@ b2bua-caller-synth@203.0.113.1        root              -       -      -      ye
 ```
 
 - Each hop indents the leg two more spaces.
-- `Match` is `identifier` when the legs share an identifier (`X-Call-ID`,
-  `Session-ID`, the SDP origin, P-Charging-Vector or a Via branch, or a
-  topology-hidden Call-ID that decodes to the other leg's or that OpenSIPS
-  named in an `E_SIPNAB_TH_MAP` event), and `guess` when
-  only their timing ties them.
+- `Match` is `identifier` when the legs share an identifier (a header named
+  in `[sip] xcid_headers`, `Session-ID`, the SDP origin, P-Charging-Vector or
+  a Via branch, or a topology-hidden Call-ID that decodes to the other leg's
+  or that OpenSIPS named in an `E_SIPNAB_TH_MAP` event), and `guess` when
+  only their timing ties them. [Follow one call across its legs](follow-a-call.md)
+  shows how to get an identifier match.
 - `Method` says how sipnab made the link: `mapping` (an OpenSIPS
   topology-hiding leg the OpenSIPS script named in an `E_SIPNAB_TH_MAP`
   event), `decoded` (an OpenSIPS
@@ -21181,6 +21414,9 @@ sipnab --find-in-files tests/pcap-samples/sip-problem-call.pcap tests/pcap-sampl
 The MCP tool `find_in_captures` runs the same search over its file root.
 
 ### Fail a build on what a capture shows
+
+[Fail a build on what a capture shows](expectations.md) walks through writing a
+suite, running it in a pipeline and reading its failures.
 
 Write the thresholds the traffic must meet in a suite file, and let the exit
 status fail the CI step that runs it. Each rule names a metric (`count`,
@@ -28343,6 +28579,1009 @@ Library parser error from `parse_sdp`. The SDP `v=` line gives a version other t
 
 ---
 
+<!-- source: docs/capture-queries.md -->
+
+# Answer questions about a capture
+
+A ticket rarely asks about one call. It asks which failure dominated, whether
+one carrier got worse, who flooded the proxy, when the trouble started, or
+which of last night's files holds the call a customer named. sipnab answers
+each of those with one command that reads the capture, prints a table and
+exits.
+
+This page takes one question per section. Each section gives the command, the
+output it printed, how to read it, and the same question asked over the REST
+API, over MCP and in the terminal interface.
+
+## What you need
+
+- A sipnab build with the default features. Every command on this page reads
+  a capture file, so none needs root or `CAP_NET_RAW`.
+- Nothing on any other system. These commands read what a capture already
+  holds. They need no change to OpenSIPS, Kamailio, rtpengine or anything else.
+- A capture. The examples read captures that ship with sipnab, in
+  `tests/pcap-samples/` of a source checkout. `sip-problem-call.pcap` holds
+  five calls: one answered, and four that failed with `486`, `603`, `404` and
+  `503`.
+
+Every query flag:
+
+- counts the calls the run's filter admits: `--filter`, a
+  [diagnostic alias](filter-dsl.md#named-aliases) such as `--problems`, and
+  `--since`/`--until`;
+- makes the run headless, so `-N` is optional;
+- prints a table, or the same table in Markdown with `--markdown`;
+- with `--json`, prints one JSON object on the last line of standard output.
+
+`--no-cli-print` leaves out the per-message lines that come first, and
+`--quiet` leaves out the summary on standard error. The examples use both.
+
+## Which failure dominated
+
+Count the calls by their final response code:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --count-by response_code --no-cli-print --quiet
+```
+
+```text
+Dialogs by response_code: 5 values, 5 dialogs
+Value  Dialogs
+--------------
+200    1
+404    1
+486    1
+503    1
+603    1
+```
+
+- Values come largest first. Values with the same count come in order.
+- A call with no value counts under `(none)`. A call still ringing when the
+  capture ended has no final response code.
+
+Narrow the run to ask about a subset. The failed calls, by who they were for:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --count-by to.user --filter "state == 'Failed'" --no-cli-print --quiet
+```
+
+```text
+Dialogs by to.user: 4 values, 4 dialogs
+Value  Dialogs
+--------------
+dave   1
+frank  1
+heidi  1
+judy   1
+```
+
+`--count-by` takes `state`, `response_code`, `method`, `from.user`, `to.user`,
+`ua`, `src.ip`, `dst.ip` and `rtp.codec`. Keep the largest values with
+`--top N` (50 by default). The last line sums the rest.
+
+For a script, read the JSON. `capture_identity` names the run, so `jq` drops it
+here:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --count-by response_code --json --no-cli-print --quiet | jq -c 'del(.capture_identity)'
+```
+
+```json
+{"schema_version":1,"group_by":"response_code","buckets":[{"value":"200","count":1},{"value":"404","count":1},{"value":"486","count":1},{"value":"503","count":1},{"value":"603","count":1}],"other_count":0,"distinct_values":5,"total_matched":5}
+```
+
+## Whether one route or carrier is doing worse
+
+Print the carrier metrics for each destination address:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --rates-by dst.ip --no-cli-print --quiet
+```
+
+```text
+Carrier metrics by dst.ip: 5 values, 5 dialogs
+Value          Dialogs  asr  ner  acd   pdd_p50  pdd_p95  mos_p10  retransmit_rate
+----------------------------------------------------------------------------------
+192.0.2.20     1        100  100  17.9  850      850      -        0
+192.0.2.40     1        0    100  -     -        -        -        0
+192.0.2.60     1        0    0    -     -        -        -        0
+198.51.100.40  1        0    100  -     -        -        -        0
+203.0.113.40   1        0    0    -     -        -        -        0
+Units: asr percent, ner percent, acd seconds, pdd_p50 milliseconds, pdd_p95 milliseconds, mos_p10 mos, retransmit_rate retransmissions per dialog
+-: the group's population could not support the figure; --json names why in not_grounded
+```
+
+Read the columns as a carrier would:
+
+- `asr` (answer-seizure ratio): the share of INVITEs with a final response
+  that the far end answered.
+- `ner` (network effectiveness ratio): the same, also counting the outcomes
+  the far end decided, such as busy and decline. So `ner` can exceed `asr`.
+- `acd` (average call duration): the mean talk time of the calls answered and
+  hung up inside the capture.
+- `pdd_p50` and `pdd_p95`: post-dial delay, the median and the
+  ninety-fifth percentile.
+- `mos_p10`: the tenth-percentile MOS of the calls' audio. The capture must
+  hold the RTP for a MOS.
+- `-`: the group holds no call the figure can come from. `--json` says why in
+  `not_grounded`.
+
+`--rates-by` takes every `--count-by` dimension, plus `to_domain`, `hour` and
+`next_hop`.
+
+## Who is sending the most
+
+Rank the addresses that took part in the most calls:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --talkers ip --top 3 --no-cli-print --quiet
+```
+
+```text
+Talkers by ip: 10 talkers, 5 dialogs
+Talker      Dialogs  Messages  INVITEs  Answered  Failed  Share%
+----------------------------------------------------------------
+192.0.2.20  1        4         1        1         0       20
+192.0.2.10  1        3         1        1         0       20
+192.0.2.30  1        2         1        0         1       20
+Other: 7 talkers past --top 3
+```
+
+- `Share%` is the share of the counted calls each address took part in. A call
+  counts for every address in it, so the shares can add up to more than 100.
+- `--talkers ua` ranks the `User-Agent` and `Server` banners instead, and
+  `--talkers prefix` the dialed numbers' first digits (four, or
+  `--prefix-digits N`).
+
+A scanner shows up here as an address with many calls and no answers. To
+judge it, read the scanner detector's findings: see
+[Feed fail2ban from sipnab](fail2ban-sipnab.md).
+
+## When the trouble started
+
+Count the calls that started in each five-second interval:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --timeline=5 --no-cli-print --quiet
+```
+
+```text
+Call volume: 3 buckets of 5 s, 5 dialogs
+Start                      Dialogs
+----------------------------------
+2023-11-14T22:13:20+00:00  2
+2023-11-14T22:13:25+00:00  2
+2023-11-14T22:13:30+00:00  1
+```
+
+- The intervals line up on the clock, not on the first call, so two captures
+  of the same hour line up too.
+- An interval with no call prints a zero. A gap in traffic is a run of zeros.
+- A bare `--timeline` uses 60 seconds.
+
+Combine it with a filter to see when the failures happened:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --timeline=5 --problems --no-cli-print --quiet
+```
+
+```text
+Call volume: 3 buckets of 5 s, 4 dialogs
+Start                      Dialogs
+----------------------------------
+2023-11-14T22:13:20+00:00  1
+2023-11-14T22:13:25+00:00  2
+2023-11-14T22:13:30+00:00  1
+```
+
+Then scope every other command to the busy interval with `--since` and
+`--until`. See [Narrow a capture to when the problem happened](examples.md#narrow-a-capture-to-when-the-problem-happened).
+
+## What one phone or address did
+
+Name an address to see everything it did:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --endpoint-ip 192.0.2.30 --no-cli-print --quiet
+```
+
+```text
+Endpoint ip 192.0.2.30: 1 dialog
+Dialogs by method: INVITE 1
+Dialogs by state: Failed 1
+Messages: 2 sent, 2 received
+Calls: 1 INVITE, 1 with a final response, 1 failed (100%); final responses: 486 x1
+Banners: none
+Signaling stack: not inferred
+Media: 0 streams (0 orphaned), 0 packets, 0 lost, max jitter -, codecs none
+Most recent dialogs (1 of 1):
+Call-ID                 Method  State   Final  Started
+------------------------------------------------------------------------
+busy-3a2b1c@192.0.2.30  INVITE  Failed  486    2023-11-14T22:13:23+00:00
+```
+
+- `Messages` counts what the address sent and what it received.
+- `Banners` are the `User-Agent` and `Server` values it sent.
+- `Signaling stack` names the SIP library its requests look built by.
+- `--filter` does not narrow the rollup. It covers every call the address took
+  part in. `--top` bounds only the list of recent calls.
+
+Name a SIP user instead, matched against the user part of each call's From and
+To:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --endpoint-user dave --no-cli-print --quiet
+```
+
+```text
+Endpoint user dave: 1 dialog
+Dialogs by method: INVITE 1
+Dialogs by state: Failed 1
+Calls: 1 INVITE, 1 with a final response, 1 failed (100%); final responses: 486 x1
+Banners: none
+Signaling stack: not inferred
+Media: 0 streams (0 orphaned), 0 packets, 0 lost, max jitter -, codecs none
+Most recent dialogs (1 of 1):
+Call-ID                 Method  State   Final  Started
+------------------------------------------------------------------------
+busy-3a2b1c@192.0.2.30  INVITE  Failed  486    2023-11-14T22:13:23+00:00
+```
+
+A user has no message counts, because messages belong to an address.
+
+## Why this call failed when that one worked
+
+Put the two calls side by side:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --compare-dialogs completed-9f8e7d@192.0.2.10 busy-3a2b1c@192.0.2.30 --no-cli-print --quiet
+```
+
+```text
+Comparing completed-9f8e7d@192.0.2.10 (A) with busy-3a2b1c@192.0.2.30 (B): 4 fields differ
+Field              A               B           Differs
+------------------------------------------------------
+state              Completed       Failed      differs
+final_status_code  200             486         differs
+msg_count          7               4           differs
+methods            ACK,BYE,INVITE  ACK,INVITE  differs
+Hints for A: none
+Hints for B: Call failed: 486 Busy Here.
+```
+
+- `differs` marks each field that is not the same.
+- The hints are each call's own diagnosis. sipnab lists them and does not
+  compare them.
+- Give the Call-IDs exactly. `--report` lists the ones the capture holds.
+
+To see the two calls' messages, run `--call-report` on each. See
+[Generate a call report](examples.md#generate-a-call-report-text--markdown--json).
+
+## Whether a change made things better or worse
+
+Hold the capture from after a change against the one from before:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap
+```
+
+```text
+A: tests/pcap-samples/sip-problem-call.pcap, 23 packets, 5 dialogs, 0 streams
+B: tests/pcap-samples/sip-rtp-g711.pcap, 852 packets, 2 dialogs, 2 streams
+
+By state:
+Value      A  B  Change
+-----------------------
+Failed     4  0  -4
+InCall     0  1  +1
+Completed  1  1  0
+
+By response_code:
+Value  A  B  Change
+-------------------
+200    1  2  +1
+404    1  0  -1
+486    1  0  -1
+503    1  0  -1
+603    1  0  -1
+
+'tests/pcap-samples/sip-problem-call.pcap' (5 dialogs) is the baseline; 'tests/pcap-samples/sip-rtp-g711.pcap' (2 dialogs) is held against it, so delta is b minus a.
+```
+
+- The first file is the baseline. `Change` is the second minus the first, so a
+  negative number means that value became rarer.
+- Each dimension lists the values that moved most first.
+- sipnab reads both files and exits. Give no `-I`.
+
+Choose what to compare with `--compare-dimensions`, from the `--count-by` set.
+`state,response_code` is the default:
+
+```sh
+sipnab --compare-captures tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap --compare-dimensions rtp.codec
+```
+
+```text
+A: tests/pcap-samples/sip-problem-call.pcap, 23 packets, 5 dialogs, 0 streams
+B: tests/pcap-samples/sip-rtp-g711.pcap, 852 packets, 2 dialogs, 2 streams
+
+By rtp.codec:
+Value   A  B  Change
+--------------------
+(none)  5  0  -5
+PCMA    0  1  +1
+PCMU    0  1  +1
+
+'tests/pcap-samples/sip-problem-call.pcap' (5 dialogs) is the baseline; 'tests/pcap-samples/sip-rtp-g711.pcap' (2 dialogs) is held against it, so delta is b minus a.
+```
+
+Two captures compare well only when they cover the same kind of traffic for a
+similar span. Use `--count-by` on each first if you are not sure.
+
+## Which file holds the call
+
+A customer names a Call-ID, and the capture host has rotated files for the
+whole day. Search them:
+
+```sh
+sipnab --find-in-files tests/pcap-samples/sip-problem-call.pcap tests/pcap-samples/sip-rtp-g711.pcap tests/pcap-samples/sip-auth-failure.pcapng --filter "call_id == 'busy-3a2b1c@192.0.2.30'"
+```
+
+```text
+Found in 1 of 3 files; every file was read.
+File                   Dialogs  First Call-ID
+------------------------------------------------------
+sip-problem-call.pcap  1        busy-3a2b1c@192.0.2.30
+```
+
+- Any filter works: a Call-ID, a user, a diagnostic alias such as
+  `--problems`, a time window.
+- Each row is a file that held a match, how many of its calls matched, and the
+  first matching Call-ID.
+- A directory stands for the capture and vCon files directly in it.
+- sipnab reads the files and exits. Give no `-I`.
+
+Read the first line before trusting an empty answer. When sipnab could not read
+every file, it says so, names each file it could not read, and exits 1. A call
+it did not find may be in a file it did not read:
+
+```sh
+sipnab --find-in-files tests/pcap-samples --filter "call_id == 'busy-3a2b1c@192.0.2.30'"
+```
+
+```text
+Found in 1 of 36 files; not complete: 34 of 36 read, so a file not read may hold a match.
+File                   Dialogs  First Call-ID
+------------------------------------------------------
+sip-problem-call.pcap  1        busy-3a2b1c@192.0.2.30
+Not read: c07-sip-r2.cap: Failed to open pcap file 'tests/pcap-samples/c07-sip-r2.cap': libpcap error: unknown file format
+Not read: rtsp-packets.cap: Failed to open pcap file 'tests/pcap-samples/rtsp-packets.cap': libpcap error: unknown file format
+```
+
+Then open the file that holds the call, with `-I`, and work on it.
+
+### Search from an agent, without losing the capture it holds
+
+The MCP tool `find_in_captures` runs the same search over the files in the
+server's `--mcp-file-root`. It reads each file into a separate store, so the
+capture the agent is working on stays loaded.
+
+Start the server with a file root. The root here holds 36 files, more than
+the 20 one search opens by default, so the example raises that bound:
+
+```sh
+sipnab --mcp -N -I tests/pcap-samples/sip-rtp-g711.pcap --mcp-file-root tests/pcap-samples --mcp-sweep-max-files 40
+```
+
+The search runs as a background job:
+
+1. `find_in_captures` starts it and waits up to `wait_seconds` (30 by
+   default). When the search ends in that time, the answer holds the result
+   under `sweep`. When it does not, the answer holds a `job_id` and
+   `status: "running"`.
+2. `find_in_captures_status` with that `job_id` reports progress, and the
+   result once `status` is `done`.
+3. `cancel_find_in_captures` stops it. `status` becomes `canceled`, and the
+   result covers the files read so far.
+
+A search that finished while the call waited, with the answer's lines
+wrapped:
+
+```jsonc
+// find_in_captures { "filter": "call_id == 'busy-3a2b1c@192.0.2.30'" }
+{"job_id":"sweep-1","limits":{"deadline_ms":30000,"max_files":40},
+ "progress":{"cancel_requested":false,"elapsed_ms":301,"files_examined":34,"files_total":36},
+ "schema_version":2,"source_exhausted":true,"source_stopped_early":false,"status":"done",
+ "sweep":{"complete":false,"files_examined":34,"files_total":36,
+  "matches":[{"dialogs_matched":1,"filename":"sip-problem-call.pcap","first_call_id":"busy-3a2b1c@192.0.2.30"}],
+  "unreadable":[{"filename":"c07-sip-r2.cap","reason":"Failed to open pcap file 'tests/pcap-samples/c07-sip-r2.cap': libpcap error: unknown file format"},
+                {"filename":"rtsp-packets.cap","reason":"Failed to open pcap file 'tests/pcap-samples/rtsp-packets.cap': libpcap error: unknown file format"}]}}
+```
+
+A search started without waiting, then stopped, wrapped the same way:
+
+```jsonc
+// find_in_captures { "filter": "state == 'Failed'", "wait_seconds": 0 }
+{"job_id":"sweep-2","limits":{"deadline_ms":30000,"max_files":40},
+ "progress":{"cancel_requested":false,"elapsed_ms":1,"files_examined":0,"files_total":36},
+ "schema_version":2,"source_exhausted":true,"source_stopped_early":false,"status":"running"}
+// cancel_find_in_captures { "job_id": "sweep-2" }
+{"job_id":"sweep-2","limits":{"deadline_ms":30000,"max_files":40},
+ "progress":{"cancel_requested":true,"elapsed_ms":4,"files_examined":0,"files_total":36},
+ "schema_version":2,"source_exhausted":true,"source_stopped_early":false,"status":"canceled",
+ "sweep":{"complete":false,"files_examined":0,"files_total":36,"matches":[],
+  "stopped_because":"canceled","unreadable":[]}}
+```
+
+Read `complete` and `stopped_because` before you trust "not found". With the
+default bound of 20 files, the first search above stopped with
+`"stopped_because":"max-files"` and no match, because it had not yet opened
+`sip-problem-call.pcap`.
+
+The operator bounds the jobs: how many files one search opens
+(`--mcp-sweep-max-files`, 20), how long it runs (`--mcp-sweep-deadline-ms`,
+30000), how many run at once (`--mcp-sweep-max-running`, 4), and how long a
+finished result waits for its poll (`--mcp-sweep-result-retention-secs`, 600).
+[`find_in_captures`](mcp-tools-captures.md#find_in_captures) gives every bound
+and the refusals.
+
+## Ask the same question elsewhere
+
+The command-line flags, the REST routes, the MCP tools and the terminal
+interface give the same answers. REST and MCP answer about the capture the
+server holds, and the terminal interface about the one it shows.
+
+| Question | Command line | REST | MCP tool | Terminal interface |
+|---|---|---|---|---|
+| Calls by one value | `--count-by` | `GET /v1/aggregate` | `aggregate_dialogs` | — |
+| Carrier metrics | `--rates-by` | `GET /v1/dialogs/rates` | `group_dialogs` | `m`, by destination address |
+| Busiest participants | `--talkers` | `GET /v1/talkers` | `top_talkers` | `g`, by source address |
+| Calls over time | `--timeline` | `GET /v1/timeline` | `timeline` | `b`, 60-second intervals |
+| One address or user | `--endpoint-ip`, `--endpoint-user` | `GET /v1/endpoints` | `describe_endpoint` | `e`, the selected call's source |
+| Two calls | `--compare-dialogs` | `GET /v1/dialogs/compare` | `compare_dialogs` | `c`, with two calls starred |
+| Two captures | `--compare-captures` | `GET /v1/captures/compare` | `compare_captures` | — |
+| Which file holds a call | `--find-in-files` | — | `find_in_captures` | — |
+
+The terminal-interface keys work from the call list. See
+[Keybindings](keybindings.md#call-list).
+
+Over REST, the routes take the same names as query parameters. A server that
+holds the capture, and the question asked of it:
+
+```bash
+# Run all of these, in order.
+export SIPNAB_API_KEY="$(openssl rand -hex 32)"
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --api 127.0.0.1:8080 --no-cli-print --quiet &
+sleep 2
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/aggregate?by=response_code" | jq -c '.buckets'
+kill %1
+```
+
+```json
+[{"value":"200","count":1},{"value":"404","count":1},{"value":"486","count":1},{"value":"503","count":1},{"value":"603","count":1}]
+```
+
+[Set up authentication](auth.md) covers keys for a server that stays up.
+`GET /v1/captures/compare` reads its two files from the server's
+`--api-file-root`. [REST API](rest-api.md) lists every route's parameters.
+
+## When it does not work
+
+| What you see | Why | What to do |
+|---|---|---|
+| Exit 2 and `invalid value 'code' for '--count-by <DIMENSION>'` | The dimension is not one the flag takes | Use a name from the list the message gives, such as `response_code` |
+| Exit 1 and `Call-ID 'nope@x' not found in tracked dialogs` | `--compare-dialogs` matches each Call-ID exactly | Copy the Call-ID from `--report` or `--json-dialogs` |
+| Every count is 0, or the answer has no rows | The filter or the time window admits no call, or the capture's SIP is outside `--portrange` | Run without the filter. If sipnab reports no SIP at all, see [Read a capture whose SIP is not on port 5060](examples.md#read-a-capture-whose-sip-is-not-on-port-5060) |
+| `--find-in-files` exits 2 with `needs something to find` | It has no filter to search with | Give `--filter`, an alias such as `--problems`, or `--since`/`--until` |
+| `--find-in-files` exits 1 with `not complete` | sipnab could not read one of the files | The `Not read:` lines name each file and the reason |
+| `--timeline` exits 1 and names a width | The calls span more than 100,000 intervals of that width | Run it again with the width it suggests |
+| `--compare-captures` exits 2 with `are the same file` | The two paths name one file | Give two different captures |
+| `mos_p10` is `-` | The capture holds no RTP for those calls | Capture the media too. See [Tune capture on a busy server](tuning-capture.md) |
+
+[Error messages](errors.md) explains every message these flags print.
+
+---
+
+<!-- source: docs/follow-a-call.md -->
+
+# Follow one call across its legs
+
+A call through a proxy keeps its Call-ID, so sipnab sees one call. A call
+through a back-to-back user agent (B2BUA) does not. A PBX such as Asterisk or
+FreeSWITCH, an SBC, and OpenSIPS with topology hiding end the call on one side
+and start a new one on the other, each with its own Call-ID. sipnab then holds
+two calls, or more across several hops, and ties them together.
+
+This page shows how to list a call's other legs, how to read how sipnab tied
+each one, and what to change on your SIP servers so the tie is an exact match
+rather than a guess.
+
+## What you need
+
+- A sipnab build with the default features, for everything except decoding
+  OpenSIPS topology-hiding Call-IDs, which needs the `tls` feature. Every
+  release package has it.
+- Reading a capture file needs no privileges. A live capture needs root or
+  `CAP_NET_RAW`.
+- A capture that holds every leg. Capture where the legs meet, on the B2BUA
+  itself or on a link that carries both sides. sipnab cannot join a leg the
+  capture does not hold.
+- A change on your SIP servers only if you want an exact match where there is
+  none today. [Make the match exact](#make-the-match-exact) says what to change
+  for each server.
+
+## List the other legs of a call
+
+Name one leg with `--correlate`. This capture holds one call through an
+Asterisk PBX: the caller's leg, and the leg Asterisk placed to the callee.
+
+```sh
+sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --correlate b2bua-caller-synth@203.0.113.1 --no-cli-print --quiet
+```
+
+```text
+Legs correlated with b2bua-caller-synth@203.0.113.1: 1 leg
+Leg                                 Strategy          Method  Score  Match  Gap ms
+----------------------------------------------------------------------------------
+b2bua-leg-synth@203.0.113.101:5060  timing_heuristic  timing  50     guess  3
+Every leg here is a timing guess: no identifier ties it to this call.
+```
+
+- `Strategy` names the rule that tied the leg. `Method` says what sipnab
+  compared the two legs on.
+- `Match` is `identifier` when both legs carry the same identifier, and
+  `guess` when only their timing and addresses tie them.
+- `Gap ms` is how far apart the two legs started, for a guess.
+
+Here Asterisk wrote nothing into the callee's leg that names the caller's, so
+the tie is a guess. A guess can join unrelated calls on a busy server. [Make the match exact](#make-the-match-exact) changes it to
+an identifier match.
+
+`--report` lists the Call-IDs a capture holds. The Call-ID must match exactly.
+
+### Walk a call across several hops
+
+A call through an SBC and then a PBX has three legs or more. `--call-tree`
+follows the ties leg by leg and prints the whole call. This capture's calls
+cross one hop, so each tree has two legs:
+
+```sh
+sipnab -I tests/fixtures/session-id/opensips-4.0-th-session-id.pcap --call-tree 1-sid-call@example.com --no-cli-print --quiet
+```
+
+```text
+Call tree from 1-sid-call@example.com: 2 legs, depth 1, 13 messages, 0 timing guesses
+Leg                                       Strategy    Method  Score  Match       Followed
+-----------------------------------------------------------------------------------------
+1-sid-call@example.com                    root        -       -      -           yes
+  DLGCH_fl0WBzdkMzIjHCULKyg9IyMVSw08JA--  session_id  header  100    identifier  yes
+```
+
+- Each hop indents the leg two more spaces.
+- `Followed` is `no` on a guess: sipnab lists the leg but does not look for
+  that leg's own matches, so one wrong guess cannot pull in unrelated calls.
+
+## Read how sipnab tied each leg
+
+sipnab tries each strategy, and reports a leg under the highest-scoring one
+that matched.
+
+| Strategy | Method | Score | What both legs carry | What it needs |
+|---|---|---|---|---|
+| `session_id` | `header` | 100 | The same [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID` | Endpoints or a server that send it. Nothing in sipnab |
+| `th_callid_decoded` | `decoded` | 100 | A Call-ID that OpenSIPS `topology_hiding("C")` encoded, which decodes to the other leg's | The OpenSIPS secret in `[sip] th_callid_secret_file` |
+| `th_callid_mapping` | `mapping` | 100 | Nothing: OpenSIPS sends sipnab the pair | An OpenSIPS event to sipnab's HEP listener |
+| `x_call_id` | `header` | 100 | A header, named in `[sip] xcid_headers`, holding the other leg's Call-ID | A header your server adds, and its name in sipnab's configuration |
+| `charging_vector_related_icid` | `header` | 95 | An [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `P-Charging-Vector` whose `related-icid` names the other leg's `icid-value` | An IMS or carrier B2BUA that sends it |
+| `sdp_origin` | `sdp` | 90 | The same SDP origin line | A server that passes SDP through unchanged |
+| `charging_vector_icid` | `header` | 85 | The same `P-Charging-Vector` `icid-value` | An intermediary that copied it onto the second leg |
+| `via_branch` | `header` | 80 | A shared Via branch | A proxy hop, not a B2BUA |
+| `timing_heuristic` | `timing` | 50 | Nothing: the legs started close together and share an address | Nothing. A guess |
+
+[Run MCP across an estate](mcp-estate.md#choose-a-correlation-identifier)
+explains what each identifier proves and where it stops working.
+
+## Make the match exact
+
+Pick one of these, in this order of preference.
+
+### Pass RFC 7989 Session-ID through
+
+`Session-ID` is a pair of identifiers that the two endpoints of a session
+exchange, made to survive a B2BUA. sipnab reads it with no configuration, and
+matches the two halves in either order.
+
+This capture holds three calls through OpenSIPS with
+`topology_hiding("C")`, which gives the callee's leg a new Call-ID. The
+endpoints send `Session-ID`, and OpenSIPS passes it through unchanged:
+
+```sh
+sipnab -I tests/fixtures/session-id/opensips-4.0-th-session-id.pcap --correlate 1-sid-call@example.com --no-cli-print --quiet
+```
+
+```text
+Legs correlated with 1-sid-call@example.com: 1 leg
+Leg                                     Strategy    Method  Score  Match       Gap ms
+-------------------------------------------------------------------------------------
+DLGCH_fl0WBzdkMzIjHCULKyg9IyMVSw08JA--  session_id  header  100    identifier  -
+```
+
+Which servers send it:
+
+- **Endpoints and SBCs.** Check whether yours send it:
+  `sipnab -N -I capture.pcap --filter "header.Session-ID =~ '.'" --report`
+  lists the calls that carry it.
+- **FreeSWITCH** writes it when a Sofia profile sets the `rfc-7989` parameter
+  to `true`. FreeSWITCH reads the parameter in
+  [`src/mod/endpoints/mod_sofia/sofia.c`](https://github.com/signalwire/freeswitch/blob/v1.11.3/src/mod/endpoints/mod_sofia/sofia.c#L5395)
+  of FreeSWITCH 1.11.3 (read on 2026-11-03). Not tested with sipnab.
+- **OpenSIPS** passes the header through unchanged, as the capture above
+  shows for OpenSIPS 4.0.2 through topology hiding. A proxy forwards the
+  header fields it does not act on ([RFC 3261 section 16.6](https://www.rfc-editor.org/rfc/rfc3261.html#section-16.6)), so Kamailio as
+  a proxy passes it too. Not tested here with Kamailio.
+- A search of the OpenSIPS, Kamailio and Asterisk source code on GitHub on
+  2026-11-03 found no code that writes the header.
+
+### Copy the caller's Call-ID into a header
+
+Have the B2BUA add a header to the callee's INVITE that holds the caller's
+Call-ID, then tell sipnab its name. This header names nothing standard, so
+sipnab looks for none until you name one.
+
+**This header discloses the caller's Call-ID to the callee's side.** Add it
+only on legs inside your own network, or remove it where the call leaves.
+
+#### On the server
+
+Asterisk 22. A pre-dial handler sets the header on the outbound channel, from
+the inbound channel's Call-ID. In `extensions.conf`:
+
+```text
+[from-caller]
+exten => 100,1,Dial(PJSIP/callee,30,b(add-xcid^s^1(${CHANNEL(pjsip,call-id)})))
+ same => n,Hangup()
+
+[add-xcid]
+exten => s,1,Set(PJSIP_HEADER(add,X-CID)=${ARG1})
+ same => n,Return()
+```
+
+Tested on 2026-11-03 with Asterisk 22.11.0: the callee's INVITE carried
+`X-CID: 1-xcid-call@example.com`. The capture below is that test.
+
+OpenSIPS with topology hiding. Add `append_hf("X-CID: $ci\r\n");` after
+`topology_hiding("C")`. [Run sipnab beside OpenSIPS](opensips-sipnab.md#or-copy-the-call-id-into-a-header)
+shows the script and the tests that run it. OpenSIPS can also tell sipnab the
+pair with no header at all. That section describes both.
+
+Kamailio with the topology-hiding module and `mask_callid = 1`, which encodes
+the Call-ID ([module documentation](https://www.kamailio.org/docs/modules/6.1.x/modules/topoh.html#topoh.p.mask_callid),
+read on 2026-11-03). Add the header in the request route before the request
+leaves, with
+[`append_hf`](https://www.kamailio.org/docs/modules/6.1.x/modules/textops.html#textops.f.append_hf):
+
+```text
+append_hf("X-CID: $ci\r\n");
+```
+
+Not tested: the Kamailio build on this project's test host lacks that
+module. Check on the wire that the callee's INVITE carries the caller's
+Call-ID before you rely on it.
+
+FreeSWITCH. Set a `sip_h_` channel variable before the `bridge`. FreeSWITCH
+adds a header named after the prefix to the outbound INVITE, and
+`sip_call_id` holds the inbound leg's Call-ID
+([channel variables](https://developer.signalwire.com/freeswitch/reference/channel-variables#sip-custom-headers),
+read on 2026-11-03):
+
+```xml
+<action application="set" data="sip_h_X-CID=${sip_call_id}"/>
+<action application="bridge" data="user/1000"/>
+```
+
+Not tested with sipnab.
+
+#### In sipnab
+
+Name the header in the `[sip]` section of the configuration file:
+
+```toml
+[sip]
+xcid_headers = ["X-CID"]
+```
+
+Without it, the Asterisk capture's legs tie only by timing:
+
+```sh
+sipnab -I tests/fixtures/xcid/asterisk-22-xcid.pcap --correlate 1-xcid-call@example.com --no-cli-print --quiet
+```
+
+```text
+Legs correlated with 1-xcid-call@example.com: 1 leg
+Leg                                   Strategy          Method  Score  Match  Gap ms
+------------------------------------------------------------------------------------
+207e9af6-c60c-4f7f-99ae-328d569004c6  timing_heuristic  timing  50     guess  5
+Every leg here is a timing guess: no identifier ties it to this call.
+```
+
+With it, they tie on the header:
+
+```sh
+sipnab -I tests/fixtures/xcid/asterisk-22-xcid.pcap --config sipnab.toml --correlate 1-xcid-call@example.com --no-cli-print --quiet
+```
+
+```text
+Legs correlated with 1-xcid-call@example.com: 1 leg
+Leg                                   Strategy   Method  Score  Match       Gap ms
+----------------------------------------------------------------------------------
+207e9af6-c60c-4f7f-99ae-328d569004c6  x_call_id  header  100    identifier  -
+```
+
+`xcid_headers` takes a list, so one sipnab can read the headers of several
+servers.
+
+### Use OpenSIPS's own help with topology hiding
+
+OpenSIPS with `topology_hiding("C")` can tie its legs for sipnab in two more
+ways: sipnab decodes the hidden Call-ID with OpenSIPS's secret, or OpenSIPS
+sends sipnab each pair as an event.
+[Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)
+gives the steps for both.
+
+### Widen the guess for a slow PBX
+
+When no identifier crosses a hop, the timing guess is what remains. It ties
+two legs that started within two seconds of each other and share an address.
+A PBX that looks a number up before it places the second leg (an LNP or ENUM
+query, a routing list) can start it later than that, and the guess then
+misses. Widen the window, in milliseconds:
+
+```sh
+sipnab -I tests/pcap-samples/b2bua-asterisk.pcapng --leg-correlation-window 8000 --correlate b2bua-caller-synth@203.0.113.1 --no-cli-print --quiet
+```
+
+The configuration key is `[sip] leg_correlation_window_ms`. A wider window
+also ties more unrelated calls on a busy server, which `Gap ms` shows.
+
+## Ask the same question elsewhere
+
+| Where | How |
+|---|---|
+| Command line | `--correlate <CALL-ID>`, `--call-tree <CALL-ID>`, each with `--json` |
+| REST | `GET /v1/dialogs/{call_id}/correlated`, `GET /v1/dialogs/{call_id}/tree` |
+| MCP | `find_correlated`, `get_call_tree` |
+| Terminal interface | In the call flow, `x` or `F4` draws the related legs in one ladder |
+| vCon | The `sipnab-related-legs` attachment of an exported call |
+
+Every surface reports the same `strategy` and `method` for each leg. Under
+`--json`, `--correlate` prints the answer the REST route returns:
+
+```sh
+sipnab -I tests/fixtures/session-id/opensips-4.0-th-session-id.pcap --correlate 1-sid-call@example.com --json --no-cli-print --quiet | jq -c '.legs[] | {call_id, strategy, method, identifier_match}'
+```
+
+```json
+{"call_id":"DLGCH_fl0WBzdkMzIjHCULKyg9IyMVSw08JA--","strategy":"session_id","method":"header","identifier_match":true}
+```
+
+## When it does not work
+
+| What you see | Why | What to do |
+|---|---|---|
+| `--correlate` prints no legs | The capture does not hold the other leg, or nothing ties it | Capture where both legs pass. Check with `--report` that both are there |
+| The legs tie with `timing_heuristic` although the server adds a header | `[sip] xcid_headers` does not name the header, or sipnab did not read the configuration file | Name the header. Pass `--config` with the file, and check that sipnab does not print that it ignores a configuration file |
+| The legs tie with `timing_heuristic` and a large `Gap ms`, or not at all | The B2BUA placed the second leg later than the window | Widen `--leg-correlation-window`, or add an identifier |
+| Unrelated calls appear as legs | Timing guesses on a busy server | Read `Match`. Add an identifier, so the guess is not needed |
+| Exit 1 and `no dialog with Call-ID` | The Call-ID is not in the capture, or is not exact | Copy it from `--report` |
+| A topology-hiding leg reports `th_callid` `undecodable` or `unmatched` | The secret or prefix is wrong, or the caller's leg is missing | See [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding) |
+
+---
+
+<!-- source: docs/expectations.md -->
+
+# Fail a build on what a capture shows
+
+A change to a dialplan, a proxy script or a trunk can break calls that nobody
+places until a customer does. An expectation suite states what a test call
+capture must show: how many calls, what share answered, how many conformance
+errors, how good the audio was. `sipnab --expect` judges a capture against it
+and exits non-zero when a rule fails, so the step that runs it fails the build.
+
+## What you need
+
+- A sipnab build with the default features. Judging a capture file needs no
+  privileges.
+- A capture of the traffic you want to judge. In a pipeline that is usually a
+  test run: SIPp or a test phone places calls through a staging server while
+  sipnab or `tcpdump` records them.
+- A suite file in your repository, `sipnab.expect.toml` by convention.
+- Nothing on your SIP servers. The suite reads the capture only.
+
+## Write a suite
+
+A suite is a list of rules. Each rule measures one figure over the capture's
+calls and compares it with a threshold:
+
+```toml
+[[rules]]
+name = "calls captured"
+metric = "count"
+op = ">="
+value = 5
+
+[[rules]]
+name = "answer-seizure ratio"
+metric = "asr"
+op = ">="
+value = 50
+
+[[rules]]
+name = "no busy answers"
+metric = "count"
+op = "=="
+value = 0
+scope = "filter:response_code == 486"
+```
+
+This is [`tests/fixtures/expect/sip-problem-call.expect.toml`](https://github.com/NormB/sipnab/blob/main/tests/fixtures/expect/sip-problem-call.expect.toml) in a source
+checkout.
+
+| Key | Required | What it takes |
+|---|---|---|
+| `metric` | yes | `count`: the calls in scope. `asr`: the percentage of INVITEs with a final response that the far end answered. `lint_errors`: the conformance findings at or above a severity. `mos_p<N>`: the Nth percentile of the streams' MOS, from `mos_p0` (the worst stream) to `mos_p100` (the best) |
+| `op` | yes | `>=`, `>`, `<=`, `<`, `==` or `!=` |
+| `value` | yes | The threshold, a number |
+| `name` | no | A label for the output. Without it, the output names the rule by its position, such as `#1` |
+| `scope` | no | `filter:<expression>` narrows the rule to the calls a [filter](filter-dsl.md) selects; an alias such as `filter:problems` works too. `severity:<info, notice, warning or error>` sets the lowest severity a `lint_errors` rule counts. Without it, the rule reads the whole capture |
+| `min_sample` | no | The fewest calls (or streams, for MOS) the rule needs. Below it, the rule is `skipped` instead of judged |
+| `grounded_only` | no | MOS rules only. `true` (the default) reads only streams whose codec has a published impairment value. `false` admits the others, and the result says so |
+
+An `asr` or MOS rule that measured nothing fails: an `asr` rule whose scope
+holds no INVITE with a final response, or a MOS rule over a capture with no
+RTP, does not pass by default. Give it `min_sample` when an empty population is
+acceptable. A `count` rule always measures something: a scope that selects no
+call counts 0, so `count == 0` passes.
+
+## Run it
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --expect tests/fixtures/expect/sip-problem-call.expect.toml --no-cli-print --quiet
+```
+
+```text
+Expectations: fail, 1 of 3 rules passed, 2 failed
+Rule                  Metric  Op  Threshold  Observed  Sample  Verdict
+----------------------------------------------------------------------
+calls captured        count   >=  5          5         5       pass
+answer-seizure ratio  asr     >=  50         20        5       fail
+no busy answers       count   ==  0          1         5       fail
+answer-seizure ratio: 20 is NOT >= 50 over 5 seizure(s)
+no busy answers: 1 is NOT == 0 over 5 dialog(s)
+```
+
+The first line is the suite's verdict. Each rule's row gives what it observed
+and over how many calls, and each failed rule repeats on a line of its own.
+
+The run exits with the verdict:
+
+| Exit | Meaning |
+|---|---|
+| `0` | Every rule that ran passed |
+| `3` | At least one rule failed |
+| `2` | No rule ran, because each one's population was below its `min_sample`. Or sipnab could not read the suite, or the suite holds a rule sipnab refuses |
+| `1` | sipnab could not read the capture |
+
+sipnab reads and checks the suite before it reads the capture, so a mistake in
+the file stops the run at once.
+
+The rules judge every call in the capture. `--filter` and `--since` do not
+narrow them. Narrow a rule with its own `scope`.
+
+## Run it in a pipeline
+
+Run the suite as its own step, after the step that records the capture. The
+step fails when sipnab exits non-zero:
+
+```sh
+sipnab -I test-calls.pcap --expect sipnab.expect.toml --no-cli-print --quiet
+```
+
+To keep a machine-readable record of the verdict, write the JSON report as
+well. `exit_code` is the run's exit status:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --expect tests/fixtures/expect/sip-problem-call.expect.toml --json --no-cli-print --quiet | jq -c '{verdict, exit_code, failed: [.results[] | select(.verdict == "fail") | .name]}'
+```
+
+```json
+{"verdict":"fail","exit_code":3,"failed":["answer-seizure ratio","no busy answers"]}
+```
+
+A pipe hands the shell `jq`'s exit status, not sipnab's. In a script, read
+`exit_code` from the JSON, or use `set -o pipefail`.
+
+## Check conformance in the same suite
+
+A `lint_errors` rule counts the [conformance linter](sip-lint-rules.md)'s
+findings, so one suite can fail a build on non-conformant SIP as well as on
+failed calls. The `scope` sets the lowest severity counted:
+
+```toml
+[[rules]]
+name = "no conformance errors"
+metric = "lint_errors"
+op = "=="
+value = 0
+scope = "severity:error"
+```
+
+With that rule in `lint.expect.toml`, against the capture that ships with
+sipnab to show what the linter finds:
+
+```sh
+sipnab -I tests/pcap-samples/sip-lint-findings.pcap --expect lint.expect.toml --no-cli-print --quiet
+```
+
+```text
+Expectations: fail, 0 of 1 rule passed, 1 failed
+Rule                   Metric       Op  Threshold  Observed  Sample  Verdict
+----------------------------------------------------------------------------
+no conformance errors  lint_errors  ==  0          2         3       fail
+no conformance errors: 2 is NOT == 0 over 3 dialog(s)
+```
+
+The rule honors the same suppressions as `--lint`: a `.sipnablint` file beside
+the capture, or the file `--lint-suppress-file` names. See
+[Suppress a rule](sip-lint-rules.md#suppress-a-rule).
+
+## Ask from an agent
+
+The MCP tool `evaluate_expectations` judges the capture the server holds. It
+takes the rules inline as JSON, or a suite file's text in `rules_toml`, and
+returns the same report. See
+[`evaluate_expectations`](mcp-tools-security.md#evaluate_expectations).
+
+## When it does not work
+
+A metric sipnab does not know stops the run before it reads the capture, with
+exit 2. The message names the suite file you gave, here
+`sipnab.expect.toml`, and lists the metrics sipnab takes:
+
+```text
+error: invalid value 'sipnab.expect.toml' for '--expect <FILE>': sipnab.expect.toml: rule 0: unknown metric 'asr2'. Known metrics: count, asr, lint_errors, mos_p<N>. A percentile is spelled mos_p10, mos_p50, mos_p90 and so on, from mos_p0 (worst stream) to mos_p100 (best)
+```
+
+A rule that measured nothing fails, and says why. Here a MOS rule over
+`sip-problem-call.pcap`, which holds no RTP:
+
+```text
+Expectations: fail, 0 of 1 rule passed, 1 failed
+Rule  Metric   Op  Threshold  Observed  Sample  Verdict
+-------------------------------------------------------
+#1    mos_p10  >=  3.50       -         0       fail
+#1: unevaluable: no scored stream was in scope, so 'mos_p10 >= 3.5' rests on nothing. Declare a min_sample of 1 or more to accept an empty population in writing; a gate does not pass on data it never judged
+```
+
+With `min_sample = 1` sipnab skips the same rule instead, and a suite in which
+sipnab skipped every rule exits 2:
+
+```text
+Expectations: not evaluated, 0 of 0 rules passed, 1 skipped
+Rule  Metric   Op  Threshold  Observed  Sample  Verdict
+-------------------------------------------------------
+#1    mos_p10  >=  3.50       -         0       skipped
+#1: skipped: 0 scored stream(s) is below the declared min_sample of 1
+```
+
+| What you see | Why | What to do |
+|---|---|---|
+| Exit 2 before sipnab reads the capture, naming a rule | The suite has a metric, operator, scope or key sipnab does not take, or a filter that does not parse | Fix the rule the message names |
+| Exit 2 and `not evaluated` | Every rule was below its `min_sample` | Capture more calls, or lower `min_sample` |
+| A rule fails with `unevaluable` and `Sample` 0 | An `asr` or MOS rule measured nothing: its scope held no INVITE with a final response, or no stream | Check the filter with `--report --filter`. Give `min_sample` if an empty capture is acceptable |
+| A MOS rule fails on a capture with audio | `grounded_only` excluded streams whose codec has no published impairment value | See [MOS and codecs](mos-and-codecs.md), or set `grounded_only = false` and read the caveat |
+| The step passes although a rule failed | A pipe returned the exit status of the last command | Run sipnab on its own, or use `set -o pipefail` |
+
+---
+
 <!-- source: docs/filter-dsl.md -->
 
 # Filter DSL reference
@@ -28354,6 +29593,13 @@ Library parser error from `parse_sdp`. The SDP `v=` line gives a version other t
 > - `sipnab -N -I capture.pcap --problems` sweeps for every kind of problem at
 >   once.
 > - Keep the `-N`. Without it, the TUI opens instead.
+
+A filter needs no build feature, no privilege beyond what the capture itself
+needs, and no change on any other system. The same expression works on the
+command line, in the terminal interface (through a named filter), over REST
+and over MCP, where the
+[`validate_filter`](mcp-tools-signaling.md#validate_filter) tool checks one
+without running it.
 
 sipnab includes a declarative, non-Turing-complete filter language. It matches SIP dialogs and their associated RTP streams.
 
@@ -29007,6 +30253,71 @@ sipnab -N -I capture.pcap --config sipnab.toml --filter "@sales AND method == 'I
 - sipnab refuses a filter given at run time that names something undefined.
   - This applies on the command line or through REST or MCP.
   - sipnab lists the defined names.
+
+For example, with this `sipnab.toml`:
+
+```toml
+[filters]
+failed-here = "state == 'Failed' AND src.ip in_subnet '192.0.2.0/24'"
+```
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config sipnab.toml --filter "@failed-here" --report --no-cli-print --quiet
+```
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+busy-3a2b1c@192.0.2.30           carol          dave           Failed       486    1s         4      -        -
+unavail-4e5f60@192.0.2.50        ivan           judy           Failed       503    1s         4      -        -
+```
+
+A name the file does not define stops the run with exit 2, and the message
+lists the names it does define:
+
+```text
+'@failed-there' is not a defined filter. Defined in [filters]: failed-here. Built-in aliases: problems, slow-setup, short-calls, one-way, nat-issues, codec-asym, ptime-asym, payload-asym, duration-asym, late-media
+```
+
+### Calls into, out of and inside a PBX
+
+`side` says which way a call went relative to your PBX. List the PBX's own
+addresses under [`[pbx] addresses`](config-reference.md#pbx), each an IP
+address or a CIDR range. Nothing changes on the PBX.
+
+- `inbound`: the opening request went to one of those addresses from
+  another one.
+- `outbound`: it went from one of them to another address.
+- `internal`: it went from one of them to another of them.
+- An empty `side`: the call touched none of them.
+
+With this `sipnab.toml`, which names two of the addresses in
+`sip-problem-call.pcap` as the PBX:
+
+```toml
+[pbx]
+addresses = ["192.0.2.40", "192.0.2.50"]
+```
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config sipnab.toml --filter "side == 'inbound'" --report --no-cli-print --quiet
+```
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+busy-3a2b1c@192.0.2.30           carol          dave           Failed       486    1s         4      -        -
+```
+
+`side == 'outbound'` selects `unavail-4e5f60@192.0.2.50`, the call the PBX
+placed. Combine `side` with the fields a PBX rewrites or adds, such as `ruri`,
+`pai.user` and `header.<name>`, to follow a call through it.
+
+An entry that is not an address or a range stops sipnab at startup with exit 1:
+
+```text
+[pbx] addresses: 'pbx.example.com' is not an IP address or a CIDR range: invalid CIDR 'pbx.example.com': invalid IP: invalid IP address syntax
+```
 
 ### Any header by name
 
@@ -35553,6 +36864,11 @@ they asked, and limit how much one of them can ask at once.
 - `--mcp-max-concurrent <N>` caps the calls running at once.
 - `--mcp-max-response-bytes` and `--mcp-max-body-bytes` cap one answer and one
   request.
+- `--mcp-sweep-max-files`, `--mcp-sweep-deadline-ms`,
+  `--mcp-sweep-max-running`, `--mcp-sweep-max-held-results` and
+  `--mcp-sweep-result-retention-secs` bound the background searches
+  `find_in_captures` runs. [Which file holds the call](capture-queries.md#which-file-holds-the-call)
+  shows one and names each bound.
 
 [MCP protocol](mcp-protocol.md#read-the-audit-log) describes every field of an
 audit line. This run set a limit of 2 calls a second and made four
@@ -36656,7 +37972,7 @@ degrees of one thing:
 | `session_id` | **Yes, by design** ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)) | An identifier both ends agreed on | `true` |
 | `th_callid_decoded` | **Yes**, through OpenSIPS `topology_hiding("C")` with the secret configured ([how](opensips-sipnab.md#calls-through-topology-hiding)) | The hidden Call-ID decodes to the other leg's, and the From tags match | `true` |
 | `th_callid_mapping` | **Yes**, through OpenSIPS `topology_hiding("C")` with the script change | OpenSIPS named both Call-IDs in an `E_SIPNAB_TH_MAP` event | `true` |
-| `x_call_id` | Only if the box inserts it | An identifier, by vendor convention | `true` |
+| `x_call_id` | Only if the box inserts a header holding the other leg's Call-ID, **and** `[sip] xcid_headers` names that header ([how](follow-a-call.md#copy-the-callers-call-id-into-a-header)) | An identifier the operator configured | `true` |
 | `charging_vector_related_icid` | **Yes** — but only when the B2BUA chose to emit it ([RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) makes it a `MAY`) | The intermediary declared the link itself, in the parameter the RFC provides for it | `true` |
 | `sdp_origin` | Only if the box forwards SDP untouched | An identifier of the MEDIA session, not the dialog | `true` |
 | `charging_vector_icid` | Not by design — an ICID names ONE dialog and a B2BUA is two | An intermediary carried a per-dialog identifier onto a second dialog | `true` |
@@ -36822,17 +38138,23 @@ they swap direction across a B2BUA, and reports `strategy: session_id` with
 
 Nothing on the sipnab side needs changing. Enable `Session-ID` on each box,
 and later traces return identifier matches.
+[Pass RFC 7989 Session-ID through](follow-a-call.md#pass-rfc-7989-session-id-through)
+says which servers send it.
 
-**2. Use an identifier the network already carries.** This is what `x_call_id`,
+**2. Use an identifier the network already carries.** This is what
 `sdp_origin` and the two `P-Charging-Vector` strategies are. sipnab is already
 looking for them. You get an identifier match today with no configuration at
-all if any of these is true:
+all if either of these is true:
 
-- your SBC emits `X-Call-ID` by vendor convention,
-- it forwards SDP untouched so the
+- your SBC forwards SDP untouched so the
   [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) origin tuple survives,
 - it sits in a carrier network where RFC 7315 charging headers are on the wire
   anyway.
+
+A header that carries the other leg's Call-ID, such as an `X-Call-ID` your SBC
+adds, is the `x_call_id` strategy. It needs one line of configuration: sipnab
+reads no such header until `[sip] xcid_headers` names it. See
+[Copy the caller's Call-ID into a header](follow-a-call.md#copy-the-callers-call-id-into-a-header).
 
 Check before you plan work. Run `find_correlated` on a known B2BUA call and see
 what `strategy` comes back.
@@ -41460,7 +42782,7 @@ timestamp of the file's first record, in whole seconds. Among forty rotated
 captures, it narrows the search for a call from 14:02 to the two files that
 could hold it, without opening any. [`open_capture`](#open_capture) replaces
 the loaded capture, and [`find_in_captures`](#find_in_captures) searches files
-without doing so.
+without doing so. [Which file holds the call](capture-queries.md#which-file-holds-the-call) walks through such a search.
 
 The key
 reads `null` whenever sipnab got no first packet out of the file — a rotated
@@ -41476,12 +42798,14 @@ with no `--vcon-key`.
 
 The listing carries no dialog count and no last-packet time, because both
 need the whole file parsed. To learn which file holds a call, use
-[`find_in_captures`](#find_in_captures).
+[`find_in_captures`](#find_in_captures), as
+[Which file holds the call](capture-queries.md#which-file-holds-the-call) shows.
 
 ### `find_in_captures`
 
 **Which of these files holds the call**, asked without giving up the one you
-are working in.
+are working in. [Which file holds the call](capture-queries.md#which-file-holds-the-call) shows the search from the command
+line and over MCP, with its background job.
 
 Use it to find which file in `--mcp-file-root` holds a call, for example a
 Call-ID across rotated captures. [`open_capture`](#open_capture) would replace
@@ -41692,7 +43016,8 @@ most one packet.
 
 ### `find_in_captures_status`
 
-Polls a [`find_in_captures`](#find_in_captures) job. It waits up to
+Polls a [`find_in_captures`](#find_in_captures) job ([Which file holds the call](capture-queries.md#which-file-holds-the-call) shows a
+search that finished and one stopped early). It waits up to
 `wait_seconds` for the job to finish and answers with the same shape
 `find_in_captures` returns: `status: "running"` with `progress`, or `done` or
 `canceled` with the `sweep` result. It hands the result over once, and sipnab
@@ -41743,7 +43068,7 @@ A second poll of the same id fails, because the first poll took the result:
 ### `cancel_find_in_captures`
 
 Stops a running [`find_in_captures`](#find_in_captures) job before its next
-packet. It returns at once, with `progress.cancel_requested: true`. A
+packet ([Which file holds the call](capture-queries.md#which-file-holds-the-call) shows one canceled). It returns at once, with `progress.cancel_requested: true`. A
 following [`find_in_captures_status`](#find_in_captures_status) poll reports
 `status: "canceled"`, with `stopped_because: "canceled"`, `complete: false`,
 and the files read to the end before the cancel. For a job that had already
@@ -42891,6 +44216,8 @@ Whether the traffic obeys the RFCs, and which clause it broke. These turn "the c
 ### `evaluate_expectations`
 
 A pass/fail verdict on the loaded capture, and an exit code for a build.
+[Fail a build on what a capture shows](expectations.md) covers the suite file
+and the same check from the command line.
 
 Use it to check a capture against written rules, such as "no 488
 responses" or "MOS p10 at least 4.0". The rules can live in a checked-in
@@ -44636,9 +45963,8 @@ together, and a slow one pulls unrelated legs inside the window. Widening the
 window widens this exposure.
 
 Before trusting a time-based match across servers, read `clock` from both, and
-prefer any of the six identifier strategies — `session_id`, `x_call_id`,
-`charging_vector_related_icid`, `sdp_origin`, `charging_vector_icid` or
-`via_branch` — which do not depend on the clock.
+prefer a leg matched by any strategy other than `timing_heuristic`. Every other
+strategy compares an identifier, so it does not depend on the clock.
 
 `available: false` means the platform gave no answer. It does not mean the
 clock lost synchronization.
@@ -47742,6 +49068,10 @@ validation corpus, are in
 
 ## Lint a capture
 
+The linter is in every sipnab build. Reading a capture file needs no
+privileges, and the linter changes nothing on the system that produced the
+traffic.
+
 Add `--lint` to an offline run. `--no-cli-print` hides the per-message lines,
 and `-q` hides the log lines, so only the findings print.
 
@@ -47783,6 +49113,27 @@ Over MCP, the [`lint_dialog`](mcp-tools-signaling.md#lint_dialog) and
 the same findings as structured fields, and
 [`explain_rule`](mcp-tools-signaling.md#explain_rule) returns one rule's
 entry.
+
+Over REST, `GET /v1/dialogs/{call_id}/lint` returns one call's findings. With
+a server holding the same capture:
+
+```bash
+# Run all of these, in order.
+export SIPNAB_API_KEY="$(openssl rand -hex 32)"
+sipnab -N -I tests/pcap-samples/sip-lint-findings.pcap --api 127.0.0.1:8080 --no-cli-print --quiet &
+sleep 2
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dialogs/lint-clen@198.51.100.10/lint" | jq -c '{finding_count, findings: [.findings[] | {rule_id, severity, observed, expected}]}'
+kill %1
+```
+
+```json
+{"finding_count":1,"findings":[{"rule_id":"SIP-3261-20.14-CONTENT-LENGTH-MISMATCH","severity":"error","observed":"Content-Length 900, body 95 octets","expected":"Content-Length 95"}]}
+```
+
+In the terminal interface, select a call in the Call List and press `f`. The
+view lists that call's findings, each with its severity, RFC section, the
+message it came from, its rule, and what sipnab observed and expected. A call with none says
+`No RFC conformance findings — this call is clean.`
 
 ## Fail a CI job on a non-conformant capture
 
@@ -68512,6 +69863,10 @@ in the terminal interface:
 
 Press `q`, then `y`, to quit.
 
+Asterisk writes nothing into the callee's leg that names the caller's, so
+sipnab ties the two legs by their timing. To tie them on a header instead, see
+[Follow one call across its legs](follow-a-call.md#copy-the-callers-call-id-into-a-header).
+
 ## Explain the call from the saved capture
 
 `--call-report` explains one call:
@@ -69486,6 +70841,9 @@ The answer is a Mermaid `sequenceDiagram` of the caller's leg.
   ringing reply.
 - The MCP tool `find_correlated` returns the same legs as the `/correlated`
   route.
+
+To tie the legs on an identifier instead of their timing, see
+[Follow one call across its legs](follow-a-call.md#make-the-match-exact).
 
 ## Receive FreeSWITCH's own copy of its SIP (HEP)
 
@@ -70642,8 +72000,9 @@ sipnab already lets you *select* dialogs:
 What none of those do is *diagnose*:
 
 - express a site-specific fault pattern,
-- and have sipnab report it as a finding, with evidence, in `--call-report`
-  and the TUI and the JSON alike.
+- and have sipnab report it as a finding, with evidence, on the dialog it
+  describes. Today that is the `--json-dialogs` output only; see
+  [Known limits](#known-limits).
 
 That is the one hole a plugin fills.
 
@@ -70857,6 +72216,40 @@ Under a top-level `plugin_findings` array, separate from `signaling_diagnosis`.
 
 That separation is the point. A reader can always tell which findings sipnab
 stands behind and which came from third-party code.
+
+Against
+[`tests/pcap-samples/sip-over-tcp.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-over-tcp.pcap),
+a call answered and hung up 2.2 seconds later, the example plugin reports:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-over-tcp.pcap --json-dialogs --no-cli-print --quiet --plugin target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm | jq -c 'select(.plugin_findings != null) | {call_id, plugin_findings}'
+```
+
+```json
+{"call_id":"over-tcp-synth@198.51.100.100","plugin_findings":[{"evidence":[3,5],"id":"short-answered-call","plugin":"sipnab_plugin_example","summary":"Call answered and torn down after 2.2s (under 5s) — check routing, codec negotiation, or dial fraud."}]}
+```
+
+A dialog the plugin has nothing to say about carries no `plugin_findings`.
+
+## When a plugin does not load
+
+sipnab still reads the capture and prints every dialog, without the findings
+that plugin would have added. It logs the reason, and the run exits 1. The
+last line of `--json-dialogs` says so as well:
+
+```json
+{"sipnab_run":{"archives":{"cut_short":false},"files":{"given":1,"not_reached":0,"read_in_full":1,"skipped":0,"stopped_early":0},"input_complete":false,"plugins":{"failed":1,"loaded":0,"requested":1},"port_gate":{"sip_outside_portrange":0,"sip_outside_ws_ports":0},"reasons":["1 of 1 requested --plugin(s) did not load; findings they would have contributed are absent"],"retention":{"messages_dropped":0}}}
+```
+
+| Logged reason | Cause | What to do |
+|---|---|---|
+| `plugin <path>: cannot read plugin: <path>: No such file or directory` | The path is wrong | Give the path to the `.wasm` file |
+| `plugin <path>: not a valid WASM module` | The file is not WebAssembly, or a build for another target | Build for `wasm32-unknown-unknown` |
+| An ABI version refusal | Someone built the plugin against another plugin ABI version | Rebuild it against the ABI this sipnab reports |
+| `plugin <name> on <Call-ID>: <reason>` | The plugin loaded, then trapped, ran out of fuel or memory, or returned the wrong shape for one dialog | That dialog prints without the plugin's findings, and the other dialogs keep theirs. Fix the plugin |
+| sipnab refuses the command line, exit 2, at `--plugin` | A build without the `plugins` feature has no `--plugin` flag | Use a build that lists `plugins` in `sipnab --version` |
+
+[Error messages](errors.md) explains each message in full.
 
 ## Known limits
 

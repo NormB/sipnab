@@ -58,6 +58,16 @@ Each answers one "how do I" question and assumes you already know what you want.
 - **[Measure call quality](call-quality.md)**: each stream's MOS, R-factor,
   jitter and loss, when in the call they changed, what the far end reported
   over RTCP, and the thresholds and alerts that act on them.
+- **[Answer questions about a capture](capture-queries.md)**: which failure
+  dominated, which route got worse, who sent the most, when it started, what
+  one phone did, how two calls or two captures differ, and which file holds a
+  call.
+- **[Follow one call across its legs](follow-a-call.md)**: the other legs
+  of a call through a B2BUA, SBC or PBX, how sipnab tied each one, and what to
+  change on Asterisk, FreeSWITCH, Kamailio or OpenSIPS so the tie is exact.
+- **[Fail a build on what a capture shows](expectations.md)**: an
+  expectation suite that fails a CI step when the calls, the answer rate, the
+  conformance or the audio of a test capture miss it.
 - **[Narrow to the calls that matter](filter-dsl.md)**: the filter language
   (`method == 'INVITE' and rtp.mos < 3.5`) and the diagnostic aliases
   (`--filter codec-asym`), with its complete grammar and field list.

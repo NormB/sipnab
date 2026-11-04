@@ -1655,7 +1655,15 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // least-privilege.md has one more: its link to troubleshooting.md's
     // output-file section, from the correction that `-O` is created after the
     // drop.
-    const EXPECTED_WIKI_LINKS: usize = 2326;
+    // 2326 -> 2380 (#641, the analysis how-tos): capture-queries.md +11,
+    // follow-a-call.md +6 and expectations.md +5, their own links;
+    // cli-reference.md +5; mcp-tools-captures.md +5 (to the find-in-files
+    // section of capture-queries.md); examples.md +4; tui-walkthrough.md +4
+    // (+5, -1); README.md +3; mcp-estate.md +3; filter-dsl.md +2; plugins.md
+    // +2; asterisk-sipnab.md, freeswitch-sipnab.md, mcp-deploy.md and
+    // mcp-tools-security.md +1 each. Same-page anchors counted. Counted per
+    // page against origin/main 9124a6f08.
+    const EXPECTED_WIKI_LINKS: usize = 2380;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2920,7 +2928,9 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // docs/README.md.
     // 104 -> 107 (#640): docs/hep.md, docs/archives.md and docs/least-privilege.md,
     // the capture how-tos, each reached from docs/README.md.
-    const EXPECTED_DOCS_PAGES: usize = 107;
+    // 107 -> 110 (#641): docs/capture-queries.md, docs/follow-a-call.md and
+    // docs/expectations.md.
+    const EXPECTED_DOCS_PAGES: usize = 110;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

@@ -28,6 +28,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 | Read a load test that reuses one Call-ID | [47. Follow a load generator's traffic by transaction, not by call](#follow-a-load-generators-traffic-by-transaction-not-by-call) |
 | Settle "we sent it" / "we never got it" | [27. Compare the same call at two nodes](#compare-the-same-call-at-two-nodes) |
 | Look only at the hour the problem happened | [67. Narrow a capture to when the problem happened](#narrow-a-capture-to-when-the-problem-happened) |
+| Find the calls someone transferred | [69. Find the transferred calls](#find-the-transferred-calls) |
 
 **Chase audio and quality complaints**
 
@@ -329,7 +330,32 @@ sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --jso
 
 **Commands:**
 
-`sipnab -N --json` emits per-message records, not per-dialog summaries.
+Count the failed calls by their final response code. Each call counts once,
+under the code that ended it:
+
+```bash
+sipnab -N -I capture.pcap --count-by response_code --filter "state == 'Failed'" --no-cli-print --quiet
+```
+
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap):
+
+```text
+Dialogs by response_code: 4 values, 4 dialogs
+Value  Dialogs
+--------------
+404    1
+486    1
+503    1
+603    1
+```
+
+[Answer questions about a capture](capture-queries.md) covers `--count-by`
+and the other counts: by user, address or codec, carrier metrics, and calls
+over time.
+
+To see every response the failed calls drew, provisional ones included, read
+the messages instead. `sipnab -N --json` emits per-message records, not
+per-dialog summaries.
 
 - It writes one JSON line per SIP message.
 - The `status_code` field is on response messages.
@@ -375,13 +401,13 @@ The histogram output looks like (`uniq -c` count, then status code):
 
 **Pitfalls:**
 
-- The histogram counts *all* response codes seen in messages of failed dialogs.
+- The `jq` histogram counts *all* response codes seen in messages of failed dialogs.
   - So a single failed call with `100 Trying → 488` contributes both 100 and 488.
-  - For just the final response per call, use `--call-report <id>` per dialog.
-- The dialog summary returned by the REST API (`/v1/dialogs`) has no `status_code` field.
-  - That's a per-message field.
-  - It is only available in CLI `--json` output, or via `/v1/dialogs/{id}`.
-  - That endpoint includes the full message list.
+  - For the final response per call, use `--count-by response_code`.
+- `status_code` is a per-message field, on `--json` lines and in the message
+  list of `/v1/dialogs/{id}`.
+  - The per-call field is `final_status_code`. `--json-dialogs` and every row
+    of the REST API's `/v1/dialogs` carry it.
 
 **Runnable example:** [Group failed calls by response code](client-examples.md#group-failed-calls-by-response-code) works over REST. It:
 
@@ -1977,7 +2003,7 @@ It asks them beside the call's one-way diagnosis.
 In `-N` (non-interactive) mode, sipnab normally prints each captured SIP message to stdout. Then it emits the report.
 
 - Pass `--no-cli-print` to suppress the per-message dump. Then only the report reaches stdout.
-- (`-N` is not optional. Without it, sipnab tries to start the TUI, and the report output never reaches stdout.)
+- `--call-report` implies `-N`, so the TUI never starts. The commands below keep `-N` anyway. `--report` does not imply it, so a `--report` run needs `-N`.
 
 Markdown, to paste into a ticket or a markdown editor:
 
@@ -2007,7 +2033,7 @@ The report covers:
 
 **Tip:** combine with the filter from [3. Find every failed call, grouped by response code](#find-every-failed-call-grouped-by-response-code).
 That bulk-generates reports for every failed call.
-The CLI `--filter` outputs per-message records. So deduplicate to call_ids first:
+`--json-dialogs` prints one line per call, so each `call_id` appears once:
 
 - Create the reports directory:
 
@@ -2019,10 +2045,9 @@ The CLI `--filter` outputs per-message records. So deduplicate to call_ids first
 
   ```bash
   # Run all of these, in order.
-  # First pass: enumerate matching calls (no --no-cli-print here — we want the
-  # per-message JSON so jq can extract call_id).
-  sipnab -N -I capture.pcap --filter "state == 'Failed'" --json 2>/dev/null \
-    | jq -r '.call_id' | sort -u \
+  # First pass: one line per failed call.
+  sipnab -N -I capture.pcap --filter "state == 'Failed'" --json-dialogs --no-cli-print --quiet \
+    | jq -r '.call_id' \
     | while read cid; do
         # Second pass per call: --no-cli-print so only the report is written.
         sipnab -N -I capture.pcap --call-report "$cid" --markdown --no-cli-print \
@@ -2234,7 +2259,7 @@ Keyboard shortcuts match the TUI (`?` opens the help popup).
 
 **Problem:** A call works "most of the time". Nothing in the ladder looks wrong, and both vendors say their side is fine.
 
-`--lint` reads the signaling against RFC 3261. It reports what violates it, citing the section:
+`--lint` reads the signaling against the RFC sections it must obey: RFC 3261 and the RFCs on session timers ([RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)), `Session-ID` ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)) and SDP offer/answer. It reports what violates them, citing the section:
 
 ```bash
 sipnab -N -I capture.pcap --lint
@@ -2287,6 +2312,25 @@ sipnab -N -I capture.pcap --analyze
 sipnab -N -I capture.pcap --json-analyze
 ```
 
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap),
+`--analyze --no-cli-print --quiet` prints:
+
+```text
+Capture analysis: 2 finding(s) across 5 dialog(s), 0 stream(s), 23 frame(s) read.
+
+1. [MAJOR] Call failed 5xx/6xx — 2 call(s)
+   The call ended on a server-class or global failure (RFC 3261 §21.5, §21.6). Unlike a 4xx these are never an ordinary call outcome: something on the path or at the far end was unable to serve the request.
+   Evidence:
+     - Call-ID decline-7c6d5e@198.51.100.30 | 198.51.100.30:5060 -> 198.51.100.40 | 2023-11-14 22:13:26.000 UTC | status_code=603 | Decline
+     - Call-ID unavail-4e5f60@192.0.2.50 | 192.0.2.50:5060 -> 192.0.2.60 | 2023-11-14 22:13:32.000 UTC | status_code=503 | Service Unavailable
+
+2. [MINOR] Call failed 4xx — 2 call(s)
+   The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy Here, 404 for a misdialled number, 480 for a phone that is off — so this is listed to be ruled out rather than acted on. The codes are named below; a run of 403 or 408 is not an ordinary outcome.
+   Evidence:
+     - Call-ID busy-3a2b1c@192.0.2.30 | 192.0.2.30:5060 -> 192.0.2.40 | 2023-11-14 22:13:23.000 UTC | status_code=486 | Busy Here
+     - Call-ID notfound-1b2c3d@203.0.113.30 | 203.0.113.30:5060 -> 203.0.113.40 | 2023-11-14 22:13:29.000 UTC | status_code=404 | Not Found
+```
+
 `--json-analyze` emits **one object**, not one line per finding.
 
 - The frames read and the dialogs examined are properties of the run, not of any finding.
@@ -2298,8 +2342,9 @@ sipnab -N -I capture.pcap --json-analyze
 
 - This is a summary, not a substitute for `--report`.
   - It tells you the capture's verdict, not each stream's jitter.
-- A capture whose SIP sits outside `--portrange` analyzes cleanly, because it saw no SIP.
-  - Check the packet counts in the same object before trusting a green result.
+- SIP outside `--portrange` is never counted, but the analysis says so.
+  - It opens with `THIS ANALYSIS IS INCOMPLETE` and a `[BLIND] SIP discarded by --portrange` finding that counts the messages, so such a capture never reads as clean.
+  - Widen the range, `--portrange 1-65535`, and read the capture again.
 
 **Runnable example:** [Triage a capture to one verdict](client-examples.md#triage-a-capture-to-one-verdict) reads this object. It exits:
 
@@ -2876,7 +2921,9 @@ What the difference tells you:
   - Check NTP before reading timing differences as evidence.
 - A B2BUA **changes the `Call-ID`** between its legs by design.
   - So this recipe compares a proxy's two sides, not a B2BUA's.
-  - Correlate those by `From`/`To` and time instead.
+  - For a B2BUA, find the other leg's Call-ID first with
+    `--correlate <CALL-ID>`, then report each leg. See
+    [Follow one call across its legs](follow-a-call.md).
 
 **Runnable example:** one node may see the signaling and another the media, as a proxy and an rtpengine relay do.
 Then neither report holds the whole call.
@@ -3081,6 +3128,38 @@ sipnab -N -I capture.pcap --one-way-delay 40 --report --no-cli-print
 - `--pdd-threshold` defaults to ITU-T E.721's target for an **international** connection.
   - A capture does not say what kind of call it holds.
   - A network that knows its traffic is local or toll wants a tighter number.
+
+The signaling and media findings have thresholds of their own, under
+`[diagnosis]` in the configuration file. Each finding and the setting that
+moves it:
+
+| Finding | Flag | Config key under `[diagnosis]` | Default |
+|---|---|---|---|
+| Slow post-dial delay, and the `pdd` term of `--problems` and `--slow-setup` | `--pdd-threshold` | `post_dial_delay_secs` | 11.0 s |
+| A `2xx` never acknowledged | `--ack-timeout` | `ack_timeout_secs` | 32.0 s |
+| An `INVITE` with no final response | `--no-final-response-timeout` | `no_final_response_secs` | 180.0 s |
+| Duration asymmetry between the two legs | `--duration-asymmetry-pct` and `--duration-asymmetry-secs` (a call must clear both) | `duration_asymmetry_pct`, `duration_asymmetry_secs` | 5.0 %, 2.0 s |
+| Late media after the `200 OK` | `--late-media-ms` | `late_media_ms` | 500 ms |
+| One-way audio withheld when comfort noise explains it | `--cn-suppression-ratio` | `cn_suppression_ratio` | 0.3 |
+
+A tighter late-media threshold reports a delay the default lets pass:
+
+```bash
+sipnab -N -I capture.pcap --late-media-ms 40 --json-dialogs --no-cli-print --quiet | jq -c '.diagnosis.hints'
+```
+
+Against [`tests/pcap-samples/sip-over-tcp.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-over-tcp.pcap),
+whose media starts 47 ms after the answer, the default prints `[]` and this
+prints:
+
+```json
+["Late media: RTP started 47 ms after 200 OK — far end was slow to send, or the media path wasn't ready when signaling completed."]
+```
+
+A looser duration threshold quiets a B2BUA whose legs never end together.
+[`tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap)
+reports `Duration asymmetry: A leg lasted 15.8s, B leg 11.5s (Δ 4.4s)` at the
+defaults, and nothing with `--duration-asymmetry-secs 5`.
 
 **Pitfalls:**
 
@@ -5185,6 +5264,58 @@ Without a file root it answers `"status":"unresolvable"`, with the reason
   instructions ([Untrusted capture text](mcp-protocol.md#untrusted-capture-text)).
 - A tool from a bundle the server did not load answers `unknown_tool`
   ([Load only the tools an agent needs](mcp-deploy.md#load-only-the-tools-an-agent-needs)).
+
+---
+
+## Find the transferred calls
+
+**Problem:** "Someone transferred the caller and then the call dropped." You need
+the calls that carried a transfer, and whether each transfer finished.
+
+A blind or attended transfer is a REFER inside the call
+([RFC 3515](https://www.rfc-editor.org/rfc/rfc3515.html)). The `Refer-To` header of the REFER names where the call should go. sipnab
+keeps the call in the state `Transferring` from the REFER until the NOTIFY
+that ends the transfer's subscription, then returns it to the call's own
+state. It needs no setting, and nothing changes on the PBX.
+
+List the calls whose messages carry a `Refer-To`:
+
+```bash
+sipnab -N -I capture.pcap --filter "header.Refer-To =~ '.'" --report --no-cli-print --quiet
+```
+
+Against [`tests/fixtures/refer/refer-transfer.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/refer/refer-transfer.pcap),
+two calls through a proxy in which Alice asks Bob to call Carol:
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+refer-done-1@example.com         alice          bob            Completed    200    0s         25     0.0s     -
+refer-pending-1@example.com      alice          bob            Transferring 200    0s         17     0.0s     -
+```
+
+- `refer-done-1@example.com` ran its transfer to the end: Bob reported
+  `200 OK` in a NOTIFY that terminated the subscription, and Alice hung up.
+- `refer-pending-1@example.com` is still `Transferring`: the capture ended
+  after a NOTIFY reporting `100 Trying`. A call left in this state at the end of
+  a long capture is a transfer that never reported its result.
+
+Narrow to one destination by matching the target, for example
+`--filter "header.Refer-To =~ 'carol'"`. Count the outcomes with
+`--count-by state` and the same filter.
+
+An exported vCon records the transfer as a `transfer` dialog object, with the
+party who asked for it, the party it moved and the target. For
+`refer-done-1@example.com`, `--export-vcon` writes
+`{"transferor":0,"transferee":1,"transfer_target":2}` in it. See
+[Export a call as a vCon](vcon.md).
+
+**Pitfalls:**
+
+- `method` in the filter language is the method that opened the call, so
+  `method == 'REFER'` does not find a REFER inside an INVITE call. Match the
+  header instead.
+- A REFER outside an established call moves no call to `Transferring`.
 
 ---
 

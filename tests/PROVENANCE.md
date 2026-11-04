@@ -360,3 +360,58 @@ leaves it by gaining a real entry here, or by the file being deleted.
   RTCP XR VoIP Metrics block ([RFC 3611](https://www.rfc-editor.org/rfc/rfc3611.html) section 4.7) about the same
   stream. `media_diagnostics_reports_the_far_ends_rtcp_xr_apart` and the RTCP section
   of `docs/call-quality.md` read it.
+
+### tests/fixtures/session-id/opensips-4.0-th-session-id.pcap
+
+- **Category:** synthetic
+- **Generator:** `harness/session-id/capture.sh`
+- **SHA-256:** `013536c00171a048b2416f1c1fcd43cf2e14708241817eb1379ae63eabded62e`
+- **Holds:** three calls placed by SIPp through OpenSIPS 4.0.2 running
+  `topology_hiding("C")` with its default `th_callid_passwd`. The caller
+  sends an [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID` and the callee answers with one, and
+  OpenSIPS passes both through unchanged while it gives the callee's leg a
+  new Call-ID. So the two legs of each call share a `Session-ID`, and
+  sipnab joins them with the `session_id` strategy and no configuration.
+  The calls start three seconds apart, outside each other's timing window.
+  SIPp, OpenSIPS and the capture ran on a private Docker network with RFC
+  5737 addresses only (203.0.113.1 and 203.0.113.10), and every Call-ID and
+  URI host is `example.com` or one of those addresses. `docs/follow-a-call.md`
+  uses it. Running the generator again writes the same messages with other
+  timestamps and From tags, so the hash changes with each run.
+
+### tests/fixtures/xcid/asterisk-22-xcid.pcap
+
+- **Category:** synthetic
+- **Generator:** `harness/asterisk-xcid/capture.sh`
+- **SHA-256:** `6e43618794c9e5d1b908831abe658c1b4f2494a886431edce9cf1ffc2a3b74cd`
+- **Holds:** three calls placed by SIPp through Asterisk 22.11.0 (the
+  `andrius/asterisk:22` image), a back-to-back user agent that gives the
+  callee's leg a Call-ID of its own. A pre-dial handler in the dialplan adds
+  `X-CID`, carrying the caller's Call-ID, to the callee's INVITE, so sipnab
+  joins the legs with the `x_call_id` strategy once `[sip] xcid_headers`
+  names `X-CID`. The calls start three seconds apart, outside each other's
+  timing window. SIPp, Asterisk and the capture ran on a private Docker
+  network with RFC 5737 addresses only (203.0.113.1 and 203.0.113.10), and
+  every caller Call-ID and URI host is `example.com` or one of those
+  addresses. `docs/follow-a-call.md` uses it. Running the generator again
+  writes the same messages with other timestamps, tags, branches and
+  Asterisk Call-IDs, so the hash changes with each run.
+
+### tests/fixtures/refer/refer-transfer.pcap
+
+- **Category:** synthetic
+- **Generator:** `harness/refer/capture.sh`
+- **SHA-256:** `d98fb2f4be3ce43dac3b6decb8b059c47f92114dfa3a3432e6618cd1e93cc6a2`
+- **Holds:** two calls placed by SIPp through an OpenSIPS 4.0.2 proxy that
+  record-routes, each with a blind transfer ([RFC 3515](https://www.rfc-editor.org/rfc/rfc3515.html)): alice calls bob
+  and sends a REFER naming carol. In `refer-done-1@example.com` bob answers
+  202, sends a NOTIFY with `100 Trying` and a second with `200 OK` that
+  terminates the subscription, and alice hangs up. In
+  `refer-pending-1@example.com` bob sends only the first NOTIFY and the
+  capture ends with the transfer and the call open, so sipnab reports the
+  call as `Transferring`. SIPp, OpenSIPS and the capture ran on a private
+  Docker network with RFC 5737 addresses only (198.51.100.1 and
+  198.51.100.10), and every URI host is `example.com` or one of those
+  addresses. `docs/examples.md` uses it to find transferred calls. Running
+  the generator again writes the same messages with other timestamps, tags
+  and branches, so the hash changes with each run.

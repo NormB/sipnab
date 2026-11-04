@@ -2235,6 +2235,11 @@ they asked, and limit how much one of them can ask at once.
 - `--mcp-max-concurrent <N>` caps the calls running at once.
 - `--mcp-max-response-bytes` and `--mcp-max-body-bytes` cap one answer and one
   request.
+- `--mcp-sweep-max-files`, `--mcp-sweep-deadline-ms`,
+  `--mcp-sweep-max-running`, `--mcp-sweep-max-held-results` and
+  `--mcp-sweep-result-retention-secs` bound the background searches
+  `find_in_captures` runs. [Which file holds the call](@/docs/capture-queries.md#which-file-holds-the-call)
+  shows one and names each bound.
 
 [MCP protocol](@/docs/mcp-protocol.md#read-the-audit-log) describes every field of an
 audit line. This run set a limit of 2 calls a second and made four

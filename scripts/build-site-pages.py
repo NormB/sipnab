@@ -208,6 +208,40 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "startup, with what it means and what to do.",
     ),
     (
+        "docs/capture-queries.md",
+        "capture-queries.md",
+        "Answer questions about a capture",
+        "Answer questions about a capture",
+        # 93: a free site weight, clear of the 83-92 the other doc pages
+        # added in the same week may take.
+        93,
+        "Count calls by code, user or codec, read carrier metrics, rank "
+        "talkers, chart calls over time, compare calls and captures, and "
+        "find the file that holds a call.",
+    ),
+    (
+        "docs/follow-a-call.md",
+        "follow-a-call.md",
+        "Follow one call across its legs",
+        "Follow one call across its legs",
+        # 94: a free site weight, clear of the 83-92 the other doc pages
+        # added in the same week may take.
+        94,
+        "List the other legs of a call through a B2BUA, SBC or PBX, read how "
+        "sipnab tied each one, and make the tie an exact match.",
+    ),
+    (
+        "docs/expectations.md",
+        "expectations.md",
+        "Fail a build on what a capture shows",
+        "Fail a build on what a capture shows",
+        # 95: a free site weight, clear of the 83-92 the other doc pages
+        # added in the same week may take.
+        95,
+        "Write an expectation suite for a capture and fail a CI step when "
+        "the calls, the answer rate, the conformance or the audio miss it.",
+    ),
+    (
         "docs/filter-dsl.md",
         "filter-dsl.md",
         # Source H1 is "Filter DSL reference"; the sidebar label is the

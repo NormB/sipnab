@@ -369,7 +369,10 @@ id = "cli"
 title = "Script and automate"
 pages = [
   { path = "docs/cli.md", menu = true },
+  { path = "docs/capture-queries.md", menu = true },
   { path = "docs/filter-dsl.md", menu = true },
+  { path = "docs/follow-a-call.md", menu = true },
+  { path = "docs/expectations.md", menu = false },
   { path = "docs/output-formats.md", menu = true },
   { path = "docs/config.md", menu = true },
   { path = "docs/errors.md", menu = false },

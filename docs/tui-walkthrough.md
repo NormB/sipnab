@@ -119,10 +119,18 @@ Suspect a header changed across a retransmit or a proxy hop?
 
 - `/` searches the current view (Call List, Raw Message, or RTP Streams).
 - `F7` opens the **Filter dialog**.
-  - It offers From/To, source/destination, payload, time bounds and method fields.
-  - These fields build a filter.
-  - There is no free-form expression field.
-  - Pass the full [Filter DSL](filter-dsl.md) through CLI `--filter`, for example `rtp.mos < 3.0`.
+  - Its fields are From user, To user, Source IP, Destination IP, Text in
+    message, Header, After, Before and Named filter, and a box per method.
+  - After and Before take an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html)
+    time, such as `2023-11-14T22:13:25Z`, and keep the calls that started in
+    between.
+  - Header takes `Name: text`, or a bare header name to keep the calls that
+    carry it.
+  - Named filter takes the names of the `[filters]` entries in your
+    configuration file. Through them, the dialog applies any
+    [Filter DSL](filter-dsl.md#named-filters) expression, for example
+    `rtp.mos < 3.0`. Without a configuration file, it shows
+    `none in [filters]`.
 - Status line 3 shows the filter the dialog built as a summary, such as
   `F7: 7 methods, From~alice · F full`.
   - `F` switches between the summary and the full expression, in every view.
@@ -132,6 +140,87 @@ Suspect a header changed across a retransmit or a proxy hop?
 - `F9` clears the view filter and any kept search.
 - `i` prunes the dialogs that do *not* match, keeping only the matches.
 - `I` prunes the ones that do.
+
+## Find the calls sipnab diagnosed
+
+The Call List marks a call sipnab diagnosed as broken. Open
+[`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap) from a source checkout to see it:
+
+```bash
+sipnab -I tests/pcap-samples/sip-problem-call.pcap
+```
+
+```text
+  # ▲    Method    From  To    Source              Destination         State      Msgs +Prev    PDD
+> [ ] 1  INVITE    alice bob   192.0.2.10          192.0.2.20          Completed  7    +0.000s  850ms
+  [ ] 2  INVITE    carol dave  192.0.2.30          192.0.2.40          FAILED ⚠   4    +3.000s
+  [ ] 3  INVITE    erin  frank 198.51.100.30       198.51.100.40       FAILED ⚠   4    +3.000s
+```
+
+- `⚠` beside the state marks a call with a diagnosis.
+- Open the call with `Enter`. The ladder tags the message the diagnosis rests
+  on. For the busy call it is `486 Busy Here [FAILURE]`.
+- The same diagnosis is in `--report` and `--json-dialogs`, and in the
+  `signaling_diagnosis` of every dialog sipnab reports over REST and MCP. See
+  [Output formats](output-formats.md).
+
+## Ask questions about the whole capture
+
+From the Call List, one key opens a view that answers a question about every
+call the list holds:
+
+| Key | View | What it answers |
+|---|---|---|
+| `g` | Top talkers | Which source addresses took part in the most calls, and how many of their INVITEs the far end answered or failed |
+| `m` | Carrier metrics | ASR, NER and ACD for each destination address |
+| `b` | Call volume | How many calls started in each minute |
+| `e` | Endpoint | Everything the selected call's source address did |
+| `c` | Compare two calls | How two calls differ. Star exactly two with `Space` first |
+| `o` | SDP offer/answer timeline | Each offer and answer of the selected call, with codecs, address and direction |
+| `f` | RFC conformance | The conformance findings of the selected call |
+| `a` | Security findings | The alerts of the detectors the run armed |
+| `h` | Capture health | Drops, undecodable frames, and the HEP listener's senders |
+
+`Esc` returns to the Call List.
+
+With the calls from `sip-problem-call.pcap`, `m` shows:
+
+```text
+┌ Carrier metrics (by destination IP) ───────────────────────────────────────────────────────────────────────┐
+│Destination IP            Calls      ASR      NER       ACD                                                 │
+│192.0.2.20                    1   100.0%   100.0%     17.9s                                                 │
+│192.0.2.40                    1     0.0%   100.0%         —                                                 │
+│192.0.2.60                    1     0.0%     0.0%         —                                                 │
+│198.51.100.40                 1     0.0%   100.0%         —                                                 │
+│203.0.113.40                  1     0.0%     0.0%         —                                                 │
+```
+
+The callee at `192.0.2.40` refused the call as busy, which counts toward NER and not
+ASR. The calls to `192.0.2.60` and `203.0.113.40` failed with `503` and `404`,
+which count toward neither.
+
+Star the answered call and the busy one, then press `c`:
+
+```text
+┌ Compare two calls ─────────────────────────────────────────────────────────────────────────────────────────┐
+│  A: completed-9f8e7d@192.0.2.10                                                                            │
+│  B: busy-3a2b1c@192.0.2.30                                                                                 │
+│                                                                                                            │
+│  State         A: Completed                   B: Failed  (differs)                                         │
+│  Final status  A: 200                         B: 486  (differs)                                            │
+│  Messages      A: 7                           B: 4  (differs)                                              │
+│  Methods       A: ACK,BYE,INVITE              B: ACK,INVITE  (differs)                                     │
+│                                                                                                            │
+│  Differences: state, final status, message count, methods                                                  │
+│  B hints:                                                                                                  │
+│    - Call failed: 486 Busy Here.                                                                           │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+These views answer about the calls the terminal holds. The command-line
+flags answer the same questions from a script, with more dimensions to group
+by. See [Answer questions about a capture](capture-queries.md).
+[Keybindings](keybindings.md) lists the keys inside each view.
 
 ## Inspect RTP quality
 
@@ -231,13 +320,24 @@ A call may cross a [B2BUA](glossary.md#b2bua) or [SBC](glossary.md#sbc).
 
 - That is a box that ends the call on one side and starts a new one on the
   other.
-- So each side has its own Call-ID.
+- So each side has its own Call-ID, and the call list shows one row per side.
 
 Then press `x` (or `F4`) in the Call Flow to toggle **extended multi-leg
 flow**.
 
 - The related legs render together in one ladder.
 - So you can follow the call end-to-end through the middle boxes.
+- The legs are the ones `--correlate` lists for the call. When the B2BUA
+  writes no identifier into the far leg, sipnab ties the legs by their timing
+  only, and a busy server can put an unrelated call in the ladder.
+  [Follow one call across its legs](follow-a-call.md) shows how to read the tie
+  and how to make it exact.
+- A leg that stays out of the ladder is not tied to the call. Check with
+  `--correlate <CALL-ID>` from the command line.
+
+To put any calls in one ladder yourself, whether sipnab ties them or not, star
+each with `Space` in the Call List and press `Enter`. sipnab opens one flow of
+all of them, in time order.
 
 ## Save what you found
 

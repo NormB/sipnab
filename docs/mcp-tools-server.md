@@ -318,9 +318,8 @@ together, and a slow one pulls unrelated legs inside the window. Widening the
 window widens this exposure.
 
 Before trusting a time-based match across servers, read `clock` from both, and
-prefer any of the six identifier strategies — `session_id`, `x_call_id`,
-`charging_vector_related_icid`, `sdp_origin`, `charging_vector_icid` or
-`via_branch` — which do not depend on the clock.
+prefer a leg matched by any strategy other than `timing_heuristic`. Every other
+strategy compares an identifier, so it does not depend on the clock.
 
 `available: false` means the platform gave no answer. It does not mean the
 clock lost synchronization.
