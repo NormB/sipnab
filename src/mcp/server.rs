@@ -211,6 +211,10 @@ pub struct SipnabMcp {
     /// file-backed run cannot construct a `TransmitPermit`, so it cannot
     /// populate this field, so the tool has nothing to send with.
     relay_query: Option<RelayQueryAccess>,
+    /// The newest reading this run's `--relay-stats-interval` poll obtained,
+    /// read by `relay_stats_polled`. Reading it transmits nothing, so
+    /// it is apart from `relay_query`. `None` reads as `not_polling`.
+    relay_polled: Option<std::sync::Arc<crate::output::relay_polled::PolledStore>>,
     /// How captured control messages are decoded, chosen by the composition
     /// root so this layer never names a protocol.
     control_decoder: Option<std::sync::Arc<dyn crate::relay::ControlDecoder>>,
@@ -430,6 +434,7 @@ impl SipnabMcp {
             #[cfg(feature = "archive")]
             archive_candidates: Arc::new(crate::capture::archive::password::run_candidates()),
             relay_query: None,
+            relay_polled: None,
             control_decoder: None,
             tfps: Default::default(),
             actions: Default::default(),
@@ -1060,6 +1065,24 @@ impl SipnabMcp {
             permit,
         });
         self
+    }
+
+    /// Let `relay_stats_polled` read what this run's own
+    /// `--relay-stats-interval` poll obtained.
+    #[must_use]
+    pub fn with_relay_polled(
+        mut self,
+        store: std::sync::Arc<crate::output::relay_polled::PolledStore>,
+    ) -> Self {
+        self.relay_polled = Some(store);
+        self
+    }
+
+    /// The store `relay_stats_polled` reads, if one was installed.
+    pub(crate) fn relay_polled(
+        &self,
+    ) -> Option<std::sync::Arc<crate::output::relay_polled::PolledStore>> {
+        self.relay_polled.clone()
     }
 
     /// The decoder `decode_ng` reads captured control messages with.
@@ -13256,7 +13279,9 @@ mod tests {
             ("captures", 13_000),
             ("security", 10_000),
             ("media", 3_500),
-            ("relay", 4_500),
+            // 4_500 -> 5_000 by `relay_stats_polled` (578 bytes): relay
+            // measured 4,777 over 5 tools.
+            ("relay", 5_000),
             ("tfps", 6_000),
             // 5_500 -> 6_000: `fleet_inventory`, the fleet inventory record,
             // joins the server bundle; server measured 5,976 over six tools.
@@ -13307,7 +13332,9 @@ mod tests {
             // 91,558 over 78 tools on the merged tree, the 89,972 the two
             // branches share plus 484 (`fleet_inventory`, server 5,492 ->
             // 5,976) and 1,102 (`th_mappings`, signaling 22,474 -> 23,576).
-            ("full", 92_000),
+            // full 92_000 -> 92_500: `relay_stats_polled`, as the relay row
+            // above says; full measured 92,136 over 79 tools.
+            ("full", 92_500),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

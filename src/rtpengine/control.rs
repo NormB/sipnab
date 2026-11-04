@@ -533,15 +533,31 @@ pub struct ControlClient {
     addr: SocketAddr,
     /// How long to wait for a reply before giving up.
     timeout: Duration,
-    /// Monotonic half of the cookie.
-    counter: AtomicU64,
-    /// Per-client half, so two runs do not mint the same cookies.
-    ///
-    /// rtpengine deduplicates on the cookie and replays cached replies. A
-    /// counter alone restarts at the same value every run, so a restarted
-    /// sipnab would ask questions the relay believes it has already answered
-    /// -- and receive the previous run's answers.
-    base: u64,
+}
+
+/// Every cookie seed this process mints, from every [`ControlClient`].
+///
+/// One sequence for the whole process, not one per client. A run holds
+/// several clients at once (the REST and MCP doors, the reconciler, the
+/// poller), each built a few microseconds after the last. With a per-client
+/// time base and counter, a client built N nanoseconds after another minted,
+/// as its first cookie, that other client's (N+1)th, and rtpengine replays the
+/// cached reply to a cookie it saw in the last 30 to 60 seconds, so one
+/// client's question got the other's answer.
+///
+/// The base is the wall clock in nanoseconds the first time a seed is minted,
+/// so a restarted sipnab does not reuse the previous run's cookies: it would
+/// need to have minted more seeds than nanoseconds passed between the runs.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+fn process_seed() -> u64 {
+    static BASE: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let base = *BASE.get_or_init(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64)
+    });
+    base.wrapping_add(COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 /// Split a reply into its cookie and its body, refusing one that answers a
@@ -608,15 +624,7 @@ impl ControlClient {
     /// Point a client at a relay's control port.
     #[must_use]
     pub fn new(addr: SocketAddr, timeout: Duration) -> Self {
-        let base = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos() as u64);
-        Self {
-            addr,
-            timeout,
-            counter: AtomicU64::new(0),
-            base,
-        }
+        Self { addr, timeout }
     }
 
     /// The relay this client talks to.
@@ -625,10 +633,9 @@ impl ControlClient {
         self.addr
     }
 
-    /// Mint a cookie seed that has not been used by this client.
+    /// Mint a cookie seed that no client in this process has used.
     fn next_seed(&self) -> u64 {
-        self.base
-            .wrapping_add(self.counter.fetch_add(1, Ordering::Relaxed))
+        process_seed()
     }
 
     /// Ask the relay for its active Call-IDs.
@@ -1234,6 +1241,32 @@ mod tests {
         let a = client.next_seed();
         let b = client.next_seed();
         assert_ne!(a, b, "a client reused a cookie seed across transactions");
+        Ok(())
+    }
+
+    /// Two clients in one process never mint the same cookie. A run holds
+    /// several at once (the REST and MCP doors, the reconciler, the poller),
+    /// all talking to one relay, and rtpengine replays its cached reply to a
+    /// cookie it saw in the last 30 to 60 seconds, so a cookie one client
+    /// reuses from another gets that other question's answer.
+    ///
+    /// The clients are built back to back, as `start_servers` builds the REST
+    /// and MCP ones: a per-client nanosecond base puts the second client's
+    /// first seed inside the first client's next million.
+    #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+    #[test]
+    fn two_clients_in_one_process_never_share_a_cookie() -> Result<(), TestError> {
+        let addr: SocketAddr = "127.0.0.1:1".parse().map_err(|e| format!("addr: {e:?}"))?;
+        let first = ControlClient::new(addr, Duration::from_millis(1));
+        let second = ControlClient::new(addr, Duration::from_millis(1));
+        let theirs = second.next_seed();
+        for n in 0..1_000_000u64 {
+            assert_ne!(
+                first.next_seed(),
+                theirs,
+                "the first client's seed {n} is the second client's first seed"
+            );
+        }
         Ok(())
     }
 

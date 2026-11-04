@@ -763,6 +763,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
         "query_relay",
         "relay_compare",
         "relay_stats",
+        "relay_stats_polled",
         "render_ladder",
         "rtp_stats",
         "runtime_stats",
@@ -816,7 +817,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
     // 69 -> 70: `fleet_inventory` (#635), in every build with the MCP server.
     // `th_mappings` (#636) is the second tool behind `hep`.
     let want =
-        70 + if cfg!(feature = "vcon") { 6 } else { 0 } + 2 * usize::from(cfg!(feature = "hep"));
+        71 + if cfg!(feature = "vcon") { 6 } else { 0 } + 2 * usize::from(cfg!(feature = "hep"));
     assert_eq!(names.len(), want, "expected exactly {want} MCP tools");
 
     // Wait for the replay to be read to its end. Until then the store-reading

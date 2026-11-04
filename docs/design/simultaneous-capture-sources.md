@@ -102,7 +102,7 @@ uprobe reader — builds a `Packet` ([`src/capture/packet.rs:658`](https://githu
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
 ([`src/capture/channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)). The consumer is the batch receive loop at
-[`src/app/batch.rs:2831`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2831), which stops when the channel disconnects — that
+[`src/app/batch.rs:2869`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2869), which stops when the channel disconnects — that
 is, when the last sender clone drops.
 
 **A second source joins here and nowhere else.** The channel is already
@@ -332,7 +332,7 @@ stamp only the name. Ordinals come from [`src/capture/file.rs:778`](https://gith
 `first_frame` is `None`, and nothing on a dialog or a stream records which source
 produced it. `input_origin` survives to the parser and then stops: `grep -rn
 input_origin src/sip/ src/rtp/ src/output/` finds only test fixtures, and the one
-real consumer is the scanner-kill gate at [`src/app/batch.rs:3680`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3680).
+real consumer is the scanner-kill gate at [`src/app/batch.rs:3718`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3718).
 
 That is the extension this feature needs, and it is small: stamp a per-source
 ordinal in the live and HEP readers so `frame_ref` starts returning `Some`, and
@@ -387,7 +387,7 @@ nothing.
 Each reader keeps a thread-local counter and stops at `config.count`
 ([`src/capture/hep.rs:1544`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1544) and its check; [`src/capture/live.rs:573`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L573)), and the
 consumer independently breaks at `total_count >= max_count`
-([`src/app/batch.rs:3051`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3051)). Because each reader gets a clone of the same
+([`src/app/batch.rs:3089`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3089)). Because each reader gets a clone of the same
 `CaptureConfig`, the per-reader copies are per source, so a member can stop
 itself while the other keeps going. The consumer's total still bounds the run,
 so the flag does not silently double — but the per-reader stop is a source-level
@@ -399,10 +399,10 @@ own start, and the starts are within milliseconds. No shared state needed.
 
 **Shutdown.** Already correct. Every reader polls `signals::shutdown_requested`,
 the coordinator drops its `tx` clone so the channel closes when the last reader
-exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:2831`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2831)).
+exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:2869`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2869)).
 When one member ends and the other continues — a HEP sender restarting while the
 NIC keeps capturing — the loop keeps running, which is correct: `source_exhausted`
-([`src/app/batch.rs:3175`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3175)) means every source is done, and with two sources it
+([`src/app/batch.rs:3213`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3213)) means every source is done, and with two sources it
 should keep meaning exactly that.
 
 One consequence to accept rather than fix: **the channel carries no
@@ -439,7 +439,7 @@ nothing.
 
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
 concrete casualty. It initializes on the first packet's `link_type`
-([`src/app/batch.rs:2846`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2846)), and the two members disagree: live capture yields
+([`src/app/batch.rs:2884`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2884)), and the two members disagree: live capture yields
 `DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:913`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L913)) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
 Ethernet, no IP, no UDP. That absence is deliberate and documented at

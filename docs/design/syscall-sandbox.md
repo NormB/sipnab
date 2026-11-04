@@ -224,7 +224,7 @@ configuration**. Enumerated from the code, everything below runs after
 | Idle wait | `libc::poll`, [`src/capture/live.rs:102-113`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L102-L113) | `poll`/`ppoll` |
 | Drop stats | `cap.stats()`, [`src/capture/live.rs:552`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L552); *"a `getsockopt` on Linux"*, [`:769`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L769) | `getsockopt` |
 | Fanout join | [`src/capture/live.rs:515`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L515) | `setsockopt` |
-| Output pcap, created **lazily on the first packet** | [`src/app/batch.rs:2233-2242`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2233-L2242) → [`src/capture/writer.rs:103`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L103) | file create + write |
+| Output pcap, created **lazily on the first packet** | [`src/app/batch.rs:2271-2280`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2271-L2280) → [`src/capture/writer.rs:103`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L103) | file create + write |
 | `--split` rotation, mid-run | [`src/capture/writer.rs:837`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L837) | more file creates |
 | REST API listener bind | [`src/app/servers.rs:277`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L277) | socket/bind/listen/accept |
 | Metrics listener, raw TCP + threads | [`src/app/servers.rs:227`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L227) | the same, plus thread creation |
@@ -261,7 +261,7 @@ permissive feature anyone might enable.
 code does the opposite: `drop_privileges` is at
 [`src/app/bootstrap.rs:828`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L828) and `start_servers` is reached
 only after `launch` returns, from
-[`src/app/batch.rs:1951`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1951) or
+[`src/app/batch.rs:1989`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1989) or
 [`src/app/tui_mode.rs:428`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L428). Anyone deriving an allowlist from
 that comment would omit `socket`, `bind`, `listen` and `accept4` and ship a
 filter that kills every `--api` run. Correcting the comment is part of this work.
@@ -461,8 +461,8 @@ Verified ordering today:
 | `drop_privileges` → setgroups, setgid, setuid | [`src/app/bootstrap.rs:843`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L843), [`src/privilege.rs:68-72`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L68-L72) |
 | `init_syslog` | [`src/app/bootstrap.rs:836`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L836) |
 | `disable_core_dumps` (conditional on key material) | [`src/app/bootstrap.rs:955`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L955) |
-| `start_servers` — binds API, MCP, metrics | [`src/app/batch.rs:1951`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1951) |
-| receive loop; writer created on first packet | [`src/app/batch.rs:2146`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2146), [`:2242`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2242) |
+| `start_servers` — binds API, MCP, metrics | [`src/app/batch.rs:1989`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1989) |
+| receive loop; writer created on first packet | [`src/app/batch.rs:2184`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2184), [`:2280`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2280) |
 
 The first row runs on **every** start — that is the point of where it sits, and
 it is why it is first. Rows two and three run **only on a root start**, and the
@@ -502,7 +502,7 @@ routine case on the configuration most users run.
 
 **The writer stays lazy.** Making it eager would let the filter drop the file
 syscalls, but the writer needs `link_type`, which comes from the first packet
-([`src/app/batch.rs:2242`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2242)). Re-architecting that to tighten a
+([`src/app/batch.rs:2280`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2280)). Re-architecting that to tighten a
 syscall list is the wrong trade. Instead: seccomp permits the file syscalls,
 and **Landlock bounds where they may point** ([section 5, "Landlock: weaker, cheaper, and the one to ship first"](#5-landlock-weaker-cheaper-and-the-one-to-ship-first)). That division of labor is
 what G5 means by Landlock being *"additionally"* useful, and it is why the two
@@ -606,7 +606,7 @@ Reporting means three things:
    implemented".
 2. A field in the batch summary and in `capture_health` — the same structural
    discipline the rest of that response follows: a code, not a free string
-   ([`src/mcp/server.rs:1784-1794`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1784-L1794)).
+   ([`src/mcp/server.rs:1807-1817`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1807-L1817)).
 3. **`--require-sandbox`**, which turns degradation into a refusal. Opt-in,
    never the default, for the operator who would rather not capture than capture
    unsandboxed. Without this flag there is no way to express that preference; with

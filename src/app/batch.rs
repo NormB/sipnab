@@ -748,11 +748,17 @@ fn spawn_relay_stats_poller(
         return (None, None);
     };
     let interval = std::time::Duration::from_secs(target.secs);
+    let secs = target.secs;
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let mut poll = RelayStatsPoll::new(target, cli);
 
     match crate::app::relay_poller::spawn(interval, rx, move || poll.poll_once()) {
-        Ok(join) => (Some(tx), Some(join)),
+        Ok(join) => {
+            // REST `/v1/relay/stats/polled` and MCP `relay_stats_polled`
+            // read the readings from here, so a reader learns a poll runs.
+            crate::output::relay_polled::PolledStore::global().start(secs);
+            (Some(tx), Some(join))
+        }
         Err(e) => {
             tracing::warn!("could not start the relay statistics poller ({e}); nothing polled");
             (None, None)
@@ -891,11 +897,24 @@ impl RelayStatsPoll {
         }
         match result {
             Ok(crate::relay::types::ControlReply::Statistics(pairs)) => self.on_statistics(pairs),
-            Ok(other) => tracing::error!("{} answered {other:?}, not statistics", self.label),
+            Ok(other) => {
+                tracing::error!("{} answered {other:?}, not statistics", self.label);
+                self.publish_failure(
+                    crate::stats_vocab::StatisticsOutcome::Suspect,
+                    format!("{} answered something other than statistics", self.label),
+                );
+            }
             Err(e) => {
                 tracing::error!(
                     "{} did not answer the polled statistics request ({e})",
                     self.label
+                );
+                self.publish_failure(
+                    crate::relay::types::fetch_error_outcome(&e),
+                    format!(
+                        "{} did not answer the polled statistics request ({e})",
+                        self.label
+                    ),
                 );
             }
         }
@@ -922,6 +941,25 @@ impl RelayStatsPoll {
         let wire = resolve_for_wire(&relay_reported(&pairs));
         self.previous = Some(pairs);
         self.print_reading(&wire);
+        crate::output::relay_polled::PolledStore::global().record(
+            crate::output::relay_polled::PolledReading {
+                wire,
+                relay: self.label.clone(),
+                obtained_at: chrono::Utc::now(),
+            },
+        );
+    }
+
+    /// Keep a poll that obtained no reading where REST and MCP read it, beside
+    /// the reading it did not replace.
+    fn publish_failure(&self, outcome: crate::stats_vocab::StatisticsOutcome, detail: String) {
+        crate::output::relay_polled::PolledStore::global().record_failure(
+            crate::output::relay_polled::PollFailure {
+                at: chrono::Utc::now(),
+                outcome: outcome.as_wire_str(),
+                detail,
+            },
+        );
     }
 
     /// Print one reading in the form `--json` / `--json-pretty` chose.

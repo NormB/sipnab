@@ -414,7 +414,7 @@ catches future accidental dependencies on `native` or another default feature.
 `sipnab.service` passes `-d %i` despite not being an instance unit
 (`packaging/sipnab.service:1,9`). It binds REST and standalone metrics
 non-loopback without credentials (`:9`), which REST refuses
-([`src/output/api.rs:443-465`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L443-L465); [`docs/rest-api.md:210-217`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L210-L217)) and metrics documents as
+([`src/output/api.rs:447-469`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L447-L469); [`docs/rest-api.md:210-217`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L210-L217)) and metrics documents as
 fail-closed ([`docs/rest-api.md:229-239`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L229-L239)). Yet [`docs/install.md:222-224`](https://github.com/NormB/sipnab/blob/main/docs/install.md#L222-L224) promises a
 packaged unit and service user.
 
@@ -476,7 +476,7 @@ either finds a Sipnab span in Tempo or explicitly says traces are unavailable.
 **Priority / type / effort:** P2 / capability improvement / M
 
 **Evidence:** REST health always returns literal `ok`
-([`src/output/api.rs:595-597`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L595-L597); [`docs/rest-api.md:263-265`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L263-L265)), and MCP health is also
+([`src/output/api.rs:599-601`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L599-L601); [`docs/rest-api.md:263-265`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L263-L265)), and MCP health is also
 unconditional ([`src/mcp/transport.rs:269-272`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L269-L272)). Existing capture state is not
 consulted by these probes.
 

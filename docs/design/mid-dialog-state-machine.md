@@ -163,7 +163,7 @@ They test `dialog.method` as well as the state.
 Also affected: `Result: Trying` in the text report
 ([`call_report.rs:276-283`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L276-L283)); a dialog counted
 in none of the three outcome buckets in every machine-readable summary
-([`api.rs:936-938`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L936-L938)); an empty result set for
+([`api.rs:940-942`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L940-L942)); an empty result set for
 `state == "Canceled"` in the filter DSL
 ([`dsl.rs:1374-1378`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1374-L1378)); and an ended call rendering amber
 "in setup" indefinitely in the TUI, where `Trying` shares an arm with `Ringing`

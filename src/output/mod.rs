@@ -77,6 +77,7 @@ pub mod prometheus_server;
 pub mod query;
 #[cfg(any(feature = "api", feature = "mcp", feature = "vcon"))]
 pub mod redact;
+pub mod relay_polled;
 pub mod relay_statistics;
 pub mod run_integrity;
 pub mod runtime;

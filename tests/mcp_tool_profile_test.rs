@@ -303,7 +303,8 @@ fn a_bundle_and_a_tool_name_reach_the_router() -> Result<(), TestError> {
             "get_sdp_timeline",
             "query_relay",
             "relay_compare",
-            "relay_stats"
+            "relay_stats",
+            "relay_stats_polled"
         ]
     );
     Ok(())

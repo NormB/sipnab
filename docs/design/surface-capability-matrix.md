@@ -356,6 +356,17 @@ Keep asking the relay for its counters, every N seconds.
 | REST | decision: a poll is a standing instruction to transmit, and a REST caller who starts one does not own the host or see that it keeps transmitting after disconnect |
 | MCP | decision: as with REST, the caller who starts a timer is not the operator, and every other agent tool answers from bytes already held rather than installing a standing transmit |
 
+### Read the latest polled relay reading
+
+What did this run's own poll of the relay's counters last obtain, and how old is it?
+
+| Surface | Detail |
+|---|---|
+| CLI | `--relay-stats-interval` |
+| TUI | `RelayStats` |
+| REST | `/v1/relay/stats/polled` |
+| MCP | `relay_stats_polled` |
+
 ### Relay holdings
 
 What Call-IDs is the live relay holding right now?

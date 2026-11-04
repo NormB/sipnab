@@ -2942,9 +2942,9 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 ### `--mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags ({})`
 
-`--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp`. The list includes `--export-vcon` only when you did not give `--vcon-out`.
+`--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp` on stdio. With `--mcp-transport http` the wire is a socket, and sipnab accepts the same flags. The list includes `--export-vcon` only when you did not give `--vcon-out`.
 
-**What to do:** Remove the listed flags from the `--mcp` run. For `--export-vcon`, add `--vcon-out FILE` so that sipnab writes the container to a file instead of standard output.
+**What to do:** Remove the listed flags from the `--mcp` run, or serve MCP with `--mcp-transport http`. For `--export-vcon`, add `--vcon-out FILE` so that sipnab writes the container to a file instead of standard output.
 
 **Exit code:** 2.
 

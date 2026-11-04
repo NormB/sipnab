@@ -11898,6 +11898,38 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   http://127.0.0.1:8080/v1/relay/stats | jq .
 ```
 
+### GET /v1/relay/stats/polled
+
+The newest reading of the relay's global counters that this run's own
+`--relay-stats-interval` poll obtained, tiered `relay_reported`.
+
+- It sends nothing to the relay. It needs no `--api-allow-relay-query`.
+- Starting a poll is CLI only: a headless run started with
+  `--rtpengine-control` and `--relay-stats-interval` polls, and this route
+  reads what that poll obtained.
+- The reading has the form `GET /v1/relay/stats` returns, with `origin:
+  "polled"`, `interval_secs`, `obtained_at` and `age_secs`, the seconds since
+  the relay answered.
+
+`outcome` is one of three values:
+
+- `ok` with the reading,
+- `no_reading_yet` when the poll runs and has obtained nothing,
+- `not_polling` when this run does not poll.
+
+`last_poll` names the newest attempt (`unreachable` or `suspect`, with `at`
+and `detail`) when it failed after the reading it sits beside. A reader that
+sees `age_secs` grow while `last_poll` is present is reading a poll that has
+stopped getting answers.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/relay/stats/polled | jq '{outcome, age_secs, interval_secs}'
+```
+
+The MCP tool `relay_stats_polled` returns the same fields and values. [Read the newest poll without asking again](relay-statistics.md#read-the-newest-poll-without-asking-again)
+walks through it.
+
 ### GET /v1/relay/stats/names
 
 Which statistics the relay knows.
@@ -12331,8 +12363,8 @@ sudo sipnab --mcp -N -d eth0
 With the stdio transport, **stdout is the JSON-RPC wire**. So `--mcp` implies
 `-N`/`--no-tui`.
 
-- sipnab refuses at startup every flag that writes its answer to stdout,
-  such as `--json` and `--report`, and exits 2, for example with `--mcp uses stdout for the JSON-RPC
+- On stdio, sipnab refuses at startup every flag that writes its answer to
+  stdout, such as `--json` and `--report`, and exits 2, for example with `--mcp uses stdout for the JSON-RPC
   wire and cannot be combined with stdout-writing flags (--json)`.
 
   Write the report from a separate run without `--mcp`.
@@ -12502,7 +12534,7 @@ it does these things:
 It does for this surface what <https://sipnab.com/api-reference/> does for the
 [REST API](rest-api.md).
 
-sipnab registers 78 MCP tools. That is more than anyone reads in a table. The
+sipnab registers 79 MCP tools. That is more than anyone reads in a table. The
 Tools tab is the fastest way to find the one you want.
 
 The MCP project maintains Inspector, not sipnab. When a tool
@@ -14823,6 +14855,13 @@ sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-interva
 
 Each reading marks itself `polled` and names the interval. So it reads as a
 timer's output rather than a one-shot answer.
+
+With `--api` or `--mcp` on the same run, the newest reading is readable
+without asking the relay again:
+[`GET /v1/relay/stats/polled`](rest-api.md#get-v1relaystatspolled) and the MCP
+tool `relay_stats_polled` return it, with its age. Neither needs
+`--api-allow-relay-query` or `--mcp-allow-relay-query`, because neither sends
+anything.
 
 ### Three numbers for one call, and none of them wins
 
@@ -21162,7 +21201,7 @@ classification instead of a list:
 | `--relay-stats` | -- | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits; on `-I <file>` it prints why it declines to ask rather than asking, and with no `--rtpengine-control` it says to name one. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-the-relay-for-its-counters) |
 | `--relay-stats-call` | `<CALL-ID>` | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its own counters about ONE call, by Call-ID: per-stream and per-SSRC packet and byte counts, RTP and RTCP totals, as the relay counts them (`relay_reported`). A relay not holding the call answers in its own words, which sipnab reports rather than inventing a not-found. Same live-source gate as `--relay-stats`. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-about-one-call) |
 | `--relay-stats-list` | -- | -- | 0.5.169 | List which statistics the relay named by `--rtpengine-control` knows, rather than their values. The key set is version-specific, so "what can I ask for?" is a real question; sipnab asks the relay rather than reading a built-in table, and the header names how it got the set (for rtpengine, the relay listed them in a `statistics` reply). Same live-source gate as `--relay-stats`, because listing asks the relay and asking transmits. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-statistics-the-relay-knows) |
-| `--relay-stats-interval` | `<SECONDS>` | -- | 0.5.170 | Poll the relay named by `--rtpengine-control` for its statistics every SECONDS, for as long as the capture runs. Nothing polls by default. One transaction per interval, the next beginning only once the previous returns, so a slow relay slows the cadence rather than stacking requests. Each polled reading says it was `polled` and names the interval. CLI only (a poll is a standing instruction to transmit; the REST/MCP caller does not own the host). Same live-source gate as `--relay-stats`. Range 1--3600. A headless run prints each reading to stdout, so `-N` with `--mcp` refuses it. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#watch-the-counters-move) |
+| `--relay-stats-interval` | `<SECONDS>` | -- | 0.5.170 | Poll the relay named by `--rtpengine-control` for its statistics every SECONDS, for as long as the capture runs. Nothing polls by default. One transaction per interval, the next beginning only once the previous returns, so a slow relay slows the cadence rather than stacking requests. Each polled reading says it was `polled` and names the interval. CLI only (a poll is a standing instruction to transmit; the REST/MCP caller does not own the host). Its newest reading is readable over REST `GET /v1/relay/stats/polled` and the MCP tool `relay_stats_polled`, which send nothing and need no opt-in. Same live-source gate as `--relay-stats`. Range 1--3600. A headless run prints each reading to stdout, so `--mcp` on stdio refuses it; `--mcp-transport http` accepts it. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#watch-the-counters-move), and [Read the newest poll without asking again](relay-statistics.md#read-the-newest-poll-without-asking-again) |
 | `--relay-compare` | `<CALL-ID>` | -- | 0.5.169 | Compare the relay's own RTP packet count for one call against what sipnab measured on the wire. It shows the relay's `totals.RTP.packets` for the call (`relay_reported`) beside sipnab's own count of the RTP packets it captured for it (`sipnab_measured`), both labeled, with a word verdict (`match` or `differ`) and a direction-aware note. The two count different sockets over different windows, so an ordinary gap is not a relay fault: if sipnab counted fewer the note names the undercount causes (a mirror-port drop, a mid-call restart) and points at `capture_health`; if sipnab counted more it names the usual cause -- a capture that sees both sides of the relay hairpin counts each packet twice, so a point upstream and downstream reads about twice the relay's count. It never sums the counts. Runs after capture, when sipnab's tally is final; sipnab reports a call the relay does not hold, or one it captured no RTP for, distinctly rather than comparing it against a made-up zero. Same live-source gate as `--relay-stats`. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#compare-the-relays-count-with-your-capture) |
 
 **Examples**
@@ -21487,7 +21526,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-token-ttl` | `<SECS>` | `3600` | 0.4.3 | Default TTL (seconds) when minting API tokens with `--mint-token`. Feature: `api` |
 | `--api-max-rows` | `<N>` | `1000` | 0.5.100 | Rows one list-style REST response returns. The REST counterpart of `--mcp-max-rows`. Raise it for a batch consumer that reads every row of `/v1/dialogs`; lower it for a dashboard. A caller may always ask for less with `?limit=`, and nothing it sends asks for more than this. Config: `[limits] api_max_rows` Feature: `api` |
 | `--api-rate-limit-per-peer` | `<N>` | `100` | 0.5.100 | REST requests one client IP may make per second; `0` disables the cap, the reading `--mcp-rate-limit-per-peer` and `--hep-rate-limit` also give it. The limiter counts by source address, so a dashboard polling `/v1/streams` on a short timer, or several collectors behind one NAT, share a single allowance. A refused request gets `503`, not `429`: the limiter runs before authentication and says nothing about the credential. Config: `[limits] api_rate_limit_per_peer` Feature: `api` |
-| `--api-allow-relay-query` | -- | -- | 0.5.170 | Let REST clients query the relay named by `--rtpengine-control` through the six `GET /v1/relay/` routes (`stats`, `stats/names`, `stats/call/{call_id}`, `compare/{call_id}`, `holdings` and `holdings/{call_id}`), which transmit. The REST counterpart of `--mcp-allow-relay-query`, off for the same reason: every other REST answer comes from bytes sipnab already holds, and these put a packet on the network — at the address that flag names, never one a client chooses. Without a relay address (no `--rtpengine-control`), those routes answer `not_configured`. With one, they answer `not_permitted` when this flag is absent, and on a file-backed run even with the flag. Each response is HTTP 200 carrying an `outcome`, so a refusal is content, not a 4xx. Polling on an interval is not offered over REST at all. Feature: `api`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-over-rest) |
+| `--api-allow-relay-query` | -- | -- | 0.5.170 | Let REST clients query the relay named by `--rtpengine-control` through the six `GET /v1/relay/` routes (`stats`, `stats/names`, `stats/call/{call_id}`, `compare/{call_id}`, `holdings` and `holdings/{call_id}`), which transmit. The REST counterpart of `--mcp-allow-relay-query`, off for the same reason: every other REST answer comes from bytes sipnab already holds, and these put a packet on the network — at the address that flag names, never one a client chooses. Without a relay address (no `--rtpengine-control`), those routes answer `not_configured`. With one, they answer `not_permitted` when this flag is absent, and on a file-backed run even with the flag. Each response is HTTP 200 carrying an `outcome`, so a refusal is content, not a 4xx. Starting a poll is not offered over REST. `GET /v1/relay/stats/polled` reads what this run's `--relay-stats-interval` poll obtained; it sends nothing and needs no flag. Feature: `api`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-over-rest) |
 | `--api-allow-vcon-fetch` | -- | off | 0.5.221 | Let REST clients read one vCon by uuid from the store the `[vcon_fetch]` keys configure, through [`GET /v1/vcon/fetch/:uuid`](rest-api.md#get-v1vconfetchuuid), which connects to that store. The REST counterpart of `--mcp-allow-vcon-fetch`, off for the same reason. The store, its kind, the credential and the decryption key come from `[vcon_fetch]` only, never from the request, and the answer holds no key. Without this flag the route answers `503` naming it; with it and no `[vcon_fetch] url`, `503` naming the keys. sipnab stops at startup when it cannot read the store's credential or key file. The container comes back in the answer, and sipnab writes no file. Feature: `api` and `vcon` |
 | `--api-accept-archive-passwords` | -- | off | 0.5.187 | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: making sure it does is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`, also when `--api-tls-cert` serves HTTPS. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | 0.5.177 | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..`, an absolute prefix or a control character before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
@@ -25282,9 +25321,9 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 ### `--mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags ({})`
 
-`--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp`. The list includes `--export-vcon` only when you did not give `--vcon-out`.
+`--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp` on stdio. With `--mcp-transport http` the wire is a socket, and sipnab accepts the same flags. The list includes `--export-vcon` only when you did not give `--vcon-out`.
 
-**What to do:** Remove the listed flags from the `--mcp` run. For `--export-vcon`, add `--vcon-out FILE` so that sipnab writes the container to a file instead of standard output.
+**What to do:** Remove the listed flags from the `--mcp` run, or serve MCP with `--mcp-transport http`. For `--export-vcon`, add `--vcon-out FILE` so that sipnab writes the container to a file instead of standard output.
 
 **Exit code:** 2.
 
@@ -37128,7 +37167,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | [`captures`](mcp-tools-captures.md) | 11 | Capture files in the file root: listing, searching, comparing, opening and exporting them, and the evidence that ties a finding to captured bytes. |
 | [`security`](mcp-tools-security.md) | 6 | Who sent what: scanner and fraud findings, the busiest sources, one endpoint's activity, registration problems, pass/fail expectations, and fail2ban rules. |
 | [`media`](mcp-tools-media.md) | 4 | Where a call's media endpoints came from, why a stream has no dialog, the facts under a quality score, and audio export. |
-| [`relay`](mcp-tools-relay.md) | 4 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
+| [`relay`](mcp-tools-relay.md) | 5 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
 | [`tfps`](mcp-tools-tfps.md) | 7 | The toll-fraud prevention peer (TFPS): what it blocks and logs, and the operator's ban, unban and revert actions. |
 | [`server`](mcp-tools-server.md) | 6 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, the fleet inventory record, and shutdown. |
 | [`vcon`](mcp-tools-vcon.md) | 7 | vCon conversation containers, exported, validated and analyzed, one at a time or a directory at once, read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
@@ -37209,17 +37248,17 @@ resource.
 | captures | 11 | 12,723 | 30,211 |
 | security | 6 | 9,954 | 9,954 |
 | media | 4 | 3,480 | 16,048 |
-| relay | 4 | 4,199 | 20,607 |
+| relay | 5 | 4,777 | 24,044 |
 | tfps | 7 | 5,717 | 16,101 |
 | server | 6 | 5,976 | 35,136 |
 | vcon | 7 | 10,714 | 34,446 |
 | tls | 3 | 2,903 | 4,996 |
-| full | 78 | 91,558 | 303,522 |
+| full | 79 | 92,136 | 306,959 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.232 with `fleet_inventory` and `th_mappings` added** on a build with every feature.
+> **Measured on sipnab 0.5.232 with `fleet_inventory`, `th_mappings` and `relay_stats_polled` added** on a build with every feature.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -37281,6 +37320,7 @@ links to its section on the bundle's page.
 | [`reconcile_orphans`](mcp-tools-media.md#reconcile_orphans) | [media](mcp-tools-media.md) | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`relay_compare`](mcp-tools-relay.md#relay_compare) | [relay](mcp-tools-relay.md) | **Transmits.** Sets the relay's per-call RTP count beside sipnab's measured count, both tiers named and a word verdict, never a sum. Same gate as `query_relay` |
 | [`relay_stats`](mcp-tools-relay.md#relay_stats) | [relay](mcp-tools-relay.md) | **Transmits.** Asks the configured relay for its own counters (global, per-call, or the names it knows), tiered `relay_reported`. Same opt-in and live-source gate as `query_relay` |
+| [`relay_stats_polled`](mcp-tools-relay.md#relay_stats_polled) | [relay](mcp-tools-relay.md) | The newest reading of the relay's own counters that this run's `--relay-stats-interval` poll obtained, with its age. Sends nothing |
 | [`render_ladder`](mcp-tools-signaling.md#render_ladder) | [signaling](mcp-tools-signaling.md) | Call-flow ladder (Markdown / text), or an annotated Mermaid diagram |
 | [`rtp_stats`](mcp-tools-core.md#rtp_stats) | [core](mcp-tools-core.md) | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
 | [`runtime_stats`](mcp-tools-server.md#runtime_stats) | [server](mcp-tools-server.md) | What sipnab is doing and what it costs the host: its own memory, threads, descriptors and CPU; the host's totals and the basis they came from; its share of them and whether that share is load-bearing; per-interface counters; store occupancy against the caps |
@@ -37532,10 +37572,10 @@ When `source_exhausted` is `false`, `total_matched` counts only what had
 loaded. Repeat the call, or poll `capture_status` until `source_exhausted`
 reads `true`, before treating a count as final.
 
-Twenty-two tools are the exception, because their answer cannot move with
+Twenty-three tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Thirteen read something other than the capture store:
+- Fourteen read something other than the capture store:
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;
@@ -37546,7 +37586,9 @@ their sources hold:
   - `compare_captures`, which reads two files and never the loaded capture;
   - `analyze_vcon`, which analyzes a container the caller hands over;
   - `vcon_directory_report`, which reads the containers in a directory of the
-    file root.
+    file root;
+  - `relay_stats_polled`, which reads the relay's counters as this run's own
+    poll obtained them.
 - The other nine ask another process:
   - `query_relay` and `relay_stats` put the question to the media relay;
   - `tfps_status`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_ban`
@@ -43467,6 +43509,7 @@ the three tools that transmit in use, with the server they need.
 | [`decode_ng`](#decode_ng) | `frame_ref` | Decodes the relay control message one pointer names: the command, the call, whether it carries SDP, and which delivery path carried it |
 | [`query_relay`](#query_relay) | `call_id?`, `max_calls?` | **Transmits.** Asks the configured relay what it holds right now. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
 | [`relay_stats`](#relay_stats) | `call_id?`, `names_only?` | **Transmits.** Asks the configured relay for its own counters (global, per-call, or the names it knows), tiered `relay_reported`. Same opt-in and live-source gate as `query_relay` |
+| [`relay_stats_polled`](#relay_stats_polled) | -- | The newest reading of the relay's own counters that this run's `--relay-stats-interval` poll obtained, with its age. Sends nothing; needs no opt-in |
 | [`relay_compare`](#relay_compare) | `call_id` | **Transmits.** Sets the relay's per-call RTP count beside sipnab's measured count, both tiers named and a word verdict, never a sum. Same gate as `query_relay` |
 
 
@@ -43651,6 +43694,48 @@ A `names_only` answer carries `names`, a `names_source` (`listed` when the relay
 enumerated them, `probed` when they are the names that did not refuse) and a
 `names_note` stating how sipnab determined the set -- so a probed set is never
 read as a definitive enumeration.
+
+### `relay_stats_polled`
+
+**Sends nothing.** It returns the newest reading of the relay's global
+counters that this run's own `--relay-stats-interval` poll obtained. Starting a
+poll stays the operator's, on the command line: a poll is a standing
+instruction to transmit, and an agent does not own the host it would transmit
+from. Reading what the poll already obtained needs no `--mcp-allow-relay-query`.
+
+It takes no parameters. `outcome` is one of three values:
+
+- `ok`: the reading, with `relay`, `obtained_at`, `origin: "polled"`,
+  `interval_secs`, `age_secs` (seconds since the relay answered),
+  `statistics` with each value's tier, and `refusals`.
+- `no_reading_yet`: the poll runs and has obtained nothing, with
+  `interval_secs`.
+- `not_polling`: this run does not poll, with a `detail` naming what starts
+  one.
+
+`last_poll` names the newest attempt (`unreachable` or `suspect`, with `at` and
+`detail`) when it failed after the reading. An `age_secs` that keeps growing
+beside a `last_poll` is a poll that has stopped getting answers.
+
+```jsonc
+// relay_stats_polled {}
+{
+  "age_secs": 3,
+  "interval_secs": 5,
+  "obtained_at": "2026-11-03T12:00:00Z",
+  "origin": "polled",
+  "outcome": "ok",
+  "refusals": [],
+  "relay": "rtpengine at 127.0.0.1:22222",
+  "statistics": [
+    { "name": "currentstatistics.sessionsown", "tier": "relay_reported", "value": "0" }
+  ]
+}
+```
+
+`GET /v1/relay/stats/polled` returns the same fields and values.
+[Read the newest poll without asking again](relay-statistics.md#read-the-newest-poll-without-asking-again)
+walks through it.
 
 ### `relay_compare`
 
@@ -46722,8 +46807,8 @@ lines on stdin, the way a client does.
 - **No prompt-injection cooperation.** Tool descriptions never
   instruct the LLM to "trust" or "act on" returned content. They
   describe what the tool returns and stop there.
-- **Every tool declares what it does.** All 78 carry MCP annotations, so a host
-  can decide what to call without asking. Sixty-five are `readOnlyHint: true`.
+- **Every tool declares what it does.** All 79 carry MCP annotations, so a host
+  can decide what to call without asking. Sixty-six are `readOnlyHint: true`.
   [What the write verbs do](#what-the-write-verbs-do) names the thirteen that
   are not.
 
@@ -47177,7 +47262,7 @@ sipnab negotiates the 2025-06-18 and 2025-11-25 revisions. There,
 
 ## What the write verbs do
 
-Sixty-five of the 78 tools are `readOnlyHint: true`. These thirteen are not.
+Sixty-six of the 79 tools are `readOnlyHint: true`. These thirteen are not.
 Each declares what kind of change it makes, so a host can decide which need
 confirmation:
 
@@ -62914,6 +62999,83 @@ three opt-ins: it decodes a relay control message already in the capture
 
 The [relay tool reference](mcp-tools-relay.md) gives each tool's full
 response.
+
+## Read the newest poll without asking again
+
+A dashboard or an agent can read the relay's counters without asking the
+relay itself. A headless run started with `--relay-stats-interval` keeps its
+newest reading, and serves it on `GET /v1/relay/stats/polled` and the MCP tool
+`relay_stats_polled`. Only that run's poll talks to rtpengine, however many
+readers there are.
+
+**Prerequisites.** Those in [Before you start](#before-you-start), with two
+differences:
+
+- Reading sends nothing to the relay. It needs no `--api-allow-relay-query` or
+  `--mcp-allow-relay-query`. The poll itself is the operator's, on the command
+  line.
+- Serve MCP over HTTP (`--mcp --mcp-transport http`) on the polling run. Over
+  stdio, sipnab refuses `--relay-stats-interval`, because it prints each
+  reading to stdout, which the stdio transport owns.
+
+**Steps.** Start a headless run that polls every five seconds and serves
+REST, wait for a reading, and read it. Then stop the run. This example listens
+for HEP on `127.0.0.1:9061` as its live source:
+
+```bash
+# Run all of these, in order.
+sipnab -N -L 127.0.0.1:9061 --rtpengine-control 127.0.0.1:22222 --relay-stats-interval 5 --api 127.0.0.1:8091 --api-key s3cret > /dev/null 2>&1 &
+sleep 8
+curl -s -H "Authorization: Bearer s3cret" http://127.0.0.1:8091/v1/relay/stats/polled | jq '{outcome, relay, origin, interval_secs, age_secs}'
+curl -s -H "Authorization: Bearer s3cret" http://127.0.0.1:8091/v1/relay/stats/polled | jq '.statistics[] | select(.name | endswith("sessionsown"))'
+kill $!
+```
+
+**Verify.** The first `curl` prints the reading's header:
+
+```json
+{
+  "outcome": "ok",
+  "relay": "rtpengine at 127.0.0.1:22222",
+  "origin": "polled",
+  "interval_secs": 5,
+  "age_secs": 2
+}
+```
+
+The second prints one of the relay's counters, with its tier:
+
+```json
+{
+  "name": "statistics.currentstatistics.sessionsown",
+  "value": "0",
+  "tier": "relay_reported"
+}
+```
+
+- `outcome` is `ok` once the poll has obtained a reading.
+- `age_secs` stays below `interval_secs` while the relay answers.
+- An agent calls `relay_stats_polled` with no arguments and gets the same
+  fields.
+
+**Troubleshoot.**
+
+- **`"outcome": "not_polling"`.** The run was not started with
+  `--relay-stats-interval`, or it is a terminal-interface run: the TUI polls
+  only while its relay view is open, and keeps those readings to itself.
+- **`"outcome": "no_reading_yet"` with a `last_poll` of `unreachable`.**
+  Nothing answers at `--rtpengine-control`. Give it rtpengine's `listen-ng`
+  address. The run's log says `did not answer the polled statistics request`.
+- **`age_secs` keeps growing past `interval_secs`, beside a `last_poll`.**
+  The poll still runs, and the relay stopped answering after the reading
+  shown. The reading stays until a newer one replaces it.
+- **The run exits with `--relay-stats-interval will not poll a relay on a run
+  that reads a file`.** `-I` cannot poll, because polling transmits. Use a
+  live source.
+
+The reference entries are
+[`GET /v1/relay/stats/polled`](rest-api.md#get-v1relaystatspolled) and
+[`relay_stats_polled`](mcp-tools-relay.md#relay_stats_polled).
 
 ## Use the terminal UI
 

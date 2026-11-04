@@ -338,6 +338,83 @@ three opt-ins: it decodes a relay control message already in the capture
 The [relay tool reference](@/docs/mcp-tools-relay.md) gives each tool's full
 response.
 
+## Read the newest poll without asking again
+
+A dashboard or an agent can read the relay's counters without asking the
+relay itself. A headless run started with `--relay-stats-interval` keeps its
+newest reading, and serves it on `GET /v1/relay/stats/polled` and the MCP tool
+`relay_stats_polled`. Only that run's poll talks to rtpengine, however many
+readers there are.
+
+**Prerequisites.** Those in [Before you start](#before-you-start), with two
+differences:
+
+- Reading sends nothing to the relay. It needs no `--api-allow-relay-query` or
+  `--mcp-allow-relay-query`. The poll itself is the operator's, on the command
+  line.
+- Serve MCP over HTTP (`--mcp --mcp-transport http`) on the polling run. Over
+  stdio, sipnab refuses `--relay-stats-interval`, because it prints each
+  reading to stdout, which the stdio transport owns.
+
+**Steps.** Start a headless run that polls every five seconds and serves
+REST, wait for a reading, and read it. Then stop the run. This example listens
+for HEP on `127.0.0.1:9061` as its live source:
+
+```bash
+# Run all of these, in order.
+sipnab -N -L 127.0.0.1:9061 --rtpengine-control 127.0.0.1:22222 --relay-stats-interval 5 --api 127.0.0.1:8091 --api-key s3cret > /dev/null 2>&1 &
+sleep 8
+curl -s -H "Authorization: Bearer s3cret" http://127.0.0.1:8091/v1/relay/stats/polled | jq '{outcome, relay, origin, interval_secs, age_secs}'
+curl -s -H "Authorization: Bearer s3cret" http://127.0.0.1:8091/v1/relay/stats/polled | jq '.statistics[] | select(.name | endswith("sessionsown"))'
+kill $!
+```
+
+**Verify.** The first `curl` prints the reading's header:
+
+```json
+{
+  "outcome": "ok",
+  "relay": "rtpengine at 127.0.0.1:22222",
+  "origin": "polled",
+  "interval_secs": 5,
+  "age_secs": 2
+}
+```
+
+The second prints one of the relay's counters, with its tier:
+
+```json
+{
+  "name": "statistics.currentstatistics.sessionsown",
+  "value": "0",
+  "tier": "relay_reported"
+}
+```
+
+- `outcome` is `ok` once the poll has obtained a reading.
+- `age_secs` stays below `interval_secs` while the relay answers.
+- An agent calls `relay_stats_polled` with no arguments and gets the same
+  fields.
+
+**Troubleshoot.**
+
+- **`"outcome": "not_polling"`.** The run was not started with
+  `--relay-stats-interval`, or it is a terminal-interface run: the TUI polls
+  only while its relay view is open, and keeps those readings to itself.
+- **`"outcome": "no_reading_yet"` with a `last_poll` of `unreachable`.**
+  Nothing answers at `--rtpengine-control`. Give it rtpengine's `listen-ng`
+  address. The run's log says `did not answer the polled statistics request`.
+- **`age_secs` keeps growing past `interval_secs`, beside a `last_poll`.**
+  The poll still runs, and the relay stopped answering after the reading
+  shown. The reading stays until a newer one replaces it.
+- **The run exits with `--relay-stats-interval will not poll a relay on a run
+  that reads a file`.** `-I` cannot poll, because polling transmits. Use a
+  live source.
+
+The reference entries are
+[`GET /v1/relay/stats/polled`](@/docs/api.md#get-v1-relay-stats-polled) and
+[`relay_stats_polled`](@/docs/mcp-tools-relay.md#relay-stats-polled).
+
 ## Use the terminal UI
 
 Start the TUI with the relay's control address, on a live source:

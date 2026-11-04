@@ -203,7 +203,7 @@ speculated about.
 
 `capture_live_fanout` gives every socket the same `tx`
 ([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), and there is one receiver: the
-`rx.recv_timeout` at [`batch.rs:2121`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2121). So the shape is
+`rx.recv_timeout` at [`batch.rs:2159`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2159). So the shape is
 N producers, one consumer, one pair of stores, one sweep.
 
 **It buys N rings and N drainers.** The overflow CT2 describes is per-socket:
@@ -228,7 +228,7 @@ distinguishable by instruments that already exist:
 |---|---|
 | `kernel_dropped` rising, queue depth low, backpressure blocks ~0 | drainer-bound — fanout is the right fix |
 | `kernel_dropped` rising, queue at capacity, backpressure blocks climbing | processor-bound — fanout buys nothing and section 4 is the only path |
-| `interface_dropped` rising | neither; the NIC discarded before libpcap, and no userspace change recovers it ([`server.rs:1694`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1694)) |
+| `interface_dropped` rising | neither; the NIC discarded before libpcap, and no userspace change recovers it ([`server.rs:1717`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1717)) |
 
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total`
@@ -237,10 +237,10 @@ distinguishable by instruments that already exist:
 instrument, fed from `CaptureMeter`
 ([`channel.rs:68-86`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L68-L86)), and they are scrapeable
 from a headless run — `start_servers` is called with `metrics: true` and the
-real meter from [`batch.rs:1861-1879`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1861-L1879).
+real meter from [`batch.rs:1899-1917`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1899-L1917).
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:9367`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9367)),
+`capture_health` MCP response ([`server.rs:9390`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9390)),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports
@@ -279,7 +279,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
 Point 3 transfers verbatim to a live worker pool, and it is the one that should
 stop anyone from treating this as CT4's sequel. The live loop already sweeps
 every five seconds of capture time
-([`batch.rs:2083-2093`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2083-L2093)) against one `SweepClock` fed by
+([`batch.rs:2121-2131`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2121-L2131)) against one `SweepClock` fed by
 every packet the single receiver saw. Give each of N workers its own clock and
 the orphan/compaction verdict becomes a function of how the kernel hashed the
 flows. That is a wrong answer that renders as a normal report.

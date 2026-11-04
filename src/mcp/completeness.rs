@@ -152,6 +152,10 @@ pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
     // `relay_compare` is deliberately NOT here -- it reads the capture store for
     // its `sipnab_measured` side, so its answer does move with the load.
     "relay_stats",
+    // The newest reading of those counters that this run's own
+    // --relay-stats-interval poll obtained: still the relay's statement about
+    // itself, held in the poll's store, not in the capture store.
+    "relay_stats_polled",
     // Answer from the TFPS peer, not from the capture store, for the
     // reason `query_relay` gives: how much of the capture has been read
     // says nothing about what another process holds.

@@ -1627,7 +1627,15 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // what the gate covers in rest-api.md. The how-to's renamed anchor
     // changed two existing links and no count. Every other page held its
     // count.
-    const EXPECTED_WIKI_LINKS: usize = 2237;
+    // 2237 -> 2247 (feat/surface-relay-polled, the polled relay reading and
+    // its how-to): cli-reference.md +1 (the `--relay-stats-interval` row's
+    // how-to), mcp-tools-relay.md +2 (the `relay_stats_polled` row and the
+    // how-to), mcp-tools.md +2 (its index row), relay-statistics.md +3 (the
+    // how-to's links to Before you start, the route and the tool), rest-api.md
+    // +1 (the how-to) and rtpengine.md +1 (to the route). Counted per page
+    // against origin/main 706e0e087; the train's other pages held their
+    // counts.
+    const EXPECTED_WIKI_LINKS: usize = 2247;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

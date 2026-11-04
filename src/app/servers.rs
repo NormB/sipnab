@@ -723,6 +723,11 @@ pub fn start_servers(
                 } else {
                     None
                 },
+                // What this run's own --relay-stats-interval poll obtained.
+                // Reading it transmits nothing, so it is not behind the permit.
+                polled: Some(std::sync::Arc::clone(
+                    crate::output::relay_polled::PolledStore::global(),
+                )),
             },
             // The SAME engine the MCP arm below is handed, so both doors read
             // one findings ring. `armed_detections` comes from Selection for the
@@ -917,6 +922,12 @@ pub fn start_servers(
             // seam declares what a control message is; this says which protocol
             // speaks it, so no layer above has to know.
             let s = s.with_control_decoder(std::sync::Arc::new(crate::rtpengine::NgControlDecoder));
+            // What this run's own --relay-stats-interval poll obtained, read by
+            // `relay_stats_polled`. Not behind the permit: reading it
+            // transmits nothing.
+            let s = s.with_relay_polled(std::sync::Arc::clone(
+                crate::output::relay_polled::PolledStore::global(),
+            ));
             let s = match (
                 cli.mcp_args.mcp_allow_relay_query,
                 relay_query_permit,

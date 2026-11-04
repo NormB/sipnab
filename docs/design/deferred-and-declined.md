@@ -286,15 +286,15 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:8552`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8552)) writes a pcap, `export_audio`
-([`server.rs:8579`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8579)) writes a WAV, `list_captures`
-([`server.rs:8298`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8298)) reads a directory, and
-`shutdown_server` ([`server.rs:9070`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9070)) ends the process.
+([`server.rs:8575`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8575)) writes a pcap, `export_audio`
+([`server.rs:8602`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8602)) writes a WAV, `list_captures`
+([`server.rs:8321`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8321)) reads a directory, and
+`shutdown_server` ([`server.rs:9093`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9093)) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
 `crate::signals::request_shutdown()`
-([`server.rs:2263`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2263)) — the same flag SIGTERM sets. The
+([`server.rs:2286`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2286)) — the same flag SIGTERM sets. The
 rule as written is intact, unqualified, across every tool. It does not need an
 exception because nothing has taken one.
 
@@ -336,17 +336,17 @@ guards, each visible in the code:
 
 1. **Off unless armed.** `allow_shutdown: bool`
    ([`server.rs:57`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L57)) is `false` in `new()`
-   ([`server.rs:1012`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1012)) and only set by `with_shutdown()`
-   ([`server.rs:1012`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1012)), which `servers.rs` calls only
+   ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)) and only set by `with_shutdown()`
+   ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)), which `servers.rs` calls only
    when `cli.mcp_allow_shutdown` is set
    ([`servers.rs:258-262`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L258-L262)). Refusal is the first
-   statement of the handler ([`server.rs:2201`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2201)).
+   statement of the handler ([`server.rs:2224`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2224)).
 2. **Dry run by default.** `params.dry_run.unwrap_or(true)`
-   ([`server.rs:2212`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2212)) — an agent that omits the
+   ([`server.rs:2235`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2235)) — an agent that omits the
    argument gets a report.
 3. **The destructive path must be named.** An unsaved live capture is refused
    unless `save_to` or `discard_unsaved=true`
-   ([`server.rs:2243-2252`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2243-L2252)).
+   ([`server.rs:2266-2275`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2266-L2275)).
 4. **The blast radius is bounded and legible.** The process either exists or it
    does not; there is no partially-shut-down state to misread. And a live
    capture is the only thing that can be lost, which is exactly what guard 3
@@ -369,7 +369,7 @@ and it is not incidental — it is the tool working:
 - `DialogSummary.from_user` / `to_user`
   ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:5842`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5842)) returns the parsed
+- `get_message` ([`server.rs:5865`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5865)) returns the parsed
   message through `message_to_json_value`. Until 0.5.159 the phrasing here was
   *"headers and body included"*, and measured against 0.5.130 that was false:
   the projection had a closed field list and no headers map, so a `Diversion`
@@ -377,7 +377,7 @@ and it is not incidental — it is the tool working:
   gap — `extension_headers` now carries every header outside that closed list,
   in wire form — so the sentence is true today, and it is worth recording that
   a threat-model section leaned on it for a release in which it was not.
-- `search_messages` ([`server.rs:6300`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6300)) returns
+- `search_messages` ([`server.rs:6323`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6323)) returns
   `snippet`, built as
   `truncate_string(&String::from_utf8_lossy(&msg.raw), MAX_BODY_BYTES)` — the
   raw bytes off the wire.
@@ -404,7 +404,7 @@ agent reads it verbatim through any of the three tools above; and with a
 write-back tool present, the text it reads can reach a verb that changes what
 the operator sees. Today the worst that text can reach is a read, a file write
 confined to `--mcp-file-root` by `resolve_in_root`
-([`server.rs:1154`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1154)), or — only if armed, only on a
+([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177)), or — only if armed, only on a
 second call, only having named the discard — a process stop. That is a
 qualitative gap, not a matter of degree.
 
@@ -416,7 +416,7 @@ and collectively they are the whole problem, because the operator's screen is
 the tool's output and every one of them edits it.
 
 Concretely: `--api` and `--mcp` share the same `Arc<RwLock<DialogStore>>`, on
-the same server thread — [`batch.rs:924-932`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L924-L932) starts both
+the same server thread — [`batch.rs:943-970`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L943-L970) starts both
 with `Selection { api: true, mcp: true }`, and the comment above it states *"They
 read the SAME stores the packet loop writes to."* Every REST route is a `GET`
 ([`api.rs:204-211`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L211)); there is no mutating verb anywhere
@@ -698,14 +698,14 @@ state — needs the same opt-in treatment as shutdown."*
 a flag ([`cli.rs:1019-1032`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1019-L1032)), an off-by-default field
 ([`server.rs:70`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L70)), a builder
 ([`server.rs:207`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L207)) and a first-statement refusal
-([`server.rs:2709`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2709)). Copying that shape costs almost
+([`server.rs:2732`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2732)). Copying that shape costs almost
 nothing.
 
 **The path-confinement problem is solved.** The roadmap's other Tier 3 entry,
 `list_captures`, was filed with *"needs a path allowlist or it is an
-arbitrary-file-read"*. It shipped ([`server.rs:1154`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1154))
+arbitrary-file-read"*. It shipped ([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177))
 with `--mcp-file-root` and `resolve_in_root`
-([`server.rs:1154`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1154)), which accepts a bare filename and
+([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177)), which accepts a bare filename and
 rejects anything with a separator, a `..`, a root prefix or a drive letter before
 touching the filesystem. So an agent can already *see* the corpus, safely, and
 `open_capture` would need no new security machinery.
@@ -750,7 +750,7 @@ documents *"the tool server; cloned per HTTP session"* and
 built once at startup ([`servers.rs:224-249`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L224-L249)) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
 argument ([`cli.rs:1363-1365`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1363-L1365)). So after an `open_capture`,
-`capture_status` ([`server.rs:6682`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6682)) would keep naming
+`capture_status` ([`server.rs:6705`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6705)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
@@ -830,7 +830,7 @@ decision was taken, not as it stands now:
    a `SipnabMcp` cloned per HTTP session
    ([`transport.rs:192`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L192)). Until it moves behind
    a shared lock, a swap leaves `capture_status`
-   ([`server.rs:6682`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6682)) naming the old file in the
+   ([`server.rs:6705`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6705)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
    ([`dialog_store.rs:1202`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1202)) is bumped by every
@@ -845,8 +845,8 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:9070`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9070)), and `--mcp-file-root` with
-`resolve_in_root` ([`server.rs:1114`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1114)).
+([`server.rs:9093`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9093)), and `--mcp-file-root` with
+`resolve_in_root` ([`server.rs:1137`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1137)).
 
 **What shipped**, against those three:
 

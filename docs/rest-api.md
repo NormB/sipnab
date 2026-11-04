@@ -5092,6 +5092,38 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   http://127.0.0.1:8080/v1/relay/stats | jq .
 ```
 
+### GET /v1/relay/stats/polled
+
+The newest reading of the relay's global counters that this run's own
+`--relay-stats-interval` poll obtained, tiered `relay_reported`.
+
+- It sends nothing to the relay. It needs no `--api-allow-relay-query`.
+- Starting a poll is CLI only: a headless run started with
+  `--rtpengine-control` and `--relay-stats-interval` polls, and this route
+  reads what that poll obtained.
+- The reading has the form `GET /v1/relay/stats` returns, with `origin:
+  "polled"`, `interval_secs`, `obtained_at` and `age_secs`, the seconds since
+  the relay answered.
+
+`outcome` is one of three values:
+
+- `ok` with the reading,
+- `no_reading_yet` when the poll runs and has obtained nothing,
+- `not_polling` when this run does not poll.
+
+`last_poll` names the newest attempt (`unreachable` or `suspect`, with `at`
+and `detail`) when it failed after the reading it sits beside. A reader that
+sees `age_secs` grow while `last_poll` is present is reading a poll that has
+stopped getting answers.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/relay/stats/polled | jq '{outcome, age_secs, interval_secs}'
+```
+
+The MCP tool `relay_stats_polled` returns the same fields and values. [Read the newest poll without asking again](relay-statistics.md#read-the-newest-poll-without-asking-again)
+walks through it.
+
 ### GET /v1/relay/stats/names
 
 Which statistics the relay knows.

@@ -323,6 +323,9 @@ fn schema_probes(call_id: &str) -> Vec<(&'static str, Value)> {
         // The test server holds no mapping, so the rows are empty; the counts,
         // the status summary and the identity are what the schema must cover.
         ("th_mappings", json!({})),
+        // The test server runs no poll, so this is the `not_polling` shape,
+        // whose `detail` the schema must describe.
+        ("relay_stats_polled", json!({})),
         ("find_correlated", json!({"call_id": call_id})),
         // One second, and the filter is allowed to match nothing: the
         // deadline path is a SUCCESSFUL answer, so it exercises the same

@@ -2208,8 +2208,10 @@ pub struct RtpArgs {
     /// the cadence rather than stacking outstanding requests. Each polled
     /// reading says it was polled and names the interval. CLI only: a poll is a
     /// standing instruction to transmit, and over REST or MCP the caller who
-    /// starts one does not own the host it keeps transmitting from. Same
-    /// live-source gate as `--relay-stats`.
+    /// starts one does not own the host it keeps transmitting from. The newest
+    /// reading is readable over REST `GET /v1/relay/stats/polled` and the MCP
+    /// tool `relay_stats_polled`, which send nothing. Same live-source gate as
+    /// `--relay-stats`.
     #[arg(
         help_heading = "RTP",
         long = "relay-stats-interval",
@@ -3253,7 +3255,9 @@ pub struct ListenerArgs {
     /// names -- never one a client chooses. Without this flag the relay routes
     /// answer `not_permitted`; without `--rtpengine-control`, or on a run
     /// reading a file, they answer `not_configured` / `not_permitted` and say
-    /// which is missing. Polling is not offered over REST at all.
+    /// which is missing. Starting a poll is not offered over REST;
+    /// `GET /v1/relay/stats/polled` reads what this run's
+    /// `--relay-stats-interval` poll obtained, sends nothing and needs no flag.
     #[arg(help_heading = "Network listeners", long = "api-allow-relay-query")]
     pub api_allow_relay_query: bool,
 
@@ -8541,9 +8545,11 @@ impl Cli {
             return Err(crate::Error::CliValidation(refusal));
         }
 
-        // MCP mode owns stdout (JSON-RPC wire); reject any flag
-        // combination that would also try to write to stdout.
-        if self.mcp_args.mcp {
+        // MCP on stdio owns stdout (the JSON-RPC wire); reject any flag
+        // combination that would also try to write to stdout. Over HTTP the
+        // wire is a socket and stdout is free, so `mcp_owns_stdout`, the rule
+        // `normalize` sets `-N` from, decides, not `--mcp` alone.
+        if self.mcp_owns_stdout() {
             // No `!no_tui` refusal here: `normalize` sets it, which is what
             // "Implies --no-tui" means. The stdout conflicts below are a
             // different question -- those flags would write to the wire MCP
@@ -9351,6 +9357,35 @@ mod tests {
                 "the refusal must name {flag}: {e}"
             );
         }
+        Ok(())
+    }
+
+    /// Over the HTTP transport the wire is a socket, not stdout, so a flag
+    /// that writes its answer to stdout is not refused beside `--mcp`. The
+    /// refusal reads `mcp_owns_stdout`, the rule `normalize` uses for `-N`.
+    /// Before, it read `--mcp` alone and refused an HTTP server's
+    /// `--relay-stats-interval` with "--mcp uses stdout for the JSON-RPC
+    /// wire", which is false on HTTP, so no headless run could both poll the
+    /// relay and serve MCP.
+    #[test]
+    fn a_stdout_writing_flag_is_allowed_beside_mcp_over_http()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let argv = [
+            "sipnab",
+            "-N",
+            "-I",
+            "capture.pcap",
+            "--rtpengine-control",
+            "127.0.0.1:22222",
+            "--relay-stats-interval",
+            "5",
+            "--mcp",
+            "--mcp-transport",
+            "http",
+        ];
+        Cli::try_parse_from_args(argv)?
+            .validate()
+            .map_err(|e| format!("an HTTP MCP server does not own stdout: {e}"))?;
         Ok(())
     }
 

@@ -78,7 +78,7 @@ Verification:
 **Severity:** High when HEP and scanner-kill are combined; Medium for HEP-only deployments  
 **CWE:** CWE-345 (Insufficient Verification of Data Authenticity), CWE-940 (Improper Verification of Source of a Communication Channel), CWE-406 (Insufficient Control of Network Message Volume / reflection)  
 **Impact framing:** the active-response primitive is a single, rate-limited, spoofed SIP/UDP packet reflected at an attacker-chosen address — packet reflection plus telemetry poisoning, *not* SSRF in the fetch-an-internal-resource sense (no response is read back and no internal service is reached).  
-**Affected code:** [`src/capture/hep.rs:788-889`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L788-L889), [`src/capture/hep.rs:202-340`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L202-L340), [`src/app/batch.rs:1264-1311`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1264-L1311), [`src/process_isolation.rs:479-578`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L479-L578)
+**Affected code:** [`src/capture/hep.rs:788-889`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L788-L889), [`src/capture/hep.rs:202-340`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L202-L340), [`src/app/batch.rs:1302-1349`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1302-L1349), [`src/process_isolation.rs:479-578`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L479-L578)
 
 The HEP listener receives UDP datagrams.
 

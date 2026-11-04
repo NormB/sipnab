@@ -4318,9 +4318,13 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // OpenSIPS topology-hiding mappings the store holds. It reads and changes
     // nothing, so the split moves to 65 read-only of 78 and the thirteen
     // write-capable tools are unchanged.
+    // 78 -> 79 by `relay_stats_polled` (src/mcp/tools/relay.rs), which returns
+    // the newest reading of this run's own --relay-stats-interval poll. It
+    // sends nothing and changes nothing, so the split moves to 66 read-only
+    // of 79 and the thirteen write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        78,
+        79,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -5853,7 +5857,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // listeners, what a client sees), docs/troubleshooting.md +2 (live
     // capture causes, listener answers), and the site mirror of each, +4, +4,
     // +2 and +2. No other changed page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1361;
+    // 1361 -> 1362: docs/design/surface-capability-matrix.md +1, the "Read
+    // the latest polled relay reading" row, which has no mirror.
+    const EXPECTED_TABLES: usize = 1362;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

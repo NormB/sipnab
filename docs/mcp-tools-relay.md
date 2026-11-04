@@ -17,6 +17,7 @@ the three tools that transmit in use, with the server they need.
 | [`decode_ng`](#decode_ng) | `frame_ref` | Decodes the relay control message one pointer names: the command, the call, whether it carries SDP, and which delivery path carried it |
 | [`query_relay`](#query_relay) | `call_id?`, `max_calls?` | **Transmits.** Asks the configured relay what it holds right now. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
 | [`relay_stats`](#relay_stats) | `call_id?`, `names_only?` | **Transmits.** Asks the configured relay for its own counters (global, per-call, or the names it knows), tiered `relay_reported`. Same opt-in and live-source gate as `query_relay` |
+| [`relay_stats_polled`](#relay_stats_polled) | -- | The newest reading of the relay's own counters that this run's `--relay-stats-interval` poll obtained, with its age. Sends nothing; needs no opt-in |
 | [`relay_compare`](#relay_compare) | `call_id` | **Transmits.** Sets the relay's per-call RTP count beside sipnab's measured count, both tiers named and a word verdict, never a sum. Same gate as `query_relay` |
 
 
@@ -201,6 +202,48 @@ A `names_only` answer carries `names`, a `names_source` (`listed` when the relay
 enumerated them, `probed` when they are the names that did not refuse) and a
 `names_note` stating how sipnab determined the set -- so a probed set is never
 read as a definitive enumeration.
+
+### `relay_stats_polled`
+
+**Sends nothing.** It returns the newest reading of the relay's global
+counters that this run's own `--relay-stats-interval` poll obtained. Starting a
+poll stays the operator's, on the command line: a poll is a standing
+instruction to transmit, and an agent does not own the host it would transmit
+from. Reading what the poll already obtained needs no `--mcp-allow-relay-query`.
+
+It takes no parameters. `outcome` is one of three values:
+
+- `ok`: the reading, with `relay`, `obtained_at`, `origin: "polled"`,
+  `interval_secs`, `age_secs` (seconds since the relay answered),
+  `statistics` with each value's tier, and `refusals`.
+- `no_reading_yet`: the poll runs and has obtained nothing, with
+  `interval_secs`.
+- `not_polling`: this run does not poll, with a `detail` naming what starts
+  one.
+
+`last_poll` names the newest attempt (`unreachable` or `suspect`, with `at` and
+`detail`) when it failed after the reading. An `age_secs` that keeps growing
+beside a `last_poll` is a poll that has stopped getting answers.
+
+```jsonc
+// relay_stats_polled {}
+{
+  "age_secs": 3,
+  "interval_secs": 5,
+  "obtained_at": "2026-11-03T12:00:00Z",
+  "origin": "polled",
+  "outcome": "ok",
+  "refusals": [],
+  "relay": "rtpengine at 127.0.0.1:22222",
+  "statistics": [
+    { "name": "currentstatistics.sessionsown", "tier": "relay_reported", "value": "0" }
+  ]
+}
+```
+
+`GET /v1/relay/stats/polled` returns the same fields and values.
+[Read the newest poll without asking again](relay-statistics.md#read-the-newest-poll-without-asking-again)
+walks through it.
 
 ### `relay_compare`
 
