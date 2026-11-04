@@ -1598,6 +1598,45 @@ mod tests {
         fn(&mut ratatui::Frame, Rect, &App) -> Result<(), TestError>,
     );
 
+    /// Popups whose entry point is compiled in this build but can never open.
+    ///
+    /// `render_archive_password_popup` keeps its signature in every build so
+    /// the `Popup` dispatch is the same everywhere, and without the `archive`
+    /// feature its body is empty: nothing can open `Popup::ArchivePassword`
+    /// and there is no question to draw. Its row in `popup_renders` cannot
+    /// even be built there, so that row is gated on `archive` too.
+    ///
+    /// The table coverage gate and the overlay count both read THIS list.
+    /// Before it existed, the overlay count subtracted one by hand for
+    /// `archive` and the coverage gate did not, so the coverage gate failed in
+    /// every TUI build without `archive` -- the default feature set among
+    /// them -- and no CI step ran it there.
+    /// `every_popup_left_out_of_the_table_draws_nothing` holds each name here
+    /// to the claim that it draws nothing.
+    fn inert_in_this_build() -> &'static [&'static str] {
+        if cfg!(feature = "archive") {
+            &[]
+        } else {
+            &["archive_password"]
+        }
+    }
+
+    /// The entry point of an inert popup, so its emptiness can be proven.
+    fn inert_render(name: &str) -> Option<fn(&mut ratatui::Frame, Rect, &App)> {
+        match name {
+            "archive_password" => Some(render_archive_password_popup),
+            _ => None,
+        }
+    }
+
+    /// The body of `render_{name}_popup` in `src`: from its `fn` line to the
+    /// closing brace rustfmt puts in column 0.
+    fn entry_point_body<'s>(src: &'s str, name: &str) -> Option<&'s str> {
+        let start = src.find(&format!("pub(in crate::tui) fn render_{name}_popup("))?;
+        let len = src[start..].find("\n}\n")?;
+        Some(&src[start..start + len])
+    }
+
     fn popup_renders() -> Vec<Overlay> {
         vec![
             ("save", |f, a, app| {
@@ -1733,6 +1772,16 @@ mod tests {
             .collect();
         let covered: Vec<&str> = popup_renders().iter().map(|(n, _)| *n).collect();
 
+        // A name that is inert here and still has a row is a stale list: the
+        // row proves the popup can be drawn in this build.
+        for name in inert_in_this_build() {
+            assert!(
+                !covered.contains(name),
+                "{name} is listed as inert in this build and the table renders \
+                 it, so the list is stale. Covered: {covered:?}"
+            );
+        }
+
         assert!(
             exposed.len() >= 5,
             "only {} popup entry point(s) found; the scan is wrong: \
@@ -1741,11 +1790,41 @@ mod tests {
         );
         for name in &exposed {
             let stem = name.trim_end_matches("_popup");
+            if inert_in_this_build().contains(&stem) {
+                continue;
+            }
             assert!(
                 covered.contains(&stem),
                 "render_{name} is a popup and no row of the table renders it, \
                  so nothing checks that it shows its exit key. Covered: \
                  {covered:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A popup left out of the table really draws nothing in this build.
+    ///
+    /// The negative control for `inert_in_this_build`. Leaving a popup out of
+    /// the exit-key gate is honest only while it cannot show a user anything;
+    /// one that starts drawing must get a row, and this is what says so.
+    #[test]
+    fn every_popup_left_out_of_the_table_draws_nothing() -> Result<(), TestError> {
+        let app = App::new_test();
+        for name in inert_in_this_build() {
+            let render = inert_render(name)
+                .ok_or_else(|| format!("inert_render has no entry point for {name}"))?;
+            let mut terminal = Terminal::new(TestBackend::new(120, 40))?;
+            terminal.draw(|frame| {
+                let area = frame.area();
+                render(frame, area, &app);
+            })?;
+            let text = frame_text(terminal.backend().buffer())?;
+            assert!(
+                text.trim().is_empty(),
+                "the {name} popup is left out of the table as inert in this \
+                 build, and it drew something. Give it a row in \
+                 popup_renders.\n{text}"
             );
         }
         Ok(())
@@ -1909,10 +1988,14 @@ mod tests {
             let production = src.split("\nmod tests {").next().unwrap_or(src);
             overlays += production.matches("frame.render_widget(Clear").count();
         }
-        // The archive password popup's overlay is compiled only with the
-        // `archive` feature, and so is its row in the table.
-        if !cfg!(feature = "archive") {
-            overlays -= 1;
+        // An inert popup's overlay is in the source text and not in this
+        // build, and neither is its row in the table. Its own `Clear` calls
+        // are counted out, not a constant, so a second inert popup cannot be
+        // miscounted.
+        for name in inert_in_this_build() {
+            let body = entry_point_body(include_str!("popups.rs"), name)
+                .ok_or_else(|| format!("no entry point found for the inert popup {name}"))?;
+            overlays -= body.matches("frame.render_widget(Clear").count();
         }
         let covered = every_overlay().len();
         assert!(
