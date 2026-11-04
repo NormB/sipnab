@@ -33,7 +33,7 @@ pub struct CorrelatedLeg {
     #[cfg_attr(feature = "api", schema(minimum = 0, maximum = 100))]
     pub score: u8,
     /// Which strategy matched, by name: `session_id`, `th_callid_decoded`,
-    /// `x_call_id`, `sdp_origin`, `charging_vector_related_icid`,
+    /// `th_callid_mapping`, `x_call_id`, `sdp_origin`, `charging_vector_related_icid`,
     /// `charging_vector_icid`, `via_branch` or `timing_heuristic`. The
     /// decisive field.
     ///
@@ -47,7 +47,8 @@ pub struct CorrelatedLeg {
     /// two. `timing_heuristic` is not an identifier at all.
     pub strategy: String,
     /// How the link was made: `decoded` (an OpenSIPS topology-hiding Call-ID
-    /// decoded with the configured secret), `header` (a SIP header both legs
+    /// decoded with the configured secret), `mapping` (an OpenSIPS
+    /// `E_SIPNAB_TH_MAP` event named both legs), `header` (a SIP header both legs
     /// carry: a header named in `[sip] xcid_headers`, `Session-ID`,
     /// `P-Charging-Vector` or a Via branch), `sdp` (the SDP origin) or
     /// `timing` (the guess).
@@ -65,6 +66,11 @@ pub struct CorrelatedLeg {
     /// a quiet box and a 1,900 ms gap on a busy SBC score identically and mean
     /// very different things.
     pub observed_gap_ms: Option<i64>,
+    /// This leg's own OpenSIPS topology-hiding status: `decoded`,
+    /// `no_secret`, `undecodable`, `unmatched`, `mapped` or `conflict`, as
+    /// the answer's top-level `th_callid` reports for the source. Null when
+    /// the leg is not a hidden leg.
+    pub th_callid: Option<crate::sip::dialog_store::ThCallidStatus>,
 }
 
 /// The other legs of one call, with the source it was asked about.
@@ -85,9 +91,11 @@ pub struct Correlated {
     pub heuristic_only: bool,
     /// When the source is the callee-side leg of an OpenSIPS
     /// `topology_hiding("C")` call: `decoded`, `no_secret` (no secret
-    /// configured), `undecodable` (the secret or prefix does not decode it) or
+    /// configured), `undecodable` (the secret or prefix does not decode it),
     /// `unmatched` (decoded, but no observed leg has that Call-ID and From
-    /// tag). Null when the source is not a hidden leg.
+    /// tag), `mapped` (an `E_SIPNAB_TH_MAP` event joined it) or `conflict`
+    /// (two events disagree about it). Null when the source is not a hidden
+    /// leg.
     pub th_callid: Option<crate::sip::dialog_store::ThCallidStatus>,
     /// WHICH capture this answer came from, and which revision of its
     /// stores, stamped under the locks the answer was built with. A
@@ -142,6 +150,7 @@ pub fn correlated(
                 method: r.reason.method().to_string(),
                 identifier_match,
                 observed_gap_ms,
+                th_callid: ds.th_callid_status(&r.dialog.call_id),
             }
         })
         .collect();
@@ -184,12 +193,16 @@ pub fn render(answer: &Correlated, format: ReportFormat) -> String {
                 .to_string(),
                 leg.observed_gap_ms
                     .map_or_else(|| "-".to_string(), |ms| ms.to_string()),
+                leg.th_callid
+                    .map_or_else(|| "-".to_string(), |s| s.as_str().to_string()),
             ]
         })
         .collect();
     out.push_str(&super::table(
         format,
-        &["Leg", "Strategy", "Method", "Score", "Match", "Gap ms"],
+        &[
+            "Leg", "Strategy", "Method", "Score", "Match", "Gap ms", "TH",
+        ],
         &rows,
     ));
     if answer.total_matched > answer.legs.len() {
@@ -296,6 +309,58 @@ mod tests {
         assert!(
             render(&a, ReportFormat::Text).contains("Topology hiding: no_secret"),
             "the text report names a hidden leg with no secret configured"
+        );
+        Ok(())
+    }
+
+    /// Each correlated leg carries its OWN topology-hiding status, so an answer
+    /// asked from the caller side says which listed leg is the hidden one and
+    /// whether it decoded, on REST, `--correlate` and MCP alike.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn each_leg_names_its_own_th_status() -> Result<(), Box<dyn std::error::Error>> {
+        let (ds, caller, hidden) = crate::test_utils::th_hidden_call_store("right", Some("right"))?;
+        let b = correlated(&ds, &caller, 10, None).ok_or("caller leg known")?;
+        let leg = b
+            .legs
+            .iter()
+            .find(|l| l.call_id == hidden)
+            .ok_or("hidden leg listed")?;
+        assert_eq!(
+            leg.th_callid.map(|s| s.as_str()),
+            Some("decoded"),
+            "the hidden leg reports its own status"
+        );
+        let v = serde_json::to_value(&b)?;
+        let row = v["legs"]
+            .as_array()
+            .and_then(|a| a.iter().find(|l| l["call_id"] == hidden.as_str()))
+            .ok_or("hidden leg in JSON")?;
+        assert_eq!(row["th_callid"], "decoded", "{v}");
+        let text = render(&b, ReportFormat::Text);
+        assert!(
+            text.lines()
+                .any(|l| l.split_whitespace().any(|w| w == "TH")),
+            "the table has a TH column: {text}"
+        );
+        let row = text
+            .lines()
+            .find(|l| l.contains(hidden.as_str()))
+            .ok_or("the hidden leg has a row")?;
+        assert_eq!(
+            row.split_whitespace().last(),
+            Some("decoded"),
+            "the hidden leg's row ends with its own status, the TH column: {row}"
+        );
+        let a = correlated(&ds, &hidden, 10, None).ok_or("hidden leg known")?;
+        let caller_leg = a
+            .legs
+            .iter()
+            .find(|l| l.call_id == caller)
+            .ok_or("caller leg")?;
+        assert!(
+            caller_leg.th_callid.is_none(),
+            "the caller leg is not hidden, so it has no status"
         );
         Ok(())
     }

@@ -317,7 +317,7 @@ AssertWithoutMessage	tests/actions_cli_test.rs	2
 AssertWithoutMessage	tests/actions_config_test.rs	15
 AssertWithoutMessage	tests/actions_governor_test.rs	4
 AssertWithoutMessage	tests/actions_journal_mcp_test.rs	4
-AssertWithoutMessage	tests/actions_journal_rest_test.rs	15
+AssertWithoutMessage	tests/actions_journal_rest_test.rs	14
 AssertWithoutMessage	tests/actions_ledger_test.rs	26
 AssertWithoutMessage	tests/actions_optin_rest_test.rs	1
 AssertWithoutMessage	tests/actions_recovery_test.rs	36

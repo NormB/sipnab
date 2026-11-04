@@ -463,15 +463,10 @@ whenever they ask.
    sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
    ```
 
-   Then grant the binary capture rights.
-   - Skip this second command if you'll feed HEP instead
-     ([Collect captures from several SIP servers in one place](mcp-estate.md#collect-captures-from-several-sip-servers-in-one-place)).
-   - A HEP listener is a plain UDP socket. So `cap_net_raw` would be
-     privilege the service never uses.
-
-   ```bash
-   sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
-   ```
+   The unit below grants capture rights itself, with
+   `AmbientCapabilities=`. Do not use `setcap` for it: the unit sets
+   `NoNewPrivileges=true`, which stops a file capability taking effect, and the
+   capture then fails with `Permission denied on 'eth0'`.
 
 - **[server]** Generate the bearer token file, in this order:
 
@@ -487,10 +482,15 @@ whenever they ask.
       head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
       ```
 
-   - Make the token file readable by root only:
+   - Make the token file readable by root and the `sipnab` group only.
+     The service reads it as the `sipnab` user, and a file only root can read
+     stops it with `--mcp-token-file '/etc/sipnab/mcp.token': Permission denied
+     (os error 13)`:
 
       ```bash
-      sudo chmod 600 /etc/sipnab/mcp.token
+      # Run all of these, in order.
+      sudo chown root:sipnab /etc/sipnab/mcp.token
+      sudo chmod 640 /etc/sipnab/mcp.token
       ```
 
 - **[server]** Install the systemd unit as
@@ -514,6 +514,8 @@ whenever they ask.
        -d eth0
    User=sipnab
    Group=sipnab
+   AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+   CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
    NoNewPrivileges=true
    ProtectSystem=strict
    ProtectHome=true
@@ -1893,14 +1895,20 @@ Use HTTP when the capture must keep running between agent sessions.
 This listens:
 
 ```bash
-sipnab --mcp -N --mcp-transport http \
+sudo sipnab --mcp -N --mcp-transport http --user sipnab \
        --mcp-bind 127.0.0.1:8731 \
        --mcp-token-file /etc/sipnab/mcp.token \
        -I capture.pcap
 ```
 
-The agent then connects to `https://your-host/mcp` with a `Bearer
-<token>` header.
+sipnab reads the capture as root, drops to `sipnab`, and then reads the token
+file, so the file must be readable by the `sipnab` group, as the next section
+sets it up.
+
+That binds loopback only, so an agent on another host reaches it through a
+proxy that terminates TLS (`https://your-host/mcp`) or an SSH tunnel, with a
+`Bearer <token>` header. To serve the agent directly, bind a routable address
+and give sipnab a certificate, as in [MCP TLS](#mcp-tls).
 
 - The default bind is loopback.
 - Non-loopback binds **must** supply a credential, either:
@@ -1937,10 +1945,15 @@ Non-loopback binds require a bearer token. Generate one once, in this order.
    head -c 32 /dev/urandom | base64 | sudo tee /etc/sipnab/mcp.token >/dev/null
    ```
 
-- Make the token file readable by root only:
+- Make the token file readable by root and the `sipnab` group only. sipnab
+  reads it as the user it runs as, `sipnab` in the units on this page. A file
+  only root can read stops it with `--mcp-token-file '/etc/sipnab/mcp.token':
+  Permission denied (os error 13)` and exit status 2:
 
    ```bash
-   sudo chmod 600 /etc/sipnab/mcp.token
+   # Run all of these, in order.
+   sudo chown root:sipnab /etc/sipnab/mcp.token
+   sudo chmod 640 /etc/sipnab/mcp.token
    ```
 
 Give the client the token:
@@ -1960,11 +1973,16 @@ Give sipnab a certificate and its private key.
 - You need no proxy in front:
 
 ```bash
-sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 \
+sudo sipnab -N -d eth0 --user sipnab --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 \
   --mcp-token-file /etc/sipnab/mcp.token \
   --mcp-allowed-host capture01.example.net \
   --mcp-tls-cert /etc/sipnab/mcp.pem --mcp-tls-key /etc/sipnab/mcp.key
 ```
+
+A root run drops to `--user` before it reads the token, the certificate and
+the key, so make all three `root:sipnab` mode `640`. With a file only root
+can read, the run stops with exit status 2. For the key the message is the
+path alone, `/etc/sipnab/mcp.key`.
 
 `--mcp-allowed-host` names the host clients use in the URL. Without it, the
 request below gets `403` ([Stop a browser reaching your
@@ -2267,9 +2285,11 @@ crate sipnab uses (3.8.0) marks its sampling types deprecated.
 
 Create `/etc/systemd/system/sipnab-mcp.service` using this example, fed by a
 HEP listener.
-The packaged
-[`packaging/sipnab.service`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service)
-starts REST and metrics, not MCP:
+The unit the `.deb` and `.rpm` packages install,
+[`packaging/sipnab.service`](https://github.com/NormB/sipnab/blob/main/packaging/sipnab.service),
+starts a capture with the metrics endpoint on loopback, and neither MCP nor the
+REST API. Its token file must be readable by the `sipnab` user, as in [Issue a
+token the client can present](#issue-a-token-the-client-can-present):
 
 ```ini
 [Unit]
@@ -2318,11 +2338,18 @@ Then start it, in this order:
 
 The HEP listener needs no capture privileges (plain UDP socket). So the
 unit runs as an unprivileged user. For live interface capture instead of
-HEP, grant the binary `CAP_NET_RAW`:
+HEP, replace `-L 0.0.0.0:9060 --hep-allow 192.0.2.0/24` with `-d eth0` and
+grant the capabilities in the unit,
+after `Group=sipnab`:
 
-```bash
-sudo setcap cap_net_raw+ep /usr/local/bin/sipnab
+```ini
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
 ```
+
+`setcap` on the binary does not work here: `NoNewPrivileges=true` stops a file
+capability taking effect. [Run sipnab as a service](run-as-a-service.md)
+covers signals, crash reports, log rotation and a unit that does not start.
 
 
 ## Build a binary with MCP support

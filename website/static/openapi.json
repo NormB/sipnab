@@ -155,6 +155,26 @@
         ],
         "type": "object"
       },
+      "BinaryInfo": {
+        "description": "The running binary.",
+        "properties": {
+          "error": {
+            "description": "Why it could not be read.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sha256": {
+            "description": "SHA-256 of the running image, lowercase hex; absent when it could\nnot be read.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "BucketDeltaView": {
         "description": "One value's movement between the two captures. `value` is raw.",
         "properties": {
@@ -183,6 +203,52 @@
           "a",
           "b",
           "delta"
+        ],
+        "type": "object"
+      },
+      "BuildInfo": {
+        "description": "The build, as `sipnab --version` reports it.",
+        "properties": {
+          "commit": {
+            "description": "The git commit the build recorded; empty when it recorded none.",
+            "type": "string"
+          },
+          "dirty": {
+            "description": "Whether the working tree had uncommitted changes.",
+            "type": "boolean"
+          },
+          "features": {
+            "description": "The compiled feature set, sorted.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "tag": {
+            "description": "The git tag at that commit; empty when there was none.",
+            "type": "string"
+          },
+          "target": {
+            "description": "The target triple.",
+            "type": "string"
+          },
+          "version": {
+            "description": "The crate version.",
+            "type": "string"
+          },
+          "version_line": {
+            "description": "The whole `--version` line.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "commit",
+          "tag",
+          "dirty",
+          "target",
+          "features",
+          "version_line"
         ],
         "type": "object"
       },
@@ -1594,7 +1660,7 @@
             ]
           },
           "method": {
-            "description": "How the edge was made: `decoded`, `header`, `sdp` or `timing`, as on\n`/v1/dialogs/{call_id}/correlated`. Null for the root.",
+            "description": "How the edge was made: `decoded`, `mapping`, `header`, `sdp` or\n`timing`, as on `/v1/dialogs/{call_id}/correlated`. Null for the root.",
             "type": [
               "string",
               "null"
@@ -1622,6 +1688,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "th_callid": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThCallidStatus",
+                "description": "This leg's own OpenSIPS topology-hiding status, as on\n`/v1/dialogs/{call_id}/correlated`: `decoded`, `no_secret`,\n`undecodable`, `unmatched`, `mapped` or `conflict`. Null when the leg\nis not a hidden leg."
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -2220,6 +2297,62 @@
         ],
         "type": "object"
       },
+      "ConfigInfo": {
+        "description": "The configuration, as digests only.",
+        "properties": {
+          "argv_sha256": {
+            "description": "SHA-256 of the command line, without the program path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_sha256": {
+            "description": "SHA-256 over `parsed_sha256` and `argv_sha256`: what decides the\neffective configuration. The one configuration digest to compare\nacross instances.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file_sha256": {
+            "description": "SHA-256 of the file's bytes.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parsed_sha256": {
+            "description": "SHA-256 of the parsed configuration, canonically serialized.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "recorded": {
+            "description": "Whether this run recorded its configuration. `false` means every\ndigest below is unknown, not empty.",
+            "type": "boolean"
+          },
+          "shadowed": {
+            "description": "Default-location files present but not read.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "source": {
+            "description": "The file read, if any.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "recorded",
+          "shadowed"
+        ],
+        "type": "object"
+      },
       "ContainerFinding": {
         "description": "One schema finding against an invalid container.",
         "properties": {
@@ -2283,7 +2416,7 @@
             "oneOf": [
               {
                 "$ref": "#/components/schemas/ThCallidStatus",
-                "description": "When the source is the callee-side leg of an OpenSIPS\n`topology_hiding(\"C\")` call: `decoded`, `no_secret` (no secret\nconfigured), `undecodable` (the secret or prefix does not decode it) or\n`unmatched` (decoded, but no observed leg has that Call-ID and From\ntag). Null when the source is not a hidden leg."
+                "description": "When the source is the callee-side leg of an OpenSIPS\n`topology_hiding(\"C\")` call: `decoded`, `no_secret` (no secret\nconfigured), `undecodable` (the secret or prefix does not decode it),\n`unmatched` (decoded, but no observed leg has that Call-ID and From\ntag), `mapped` (an `E_SIPNAB_TH_MAP` event joined it) or `conflict`\n(two events disagree about it). Null when the source is not a hidden\nleg."
               },
               {
                 "type": "null"
@@ -2317,7 +2450,7 @@
             "type": "boolean"
           },
           "method": {
-            "description": "How the link was made: `decoded` (an OpenSIPS topology-hiding Call-ID\ndecoded with the configured secret), `header` (a SIP header both legs\ncarry: a header named in `[sip] xcid_headers`, `Session-ID`,\n`P-Charging-Vector` or a Via branch), `sdp` (the SDP origin) or\n`timing` (the guess).",
+            "description": "How the link was made: `decoded` (an OpenSIPS topology-hiding Call-ID\ndecoded with the configured secret), `mapping` (an OpenSIPS\n`E_SIPNAB_TH_MAP` event named both legs), `header` (a SIP header both legs\ncarry: a header named in `[sip] xcid_headers`, `Session-ID`,\n`P-Charging-Vector` or a Via branch), `sdp` (the SDP origin) or\n`timing` (the guess).",
             "type": "string"
           },
           "observed_gap_ms": {
@@ -2336,8 +2469,19 @@
             "type": "integer"
           },
           "strategy": {
-            "description": "Which strategy matched, by name: `session_id`, `th_callid_decoded`,\n`x_call_id`, `sdp_origin`, `charging_vector_related_icid`,\n`charging_vector_icid`, `via_branch` or `timing_heuristic`. The\ndecisive field.\n\n`session_id` and `x_call_id` both score 100 and are not the same claim:\none is an RFC 7989 identifier designed to cross a B2BUA, the other a\nvendor header someone configured. `charging_vector_related_icid` and\n`charging_vector_icid` come out of ONE header and are likewise not the\nsame claim: RFC 7315's `related-icid` is an intermediary declaring the\nlink across a B2BUA, while plain `icid-value` equality is silent across\na conformant one, because an ICID identifies a dialog and a B2BUA is\ntwo. `timing_heuristic` is not an identifier at all.",
+            "description": "Which strategy matched, by name: `session_id`, `th_callid_decoded`,\n`th_callid_mapping`, `x_call_id`, `sdp_origin`, `charging_vector_related_icid`,\n`charging_vector_icid`, `via_branch` or `timing_heuristic`. The\ndecisive field.\n\n`session_id` and `x_call_id` both score 100 and are not the same claim:\none is an RFC 7989 identifier designed to cross a B2BUA, the other a\nvendor header someone configured. `charging_vector_related_icid` and\n`charging_vector_icid` come out of ONE header and are likewise not the\nsame claim: RFC 7315's `related-icid` is an intermediary declaring the\nlink across a B2BUA, while plain `icid-value` equality is silent across\na conformant one, because an ICID identifies a dialog and a B2BUA is\ntwo. `timing_heuristic` is not an identifier at all.",
             "type": "string"
+          },
+          "th_callid": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThCallidStatus",
+                "description": "This leg's own OpenSIPS topology-hiding status: `decoded`,\n`no_secret`, `undecodable`, `unmatched`, `mapped` or `conflict`, as\nthe answer's top-level `th_callid` reports for the source. Null when\nthe leg is not a hidden leg."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -2346,6 +2490,64 @@
           "strategy",
           "method",
           "identifier_match"
+        ],
+        "type": "object"
+      },
+      "Counters": {
+        "description": "Capture-path and HEP export counters, cumulative.",
+        "properties": {
+          "capture_backpressure_blocks_total": {
+            "description": "Times the capture path blocked on a full queue; absent with no queue.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "capture_packets_total": {
+            "description": "Packets the capture path received.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "capture_sources_refused_total": {
+            "description": "Capture sources refused past the source-table cap.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hep_export_dropped_total": {
+            "description": "HEP export packets dropped of every kind; absent with no exporter.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hep_export_failures_total": {
+            "description": "HEP export failures of every kind; absent with no exporter.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "hep_export_queue_depth": {
+            "description": "HEP export packets queued now; absent with no exporter.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "capture_packets_total",
+          "capture_sources_refused_total"
         ],
         "type": "object"
       },
@@ -3040,6 +3242,61 @@
         ],
         "type": "object"
       },
+      "HepListenerInfo": {
+        "description": "The HEP listener's senders, by address only.",
+        "properties": {
+          "listening": {
+            "description": "Whether this run has a HEP listener.",
+            "type": "boolean"
+          },
+          "packets_refused": {
+            "description": "Packets the listener refused, for any reason.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "senders": {
+            "description": "The senders it tracks, at most [`MAX_HEP_PEERS`].",
+            "items": {
+              "$ref": "#/components/schemas/HepPeer"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "listening",
+          "packets_refused",
+          "senders"
+        ],
+        "type": "object"
+      },
+      "HepPeer": {
+        "description": "One HEP sender.",
+        "properties": {
+          "capture_id": {
+            "description": "The capture id it claims; never proven.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "peer": {
+            "description": "The address its packets came from.",
+            "type": "string"
+          },
+          "silent": {
+            "description": "Whether it has been silent past the warning threshold.",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "peer",
+          "silent"
+        ],
+        "type": "object"
+      },
       "HepRefusedSourceRow": {
         "description": "One address the listener has been turning away.\n\nKeyed by address alone, never by the capture id a refused packet claimed:\na packet that failed authentication has proven nothing, including its id.",
         "properties": {
@@ -3344,6 +3601,121 @@
         ],
         "type": "object"
       },
+      "InterfaceCounters": {
+        "description": "One capture interface's error and drop counters, read from the interface.",
+        "properties": {
+          "name": {
+            "description": "The interface name.",
+            "type": "string"
+          },
+          "operstate": {
+            "description": "Link state; absent when not readable on this platform.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rx_dropped": {
+            "description": "Packets the kernel dropped on receive.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rx_errors": {
+            "description": "Receive errors.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rx_missed_errors": {
+            "description": "Packets the NIC missed for lack of ring space.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "Inventory": {
+        "description": "One inventory record.",
+        "properties": {
+          "binary": {
+            "$ref": "#/components/schemas/BinaryInfo",
+            "description": "The running binary."
+          },
+          "build": {
+            "$ref": "#/components/schemas/BuildInfo",
+            "description": "The build."
+          },
+          "config": {
+            "$ref": "#/components/schemas/ConfigInfo",
+            "description": "The configuration this run loaded, as digests."
+          },
+          "counters": {
+            "$ref": "#/components/schemas/Counters",
+            "description": "Capture-path and HEP export counters."
+          },
+          "hep_listener": {
+            "$ref": "#/components/schemas/HepListenerInfo",
+            "description": "The HEP listener, when this run has one."
+          },
+          "interfaces": {
+            "description": "The capture interfaces and their error and drop counters.",
+            "items": {
+              "$ref": "#/components/schemas/InterfaceCounters"
+            },
+            "type": "array"
+          },
+          "node_name": {
+            "description": "The node name this process reports (`--node-name`,\n`[capture] node_name`, else the host name).",
+            "type": "string"
+          },
+          "privilege": {
+            "$ref": "#/components/schemas/PrivilegeInfo",
+            "description": "The privilege the process holds."
+          },
+          "process": {
+            "$ref": "#/components/schemas/ProcessInfo",
+            "description": "The process."
+          },
+          "schema_version": {
+            "description": "Wire-format version of this envelope, [`SCHEMA_VERSION`].",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "signature": {
+            "$ref": "#/components/schemas/SignatureInfo",
+            "description": "What this process can say about its release signature."
+          }
+        },
+        "required": [
+          "schema_version",
+          "node_name",
+          "build",
+          "binary",
+          "signature",
+          "config",
+          "privilege",
+          "process",
+          "interfaces",
+          "counters",
+          "hep_listener"
+        ],
+        "type": "object"
+      },
       "LadderRow": {
         "description": "One message of a dialog's ladder.",
         "properties": {
@@ -3612,6 +3984,35 @@
         ],
         "type": "object"
       },
+      "PrivilegeInfo": {
+        "description": "The privilege the process holds.",
+        "properties": {
+          "dropped_to": {
+            "description": "The user a privilege drop switched to; absent when none happened.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "root": {
+            "description": "Whether that is root.",
+            "type": "boolean"
+          },
+          "uid": {
+            "description": "The user id the process runs as.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "root"
+        ],
+        "type": "object"
+      },
       "Problem": {
         "description": "An RFC 9457 `application/problem+json` body: what every 4xx and 5xx\ncarries.\n\nSerialized by [`super::Problem`]'s `IntoResponse`, so this is the wire\ntype itself rather than a description of one.",
         "properties": {
@@ -3644,6 +4045,35 @@
           "type",
           "title",
           "status"
+        ],
+        "type": "object"
+      },
+      "ProcessInfo": {
+        "description": "The process.",
+        "properties": {
+          "pid": {
+            "description": "The process id.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "started": {
+            "description": "When the configuration was recorded, RFC 3339; absent when it was\nnot.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uptime_seconds": {
+            "description": "Seconds this process has been serving.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pid",
+          "uptime_seconds"
         ],
         "type": "object"
       },
@@ -4913,6 +5343,24 @@
         ],
         "type": "object"
       },
+      "SignatureInfo": {
+        "description": "The release signature, as far as the process can speak to it.",
+        "properties": {
+          "note": {
+            "description": "How to verify the binary.",
+            "type": "string"
+          },
+          "state": {
+            "description": "Always [`SIGNATURE_STATE`].",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "note"
+        ],
+        "type": "object"
+      },
       "SkippedPort": {
         "description": "One of the busiest ports the port gate excluded.",
         "properties": {
@@ -5126,6 +5574,10 @@
             "$ref": "#/components/schemas/StatsStreams",
             "description": "Stream counts."
           },
+          "th_callid": {
+            "$ref": "#/components/schemas/ThCallidSummary",
+            "description": "The OpenSIPS topology-hiding legs held now, by status (`decoded`,\n`no_secret`, `undecodable`, `unmatched`, `mapped`, `conflict`),\nand `undecoded_with_peer`: undecoded legs whose caller leg WAS\ncaptured, which points at the secret or prefix. All zero when no\nhidden leg is held."
+          },
           "th_mappings": {
             "$ref": "#/components/schemas/ThMappingCounts",
             "description": "OpenSIPS `E_SIPNAB_TH_MAP` mapping events the HEP listener\nreceived: running totals by outcome, and the mappings held and\npending now. All zero when none arrived."
@@ -5186,6 +5638,7 @@
           "dialogs",
           "streams",
           "th_mappings",
+          "th_callid",
           "caveats",
           "source",
           "source_exhausted",
@@ -6423,6 +6876,56 @@
         ],
         "type": "string"
       },
+      "ThCallidSummary": {
+        "description": "Counts of hidden dialogs by [`ThCallidStatus`], from\n[`DialogStore::th_callid_summary`]. The `th_callid` object REST\n`/v1/stats` and MCP `capture_status` return, and the source of the\n`sipnab_th_callid_*` series. Counts of dialogs held now, not running totals.",
+        "properties": {
+          "conflict": {
+            "description": "Hidden legs whose mapping a conflicting event stopped.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "decoded": {
+            "description": "Hidden legs decoded and joined.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mapped": {
+            "description": "Hidden legs joined by an `E_SIPNAB_TH_MAP` event.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "no_secret": {
+            "description": "Hidden legs seen with no secret configured.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "undecodable": {
+            "description": "Hidden legs the secret did not decode.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "undecoded_with_peer": {
+            "description": "Undecodable or unmatched hidden legs whose From tag IS on an observed\nnon-hidden leg: the caller side was captured, so the secret (or the\nprefix) is the likely fault.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unmatched": {
+            "description": "Hidden legs decoded to no observed caller leg.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "decoded",
+          "no_secret",
+          "undecodable",
+          "unmatched",
+          "mapped",
+          "conflict",
+          "undecoded_with_peer"
+        ],
+        "type": "object"
+      },
       "ThMappingCounts": {
         "description": "Counts a table keeps, for the status surfaces and metrics. Every field is\na running total since the process started, except where noted.",
         "properties": {
@@ -6484,6 +6987,117 @@
           "expired",
           "held",
           "pending"
+        ],
+        "type": "object"
+      },
+      "ThMappingRow": {
+        "description": "One mapping the table holds.",
+        "properties": {
+          "callee_call_id": {
+            "description": "The callee-side Call-ID OpenSIPS named (`$TH_callee_callid`).",
+            "type": "string"
+          },
+          "callee_captured": {
+            "description": "Whether the store holds a dialog with `callee_call_id`.",
+            "type": "boolean"
+          },
+          "caller_call_id": {
+            "description": "The caller-side Call-ID OpenSIPS named (`$ci`).",
+            "type": "string"
+          },
+          "caller_captured": {
+            "description": "Whether the store holds a dialog with `caller_call_id`.",
+            "type": "boolean"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ThMappingState",
+            "description": "`joined` (both legs are captured and the mapping joins them),\n`pending` (a leg is not captured yet) or `conflict` (another event\nnamed one of these Call-IDs with a different partner, so this mapping\njoins nothing)."
+          }
+        },
+        "required": [
+          "caller_call_id",
+          "callee_call_id",
+          "state",
+          "caller_captured",
+          "callee_captured"
+        ],
+        "type": "object"
+      },
+      "ThMappingState": {
+        "description": "Where one held mapping stands, for the listing surfaces.",
+        "enum": [
+          "conflict",
+          "pending",
+          "joined"
+        ],
+        "type": "string"
+      },
+      "ThMappings": {
+        "description": "The mappings held, with the counts they belong to.",
+        "properties": {
+          "call_id": {
+            "description": "The Call-ID the rows were narrowed to, either side of a mapping. Null\nwhen none was asked for.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capture_identity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CaptureIdentity",
+                "description": "WHICH capture this answer came from, and which revision of its\nstores, stamped under the locks the answer was built with: whether a\nleg is captured depends on the dialog store. The same identity the MCP\ntool answering this question carries. `null` when nobody told this\nserver what it is attached to."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counts": {
+            "$ref": "#/components/schemas/ThMappingCounts",
+            "description": "The `E_SIPNAB_TH_MAP` counts, the object `/v1/stats` returns as\n`th_mappings`."
+          },
+          "mappings": {
+            "description": "The rows, ordered by state (`conflict`, `pending`, `joined`) and then\nby caller-side Call-ID, so the ones worth looking at come first and two\nanswers about the same table list them in the same order.",
+            "items": {
+              "$ref": "#/components/schemas/ThMappingRow"
+            },
+            "type": "array"
+          },
+          "schema_version": {
+            "description": "Version of this response's shape.",
+            "example": 1,
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ThMappingState",
+                "description": "The state the rows were narrowed to. Null when none was asked for."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "th_callid": {
+            "$ref": "#/components/schemas/ThCallidSummary",
+            "description": "The hidden legs held now by status, the object `/v1/stats` returns as\n`th_callid`."
+          },
+          "total_matched": {
+            "description": "How many rows matched before the row cap.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "schema_version",
+          "mappings",
+          "total_matched",
+          "counts",
+          "th_callid"
         ],
         "type": "object"
       },
@@ -8525,6 +9139,58 @@
         ]
       }
     },
+    "/v1/inventory": {
+      "get": {
+        "description": "What this sipnab process is, for managing many instances as one fleet: the build (version, git commit and tag, dirty flag, target, compiled features, the `--version` line), SHA-256 of the running binary, the signature state, the configuration as digests only, the user id and privilege drop, pid, start time and uptime, the capture interfaces' error and drop counters, capture and HEP export counters, and the HEP listener's sender addresses.\n\nNo configuration value and no command-line argument is in the answer, only their SHA-256 digests, so a secret in either changes a digest and never appears. `signature.state` is always `unverified`: compare `binary.sha256` with the release's attested `SHA256SUMS.txt`. Every field is the process's own claim.\n\nReached by a token with scope `inventory`, or `full` and the broader scopes. The MCP tool `fleet_inventory` returns the same fields and values.",
+        "operationId": "get_inventory",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Inventory"
+                }
+              }
+            },
+            "description": "The inventory record."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "500": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The task that builds the record failed."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "summary": "Fleet inventory of this process",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
     "/v1/persistence": {
       "get": {
         "description": "Whether this capture is writing content to disk, and whether its command line and config file allow it to.\n\nBehind the same guard as every other route: what a capture is keeping is not a public fact, and a reader who can see the answer is one step from a writer who can change it.",
@@ -10002,6 +10668,88 @@
         "summary": "Ask TFPS to release a source sipnab banned",
         "tags": [
           "tfps"
+        ]
+      }
+    },
+    "/v1/th-mappings": {
+      "get": {
+        "description": "The OpenSIPS topology-hiding mappings sipnab holds from `E_SIPNAB_TH_MAP` events, one row each: the caller-side and callee-side Call-IDs, the state (`conflict`: another event named one of its Call-IDs with a different partner, so it joins nothing; `pending`: a leg is not captured yet; `joined`: both legs are captured and it joins them), and whether each leg is captured. Conflicts come first, then pending, then joined.\n\nBeside the rows: `counts`, the object `/v1/stats` returns as `th_mappings`, and `th_callid`, the hidden legs held now by status, as `/v1/stats` returns it.\n\nTo find why one call did not join, pass `call_id` (either leg): no row means no event named it.",
+        "operationId": "get_th_mappings",
+        "parameters": [
+          {
+            "description": "Only the mapping naming this Call-ID, on either side.",
+            "in": "query",
+            "name": "call_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only mappings in this state: `conflict`, `pending` or `joined`.",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The most rows to return. Omitted or `0`, the default page; at most\n`--api-max-rows`. `total_matched` counts every match.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThMappings"
+                }
+              }
+            },
+            "description": "The mappings held."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A `state` other than `conflict`, `pending` or `joined`."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "summary": "`GET /v1/th-mappings` — the OpenSIPS topology-hiding mappings held, one\nrow each, with the counts they belong to.",
+        "tags": [
+          "capture"
         ]
       }
     },

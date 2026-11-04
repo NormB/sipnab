@@ -56,6 +56,8 @@ pub mod event_exec;
 pub mod fail2ban;
 pub mod group;
 pub mod hexdump;
+#[cfg(any(feature = "api", feature = "mcp"))]
+pub mod inventory;
 pub mod json;
 #[cfg(feature = "vcon")]
 pub mod live_rtp;

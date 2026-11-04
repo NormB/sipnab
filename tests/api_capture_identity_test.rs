@@ -147,6 +147,9 @@ const WITH_IDENTITY: &[(&str, &str, &str, &str)] = &[
     // Occupancy: `dialogs.used` and `streams.used` count this capture's
     // stores, so the answer is about the capture.
     ("/v1/runtime", "/v1/runtime", "runtime_stats", r#"{}"#),
+    // Whether a mapping's legs are captured depends on the dialog store, so
+    // the listing is about the capture even when it holds no mapping.
+    ("/v1/th-mappings", "/v1/th-mappings", "th_mappings", r#"{}"#),
 ];
 
 /// GET routes that do not carry `capture_identity`, each with the reason.
@@ -162,6 +165,11 @@ const WITHOUT_IDENTITY: &[(&str, &str)] = &[
         "the MCP `hep_senders` tool carries none, and the two answer the same \
          bytes: the listener's roster, not the capture's contents; checked \
          below",
+    ),
+    (
+        "/v1/inventory",
+        "the MCP `fleet_inventory` tool is source-independent and answers the \
+         same document: what this process is, not what the capture holds",
     ),
     (
         "/v1/capabilities",
@@ -259,7 +267,8 @@ const WITHOUT_IDENTITY: &[(&str, &str)] = &[
 /// The MCP counterparts [`WITHOUT_IDENTITY`] cites as carrying no identity,
 /// with arguments that make each answer.
 #[cfg(feature = "hep")]
-const COUNTERPARTS_WITHOUT: &[(&str, &str)] = &[("hep_senders", r#"{}"#)];
+const COUNTERPARTS_WITHOUT: &[(&str, &str)] =
+    &[("hep_senders", r#"{}"#), ("fleet_inventory", r#"{}"#)];
 
 /// Every GET path the published document declares, as the router serves it.
 fn documented_gets() -> Result<BTreeSet<String>, TestError> {

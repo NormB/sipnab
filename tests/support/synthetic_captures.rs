@@ -117,6 +117,10 @@ pub const OWNED: &[Owned] = &[
         path: "tests/fixtures/sip-scanner-and-register-flood.pcap",
         build: scanner_and_register_flood,
     },
+    Owned {
+        path: "tests/fixtures/rtcp-xr-call.pcap",
+        build: rtcp_xr_call,
+    },
 ];
 
 // ── the pcap container ──────────────────────────────────────────────
@@ -2833,5 +2837,218 @@ pub fn interleaved_calls() -> Vec<u8> {
             frame(b, a, 5060, 5060, ok.as_bytes()),
         );
     }
+    pcap(65535, &records)
+}
+
+// ── rtcp-xr-call.pcap: a far end that reports over RTCP ─────────────
+
+/// One RTCP sender report from `sender`, with one reception report block
+/// about `about`, at `secs` seconds into the call.
+///
+/// The NTP timestamp is the capture's own clock, so the report reads as sent
+/// when it was captured. `last_sr` and `delay_since_sr` are zero: no earlier
+/// sender report from the other side is echoed, so sipnab derives no round
+/// trip from it and the XR block's figure is the only one.
+fn rtcp_sender_report(
+    sender: u32,
+    about: u32,
+    secs: u32,
+    sent: u32,
+    report: (u8, u32, u32, u32),
+) -> Vec<u8> {
+    const NTP_UNIX_OFFSET: u32 = 2_208_988_800;
+    let (fraction_lost, cumulative_lost, highest_seq, jitter) = report;
+    let mut p = Vec::with_capacity(52);
+    p.push(0x81); // version 2, no padding, one report block
+    p.push(200); // SR
+    p.extend_from_slice(&12u16.to_be_bytes()); // 13 words, minus one
+    p.extend_from_slice(&sender.to_be_bytes());
+    p.extend_from_slice(&(LEGACY_EPOCH + secs + NTP_UNIX_OFFSET).to_be_bytes());
+    p.extend_from_slice(&0u32.to_be_bytes()); // NTP fraction
+    p.extend_from_slice(&(sent * 160).to_be_bytes()); // RTP timestamp
+    p.extend_from_slice(&sent.to_be_bytes()); // packets sent
+    p.extend_from_slice(&(sent * 160).to_be_bytes()); // octets sent
+    p.extend_from_slice(&about.to_be_bytes());
+    p.push(fraction_lost);
+    p.extend_from_slice(&cumulative_lost.to_be_bytes()[1..]);
+    p.extend_from_slice(&highest_seq.to_be_bytes());
+    p.extend_from_slice(&jitter.to_be_bytes());
+    p.extend_from_slice(&0u32.to_be_bytes()); // LSR
+    p.extend_from_slice(&0u32.to_be_bytes()); // DLSR
+    p
+}
+
+/// One RTCP XR packet from `sender` carrying one VoIP Metrics block (RFC 3611
+/// section 4.7) about `about`.
+///
+/// Loss 13/256 (5.1 %), discard 8/256 (3.1 %), a 180 ms round trip and 40 ms
+/// of end-system delay, R 78, MOS-LQ 3.8 and MOS-CQ 3.7. Signal level, noise
+/// level, RERL and the extended R factor carry 127, RFC 3611's "unavailable".
+fn rtcp_xr_voip_metrics(sender: u32, about: u32) -> Vec<u8> {
+    let mut p = Vec::with_capacity(44);
+    p.push(0x80); // version 2, no padding
+    p.push(207); // XR
+    p.extend_from_slice(&10u16.to_be_bytes()); // 11 words, minus one
+    p.extend_from_slice(&sender.to_be_bytes());
+    p.push(7); // BT 7: VoIP Metrics
+    p.push(0); // type-specific
+    p.extend_from_slice(&8u16.to_be_bytes()); // block length in words
+    p.extend_from_slice(&about.to_be_bytes());
+    p.extend_from_slice(&[13, 8, 0, 13]); // loss, discard, burst and gap density
+    p.extend_from_slice(&0u16.to_be_bytes()); // burst duration, ms
+    p.extend_from_slice(&10_000u16.to_be_bytes()); // gap duration, ms
+    p.extend_from_slice(&180u16.to_be_bytes()); // round-trip delay, ms
+    p.extend_from_slice(&40u16.to_be_bytes()); // end-system delay, ms
+    p.extend_from_slice(&[127, 127, 127, 16]); // signal, noise, RERL, Gmin
+    p.extend_from_slice(&[78, 127, 38, 37]); // R, ext R, MOS-LQ, MOS-CQ
+    p.extend_from_slice(&[0, 0]); // RX config, reserved
+    p.extend_from_slice(&40u16.to_be_bytes()); // JB nominal, ms
+    p.extend_from_slice(&80u16.to_be_bytes()); // JB maximum, ms
+    p.extend_from_slice(&200u16.to_be_bytes()); // JB abs max, ms
+    p
+}
+
+/// A ten-second PCMU call whose callee reports on the caller's media in RTCP.
+///
+/// 192.0.2.30 calls 198.51.100.40. Each side sends 500 RTP packets at 20 ms,
+/// the caller from port 20000 (SSRC `0x0a0a0a0a`) and the callee from 30000
+/// (SSRC `0x0b0b0b0b`). The capture is missing every twentieth packet of the
+/// caller's stream, 25 in all and none of them the last, so sipnab measures
+/// 5 % loss on it. At five and
+/// at ten seconds the callee sends one compound RTCP packet to the caller's
+/// RTCP port, 20001: a sender report whose block about the caller's stream
+/// says 13/256 lost, and an XR VoIP Metrics block about the same stream.
+/// The XR block carries what no capture can see, such as a discard rate,
+/// and a 180 ms round trip that sipnab's MOS takes its delay from.
+/// Then the caller hangs up.
+pub fn rtcp_xr_call() -> Vec<u8> {
+    const CALLER: [u8; 4] = [192, 0, 2, 30];
+    const CALLEE: [u8; 4] = [198, 51, 100, 40];
+    const CALLER_SSRC: u32 = 0x0a0a_0a0a;
+    const CALLEE_SSRC: u32 = 0x0b0b_0b0b;
+    const PACKETS: u32 = 500;
+    let call_id = "rtcp-xr-1@192.0.2.30";
+    let sdp = |addr: &str, port: u16| {
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 {addr}\r\ns=-\r\nc=IN IP4 {addr}\r\nt=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        )
+    };
+    let sip = |first: &str, to_tag: &str, cseq: &str, body: &str| {
+        let ct = if body.is_empty() {
+            ""
+        } else {
+            "Content-Type: application/sdp\r\n"
+        };
+        format!(
+            "{first}\r\n\
+             Via: SIP/2.0/UDP 192.0.2.30:5060;branch=z9hG4bK-rtcpxr-{branch}\r\n\
+             From: <sip:mia@192.0.2.30>;tag=m1\r\n\
+             To: <sip:noah@198.51.100.40>{to_tag}\r\n\
+             Call-ID: {call_id}\r\n\
+             CSeq: {cseq}\r\n\
+             Contact: <sip:mia@192.0.2.30:5060>\r\n\
+             {ct}Content-Length: {len}\r\n\r\n{body}",
+            branch = cseq.replace(' ', "-"),
+            len = body.len(),
+        )
+    };
+    let invite = sip(
+        "INVITE sip:noah@198.51.100.40 SIP/2.0",
+        "",
+        "1 INVITE",
+        &sdp("192.0.2.30", 20000),
+    );
+    let ok = sip(
+        "SIP/2.0 200 OK",
+        ";tag=n1",
+        "1 INVITE",
+        &sdp("198.51.100.40", 30000),
+    );
+    let ack = sip("ACK sip:noah@198.51.100.40 SIP/2.0", ";tag=n1", "1 ACK", "");
+    let bye = sip("BYE sip:noah@198.51.100.40 SIP/2.0", ";tag=n1", "2 BYE", "");
+    let bye_ok = sip("SIP/2.0 200 OK", ";tag=n1", "2 BYE", "");
+
+    let media = |from: [u8; 4], fport: u16, to: [u8; 4], tport: u16, ident: u16, payload: &[u8]| {
+        stun_frame(
+            OPERATOR_MACS,
+            UdpEnd {
+                addr: from,
+                port: fport,
+            },
+            UdpEnd {
+                addr: to,
+                port: tport,
+            },
+            0,
+            ident,
+            payload,
+        )
+    };
+
+    let mut records = vec![
+        at_ms(LEGACY_EPOCH, 0, sip_frame(1, CALLER, CALLEE, &invite)),
+        at_ms(LEGACY_EPOCH, 200, sip_frame(2, CALLEE, CALLER, &ok)),
+        at_ms(LEGACY_EPOCH, 210, sip_frame(3, CALLER, CALLEE, &ack)),
+    ];
+    let start_ms = 300u32;
+    for i in 0..PACKETS {
+        let at = start_ms + i * 20;
+        let seq = i as u16;
+        let ts = i * 160;
+        let payload = relay_pcmu_payload(i as usize);
+        // The capture misses every twentieth packet of the caller's stream,
+        // the eleventh of each twenty, so the last packet still arrives.
+        if i % 20 != 10 {
+            records.push(at_ms(
+                LEGACY_EPOCH,
+                at,
+                media(
+                    CALLER,
+                    20000,
+                    CALLEE,
+                    30000,
+                    seq,
+                    &rtp(i == 0, PT_PCMU, seq, ts, CALLER_SSRC, &payload),
+                ),
+            ));
+        }
+        records.push(at_ms(
+            LEGACY_EPOCH,
+            at + 5,
+            media(
+                CALLEE,
+                30000,
+                CALLER,
+                20000,
+                seq,
+                &rtp(i == 0, PT_PCMU, seq, ts, CALLEE_SSRC, &payload),
+            ),
+        ));
+        // At five and at ten seconds the callee reports on the caller's media.
+        if i == 249 || i == PACKETS - 1 {
+            let secs = (at + 10) / 1000;
+            let lost = (i + 1) / 20;
+            let mut compound =
+                rtcp_sender_report(CALLEE_SSRC, CALLER_SSRC, secs, i + 1, (13, lost, i, 16));
+            compound.extend_from_slice(&rtcp_xr_voip_metrics(CALLEE_SSRC, CALLER_SSRC));
+            records.push(at_ms(
+                LEGACY_EPOCH,
+                at + 10,
+                media(CALLEE, 30001, CALLER, 20001, 0, &compound),
+            ));
+        }
+    }
+    let end = start_ms + PACKETS * 20;
+    records.push(at_ms(
+        LEGACY_EPOCH,
+        end + 100,
+        sip_frame(4, CALLER, CALLEE, &bye),
+    ));
+    records.push(at_ms(
+        LEGACY_EPOCH,
+        end + 150,
+        sip_frame(5, CALLEE, CALLER, &bye_ok),
+    ));
     pcap(65535, &records)
 }

@@ -45,7 +45,8 @@ read:
 - `statistics` returns the relay's own totals.
 
 To name calls, sipnab asks once at startup. It asks again only when a stream
-turns up that nothing explains. It never asks on a timer.
+turns up that nothing explains. It does not ask on a timer. Only
+`--relay-stats-interval` polls, and it asks for `statistics`, not for calls.
 
 No sipnab command, flag, REST route or MCP tool can make rtpengine create,
 change or delete a call.
@@ -168,6 +169,8 @@ sipnab can also print rtpengine's own counters for one call:
 
 These are what the relay says about itself. So sipnab marks them
 `relay_reported`, apart from what it measured on the wire.
+[Ask a media relay about itself](relay-statistics.md) covers the relay's
+other counters, the calls it holds, and the same questions over REST and MCP.
 
 The first line waits until the relay no longer holds the call from the Name a
 call that was already up step. That takes up to a minute after the call ends:

@@ -147,7 +147,9 @@ The metric families:
 | `sipnab_th_mapping_events_total{outcome}` | counter | OpenSIPS `E_SIPNAB_TH_MAP` events the HEP listener accepted from a `--hep-allow` sender, by outcome: `accepted` (a new mapping), `duplicate` (one already held), `conflict` (a Call-ID already mapped to another partner; refused, and the held mapping stops joining), `malformed` (not a valid event) and `refused_full` (the table held `[sip] th_mapping_max`). Every outcome appears on every scrape, at `0` where none happened. See [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping). |
 | `sipnab_th_mappings_expired_total` | counter | Mappings dropped because neither leg was in the store for `[sip] th_mapping_ttl_secs`. |
 | `sipnab_th_mappings_held` | gauge | Mappings held now. |
-| `sipnab_th_mappings_pending` | gauge | Mappings held whose two legs are not both captured. A value that stays up means the SIP the events name is not reaching sipnab: with `--hep-listen` as well as `-d` and no filter of your own, the interface takes media only. |
+| `sipnab_th_mappings_pending` | gauge | Mappings held whose two legs are not both captured. A value that stays up means the SIP the events name is not reaching sipnab: with `--hep-listen` as well as `-d` and no filter of your own, the interface takes media only. To see which mappings, use [`GET /v1/th-mappings?state=pending`](rest-api.md#get-v1th-mappings), the MCP `th_mappings` tool, or `--th-mappings`. |
+| `sipnab_th_callid_legs{status}` | gauge | OpenSIPS topology-hiding legs held now, by status: `decoded`, `no_secret`, `undecodable`, `unmatched`, `mapped` and `conflict`, the values `th_callid` takes on `/v1/dialogs/{call_id}/correlated`. Every status appears on every scrape, at `0` where the store holds none. No per-call label. |
+| `sipnab_th_callid_undecoded_with_peer` | gauge | Of the `undecodable` and `unmatched` legs, those whose From tag is on a captured caller leg. sipnab captured the caller side, so a non-zero value points at `[sip] th_callid_secret_file` or `th_callid_prefix` rather than the capture. |
 | `sipnab_messages_total{method}` | counter | SIP messages in the tracked dialogs, labeled by the method that opened each dialog. Every message of an INVITE dialog, its responses, `ACK` and `BYE` included, counts under `method="INVITE"`. |
 | `sipnab_responses_total{code}` | counter | SIP responses in the tracked dialogs, grouped by class: `1xx`, `2xx`, `3xx`, `4xx`, `5xx`, `6xx`. Every class appears on every scrape, at `0` where the capture saw none. |
 | `sipnab_rtp_streams_active` | gauge | RTP streams a dialog claims, however long ago their last packet arrived: the same population as `sipnab_rtp_streams_total{status="established"}`. A call whose media stopped five minutes ago still counts until sipnab drops its dialog. |
@@ -260,14 +262,21 @@ with the number of tracked dialogs (see `sipnab_diagnosis_total`).
 
 ## Metrics TLS
 
+[Secure every listener](auth.md#secure-every-listener) makes the certificate,
+serves all four listeners over TLS, and scrapes the result from Prometheus.
+
 Give sipnab a certificate and its private key. Then the standalone metrics
 server (`--metrics`) serves HTTPS instead of plain HTTP on its port:
 
 ```bash
-sudo sipnab -N -d eth0 --metrics 0.0.0.0:9090 \
+sudo sipnab -N -d eth0 --user sipnab --metrics 0.0.0.0:9090 \
   --metrics-auth-file /etc/sipnab/metrics.auth \
   --metrics-tls-cert /etc/sipnab/metrics.pem --metrics-tls-key /etc/sipnab/metrics.key
 ```
+
+A root run reads the credential file, the certificate and the key after it
+drops to `--user`, so make them readable by that account (`chown
+root:sipnab`, `chmod 640`). See [Make a certificate](auth.md#make-a-certificate).
 
 Check it with curl, trusting the CA that issued the certificate. The
 credential file holds `user:pass`. That is what `curl -u` takes:

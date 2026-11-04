@@ -32,7 +32,13 @@ impl Fake {
              printf '%s\\n' \"$@\" >> \"{here}/argv\"\n\
              case \"$1\" in\n\
              ban) if [ -e \"{here}/fail\" ]; then echo 'tfps: map write failed' >&2; exit 1; fi; \
-                  echo \"$3\" >> \"{here}/held\"; echo '{BAN}';;\n\
+                  echo \"$3\" >> \"{here}/held\"; \
+                  if [ -e \"{here}/lose\" ]; then case $(cat \"{here}/lose\") in \
+                  garbage) echo 'segmentation fault (core dumped)'; exit 0;; \
+                  nonzero) echo 'tfps: lost the map' >&2; exit 3;; \
+                  hang) sleep 30;; \
+                  esac; fi; \
+                  echo '{BAN}';;\n\
              unban) : > \"{here}/held.new\"; while read -r ip; do [ \"$ip\" = \"$3\" ] || echo \"$ip\" >> \"{here}/held.new\"; done < \"{here}/held\"; \
                     mv \"{here}/held.new\" \"{here}/held\"; \
                     echo '{UNBAN}';;\n\
@@ -54,6 +60,23 @@ impl Fake {
 
     pub fn fail_bans(&self) -> std::io::Result<()> {
         std::fs::write(self.dir.path().join("fail"), "")
+    }
+
+    /// Apply every ban, then lose its answer: `garbage` answers something
+    /// that is not JSON, `nonzero` exits 3 with no result, `hang` never
+    /// answers. TFPS has acted each time; what sipnab reads is the loss.
+    pub fn lose_ban_answers(&self, how: &str) -> std::io::Result<()> {
+        std::fs::write(self.dir.path().join("lose"), how)
+    }
+
+    /// Answer bans again.
+    pub fn answer_bans(&self) -> std::io::Result<()> {
+        std::fs::remove_file(self.dir.path().join("lose"))
+    }
+
+    /// The addresses this TFPS holds banned now, one a line.
+    pub fn held(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("held")).unwrap_or_default()
     }
 
     pub fn calls(&self) -> String {

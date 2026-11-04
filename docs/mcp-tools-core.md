@@ -71,6 +71,10 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
   "source_exhausted": true,        // true once a file is read to the end
   "source_stopped_early": false,   // true when a read ended before the file did
   "stream_count": 2,
+  "th_callid": {                   // hidden legs held now, by status, as on /v1/stats
+    "conflict": 0, "decoded": 0, "mapped": 0, "no_secret": 0,
+    "undecodable": 0, "undecoded_with_peer": 0, "unmatched": 0
+  },
   "th_mappings": {                 // OpenSIPS E_SIPNAB_TH_MAP events, as on /v1/stats
     "accepted": 0, "conflict": 0, "duplicate": 0, "expired": 0,
     "held": 0, "malformed": 0, "pending": 0, "refused_full": 0
@@ -89,6 +93,15 @@ No parameters. Against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.c
 accepted, by outcome, and the mappings held and still waiting for their SIP
 (`pending`). It is the same object REST `GET /v1/stats` returns. See
 [Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping).
+To list the mappings themselves, call
+[`th_mappings`](mcp-tools-signaling.md#th_mappings).
+
+`th_callid` counts the OpenSIPS topology-hiding legs held now by the status
+each one's `th_callid` reports on [`find_correlated`](mcp-tools-signaling.md#find_correlated):
+`decoded`, `no_secret`, `undecodable`, `unmatched`, `mapped` and `conflict`.
+`undecoded_with_peer` counts the `undecodable` and `unmatched` legs whose From
+tag is on a captured caller leg: sipnab captured the caller side, so check the
+secret and the prefix. It is the same object REST `GET /v1/stats` returns.
 
 Read `unsaved` before you stop a server. It is `true` only for a **live**
 capture with no output file, where the packets exist only in memory. A capture

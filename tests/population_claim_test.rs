@@ -231,6 +231,15 @@ struct PageProbe {
 /// source no longer derives fails `the_page_size_surface_is_derived_and_fully_probed`.
 const NOT_PROBED: &[(&str, &str)] = &[
     (
+        "th_mappings",
+        "pages over the OpenSIPS topology-hiding mappings, which arrive only as \
+     events on a HEP listener, and the session here replays a file: sipnab \
+     refuses `-I` beside `-L`, so no mapping can exist in it and both page \
+     sizes would compare two empty lists. \
+     `a_page_size_never_moves_the_mapping_counts` in src/mcp/tools/hep.rs \
+     drives the same property over a real mapping table.",
+    ),
+    (
         "hep_senders",
         "pages over a HEP listener's sender roster, and the session here replays a \
      file: sipnab refuses `-I` beside `-L`, so no roster can exist in it and \

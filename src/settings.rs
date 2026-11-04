@@ -324,6 +324,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ),
     ("hep-send-transport", Link::Pending),
     ("hep-senders", Link::PerRun),
+    ("th-mappings", Link::PerRun),
     ("hep-silence-warn", Link::Pending),
     ("hep-tls-ca", Link::Key("hep", "tls_ca", Merge::Override)),
     (

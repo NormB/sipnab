@@ -295,9 +295,20 @@ it:
 }
 ```
 
-`refusal` is `rate` (with `retry_after_secs`), `in_doubt` (actions a crash
-left unfinished are waiting for TFPS to answer for them), `journal` (sipnab
-cannot use the journal), or `tfps` (sipnab could not ask TFPS).
+`refusal` is `rate` (with `retry_after_secs`), `in_doubt`, `journal` (sipnab
+cannot use the journal), or `tfps`.
+
+- `in_doubt`: actions wait for TFPS to answer for them, or for an unban of
+  their address. Either sipnab stopped before TFPS answered, or TFPS was
+  asked and sipnab could not read its answer.
+- `tfps`: either sipnab could not ask TFPS, or it asked and could not read
+  the answer.
+  - In the second case TFPS may have acted. That covers a timeout, a
+    non-zero exit with no result, and an answer that is not the JSON TFPS
+    has given since [`e7ee57a`](https://github.com/sippulse/tfps/commit/e7ee57a).
+  - The journal then holds the ban in doubt, and the message says so.
+  - The caller who asked, or a token with the `admin` scope, can lift it
+    with `tfps_unban`, and TFPS's answer settles it.
 
 The tool is `readOnlyHint: false` and `destructiveHint: true`, so a host that
 confirms destructive calls asks before this one. `idempotentHint: true`,
@@ -308,8 +319,8 @@ because banning a banned source changes nothing.
 Ask TFPS to release a source **sipnab banned**. Off by default, behind the
 same enabling, rules and limits as `tfps_ban`.
 
-sipnab lifts only a ban it placed and still holds, as its journal records. A
-ban TFPS placed itself, or anyone else did, is an error result with `refusal`
+sipnab lifts only a ban it placed and still holds, as its journal records,
+or one it asked for and holds in doubt. A ban TFPS placed itself, or anyone else did, is an error result with `refusal`
 `not_owned`, and sipnab does not ask TFPS. A ban belongs to the caller that
 placed it: another caller gets `refusal` `not_yours`, and the message names
 the owner, unless its token holds the `admin` scope. Because an address rests for a

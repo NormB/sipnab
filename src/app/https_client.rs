@@ -59,6 +59,11 @@ impl UrlUse {
         client: "the enricher",
         credentials: Some("[[vcon.enrich]] auth_file"),
     };
+    /// An instance URL in a `sipnab fleet` hosts file.
+    pub const FLEET: Self = Self {
+        client: "sipnab fleet",
+        credentials: Some("the host's token_file"),
+    };
     /// A URL sipnab reads without credentials: one named inside a vCon, a
     /// transparency service's `Location`, or the G.729 package download.
     pub const DOWNLOAD: Self = Self {

@@ -30,6 +30,7 @@ pub mod rates;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_holdings;
 pub mod talkers;
+pub mod th_mappings;
 pub mod timeline;
 pub mod tree;
 pub mod vcon_validate;

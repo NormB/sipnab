@@ -72,7 +72,9 @@ sipnab -N -I tests/pcap-samples/sip-rtp-g722.pcap --call-report 1-2161@10.0.2.20
 ## Declare an impairment factor for a codec
 
 If you know the `Ie` (equipment impairment factor) for a codec on your own
-network, declare it in the config file and sipnab scores with it. Put this in
+network, declare it in the config file and sipnab scores with it. It is one
+table in sipnab's config file: no other system changes, and every build reads
+it. Put this in
 `ie.toml`:
 
 ```toml
@@ -120,11 +122,15 @@ captured media. The one-way delay comes from the first of these that exists:
    sender-report echo, which reads as a lower bound;
 4. otherwise 100 ms, labeled `assumed`.
 
-MCP `rtp_stats` names the delay's source in each row's `delay` member.
+MCP `media_diagnostics` names the delay's source in each stream's `delay`
+member. MCP `rtp_stats` carries the round trip itself, as `round_trip_ms`
+and `round_trip_source`.
 
 What the far end reported about loss, jitter and its own quality score never
-moves sipnab's MOS. MCP `rtp_stats` returns it separately, under
-`endpoint_reported`, omitted when no RTCP arrived:
+moves sipnab's MOS. MCP `media_diagnostics` returns it separately, under
+`endpoint_reported`, omitted when no RTCP arrived
+([Measure call quality](call-quality.md#read-what-the-far-end-reported)
+shows one):
 
 | What the far end sent | Key under `endpoint_reported` | Carries |
 |---|---|---|

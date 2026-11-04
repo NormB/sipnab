@@ -54,13 +54,13 @@ A bundle is a named set of tools defined in sipnab's code.
 | Bundle | Tools | What its tools answer |
 |---|---|---|
 | [`core`](@/docs/mcp-tools-core.md) | 9 | The smallest set that answers what happened on one call, and whether the fault was in signaling or media, from listing the calls to the bytes that prove it. |
-| [`signaling`](@/docs/mcp-tools-signaling.md) | 20 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
+| [`signaling`](@/docs/mcp-tools-signaling.md) | 21 | Follow-up questions about SIP signaling: single messages, call flows, SDP negotiation, related call legs, RFC conformance, time windows, and reproducing a call. |
 | [`captures`](@/docs/mcp-tools-captures.md) | 11 | Capture files in the file root: listing, searching, comparing, opening and exporting them, and the evidence that ties a finding to captured bytes. |
 | [`security`](@/docs/mcp-tools-security.md) | 6 | Who sent what: scanner and fraud findings, the busiest sources, one endpoint's activity, registration problems, pass/fail expectations, and fail2ban rules. |
 | [`media`](@/docs/mcp-tools-media.md) | 4 | Where a call's media endpoints came from, why a stream has no dialog, the facts under a quality score, and audio export. |
 | [`relay`](@/docs/mcp-tools-relay.md) | 4 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
 | [`tfps`](@/docs/mcp-tools-tfps.md) | 7 | The toll-fraud prevention peer (TFPS): what it blocks and logs, and the operator's ban, unban and revert actions. |
-| [`server`](@/docs/mcp-tools-server.md) | 5 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, and shutdown. |
+| [`server`](@/docs/mcp-tools-server.md) | 6 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, the fleet inventory record, and shutdown. |
 | [`vcon`](@/docs/mcp-tools-vcon.md) | 7 | vCon conversation containers, exported, validated and analyzed, one at a time or a directory at once, read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
 | [`tls`](@/docs/mcp-tools-tls.md) | 3 | Reading SIP inside TLS without keys through kernel uprobes, and which TLS libraries this host runs. |
 
@@ -134,22 +134,22 @@ resource.
 
 | Bundle | Tools | Bytes (default) | Bytes with output schemas |
 |---|---|---|---|
-| core | 9 | 12,316 | 54,624 |
-| signaling | 20 | 22,474 | 58,619 |
+| core | 9 | 12,316 | 59,983 |
+| signaling | 21 | 23,576 | 76,040 |
 | captures | 11 | 12,723 | 30,211 |
 | security | 6 | 9,954 | 9,954 |
 | media | 4 | 3,480 | 16,048 |
-| relay | 4 | 4,199 | 19,988 |
-| tfps | 7 | 5,563 | 15,947 |
-| server | 5 | 5,394 | 27,452 |
-| vcon | 7 | 10,714 | 33,024 |
-| tls | 3 | 2,850 | 4,943 |
-| full | 76 | 89,667 | 270,810 |
+| relay | 4 | 4,199 | 20,607 |
+| tfps | 7 | 5,717 | 16,101 |
+| server | 6 | 5,976 | 35,136 |
+| vcon | 7 | 10,714 | 34,446 |
+| tls | 3 | 2,903 | 4,996 |
+| full | 78 | 91,558 | 303,522 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.222** on a build with every feature.
+> **Measured on sipnab 0.5.232 with `fleet_inventory` and `th_mappings` added** on a build with every feature.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -189,6 +189,7 @@ links to its section on the bundle's page.
 | [`find_in_captures`](@/docs/mcp-tools-captures.md#find-in-captures) | [captures](@/docs/mcp-tools-captures.md) | Which capture files hold dialogs matching a filter, without opening any of them; a sweep that outlasts its wait returns a job |
 | [`find_in_captures_status`](@/docs/mcp-tools-captures.md#find-in-captures-status) | [captures](@/docs/mcp-tools-captures.md) | A `find_in_captures` job's progress, or its result once it finishes |
 | [`find_problems`](@/docs/mcp-tools-core.md#find-problems) | [core](@/docs/mcp-tools-core.md) | A page of dialogs matching one or more diagnostic alias names |
+| [`fleet_inventory`](@/docs/mcp-tools-server.md#fleet-inventory) | [server](@/docs/mcp-tools-server.md) | What this process is, for a fleet controller: build, binary SHA-256, signature state, configuration digests, privilege, uptime and counters |
 | [`generate_fail2ban_rule`](@/docs/mcp-tools-security.md#generate-fail2ban-rule) | [security](@/docs/mcp-tools-security.md) | A fail2ban filter and jail derived from ONE recorded finding, with that finding attached as the evidence |
 | [`generate_repro`](@/docs/mcp-tools-signaling.md#generate-repro) | [signaling](@/docs/mcp-tools-signaling.md) | A SIPp scenario replaying one call, with the hypothesis as an input: `pin` holds the suspected cause fixed, `vary` regenerates identity |
 | [`generate_wireshark_filter`](@/docs/mcp-tools-signaling.md#generate-wireshark-filter) | [signaling](@/docs/mcp-tools-signaling.md) | A Wireshark display filter selecting one call's signaling and its RTP by SSRC, plus the tshark line that applies it |
@@ -230,6 +231,7 @@ links to its section on the bundle's page.
 | [`tfps_labels`](@/docs/mcp-tools-tfps.md#tfps-labels) | [tfps](@/docs/mcp-tools-tfps.md) | The TFPS verdict log -- blocked, would-block, exempt -- the export the label corpus harness scores the scanner detector against |
 | [`tfps_status`](@/docs/mcp-tools-tfps.md#tfps-status) | [tfps](@/docs/mcp-tools-tfps.md) | Whether the toll-fraud prevention peer (TFPS) runs on this host, and what it reports: enforcement, mode, interface, sources blocked now, database, version |
 | [`tfps_unban`](@/docs/mcp-tools-tfps.md#tfps-unban) | [tfps](@/docs/mcp-tools-tfps.md) | **Write, off by default.** Releases a source sipnab banned |
+| [`th_mappings`](@/docs/mcp-tools-signaling.md#th-mappings) | [signaling](@/docs/mcp-tools-signaling.md) | The OpenSIPS topology-hiding mappings held, one row each with its state and which legs sipnab captured, beside the event counts |
 | [`timeline`](@/docs/mcp-tools-signaling.md#timeline) | [signaling](@/docs/mcp-tools-signaling.md) | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
 | [`top_talkers`](@/docs/mcp-tools-security.md#top-talkers) | [security](@/docs/mcp-tools-security.md) | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
 | [`triage_call`](@/docs/mcp-tools-core.md#triage-call) | [core](@/docs/mcp-tools-core.md) | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
@@ -460,13 +462,15 @@ When `source_exhausted` is `false`, `total_matched` counts only what had
 loaded. Repeat the call, or poll `capture_status` until `source_exhausted`
 reads `true`, before treating a count as final.
 
-Twenty-one tools are the exception, because their answer cannot move with
+Twenty-two tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Twelve read something other than the capture store:
+- Thirteen read something other than the capture store:
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;
+  - `fleet_inventory`, which describes the process and returns the same
+    document as the REST inventory route;
   - `vcon_spool_status`, which counts the vCon export spool that the
     forwarder drains;
   - `compare_captures`, which reads two files and never the loaded capture;
@@ -769,6 +773,7 @@ which:**
 |---|---|---|---|
 | `security_findings` | Yes, `total_matched` | Its source is a ring buffer whose default depth is 1000, the same as the maximum `limit`, so one call reaches all of it | Raise `limit`, and narrow with `since` |
 | `find_correlated` | Yes, `total_matched` | A ranking by score: a later page would hold weaker matches, not the rest of a list | Raise `limit` |
+| `th_mappings` | Yes, `total_matched` | One answer narrowed by Call-ID and state, ordered by state, and the same fields and values `GET /v1/th-mappings` returns | Raise `limit`, or narrow with `call_id` or `state` |
 | `get_call_tree` | No, `truncated` only | A breadth-first walk outward from one call, stopped at `limit` legs | Raise `limit` |
 | `top_talkers` | Yes, `distinct_talkers` | A ranking by dialog count | Raise `limit` |
 | `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `updated_at`, which moves each time a call gains a message, so a cursor on it would skip rows | [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |

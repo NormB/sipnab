@@ -67,6 +67,16 @@ fn clap_long_flags() -> BTreeSet<String> {
         }
     }
     flags.insert("g729 --help".into());
+    // `sipnab fleet inventory` likewise, keyed `fleet `.
+    let fleet = sipnab::cli::fleet_args::FleetCli::command();
+    for cmd in std::iter::once(&fleet).chain(fleet.get_subcommands()) {
+        for a in cmd.get_arguments() {
+            if let Some(l) = a.get_long() {
+                flags.insert(format!("fleet --{l}"));
+            }
+        }
+    }
+    flags.insert("fleet --help".into());
     flags
 }
 
@@ -111,6 +121,9 @@ fn flags_in(text: &str) -> BTreeSet<String> {
             let command = if tokens.peek() == Some(&"g729") {
                 tokens.next();
                 "g729 "
+            } else if tokens.peek() == Some(&"fleet") {
+                tokens.next();
+                "fleet "
             } else {
                 ""
             };

@@ -28,8 +28,8 @@ pub struct CallTreeLeg {
     pub score: Option<u8>,
     /// Which strategy matched this edge. Null for the root.
     pub strategy: Option<String>,
-    /// How the edge was made: `decoded`, `header`, `sdp` or `timing`, as on
-    /// `/v1/dialogs/{call_id}/correlated`. Null for the root.
+    /// How the edge was made: `decoded`, `mapping`, `header`, `sdp` or
+    /// `timing`, as on `/v1/dialogs/{call_id}/correlated`. Null for the root.
     pub method: Option<String>,
     /// Whether the edge compared identifiers rather than guessing. Null for
     /// the root, which the caller named rather than the walk matching.
@@ -37,6 +37,11 @@ pub struct CallTreeLeg {
     /// Whether the walk continued THROUGH this leg. False on a leg reached
     /// by a timing guess, and on any leg the cap cut the walk short of.
     pub followed: bool,
+    /// This leg's own OpenSIPS topology-hiding status, as on
+    /// `/v1/dialogs/{call_id}/correlated`: `decoded`, `no_secret`,
+    /// `undecodable`, `unmatched`, `mapped` or `conflict`. Null when the leg
+    /// is not a hidden leg.
+    pub th_callid: Option<crate::sip::dialog_store::ThCallidStatus>,
 }
 
 /// The tree of legs reachable from one call across a B2BUA, SBC or PBX.
@@ -100,6 +105,7 @@ pub fn call_tree(
             method: leg.method.map(|m| m.as_str().to_string()),
             identifier_match: leg.identifier_match,
             followed: leg.followed,
+            th_callid: leg.th_callid,
         })
         .collect();
     Some(CallTree {
@@ -148,12 +154,16 @@ pub fn render(answer: &CallTree, format: ReportFormat) -> String {
                     None => "-".to_string(),
                 },
                 if leg.followed { "yes" } else { "no" }.to_string(),
+                leg.th_callid
+                    .map_or_else(|| "-".to_string(), |s| s.as_str().to_string()),
             ]
         })
         .collect();
     out.push_str(&super::table(
         format,
-        &["Leg", "Strategy", "Method", "Score", "Match", "Followed"],
+        &[
+            "Leg", "Strategy", "Method", "Score", "Match", "Followed", "TH",
+        ],
         &rows,
     ));
     if answer.truncated {
@@ -167,6 +177,47 @@ pub fn render(answer: &CallTree, format: ReportFormat) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// Every tree leg carries its own topology-hiding status: the hidden leg
+    /// says `decoded`, the caller leg none.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn tree_legs_name_their_th_status() -> Result<(), Box<dyn std::error::Error>> {
+        let (ds, caller, hidden) = crate::test_utils::th_hidden_call_store("right", Some("right"))?;
+        let t = super::call_tree(&ds, &caller, 10, None).ok_or("known")?;
+        let h = t
+            .legs
+            .iter()
+            .find(|l| l.call_id == hidden)
+            .ok_or("hidden leg")?;
+        assert_eq!(
+            h.th_callid.map(|s| s.as_str()),
+            Some("decoded"),
+            "the hidden leg names its own status"
+        );
+        let c = t
+            .legs
+            .iter()
+            .find(|l| l.call_id == caller)
+            .ok_or("caller leg")?;
+        assert!(c.th_callid.is_none(), "the caller leg is not hidden");
+        let text = super::render(&t, crate::output::ReportFormat::Text);
+        assert!(
+            text.lines()
+                .any(|l| l.split_whitespace().any(|w| w == "TH")),
+            "the table has a TH column: {text}"
+        );
+        let row = text
+            .lines()
+            .find(|l| l.contains(hidden.as_str()))
+            .ok_or("the hidden leg has a row")?;
+        assert_eq!(
+            row.split_whitespace().last(),
+            Some("decoded"),
+            "the hidden leg's row ends with its own status, the TH column: {row}"
+        );
+        Ok(())
+    }
 
     /// T13 (REST `/v1/dialogs/{id}/tree` and `--call-tree`): the decoded edge
     /// names its method, and the root, which has no edge, names none.

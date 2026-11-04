@@ -2193,6 +2193,11 @@ static SPECS: &[Spec] = &[
         Kind::Switch,
         &["--hep-listen", "127.0.0.1:0"],
     ),
+    (
+        "th-mappings",
+        Kind::Switch,
+        &["--hep-listen", "127.0.0.1:0"],
+    ),
     ("hep-parse", Kind::Switch, &[]),
     ("no-hep-parse", Kind::Switch, &[]),
     (

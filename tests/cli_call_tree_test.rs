@@ -101,7 +101,15 @@ fn the_table_indents_legs_by_depth_and_names_the_strategy() -> Result<(), TestEr
     let words: Vec<&str> = leg.split_whitespace().collect();
     assert_eq!(
         words,
-        vec![B_LEG, "timing_heuristic", "timing", "50", "guess", "no"],
+        vec![
+            B_LEG,
+            "timing_heuristic",
+            "timing",
+            "50",
+            "guess",
+            "no",
+            "-"
+        ],
         "{out}"
     );
     Ok(())

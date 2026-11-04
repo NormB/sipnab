@@ -958,6 +958,9 @@ Seconds a \fB\-\-hep\-listen\fR listener may go without ADMITTING a packet befor
 \fB\-\-hep\-senders\fR
 At the end of a headless run, print who fed the \fB\-\-hep\-listen\fR listener: each sender (the capture id it claims and the address it sent from), its packet count, when it was last heard and whether it went silent, and every address the listener refused with the reasons. With \fB\-\-json\fR, the same as one JSON object on the last line of stdout \(em the shape \fBGET /v1/hep/senders\fR and the MCP \fBhep_senders\fR tool return. Refused without \fB\-\-hep\-listen\fR, which is the side it describes.
 .TP
+\fB\-\-th\-mappings\fR
+At the end of a headless run, print the OpenSIPS topology\-hiding mappings the \fB\-\-hep\-listen\fR listener received in \fBE_SIPNAB_TH_MAP\fR events: one row per mapping with its caller\-side and callee\-side Call\-IDs, its state (\fBconflict\fR, \fBpending\fR or \fBjoined\fR) and whether each leg was captured, after the event counts and the hidden legs by status. With \fB\-\-json\fR, the same as one JSON object on the last line of stdout \(em the shape \fBGET /v1/th\-mappings\fR and the MCP \fBth_mappings\fR tool return. Refused without \fB\-\-hep\-listen\fR, where the events arrive.
+.TP
 \fB\-E\fR, \fB\-\-hep\-parse\fR
 Parse incoming HEP packets (enable HEP decoding). Config: \fB[capture] hep_parse\fR; \fB\-\-no\-hep\-parse\fR turns it off again.
 .TP
@@ -1072,8 +1075,8 @@ Mint a signed bearer token from the first configured signing key, print it to st
 Token id (jti) for \-\-mint\-token. Defaults to a derived unique id.
 .TP
 \fB\-\-token\-scope\fR \fISCOPE\fR
-Scope for \-\-mint\-token: \fBfull\fR (default), \fBmetrics\fR, \fBread\fR, \fBactions\fR or \fBaudio\fR.
-Values: \fBfull\fR, \fBmetrics\fR, \fBread\fR, \fBactions\fR, \fBadmin\fR, \fBaudio\fR.
+Scope for \-\-mint\-token: \fBfull\fR (default), \fBmetrics\fR, \fBread\fR, \fBactions\fR, \fBadmin\fR, \fBaudio\fR or \fBinventory\fR.
+Values: \fBfull\fR, \fBmetrics\fR, \fBread\fR, \fBactions\fR, \fBadmin\fR, \fBaudio\fR, \fBinventory\fR.
 Default: \fBfull\fR.
 .SS vCon forwarder
 .TP

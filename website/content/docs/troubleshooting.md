@@ -45,6 +45,13 @@ the cause from there.
 | `Failed to create output file` for a `-O` path, or for a `--split` file mid-run | [An output file sipnab cannot create](#an-output-file-sipnab-cannot-create) |
 | sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
 | sipnab refused to start, or stopped with an error message | [Error messages](@/docs/errors.md): look up the message by its text |
+| The systemd service does not start, or stops and stays down | [A service that does not start](#a-service-that-does-not-start) |
+| `Permission denied on 'eth0'` on a live capture | [Live capture says Permission denied](#live-capture-says-permission-denied) |
+| A run under `sudo` stops with `Permission denied` on a key, token or certificate file | [A key file sipnab cannot read after the drop](#a-key-file-sipnab-cannot-read-after-the-drop) |
+| A client of the REST API, MCP or metrics gets `401`, `403`, `404` or `503` | [A client the listener turns away](#a-client-the-listener-turns-away) |
+| A client or HEP sender fails the TLS handshake | [A TLS handshake that fails](#a-tls-handshake-that-fails) |
+| A setting in `sipnab.toml` has no effect | [A setting that has no effect](#a-setting-that-has-no-effect) |
+| The disk fills, or memory grows, on a long run | [A long run that fills the disk or the memory](#a-long-run-that-fills-the-disk-or-the-memory) |
 | Nothing yet -- you have a capture and a complaint | [Start here](#start-here-one-pass-over-everything) |
 
 Whatever the symptom, three things decide whether the answer is in the capture
@@ -594,6 +601,13 @@ sudo sipnab -N -d eth0 --filter "rtp.mos < 3.0 OR rtp.jitter > 50" --json
 - Loss is high:
   - First rule out sipnab itself.
   - Then run a path MTR/traceroute to find where packets are dropping.
+- The run logs a warning that starts `IMPOSSIBLE RATE:`: sipnab read the
+  same traffic twice, such as a capture and its copy in one `-I` directory.
+  [Measure call quality](@/docs/call-quality.md#when-something-does-not-work) quotes
+  the warning in full. Every count and rate in that run is too high,
+  the loss and MOS included. Read one copy.
+- To see when in the call the quality changed, and what the far end reported
+  over RTCP, see [Measure call quality](@/docs/call-quality.md).
 
 > **Before you chase high loss on the network, check whether *sipnab* dropped the packets.**
 >
@@ -1620,6 +1634,143 @@ reason.
   - A run without it may still say `Permission denied`.
   - That means your own account may not write there.
 
+## A service that does not start
+
+`systemctl status sipnab` names the exit status, and `journalctl -u sipnab -n
+20` the reason. sipnab prints that reason at every log level.
+
+- **Exit status 2**: a flag, or a pair of flags, sipnab refuses. The usual one
+  on a service is a listener bound to a routable address with no credential:
+
+  ```text
+  REST API refuses to start: --api 0.0.0.0:18080 is non-loopback but no --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was supplied. Bind 127.0.0.1, or configure authentication.
+  ```
+
+- **Exit status 1**: a runtime failure, or a value in `sipnab.toml` it
+  refuses. A HEP listener with no allowlist or secret also exits 1.
+- **Exit status 101**: sipnab panicked. See
+  [Send us a crash report](#send-us-a-crash-report).
+- **Active, then `inactive` with `Result=success`**: something sent `SIGHUP`.
+  sipnab does not handle it, systemd counts it as a clean stop, and
+  `Restart=on-failure` leaves the service down. Start it again.
+
+[A service that does not start](@/docs/run-as-a-service.md#a-service-that-does-not-start)
+lists each refusal message with its fix.
+
+## Live capture says Permission denied
+
+```text
+Permission denied on 'eth0'. Grant capture capabilities once (Linux), then re-run without sudo:
+```
+
+The process lacks `CAP_NET_RAW` and `CAP_NET_ADMIN`. Which fix applies
+depends on how sipnab runs:
+
+| How it runs | Cause | Fix |
+|---|---|---|
+| From a shell, as your user | The binary has no file capabilities, or an upgrade replaced it and cleared them | `sudo sipnab --setup-caps` |
+| Under systemd with `NoNewPrivileges=true` | `NoNewPrivileges` stops file capabilities taking effect, so `setcap` cannot help | `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` in the unit ([Write a unit of your own](@/docs/run-as-a-service.md#write-a-unit-of-your-own)) |
+| In the release container image | The image runs as the non-root user `sipnab`, which gets no capabilities, even with `--cap-add` | `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
+
+The lines under the message suggest `--setup-caps`, `sudo` and `setcap`
+whatever the cause. In the last two rows none of them helps.
+
+## A key file sipnab cannot read after the drop
+
+```text
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+metrics auth: --metrics-auth-file '/root/metrics.auth': Permission denied (os error 13)
+```
+
+A run started as root drops to `nobody`, or to the `--user` account, right
+after it opens the capture. It reads these files after the drop, as that
+account:
+
+- `--api-signing-key-file`, `--mcp-signing-key-file`, `--mcp-token-file`;
+- `--metrics-auth-file`;
+- the REST, MCP and metrics certificates and keys;
+- a HEP sender's `--hep-auth-file`.
+
+A file only root can read stops the run with exit status 2. For an MCP
+certificate or key the message is the path alone, such as
+`/etc/sipnab/mcp.key`. Run with `--user sipnab` and make the files
+`root:sipnab` mode `640`, as [Make a certificate](@/docs/auth.md#make-a-certificate)
+shows. A systemd unit with `User=sipnab` reads them as `sipnab` from the
+start.
+
+## A client the listener turns away
+
+| Answer | Listener | Cause |
+|---|---|---|
+| `401` | REST API, MCP | No bearer token, an expired or revoked one, one from the other surface's key, or one scoped too narrowly for the route. A `metrics` token gets `401` on `/v1/stats` |
+| `401` | MCP `/health` | No token: on MCP, `/health` needs one. The REST API's `/health` does not |
+| `401` | metrics | No HTTP Basic credential, on a routable bind |
+| `403` | REST API, MCP | The `Host` header names a host not on `--api-allowed-host` or `--mcp-allowed-host` |
+| `404` | metrics `/health` | The standalone metrics server has no `/health`. Check `/metrics` instead |
+| `503` | REST API, MCP, metrics | The client is over its rate limit or the in-flight cap. The limiter runs before authentication, so `503` says nothing about the credential |
+
+[Use a token](@/docs/auth.md#use-a-token) explains each REST and MCP status, and how
+to read the `WWW-Authenticate` challenge MCP adds to a `401`.
+
+## A TLS handshake that fails
+
+- **curl exits 60 with `SSL certificate problem: unable to get local issuer
+  certificate`.** The client does not trust the issuer of sipnab's
+  certificate. Pass it with `--cacert ca.pem`.
+- **curl exits 1, or a client reports a reset, against an `http://` URL.** The
+  listener serves HTTPS only once it has a certificate. Use `https://`.
+- **A HEP sender stops at startup with exit status 2:**
+
+  ```text
+  Failed to create HEP sender: Failed to establish a TLS session with '127.0.0.1:19063': invalid peer certificate: UnknownIssuer
+  ```
+
+  The sender does not trust the collector's issuer. Name it with
+  `--hep-tls-ca`. The listener logs nothing for the failed handshake at the
+  default level, so this line on the sender is the evidence.
+- **A HEP sender in the release container image stops with `no system CA
+  bundle found; name the collector's issuer with --hep-tls-ca`.** The image
+  has no CA bundle. Mount the issuer's certificate and name it.
+
+[API TLS](@/docs/api.md#api-tls), [MCP TLS](@/docs/mcp-deploy.md#mcp-tls) and
+[Carry the feed over TCP and TLS](@/docs/cookbook.md#carry-the-feed-over-tcp-and-tls)
+set each listener up.
+
+## A setting that has no effect
+
+Ask sipnab which file it read and what it made of it:
+
+```bash
+sipnab -D --config /etc/sipnab/sipnab.toml
+```
+
+Then check, in order:
+
+- **A misspelled key.** sipnab ignores an unknown key and warns:
+  `WARN sipnab::config: Unknown config key: capture.snaplenn`. In the terminal
+  interface that warning does not show unless you set `SIPNAB_LOG`: a TUI run
+  logs errors only by default.
+- **Another file.** sipnab reads only the first file it finds. `-D` prints
+  `# Loaded from:` and, when a later candidate also exists, `# Also present
+  and NOT read:`. See [File Locations](@/docs/config.md#file-locations).
+- **A flag.** A flag beats the same key in the file. A systemd unit or drop-in
+  may pass one.
+- **A running service.** sipnab reads the file at startup only. Restart it.
+
+## A long run that fills the disk or the memory
+
+- **Disk.** A live run with `-O` writes one file until it stops. Add
+  `--split filesize:N` and `--split-keep N` to keep a fixed number of files
+  ([Run a capture that stops on its own](@/docs/cookbook.md#run-a-capture-that-stops-on-its-own)).
+  The audit and provenance files grow without limit: rotate them with
+  `logrotate` and `copytruncate`
+  ([Rotate the audit and provenance files](@/docs/run-as-a-service.md#rotate-the-audit-and-provenance-files)).
+- **Memory.** sipnab holds the dialogs, streams and findings of the whole run,
+  up to caps that evict the oldest
+  ([Keep a long-running capture inside a memory
+  budget](@/docs/cookbook.md#keep-a-long-running-capture-inside-a-memory-budget)).
+  A restart empties them.
+
 ## Send us a crash report
 
 When sipnab hits a bug it cannot recover from, it stops. It prints two lines
@@ -1661,6 +1812,17 @@ ls -t ~/.local/state/sipnab/sipnab-crash-*.log | head -1
 - **Send it.** [Open an issue](https://github.com/NormB/sipnab/issues/new/choose).
   - Attach the `.log` file.
   - Add the output of `sipnab --version` and the command you ran.
+
+Under a systemd unit, the default report directory may not be writable. The
+journal then holds the report's text and the line `failed to write crash
+report: Read-only file system (os error 30)`. Copy the text from the journal,
+and see [Keep crash reports](@/docs/run-as-a-service.md#keep-crash-reports).
+
+A panic in the parser of one input does not stop the run. sipnab drops that
+frame, packet, record or archive member, logs one warning such as
+`contained a panic at <location>: <message>`, and goes on. It writes no
+crash report for it. Send that line, with `sipnab --version` and the input if
+you can share it.
 
 A core dump is not needed, and it is not safe to share.
 

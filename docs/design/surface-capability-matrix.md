@@ -411,6 +411,17 @@ Who is feeding this collector's HEP listener, who went silent, and who is it tur
 | REST | `/v1/hep/senders` |
 | MCP | `hep_senders` |
 
+### Topology-hiding mappings
+
+Which OpenSIPS topology-hiding mappings does sipnab hold, and why did one call not join?
+
+| Surface | Detail |
+|---|---|
+| CLI | `--th-mappings` |
+| TUI | gap: the statistics view shows the mapping counts, and no view lists the mappings themselves |
+| REST | `/v1/th-mappings` |
+| MCP | `th_mappings` |
+
 ### Runtime cost
 
 What is sipnab costing the host — its memory, threads, CPU, load-bearing share?
@@ -610,6 +621,17 @@ What did this build compile in, and what did the operator turn on?
 | TUI | decision: the `Help` view's version line shows the feature list, and the structured opt-in contract is machine-only |
 | REST | `/v1/capabilities` |
 | MCP | `server_capabilities` |
+
+### Fleet inventory
+
+Which build, binary and configuration is this process running, as one record a fleet controller compares across instances?
+
+| Surface | Detail |
+|---|---|
+| CLI | decision: `sipnab fleet inventory` reads this record from each instance's REST API, and an instance has no reason to print its own when `--version` names its build |
+| TUI | decision: a fleet controller is a program that polls many instances, not a human at one instance's screen |
+| REST | `/v1/inventory` |
+| MCP | `fleet_inventory` |
 
 ### Remote lifecycle stop
 

@@ -242,6 +242,27 @@ Call-ID                                                      Streams
 - There is no SDP on this machine. So the report shows the DTMF streams' codec
   as `?`.
 
+## See when the proxy retries a command
+
+A SIP proxy that hears no answer from rtpproxy in time sends the same command
+again, with the same cookie. rtpproxy answers the repeat from its reply
+cache. sipnab counts the repeats, and at the end of the run logs one line per
+control socket that saw any:
+
+```text
+WARN sipnab::app::batch: rtpproxy at 127.0.0.1:7722: 1 of 5 control commands were retried (the same cookie sent again), 1 after the relay's answer was already on the wire. A retry means the proxy did not hear an answer in time; one sent after the answer means that answer was lost or late on its way back.
+```
+
+- Retries before the answer mean rtpproxy was slow to answer.
+- Retries after the answer mean the answer got lost or arrived late on its
+  way back to the proxy.
+- From the SIP side, either looks only like a proxy that is sometimes slow.
+
+A run with no retries logs nothing about them. This line came from sipnab
+0.5.232 watching an rtpproxy 2.1.1 control socket in the repository's harness,
+with one command sent twice by hand, and the socket written here as this
+guide's `127.0.0.1:7722`.
+
 ## When something does not work
 
 - **The report shows calls but `0 RTP packets`.** sipnab's filter admitted

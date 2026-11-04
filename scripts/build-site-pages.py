@@ -153,6 +153,16 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "the commands it gives, in order.",
     ),
     (
+        "docs/call-quality.md",
+        "call-quality.md",
+        "Measure call quality",
+        "Measure call quality",
+        69,
+        "Read each stream's MOS, R-factor, jitter and loss, see when in the "
+        "call they changed, read what the far end reported over RTCP, and set "
+        "the thresholds and alerts that act on them.",
+    ),
+    (
         "docs/tui-walkthrough.md",
         "tui.md",
         "Walk through the terminal UI",
@@ -299,6 +309,18 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Several SIP servers feeding one capture host, reaching sipnab from "
         "outside the network, one agent holding many capture hosts, and "
         "following one call across an SBC, a proxy and a PBX.",
+    ),
+    (
+        "docs/fleet.md",
+        "fleet.md",
+        "Manage many sipnab instances",
+        "Manage many sipnab instances",
+        # 66: the first weight free on the SITE side, which
+        # `docs_page_weights_are_unique_and_descriptions_present` reads.
+        66,
+        "One table of every sipnab instance's build, binary and "
+        "configuration digests, privilege and uptime, the instances that "
+        "did not answer, and HEP senders nobody listed.",
     ),
     (
         "docs/mcp-tools.md",
@@ -570,6 +592,21 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "format, audience binding, configuring a signing key, minting tokens, "
         "expiry and key rotation.",
     ),
+    # Registered with the page itself, for the reason the tuning-capture entry
+    # records: install.md, examples.md and mcp-deploy.md link it, and an
+    # unregistered page would exist only on the wiki. Weight 67: this page
+    # took 66 on its branch while docs/fleet.md took 66 on its own; the two
+    # met in the 2026-11-04 merge train and 67 was the next free weight.
+    (
+        "docs/run-as-a-service.md",
+        "run-as-a-service.md",
+        "Run sipnab as a service",
+        "Run sipnab as a service",
+        67,
+        "Start and change the packaged systemd unit, write one of your own, "
+        "read the log, signals and crash reports, rotate the audit files, and "
+        "read a service that does not start.",
+    ),
     # The four "add it to your voice stack" guides (2026-09-25). 40-43 were
     # the next free weights on the SITE side; sidebar order comes from the
     # nav group in website/config.toml.
@@ -665,6 +702,16 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "Have sipnab name the media on an rtpproxy relay from the relay's "
         "control traffic, with the relay on the same machine as the SIP proxy "
         "or its own.",
+    ),
+    (
+        "docs/relay-statistics.md",
+        "relay-statistics.md",
+        "Ask a media relay about itself",
+        "Ask a media relay about itself",
+        68,
+        "Ask rtpengine for its own counters, the calls it holds and its count "
+        "for one call beside sipnab's, from the command line, REST, MCP or the "
+        "terminal UI.",
     ),
     (
         "docs/homer.md",

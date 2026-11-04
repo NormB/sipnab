@@ -117,6 +117,12 @@ const FOREIGN_TOML: &[(&str, &str, &str)] = &[
         "Codex CLI: its MCP server table",
     ),
     (
+        "docs/fleet.md",
+        "host",
+        "the `sipnab fleet inventory` hosts file, which \
+         tests/fleet_inventory_test.rs parses with the command's own parser",
+    ),
+    (
         "docs/mcp-tools-security.md",
         "rules",
         "an expectation suite: the text `evaluate_expectations` takes in `rules_toml`",

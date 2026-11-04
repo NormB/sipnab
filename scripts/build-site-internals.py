@@ -255,6 +255,7 @@ DOCS_TO_SITE = {
     "examples.md": "cookbook.md",
     "real-world-captures.md": "real-world-captures.md",
     "troubleshooting.md": "troubleshooting.md",
+    "call-quality.md": "call-quality.md",
     "rtpengine.md": "rtpengine.md",
     "tui-walkthrough.md": "tui.md",
     "keybindings.md": "keybindings.md",
@@ -273,6 +274,7 @@ DOCS_TO_SITE = {
     "mcp.md": "mcp.md",
     "mcp-deploy.md": "mcp-deploy.md",
     "mcp-estate.md": "mcp-estate.md",
+    "fleet.md": "fleet.md",
     "mcp-tools.md": "mcp-tools.md",
     "mcp-tools-core.md": "mcp-tools-core.md",
     "mcp-tools-signaling.md": "mcp-tools-signaling.md",
@@ -290,6 +292,10 @@ DOCS_TO_SITE = {
     "benchmarks.md": "benchmarks.md",
     "plugins.md": "plugins.md",
     "auth.md": "auth.md",
+    # Registered with the page, for the reason the tuning-capture entry below
+    # records: install.md, examples.md and mcp-deploy.md link it, and an
+    # unregistered target rewrites to a GitHub blob URL on the site.
+    "run-as-a-service.md": "run-as-a-service.md",
     "tls-capture.md": "tls-capture.md",
     "integrations.md": "integrations.md",
     "internals/profiling.md": "internals/profiling.md",
@@ -316,6 +322,7 @@ DOCS_TO_SITE = {
     "rtpengine-sipnab.md": "rtpengine-sipnab.md",
     "rtpproxy-relay.md": "rtpproxy-relay.md",
     "rtpproxy-sipnab.md": "rtpproxy-sipnab.md",
+    "relay-statistics.md": "relay-statistics.md",
     "homer.md": "homer.md",
     "homer-sipnab.md": "homer-sipnab.md",
     "prometheus.md": "prometheus.md",

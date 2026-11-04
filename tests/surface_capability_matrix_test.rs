@@ -59,6 +59,9 @@ const GAP_LEDGER: &[(&str, &str)] = &[
     // CLI query batch B4: gates and the relay.
     // TUI (PAR4).
     ("Whole-capture report", "TUI"),
+    // The mapping listing arrived on the CLI, REST and MCP together; the TUI
+    // shows the counts only.
+    ("Topology-hiding mappings", "TUI"),
     // REST: the vCon directory report arrived on the CLI (`--report`) and
     // MCP (`vcon_directory_report`) first.
     ("Report a directory of stored vCons", "REST"),

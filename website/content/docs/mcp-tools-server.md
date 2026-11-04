@@ -24,6 +24,7 @@ the other bundles and finds any tool by name.
 |---|---|---|
 | [`runtime_stats`](#runtime-stats) | `sample_seconds?` | What sipnab is doing and what it costs the host: its own memory, threads, descriptors and CPU; the host's totals and the basis they came from; its share of them and whether that share is load-bearing; per-interface counters; store occupancy against the caps |
 | [`capture_health`](#capture-health) | `sample_seconds` | Capture-path counters read twice: run totals, deltas across the window, `undecoded_fraction`, and undecodable frames by reason |
+| [`fleet_inventory`](#fleet-inventory) | -- | What this process is, for a fleet controller: build, binary SHA-256, signature state, configuration digests, privilege, uptime, interface, capture and HEP counters, and HEP sender addresses |
 | [`hep_senders`](#hep-senders) | `limit?` | Who feeds this run's HEP listener: each sender, its count, when it was last heard and whether it went silent, and every address the listener refused, by reason |
 | [`server_capabilities`](#server-capabilities) | -- | sipnab version, the optional features this binary carries, and the libpcap it runs |
 | [`shutdown_server`](#shutdown-server) | `dry_run?`, `save_to?`, `discard_unsaved?` | **Destructive.** Stops the process. Needs `--mcp-allow-shutdown`; dry-run by default |
@@ -38,7 +39,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 What sipnab is doing, and what it is costing the host it runs on.
 
 Use it to answer "is this server healthy" without a metrics listener. sipnab
-exports 49 Prometheus metrics, and the listener that serves them is off by
+exports 51 Prometheus metrics, and the listener that serves them is off by
 default. This tool reports process, host and store state over MCP without
 that listener.
 
@@ -441,6 +442,69 @@ roster. The MCP answer differs in two ways: its keys are in alphabetical order,
 and it adds `source_exhausted` and `source_stopped_early`. `--hep-senders`
 prints the roster at the end of a headless run.
 
+### `fleet_inventory`
+
+What this sipnab process is, for a fleet controller that manages many
+instances: its build, the SHA-256 of its binary, its configuration as digests,
+its privilege, its uptime and its counters. Starts nothing and waits for
+nothing.
+
+**Parameters:** none.
+
+The example ran on 2026-11-03 with a development build, against
+[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap)
+with `--node-name edge-a --no-config`:
+
+```jsonc
+// fleet_inventory {}
+{
+  "schema_version": 1,
+  "node_name": "edge-a",
+  "build": {
+    "version": "0.5.232", "commit": "29204db7", "tag": "", "dirty": true,
+    "target": "aarch64-unknown-linux-gnu",
+    "features": ["api", "archive", "audio", "g729", "hep", "mcp", "mcp-http", "metrics",
+                 "native", "opus", "plugins", "tls", "tui", "vcon"],
+    "version_line": "0.5.232 (29204db7-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729"
+  },
+  "binary": {
+    "sha256": "3242a3324b1c3ac762ba15d4f2eec3789a995533540b8aee56ec087afdc51ea8",
+    "error": null
+  },
+  "signature": {
+    "state": "unverified",
+    "note": "sipnab does not verify its own binary. Compare binary.sha256 with SHA256SUMS.txt of the release, after `gh attestation verify SHA256SUMS.txt --repo NormB/sipnab`."
+  },
+  "config": {
+    "recorded": true, "source": null, "shadowed": [], "file_sha256": null,
+    "parsed_sha256": "afa5e308cbb51683fe7ac0ca79e2a33f601530f33439211dd29586c9db0c7d75",
+    "argv_sha256": "cb86e74e2f7d2f54c2e75c3cb01976de06c9658406112c318c5f290cf606418d",
+    "effective_sha256": "aee2e58c08b314be6538cf9ccf1dfddb992992c4e7336a4d256373b67be72130"
+  },
+  "privilege": { "uid": 1000, "root": false, "dropped_to": null },
+  "process": { "pid": 3985285, "started": "2026-11-03T13:26:30Z", "uptime_seconds": 1 },
+  "interfaces": [],
+  "counters": {
+    "capture_packets_total": 852, "capture_sources_refused_total": 0,
+    "capture_backpressure_blocks_total": 0, "hep_export_failures_total": null,
+    "hep_export_dropped_total": null, "hep_export_queue_depth": null
+  },
+  "hep_listener": { "listening": false, "packets_refused": 0, "senders": [] }
+}
+```
+
+- No configuration value and no command-line argument is in the answer, only
+  their SHA-256 digests. A secret in either changes a digest and never appears.
+- `signature.state` is always `unverified`. Compare `binary.sha256` with the
+  release's attested `SHA256SUMS.txt`.
+- Every field is the process's own claim.
+
+`GET /v1/inventory` returns the same document, from the same builder. Unlike
+most tools, the answer carries no `source_exhausted` or `source_stopped_early`:
+it describes the process, not a result read from the capture. A `read` token
+reaches this tool. [Manage many
+sipnab instances](@/docs/fleet.md) reads the REST route from every instance.
+
 ### `server_capabilities`
 
 What this binary can do, what this server permits and loaded, the limits it
@@ -492,7 +556,7 @@ opt-in flags:
     "evaluate_expectations", "explain_attribution", "explain_response_code",
     "explain_rule", "export_audio", "export_capture", "export_vcon", "fetch_vcon",
     "find_correlated", "find_in_captures", "find_in_captures_status", "find_problems",
-    "generate_fail2ban_rule", "generate_repro", "generate_wireshark_filter",
+    "fleet_inventory", "generate_fail2ban_rule", "generate_repro", "generate_wireshark_filter",
     "get_call_tree", "get_capture_report", "get_dialog", "get_dialog_report",
     "get_message", "get_sdp_timeline", "group_dialogs", "hep_senders", "lint_dialog",
     "list_captures", "list_dialogs", "list_tls_libraries", "media_diagnostics",
@@ -501,7 +565,7 @@ opt-in flags:
     "search_messages", "security_findings", "server_capabilities", "show_evidence",
     "shutdown_server", "siprec_metadata", "start_tls_capture", "stop_tls_capture",
     "tail_dialogs", "tfps_ban", "tfps_banned", "tfps_dropped", "tfps_labels",
-    "tfps_status", "tfps_unban", "timeline", "top_talkers", "triage_call",
+    "tfps_status", "tfps_unban", "th_mappings", "timeline", "top_talkers", "triage_call",
     "validate_filter", "validate_message", "validate_vcon", "vcon_directory_report",
     "vcon_spool_status"
   ],

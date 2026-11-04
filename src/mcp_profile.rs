@@ -104,6 +104,7 @@ pub const BUNDLES: &[(&str, &[&str])] = &[
             "render_ladder",
             "search_by_time",
             "tail_dialogs",
+            "th_mappings",
             "timeline",
             "validate_filter",
             "validate_message",
@@ -165,6 +166,7 @@ pub const BUNDLES: &[(&str, &[&str])] = &[
         "server",
         &[
             "capture_health",
+            "fleet_inventory",
             "hep_senders",
             "runtime_stats",
             "server_capabilities",

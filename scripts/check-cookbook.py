@@ -156,7 +156,7 @@ VCON_SUFFIX = ".vcon.json"
 # first. Measured 2026-09-25: the second run of recipe "Export every failed call as a redacted vCon in one pass" exits 1 with
 # "--redact-map './redact-map.json' already exists".
 OUTPUT_FLAGS = frozenset({
-    "-O", "--output",
+    "-O", "--output", "--export-audio-out",
     "--export-vcon-dir", "--vcon-out", "--redact-map", "--evidence-out",
     "--run-provenance-file", "--tui-audit-file", "--mcp-audit-file",
 })

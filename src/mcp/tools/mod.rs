@@ -28,6 +28,7 @@ pub mod expectations;
 #[cfg(all(feature = "mcp", feature = "hep"))]
 pub mod hep;
 pub mod inspect;
+pub mod inventory;
 pub mod provenance;
 pub mod relay;
 pub mod tfps;

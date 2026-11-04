@@ -478,6 +478,14 @@ wasm-opt = false
 [profile.dev]
 debug = "line-tables-only"
 
+# SHA-256 at opt-level 0 is slow enough to fail a test: `/v1/inventory` and
+# `fleet_inventory` hash the running binary on first use, and a debug sipnab
+# is about 200 MB. Measured on the aarch64 build host: the first request took
+# 1.97 s unoptimized; on CI's ubuntu runner it outlasted the tests' 10 s read
+# timeout. Only sha2 is raised; tests/config_wiring_test.rs holds the setting.
+[profile.dev.package.sha2]
+opt-level = 3
+
 # `strip = true` holds for every build, the release included. The release
 # workflow appends `-C strip=none` to RUSTFLAGS (from
 # `scripts/split-debuginfo.sh --rustflags`) so the line tables below survive

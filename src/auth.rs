@@ -130,6 +130,17 @@ pub const SCOPE_ADMIN: &str = "admin";
 /// dashboard is not.
 pub const SCOPE_AUDIO: &str = "audio";
 
+/// The fleet inventory: `GET /v1/inventory` on the REST API and nothing
+/// else.
+///
+/// A fleet controller polls every instance it manages. Before this scope it
+/// had to hold a `full` token for each, which reads `/v1/dialogs` and the
+/// message bodies of every call the instance sees. The inventory carries
+/// digests, versions and counters and no call content, so the credential
+/// that reads it reaches nothing more. `full` reaches it too, by the rule
+/// every narrow scope follows.
+pub const SCOPE_INVENTORY: &str = "inventory";
+
 /// Whether a token holding `held` may reach something that requires `required`.
 ///
 /// One rule for every surface. `admin` satisfies everything; `actions`
@@ -652,6 +663,45 @@ mod tests {
             SCOPE_AUDIO,
         ] {
             assert!(!scope_satisfies(held, SCOPE_ADMIN), "{held} reaches admin");
+        }
+    }
+
+    /// An `inventory` token reaches the inventory and nothing else; `full`,
+    /// `actions` and `admin` reach the inventory; no other narrow scope does.
+    #[test]
+    fn only_inventory_and_the_broad_scopes_reach_the_inventory() {
+        assert_eq!(
+            SCOPE_INVENTORY, "inventory",
+            "the scope's wire name is what --token-scope inventory mints"
+        );
+        assert!(
+            scope_satisfies(SCOPE_INVENTORY, SCOPE_INVENTORY),
+            "an inventory token must reach the inventory"
+        );
+        for required in [
+            SCOPE_FULL,
+            SCOPE_ACTIONS,
+            SCOPE_READ,
+            SCOPE_METRICS,
+            SCOPE_ADMIN,
+            SCOPE_AUDIO,
+        ] {
+            assert!(
+                !scope_satisfies(SCOPE_INVENTORY, required),
+                "inventory reaches {required}"
+            );
+        }
+        for held in [SCOPE_FULL, SCOPE_ACTIONS, SCOPE_ADMIN] {
+            assert!(
+                scope_satisfies(held, SCOPE_INVENTORY),
+                "{held} misses inventory"
+            );
+        }
+        for held in [SCOPE_READ, SCOPE_METRICS, SCOPE_AUDIO] {
+            assert!(
+                !scope_satisfies(held, SCOPE_INVENTORY),
+                "{held} reaches inventory"
+            );
         }
     }
 

@@ -449,6 +449,32 @@ fn pcap_export_mode_all_variants_round_trip() -> Result<(), TestError> {
     Ok(())
 }
 
+/// Verify debug and test builds compile `sha2` optimized.
+///
+/// `/v1/inventory` and the MCP `fleet_inventory` tool hash the running binary
+/// on first use. A debug sipnab is about 200 MB, and unoptimized SHA-256 took
+/// 1.97 s over it on the aarch64 build host (a release build hashes its own
+/// image in milliseconds). On CI's ubuntu runner, under eight test binaries
+/// at once, the first request outlasted the 10 s read timeout of
+/// tests/support/server.rs, and four tests in tests/fleet_inventory_test.rs
+/// failed with `WouldBlock`. Read from the `[profile.dev.package.sha2]`
+/// section itself.
+#[test]
+fn cargo_toml_dev_profile_optimizes_sha2() -> Result<(), TestError> {
+    let cargo = std::fs::read_to_string("Cargo.toml")?;
+    let section = cargo
+        .split("\n[profile.dev.package.sha2]\n")
+        .nth(1)
+        .and_then(|rest| rest.split("\n[").next())
+        .ok_or("Cargo.toml has a [profile.dev.package.sha2] section")?;
+    assert!(
+        section.lines().any(|l| l.trim() == "opt-level = 3"),
+        "debug builds must compile sha2 at opt-level 3 so the inventory's \
+         binary digest answers within a test's read timeout: {section}"
+    );
+    Ok(())
+}
+
 /// Verify the release profile unwinds on panic, and is optimized and stripped.
 ///
 /// `unwind`, not `abort`: `crash::contain` catches a panic in a parser of

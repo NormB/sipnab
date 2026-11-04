@@ -197,6 +197,9 @@ struct Listener {
     hep: std::net::SocketAddr,
     api: String,
     log: std::sync::mpsc::Receiver<String>,
+    /// Everything the run writes to stdout, drained on a thread so a full
+    /// pipe never stalls it.
+    stdout: std::sync::mpsc::Receiver<String>,
 }
 
 impl Listener {
@@ -223,9 +226,16 @@ impl Listener {
             .args(extra)
             .env("SIPNAB_LOG", "info")
             .env("NO_COLOR", "1")
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()?;
+        let out = child.stdout.take().ok_or("piped stdout")?;
+        let (out_tx, stdout) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                let _ = out_tx.send(line);
+            }
+        });
         let stderr = child.stderr.take().ok_or("piped stderr")?;
         let (tx, log) = std::sync::mpsc::channel::<String>();
         std::thread::spawn(move || {
@@ -264,6 +274,7 @@ impl Listener {
             hep,
             api,
             log,
+            stdout,
         })
     }
 
@@ -342,6 +353,26 @@ impl Listener {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+    }
+
+    /// `GET path` on the REST API: the status code and the body.
+    fn get_raw(&self, path: &str) -> Result<(u16, String), TestError> {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(&self.api)?;
+        write!(
+            s,
+            "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            self.api
+        )?;
+        let mut text = String::new();
+        s.read_to_string(&mut text)?;
+        let status = text
+            .split_whitespace()
+            .nth(1)
+            .ok_or("a status line")?
+            .parse()?;
+        let body = text.split("\r\n\r\n").nth(1).unwrap_or_default();
+        Ok((status, body.to_string()))
     }
 
     /// `/v1/dialogs/{call_id}/correlated`.
@@ -597,5 +628,99 @@ fn the_guides_complete_config_is_the_harness_template() -> Result<(), TestError>
         body.join("\n").trim_end(),
         "the guide's opensips.cfg differs from harness/th-mapping/opensips.cfg.tmpl"
     );
+    Ok(())
+}
+
+/// `GET /v1/th-mappings` on a live listener lists each mapping the events
+/// made, joined once its legs are captured; narrows to one call by either
+/// leg; and lists a mapping a conflicting event stopped first, as `conflict`.
+#[test]
+fn the_mapping_listing_names_each_mapping_and_its_state() -> Result<(), TestError> {
+    let (sip, events) = sip_and_events()?;
+    let l = Listener::start(&["--hep-allow", "127.0.0.1/32"])?;
+    l.send(&sip, &events, false)?;
+    l.wait_for("three accepted events and six dialogs", |s| {
+        s["th_mappings"]["accepted"] == 3 && s["dialogs"]["total"] == 6
+    })?;
+    let (status, body) = l.get_raw("/v1/th-mappings")?;
+    assert_eq!(status, 200, "the route answers: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(v["total_matched"], 3, "{v}");
+    for row in v["mappings"].as_array().ok_or("rows")? {
+        assert_eq!(row["state"], "joined", "{v}");
+        assert!(
+            CALLS
+                .iter()
+                .any(|(a, b)| row["caller_call_id"] == *a && row["callee_call_id"] == *b),
+            "each row is one of the captured calls: {v}"
+        );
+    }
+    assert_eq!(v["th_callid"]["mapped"], 3, "{v}");
+    assert!(
+        v["capture_identity"]["instance"].is_string(),
+        "the answer names the capture its rows came from: {v}"
+    );
+    let v = l.get(&format!("/v1/th-mappings?call_id={}", CALLS[1].1))?;
+    assert_eq!(v["total_matched"], 1, "{v}");
+    assert_eq!(v["mappings"][0]["caller_call_id"], CALLS[1].0, "{v}");
+    let crossed = format!(
+        r#"{{"jsonrpc":"2.0","method":"E_SIPNAB_TH_MAP","params":{{"caller_call_id":"{}","callee_call_id":"{}"}}}}"#,
+        CALLS[0].0, CALLS[1].1
+    );
+    l.send(&[], &[crossed.into_bytes()], false)?;
+    l.wait_for("the conflict", |s| s["th_mappings"]["conflict"] == 1)?;
+    let v = l.get("/v1/th-mappings")?;
+    assert_eq!(
+        v["mappings"][0]["state"], "conflict",
+        "conflicts first: {v}"
+    );
+    assert_eq!(v["mappings"][1]["state"], "conflict", "{v}");
+    assert_eq!(v["mappings"][2]["state"], "joined", "{v}");
+    let (status, body) = l.get_raw("/v1/th-mappings?state=stuck")?;
+    assert_eq!(status, 400, "an unknown state is refused: {body}");
+    Ok(())
+}
+
+/// `--th-mappings` ends a live run with the mapping table, and with `--json`
+/// the last line of stdout is the object `GET /v1/th-mappings` returns.
+#[test]
+fn th_mappings_ends_a_live_run_with_the_table() -> Result<(), TestError> {
+    let (sip, events) = sip_and_events()?;
+    for json in [false, true] {
+        let mut args = vec![
+            "--hep-allow",
+            "127.0.0.1/32",
+            "--duration",
+            "4",
+            "--th-mappings",
+            "--no-cli-print",
+        ];
+        if json {
+            args.push("--json");
+        }
+        let mut l = Listener::start_without_api(&args)?;
+        l.send(&sip, &events, false)?;
+        let status = l.child.wait()?;
+        assert!(status.success(), "the run ends cleanly: {status}");
+        // The reader thread ends when the child's stdout closes.
+        let out: Vec<String> = l.stdout.iter().collect();
+        if json {
+            let last = out.last().ok_or("stdout has a last line")?;
+            let v: serde_json::Value = serde_json::from_str(last)?;
+            assert_eq!(v["total_matched"], 3, "{v}");
+            assert_eq!(v["counts"]["accepted"], 3, "{v}");
+            assert_eq!(v["mappings"][0]["state"], "joined", "{v}");
+        } else {
+            let text = out.join("\n");
+            assert!(text.contains("3 mappings held"), "{text}");
+            for (caller, callee) in CALLS {
+                let row = text
+                    .lines()
+                    .find(|l| l.contains(caller))
+                    .ok_or_else(|| format!("no row for {caller}:\n{text}"))?;
+                assert!(row.contains(callee) && row.contains("joined"), "{row}");
+            }
+        }
+    }
     Ok(())
 }

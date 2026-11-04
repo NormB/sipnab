@@ -217,7 +217,7 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocol
   - It does not apply to a relay mirror sipnab reads from the network.
   - No sipnab socket receives that traffic.
 - sipnab asks a relay only with `--rtpengine-control` on a live source.
-  - It sends only the `list` and `query` commands.
+  - It sends only the read-only `list`, `query` and `statistics` commands.
   - It stops after 66 control transactions per run.
   - On a run reading a file it does not ask.
 

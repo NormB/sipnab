@@ -13,6 +13,7 @@ use clap::Parser;
 mod aggregate_args;
 mod call_query_args;
 mod file_job_args;
+pub mod fleet_args;
 pub mod g729_args;
 mod gate_args;
 pub mod one_shot;
@@ -2091,11 +2092,12 @@ pub struct RtpArgs {
     /// response usually begins mid-call, which is exactly when that gap is
     /// worst. This closes it by ASKING.
     ///
-    /// **Read-only, and structurally so.** Only `list` and `query` can be
-    /// sent, because those are the only two commands the type reaching this
-    /// path can express. sipnab never sends `offer`, `answer`, `delete` or
-    /// `start recording`: each of them changes a production relay, and none is
-    /// representable here.
+    /// **Read-only, and structurally so.** sipnab sends only `list`, `query`
+    /// and `statistics` (the last for `--relay-stats` and its relatives),
+    /// because those are the commands the type reaching this path can express.
+    /// sipnab never sends `offer`, `answer`, `delete` or `start recording`:
+    /// each of them changes a production relay, and none is representable
+    /// here.
     ///
     /// **Not a poller by default.** sipnab asks for its call list at two
     /// moments: once at startup, before the capture opens, and again when a
@@ -4451,6 +4453,17 @@ pub struct HepArgs {
     #[arg(help_heading = "HEP", long = "hep-senders", requires = "hep_listen")]
     pub hep_senders: bool,
 
+    /// At the end of a headless run, print the OpenSIPS topology-hiding
+    /// mappings the `--hep-listen` listener received in `E_SIPNAB_TH_MAP`
+    /// events: one row per mapping with its caller-side and callee-side
+    /// Call-IDs, its state (`conflict`, `pending` or `joined`) and whether
+    /// each leg was captured, after the event counts and the hidden legs by
+    /// status. With `--json`, the same as one JSON object on the last line of
+    /// stdout — the shape `GET /v1/th-mappings` and the MCP `th_mappings`
+    /// tool return. Refused without `--hep-listen`, where the events arrive.
+    #[arg(help_heading = "HEP", long = "th-mappings", requires = "hep_listen")]
+    pub th_mappings: bool,
+
     /// Parse incoming HEP packets (enable HEP decoding). Config:
     /// `[capture] hep_parse`; `--no-hep-parse` turns it off again.
     #[arg(
@@ -4879,8 +4892,8 @@ pub struct TokenArgs {
     #[arg(help_heading = "Token minting", long = "token-id", value_name = "ID")]
     pub token_id: Option<String>,
 
-    /// Scope for --mint-token: `full` (default), `metrics`, `read`, `actions`
-    /// or `audio`.
+    /// Scope for --mint-token: `full` (default), `metrics`, `read`, `actions`,
+    /// `admin`, `audio` or `inventory`.
     ///
     /// A `metrics` token reaches `GET /metrics` and nothing else — mint one for
     /// a scrape job rather than handing it a credential that also reads
@@ -4904,12 +4917,16 @@ pub struct TokenArgs {
     /// /v1/calls/live`, `GET /v1/calls/live/events` and `GET
     /// /v1/calls/{call_id}/audio`, and nothing else; no other scope reaches
     /// them. REST API tokens only.
+    ///
+    /// An `inventory` token reaches `GET /v1/inventory` and nothing else —
+    /// mint one for `sipnab fleet inventory` rather than handing a fleet
+    /// controller a credential that reads every call. REST API tokens only.
     #[arg(
         help_heading = "Token minting",
         long = "token-scope",
         value_name = "SCOPE",
         default_value = "full",
-        value_parser = ["full", "metrics", "read", "actions", "admin", "audio"]
+        value_parser = ["full", "metrics", "read", "actions", "admin", "audio", "inventory"]
     )]
     pub token_scope: String,
 }
@@ -9125,6 +9142,54 @@ mod tests {
             found.len(),
             found.join("\n")
         );
+    }
+
+    /// `--rtpengine-control`'s help names every command sipnab can send the
+    /// relay, taken from the command type itself, and no fixed count of them.
+    ///
+    /// The help said only `list` and `query` could be sent, calling them the
+    /// only two commands, after `--relay-stats` had added `statistics` to the
+    /// same control client. The match below is exhaustive, so a new command fails
+    /// to compile here until its verb is listed, and the help must name it.
+    #[test]
+    fn rtpengine_control_help_names_every_command_it_can_send() -> Result<(), TestError> {
+        use crate::relay::types::ReadOnlyCommand;
+        use clap::CommandFactory;
+        let every = [
+            ReadOnlyCommand::List { limit: 1 },
+            ReadOnlyCommand::Query {
+                call_id: String::new(),
+            },
+            ReadOnlyCommand::Statistics,
+        ];
+        for cmd in &every {
+            match cmd {
+                ReadOnlyCommand::List { .. }
+                | ReadOnlyCommand::Query { .. }
+                | ReadOnlyCommand::Statistics => {}
+            }
+        }
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_long() == Some("rtpengine-control"))
+            .ok_or("no --rtpengine-control argument")?;
+        let help = arg
+            .get_long_help()
+            .ok_or("--rtpengine-control has no long help")?
+            .to_string();
+        for cmd in &every {
+            let verb = format!("`{}`", cmd.verb());
+            assert!(
+                help.contains(&verb),
+                "--rtpengine-control help does not name {verb}:\n{help}"
+            );
+        }
+        assert!(
+            !help.contains("only two commands"),
+            "--rtpengine-control help states a command count:\n{help}"
+        );
+        Ok(())
     }
 
     /// `--slow-setup` and `--short-calls` state the threshold they select on,

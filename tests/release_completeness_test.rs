@@ -187,7 +187,7 @@ fn every_download_instruction_names_the_advertised_version() -> Result<(), TestE
     let markers = [
         r"SIPNAB_VERSION=(\d+\.\d+\.\d+)",
         r"e\.g\. (\d+\.\d+\.\d+)",
-        r"rpm -i sipnab-(\d+\.\d+\.\d+)-1\.",
+        r"dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.",
     ];
     for pattern in markers {
         let re = regex::Regex::new(pattern)?;

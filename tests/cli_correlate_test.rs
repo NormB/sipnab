@@ -101,7 +101,7 @@ fn the_table_lists_each_leg_and_warns_on_guesses_only() -> Result<(), TestError>
         .collect();
     assert_eq!(
         row,
-        vec![B_LEG, "timing_heuristic", "timing", "50", "guess", "3"],
+        vec![B_LEG, "timing_heuristic", "timing", "50", "guess", "3", "-"],
         "{out}"
     );
     assert!(
@@ -224,6 +224,7 @@ fn an_identifier_match_is_not_called_a_guess() -> Result<(), TestError> {
             "sdp",
             "90",
             "identifier",
+            "-",
             "-"
         ],
         "{}",
@@ -245,7 +246,17 @@ fn property_descriptions(
     Ok(props
         .iter()
         .map(|(name, p)| {
-            let text = p["description"].as_str().unwrap_or("");
+            // A nullable reference (`Option<SomeEnum>`) carries its text on
+            // the reference inside `oneOf` in the OpenAPI document, and on the
+            // property itself in the MCP schema.
+            let text = p["description"]
+                .as_str()
+                .or_else(|| {
+                    p["oneOf"].as_array().and_then(|branches| {
+                        branches.iter().find_map(|b| b["description"].as_str())
+                    })
+                })
+                .unwrap_or("");
             let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
             (name.clone(), text)
         })

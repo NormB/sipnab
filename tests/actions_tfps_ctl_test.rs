@@ -124,3 +124,98 @@ fn an_unban_asks_tfps_to_unban_and_nothing_else() -> Result<(), TestError> {
     assert_eq!(verbs, ["unban"], "{argv}");
     Ok(())
 }
+
+// ── A ban TFPS may have applied, with an answer sipnab cannot read ────────
+
+/// A `tfps_ctl` that bans (it notes the address in `held`, as TFPS writes
+/// its block map) and then answers with `answer`: shell lines run after the
+/// ban took effect.
+fn acts_then(answer: &str) -> Result<(tempfile::TempDir, TfpsCtl), TestError> {
+    let dir = tempfile::tempdir()?;
+    let here = dir.path().display();
+    let script = format!(
+        "#!/bin/sh\ncase \"$1\" in\n\
+         ban) echo \"$3\" >> \"{here}/held\"; {answer};;\n\
+         esac\n"
+    );
+    let path = dir.path().join("tfps_ctl");
+    executable::write_executable(&path, &script)?;
+    let ctl = TfpsCtl::new(TfpsLocator::new(Some(path), None));
+    Ok((dir, ctl))
+}
+
+/// Ban 198.51.100.20 through `ctl`, expecting TFPS to have acted and
+/// sipnab to report the answer as unreadable rather than as an error.
+fn unanswered(dir: &tempfile::TempDir, ctl: &TfpsCtl) -> Result<String, TestError> {
+    let reply = ctl.ban(Ipv4Addr::new(198, 51, 100, 20), 600, 0);
+    let held = std::fs::read_to_string(dir.path().join("held")).unwrap_or_default();
+    assert_eq!(held.trim(), "198.51.100.20", "the fake applied the ban");
+    match reply {
+        Ok(TfpsReply::Unanswered(why)) => Ok(why),
+        other => Err(format!(
+            "tfps_ctl ran and may have banned, so the answer is Unanswered, not {other:?}"
+        )
+        .into()),
+    }
+}
+
+/// An answer that is not JSON at all.
+#[test]
+fn a_ban_answered_with_garbage_is_unanswered_not_failed() -> Result<(), TestError> {
+    let (dir, ctl) = acts_then("echo 'segmentation fault (core dumped)'")?;
+    let why = unanswered(&dir, &ctl)?;
+    assert!(why.contains("tfps_ctl"), "names what ran: {why}");
+    Ok(())
+}
+
+/// The answer a `tfps_ctl` built before TFPS's JSON contract gives: the
+/// same object, with `expires` an RFC 3339 string instead of epoch seconds.
+/// sipnab does not read that shape, and says why it may have met it.
+#[test]
+fn a_ban_answered_by_a_pre_contract_tfps_ctl_is_unanswered_and_says_why() -> Result<(), TestError> {
+    let (dir, ctl) = acts_then(
+        "echo '{\"ip\":\"198.51.100.20\",\"action\":\"ban\",\"applied\":true,\
+         \"refused\":null,\"expires\":\"2026-11-03T17:00:00Z\",\"source\":\"operator\"}'",
+    )?;
+    let why = unanswered(&dir, &ctl)?;
+    assert!(
+        why.contains("e7ee57a"),
+        "names the TFPS commit whose contract this answer does not meet: {why}"
+    );
+    Ok(())
+}
+
+/// A non-zero exit with no result, after the ban took effect.
+#[test]
+fn a_ban_that_exits_non_zero_with_no_result_is_unanswered() -> Result<(), TestError> {
+    let (dir, ctl) = acts_then("echo 'tfps: lost the map' >&2; exit 3")?;
+    let why = unanswered(&dir, &ctl)?;
+    assert!(why.contains("lost the map"), "carries its stderr: {why}");
+    Ok(())
+}
+
+/// A `tfps_ctl` that never answers, after the ban took effect.
+#[test]
+fn a_ban_that_times_out_is_unanswered() -> Result<(), TestError> {
+    let (dir, ctl) = acts_then("sleep 30")?;
+    let why = unanswered(&dir, &ctl)?;
+    assert!(why.contains("did not finish"), "says it timed out: {why}");
+    Ok(())
+}
+
+/// A `tfps_ctl` that cannot be started never ran, so nothing was banned:
+/// that is still an error, not an unreadable answer.
+#[test]
+fn a_tfps_ctl_that_cannot_start_is_an_error_not_unanswered() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("tfps_ctl");
+    std::fs::write(&path, "not executable")?;
+    let ctl = TfpsCtl::new(TfpsLocator::new(Some(path), None));
+    match ctl.ban(Ipv4Addr::new(198, 51, 100, 20), 600, 0) {
+        Err(e) => {
+            assert!(e.contains("tfps_ctl"), "{e}");
+            Ok(())
+        }
+        Ok(reply) => Err(format!("a peer that never ran answered {reply:?}").into()),
+    }
+}

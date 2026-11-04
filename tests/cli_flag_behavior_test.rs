@@ -2468,20 +2468,44 @@ fn token_scope_flag_mints_a_scope_the_verifier_honors() -> Result<(), TestError>
             "no other scope reaches call audio"
         );
     }
+
+    let inventory = mint("inventory")?;
+    assert!(
+        verifier.verify(&inventory, now, sipnab::auth::SCOPE_INVENTORY),
+        "--token-scope inventory must mint a token accepted for the inventory"
+    );
+    assert!(
+        !verifier.verify(&inventory, now, sipnab::auth::SCOPE_FULL),
+        "and one that reads nothing else"
+    );
+    assert!(
+        verifier.verify(&full, now, sipnab::auth::SCOPE_INVENTORY),
+        "a full token reads the inventory too"
+    );
     Ok(())
 }
 
-/// `--token-scope audio` is refused for the MCP surface at mint time.
+/// `--token-scope audio` and `--token-scope inventory` are refused for the
+/// MCP surface at mint time.
 ///
-/// MCP has no call audio routes, so the token could never authenticate
-/// anything there. Failing at mint beats handing the operator a token that
-/// silently works nowhere.
+/// MCP has no call audio routes and no inventory route, so the token could
+/// never authenticate anything there. Failing at mint beats handing the
+/// operator a token that silently works nowhere.
 #[test]
-fn token_scope_audio_is_refused_for_the_mcp_surface() -> Result<(), TestError> {
+fn rest_only_scopes_are_refused_for_the_mcp_surface() -> Result<(), TestError> {
+    for scope in ["audio", "inventory"] {
+        rest_only_scope_is_refused_for_mcp(scope)?;
+    }
+    Ok(())
+}
+
+/// `--mint-token --token-scope <scope>` for the MCP surface fails, saying the
+/// scope applies to the REST API only. The MCP surface has no call audio
+/// routes, and it serves the inventory tool to a `read` token.
+fn rest_only_scope_is_refused_for_mcp(scope: &str) -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
     let key_path = dir.path().join("mcp.key");
     std::fs::File::create(&key_path)?.write_all(b"mcp-scope-signing-key-0123456789")?;
-    let scope = "audio";
     let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
             "--mint-token",

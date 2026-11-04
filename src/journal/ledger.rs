@@ -8,7 +8,9 @@
 //! action path writes (see the approved spec "sipnab Operations Journal"):
 //!
 //! * `action_intent` — admitted and about to run; in doubt until resolved;
-//! * `action_outcome` — `applied`, `refused` or `failed`;
+//! * `action_outcome` — `applied`, `refused`, `failed` (`tfps_ctl` never
+//!   ran) or `unknown` (it ran and its answer was lost, so the action stays
+//!   in doubt);
 //! * `revert_intent` / `revert_outcome` — the same, for an unban that backs
 //!   out an earlier ban;
 //! * `reconciled` — an in-doubt action resolved against TFPS at startup;
@@ -207,6 +209,9 @@ impl Ledger {
                     self.in_doubt.insert(intent.id.clone(), intent);
                 }
             }
+            // `unknown`: TFPS was asked and may have acted, so the action
+            // stays in doubt until TFPS answers for it.
+            "action_outcome" | "revert_outcome" if body["result"].as_str() == Some("unknown") => {}
             "action_outcome" | "revert_outcome" => {
                 if let Some(intent) = id().and_then(|id| self.in_doubt.remove(&id))
                     && body["result"].as_str() == Some("applied")

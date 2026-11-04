@@ -446,6 +446,19 @@ The `curl` commands from the same-machine section work unchanged.
   HTTP token has the `full` scope. Mint one with `--token-scope actions`.
 - **`/v1/tfps/dropped` answers `502`.** Expected: no TFPS build has `dropped`
   yet.
+- **A ban answers `502` with `answered something this sipnab cannot read`.**
+  - sipnab reads the JSON of
+    [`e7ee57a`](https://github.com/sippulse/tfps/commit/e7ee57a) and later,
+    where every time is epoch seconds. A `tfps_ctl` built from the draft of
+    that JSON gives `expires` as an [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) date string instead, and sipnab
+    cannot read it.
+  - TFPS may still have applied the ban, so sipnab holds it in doubt.
+    `sipnab --journal-show` lists it, and no other action runs until it is
+    settled.
+  - Unban the address with the same token, or with a token with scope
+    `admin`. TFPS's answer settles it.
+  - Then build TFPS from master, as in the "Check that TFPS answers in JSON"
+    step.
 - **`installed: false`, and the reason says `tfps_ctl` was not found on
   `PATH`.**
   - The service runs without `--tfps-ctl`, and its `PATH` has no `tfps_ctl`.

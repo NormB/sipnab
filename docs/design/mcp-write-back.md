@@ -85,7 +85,7 @@ raw material and none of the interpretation. This is a real dead end, and it is
 the strongest argument on this page.
 
 **The read surface is rich enough that the asymmetry is conspicuous.** There are
-76 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
+78 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
 `:2260`), and several of them do genuine analysis rather than projection:
 `triage_call` (`:1927`), `check_codec_negotiation` (`:1999`),
 `diagnose_registration` (`:2085`), `compare_dialogs` (`:1722`). An agent that
@@ -132,7 +132,7 @@ because the incident is over.
 **The operator's screen is the tool's output.** sipnab has no other product. Every
 mutating verb proposed so far — tag a dialog, acknowledge a finding, name a host
 — edits the thing the operator is reading, and does so with no signal that it
-happened. `DialogStore::generation` ([`dialog_store.rs:1173`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1173))
+happened. `DialogStore::generation` ([`dialog_store.rs:1202`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1202))
 is bumped by every mutating method and exposed on no wire format: not in
 `DialogSummary` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56)), not in any REST
 response (`build_router`, [`api.rs:204-213`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L213) — eight
@@ -344,7 +344,7 @@ store, no schema migration and no wire-visible generation counter.
 **What would change this.** Both of the following, not either:
 
 1. A wire-visible store identity — `generation`
-   ([`dialog_store.rs:1173`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1173)) surfaced on REST and
+   ([`dialog_store.rs:1202`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1202)) surfaced on REST and
    MCP responses — so a consumer can detect that what it is reading changed
    underneath it.
 2. A demonstrated need that `save_findings` does not meet, from someone who has

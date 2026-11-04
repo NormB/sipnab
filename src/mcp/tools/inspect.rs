@@ -48,9 +48,10 @@ pub struct CallTreeLeg {
     /// Which correlation strategy matched this edge. `None` for the root.
     pub strategy: Option<String>,
     /// How the edge was made: `decoded` (an OpenSIPS topology-hiding Call-ID
-    /// decoded with the configured secret), `header` (a SIP header both legs
-    /// carry), `sdp` (the SDP origin) or `timing` (the guess). `None` for the
-    /// root.
+    /// decoded with the configured secret), `mapping` (an OpenSIPS
+    /// `E_SIPNAB_TH_MAP` event named both legs), `header` (a SIP header both
+    /// legs carry), `sdp` (the SDP origin) or `timing` (the guess). `None` for
+    /// the root.
     pub method: Option<String>,
     /// Whether the edge is an identifier comparison rather than a guess.
     ///
@@ -63,6 +64,10 @@ pub struct CallTreeLeg {
     /// two produce the same shape — a leaf — for opposite reasons, and an agent
     /// deciding whether the tree is complete needs to tell them apart.
     pub followed: bool,
+    /// This leg's own OpenSIPS topology-hiding status: `decoded`,
+    /// `no_secret`, `undecodable`, `unmatched`, `mapped` or `conflict`.
+    /// `None` when the leg is not a hidden leg.
+    pub th_callid: Option<crate::sip::dialog_store::ThCallidStatus>,
     /// The dialog itself, with its capture-derived free text fenced.
     pub dialog: DialogSummary,
 }
@@ -224,6 +229,7 @@ impl SipnabMcp {
                         method: leg.method.map(|m| m.as_str().to_string()),
                         identifier_match: leg.identifier_match,
                         followed: leg.followed,
+                        th_callid: leg.th_callid,
                         dialog: crate::mcp::shape::fenced_dialog_summary(dialog),
                     })
                 })
@@ -518,8 +524,16 @@ mod tests {
         assert_eq!(edge["method"], "decoded", "{v}");
         assert_eq!(edge["identifier_match"], true, "{v}");
         assert_eq!(edge["followed"], true, "{v}");
+        assert_eq!(
+            edge["th_callid"], "decoded",
+            "the hidden leg names its own topology-hiding status: {v}"
+        );
         let root = legs.iter().find(|l| l["depth"] == 0).ok_or("root")?;
         assert!(root["method"].is_null(), "the root has no edge: {v}");
+        assert!(
+            root["th_callid"].is_null(),
+            "the caller root is not a hidden leg: {v}"
+        );
         Ok(())
     }
 

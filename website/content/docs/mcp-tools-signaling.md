@@ -30,6 +30,7 @@ the other bundles and finds any tool by name.
 | [`await_condition`](#await-condition) | `filter`, `timeout_seconds?`, `poll_interval_ms?` | Waits until a filter matches or a deadline passes, whichever is first, so a live capture costs one call instead of a polling loop |
 | [`find_correlated`](#find-correlated) | `call_id`, `limit?` | The other legs of the same call across a B2BUA, each with a score AND the strategy that matched it |
 | [`get_call_tree`](#get-call-tree) | `call_id`, `limit?` | Every leg of one call as a tree, each edge carrying its parent, depth, score, strategy and whether the walk went through it |
+| [`th_mappings`](#th-mappings) | `call_id?`, `state?`, `limit?` | The OpenSIPS topology-hiding mappings held, one row each with its state and which legs sipnab captured, beside the event counts |
 | [`compare_dialogs`](#compare-dialogs) | `call_id_a`, `call_id_b` | Two calls side by side, with the differences named |
 | [`get_dialog_report`](#get-dialog-report) | `call_id`, `format?` | Structured per-call report (JSON / Markdown / text) |
 | [`get_message`](#get-message) | `call_id`, `index` | Single SIP message at a given index |
@@ -679,7 +680,8 @@ whose two calls share an SDP origin:
   "source_call_id": "1-1966@10.0.2.20",
   "legs": [
     { "call_id": "1-1968@10.0.2.20", "score": 90, "strategy": "sdp_origin",
-      "method": "sdp", "identifier_match": true, "observed_gap_ms": null }
+      "method": "sdp", "identifier_match": true, "observed_gap_ms": null,
+      "th_callid": null }
   ],
   "total_matched": 1,
   "heuristic_only": false,
@@ -742,16 +744,20 @@ it.
 
 - `mapping` is `th_callid_mapping`.
 - `decoded` is `th_callid_decoded`.
+- `mapping` is `th_callid_mapping`: an OpenSIPS `E_SIPNAB_TH_MAP` event named
+  both legs.
 - `header` is `session_id`, `x_call_id`, both charging-vector strategies and
   `via_branch`.
 - `sdp` is `sdp_origin`.
 - `timing` is `timing_heuristic`.
 
-`th_callid` has a value only when the source is the callee-side leg of an OpenSIPS
+`th_callid` has a value only for the callee-side leg of an OpenSIPS
 `topology_hiding("C")` call: `decoded`, `no_secret`, `undecodable`,
 `unmatched`, `mapped` or `conflict`, as
 [Calls through topology hiding](@/docs/opensips-sipnab.md#calls-through-topology-hiding)
-explains.
+explains. The top-level `th_callid` describes the source, and each leg's
+`th_callid` describes that leg. `get_call_tree` carries the same per-leg
+`th_callid`.
 
 `identifier_match` is `true` when the leg matched on a value both legs carry,
 and `false` for `timing_heuristic`. `heuristic_only` is `true` when *every*
@@ -801,6 +807,7 @@ its first three keys:
       "method": null,
       "identifier_match": null,
       "followed": true,
+      "th_callid": null,
       "dialog": { "call_id": "1-1966@10.0.2.20", "state": "Completed", "method": "INVITE" }
     },
     {
@@ -812,6 +819,7 @@ its first three keys:
       "method": "sdp",
       "identifier_match": true,
       "followed": true,
+      "th_callid": null,
       "dialog": { "call_id": "1-1968@10.0.2.20", "state": "InCall", "method": "INVITE" }
     }
   ],
@@ -853,6 +861,62 @@ ladder the TUI's extended flow renders, and `first_activity` and
 An unknown `call_id` fails with `invalid_params` (`call_id 'nope' not found`,
 `data.reason: "not_found"`). A dialog with no other legs comes back as a
 one-leg tree with `total_legs: 1` and `max_depth: 0`.
+
+### `th_mappings`
+
+The OpenSIPS topology-hiding mappings sipnab holds, one row per mapping, from
+the `E_SIPNAB_TH_MAP` events its HEP listener accepted. Use it to find why one
+call through `topology_hiding("C")` did not join its caller leg:
+[`find_correlated`](#find-correlated) says THAT a leg is `conflict` or did not
+join, and this says which mapping and which leg. Exists in a build with the
+`hep` feature.
+
+| Name | Type | Legal values | If omitted |
+|---|---|---|---|
+| `call_id?` | string? | A Call-ID, either leg. The answer holds only the mapping that names it. | Every mapping. |
+| `state?` | string? | `conflict`, `pending` or `joined`. Any other word fails with a message naming the three. | Every state. |
+| `limit?` | u32? | Maximum rows. Ceiling is `--mcp-max-rows`, higher clamps to it, `0` means the default. | 50 rows. |
+
+```jsonc
+// th_mappings { "call_id": "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-" }
+{
+  "call_id": "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-",
+  "capture_identity": { "dialog_generation": 6, "instance": "1f4a17c8e2b91d40-1",
+                        "node": "capture-01", "stream_generation": 0 },
+  "counts": { "accepted": 3, "conflict": 0, "duplicate": 0, "expired": 0,
+              "held": 3, "malformed": 0, "pending": 0, "refused_full": 0 },
+  "mappings": [
+    { "callee_call_id": "DLGCH_fl0RBn4kMSMPFR0PPjk8NmETCgM-",
+      "callee_captured": true, "caller_call_id": "1-th-map@example.com",
+      "caller_captured": true, "state": "joined" }
+  ],
+  "schema_version": 1,
+  "state": null,
+  "th_callid": { "conflict": 0, "decoded": 0, "mapped": 3, "no_secret": 0,
+                 "undecodable": 0, "undecoded_with_peer": 0, "unmatched": 0 },
+  "total_matched": 1,
+  "source_exhausted": false,
+  "source_stopped_early": false
+}
+```
+
+`state` is one of three values:
+
+- `joined`: sipnab captured both legs, and the mapping joins them.
+- `pending`: sipnab has not captured a leg yet. `caller_captured` and
+  `callee_captured` say which.
+- `conflict`: another event named one of its Call-IDs with a different
+  partner, so the mapping joins nothing.
+
+Rows come conflicts first, then pending, then joined. No row for a Call-ID means no event named it.
+
+`counts` is the `th_mappings` object [`capture_status`](@/docs/mcp-tools-core.md#capture-status)
+returns, and `th_callid` its `th_callid` object. The Call-IDs came off the
+wire, so the response carries the untrusted-content note.
+`GET /v1/th-mappings` returns the same fields and values, and `--th-mappings`
+prints them at the end of a headless run. [Find why a call through topology
+hiding did not join](@/docs/api.md#find-why-a-call-through-topology-hiding-did-not-join)
+walks through reading it.
 
 ### `compare_dialogs`
 

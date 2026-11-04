@@ -115,7 +115,8 @@ const COMPLETE_KEY: &str = "complete";
 ///   of the file root, likewise.
 /// - `list_captures` lists files on disk, and `vcon_spool_status` counts
 ///   the files in the vCon export spool.
-/// - `server_capabilities` describes the binary.
+/// - `server_capabilities` describes the binary, and `fleet_inventory` the
+///   process.
 ///
 /// `mcp_completeness_test.rs` derives the set of store-reading tools from the
 /// source and fails if any of them appears here.
@@ -132,6 +133,11 @@ pub const SOURCE_INDEPENDENT_TOOLS: &[&str] = &[
     "decode_ng",
     "explain_response_code",
     "explain_rule",
+    // Describes the process: its build, binary and configuration digests,
+    // privilege and cumulative counters. It reads no capture store and claims
+    // no completeness, and `GET /v1/inventory` returns the same document from
+    // the same builder; a stamp here would make the two surfaces differ.
+    "fleet_inventory",
     // Reads one container from the operator's vCon store. How much of the
     // capture has been read says nothing about what another system holds.
     "fetch_vcon",

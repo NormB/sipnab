@@ -122,8 +122,10 @@ pub fn show(
     } else {
         let _ = writeln!(
             out,
-            "In doubt: actions that started and never finished ({}); new actions wait until \
-             TFPS answers for them",
+            "In doubt: actions TFPS has not answered for ({}): sipnab stopped before the \
+             answer, or could not read it, so TFPS may have acted. New actions wait until TFPS \
+             answers for them, or until their caller, or a token with the admin scope, unbans \
+             their address",
             doubt.len()
         );
         for i in &doubt {

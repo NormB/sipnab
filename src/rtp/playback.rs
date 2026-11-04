@@ -96,6 +96,58 @@ pub struct AudioPlayer {
     _lib: Library,
 }
 
+/// A codec the TUI's `Shift+P` playback decodes.
+///
+/// One list, read by `play_stream` and by the test that holds the F1 help to
+/// it, so the help cannot name fewer codecs than playback decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlaybackCodec {
+    /// G.711 mu-law, `PCMU`.
+    Ulaw,
+    /// G.711 A-law, `PCMA`.
+    Alaw,
+    /// Opus, matched in any case.
+    Opus,
+}
+
+impl PlaybackCodec {
+    /// Every codec playback decodes. Read by the tests that hold the help
+    /// text and this list together.
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 3] = [Self::Ulaw, Self::Alaw, Self::Opus];
+
+    /// The codec an SDP `rtpmap` name selects, or `None` when playback does
+    /// not decode it.
+    pub(crate) fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "PCMU" => Some(Self::Ulaw),
+            "PCMA" => Some(Self::Alaw),
+            _ if name.eq_ignore_ascii_case("opus") => Some(Self::Opus),
+            _ => None,
+        }
+    }
+
+    /// The label the playback status line shows.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Ulaw => "mu-law",
+            Self::Alaw => "A-law",
+            Self::Opus => "Opus",
+        }
+    }
+
+    /// The codec family the help text names.
+    // Gated as its one caller is, the `tui` help test; under `test` alone a
+    // build without `tui` fails -Dwarnings on it as dead code.
+    #[cfg(all(test, feature = "tui"))]
+    pub(crate) fn family(self) -> &'static str {
+        match self {
+            Self::Ulaw | Self::Alaw => "G.711",
+            Self::Opus => "Opus",
+        }
+    }
+}
+
 impl AudioPlayer {
     /// Create a new audio player by `dlopen`-ing the `sipnab-audio` plugin and
     /// opening the default output device through it.
@@ -166,25 +218,25 @@ impl AudioPlayer {
         }
 
         let output_rate = 48000u32;
-        let (pcm_48k, codec_label) = match stream.codec.as_deref() {
-            Some("PCMU") => {
-                let pcm = decode_g711_to_f32(G711Codec::Ulaw, stream);
-                let resampled = resample_f32(&pcm, stream.clock_rate, output_rate);
-                (resampled, "mu-law")
-            }
-            Some("PCMA") => {
-                let pcm = decode_g711_to_f32(G711Codec::Alaw, stream);
-                let resampled = resample_f32(&pcm, stream.clock_rate, output_rate);
-                (resampled, "A-law")
-            }
-            Some(name) if name.eq_ignore_ascii_case("opus") => {
-                let pcm = decode_opus_to_f32(stream)?;
-                // Opus already at 48 kHz, no resampling needed
-                (pcm, "Opus")
-            }
-            Some(other) => bail!("Unsupported codec for playback: {other}"),
-            None => bail!("Unknown codec"),
+        let Some(name) = stream.codec.as_deref() else {
+            bail!("Unknown codec");
         };
+        let Some(codec) = PlaybackCodec::from_name(name) else {
+            bail!("Unsupported codec for playback: {name}");
+        };
+        let pcm_48k = match codec {
+            PlaybackCodec::Ulaw => {
+                let pcm = decode_g711_to_f32(G711Codec::Ulaw, stream);
+                resample_f32(&pcm, stream.clock_rate, output_rate)
+            }
+            PlaybackCodec::Alaw => {
+                let pcm = decode_g711_to_f32(G711Codec::Alaw, stream);
+                resample_f32(&pcm, stream.clock_rate, output_rate)
+            }
+            // Opus already at 48 kHz, no resampling needed
+            PlaybackCodec::Opus => decode_opus_to_f32(stream)?,
+        };
+        let codec_label = codec.label();
 
         let duration_secs = pcm_48k.len() as f64 / output_rate as f64;
 
@@ -549,6 +601,53 @@ mod tests {
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    /// `ALL` lists every variant. The match is exhaustive, so a new codec
+    /// fails to compile here until it is placed in `ALL`.
+    #[test]
+    fn playback_codec_all_lists_every_variant() {
+        for codec in PlaybackCodec::ALL {
+            match codec {
+                PlaybackCodec::Ulaw | PlaybackCodec::Alaw | PlaybackCodec::Opus => {}
+            }
+        }
+        assert_eq!(
+            PlaybackCodec::ALL.len(),
+            3,
+            "ALL must list each of the three variants once"
+        );
+        for (name, want) in [
+            ("PCMU", Some(PlaybackCodec::Ulaw)),
+            ("PCMA", Some(PlaybackCodec::Alaw)),
+            ("OPUS", Some(PlaybackCodec::Opus)),
+            ("G722", None),
+        ] {
+            assert_eq!(
+                PlaybackCodec::from_name(name),
+                want,
+                "the rtpmap name {name} selects the wrong playback codec"
+            );
+        }
+    }
+
+    /// The F1 help's `Shift+P` line names every codec family playback
+    /// decodes. It said "G.711" alone while playback also decoded Opus.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn shift_p_help_names_every_codec_family_playback_decodes() -> Result<(), TestError> {
+        let line = crate::tui::help::HELP_TEXT
+            .lines()
+            .find(|l| l.trim_start().starts_with("Shift+P"))
+            .ok_or("the F1 help has no Shift+P line")?;
+        for codec in PlaybackCodec::ALL {
+            assert!(
+                line.contains(codec.family()),
+                "the Shift+P help line does not name {}: {line}",
+                codec.family()
+            );
+        }
+        Ok(())
+    }
 
     /// An RtpStream with the given payload type and no captured frames yet.
     fn stream(payload_type: u8) -> RtpStream {
