@@ -606,7 +606,7 @@ Reporting means three things:
    implemented".
 2. A field in the batch summary and in `capture_health` — the same structural
    discipline the rest of that response follows: a code, not a free string
-   ([`src/mcp/server.rs:1755-1765`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1755-L1765)).
+   ([`src/mcp/server.rs:1784-1794`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1784-L1794)).
 3. **`--require-sandbox`**, which turns degradation into a refusal. Opt-in,
    never the default, for the operator who would rather not capture than capture
    unsandboxed. Without this flag there is no way to express that preference; with

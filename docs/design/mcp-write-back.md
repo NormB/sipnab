@@ -59,7 +59,7 @@ at handshake.
 > //! dialog/stream stores (plus the optional alert engine).
 
 **As a runtime assertion to the client.** `get_info`
-([`server.rs:2310-2314`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2310-L2314)) sets the handshake
+([`server.rs:2339-2343`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2339-L2343)) sets the handshake
 `instructions` string every MCP client reads before it calls anything:
 
 > "sipnab MCP server — read-only access to captured SIP dialogs, RTP streams,
@@ -144,10 +144,10 @@ concrete rather than theoretical:
 
 - `DialogSummary.from_user` / `to_user` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56),
   populated at `:91-92`) are copied off the From/To URIs.
-- `get_message` ([`server.rs:5813`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5813)) returns headers and
+- `get_message` ([`server.rs:5842`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5842)) returns headers and
   body.
-- `search_messages` ([`server.rs:6271`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6271)) returns a
-  `snippet` built at [`:1337`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1337) from
+- `search_messages` ([`server.rs:6300`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6300)) returns a
+  `snippet` built at [`:1366`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1366) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.
 
@@ -205,7 +205,7 @@ states the reasoning, and `:21-29` states why the fix is a type:
 > remembering.
 
 Both fixes reached MCP, and how they reached it is the point. `resolve_in_root`
-([`server.rs:1139`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1139)) accepts a bare filename and rejects
+([`server.rs:1154`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1154)) accepts a bare filename and rejects
 any separator, `..`, root prefix or drive letter *before* touching the
 filesystem — its doc comment (`:163-173`) argues that requiring one component
 has no middle ground, where "every clever normaliser eventually meets a symlink,
@@ -323,7 +323,7 @@ touching the analysis at all.
   Call-IDs, a verdict per call, free text — to a bare filename under
   `--mcp-file-root`.
 - It reaches the filesystem through `resolve_in_root`
-  ([`server.rs:1139`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1139)) exactly as `export_capture` and
+  ([`server.rs:1154`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1154)) exactly as `export_capture` and
   `export_audio` do, and therefore inherits `ProtectedInputs::check` and cannot
   land on a capture.
 - **Nothing reads it back.** No tool, no report, no REST route, no diagnosis.
@@ -367,7 +367,7 @@ proposed the repair — that the guarantee is *no tool alters the analysis an
 operator is reading while leaving them reading it*. The repair has still not
 been made, and the same wording drift affects
 [`src/mcp/mod.rs:5`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L5) and the handshake string at
-[`server.rs:2311`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2311).
+[`server.rs:2340`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2340).
 
 **[Section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` has itself gone stale on one claim.** It states
 that the prompt-injection rule for tool descriptions "is convention, not

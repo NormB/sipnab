@@ -879,6 +879,8 @@ pub fn start_servers(
                 Some(dir) => s.with_file_root(dir),
                 None => s,
             };
+            // The same gate the REST door moves and the exporter reads.
+            let s = s.with_persistence_gate(Arc::clone(&persistence_gate));
             // The spool this run's `--export-vcon-when` writes into, so
             // `vcon_spool_status` reads the directory the capture fills.
             #[cfg(feature = "vcon")]

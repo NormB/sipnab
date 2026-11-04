@@ -30,6 +30,15 @@ fn render_export_audio(ctx: &QueryContext<'_>) -> bool {
     let Some(call_id) = args.export_audio.as_deref() else {
         return true;
     };
+    // A closed persistence gate writes no file, and is not a failure: an
+    // operator switched persistence off, which is what happened.
+    if !crate::output::persistence::permits(ctx.gate) {
+        stderr_line!(
+            "--export-audio: no file written: {}",
+            crate::output::persistence::WITHHELD
+        );
+        return true;
+    }
     let path = args
         .export_audio_out
         .clone()

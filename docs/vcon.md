@@ -1822,22 +1822,32 @@ the file sipnab wrote, not the object a store holds after it adds fields on
 ingest. To sign the container itself, use a rule with `sign_only` or
 `encrypt_to` (see [Sign without encrypting](#sign-without-encrypting)).
 
-### Stop writing containers partway through a run
+### Stop writing call content partway through a run
 
-You can tell a running capture to stop writing containers, and to start again,
-without a restart. Use it when someone asks you to stop recording calls while
-the capture itself must go on.
+You can tell a running capture to stop writing call content, and to start
+again, without a restart. Use it when someone asks you to stop recording calls
+while the capture itself must go on. It stops every writer of call content:
+
+- vCon containers (`--export-vcon-when`, `--export-vcon`, `[[vcon.rule]]`),
+- the `-O` pcap,
+- `--export-audio`,
+- the MCP tools that write into `--mcp-file-root`.
+
+[What the gate covers](rest-api.md#get-v1persistence) lists what it does not
+stop, such as what leaves the host over the network.
 
 **Before you start.**
 
-- The run writes containers with `--export-vcon-when`, `--export-vcon` or a
-  `[[vcon.rule]]`, and serves the REST API (`--api`). The `api` and `vcon` features are in every
-  release package.
+- The run writes call content with one of those writers, and serves the REST
+  API (`--api`). The `api` and `vcon` features are in every release package.
 - The control is `GET` and `POST /v1/persistence`. Any token the API accepts
   can use it.
-- It only narrows. A run started without `--export-vcon-when`,
-  `--export-vcon` or a `[[vcon.rule]]` reports `"authorized": false`, and no
-  request makes it write.
+- It only narrows. A run started without any of those writers reports
+  `"authorized": false`, and no request makes it write.
+- In sipnab 0.5.232 and earlier the control stops vCon containers only:
+  `-O`, `--export-audio` and the MCP file tools go on writing, and a run whose
+  only writer is `-O` reports `"authorized": false`. The release after
+  0.5.232 stops them all.
 - In sipnab 0.5.232 and earlier, a run that writes through `[[vcon.rule]]`
   and serves `--api` reports `"authorized": false` from the start, and its
   rules write no container.
@@ -1853,7 +1863,7 @@ running while calls come and go:
 export SIPNAB_API_KEY="$(openssl rand -hex 32)"
 sipnab -N --no-cli-print -L 127.0.0.1:19060 \
   --export-vcon-when "state == 'Completed'" --export-vcon-dir live-spool \
-  --api 127.0.0.1:18080 &
+  -O live.pcap --api 127.0.0.1:18080 &
 sleep 2
 curl -s -X POST -H "Authorization: Bearer $SIPNAB_API_KEY" -H 'Content-Type: application/json' \
   -d '{"enabled":false}' http://127.0.0.1:18080/v1/persistence
@@ -1894,12 +1904,29 @@ What happened to the call that ended while writing was off:
 So turning writing off holds containers back while the run keeps the calls.
 A run that ends before you turn writing back on writes none of them.
 
+The `-O` pcap is different: a packet captured while writing is off is never
+written, even after writing is back on. Stop the run, the job the first
+block started:
+
+```sh
+kill -INT %1
+```
+
+As it stops, it says how many packets the file left out:
+
+```text
+-O/--output holds a gap: 7 packet(s) were not written while persistence is off: an operator closed it with POST /v1/persistence {"enabled": false}
+```
+
+`sipnab -N -I live.pcap --report` lists no dialog: the call's seven SIP
+messages arrived while writing was off.
+
 **When it does not work.**
 
 - `{"authorized":false,"enabled":false}`, and `{"enabled":true}` changes
-  nothing: the run started without `--export-vcon-when`, `--export-vcon` or
-  a `[[vcon.rule]]`. Restart it with one. On sipnab 0.5.232 and earlier a
-  `[[vcon.rule]]` does not count; see the note above.
+  nothing: the run started without any writer of call content. Restart it
+  with one. On sipnab 0.5.232 and earlier only the vCon writers count, and a
+  `[[vcon.rule]]` does not; see the notes above.
 - `400`: the body is not exactly `{"enabled": true}` or `{"enabled": false}`.
 - `401`: the token is missing, wrong or expired.
   [POST /v1/persistence](rest-api.md#post-v1persistence) lists every answer.
@@ -3774,7 +3801,7 @@ you look for a capture fault:
 
 | Field | What it means |
 |---|---|
-| `gate_closed_during_run` | An operator stopped this run writing content partway through, over `POST /v1/persistence`. A container written after writing resumed may be late, and calls that ended while it was off are absent when the run ended first. The capture does not otherwise record it. See [Stop writing containers partway through a run](#stop-writing-containers-partway-through-a-run). |
+| `gate_closed_during_run` | An operator stopped this run writing content partway through, over `POST /v1/persistence`. A container written after writing resumed may be late, and calls that ended while it was off are absent when the run ended first. The capture does not otherwise record it. See [Stop writing containers partway through a run](#stop-writing-call-content-partway-through-a-run). |
 | `dialogs_suppressed_by_deny` | How many dialogs carried the `--content-deny-header` name and produced no container. |
 
 Both are always present, including as `false` and `0`.

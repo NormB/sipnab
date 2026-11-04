@@ -6221,8 +6221,15 @@ impl Cli {
     /// which is compiled whether or not the server behind it is.
     pub const DEFAULT_METRICS_MAX_CONN: usize = 16;
 
-    /// Whether this run writes call content to disk: an export flag, or a
-    /// `[[vcon.rule]]` in the config file.
+    /// Whether this run writes call content to disk: a vCon writer
+    /// ([`Self::exports_vcon`]: an export flag or a `[[vcon.rule]]`), `-O`,
+    /// `--export-audio`, or `--mcp-file-root`, where the MCP tools write
+    /// captures, audio and evidence packages.
+    ///
+    /// Every one of them obeys the persistence gate, which reads its ceiling
+    /// from here. While this named the vCon writers alone, a run with only
+    /// `-O` reported `authorized: false` over REST while its pcap grew, and
+    /// closing the gate stopped containers and nothing else.
     ///
     /// THE rule for "this run writes content". The REST gate's ceiling is read
     /// off it, and so is the `--redact` refusal, so the two cannot disagree
@@ -6244,7 +6251,21 @@ impl Cli {
     /// that reports no authority over a run that is writing.
     #[must_use]
     pub fn persists_content(&self, config: &crate::config::Config) -> bool {
-        self.exports_vcon(config)
+        self.exports_vcon(config) || self.writes_content_outside_vcon()
+    }
+
+    /// Whether this run writes call content other than vCon containers:
+    /// `-O`, `--export-audio`, or `--mcp-file-root`, where the MCP tools
+    /// write captures, audio and evidence packages.
+    ///
+    /// The part of [`Self::persists_content`] a TUI run carries out: the TUI
+    /// loop runs no vCon exporter, so its gate counts these and not
+    /// [`Self::exports_vcon`].
+    #[must_use]
+    pub fn writes_content_outside_vcon(&self) -> bool {
+        self.capture_args.output.is_some()
+            || self.call_query_args.export_audio.is_some()
+            || self.mcp_args.mcp_file_root.is_some()
     }
 
     /// Whether this run writes vCon containers: `--export-vcon`,
@@ -11488,6 +11509,10 @@ mod tests {
             predicate.persists_content(&none),
             "--export-vcon-when writes containers"
         );
+        assert!(
+            !predicate.writes_content_outside_vcon(),
+            "--export-vcon-when is a vCon writer, which the TUI does not run"
+        );
 
         // A build without the vCon exporter writes nothing for a rule; one
         // with it writes the rule's containers.
@@ -11496,6 +11521,42 @@ mod tests {
             cfg!(feature = "vcon"),
             "a [[vcon.rule]] writes containers, with no flag on the command line"
         );
+
+        // The writers outside the vCon exporter, which the persistence gate
+        // also stops: `-O`, `--export-audio`, and the MCP tools that write
+        // into `--mcp-file-root`.
+        for (argv, what) in [
+            (
+                vec!["sipnab", "-N", "-d", "eth0", "-O", "out.pcap"],
+                "-O writes every captured packet",
+            ),
+            (
+                vec!["sipnab", "-I", "x.pcap", "--export-audio", "a@x"],
+                "--export-audio writes a WAV",
+            ),
+            (
+                vec![
+                    "sipnab",
+                    "-I",
+                    "x.pcap",
+                    "--mcp",
+                    "--mcp-file-root",
+                    "/srv/root",
+                ],
+                "--mcp-file-root is where the MCP tools write call content",
+            ),
+        ] {
+            let cli = Cli::try_parse_from(&argv)?;
+            assert!(cli.persists_content(&none), "{what}");
+            assert!(
+                cli.writes_content_outside_vcon(),
+                "{what}, and the TUI's gate counts it: the TUI writes it"
+            );
+            assert!(
+                !cli.exports_vcon(&none),
+                "{what}, and is not a vCon writer: the TUI and --redact refusals ask exports_vcon"
+            );
+        }
         Ok(())
     }
 

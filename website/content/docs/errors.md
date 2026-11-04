@@ -437,6 +437,17 @@ The suite file `{}` holds a rule the evaluator refused when it judged the captur
 
 **Exit code:** 2.
 
+### `--export-audio: no file written: {}`
+
+An operator switched persistence off over `POST /v1/persistence`, and the run
+reached its end with it still off. `{}` says so in words. So `--export-audio`
+wrote no WAV. The run is not failed for it: the gate did what the operator
+asked.
+
+**What to do:** Nothing, if you meant writing to be off. To have the file,
+switch persistence back on with `POST /v1/persistence` `{"enabled": true}`
+before the run ends.
+
 ### `--export-audio: {why}`
 
 `--export-audio <CALL-ID>` could not write the call's audio. `{why}` says which of these happened:
@@ -2553,6 +2564,18 @@ The interface delivers Ethernet frames. HEP delivers bare SIP text with no link,
 - Keep both sources, and use `--hep-send <ADDR>` to forward the signaling to a collector instead of `-O`.
 
 **Exit code:** 2.
+
+### `-O/--output holds a gap: {} packet(s) were not written while {}`
+
+An operator switched persistence off over `POST /v1/persistence` while the run
+wrote `-O`. Each packet captured while it was off stayed out of the file.
+
+- The first `{}` is how many packets the file leaves out.
+- The second says why, in the words every writer uses.
+- The file itself cannot show the gap, so the run says it at its end.
+
+**What to do:** Nothing, if you meant writing to be off. Compare the capture
+with other records knowing that this stretch is missing.
 
 ### `Output file may be incomplete: {e:#}`
 

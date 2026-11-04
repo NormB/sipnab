@@ -656,6 +656,7 @@ pub fn run_tui_mode(
         capture_meter,
     );
     let source_exhausted = servers.as_ref().and_then(|h| h.source_exhausted.clone());
+    let persistence_gate = servers.as_ref().map(|h| Arc::clone(&h.persistence_gate));
 
     let processing_thread = spawn_tui_processor(TuiProcessorInputs {
         cli: cli.clone(),
@@ -677,6 +678,7 @@ pub fn run_tui_mode(
         max_count: capture_config.count,
         duration: capture_config.duration,
         source_exhausted,
+        persistence_gate,
     });
 
     // Build resolved theme and keymap from config
@@ -1103,12 +1105,13 @@ fn start_tui_servers(
             scanner_response: detections.scanner_response,
             pipeline_options: crate::app::server_pipeline_options(cli, config),
             alias_thresholds: cli.alias_thresholds(config),
-            // The TUI loop runs no vCon exporter, so it writes none of the
-            // content the gate governs: an export flag sends the run headless
-            // (`Cli::normalize`), and a `[[vcon.rule]]` writes nothing here
-            // (`bootstrap::tui_export_notice` says so). `persists_content`
-            // would count the rule and report a writer this run lacks.
-            persists_content: false,
+            // The TUI loop runs no vCon exporter: an export flag sends the
+            // run headless (`Cli::normalize`), and a `[[vcon.rule]]` writes
+            // nothing here (`bootstrap::tui_export_notice` says so). So the
+            // gate counts the writers the TUI does run, `-O` among them, and
+            // not `persists_content`, which would count the rule and report a
+            // writer this run lacks.
+            persists_content: cli.writes_content_outside_vcon(),
             vcon_spools: crate::app::vcon_spool::spools(cli, config),
             vcon_fetch: config.vcon_fetch.clone(),
             live_audio: crate::app::bootstrap::live_audio_filters(cli, config),
@@ -1160,6 +1163,9 @@ struct TuiProcessorInputs {
     /// MCP `capture_status`, `list_dialogs` and `tail_dialogs` report.
     /// `None` when no server runs.
     source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>,
+    /// The persistence gate the servers move, which `-O` obeys. `None` when
+    /// no server runs.
+    persistence_gate: Option<Arc<crate::output::persistence::PersistenceGate>>,
 }
 
 /// Spawn the packet processing thread.
@@ -1217,7 +1223,8 @@ impl TuiProcessor {
         let cli = &inputs.cli;
         Self {
             thread: TuiPacketThread {
-                output: TuiOutput::new(cli, inputs.split),
+                output: TuiOutput::new(cli, inputs.split)
+                    .with_gate(inputs.persistence_gate.clone()),
                 processor: capture::PacketProcessor::with_max_sessions(inputs.reassembly_cap)
                     .with_reassembly(!cli.capture_args.no_reassembly)
                     .with_parse_limit(cli.capture_args.limitlen),
@@ -1371,6 +1378,10 @@ pub struct TuiOutput {
     /// The decrypted export, in `--pcap-export-mode decrypted`.
     #[cfg(feature = "tls")]
     export: Option<crate::capture::decrypted_export::DecryptedExport>,
+    /// The persistence gate the run's servers move; `None` when none runs.
+    gate: Option<Arc<crate::output::persistence::PersistenceGate>>,
+    /// Packets not written because the gate was closed.
+    withheld: u64,
 }
 
 impl TuiOutput {
@@ -1402,7 +1413,19 @@ impl TuiOutput {
             writer: None,
             #[cfg(feature = "tls")]
             export,
+            gate: None,
+            withheld: 0,
         }
+    }
+
+    /// The persistence gate the run's servers move, when one runs.
+    #[must_use]
+    pub fn with_gate(
+        mut self,
+        gate: Option<Arc<crate::output::persistence::PersistenceGate>>,
+    ) -> Self {
+        self.gate = gate;
+        self
     }
 
     /// Open the writer on the first packet, then hold `packet` (decrypted
@@ -1448,6 +1471,13 @@ impl TuiOutput {
                     )
                 ),
             }
+        }
+        // The persistence gate covers `-O` as it covers the exporter: a
+        // closed gate keeps the packet out of the file, the decrypted
+        // export's hold included, and `close` says how many.
+        if self.writer.is_some() && !crate::output::persistence::permits(self.gate.as_deref()) {
+            self.withheld = self.withheld.saturating_add(1);
+            return Ok(());
         }
         #[cfg(feature = "tls")]
         if let Some(x) = self.export.as_mut()
@@ -1521,6 +1551,13 @@ impl TuiOutput {
             && let Err(e) = w.finish()
         {
             tracing::error!("Output file may be incomplete: {e:#}");
+        }
+        if self.withheld > 0 {
+            tracing::warn!(
+                "-O/--output holds a gap: {} packet(s) were not written while {}",
+                self.withheld,
+                crate::output::persistence::WITHHELD
+            );
         }
         summary
     }
@@ -2783,6 +2820,7 @@ mod processor_tests {
             max_count: limits.0,
             duration: limits.1,
             source_exhausted: None,
+            persistence_gate: None,
         });
         p.shutdown = || false;
         Ok((p, dialogs))
@@ -2848,6 +2886,32 @@ mod processor_tests {
             armed_kinds(&armed),
             vec!["digest", "fraud", "reg_flood", "scanner"]
         );
+        Ok(())
+    }
+
+    /// `-O` beside the TUI writes nothing while the persistence gate is
+    /// closed, and writes again once it reopens. The gate covered only the
+    /// vCon exporter, and the TUI's `-O` writer was never handed it.
+    #[test]
+    fn a_closed_persistence_gate_keeps_packets_out_of_the_tui_output() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("out.pcap");
+        let cli = cli_from(&["-O", &path.to_string_lossy()]);
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        let mut out = TuiOutput::new(&cli, (None, None, None)).with_gate(Some(Arc::clone(&gate)));
+        out.on_packet(&invite("before@x")?)?;
+        gate.set(false);
+        out.on_packet(&invite("during@x")?)?;
+        gate.set(true);
+        out.on_packet(&invite("after@x")?)?;
+        let _ = out.close(false);
+        let written = String::from_utf8_lossy(&std::fs::read(&path)?).into_owned();
+        assert!(written.contains("before@x"), "written before the close");
+        assert!(
+            !written.contains("during@x"),
+            "written while the persistence gate was closed"
+        );
+        assert!(written.contains("after@x"), "written after the reopen");
         Ok(())
     }
 

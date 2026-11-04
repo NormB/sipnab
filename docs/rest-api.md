@@ -1880,21 +1880,43 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 There are two fields. "Not writing" has two causes an operator needs to tell
 apart:
 
-- `authorized` — whether the operator started this run to write content at
-  all: an export flag on the command line, or a `[[vcon.rule]]` in the config
-  file.
+- `authorized` — whether the operator started this run to write call content
+  to disk at all: one of the writers below, on the command line or as a
+  `[[vcon.rule]]` in the config file.
   Fixed when sipnab starts, and nothing over the network changes it.
 - `enabled` — whether content is reaching disk right now.
 
 `authorized: false` means this run was never going to write anything.
 `authorized: true, enabled: false` means somebody switched it off.
 
+**What the gate covers.** Every writer that puts call content on disk while
+the run captures:
+
+- `-O`/`--output`: sipnab writes no packet it captures while you have the
+  gate off, so the pcap has a gap. At the end of the run sipnab says how many
+  packets it left out.
+- vCon containers: `--export-vcon`, `--export-vcon-when` and every
+  `[[vcon.rule]]`.
+- `--export-audio`: sipnab writes no WAV at the end of the run.
+- The MCP tools that write into `--mcp-file-root`: `export_capture`,
+  `export_audio`, `build_evidence_package`, `generate_repro` and
+  `shutdown_server`'s `save_to`. sipnab refuses each while the gate is off.
+
+It does not cover:
+
+- what leaves the host over the network: `--hep-send`, a rule's
+  `live_audio` and `live_rtp`;
+- the save command of the terminal UI, which the operator at the terminal
+  runs;
+- `--evidence-out`, which writes findings rather than call content;
+- the audit and journal files.
+
 ---
 
 ### POST /v1/persistence
 
 Stop writing content, or start again up to what the command line allowed.
-[Stop writing containers partway through a run](vcon.md#stop-writing-containers-partway-through-a-run)
+[Stop writing call content partway through a run](vcon.md#stop-writing-call-content-partway-through-a-run)
 walks through it on a live run, and says what happens to the calls that end
 while writing is off.
 
@@ -1924,9 +1946,9 @@ rather than the request.
 
 - `{"enabled": true}` restores writing as far as
   the command line allowed and no further.
-- Starting sipnab without a persistence
-  flag and without a `[[vcon.rule]]` is the way to guarantee a run writes no
-  content. No API key changes that.
+- Starting sipnab without any of the writers above, and without a
+  `[[vcon.rule]]`, is the way to guarantee a run writes no content. No API
+  key changes that.
 - Anyone holding a token can switch recording off. Nobody can switch it on.
 
 **Body shape:** a JSON object with exactly the key `enabled`, carrying `true`

@@ -1621,7 +1621,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2234 -> 2235 (#639, the TUI refusal of a `[[vcon.rule]]`): docs/errors.md +1,
     // the new entry's link to the config search order in
     // config-reference.md. Every other page held its count.
-    const EXPECTED_WIKI_LINKS: usize = 2235;
+    // 2235 -> 2237 (#642, the persistence gate covers every content writer):
+    // docs/README.md +1, the how-to index entry for "Stop writing call
+    // content partway through a run"; docs/vcon.md +1, that how-to's link to
+    // what the gate covers in rest-api.md. The how-to's renamed anchor
+    // changed two existing links and no count. Every other page held its
+    // count.
+    const EXPECTED_WIKI_LINKS: usize = 2237;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

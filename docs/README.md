@@ -94,6 +94,9 @@ Each answers one "how do I" question and assumes you already know what you want.
   and which instances did not answer.
 - **[Set up authentication](auth.md)**: signed bearer tokens for the API and
   MCP, with lifetimes, key rotation and revocation.
+- **[Stop writing call content partway through a run](vcon.md#stop-writing-call-content-partway-through-a-run)**:
+  switch off the pcap, the vCon containers and the audio files a running
+  capture writes, over the REST API, without stopping the capture.
 - **[Export a call as a vCon](vcon.md)**: write one observed dialog as a
   conversation container, and what an observer's record lets a consumer
   conclude.

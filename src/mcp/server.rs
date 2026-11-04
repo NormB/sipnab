@@ -303,6 +303,9 @@ pub struct SipnabMcp {
     output_schemas: Arc<std::collections::BTreeMap<String, Arc<rmcp::model::JsonObject>>>,
     /// The HEP authentication posture this run was started with, when one was.
     hep_auth_mode: Option<crate::cli::HepAuthMode>,
+    /// The persistence gate `POST /v1/persistence` moves. Every write into
+    /// the file root asks it; `None` when no gate was handed over.
+    persistence_gate: Option<Arc<crate::output::persistence::PersistenceGate>>,
     /// The append-only file every tool call is recorded to, or `None` when the
     /// operator asked for no such file.
     ///
@@ -443,6 +446,7 @@ impl SipnabMcp {
             // only one they share.
             audit_sink: None,
             hep_auth_mode: None,
+            persistence_gate: None,
             subscriptions: super::subscribe::Subscriptions::new(),
             tool_router: router,
             carried_tools,
@@ -930,6 +934,17 @@ impl SipnabMcp {
         self
     }
 
+    /// The persistence gate `POST /v1/persistence` moves, which every file
+    /// this server writes obeys.
+    #[must_use]
+    pub fn with_persistence_gate(
+        mut self,
+        gate: Arc<crate::output::persistence::PersistenceGate>,
+    ) -> Self {
+        self.persistence_gate = Some(gate);
+        self
+    }
+
     /// Confine the file tools to `dir`. Without this they refuse to run.
     pub fn with_file_root(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
         self.file_root = Some(dir.into());
@@ -1272,7 +1287,21 @@ impl SipnabMcp {
         &self,
         name: &str,
     ) -> Result<std::path::PathBuf, rmcp::ErrorData> {
+        // The root first: a server with no `--mcp-file-root` refuses by
+        // naming that flag, which is the cause. Its gate is never authorized
+        // (nothing writes), so asking the gate first answered "persistence is
+        // off", which is true and names the wrong remedy.
         let target = self.resolve_in_root(name)?;
+        // Then the persistence gate: while an operator has switched
+        // persistence off, no tool writes call content into the root. Every
+        // file tool that writes resolves its output here, so this is the one
+        // place it is asked, before anything touches the file.
+        if !crate::output::persistence::permits(self.persistence_gate.as_deref()) {
+            return Err(errors::refuse(
+                Reason::NotEnabled,
+                crate::output::persistence::WITHHELD.to_string(),
+            ));
+        }
         self.protected_inputs
             .check(&target, "the requested filename", false)
             .map_err(|msg| errors::refuse(Reason::PathRefused, msg))?;
@@ -12456,6 +12485,42 @@ mod tests {
             .map_err(|e| format!("a free name must still be writable: {e:?}"))?;
 
         let _ = std::fs::remove_dir_all(&root);
+        Ok(())
+    }
+
+    /// A closed persistence gate refuses every write into the file root, and
+    /// writes nothing; the reopened gate writes again.
+    ///
+    /// `export_capture`, `export_audio`, `build_evidence_package`,
+    /// `generate_repro` and `shutdown_server`'s `save_to` all resolve their output
+    /// through `resolve_in_root_for_write`, so this is where the gate is
+    /// asked. The gate covered only the vCon exporter, and an agent could go
+    /// on writing call content to disk after an operator had switched
+    /// persistence off.
+    #[test]
+    fn a_closed_persistence_gate_refuses_every_file_write() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        let srv = server_with_dialog("gate@test")?
+            .with_file_root(root.path())
+            .with_persistence_gate(Arc::clone(&gate));
+        gate.set(false);
+        let err = srv
+            .resolve_in_root_for_write("closed.pcap")
+            .err()
+            .ok_or("a write while persistence is off must be refused")?;
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("persistence is off"),
+            "the refusal says why: {msg}"
+        );
+        assert!(
+            !root.path().join("closed.pcap").exists(),
+            "a refused write leaves no file"
+        );
+        gate.set(true);
+        srv.resolve_in_root_for_write("open.pcap")
+            .map_err(|e| format!("the reopened gate writes again: {e:?}"))?;
         Ok(())
     }
 

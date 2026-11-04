@@ -887,7 +887,11 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 547 -> 548 (#639): src/app/bootstrap.rs, tui_export_refusal: a run that would
 // start the terminal UI with a `[[vcon.rule]]` is refused, naming the rule
 // (the TUI loop runs no vCon exporter). Nothing removed.
-const EXPECTED_TEMPLATES: usize = 548;
+// 548 -> 550 (#642): the persistence gate covers every content writer. One
+// template shared by src/app/batch.rs (stderr_line!) and src/app/tui_mode.rs
+// (warn!), `-O/--output holds a gap: ...`, and src/app/queries/b2.rs,
+// `--export-audio: no file written: ...`. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 550;
 
 // ---------------------------------------------------------------------------
 // The page gates

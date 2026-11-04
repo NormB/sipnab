@@ -4323,6 +4323,17 @@ impl BatchRunner {
         lp: &mut ReceiveLoop,
         packet: &capture::Packet,
     ) -> std::ops::ControlFlow<()> {
+        // The persistence gate covers `-O` as it covers the exporter: a
+        // closed gate keeps the packet out of the file, the decrypted
+        // export's hold included, and the run says how many at its end.
+        if self.writer.is_some()
+            && !crate::output::persistence::permits(
+                self.servers.as_ref().map(|s| s.persistence_gate.as_ref()),
+            )
+        {
+            lp.withheld_by_gate = lp.withheld_by_gate.saturating_add(1);
+            return std::ops::ControlFlow::Continue(());
+        }
         #[cfg(feature = "tls")]
         let held = match lp.decrypted_export.as_mut() {
             Some(x) if self.writer.is_some() => {
@@ -4618,6 +4629,13 @@ impl BatchRunner {
         {
             stderr_line!("Output file may be incomplete: {e:#}");
             lp.output_failed = true;
+        }
+        if lp.withheld_by_gate > 0 {
+            stderr_line!(
+                "-O/--output holds a gap: {} packet(s) were not written while {}",
+                lp.withheld_by_gate,
+                crate::output::persistence::WITHHELD
+            );
         }
     }
 
@@ -4942,6 +4960,9 @@ fn keylog_poll_due(watching: bool, since_last: impl FnOnce() -> std::time::Durat
 struct ReceiveLoop {
     /// Reused across packets so the hand-off costs no allocation per packet.
     new_orphans: Vec<(std::net::IpAddr, u16)>,
+    /// Packets `-O` did not write because the persistence gate was closed;
+    /// reported at the end of the run, because the file cannot say so.
+    withheld_by_gate: u64,
     /// Set when writing the -O output fails. The open path exits 1; the
     /// write and final-flush paths only logged, so a capture truncated by
     /// ENOSPC reported success and any `sipnab -O out.pcap && next-step`
@@ -5014,6 +5035,7 @@ impl ReceiveLoop {
         Self {
             new_orphans: Vec::new(),
             output_failed: false,
+            withheld_by_gate: 0,
             #[cfg(feature = "tls")]
             decrypted_export: (runner.export_mode == PcapExportMode::Decrypted
                 && cli.capture_args.output.is_some())
@@ -6742,13 +6764,10 @@ pub fn generate_reports(
         // The one-shot query flags (`--talkers`, `--call-tree`, `--expect`
         // and the rest), answered from these same final stores through the
         // same compiled filter. See `app::queries`.
-        && super::queries::render(&super::queries::QueryContext::new(
-            cli,
-            config,
-            dialog_store,
-            stream_store,
-            filter,
-        ))
+        && super::queries::render(
+            &super::queries::QueryContext::new(cli, config, dialog_store, stream_store, filter)
+                .with_gate(gate),
+        )
 }
 
 /// What `--since`/`--until` found when the window itself holds no dialog of

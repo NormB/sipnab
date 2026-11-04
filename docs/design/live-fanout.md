@@ -228,7 +228,7 @@ distinguishable by instruments that already exist:
 |---|---|
 | `kernel_dropped` rising, queue depth low, backpressure blocks ~0 | drainer-bound — fanout is the right fix |
 | `kernel_dropped` rising, queue at capacity, backpressure blocks climbing | processor-bound — fanout buys nothing and section 4 is the only path |
-| `interface_dropped` rising | neither; the NIC discarded before libpcap, and no userspace change recovers it ([`server.rs:1665`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1665)) |
+| `interface_dropped` rising | neither; the NIC discarded before libpcap, and no userspace change recovers it ([`server.rs:1694`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1694)) |
 
 `sipnab_capture_queue_depth_packets` and
 `sipnab_capture_backpressure_blocks_total`
@@ -240,7 +240,7 @@ from a headless run — `start_servers` is called with `metrics: true` and the
 real meter from [`batch.rs:1861-1879`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1861-L1879).
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:9338`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9338)),
+`capture_health` MCP response ([`server.rs:9367`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9367)),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports
