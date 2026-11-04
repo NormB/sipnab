@@ -13034,7 +13034,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.232 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.233 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13057,7 +13057,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.232` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.233` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13226,22 +13226,23 @@ Later releases fix three `netmap:` failures. Check your release with
 ### The audio plugin in Linux packages
 
 Live audio playback in the TUI loads a separate plugin,
-`libsipnab_audio.so` on Linux and `libsipnab_audio.dylib` on macOS. The
-packaging scripts intend the gnu tarballs and the standard packages to carry
-it. From 0.5.118 to 0.5.232 at least, the Linux ones do not:
+`libsipnab_audio.so` on Linux and `libsipnab_audio.dylib` on macOS. From
+0.5.118 to 0.5.232 the Linux gnu tarballs and the standard `.deb` and `.rpm`
+held no plugin, and the packages recommended no sound library. 0.5.233 ships
+the plugin again:
 
-| Artifact (0.5.232) | Plugin | `Recommends` |
+| Artifact (0.5.233) | Plugin | `Recommends` |
 |---|---|---|
-| `sipnab_<version>_<arch>.deb` | none | none |
-| `sipnab-<version>-1.<arch>.rpm` | none | none |
-| `sipnab-<version>-<arch>-unknown-linux-gnu.tar.gz` | none | — |
-| `sipnab-<version>-aarch64-apple-darwin.tar.gz` | `libsipnab_audio.dylib` | — |
+| `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
+| `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
+| `sipnab-<version>-<arch>-unknown-linux-gnu.tar.gz` | `libsipnab_audio.so` | — |
+| `sipnab-<version>-<arch>-apple-darwin.tar.gz` | `libsipnab_audio.dylib` | — |
 
-0.5.117 is the last release whose arm64 `.deb` held the plugin, at
-`/usr/lib/sipnab/libsipnab_audio.so`, with `Recommends: libasound2 |
-libasound2t64`. `sipnab --version` still lists `audio`, because the release
-builds the binary with the feature. Every other part of `audio`, WAV export included,
-is in the binary and works without the plugin.
+The `-noaudio` packages hold no plugin and recommend nothing. Before 0.5.233,
+0.5.117 is the last release whose gnu tarballs and standard packages held the
+plugin. In 0.5.118 to 0.5.232, `sipnab --version` still lists `audio`, because
+the release builds the binary with the feature. Every other part of `audio`,
+WAV export included, is in the binary and works without the plugin.
 
 Check what a package holds before you install it:
 
@@ -13270,11 +13271,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.232 for the
+it first, in the same shell, to the release you want, e.g. 0.5.233 for the
 latest:
 
 ```bash
-VERSION=0.5.232
+VERSION=0.5.233
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13358,9 +13359,12 @@ A manual download of the gnu build that checks the checksum before installing.
    ```
 
 The dynamic builds, whose names end in `-unknown-linux-gnu.tar.gz`, are the
-ones meant to add TUI audio playback. From 0.5.118 to 0.5.232 at least, they
-ship without the playback plugin (`libsipnab_audio.so`): the tarball holds the
-binary, the man page and the license files only. See
+ones that can add TUI audio playback. From 0.5.233 the tarball holds the
+playback plugin (`libsipnab_audio.so`) beside the binary. From 0.5.118 to
+0.5.232 it held the binary, the man page and the license files only. sipnab
+looks for the plugin next to its own executable, then in `/usr/lib/sipnab/`,
+then through the dynamic loader's search path, so the step above, which
+installs the binary alone, leaves playback off. See
 [The audio plugin in Linux packages](#the-audio-plugin-in-linux-packages).
 
 - They require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap.
@@ -13398,13 +13402,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.232, as in
+you want, e.g. 0.5.233, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.232
+   VERSION=0.5.233
    ```
 
 - Download the package:
@@ -13459,9 +13463,9 @@ Each release publishes a standard package and a **`-noaudio`** package.
 - The `-noaudio` package has no audio plugin and no ALSA dependency.
   - Everything else, WAV export included, works the same.
   - Only live playback in the TUI is unavailable.
-- The packaging scripts intend the standard package to ship the plugin and
-  *Recommend* `libasound2`. Releases from 0.5.118 to 0.5.232 at least do neither, so today
-  the two packages differ only in name. See
+- From 0.5.233 the standard package ships the plugin and *recommends*
+  `libasound2`. Releases from 0.5.118 to 0.5.232 did neither, so in those
+  releases the two packages differ only in name. See
   [The audio plugin in Linux packages](#the-audio-plugin-in-linux-packages).
 
 The headless amd64 (x86_64) package:
@@ -13515,25 +13519,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.232-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.233-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.232-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.233-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.232-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.233-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.232-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.233-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14018,14 +14022,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.232
+docker pull ghcr.io/normb/sipnab:0.5.233
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.232` | That release |
+| `0.5.233` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `sha-<commit>` | The image built from that commit |
 | `latest` | The newest commit on `main`, which can be ahead of every release |
@@ -14041,7 +14045,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.232 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.233 -N -I /data/capture.pcap
 ```
 
 **Live capture needs `--user root`.** The image runs as the unprivileged user
@@ -14050,7 +14054,7 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 to `nobody`:
 
 ```bash
-docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.232 -N -d eth0
+docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.233 -N -d eth0
 ```
 
 ```text
@@ -14068,7 +14072,7 @@ Permission denied on 'lo'. Grant capture capabilities once (Linux), then re-run 
 The outputs above came from an arm64 image built from the
 [`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
 stage with the 0.5.232 `.deb` binary, capturing `lo`, because the published
-image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.232`
+image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.233`
 shows the same `"User": "sipnab"` for the published image.
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14081,11 +14085,11 @@ shows the same `"User": "sipnab"` for the published image.
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.232 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.233 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.232` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.232`. For `latest` it is
+It names the workflow and the ref that built the image. For `0.5.233` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.233`. For `latest` it is
 `.github/workflows/docker.yml@refs/heads/main`.
 
 ### Build the Docker image locally
@@ -14372,7 +14376,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.232
+docker pull ghcr.io/normb/sipnab:0.5.233
 ```
 
 Pulling `latest` gives the newest `main` commit, not the newest release. See
@@ -81329,6 +81333,7 @@ Each successful run gets a row here.
 | 0.5.230 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.111+deb13-amd64 | 2026-10-25 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.231 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.111+deb13-amd64 | 2026-10-28 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.232 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.111+deb13-amd64 | 2026-11-03 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.233 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.111+deb13-amd64 | 2026-11-04 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every phase-two release commit.
 
