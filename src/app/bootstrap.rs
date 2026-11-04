@@ -2287,11 +2287,44 @@ fn report_relay_stats_blocked(blocked: &RelayAskBlocked) {
 /// the answer. A refusal is the invocation's to fix, so it exits 2.
 #[must_use]
 pub fn run_relay_holdings(cli: &Cli, planned: Option<&CaptureSource>) -> Option<i32> {
-    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
-
     if !cli.gate_args.relay_holdings {
         return None;
     }
+    Some(run_relay_listing(
+        cli,
+        planned,
+        "--relay-holdings",
+        crate::app::queries::relay_holdings,
+    ))
+}
+
+/// Answer `--relay-sessions` and return the exit code, when it was asked;
+/// `None` otherwise. The same gate, order and refusals as
+/// [`run_relay_holdings`].
+#[must_use]
+pub fn run_relay_sessions(cli: &Cli, planned: Option<&CaptureSource>) -> Option<i32> {
+    if !cli.gate_args.relay_sessions {
+        return None;
+    }
+    Some(run_relay_listing(
+        cli,
+        planned,
+        "--relay-sessions",
+        crate::app::queries::relay_sessions,
+    ))
+}
+
+/// The answer to a relay question asked before the capture opens: decide the
+/// permit from the planned source, ask through `answer`, or report why
+/// nothing was asked (exit 2).
+fn run_relay_listing(
+    cli: &Cli,
+    planned: Option<&CaptureSource>,
+    flag: &str,
+    answer: fn(&Cli, &dyn crate::relay::reconcile::ReadOnlyRelay, &TransmitPermit) -> i32,
+) -> i32 {
+    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+
     let detected;
     let source = match planned {
         Some(source) => source,
@@ -2309,35 +2342,31 @@ pub fn run_relay_holdings(cli: &Cli, planned: Option<&CaptureSource>) -> Option<
     match relay_ask(action, permit) {
         Ok(ask) => {
             let client = ControlClient::new(ask.socket, DEFAULT_CONTROL_TIMEOUT);
-            Some(crate::app::queries::relay_holdings(
-                cli,
-                &client,
-                &ask.permit,
-            ))
+            answer(cli, &client, &ask.permit)
         }
         Err(blocked) => {
-            report_relay_holdings_blocked(&blocked);
-            Some(2)
+            report_relay_listing_blocked(flag, &blocked);
+            2
         }
     }
 }
 
-/// Report why `--relay-holdings` asked nothing, on stderr so the reason for
-/// exit 2 survives `SIPNAB_LOG=off`.
-fn report_relay_holdings_blocked(blocked: &RelayAskBlocked) {
+/// Report why `flag` (`--relay-holdings`, `--relay-sessions`) asked nothing,
+/// on stderr so the reason for exit 2 survives `SIPNAB_LOG=off`.
+fn report_relay_listing_blocked(flag: &str, blocked: &RelayAskBlocked) {
     match blocked {
         // Clap requires `--rtpengine-control` beside the flag, so neither is
         // reached from a command line; both mean there is no relay to ask.
         RelayAskBlocked::Silent | RelayAskBlocked::NotConfigured => {
             stderr_line!(
-                "--relay-holdings needs a relay to ask. Name one with \
+                "{flag} needs a relay to ask. Name one with \
                  --rtpengine-control <addr>, for example \
                  --rtpengine-control 127.0.0.1:22222."
             );
         }
         RelayAskBlocked::NotPermitted => {
             stderr_line!(
-                "--relay-holdings will not ask a relay on a run that reads a file: \
+                "{flag} will not ask a relay on a run that reads a file: \
                  asking transmits. Ask from a live source (-d <device> or -L <addr>)."
             );
         }

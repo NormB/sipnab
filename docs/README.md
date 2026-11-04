@@ -174,6 +174,9 @@ Each answers one "how do I" question and assumes you already know what you want.
 - **[Ask a media relay about itself](relay-statistics.md)**: rtpengine's own
   counters, the calls it holds, and its count for one call beside sipnab's,
   from the command line, REST, MCP or the TUI.
+- **[See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay)**:
+  for each call rtpengine holds, whether each party's media arrives, has
+  stalled, or never arrived, from the relay's own counters.
 - **[Add rtpproxy to your voice stack](rtpproxy-relay.md)**: anchor every
   call's media on an rtpproxy relay instead, from OpenSIPS or Kamailio. No
   sipnab involved.

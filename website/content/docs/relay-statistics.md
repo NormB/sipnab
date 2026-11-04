@@ -227,6 +227,364 @@ holds and the proxy does not is a candidate. rtpengine removes a session
 whose media stopped only after its RTP `timeout` setting has passed, so a
 call that ended a short time ago can still appear.
 
+## See whether media reaches the relay
+
+For each call the relay holds, sipnab can say per direction whether the
+relay is receiving that party's media. Use it during a "no audio" or
+"one-way audio" incident: it names the party whose media never reached the
+relay, from one answer of the relay's and on the relay's own clock.
+
+### What it needs
+
+- **On the relay: nothing to change.** sipnab sends rtpengine's `list` and
+  `query` on its `listen-ng` address. Neither creates, changes or deletes a
+  call.
+- **`--rtpengine-control <listen-ng address>`** on the sipnab command line,
+  and a live source (`-d` or `-L`), as for every request on this page.
+- **For REST**, start the server with `--api-allow-relay-query`. **For MCP**,
+  start it with `--mcp-allow-relay-query`. Without the opt-in the request
+  sends nothing.
+- **To mark a hung-up call `ended`**, sipnab must see that call's SIP: a TUI,
+  REST or MCP run that captures the signaling. A `--relay-sessions` run asks
+  before it reads any packet, so it can only say that the relay may still
+  list a call for about 30 s after it ends.
+
+The output in this section came from this build of sipnab against the
+harness relay, rtpengine 12.5.1 in userspace, with calls placed by SIPp
+through OpenSIPS. This page writes the relay's address as `192.0.2.11` and
+the SIP test clients' as `192.0.2.21`.
+
+### Ask from the command line
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions 2>/dev/null
+```
+
+`-L 127.0.0.1:0` is a HEP listener that receives nothing. It is enough to
+make the run live, so it needs no privileges. sipnab sends one `list`, then
+one `query` per held call, up to `--relay-holdings-max` (32 by default),
+prints the answer and exits 0:
+
+```text
+Sessions of relay (rtpengine at 192.0.2.11:22222), asked 2026-11-04T16:01:54.067925771+00:00 (relay_reported)
+reachable; 2 calls listed; queried 2 of 2 (scan)
+Note: a relay keeps a call it was told to delete for its delete delay (30 s by default) and its answer does not mark it; a call sipnab did not see end in SIP may have ended up to about 30 s ago.
+Note: stalled means no packet for more than 2 s while another socket of the same call received one; silence suppression, comfort noise, hold and loss bursts were not measured and can also produce it.
+
+sg2-nomedia-1-104@192.0.2.21  from 104SIPpTag001: never received; from 1SIPpTag0110: flowing
+sg2-twoway-1-105@192.0.2.21  from 105SIPpTag091: flowing; from 1SIPpTag0111: flowing
+
+Call sg2-nomedia-1-104@192.0.2.21 (relay_reported)
+sipnab did not see its SIP dialog end; the relay may still list a call for about 30 s after it ends.
+from 104SIPpTag001 to 192.0.2.11:30038: never received
+from 1SIPpTag0110 to 192.0.2.11:30000: flowing
+Tag            Relay socket      Kind  In pkts  In bytes  In errs  Out pkts  Out bytes  Out errs  Last packet  Forwarding
+-------------------------------------------------------------------------------------------------------------------------
+104SIPpTag001  192.0.2.11:30038  rtp   0        0         0        243       41796      0         1793808109   userspace
+104SIPpTag001  192.0.2.11:30039  rtcp  0        0         0        0         0          0         1793808109   userspace
+1SIPpTag0110   192.0.2.11:30000  rtp   245      42140     0        0         0          0         1793808114   userspace
+1SIPpTag0110   192.0.2.11:30001  rtcp  0        0         0        0         0          0         1793808109   userspace
+```
+
+The first call's caller sent no media, and the answer says so: the relay
+counted 0 packets in on that party's socket and never confirmed it. The
+second call's media reaches the relay both ways. Each call's table, the
+second one's included, follows.
+
+How to read a direction:
+
+| Verdict | Meaning |
+|---|---|
+| `flowing` | packets are arriving on that party's RTP socket |
+| `never received` | the socket counted 0 packets in, and the relay never marked it `confirmed` |
+| `no packet for N s` (`stalled`) | its last packet is more than 2 s behind the newest one of any RTP socket of the same call, in the same answer |
+| `not reported by this relay version` (`not_reported`) | the relay's answer lacked the counters, the last-packet time or the flags |
+
+- **`stalled` compares sockets of one call.** When every socket of a call
+  stops together, none trails another, so the call still reads `flowing`.
+  The `Last packet` column is the relay's own time in seconds.
+- **A call with an early media branch** (a parallel fork that sent early
+  media) shows its counters and no verdict. rtpengine can count the answered
+  party's media on the early branch's socket, and a verdict per socket would
+  call a live party silent.
+- **`Forwarding`** is `kernel` when the relay flags the socket `kernelized`
+  without `no kernel support`, and `userspace` otherwise.
+- **Absent is not zero.** A counter the relay did not report reads
+  `not reported`, and the JSON leaves it out.
+
+To ask about one call only, with one `list` and one `query`:
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions --relay-sessions-call sg2-twoway-1-105@192.0.2.21 --json 2>/dev/null
+```
+
+`--json` prints one object on one line, the body of `GET /v1/relay/sessions`.
+Here it is pretty-printed and shortened to one tag and one socket:
+
+```json
+{
+  "calls": [
+    {
+      "call_id": "sg2-twoway-1-105@192.0.2.21",
+      "directions": [
+        {
+          "from_tag": "105SIPpTag091",
+          "local_address": "192.0.2.11",
+          "local_port": 30014,
+          "media_index": 1,
+          "verdict": "flowing"
+        },
+        {
+          "from_tag": "1SIPpTag0111",
+          "local_address": "192.0.2.11",
+          "local_port": 30048,
+          "media_index": 1,
+          "verdict": "flowing"
+        }
+      ],
+      "outcome": "ok",
+      "sip_dialog": "not_seen_ended",
+      "tags": [
+        {
+          "in_dialogue_with": [
+            "1SIPpTag0111"
+          ],
+          "is_media_subscriber": false,
+          "sockets": [
+            {
+              "egress": {
+                "bytes": 135020,
+                "errors": 0,
+                "packets": 785
+              },
+              "endpoint": "192.0.2.21:6000",
+              "ingress": {
+                "bytes": 135020,
+                "errors": 0,
+                "packets": 785
+              },
+              "kernel": "userspace",
+              "kind": "rtp",
+              "last_packet": 1793808124,
+              "local_address": "192.0.2.11",
+              "local_port": 30014,
+              "media_index": 1
+            }
+          ],
+          "tag": "105SIPpTag091"
+        }
+      ]
+    }
+  ],
+  "cap": 32,
+  "held": 2,
+  "list_limit": 32,
+  "not_queried": [
+    {
+      "call_id": "sg2-nomedia-1-104@192.0.2.21",
+      "sip_dialog": "not_seen_ended"
+    }
+  ],
+  "notes": [
+    "a relay keeps a call it was told to delete for its delete delay (30 s by default) and its answer does not mark it; a call sipnab did not see end in SIP may have ended up to about 30 s ago",
+    "stalled means no packet for more than 2 s while another socket of the same call received one; silence suppression, comfort noise, hold and loss bursts were not measured and can also produce it"
+  ],
+  "obtained_at": "2026-11-04T16:02:04.870332099+00:00",
+  "outcome": "ok",
+  "reach": "ok",
+  "relay": "relay (rtpengine at 192.0.2.11:22222)",
+  "scan": false,
+  "stall_seconds": 2,
+  "tier": "relay_reported",
+  "truncated": false
+}
+```
+
+`not_queried` names the held calls this answer did not ask about, so a call
+never drops out of the answer. `truncated` is true when `list` returned as
+many Call-IDs as it asked for, and the relay may then hold more.
+
+### Ask over REST and MCP
+
+Start a server with both opt-ins:
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 \
+  --api 127.0.0.1:18731 --api-allow-relay-query \
+  --mcp --mcp-transport http --mcp-bind 127.0.0.1:18732 --mcp-allow-relay-query
+```
+
+`GET /v1/relay/sessions` takes `call_id` (one call to query) and `scan=true`
+(every held call, up to 32). Without `scan`, sipnab asks only `list` and
+`call_id`:
+
+```bash
+curl -s "http://127.0.0.1:18731/v1/relay/sessions?call_id=sg2-nomedia-1-104@192.0.2.21" | jq '.calls[0].directions'
+```
+
+```json
+[
+  {
+    "from_tag": "104SIPpTag001",
+    "local_address": "192.0.2.11",
+    "local_port": 30038,
+    "media_index": 1,
+    "verdict": "never_received"
+  },
+  {
+    "from_tag": "1SIPpTag0110",
+    "local_address": "192.0.2.11",
+    "local_port": 30000,
+    "media_index": 1,
+    "verdict": "flowing"
+  }
+]
+```
+
+Over MCP, call `query_relay` with `{"sessions": true, "scan": true}`. The
+answer has `"asked": "sessions"`, `"outcome": "sessions"`, and the same
+snapshot under `sessions`. The two calls above came back as:
+
+```text
+sg2-nomedia-1-104@192.0.2.21 [('104SIPpTag001', 'never_received'), ('1SIPpTag0110', 'flowing')]
+sg2-twoway-1-105@192.0.2.21 [('105SIPpTag091', 'flowing'), ('1SIPpTag0111', 'flowing')]
+```
+
+That listing is each `calls[]` entry's `call_id` and its `directions`, read
+from the tool's JSON.
+
+### Tell a call that ended from one that is up
+
+rtpengine keeps a hung-up call for its delete delay, 30 s by default, and
+answers for it as it did while the call was up. Asked a few seconds after
+the first call above hung up, the relay still listed it:
+
+```text
+sg2-nomedia-1-104@192.0.2.21  from 104SIPpTag001: never received; from 1SIPpTag0110: flowing
+```
+
+Its callee still reads `flowing`: that socket was the newest of its call, so
+nothing trailed it.
+
+A run that sees the SIP marks such a call. Start the server capturing the
+bridge the SIP crosses:
+
+```bash
+sudo sipnab -N -d br-0b7ba286bc5b --rtpengine-control 192.0.2.11:22222 --api 127.0.0.1:18741 --api-allow-relay-query
+```
+
+Then a 5 s call, asked about after its BYE, reads:
+
+```bash
+curl -s "http://127.0.0.1:18741/v1/relay/sessions?call_id=sg2-short-1-114@192.0.2.21" | jq '.calls[0] | {call_id, sip_dialog, directions}'
+```
+
+```json
+{
+  "call_id": "sg2-short-1-114@192.0.2.21",
+  "sip_dialog": "ended",
+  "directions": [
+    {
+      "from_tag": "114SIPpTag001",
+      "local_address": "192.0.2.11",
+      "local_port": 30040,
+      "media_index": 1,
+      "verdict": "never_received"
+    },
+    {
+      "from_tag": "1SIPpTag0112",
+      "local_address": "192.0.2.11",
+      "local_port": 30036,
+      "media_index": 1,
+      "verdict": "flowing"
+    }
+  ]
+}
+```
+
+`br-0b7ba286bc5b` is the harness's Docker bridge. Replace it with the
+interface your SIP crosses.
+
+### Watch it in the terminal UI
+
+Open the relay view with `S`, then press `H`:
+
+```text
+┌ Relay sessions — what the relay holds
+│Sessions of relay (rtpengine at 192.0.2.11:22222), asked 2026-11-04T16:03:55.240602811+00:00 (relay_reported)
+│reachable; 1 call listed; queried 1 of 1
+│Note: a relay keeps a call it was told to delete for its delete delay (30 s by default) and its answer does not mark it; a call sipnab did not see end in SIP
+│may have ended up to about 30 s ago.
+│Note: stalled means no packet for more than 2 s while another socket of the same call received one; silence suppression, comfort noise, hold and loss bursts
+│were not measured and can also produce it.
+│
+│> sg2-tui-1-121@192.0.2.21  from 121SIPpTag091: flowing; from 1SIPpTag0113: flowing
+│
+│Enter opens the call under the cursor; a asks every held call once (up to the cap).
+```
+
+- While the view is open it asks for the list and the call under the cursor
+  every `--relay-stats-interval` seconds, or every 2 s without it
+  (`DEFAULT_REFRESH_SECS` (2) in [`src/tui/relay_sessions.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/relay_sessions.rs)). It asks
+  nothing once you close it.
+- `a` asks about every held call once, up to 32. Up and Down move the
+  cursor, and Enter opens that call's directions and socket table.
+- In one call's view, `K` sets each relay socket's counts beside what this
+  capture saw on it, two tiers named and never subtracted. Captured on the
+  harness bridge, starting partway through the call:
+
+```text
+Call sg2-tui-1-121@192.0.2.21: relay sockets beside this capture
+relay_reported is what the relay counted; sipnab_measured is what this capture saw.
+121SIPpTag091 192.0.2.11:30010 (rtp)
+  in:  relay_reported 2023  sipnab_measured 768
+  out: relay_reported 2023  sipnab_measured 768
+121SIPpTag091 192.0.2.11:30011 (rtcp)
+  in:  relay_reported 0  sipnab_measured not captured
+  out: relay_reported 0  sipnab_measured not captured
+```
+
+The relay counts from the start of the call and the capture from when it
+started, so the two differ. `not captured` means this capture has no
+stream to or from that socket. On a run that captures no media, such as
+`-L`, every socket reads `not captured`.
+
+### Check that it worked
+
+- `--relay-sessions` exits 0, and its second line starts `reachable;`.
+- Every call the relay holds is in the answer, as a row with verdicts or as
+  `not queried`.
+- On a call with audio both ways, both directions read `flowing`. If they do
+  not, read the troubleshooting list below before suspecting the relay.
+
+### When the sessions answer is not what you expect
+
+- **`--relay-sessions will not ask a relay on a run that reads a file:
+  asking transmits. Ask from a live source (-d <device> or -L <addr>).`** and
+  exit 2. The run reads a capture file, and sends nothing.
+- **`--relay-sessions: unreachable: relay (rtpengine at 192.0.2.11:22299) did
+  not answer (no reply from 192.0.2.11:22299 within 2s); asked, nothing came
+  back`** and exit 1. No relay answers at that address. Use the relay's
+  `listen-ng` value. sipnab sends no `query` after an unanswered `list`.
+- **`error: the following required arguments were not provided:
+  --rtpengine-control <ADDR>`.** `--relay-sessions` and
+  `--relay-sessions-call` need the relay's address.
+- **`not_permitted` from `GET /v1/relay/sessions`.** The server lacks
+  `--api-allow-relay-query`, or reads a capture file. It sent nothing.
+- **A call that hung up still reads `flowing`.** The relay keeps it for its
+  delete delay. Ask from a run that sees the SIP, which marks it `ended`.
+- **A direction reads `no packet for N s` on a call with audio.** The
+  sending phone may suppress silence or send comfort noise, or the call may
+  be on hold. Those cases were not measured, and can make a live party trail
+  by more than 2 s.
+- **A call shows its counters and "early media branch".** The call forked
+  and one branch sent early media; read the socket table instead of a
+  verdict.
+- **A held call reads `not queried`.** The scan stops at the cap, 32 by
+  default, the selected call included. Raise it with
+  `--relay-holdings-max`, or ask about that call with
+  `--relay-sessions-call`.
+
 ## Compare the relay's count with your capture
 
 For one call, put the relay's RTP packet count beside the count sipnab
@@ -434,7 +792,7 @@ the answer arrives. Inside it:
 | Key | Shows |
 |---|---|
 | `?` | the names the relay knows |
-| `H` | the Call-IDs the relay holds now, up to 32 (press again for the counters) |
+| `H` | the relay sessions: each held call and whether media reaches the relay each way ([see above](#watch-it-in-the-terminal-ui); press again for the counters) |
 | `K` | the relay's count beside this capture's, in a call's view only |
 | `Esc` or `S` | closes the view |
 

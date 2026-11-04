@@ -139,12 +139,12 @@ resource.
 | captures | 11 | 12,723 | 30,211 |
 | security | 6 | 9,954 | 9,954 |
 | media | 4 | 3,480 | 16,048 |
-| relay | 5 | 4,777 | 24,044 |
+| relay | 5 | 5,109 | 31,609 |
 | tfps | 7 | 5,717 | 16,101 |
 | server | 6 | 5,976 | 35,136 |
 | vcon | 7 | 10,714 | 34,446 |
 | tls | 3 | 2,903 | 4,996 |
-| full | 79 | 92,136 | 306,959 |
+| full | 79 | 92,468 | 314,524 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
@@ -207,7 +207,7 @@ links to its section on the bundle's page.
 | [`list_tls_libraries`](@/docs/mcp-tools-tls.md#list-tls-libraries) | [tls](@/docs/mcp-tools-tls.md) | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 | [`media_diagnostics`](@/docs/mcp-tools-media.md#media-diagnostics) | [media](@/docs/mcp-tools-media.md) | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
 | [`open_capture`](@/docs/mcp-tools-captures.md#open-capture) | [captures](@/docs/mcp-tools-captures.md) | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
-| [`query_relay`](@/docs/mcp-tools-relay.md#query-relay) | [relay](@/docs/mcp-tools-relay.md) | **Transmits.** Asks the configured relay what it holds right now. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
+| [`query_relay`](@/docs/mcp-tools-relay.md#query-relay) | [relay](@/docs/mcp-tools-relay.md) | **Transmits.** Asks the configured relay what it holds right now, or with `sessions` whether media reaches it per call and direction. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
 | [`reconcile_orphans`](@/docs/mcp-tools-media.md#reconcile-orphans) | [media](@/docs/mcp-tools-media.md) | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`relay_compare`](@/docs/mcp-tools-relay.md#relay-compare) | [relay](@/docs/mcp-tools-relay.md) | **Transmits.** Sets the relay's per-call RTP count beside sipnab's measured count, both tiers named and a word verdict, never a sum. Same gate as `query_relay` |
 | [`relay_stats`](@/docs/mcp-tools-relay.md#relay-stats) | [relay](@/docs/mcp-tools-relay.md) | **Transmits.** Asks the configured relay for its own counters (global, per-call, or the names it knows), tiered `relay_reported`. Same opt-in and live-source gate as `query_relay` |

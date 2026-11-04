@@ -369,14 +369,14 @@ What did this run's own poll of the relay's counters last obtain, and how old is
 
 ### Relay holdings
 
-What Call-IDs is the live relay holding right now?
+What Call-IDs is the live relay holding right now, and is each party's media reaching it?
 
 | Surface | Detail |
 |---|---|
-| CLI | `--relay-holdings` |
-| TUI | `RelayStats` |
-| REST | `/v1/relay/holdings` and `/v1/relay/holdings/{call_id}` |
-| MCP | `query_relay` |
+| CLI | `--relay-holdings`, `--relay-sessions` and `--relay-sessions-call` |
+| TUI | `RelayStats` (`H` opens the sessions list) |
+| REST | `/v1/relay/holdings`, `/v1/relay/holdings/{call_id}` and `/v1/relay/sessions` |
+| MCP | `query_relay` (with `sessions` for the sessions snapshot) |
 
 ### Decode a relay control message
 

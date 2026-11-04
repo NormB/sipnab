@@ -19,6 +19,7 @@ pub mod header_form;
 pub mod help;
 pub(crate) mod loss_map;
 pub mod msg_raw;
+pub mod relay_sessions;
 pub mod relay_stats;
 pub mod stream_detail;
 pub mod stream_list;
@@ -334,6 +335,8 @@ pub struct App {
     call_volume: VolumeCache,
     /// Relay-statistics view cache and the ask in flight (ST8).
     relay_stats: relay_stats::RelayStatsCache,
+    /// The relay sessions view's kept answer, cursor and snapshot in flight.
+    relay_sessions: relay_sessions::SessionsCache,
     /// What the relay-statistics view needs to transmit, or which ST-S4
     /// invocation refusal applies when it cannot ask (no relay, or no permit).
     relay_query: relay_stats::RelayQueryState,
@@ -579,6 +582,7 @@ impl App {
             flow_correlation: FlowCorrelationCache::default(),
             call_volume: VolumeCache::default(),
             relay_stats: relay_stats::RelayStatsCache::default(),
+            relay_sessions: relay_sessions::SessionsCache::default(),
             relay_query: relay_stats::RelayQueryState::default(),
             tfps: tfps_observe::TfpsCache::default(),
             tfps_access: crate::security::tfps::TfpsLocator::default(),
@@ -1057,6 +1061,10 @@ impl App {
             View::RelayStats { call_id, mode } => (call_id.clone(), *mode),
             _ => return,
         };
+        if want.1.is_sessions() {
+            self.drive_relay_sessions(want.0.as_deref(), want.1);
+            return;
+        }
         // Take any finished reply by value first, so the body can mutate the
         // cache without the receiver's borrow still being live.
         let received = self
@@ -1092,6 +1100,74 @@ impl App {
         if !up_to_date {
             self.start_relay_stats_ask(want);
         }
+    }
+
+    /// Drive the relay sessions view (SG2): take a finished snapshot, start
+    /// the next when one is due or a scan was asked for, and compose the text
+    /// the render pass shows.
+    ///
+    /// Runs only while a sessions mode is open, so nothing is asked while the
+    /// view is closed. The snapshot runs on a worker; this thread only reads
+    /// the stores.
+    fn drive_relay_sessions(&mut self, call_id: Option<&str>, mode: RelayStatsMode) {
+        let now = std::time::Instant::now();
+        self.relay_sessions.absorb(now);
+        let access = match &self.relay_query {
+            relay_stats::RelayQueryState::Ready(a) => a.clone(),
+            other => {
+                // No relay or no permit: the ST-S4 refusal, and no thread.
+                if let Some(text) = other.invocation_refusal() {
+                    self.relay_stats.text = text;
+                }
+                return;
+            }
+        };
+        let due = relay_sessions::refresh_due(
+            self.relay_sessions.asked_at,
+            now,
+            self.relay_stats_interval,
+        );
+        if !self.relay_sessions.pending() && (due || self.relay_sessions.scan_requested) {
+            let selected = match mode {
+                RelayStatsMode::Sessions => self.relay_sessions.selected_call(),
+                _ => call_id.map(str::to_string),
+            };
+            let scan = std::mem::take(&mut self.relay_sessions.scan_requested);
+            let dialogs = Arc::clone(&self.dialog_store);
+            let ended: Arc<dyn Fn(&str) -> bool + Send + Sync> = Arc::new(move |c: &str| {
+                crate::output::query::relay_sessions::sip_saw_end(&dialogs.read(), c)
+            });
+            self.relay_sessions.rx = Some(relay_sessions::spawn_snapshot(
+                access,
+                selected,
+                scan,
+                crate::relay::reconcile::DEFAULT_LIST_LIMIT,
+                ended,
+            ));
+            self.relay_sessions.asked_at = Some(now);
+        }
+        self.relay_stats.text = match (mode, call_id) {
+            (RelayStatsMode::SessionCall, Some(cid)) => {
+                relay_sessions::compose_call(&self.relay_sessions, cid)
+            }
+            (RelayStatsMode::SessionCompare, Some(cid)) => {
+                let call = self
+                    .relay_sessions
+                    .answered
+                    .as_ref()
+                    .and_then(|s| s.calls.iter().find(|c| c.call_id == cid));
+                match call {
+                    Some(call) => {
+                        let ss = self.stream_store.read();
+                        relay_sessions::compose_socket_compare(call, &|addr, port, way| {
+                            captured_on(&ss, addr, port, way)
+                        })
+                    }
+                    None => relay_sessions::compose_call(&self.relay_sessions, cid),
+                }
+            }
+            _ => relay_sessions::compose_list(&self.relay_sessions, now),
+        };
     }
 
     /// Drive the TFPS-observe view's off-thread ask: absorb a finished reply,
@@ -2406,6 +2482,33 @@ fn refresh_text<K: PartialEq>(
         *cache.key = Some(now);
         cache.floor.mark();
     }
+}
+
+/// What this capture saw sent to (`ToRelay`) or from (`FromRelay`) one relay
+/// socket: the sum of `packet_count` over the streams whose destination, or
+/// source, is that address and port. `None` when the capture holds no such
+/// stream, which is "not captured", never a measured 0.
+fn captured_on(
+    ss: &crate::rtp::stream_store::StreamStore,
+    addr: &str,
+    port: u16,
+    way: relay_sessions::Way,
+) -> Option<u64> {
+    let ip: std::net::IpAddr = addr.parse().ok()?;
+    let want = std::net::SocketAddr::new(ip, port);
+    let mut seen = false;
+    let mut total = 0u64;
+    for s in ss.iter() {
+        let at = match way {
+            relay_sessions::Way::ToRelay => s.key.dst,
+            relay_sessions::Way::FromRelay => s.key.src,
+        };
+        if at == want {
+            seen = true;
+            total = total.saturating_add(s.packet_count);
+        }
+    }
+    seen.then_some(total)
 }
 
 #[cfg(test)]
@@ -4994,6 +5097,136 @@ mod tests {
         assert!(!app.is_paused());
         app.paused = true;
         assert!(app.is_paused());
+        Ok(())
+    }
+}
+
+/// The relay sessions view asks only while it is open, on its cadence.
+#[cfg(test)]
+mod relay_sessions_drive_tests {
+    use super::*;
+    use crate::relay::reconcile::ReadOnlyRelay;
+    use crate::relay::types::{ControlReply, Enumeration};
+    use crate::security::transmit_guard::TransmitPermit;
+    use std::sync::Mutex;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A relay that answers every `list` with one call and records each ask.
+    #[derive(Default)]
+    struct Counting {
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl ReadOnlyRelay for Counting {
+        fn list(&self, _: &TransmitPermit, _: u32) -> anyhow::Result<ControlReply> {
+            self.asked
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .push("list".to_string());
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: vec!["a@example.invalid".to_string()],
+                truncated: false,
+            }))
+        }
+        fn query(&self, _: &TransmitPermit, c: &str) -> anyhow::Result<ControlReply> {
+            self.asked
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .push(format!("query {c}"));
+            anyhow::bail!("no such call")
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("never asked")
+        }
+        fn describe(&self) -> String {
+            "counting".to_string()
+        }
+    }
+
+    fn app_with(relay: &Arc<Counting>) -> Result<App, TestError> {
+        let mut app = App::new_test();
+        let live = crate::capture::CaptureSource::Live {
+            device: "eth0".to_string(),
+        };
+        app.relay_query = relay_stats::RelayQueryState::Ready(relay_stats::TuiRelayAccess {
+            relay: Arc::clone(relay) as Arc<dyn ReadOnlyRelay + Send + Sync>,
+            permit: TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?,
+            addr: "192.0.2.10:22222".parse()?,
+        });
+        Ok(app)
+    }
+
+    /// Wait for the snapshot in flight and take it.
+    fn land(app: &mut App) -> Result<(), TestError> {
+        let rx = app.relay_sessions.rx.take().ok_or("a snapshot in flight")?;
+        let snapshot = rx.recv_timeout(std::time::Duration::from_secs(10))?;
+        let (tx, again) = std::sync::mpsc::channel();
+        tx.send(snapshot)?;
+        app.relay_sessions.rx = Some(again);
+        app.relay_sessions.absorb(std::time::Instant::now());
+        Ok(())
+    }
+
+    /// Closed, the view asks nothing. Opened, it takes one snapshot, and the
+    /// next tick inside the interval takes none.
+    #[test]
+    fn the_view_asks_only_while_open_and_on_its_cadence() -> Result<(), TestError> {
+        let relay = Arc::new(Counting::default());
+        let mut app = app_with(&relay)?;
+        app.drive_relay_stats();
+        assert!(!app.relay_sessions.pending(), "the call list asks nothing");
+        app.current_view = View::RelayStats {
+            call_id: None,
+            mode: RelayStatsMode::Counters,
+        };
+        app.current_view = View::RelayStats {
+            call_id: None,
+            mode: RelayStatsMode::Sessions,
+        };
+        app.drive_relay_stats();
+        assert!(app.relay_sessions.pending(), "opening takes a snapshot");
+        let first = app.relay_sessions.asked_at;
+        land(&mut app)?;
+        app.drive_relay_stats();
+        assert_eq!(
+            app.relay_sessions.asked_at, first,
+            "no second snapshot inside the interval"
+        );
+        assert!(
+            !app.relay_sessions.pending(),
+            "Closed, the view asks nothing"
+        );
+        assert_eq!(
+            *relay.asked.lock().map_err(|e| e.to_string())?,
+            ["list"],
+            "one list, and no query: nothing was selected or scanned"
+        );
+        Ok(())
+    }
+
+    /// The scan key's request is taken by the next tick, once: that snapshot
+    /// queries the held calls.
+    #[test]
+    fn a_scan_request_is_taken_by_the_next_tick_once() -> Result<(), TestError> {
+        let relay = Arc::new(Counting::default());
+        let mut app = app_with(&relay)?;
+        app.current_view = View::RelayStats {
+            call_id: None,
+            mode: RelayStatsMode::Sessions,
+        };
+        app.drive_relay_stats();
+        land(&mut app)?;
+        app.relay_sessions.scan_requested = true;
+        app.drive_relay_stats();
+        assert!(!app.relay_sessions.scan_requested, "the request was taken");
+        land(&mut app)?;
+        let asked = relay.asked.lock().map_err(|e| e.to_string())?.clone();
+        assert_eq!(
+            asked,
+            ["list", "list", "query a@example.invalid"],
+            "the scan asked about the held call once"
+        );
         Ok(())
     }
 }

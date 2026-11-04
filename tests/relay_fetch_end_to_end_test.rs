@@ -1244,3 +1244,329 @@ fn relay_holdings_an_unreadable_reply_is_suspect_not_unreachable() -> Result<(),
     );
     Ok(())
 }
+
+// ── --relay-sessions, GET /v1/relay/sessions, query_relay sessions ───
+
+/// A recorded `query` reply body from `tests/fixtures/rtpengine/`, recorded
+/// from rtpengine 12.5.1 on 2026-11-04 and rewritten to RFC 5737 addresses.
+fn recorded(name: &str) -> Result<Vec<u8>, TestError> {
+    let path = format!(
+        "{}/tests/fixtures/rtpengine/{name}.bencode",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    Ok(std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?)
+}
+
+/// A relay holding [`HELD`]. A scan queries them in Call-ID order, so the
+/// first call gets the even-numbered replies, which are one-way (the callee
+/// sends nothing), and the second the odd ones, which are two-way. Every
+/// scan of this relay therefore sees the same two answers.
+fn holding_sessions() -> Result<FakeRelay, TestError> {
+    let one_way = recorded("h-oneway-query")?;
+    let two_way = recorded("h-twoway-query")?;
+    FakeRelay::start(move |verb, nth| match verb {
+        "list" => calls(&HELD),
+        "query" if nth % 2 == 0 => Answer::Body(one_way.clone()),
+        "query" => Answer::Body(two_way.clone()),
+        _ => Answer::Silent,
+    })
+}
+
+/// `--relay-sessions` lists what the relay holds, queries each held call up
+/// to `--relay-holdings-max`, prints each direction's verdict, and exits
+/// without opening the capture. It sends `list` and `query` and nothing else.
+#[test]
+fn relay_sessions_prints_each_direction_s_verdict_and_exits() -> Result<(), TestError> {
+    let relay = holding_sessions()?;
+    let addr = relay.addr.to_string();
+    let done = run_to_exit(&[
+        "-L",
+        "127.0.0.1:0",
+        "--rtpengine-control",
+        &addr,
+        "--relay-sessions",
+    ])?;
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    assert!(
+        done.stdout
+            .contains(&format!("Sessions of relay (rtpengine at {addr}), asked ")),
+        "{}",
+        done.dump()
+    );
+    assert!(
+        done.stdout.contains("queried 2 of 2 (scan)"),
+        "{}",
+        done.dump()
+    );
+    assert!(
+        done.stdout.contains(&format!(
+            "{}  from callee-tag-1: never received; from caller-tag-1: flowing",
+            HELD[0]
+        )),
+        "the one-way call names the silent party:\n{}",
+        done.dump()
+    );
+    assert_eq!(
+        relay.asked()?,
+        ["list", "query", "query"],
+        "one list and one query per held call, nothing else"
+    );
+    assert_eq!(
+        list_limits(&relay)?,
+        ["32"],
+        "`--relay-sessions` lists what the relay holds, queries each held call up to `--relay-holdings-max`, prints each direction's verdict, and exits without opening the capture"
+    );
+    assert!(
+        !done.stderr.contains("HEP listener started on"),
+        "the capture never opens:\n{}",
+        done.dump()
+    );
+    Ok(())
+}
+
+/// `--relay-sessions-call` asks about that call only: one `list` and one
+/// `query`, never a scan of the other held calls.
+#[test]
+fn relay_sessions_call_queries_that_call_only() -> Result<(), TestError> {
+    let relay = holding_sessions()?;
+    let addr = relay.addr.to_string();
+    let done = run_to_exit(&[
+        "-L",
+        "127.0.0.1:0",
+        "--rtpengine-control",
+        &addr,
+        "--relay-sessions",
+        "--relay-sessions-call",
+        HELD[1],
+        "--json",
+    ])?;
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    assert_eq!(
+        relay.asked()?,
+        ["list", "query"],
+        "`--relay-sessions-call` asks about that call only"
+    );
+    let v = last_json(&done)?;
+    assert_eq!(v["scan"], false, "{v}");
+    assert_eq!(v["calls"][0]["call_id"], HELD[1], "{v}");
+    assert_eq!(v["not_queried"][0]["call_id"], HELD[0], "{v}");
+    Ok(())
+}
+
+/// The same answer on every surface: `--relay-sessions --json`, REST
+/// `GET /v1/relay/sessions?scan=true` and the MCP `query_relay` tool with
+/// `sessions: true, scan: true` carry one serialized snapshot, equal but for
+/// the moment each was asked.
+#[test]
+fn relay_sessions_is_one_answer_on_the_cli_rest_and_mcp() -> Result<(), TestError> {
+    let relay = holding_sessions()?;
+    let addr = relay.addr.to_string();
+    let done = run_to_exit(&[
+        "-L",
+        "127.0.0.1:0",
+        "--rtpengine-control",
+        &addr,
+        "--relay-sessions",
+        "--json",
+    ])?;
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    let mut cli = last_json(&done)?;
+
+    // The same relay, so every answer names the same one. Each scan asks two
+    // queries, and so does the server's startup snapshot, so every scan sees
+    // the even-numbered (one-way) reply for the first call.
+    let mut server = Run::start(
+        &relay,
+        &[
+            "--api",
+            "127.0.0.1:0",
+            "--api-allow-relay-query",
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-bind",
+            "127.0.0.1:0",
+            "--mcp-allow-relay-query",
+        ],
+    )?;
+    assert!(
+        server.wait_stderr("REST API listening on ")
+            && server.wait_stderr("MCP HTTP server listening on "),
+        "{}",
+        server.err.join("\n")
+    );
+    let api = server
+        .err
+        .iter()
+        .find_map(|l| l.split("REST API listening on ").nth(1))
+        .map(|s| s.trim().trim_start_matches("http://").to_string())
+        .ok_or("the REST listening address")?;
+    let mcp_addr = server
+        .err
+        .iter()
+        .find_map(|l| l.split("MCP HTTP server listening on ").nth(1))
+        .map(|a| a.trim().to_string())
+        .ok_or("the MCP listening address")?;
+    let mut rest = http_get_json(&api, "/v1/relay/sessions?scan=true")?;
+
+    let session = mcp::establish_session(&mcp_addr).map_err(|e| e.to_string())?;
+    let reply = mcp::session_request(
+        &mcp_addr,
+        &session,
+        2,
+        "tools/call",
+        serde_json::json!({
+            "name": "query_relay",
+            "arguments": {"sessions": true, "scan": true}
+        }),
+    )
+    .map_err(|e| e.to_string())?;
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("a text block: {reply}"))?;
+    let answer: serde_json::Value = serde_json::from_str(text)?;
+    assert_eq!(answer["asked"], "sessions", "{answer}");
+    assert_eq!(answer["outcome"], "sessions", "{answer}");
+    let mut from_mcp = answer["sessions"].clone();
+    let asked = relay.asked()?;
+    drop(server.finish());
+
+    assert!(
+        asked.iter().all(|v| v == "list" || v == "query"),
+        "only list and query reach the relay: {asked:?}"
+    );
+    for (side, v) in [
+        ("CLI", &mut cli),
+        ("REST", &mut rest),
+        ("MCP", &mut from_mcp),
+    ] {
+        let o = v
+            .as_object_mut()
+            .ok_or_else(|| format!("{side} answers an object"))?;
+        let at = o
+            .remove("obtained_at")
+            .ok_or_else(|| format!("{side} names when it asked"))?;
+        chrono::DateTime::parse_from_rfc3339(at.as_str().ok_or("a string")?)?;
+        o.remove("outcome");
+    }
+    assert_eq!(cli, rest, "the CLI prints what REST returns");
+    assert_eq!(from_mcp, rest, "MCP carries what REST returns");
+    assert_eq!(
+        rest["tier"], "relay_reported",
+        "The same answer on every surface"
+    );
+    assert_eq!(
+        rest["calls"][0]["directions"][0]["verdict"], "never_received",
+        "{rest}"
+    );
+    Ok(())
+}
+
+/// A run reading a file holds no permit to transmit: `--relay-sessions` asks
+/// nothing, says why and exits 2, and the relay double receives zero
+/// datagrams.
+#[test]
+fn relay_sessions_on_a_file_run_sends_zero_datagrams_and_exits_2() -> Result<(), TestError> {
+    let relay = holding_sessions()?;
+    let addr = relay.addr.to_string();
+    let done = run_to_exit(&[
+        "-I",
+        "tests/fixtures/sip_call.pcap",
+        "--rtpengine-control",
+        &addr,
+        "--relay-sessions",
+    ])?;
+    assert_eq!(done.code, Some(2), "{}", done.dump());
+    assert!(
+        done.stderr
+            .contains("--relay-sessions will not ask a relay on a run that reads a file"),
+        "{}",
+        done.dump()
+    );
+    // Give a datagram sent at exit time to arrive before counting.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        relay.requests()?.is_empty(),
+        "zero datagrams reached the relay"
+    );
+    Ok(())
+}
+
+/// A relay that does not answer `list` is unreachable: exit 1, and no
+/// `query` follows the unanswered `list`.
+#[test]
+fn relay_sessions_with_no_answer_is_unreachable_and_asks_nothing_more() -> Result<(), TestError> {
+    let relay = FakeRelay::start(|_, _| Answer::Silent)?;
+    let addr = relay.addr.to_string();
+    let done = run_to_exit(&[
+        "-L",
+        "127.0.0.1:0",
+        "--rtpengine-control",
+        &addr,
+        "--relay-sessions",
+    ])?;
+    assert_eq!(done.code, Some(1), "{}", done.dump());
+    assert!(
+        done.stderr
+            .contains("--relay-sessions: unreachable: relay (rtpengine at"),
+        "{}",
+        done.dump()
+    );
+    assert_eq!(
+        relay.asked()?,
+        ["list"],
+        "A relay that does not answer `list` is unreachable"
+    );
+    Ok(())
+}
+
+/// REST answers `not_permitted` without `--api-allow-relay-query` and sends
+/// nothing; a Prometheus scrape sends nothing either. Only the run's own
+/// startup snapshot reaches the relay.
+#[test]
+fn rest_without_the_opt_in_and_a_scrape_send_nothing() -> Result<(), TestError> {
+    let relay = holding_sessions()?;
+    let mut server = Run::start(&relay, &["--api", "127.0.0.1:0"])?;
+    assert!(
+        server.wait_stderr("REST API listening on "),
+        "{}",
+        server.err.join("\n")
+    );
+    let api = server
+        .err
+        .iter()
+        .find_map(|l| l.split("REST API listening on ").nth(1))
+        .map(|s| s.trim().trim_start_matches("http://").to_string())
+        .ok_or("the REST listening address")?;
+    // Let the startup snapshot finish before counting.
+    std::thread::sleep(Duration::from_millis(500));
+    let before = relay.requests()?.len();
+    let v = http_get_json(&api, "/v1/relay/sessions?scan=true")?;
+    assert_eq!(v["outcome"], "not_permitted", "{v}");
+    assert!(
+        v["detail"]
+            .as_str()
+            .is_some_and(|d| d.contains("--api-allow-relay-query")),
+        "{v}"
+    );
+    {
+        use std::io::{Read, Write};
+        let mut sock = std::net::TcpStream::connect(&api)?;
+        sock.set_read_timeout(Some(WAIT))?;
+        write!(
+            sock,
+            "GET /metrics HTTP/1.1\r\nHost: {api}\r\nConnection: close\r\n\r\n"
+        )?;
+        let mut reply = String::new();
+        sock.read_to_string(&mut reply)?;
+        assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        relay.requests()?.len(),
+        before,
+        "neither the refused ask nor the scrape transmitted"
+    );
+    drop(server.finish());
+    Ok(())
+}

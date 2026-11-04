@@ -1039,7 +1039,7 @@ static SPECS: &[Spec] = &[
         &["--rtpengine-control", "127.0.0.1:22222"],
     ),
     // `--relay-holdings-max`: the relay's `list` limit, from one up; it needs
-    // `--relay-holdings`.
+    // `--relay-holdings` or `--relay-sessions`.
     (
         "relay-holdings-max",
         Kind::Int {
@@ -1047,6 +1047,22 @@ static SPECS: &[Spec] = &[
             hi: 4294967295,
         },
         &["--relay-holdings", "--rtpengine-control", "127.0.0.1:22222"],
+    ),
+    // `--relay-sessions`: asks the relay `--rtpengine-control` names, which it
+    // requires.
+    (
+        "relay-sessions",
+        Kind::Switch,
+        &["--rtpengine-control", "127.0.0.1:22222"],
+    ),
+    // `--relay-sessions-call`: any Call-ID; it needs `--relay-sessions`.
+    (
+        "relay-sessions-call",
+        Kind::Text {
+            accept: &["x", "", " ", "0"],
+            reject: &[],
+        },
+        &["--relay-sessions", "--rtpengine-control", "127.0.0.1:22222"],
     ),
     (
         "max-streams",

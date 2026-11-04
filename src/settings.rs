@@ -660,6 +660,8 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("relay-compare", Link::PerRun),
     ("relay-holdings", Link::PerRun),
     ("relay-holdings-max", Link::PerRun),
+    ("relay-sessions", Link::PerRun),
+    ("relay-sessions-call", Link::PerRun),
     ("relay-stats", Link::PerRun),
     ("relay-stats-call", Link::PerRun),
     ("relay-stats-interval", Link::PerRun),

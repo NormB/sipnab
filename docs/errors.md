@@ -3182,17 +3182,17 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
-### `--relay-holdings needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
+### `{flag} needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
 
-`--relay-holdings` asks a media relay which calls it holds, but the run has no relay address to ask. The command line refuses `--relay-holdings` without `--rtpengine-control` before this point, so this message is a fallback. sipnab asked nothing.
+`{flag}` is `--relay-holdings` or `--relay-sessions`. Each asks a media relay which calls it holds, but the run has no relay address to ask. The command line refuses either flag without `--rtpengine-control` before this point, so this message is a fallback. sipnab asked nothing.
 
 **What to do:** Add `--rtpengine-control <ip:port>`, for example `--rtpengine-control 127.0.0.1:22222`.
 
 **Exit code:** 2.
 
-### `--relay-holdings will not ask a relay on a run that reads a file: asking transmits. Ask from a live source (-d <device> or -L <addr>).`
+### `{flag} will not ask a relay on a run that reads a file: asking transmits. Ask from a live source (-d <device> or -L <addr>).`
 
-Asking the relay sends a packet. sipnab transmits only on a run that watches a live source: a network interface or a HEP listener. This run reads a capture file, so `--relay-holdings` asked nothing and printed no answer.
+`{flag}` is `--relay-holdings` or `--relay-sessions`. Asking the relay sends a packet. sipnab transmits only on a run that watches a live source: a network interface or a HEP listener. This run reads a capture file, so the flag asked nothing, sent no datagram and printed no answer.
 
 **What to do:** Ask from a live source, for example `-d <device>` or `-L <addr>`.
 
@@ -3207,6 +3207,20 @@ Asking the relay sends a packet. sipnab transmits only on a run that watches a l
 - `suspect`: a reply arrived that sipnab cannot trust: one for another request, one sipnab cannot decode, or one that is not a call list.
 
 This is not a relay that holds no calls. That answer prints `The relay holds no calls.` and exits 0.
+
+**What to do:** For `unreachable`, check that `--rtpengine-control` names the relay's ng control port and that the relay is running. For `refused`, read the relay's reason. For `suspect`, ask again. If it repeats, look at the relay, or at something else answering on its port.
+
+**Exit code:** 1.
+
+### `--relay-sessions: {}: {}`
+
+`--relay-sessions` asked the relay which calls it holds, and its `list` got no call list back, so sipnab sent no `query`. The first `{}` names the classification and the second what happened:
+
+- `unreachable`: no reply arrived within the timeout. Over UDP, a relay that is down, a filtered port and a lost reply look the same.
+- `refused`: the relay answered and declined, in its own words.
+- `suspect`: a reply arrived that sipnab cannot trust: one for another request, one sipnab cannot decode, or one that is not a call list.
+
+This is not a relay that holds no calls. That answer prints `The relay holds no calls.` and exits 0. A call the relay declined to answer about is in the answer with its own classification, and does not produce this message.
 
 **What to do:** For `unreachable`, check that `--rtpengine-control` names the relay's ng control port and that the relay is running. For `refused`, read the relay's reason. For `suspect`, ask again. If it repeats, look at the relay, or at something else answering on its port.
 
@@ -4011,6 +4025,14 @@ The forwarder's replace URL holds no `{uuid}`.
 - vCon is a JSON format for a recorded conversation.
 
 **What to do:** Add `--vcon-forward` to run the forwarder, or remove the named option.
+
+**Exit code:** 2.
+
+### `--relay-holdings-max bounds --relay-holdings or --relay-sessions and needs one of them`
+
+You gave `--relay-holdings-max` without either flag it bounds. It caps the Call-IDs `--relay-holdings` asks for and the held calls `--relay-sessions` queries, so alone it does nothing. sipnab asked the relay nothing.
+
+**What to do:** Add `--relay-holdings` or `--relay-sessions`, or remove `--relay-holdings-max`.
 
 **Exit code:** 2.
 

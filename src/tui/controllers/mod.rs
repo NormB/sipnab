@@ -1512,9 +1512,13 @@ pub enum RelayStatsAction {
     /// pressed again, return to the counters. Only meaningful when the view is
     /// scoped to a call.
     ToggleCompare,
-    /// `H` — show the Call-IDs the relay is holding right now (ST8 holdings);
-    /// pressed again, return to the counters.
-    ToggleHoldings,
+    /// `H` — show the relay sessions (SG2); pressed again, return to the
+    /// counters.
+    ToggleSessions,
+    /// Enter — in the sessions list, open the call under the cursor.
+    Open,
+    /// `a` — in the sessions views, query every held call once (a scan).
+    Scan,
 }
 
 /// Pure key→action mapping for the relay-statistics view (keymap-aware).
@@ -1531,7 +1535,9 @@ pub fn relay_stats_action(km: &Keymap, key: KeyEvent) -> Option<RelayStatsAction
         k if k == KeyCode::Esc || k == km.quit || k == KeyCode::Char('S') => Close,
         KeyCode::Char('?') => ToggleNames,
         KeyCode::Char('K') => ToggleCompare,
-        KeyCode::Char('H') => ToggleHoldings,
+        KeyCode::Char('H') => ToggleSessions,
+        KeyCode::Enter => Open,
+        KeyCode::Char('a') => Scan,
         KeyCode::Up | KeyCode::Char('k') => ScrollUp,
         KeyCode::Down | KeyCode::Char('j') => ScrollDown,
         KeyCode::PageUp => PageUp,
@@ -1550,6 +1556,13 @@ pub fn relay_stats_action(km: &Keymap, key: KeyEvent) -> Option<RelayStatsAction
 fn toggle_relay_stats_mode(app: &mut App, target: RelayStatsMode) {
     let View::RelayStats { call_id, mode } = &app.current_view else {
         return;
+    };
+    // In the per-call sessions view `K` is the per-socket compare, and `K`
+    // again returns to that call.
+    let target = match (target, *mode) {
+        (RelayStatsMode::Compare, RelayStatsMode::SessionCall) => RelayStatsMode::SessionCompare,
+        (RelayStatsMode::Compare, RelayStatsMode::SessionCompare) => RelayStatsMode::SessionCall,
+        (t, _) => t,
     };
     if target == RelayStatsMode::Compare && call_id.is_none() {
         return;
@@ -1577,8 +1590,31 @@ pub(in crate::tui) fn handle_relay_stats_key(app: &mut App, key: KeyEvent) {
     let Some(action) = relay_stats_action(&app.keymap, key) else {
         return;
     };
+    let mode = match &app.current_view {
+        View::RelayStats { mode, .. } => *mode,
+        _ => return,
+    };
     match action {
+        // From one call of the sessions view, Esc goes back to its list.
+        RelayStatsAction::Close
+            if matches!(
+                mode,
+                RelayStatsMode::SessionCall | RelayStatsMode::SessionCompare
+            ) =>
+        {
+            if let View::RelayStats { mode, .. } = &mut app.current_view {
+                *mode = RelayStatsMode::Sessions;
+            }
+            app.relay_stats_scroll = 0;
+        }
         RelayStatsAction::Close => app.current_view = View::CallList,
+        // In the sessions list the arrows move the cursor over the held calls.
+        RelayStatsAction::ScrollUp if mode == RelayStatsMode::Sessions => {
+            app.relay_sessions.move_cursor(-1);
+        }
+        RelayStatsAction::ScrollDown if mode == RelayStatsMode::Sessions => {
+            app.relay_sessions.move_cursor(1);
+        }
         RelayStatsAction::ScrollUp => {
             app.relay_stats_scroll = app.relay_stats_scroll.saturating_sub(1);
         }
@@ -1595,7 +1631,19 @@ pub(in crate::tui) fn handle_relay_stats_key(app: &mut App, key: KeyEvent) {
         RelayStatsAction::ScrollBottom => app.relay_stats_scroll = u16::MAX,
         RelayStatsAction::ToggleNames => toggle_relay_stats_mode(app, RelayStatsMode::Names),
         RelayStatsAction::ToggleCompare => toggle_relay_stats_mode(app, RelayStatsMode::Compare),
-        RelayStatsAction::ToggleHoldings => toggle_relay_stats_mode(app, RelayStatsMode::Holdings),
+        RelayStatsAction::ToggleSessions => toggle_relay_stats_mode(app, RelayStatsMode::Sessions),
+        RelayStatsAction::Open if mode == RelayStatsMode::Sessions => {
+            if let Some(call) = app.relay_sessions.selected_call() {
+                app.current_view = View::RelayStats {
+                    call_id: Some(call),
+                    mode: RelayStatsMode::SessionCall,
+                };
+                app.relay_stats_scroll = 0;
+            }
+        }
+        // Recorded only: the refresh loop starts the scan off this thread.
+        RelayStatsAction::Scan if mode.is_sessions() => app.relay_sessions.scan_requested = true,
+        RelayStatsAction::Open | RelayStatsAction::Scan => {}
     }
 }
 
@@ -3536,7 +3584,11 @@ mod panel_view_tests {
         assert_eq!(app.relay_stats_scroll, 4, "a refused K does not reset");
 
         press(&mut app, KeyCode::Char('H'));
-        assert_eq!(mode(&app)?, RelayStatsMode::Holdings);
+        assert_eq!(
+            mode(&app)?,
+            RelayStatsMode::Sessions,
+            "Relay stats, global scope"
+        );
         assert_eq!(app.relay_stats_scroll, 0);
         press(&mut app, KeyCode::Char('H'));
         assert_eq!(mode(&app)?, RelayStatsMode::Counters, "H again returns");
@@ -3981,6 +4033,124 @@ mod panel_view_tests {
         app.current_view = View::StreamLossMap(stream_key(7));
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.current_view, View::StreamDetail(stream_key(7)));
+        Ok(())
+    }
+
+    /// A kept sessions answer naming `ids`, none of them queried.
+    fn sessions_holding(ids: &[&str]) -> crate::output::query::relay_sessions::RelaySessions {
+        use crate::output::query::relay_sessions::{NotQueried, RelaySessions, SipDialog};
+        RelaySessions {
+            relay: "relay (scripted)".to_string(),
+            obtained_at: "2026-11-04T12:00:00+00:00".to_string(),
+            tier: "relay_reported".to_string(),
+            reach: "ok".to_string(),
+            detail: None,
+            held: Some(ids.len()),
+            list_limit: 32,
+            truncated: Some(false),
+            scan: false,
+            cap: 32,
+            calls: Vec::new(),
+            not_queried: ids
+                .iter()
+                .map(|c| NotQueried {
+                    call_id: (*c).to_string(),
+                    sip_dialog: SipDialog::NotSeenEnded,
+                })
+                .collect(),
+            stall_seconds: 2,
+            notes: Vec::new(),
+        }
+    }
+
+    fn sessions_view(call_id: Option<&str>, mode: RelayStatsMode) -> View {
+        View::RelayStats {
+            call_id: call_id.map(str::to_string),
+            mode,
+        }
+    }
+
+    /// In the sessions list, Down and Up move the cursor over the held calls
+    /// (clamped), and Enter opens the call under it in the per-call view.
+    #[test]
+    fn the_sessions_list_moves_its_cursor_and_enter_opens_that_call() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.current_view = sessions_view(None, RelayStatsMode::Sessions);
+        app.relay_sessions.answered = Some(sessions_holding(&[
+            "a@example.invalid",
+            "b@example.invalid",
+            "c@example.invalid",
+        ]));
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.relay_sessions.selected, 2, "clamped to the last row");
+        press(&mut app, KeyCode::Up);
+        assert_eq!(
+            app.relay_sessions.selected, 1,
+            "In the sessions list, Down and Up move the cursor over the held calls (clamped), and Enter opens the call under it in the per-call view"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.current_view,
+            sessions_view(Some("b@example.invalid"), RelayStatsMode::SessionCall),
+            "In the sessions list, Down and Up move the cursor over the held calls (clamped), and Enter opens the call under it in the per-call view"
+        );
+        Ok(())
+    }
+
+    /// In the per-call view `K` shows the per-socket compare and `K` again
+    /// returns; Esc goes back to the sessions list, not out of the view.
+    #[test]
+    fn k_in_the_per_call_view_compares_sockets_and_esc_returns_to_the_list() -> Result<(), TestError>
+    {
+        let mut app = App::new_test();
+        app.current_view = sessions_view(Some("b@example.invalid"), RelayStatsMode::SessionCall);
+        press(&mut app, KeyCode::Char('K'));
+        assert_eq!(
+            app.current_view,
+            sessions_view(Some("b@example.invalid"), RelayStatsMode::SessionCompare),
+            "In the per-call view `K` shows the per-socket compare and `K` again returns"
+        );
+        press(&mut app, KeyCode::Char('K'));
+        assert_eq!(
+            app.current_view,
+            sessions_view(Some("b@example.invalid"), RelayStatsMode::SessionCall),
+            "In the per-call view `K` shows the per-socket compare and `K` again returns"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(
+            app.current_view,
+            sessions_view(Some("b@example.invalid"), RelayStatsMode::Sessions),
+            "In the per-call view `K` shows the per-socket compare and `K` again returns"
+        );
+        press(&mut app, KeyCode::Esc);
+        assert_eq!(app.current_view, View::CallList, "Esc from the list closes");
+        Ok(())
+    }
+
+    /// The scan key only records the request: the key handler asks the relay
+    /// nothing, so it returns at once however slow the relay is. Enter with no
+    /// answer yet opens nothing.
+    #[test]
+    fn the_scan_key_records_the_request_and_asks_nothing() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.current_view = sessions_view(None, RelayStatsMode::Sessions);
+        press(&mut app, KeyCode::Char('a'));
+        assert!(
+            app.relay_sessions.scan_requested,
+            "The scan key only records the request"
+        );
+        assert!(
+            !app.relay_sessions.pending(),
+            "no snapshot started by a key"
+        );
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.current_view,
+            sessions_view(None, RelayStatsMode::Sessions),
+            "nothing to open before an answer"
+        );
         Ok(())
     }
 }

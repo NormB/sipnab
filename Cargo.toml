@@ -93,6 +93,7 @@ include = [
   "/docs/plugins.md",
   "/docs/sip-response-codes.md",
   "/tests/fixtures/rtpengine/query-reply-12.5.1.bin",
+  "/tests/fixtures/rtpengine/h-oneway-query.bencode",
   "/tests/fixtures/tfps-*",
   "/tests/fixtures/tls_rsa/**",
   "/tests/schemas/vcon.schema.json",

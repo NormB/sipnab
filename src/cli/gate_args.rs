@@ -11,7 +11,8 @@
 
 use super::one_shot::OneShot;
 
-/// Gate and relay query flags (`--expect`, `--relay-holdings`).
+/// Gate and relay query flags (`--expect`, `--relay-holdings`,
+/// `--relay-sessions`).
 ///
 /// Split out of [`super::Cli`] so clap's generated parser builds this group
 /// in its own stack frame, like every other group.
@@ -59,15 +60,43 @@ pub struct GateArgs {
     /// says so (`truncated` under `--json`).
     ///
     /// The relay's own `list` limit, REST's `max_calls`. rtpengine answers
-    /// over UDP, and a large limit may not fit in one datagram.
+    /// over UDP, and a large limit may not fit in one datagram. Also the
+    /// most held calls `--relay-sessions` queries.
     #[arg(
         help_heading = "Queries",
         long,
         value_name = "CALLS",
-        requires = "relay_holdings",
         value_parser = clap::value_parser!(u32).range(1..),
     )]
     pub relay_holdings_max: Option<u32>,
+
+    /// Ask the relay named by `--rtpengine-control` which calls it holds and,
+    /// for each, whether media reaches it each way; print the answer and exit.
+    ///
+    /// Sends one `list` and then one `query` per held call, up to
+    /// `--relay-holdings-max` (default 32). For each party's RTP socket the
+    /// answer says `never_received` (no packet in, and the relay never
+    /// confirmed the socket), `stalled` (no packet for more than 2 s while
+    /// another socket of the call received one), `flowing`, or
+    /// `not_reported`, from the relay's own counters and clock. A call with an
+    /// early media branch is shown with its counters and no verdict. Every
+    /// value is `relay_reported`. The answer `GET /v1/relay/sessions?scan=true`
+    /// returns. Needs a live source (`-d`, `-L`): on `-I <file>` it asks
+    /// nothing and exits 2. Exits 0 with the answer, 1 when the relay did not
+    /// answer the `list`. With `--json`, one JSON object on the last line of
+    /// stdout.
+    #[arg(help_heading = "Queries", long, requires = "rtpengine_control")]
+    pub relay_sessions: bool,
+
+    /// With `--relay-sessions`, ask about this Call-ID only: one `list` and one
+    /// `query`, without querying the other held calls.
+    #[arg(
+        help_heading = "Queries",
+        long,
+        value_name = "CALL-ID",
+        requires = "relay_sessions"
+    )]
+    pub relay_sessions_call: Option<String>,
 }
 
 /// Read and check an `--expect` suite file while the command line is
@@ -77,6 +106,17 @@ fn parse_expect(s: &str) -> Result<crate::output::query::expectations::SuiteFile
 }
 
 impl GateArgs {
+    /// Whether `--relay-holdings-max` was given with neither flag it bounds.
+    ///
+    /// Checked by `Cli::validate` rather than by clap: a clap group of
+    /// `--relay-holdings` and `--relay-sessions` counts a boolean flag as
+    /// present through its implicit `false` default, so `requires` on such a
+    /// group never fires.
+    #[must_use]
+    pub const fn listing_cap_without_a_listing(&self) -> bool {
+        self.relay_holdings_max.is_some() && !self.relay_holdings && !self.relay_sessions
+    }
+
     /// The one-shot declarations of this group's flags, active or not.
     ///
     /// Every flag in this struct that answers a query and exits declares
@@ -96,6 +136,45 @@ impl GateArgs {
                 implies_no_tui: true,
                 owns_stdout: true,
             },
+            OneShot {
+                name: "--relay-sessions",
+                active: self.relay_sessions,
+                implies_no_tui: true,
+                owns_stdout: true,
+            },
         ]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cap needs a flag it bounds: alone it is refused, beside either
+    /// flag it is not, and absent it asks for nothing.
+    #[test]
+    fn the_listing_cap_needs_a_flag_it_bounds() {
+        let with = |holdings: bool, sessions: bool, max: Option<u32>| GateArgs {
+            relay_holdings: holdings,
+            relay_sessions: sessions,
+            relay_holdings_max: max,
+            ..GateArgs::default()
+        };
+        assert!(
+            with(false, false, Some(2)).listing_cap_without_a_listing(),
+            "a cap with nothing to bound is refused"
+        );
+        assert!(
+            !with(true, false, Some(2)).listing_cap_without_a_listing(),
+            "--relay-holdings takes the cap"
+        );
+        assert!(
+            !with(false, true, Some(2)).listing_cap_without_a_listing(),
+            "--relay-sessions takes the cap"
+        );
+        assert!(
+            !with(false, false, None).listing_cap_without_a_listing(),
+            "no cap, nothing to refuse"
+        );
     }
 }

@@ -292,7 +292,7 @@ AssertWithoutMessage	src/tui/controllers/file_open.rs	81
 AssertWithoutMessage	src/tui/controllers/filter_dialog.rs	53
 AssertWithoutMessage	src/tui/controllers/g729_offer.rs	11
 AssertWithoutMessage	src/tui/controllers/loss_map.rs	8
-AssertWithoutMessage	src/tui/controllers/mod.rs	125
+AssertWithoutMessage	src/tui/controllers/mod.rs	124
 AssertWithoutMessage	src/tui/controllers/name_dialog.rs	12
 AssertWithoutMessage	src/tui/controllers/quit_confirm.rs	2
 AssertWithoutMessage	src/tui/controllers/save_dialog.rs	3
@@ -304,7 +304,7 @@ AssertWithoutMessage	src/tui/help.rs	24
 AssertWithoutMessage	src/tui/loss_map.rs	1
 AssertWithoutMessage	src/tui/mod.rs	183
 AssertWithoutMessage	src/tui/msg_raw.rs	5
-AssertWithoutMessage	src/tui/relay_stats.rs	10
+AssertWithoutMessage	src/tui/relay_stats.rs	9
 AssertWithoutMessage	src/tui/render/mod.rs	44
 AssertWithoutMessage	src/tui/render/popups.rs	18
 AssertWithoutMessage	src/tui/render/status.rs	41

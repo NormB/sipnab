@@ -24,7 +24,7 @@ the three tools that transmit in use, with the server they need.
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`decode_ng`](#decode-ng) | `frame_ref` | Decodes the relay control message one pointer names: the command, the call, whether it carries SDP, and which delivery path carried it |
-| [`query_relay`](#query-relay) | `call_id?`, `max_calls?` | **Transmits.** Asks the configured relay what it holds right now. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
+| [`query_relay`](#query-relay) | `call_id?`, `max_calls?`, `sessions?`, `scan?` | **Transmits.** Asks the configured relay what it holds right now, or with `sessions` whether media reaches it per call and direction. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
 | [`relay_stats`](#relay-stats) | `call_id?`, `names_only?` | **Transmits.** Asks the configured relay for its own counters (global, per-call, or the names it knows), tiered `relay_reported`. Same opt-in and live-source gate as `query_relay` |
 | [`relay_stats_polled`](#relay-stats-polled) | -- | The newest reading of the relay's own counters that this run's `--relay-stats-interval` poll obtained, with its age. Sends nothing; needs no opt-in |
 | [`relay_compare`](#relay-compare) | `call_id` | **Transmits.** Sets the relay's per-call RTP count beside sipnab's measured count, both tiers named and a word verdict, never a sum. Same gate as `query_relay` |
@@ -115,7 +115,9 @@ may be somebody's laptop now.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id?` | string? | One Call-ID to ask the relay about. | **Switches modes** — the tool enumerates what the relay holds. |
-| `max_calls?` | u32? | Enumeration only. A cap on the Call-IDs the relay returns. | The relay's own default. |
+| `max_calls?` | u32? | Enumeration and sessions. A cap on the Call-IDs the relay returns, and on the calls a sessions scan queries. | The relay's own default; 32 for sessions. |
+| `sessions?` | bool? | `true` returns the sessions snapshot: `list`, then `query` for `call_id` and, with `scan`, for the held calls, each direction with a verdict. | The tool answers as before. |
+| `scan?` | bool? | With `sessions`, `true` queries every held call too, up to `max_calls`. | The tool asks about `call_id` alone. |
 
 `max_calls` takes its name from what it bounds rather than from `limit`,
 because it is the relay's own `list` argument traveling to another process
@@ -136,6 +138,16 @@ the same ones `--relay-holdings` and `GET /v1/relay/holdings` report:
 | suspect | a reply arrived that sipnab could not trust: a reply to another request, no cookie framing, not bencode, or missing what its answer needs | a success with `outcome: "suspect"` and a `detail` that reads `relay (rtpengine at ADDR): REASON; the reply was discarded and not read` |
 
 `relay_stats` and `relay_compare` report the same three classes the same way.
+
+With `sessions: true` the answer is `asked: "sessions"`, `outcome: "sessions"`,
+and a `sessions` field holding the snapshot `GET /v1/relay/sessions` returns,
+without its `outcome`: per queried call, each party's direction with a
+`verdict` of `never_received`, `stalled`, `flowing` or `not_reported`, the
+relay's counters per socket, `sip_dialog`, and the held calls not queried in
+`not_queried`. The fields are additive. Without `sessions` the answer stays
+as before. The tool reports a `list` the relay did not answer in the three
+classes above. [See whether media reaches the relay](@/docs/relay-statistics.md#see-whether-media-reaches-the-relay)
+shows a live answer.
 
 ```jsonc
 // query_relay { "call_id": "call-2c9d47@192.0.2.10" }

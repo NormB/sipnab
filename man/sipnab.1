@@ -1306,6 +1306,12 @@ Ask the relay named by \fB\-\-rtpengine\-control\fR which calls it is holding ri
 .TP
 \fB\-\-relay\-holdings\-max\fR \fICALLS\fR
 The most Call\-IDs \fB\-\-relay\-holdings\fR asks the relay for (default 32). When the relay returns that many it may hold more, and the answer says so (\fBtruncated\fR under \fB\-\-json\fR).
+.TP
+\fB\-\-relay\-sessions\fR
+Ask the relay named by \fB\-\-rtpengine\-control\fR which calls it holds and, for each, whether media reaches it each way; print the answer and exit.
+.TP
+\fB\-\-relay\-sessions\-call\fR \fICALL\-ID\fR
+With \fB\-\-relay\-sessions\fR, ask about this Call\-ID only: one \fBlist\fR and one \fBquery\fR, without querying the other held calls.
 .SS Options
 .TP
 \fB\-h\fR, \fB\-\-help\fR

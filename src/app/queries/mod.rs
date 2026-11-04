@@ -302,6 +302,18 @@ pub fn relay_holdings(
     b4::relay_holdings(cli, relay, permit)
 }
 
+/// Answer `--relay-sessions` from `relay` and return the exit code: 0 with
+/// the snapshot written, 1 when the relay did not answer its `list` or stdout
+/// refused the answer.
+#[must_use]
+pub fn relay_sessions(
+    cli: &Cli,
+    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    permit: &crate::security::transmit_guard::TransmitPermit,
+) -> i32 {
+    b4::relay_sessions(cli, relay, permit)
+}
+
 /// A file job a unit test declares to prove `run_startup_commands` reaches
 /// [`startup`] and exits with its code.
 #[cfg(test)]

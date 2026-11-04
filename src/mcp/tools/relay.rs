@@ -709,7 +709,9 @@ impl SipnabMcp {
                        answers from bytes sipnab already has. It closes the gap a passive decoder cannot: \
                        a call already in progress when sipnab started has no \
                        control exchange left to read, which is exactly the case \
-                       during incident response. Off unless \
+                       during incident response. sessions: true returns each \
+                       call's per-direction media verdict instead (scan: true \
+                       for every held call). Off unless \
                        --mcp-allow-relay-query is given, refused on a run \
                        reading a file, and the destination comes from operator \
                        configuration only -- never from an argument.",
@@ -738,6 +740,15 @@ impl SipnabMcp {
         // Handed in by the composition root. This layer asks a relay a
         // question; which relay, and what speaks to it, is not its business.
         let client = &access.relay;
+        if params.sessions == Some(true) {
+            let payload = self.relay_sessions_answer(&access, &params)?;
+            return Ok(CallToolResult::success(vec![
+                ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
+                    rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
+                })?)?,
+                ContentBlock::text(crate::mcp::shape::untrusted_note()),
+            ]));
+        }
         let asked = if params.call_id.is_some() {
             "query"
         } else {
@@ -1362,6 +1373,11 @@ pub struct QueryRelayParams {
     /// sipnab already holds. rtpengine warns that raising it may exceed a UDP
     /// datagram, and a truncated answer is reported rather than padded.
     pub max_calls: Option<u32>,
+    /// Return the sessions snapshot: each queried call's media verdict per
+    /// direction.
+    pub sessions: Option<bool>,
+    /// With `sessions`, query every held call, up to `max_calls`.
+    pub scan: Option<bool>,
 }
 
 /// One relay-side port, as the relay describes it.
@@ -1454,13 +1470,13 @@ fn relay_label(relay: &dyn crate::relay::reconcile::ReadOnlyRelay) -> String {
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 pub struct RelayAnswer {
-    /// `list` or `query` -- which question was put.
+    /// `list`, `query` or `sessions` -- which question was put.
     pub asked: String,
     /// The address asked, echoed so the answer names its own source.
     ///
     /// Echoed from CONFIGURATION, which is the only place it can come from.
     pub relay_address: String,
-    /// `calls`, `call`, `statistics`, `refused`, or `suspect` (a reply arrived
+    /// `calls`, `call`, `statistics`, `sessions`, `refused`, or `suspect` (a reply arrived
     /// and could not be trusted).
     pub outcome: String,
     /// What happened, naming the relay, on a `suspect` answer: the words
@@ -1504,11 +1520,88 @@ pub struct RelayAnswer {
     /// and on a run where nothing asked -- which is most of them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statistics: Option<Vec<(String, String)>>,
+    /// The sessions snapshot, when `sessions` was asked for: the answer
+    /// `GET /v1/relay/sessions` returns, without its `outcome`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<crate::output::query::relay_sessions::RelaySessions>,
     /// Version of this response shape.
     pub schema_version: u32,
 }
 
+impl SipnabMcp {
+    /// The `sessions: true` answer of `query_relay`: one snapshot from the
+    /// function every surface uses, with this server's dialog store saying
+    /// which calls sipnab saw end in SIP.
+    fn relay_sessions_answer(
+        &self,
+        access: &crate::mcp::server::RelayQueryAccess,
+        params: &QueryRelayParams,
+    ) -> Result<RelayAnswer, rmcp::ErrorData> {
+        use crate::output::query::relay_sessions::{SessionsAsk, relay_sessions, sip_saw_end};
+        let cap = params
+            .max_calls
+            .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+        let ask = SessionsAsk {
+            selected: params.call_id.as_deref(),
+            scan: params.scan == Some(true),
+            cap,
+            list_limit: cap,
+        };
+        let dialogs = std::sync::Arc::clone(&self.dialog_store);
+        let ended = move |c: &str| sip_saw_end(&dialogs.read(), c);
+        let snapshot = relay_sessions(
+            access.relay.as_ref(),
+            &access.permit,
+            &ask,
+            &ended,
+            &chrono::Utc::now,
+        );
+        RelayAnswer::from_sessions(access.addr, snapshot)
+    }
+}
+
 impl RelayAnswer {
+    /// Render a sessions snapshot for an agent.
+    ///
+    /// A snapshot whose `list` was answered is `outcome: "sessions"` carrying
+    /// it. One the relay declined is `refused` in its own words, and one whose
+    /// reply could not be trusted is `suspect`, as for a `list`. One that got
+    /// no answer is the `internal_error` every relay tool returns when nothing
+    /// is known.
+    ///
+    /// # Errors
+    ///
+    /// `internal_error` (-32603) when the relay did not answer the `list`.
+    fn from_sessions(
+        addr: std::net::SocketAddr,
+        snapshot: crate::output::query::relay_sessions::RelaySessions,
+    ) -> Result<Self, rmcp::ErrorData> {
+        let base = |outcome: &str| Self::base("sessions", addr, outcome);
+        let detail = snapshot.detail.clone();
+        match snapshot.reach.as_str() {
+            "ok" => Ok(Self {
+                sessions: Some(snapshot),
+                ..base("sessions")
+            }),
+            "refused" => Ok(Self {
+                refusal: detail,
+                ..base("refused")
+            }),
+            "suspect" => Ok(Self {
+                detail,
+                ..base("suspect")
+            }),
+            _ => Err(rmcp::ErrorData::internal_error(
+                format!(
+                    "{}. Nothing is known about what it holds; this is not an answer that \
+                     it holds nothing.",
+                    detail.unwrap_or_default()
+                ),
+                None,
+            )),
+        }
+    }
+
     /// Render one control reply for an agent.
     fn from_reply(
         asked: &str,
@@ -1580,6 +1673,7 @@ impl RelayAnswer {
         Self {
             // Absent unless statistics were what was asked for.
             statistics: None,
+            sessions: None,
             asked: asked.to_string(),
             relay_address: addr.to_string(),
             outcome: outcome.to_string(),
@@ -2134,6 +2228,7 @@ mod query_relay_view_tests {
                 advertised_endpoint: None,
                 is_rtcp: false,
                 ssrcs: vec![1],
+                facts: Default::default(),
             }],
         }])?;
         assert!(tags[0].is_media_subscriber);
@@ -3667,6 +3762,7 @@ mod relay_handler_tests {
             .query_relay(Parameters(QueryRelayParams {
                 call_id: None,
                 max_calls: Some(7),
+                ..QueryRelayParams::default()
             }))
             .await
             .map_err(|e| format!("the relay answered: {e:?}"))?;
@@ -3695,6 +3791,7 @@ mod relay_handler_tests {
                 .query_relay(Parameters(QueryRelayParams {
                     call_id: Some("c1@example.invalid".to_string()),
                     max_calls: Some(7),
+                    ..QueryRelayParams::default()
                 }))
                 .await
                 .map_err(|e| format!("the relay answered: {e:?}"))?,
@@ -4111,6 +4208,7 @@ mod relay_handler_tests {
                 srv.query_relay(Parameters(QueryRelayParams {
                     call_id: call(),
                     max_calls: None,
+                    ..QueryRelayParams::default()
                 }))
                 .await,
             ),
@@ -4856,6 +4954,123 @@ mod relay_handler_tests {
             nothing_carried("elsewhere@example.invalid")
         );
         assert!(!dir.path().join("call.wav").exists(), "nothing is written");
+        Ok(())
+    }
+}
+
+/// `query_relay`'s `sessions: true` answer, from snapshots built in memory.
+#[cfg(test)]
+mod sessions_answer_tests {
+    use super::*;
+    use crate::output::query::relay_sessions::RelaySessions;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn addr() -> Result<std::net::SocketAddr, TestError> {
+        Ok("192.0.2.10:22222".parse()?)
+    }
+
+    /// A snapshot whose `list` got `reach`, with `detail`.
+    fn snapshot(reach: &str, detail: Option<&str>) -> RelaySessions {
+        RelaySessions {
+            relay: "relay (a relay at 192.0.2.10:22222)".to_string(),
+            obtained_at: "2026-11-04T12:00:00+00:00".to_string(),
+            tier: "relay_reported".to_string(),
+            reach: reach.to_string(),
+            detail: detail.map(str::to_string),
+            held: (reach == "ok").then_some(0),
+            list_limit: 32,
+            truncated: (reach == "ok").then_some(false),
+            scan: true,
+            cap: 32,
+            calls: Vec::new(),
+            not_queried: Vec::new(),
+            stall_seconds: 2,
+            notes: Vec::new(),
+        }
+    }
+
+    /// An answered snapshot is `outcome: "sessions"` and carries the snapshot
+    /// itself, beside the fields every `query_relay` answer has.
+    #[test]
+    fn an_answered_snapshot_is_carried_whole() -> Result<(), TestError> {
+        let answer = RelayAnswer::from_sessions(addr()?, snapshot("ok", None))
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(answer.asked, "sessions", "An answered snapshot is `outcome");
+        assert_eq!(
+            answer.outcome, "sessions",
+            "An answered snapshot is `outcome"
+        );
+        assert_eq!(
+            answer.sessions,
+            Some(snapshot("ok", None)),
+            "An answered snapshot is `outcome"
+        );
+        assert_eq!(
+            answer.relay_address, "192.0.2.10:22222",
+            "An answered snapshot is `outcome"
+        );
+        Ok(())
+    }
+
+    /// A declined `list` is `refused` in the relay's words, and an untrusted
+    /// reply `suspect`; neither carries a snapshot.
+    #[test]
+    fn a_declined_or_untrusted_list_is_refused_or_suspect() -> Result<(), TestError> {
+        let refused = RelayAnswer::from_sessions(addr()?, snapshot("refused", Some("no")))
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            refused.outcome, "refused",
+            "A declined `list` is `refused` in the relay's words, and an untrusted reply `suspect`"
+        );
+        assert_eq!(
+            refused.refusal.as_deref(),
+            Some("no"),
+            "A declined `list` is `refused` in the relay's words, and an untrusted reply `suspect`"
+        );
+        assert!(
+            refused.sessions.is_none(),
+            "A declined `list` is `refused` in the relay's words, and an untrusted reply `suspect`"
+        );
+        let suspect = RelayAnswer::from_sessions(addr()?, snapshot("suspect", Some("bad")))
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            suspect.outcome, "suspect",
+            "A declined `list` is `refused` in the relay's words, and an untrusted reply `suspect`"
+        );
+        assert_eq!(
+            suspect.detail.as_deref(),
+            Some("bad"),
+            "A declined `list` is `refused` in the relay's words, and an untrusted reply `suspect`"
+        );
+        Ok(())
+    }
+
+    /// An unanswered `list` is the error every relay tool returns when
+    /// nothing is known, never an empty snapshot.
+    #[test]
+    fn an_unanswered_list_is_an_internal_error() -> Result<(), TestError> {
+        let err = RelayAnswer::from_sessions(addr()?, snapshot("unreachable", Some("timed out")))
+            .err()
+            .ok_or("an unanswered list is an error")?;
+        assert_eq!(
+            err.code,
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "An unanswered `list` is the error every relay tool returns when nothing is known, never an empty snapshot"
+        );
+        assert!(err.message.contains("timed out"), "{}", err.message);
+        Ok(())
+    }
+
+    /// The declared output schema names the new field, so a client
+    /// validating against it can read the snapshot.
+    #[test]
+    fn the_declared_schema_names_sessions() -> Result<(), TestError> {
+        let schema = serde_json::to_value(rmcp::schemars::schema_for!(RelayAnswer))?;
+        let text = schema.to_string();
+        for field in ["\"sessions\"", "never_received", "not_queried"] {
+            assert!(text.contains(field), "the schema omits {field}");
+        }
         Ok(())
     }
 }

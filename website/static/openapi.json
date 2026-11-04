@@ -2890,6 +2890,53 @@
         ],
         "type": "object"
       },
+      "Direction": {
+        "description": "The verdict for media one party sends, read at one relay RTP socket.",
+        "properties": {
+          "from_tag": {
+            "description": "The tag of the party that sends this media.",
+            "type": "string"
+          },
+          "local_address": {
+            "description": "The relay socket it arrives at.",
+            "type": "string"
+          },
+          "local_port": {
+            "description": "The relay port it arrives at.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "media_index": {
+            "description": "The media section.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "no_packet_for_s": {
+            "description": "How many seconds this socket's `last packet` trails the newest in the\nreply, on a `stalled` verdict.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "verdict": {
+            "$ref": "#/components/schemas/MediaVerdict",
+            "description": "The verdict."
+          }
+        },
+        "required": [
+          "from_tag",
+          "local_address",
+          "local_port",
+          "verdict"
+        ],
+        "type": "object"
+      },
       "EndpointBannerRow": {
         "description": "A `User-Agent` or `Server` banner an endpoint sent, and how often.",
         "properties": {
@@ -3716,6 +3763,15 @@
         ],
         "type": "object"
       },
+      "KernelVerdict": {
+        "description": "Whether the relay forwards one socket's media in the kernel.",
+        "enum": [
+          "kernel",
+          "userspace",
+          "not_reported"
+        ],
+        "type": "string"
+      },
       "LadderRow": {
         "description": "One message of a dialog's ladder.",
         "properties": {
@@ -3954,6 +4010,16 @@
         ],
         "type": "object"
       },
+      "MediaVerdict": {
+        "description": "Whether media is reaching the relay on one socket.",
+        "enum": [
+          "never_received",
+          "stalled",
+          "flowing",
+          "not_reported"
+        ],
+        "type": "string"
+      },
       "MethodCount": {
         "description": "One opening method and how many dialogs in the filtered set it opened.\n\nA list of pairs rather than an object: JSON object key order is not\nguaranteed, and the useful reading of this field is \"what dominates\",\nwhich only an ordered sequence can carry.",
         "properties": {
@@ -3972,6 +4038,24 @@
         "required": [
           "method",
           "count"
+        ],
+        "type": "object"
+      },
+      "NotQueried": {
+        "description": "A call the relay listed and this snapshot did not query.",
+        "properties": {
+          "call_id": {
+            "description": "The Call-ID.",
+            "type": "string"
+          },
+          "sip_dialog": {
+            "$ref": "#/components/schemas/SipDialog",
+            "description": "Whether sipnab saw its SIP dialog end."
+          }
+        },
+        "required": [
+          "call_id",
+          "sip_dialog"
         ],
         "type": "object"
       },
@@ -4420,6 +4504,140 @@
           "other_count",
           "distinct_values",
           "total_matched"
+        ],
+        "type": "object"
+      },
+      "RelaySessionsResponse": {
+        "description": "`GET /v1/relay/sessions` — the sessions snapshot, or a classification.\n\n`outcome` is always present: `ok` with every snapshot field, or one of\nthe five ST-S4 classifications with `responsibility` and `detail` and no\nsnapshot. The snapshot fields are those of\n[`crate::output::query::relay_sessions::RelaySessions`], which the CLI's\n`--relay-sessions --json` and the MCP `query_relay` tool serialize too.",
+        "properties": {
+          "calls": {
+            "description": "The calls queried, each with its directions and sockets.",
+            "items": {
+              "$ref": "#/components/schemas/SessionCall"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "cap": {
+            "description": "The most held calls a scan queries.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "detail": {
+            "description": "What happened, on a non-`ok` outcome; on `ok`, absent unless the\nrelay's `list` was not answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "held": {
+            "description": "How many Call-IDs `list` returned.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "list_limit": {
+            "description": "The `limit` the `list` asked for.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "not_queried": {
+            "description": "The calls listed and not queried.",
+            "items": {
+              "$ref": "#/components/schemas/NotQueried"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "notes": {
+            "description": "What every reader should know about these verdicts.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "obtained_at": {
+            "description": "When the snapshot was taken, RFC 3339.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "description": "`ok`, or `not_configured` / `not_permitted` / `unreachable` /\n`refused` / `suspect`.",
+            "type": "string"
+          },
+          "reach": {
+            "description": "`ok` when the relay answered its `list`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relay": {
+            "description": "Which relay answered.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "responsibility": {
+            "description": "Whose problem a non-`ok` outcome is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "scan": {
+            "description": "Whether this ask scanned the held calls.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "stall_seconds": {
+            "description": "The threshold `stalled` uses, in seconds.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tier": {
+            "description": "Always `relay_reported`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "truncated": {
+            "description": "Whether `list` returned as many as asked for.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "outcome"
         ],
         "type": "object"
       },
@@ -5505,6 +5723,157 @@
         ],
         "type": "object"
       },
+      "SessionCall": {
+        "description": "One queried call, as the relay answered.",
+        "properties": {
+          "call_id": {
+            "description": "The Call-ID asked about.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "What went wrong, in the relay's own words on a refusal.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "directions": {
+            "description": "One verdict per direction. Empty when the call is not judged.",
+            "items": {
+              "$ref": "#/components/schemas/Direction"
+            },
+            "type": "array"
+          },
+          "outcome": {
+            "description": "`ok`, or the classification when the relay did not answer about it:\n`refused`, `unreachable` or `suspect`.",
+            "type": "string"
+          },
+          "sip_dialog": {
+            "$ref": "#/components/schemas/SipDialog",
+            "description": "Whether sipnab saw this call's SIP dialog end."
+          },
+          "tags": {
+            "description": "Every side the relay holds, with its sockets' counters.",
+            "items": {
+              "$ref": "#/components/schemas/SessionTag"
+            },
+            "type": "array"
+          },
+          "unjudged": {
+            "description": "Why the call is not judged per direction, when it is not.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "call_id",
+          "outcome",
+          "sip_dialog",
+          "directions",
+          "tags"
+        ],
+        "type": "object"
+      },
+      "SessionSocket": {
+        "description": "One relay socket, as the relay counted it. Never judged on its own.",
+        "properties": {
+          "egress": {
+            "$ref": "#/components/schemas/Counters",
+            "description": "What the relay sent out of it."
+          },
+          "endpoint": {
+            "description": "Where the relay sends to, once it learned it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ingress": {
+            "$ref": "#/components/schemas/Counters",
+            "description": "What arrived at this socket."
+          },
+          "kernel": {
+            "$ref": "#/components/schemas/KernelVerdict",
+            "description": "Kernel or userspace forwarding."
+          },
+          "kind": {
+            "description": "`rtp`, `rtcp`, or `not_reported` when the answer carried no flags.",
+            "type": "string"
+          },
+          "last_packet": {
+            "description": "When a packet last arrived, whole seconds on the relay's clock.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "local_address": {
+            "description": "The relay's own address for this socket.",
+            "type": "string"
+          },
+          "local_port": {
+            "description": "The relay's own port.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "media_index": {
+            "description": "The media section, as the relay numbered it.",
+            "format": "int32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "local_address",
+          "local_port",
+          "kind",
+          "ingress",
+          "egress",
+          "kernel"
+        ],
+        "type": "object"
+      },
+      "SessionTag": {
+        "description": "One side of the call and its sockets.",
+        "properties": {
+          "in_dialogue_with": {
+            "description": "The tags it is in an offer/answer dialog with.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "is_media_subscriber": {
+            "description": "Whether it only receives another side's media (a recorder, a fork).",
+            "type": "boolean"
+          },
+          "sockets": {
+            "description": "Its sockets, RTP and RTCP.",
+            "items": {
+              "$ref": "#/components/schemas/SessionSocket"
+            },
+            "type": "array"
+          },
+          "tag": {
+            "description": "The SIP tag.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tag",
+          "in_dialogue_with",
+          "is_media_subscriber",
+          "sockets"
+        ],
+        "type": "object"
+      },
       "SignatureInfo": {
         "description": "The release signature, as far as the process can speak to it.",
         "properties": {
@@ -5522,6 +5891,14 @@
           "note"
         ],
         "type": "object"
+      },
+      "SipDialog": {
+        "description": "Whether sipnab saw the call's SIP dialog end.",
+        "enum": [
+          "ended",
+          "not_seen_ended"
+        ],
+        "type": "string"
       },
       "SkippedPort": {
         "description": "One of the busiest ports the port gate excluded.",
@@ -9647,6 +10024,73 @@
           }
         ],
         "summary": "What the relay holds for one call",
+        "tags": [
+          "relay"
+        ]
+      }
+    },
+    "/v1/relay/sessions": {
+      "get": {
+        "description": "Asks the configured relay for its held calls (`list`), then `query` for `call_id` and, with `scan=true`, for every held call up to 32. For each party's RTP socket it returns a verdict from the relay's own counters and clock: `never_received` (0 packets in and the socket never `confirmed`), `stalled` (its `last packet` more than 2 s behind the newest in the same reply), `flowing`, or `not_reported`. A call with an early media branch has its sockets shown and no verdict. Calls listed and not queried are named in `not_queried`; `truncated` is true when `list` returned as many as asked for. Every value is `relay_reported`, and an absent value is absent, never 0. This TRANSMITS, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. The same snapshot `--relay-sessions --json` prints and the MCP `query_relay` tool returns with `sessions: true`. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
+        "operationId": "get_relay_sessions",
+        "parameters": [
+          {
+            "description": "A Call-ID to query on this ask, listed or not.",
+            "in": "query",
+            "name": "call_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`true` to query every held call too, up to 32 including `call_id`.",
+            "in": "query",
+            "name": "scan",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RelaySessionsResponse"
+                }
+              }
+            },
+            "description": "outcome=ok with the snapshot, or a classification."
+          },
+          "401": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No bearer credential, or one this server does not accept."
+          },
+          "503": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Over the per-source-IP rate limit of 100 requests per second."
+          }
+        },
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What the relay holds, and whether media reaches it",
         "tags": [
           "relay"
         ]

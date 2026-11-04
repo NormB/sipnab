@@ -1923,9 +1923,17 @@ pub(in crate::tui) fn render_relay_stats(
             ..
         } => " Relay statistics — relay vs capture ",
         View::RelayStats {
-            mode: RelayStatsMode::Holdings,
+            mode: RelayStatsMode::Sessions,
             ..
-        } => " Relay statistics — what the relay holds ",
+        } => " Relay sessions — what the relay holds ",
+        View::RelayStats {
+            mode: RelayStatsMode::SessionCall,
+            ..
+        } => " Relay sessions — one call ",
+        View::RelayStats {
+            mode: RelayStatsMode::SessionCompare,
+            ..
+        } => " Relay sessions — relay sockets vs capture ",
         _ => " Relay statistics ",
     };
     // The text `sync_caches` composed off the input path: an asked answer, an

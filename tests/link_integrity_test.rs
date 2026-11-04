@@ -1669,7 +1669,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2381 -> 2382 (CSV-FORMULA-INJECTION): tui-walkthrough.md +1, the CSV
     // save note linking keybindings.md for the guarded characters. Counted
     // against origin/main ac4928010.
-    const EXPECTED_WIKI_LINKS: usize = 2382;
+    // 2382 -> 2390 (SG2 relay sessions): cli-reference.md +3 (the
+    // --relay-sessions row's two and its section's how-to link),
+    // keybindings.md +1, mcp-tools-relay.md +1 net (one row link rewritten,
+    // one added), relay-statistics.md +1, rest-api.md +1, README.md +1.
+    const EXPECTED_WIKI_LINKS: usize = 2390;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

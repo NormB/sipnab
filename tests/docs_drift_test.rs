@@ -5982,7 +5982,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1396 -> 1397: bench/README.md gains the throughput gate's exit-code
     // table. It has no site mirror, and no other changed page gained or lost
     // a table.
-    const EXPECTED_TABLES: usize = 1397;
+    // 1397 -> 1399 (SG2 relay sessions): the verdict table in
+    // docs/relay-statistics.md (+1) and its website mirror (+1).
+    const EXPECTED_TABLES: usize = 1399;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

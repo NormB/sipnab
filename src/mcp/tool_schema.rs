@@ -28,6 +28,12 @@ pub const SCHEMA_URI_PREFIX: &str = "sipnab://schema/";
 /// out and an array is left empty, which every schema here accepts.
 const MAX_DEPTH: usize = 12;
 
+/// Depth past which even a required `$ref` is not followed.
+///
+/// Reached only by a schema whose cycle is required, which describes no finite
+/// value; it keeps such a schema from recursing without end.
+const HARD_DEPTH: usize = 4 * MAX_DEPTH;
+
 /// The body `sipnab://schema/<tool>` returns.
 ///
 /// # Arguments
@@ -85,8 +91,14 @@ fn instance(node: &Value, root: &Value, depth: usize) -> Value {
         return Value::Null;
     };
     if let Some(target) = obj.get("$ref").and_then(Value::as_str) {
+        // Resolved past `MAX_DEPTH` too: a member that reaches a reference is
+        // one the parent kept (required, or not yet past the depth), and a
+        // required member left null is an example its own schema rejects.
+        // What ends a cycle is the optional branch taken below, and
+        // `HARD_DEPTH` ends a schema whose cycle is required, which no finite
+        // value has.
         return match resolve(root, target) {
-            Some(resolved) if depth < MAX_DEPTH => instance(resolved, root, depth + 1),
+            Some(resolved) if depth < HARD_DEPTH => instance(resolved, root, depth + 1),
             _ => Value::Null,
         };
     }
@@ -102,6 +114,15 @@ fn instance(node: &Value, root: &Value, depth: usize) -> Value {
     }
     for key in ["oneOf", "anyOf"] {
         if let Some(branches) = obj.get(key).and_then(Value::as_array) {
+            // Past the depth an optional value is shown absent, which is how
+            // a self-reference such as `Option<Box<Self>>` ends.
+            if depth >= MAX_DEPTH
+                && branches
+                    .iter()
+                    .any(|b| b.get("type").and_then(Value::as_str) == Some("null"))
+            {
+                return Value::Null;
+            }
             // The first branch that is not bare `null`, so an optional value
             // is shown with its content rather than as absent.
             let branch = branches
@@ -281,6 +302,63 @@ mod tests {
             }}
         });
         assert_valid(&schema)?;
+        Ok(())
+    }
+
+    /// A chain of required references deeper than `MAX_DEPTH` is still
+    /// filled in to its leaf: a required member left `null` is an example its
+    /// own schema rejects. The relay sessions answer nests a socket's
+    /// counters this deep.
+    #[test]
+    fn a_required_reference_past_the_depth_is_still_filled_in() -> Result<(), TestError> {
+        let mut defs = serde_json::Map::new();
+        let levels = MAX_DEPTH + 6;
+        for i in 0..levels {
+            defs.insert(
+                format!("L{i}"),
+                json!({
+                    "type": "object",
+                    "required": ["next"],
+                    "properties": {"next": {"$ref": format!("#/$defs/L{}", i + 1)}}
+                }),
+            );
+        }
+        defs.insert(
+            format!("L{levels}"),
+            json!({"type": "string", "enum": ["leaf"]}),
+        );
+        let schema = json!({"$ref": "#/$defs/L0", "$defs": defs});
+        let mut e = assert_valid(&schema)?;
+        for _ in 0..levels {
+            e = e["next"].clone();
+        }
+        assert_eq!(e, json!("leaf"), "the deepest required member is filled in");
+        Ok(())
+    }
+
+    /// An optional self-reference, `Option<Box<Self>>`'s `anyOf` with `null`,
+    /// still ends: past the depth the optional member takes its `null`
+    /// branch.
+    #[test]
+    fn an_optional_self_reference_still_ends() -> Result<(), TestError> {
+        let schema = json!({
+            "$ref": "#/$defs/Node",
+            "$defs": {"Node": {
+                "type": "object",
+                "required": ["next"],
+                "properties": {"next": {"anyOf": [{"$ref": "#/$defs/Node"}, {"type": "null"}]}}
+            }}
+        });
+        let mut e = assert_valid(&schema)?;
+        let mut nested = 0;
+        while e.get("next").is_some_and(|n| !n.is_null()) {
+            e = e["next"].clone();
+            nested += 1;
+        }
+        assert!(
+            nested <= MAX_DEPTH,
+            "the optional member ends at the depth, not at the hard stop: {nested} levels"
+        );
         Ok(())
     }
 

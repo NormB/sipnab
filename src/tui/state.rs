@@ -1578,10 +1578,29 @@ pub enum RelayStatsMode {
     /// The relay's per-call count beside this capture's (C4), reached with `K`.
     /// Only meaningful when the view is scoped to a call.
     Compare,
-    /// The Call-IDs the relay is holding right now (ST8 holdings), reached with
-    /// `H`. Always the relay's full held set, independent of any call the view
-    /// is scoped to.
-    Holdings,
+    /// What the relay holds and whether media reaches it (SG2), reached with
+    /// `H`: a row per held call with each direction's verdict. Refreshes
+    /// `list` and the call under the cursor while open; `a` queries every
+    /// held call once.
+    Sessions,
+    /// One held call's directions and sockets, reached with Enter from
+    /// [`Self::Sessions`]. The view's `call_id` names the call.
+    SessionCall,
+    /// That call's relay sockets beside what this capture saw on each,
+    /// reached with `K` from [`Self::SessionCall`].
+    SessionCompare,
+}
+
+impl RelayStatsMode {
+    /// Whether this mode is answered by the sessions snapshot rather than by
+    /// a one-shot ask.
+    #[must_use]
+    pub const fn is_sessions(self) -> bool {
+        matches!(
+            self,
+            Self::Sessions | Self::SessionCall | Self::SessionCompare
+        )
+    }
 }
 
 /// Which view is currently displayed in the TUI.

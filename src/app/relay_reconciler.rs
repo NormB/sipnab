@@ -153,6 +153,7 @@ mod tests {
                         advertised_endpoint: None,
                         is_rtcp: false,
                         ssrcs: Vec::new(),
+                        facts: Default::default(),
                     }],
                 }],
             }))

@@ -13281,7 +13281,9 @@ mod tests {
             ("media", 3_500),
             // 4_500 -> 5_000 by `relay_stats_polled` (578 bytes): relay
             // measured 4,777 over 5 tools.
-            ("relay", 5_000),
+            // 5_000 -> 5_500 by `query_relay`'s `sessions` and `scan` (SG2,
+            // +332 bytes): relay measured 5,109 over 5 tools, full 92,468.
+            ("relay", 5_500),
             ("tfps", 6_000),
             // 5_500 -> 6_000: `fleet_inventory`, the fleet inventory record,
             // joins the server bundle; server measured 5,976 over six tools.
