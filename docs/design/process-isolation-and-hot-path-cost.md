@@ -27,7 +27,7 @@ rather than `fork()`:
 | Site | What it spawns | Why a process is right |
 |---|---|---|
 | [`src/output/event_exec.rs:443`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L443) | `sh -c` per `--on-*-exec` event | Operator-supplied code. Must not share our address space. |
-| [`src/security/alerting.rs:717`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L717) | `sh -c` per `--alert-exec` alert | Same. |
+| [`src/security/alerting.rs:700`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L700) | `sh -c` per `--alert-exec` alert | Same. |
 | [`src/privilege.rs:153`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L153) | `setcap` | One-shot install helper. |
 | [`src/tui/clipboard.rs:89`](https://github.com/NormB/sipnab/blob/main/src/tui/clipboard.rs#L89) | `xclip`/`pbcopy` | Holds an X11 selection; must outlive the copy. |
 

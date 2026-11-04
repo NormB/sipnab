@@ -230,7 +230,7 @@ configuration**. Enumerated from the code, everything below runs after
 | Metrics listener, raw TCP + threads | [`src/app/servers.rs:227`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L227) | the same, plus thread creation |
 | MCP over stdio | [`src/mcp/transport.rs:59-60`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L59-L60) | read/write on fds 0 and 1 |
 | MCP over HTTP, `mcp-http` | [`src/app/servers.rs:370-375`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L370-L375) | tokio reactor: epoll, eventfd, timerfd |
-| Syslog, eight lines after the drop | [`src/app/bootstrap.rs:836`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L836) → [`src/security/alerting.rs:960`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L960) | `AF_UNIX` connect to `/dev/log` |
+| Syslog, eight lines after the drop | [`src/app/bootstrap.rs:836`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L836) → [`src/security/alerting.rs:943`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L943) | `AF_UNIX` connect to `/dev/log` |
 | Signing keys read from files | [`src/app/servers.rs:442`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L442) | file open, after the drop *and* after any chroot |
 | `--keylog-watch` re-reads the keylog repeatedly | [`src/capture/decrypt.rs:592`](https://github.com/NormB/sipnab/blob/main/src/capture/decrypt.rs#L592) | file open + stat, for the life of the run |
 | Reverse DNS | [`src/names.rs:520`](https://github.com/NormB/sipnab/blob/main/src/names.rs#L520) | resolver sockets, `/etc/resolv.conf`, glibc NSS `dlopen` |

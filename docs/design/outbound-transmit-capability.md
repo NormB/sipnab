@@ -212,7 +212,7 @@ operator-supplied. Content is derived from the capture. This is the category
 
 For the record, the inventory of what sipnab can currently emit is short:
 the kill path (permit-gated), `--hep-send` (section 3), reverse DNS (section 3),
-syslog from the alert engine ([`alerting.rs:445`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L445),
+syslog from the alert engine ([`alerting.rs:428`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L428),
 local `AF_UNIX` by default but remotable by host configuration), and the
 `sh -c` hooks — `--alert-exec`, `--on-dialog-exec`, `--on-quality-exec` — which
 transmit nothing themselves but whose documented example is an outbound HTTP POST

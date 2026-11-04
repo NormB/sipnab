@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A refused `--duration` quotes the value as typed.** `--duration five-minutes` was refused as `Invalid duration value: 'five-minute'`, the text left once the unit was taken off. `--duration` and the `--alert-rule` window and cooldown now share one parser, which quotes the value exactly as given.
+
 ## [0.5.233] - 2026-11-04
 
 ### Added
