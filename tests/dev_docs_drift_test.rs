@@ -923,7 +923,16 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // section on the topology-hiding join (#617).
     // 742 -> 743: docs/internals/mcp.md links src/sip/th_mapping.rs from its
     // section on the OpenSIPS mapping event (#617).
-    const EXPECTED_CODE_LINKS: usize = 744;
+    // 743 -> 744: docs/internals/build-ci-release.md links
+    // tests/reproducible_build_test.rs from its compiler-wrapper cause (#627).
+    // 744 -> 751: docs/internals/build-ci-release.md's sections on the macOS
+    // legs, the suite in shards and the folded feature matrix link
+    // .github/feature-combos.txt, scripts/ci-disk-floor.sh,
+    // scripts/tests/test_feature_matrix_groups.py and
+    // scripts/tests/test_parallel_tests_shards.py, and
+    // scripts/check-feature-matrix.py, scripts/parallel-tests.py and
+    // tests/site_journey_test.rs a second time each.
+    const EXPECTED_CODE_LINKS: usize = 751;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

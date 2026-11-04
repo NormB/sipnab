@@ -3558,15 +3558,13 @@ fn pages_writes_the_test_count_before_it_builds_the_site() -> Result<(), TestErr
 ///
 /// Linux only, deliberately. The suite is not the same size on every platform
 /// (`#[cfg(target_os = "linux")]` tests), and the homepage figure describes
-/// the Linux run.
+/// the Linux run. The Linux suite runs in shards (the `test` job), and the
+/// `test-results` job, on Linux and after every shard has passed, merges
+/// their outputs into the one run the rule counts.
 #[test]
 fn ci_derives_the_test_count_and_hands_the_suite_output_to_the_site() -> Result<(), TestError> {
     let wf = ".github/workflows/ci.yml";
-    assert_step_enforces(
-        wf,
-        "Derive the published test count",
-        Some("matrix.os == 'ubuntu-latest'"),
-    )?;
+    assert_step_enforces(wf, "Derive the published test count", None)?;
     assert_step_fails_on_bad_input(wf, "Derive the published test count", &[], &|dir| {
         std::fs::create_dir_all(dir.join("scripts")).map_err(|e| format!("mkdir: {e}"))?;
         std::fs::copy(
@@ -3588,19 +3586,47 @@ fn ci_derives_the_test_count_and_hands_the_suite_output_to_the_site() -> Result<
     // binary, so the count rule reads it unchanged. Plain `cargo test` ran
     // the 406 binaries one at a time: 460 s of the Linux job's 12.8-minute
     // Test step on 2026-10-12.
-    let test = line_of(
+    let test = workflow_step_body(wf, "Test")?;
+    for needle in [
+        "python3 scripts/parallel-tests.py --shard-index ${{ strategy.job-index }} --shard-count ${{ strategy.job-total }}",
+        "-- --all-features 2>&1",
+        "| tee \"$RUNNER_TEMP/test-shard/test-output.txt\"",
+    ] {
+        assert!(
+            test.contains(needle),
+            "{wf} step \"Test\" lacks {needle:?}:\n{test}"
+        );
+    }
+    let jobs: BTreeMap<String, String> = workflow_jobs(&yaml)?.into_iter().collect();
+    let results = jobs
+        .get("test-results")
+        .ok_or("ci.yml has no test-results job")?;
+    for needle in [
+        "\n    needs: [test]\n",
+        "\n    runs-on: ubuntu-24.04-arm\n",
+        "- name: Merge the shards' outputs",
+        "- name: Derive the published test count",
+        "- name: Hand the suite output to the site build",
+    ] {
+        assert!(
+            results.contains(needle),
+            "{wf} job test-results lacks {needle:?}: the count must come from every \
+             Linux shard, merged, on Linux"
+        );
+    }
+    let merge = line_of(
         &yaml,
-        "python3 scripts/parallel-tests.py -- --all-features 2>&1 | tee test-output.txt",
+        "python3 scripts/parallel-tests.py merge --output test-output.txt",
         wf,
     )?;
     let derive = line_of(&yaml, "- name: Derive the published test count", wf)?;
     let upload = line_of(&yaml, "- name: Hand the suite output to the site build", wf)?;
     assert!(
-        test < derive && derive < upload,
-        "{wf} must run the suite (line {}), derive the count (line {}) and only \
-         then upload the output (line {}): an output the rule refuses must never \
-         reach the site",
-        test + 1,
+        merge < derive && derive < upload,
+        "{wf} must merge the shards' outputs (line {}), derive the count (line {}) \
+         and only then upload the output (line {}): an output the rule refuses \
+         must never reach the site",
+        merge + 1,
         derive + 1,
         upload + 1
     );
@@ -3609,8 +3635,7 @@ fn ci_derives_the_test_count_and_hands_the_suite_output_to_the_site() -> Result<
         "uses: actions/upload-artifact@",
         "name: suite-output",
         "path: test-output.txt",
-        "matrix.os == 'ubuntu-latest'",
-        "github.event_name == 'push'",
+        "if: github.event_name == 'push'",
     ] {
         assert!(
             body.contains(needle),
@@ -5852,22 +5877,25 @@ fn ci_success_gates_every_job() -> Result<(), TestError> {
         })
         .collect();
 
-    // The needs: list may wrap across lines, so read to the closing bracket
-    // rather than to end-of-line.
-    let after = jobs_block
-        .split_once("needs: [")
-        .ok_or("ci-success has no needs: list")?
-        .1;
-    let list = &after[..after.find(']').ok_or("unterminated needs: list")?];
-    let gated: BTreeSet<String> = list
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+    // ci-success's own needs: list, which may wrap across lines. The first
+    // `needs: [` in the file belonged to ci-success only while no other job
+    // had one; test-results needs [test], and a scan of the whole block read
+    // that list instead.
+    let gated: BTreeSet<String> = workflow_jobs(&yaml)?
+        .into_iter()
+        .find(|(id, _)| id == "ci-success")
+        .map(|(_, body)| job_needs(&body))
+        .ok_or("ci.yml has no ci-success job")?
+        .into_iter()
         .collect();
+    assert!(!gated.is_empty(), "ci-success has no needs: list");
 
+    // The macOS-only jobs are left out on purpose; the test below holds that
+    // rule. Every other job is gated.
+    let macos = macos_only_jobs(&yaml)?;
     let expected: BTreeSet<String> = defined
         .iter()
-        .filter(|j| *j != "ci-success")
+        .filter(|j| *j != "ci-success" && !macos.contains(*j))
         .cloned()
         .collect();
     assert!(
@@ -5885,6 +5913,220 @@ fn ci_success_gates_every_job() -> Result<(), TestError> {
         phantom.is_empty(),
         "ci-success needs jobs that no longer exist: {phantom:?}"
     );
+    Ok(())
+}
+
+/// The jobs of a workflow, in file order: each two-space-indented key under
+/// `jobs:` and the lines below it up to the next such key.
+fn workflow_jobs(yaml: &str) -> Result<Vec<(String, String)>, TestError> {
+    let block = yaml
+        .split_once("\njobs:\n")
+        .ok_or("the workflow has no jobs: block")?
+        .1;
+    let mut jobs: Vec<(String, String)> = Vec::new();
+    for line in block.lines() {
+        if !line.starts_with(' ') && !line.trim().is_empty() && !line.starts_with('#') {
+            break;
+        }
+        let key = line
+            .strip_prefix("  ")
+            .filter(|l| !l.starts_with(' ') && !l.starts_with('#'))
+            .and_then(|l| l.strip_suffix(':'));
+        match (key, jobs.last_mut()) {
+            (Some(id), _) => jobs.push((id.to_string(), String::new())),
+            (None, Some((_, body))) => {
+                body.push_str(line);
+                body.push('\n');
+            }
+            (None, None) => {}
+        }
+    }
+    if jobs.is_empty() {
+        return Err("parsed no jobs: the jobs: block changed shape".into());
+    }
+    Ok(jobs)
+}
+
+/// The runner images a job can select: the values of its matrix `os:`, in
+/// the list form (`os: [macos-latest]`) or as `include` entries
+/// (`- os: macos-latest`), and a literal `runs-on:`.
+fn job_runners(body: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let t = line.trim();
+        let t = t.strip_prefix("- ").unwrap_or(t);
+        if let Some(list) = t.strip_prefix("os: [").and_then(|r| r.strip_suffix(']')) {
+            out.extend(list.split(',').map(|v| v.trim().to_string()));
+        } else if let Some(v) = t.strip_prefix("os: ") {
+            out.push(v.trim().to_string());
+        } else if let Some(v) = line
+            .strip_prefix("    runs-on: ")
+            .filter(|v| !v.contains("${{"))
+        {
+            out.push(v.trim().to_string());
+        }
+    }
+    out
+}
+
+/// A job's `needs:`, in either the flow-list form (which may wrap) or the
+/// single-job form.
+fn job_needs(body: &str) -> Vec<String> {
+    let Some(after) = body.split_once("\n    needs: ").map(|(_, a)| a) else {
+        return Vec::new();
+    };
+    match after.strip_prefix('[') {
+        Some(list) => list[..list.find(']').unwrap_or(list.len())]
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => vec![after.lines().next().unwrap_or("").trim().to_string()],
+    }
+}
+
+/// The jobs that run on macOS only: every runner they can select is a macOS
+/// image.
+fn macos_only_jobs(yaml: &str) -> Result<BTreeSet<String>, TestError> {
+    Ok(workflow_jobs(yaml)?
+        .into_iter()
+        .filter(|(_, body)| {
+            let os = job_runners(body);
+            !os.is_empty() && os.iter().all(|o| o.starts_with("macos-"))
+        })
+        .map(|(id, _)| id)
+        .collect())
+}
+
+/// The macOS leg of CI blocks main and no pull request.
+///
+/// On 2026-11-02 GitHub canceled Check (macos-latest) on both runs of pull
+/// request #601 for lack of capacity ("The job was not acquired by Runner of
+/// type hosted even after multiple attempts"), and each rerun cost about 28
+/// minutes. So the required `CI success` check does not need the macOS-only
+/// jobs, directly or through another job: a pull request neither waits for
+/// them nor fails when one is canceled. They still run on every pull request
+/// and every push to main, with no `if:` or `continue-on-error` of their own,
+/// so on main a macOS failure fails the CI run, and the pre-push hook's tag
+/// gate refuses to tag a commit whose CI run is not green. And each macOS job
+/// runs the very steps of a Linux job, through a YAML alias, so it checks
+/// what the Linux job checks; check-macos adds the whole suite.
+///
+/// No job may have a macOS leg beside a Linux one: `needs` takes a matrix job
+/// whole, so such a job is either required, and blocks pull requests on
+/// macOS, or left out, and leaves its Linux leg ungated. Symbol split was such
+/// a job, and GitHub canceled its macOS leg for capacity on pull request #631
+/// (run 41725010284, 2026-11-03).
+#[test]
+fn the_macos_leg_blocks_main_and_no_pull_request() -> Result<(), TestError> {
+    let yaml = read(".github/workflows/ci.yml")?;
+    let jobs: BTreeMap<String, String> = workflow_jobs(&yaml)?.into_iter().collect();
+    let macos = macos_only_jobs(&yaml)?;
+    let mixed: Vec<&String> = jobs
+        .iter()
+        .filter(|(id, body)| {
+            !macos.contains(*id) && job_runners(body).iter().any(|o| o.starts_with("macos-"))
+        })
+        .map(|(id, _)| id)
+        .collect();
+    assert!(
+        mixed.is_empty(),
+        "ci.yml job(s) {mixed:?} run on macOS beside another OS; give the macOS leg \
+         its own job, through a YAML alias of the steps, that CI success does not need"
+    );
+    let want: BTreeSet<String> = ["check-macos", "symbol-split-macos"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(
+        macos, want,
+        "the macOS-only jobs of ci.yml must be the macOS legs of Check and Symbol split"
+    );
+
+    // Not needed by CI success, directly or through any job it needs.
+    let mut seen = BTreeSet::new();
+    let mut queue = vec!["ci-success".to_string()];
+    while let Some(id) = queue.pop() {
+        let body = jobs
+            .get(&id)
+            .ok_or_else(|| format!("ci.yml needs a job {id:?} it does not define"))?;
+        for need in job_needs(body) {
+            if seen.insert(need.clone()) {
+                queue.push(need);
+            }
+        }
+    }
+    let blocking: Vec<_> = macos.intersection(&seen).collect();
+    assert!(
+        blocking.is_empty(),
+        "CI success waits for the macOS-only job(s) {blocking:?}, so a pull request blocks on \
+         macOS again and a capacity cancellation turns the required check red"
+    );
+
+    // Run on every pull request and every push to main.
+    let on = yaml
+        .split_once("\non:\n")
+        .and_then(|(_, rest)| rest.split_once("\n\n"))
+        .map(|(on, _)| on)
+        .ok_or("ci.yml has no on: block")?;
+    assert!(
+        on.contains("\n  push:\n    branches: [main]")
+            || on.starts_with("  push:\n    branches: [main]"),
+        "ci.yml must run on every push to main:\n{on}"
+    );
+    assert!(
+        on.contains("\n  pull_request:\n"),
+        "ci.yml must run on every pull request:\n{on}"
+    );
+    for id in &macos {
+        let body = &jobs[id];
+        for (field, why) in [
+            ("    if:", "would skip the macOS leg on some event"),
+            (
+                "    continue-on-error:",
+                "would keep a macOS failure from failing the CI run on main",
+            ),
+        ] {
+            assert!(
+                !body.lines().any(|l| l.starts_with(field)),
+                "{id} has a job-level `{}`, which {why}",
+                field.trim()
+            );
+        }
+        assert_eq!(job_runners(body), vec!["macos-latest".to_string()], "{id}");
+    }
+
+    // The same steps as a gated Linux job, and on macOS Check runs the suite.
+    for (linux, mac, anchor) in [
+        ("check", "check-macos", "check-steps"),
+        ("symbol-split", "symbol-split-macos", "symbol-split-steps"),
+    ] {
+        let linux_body = jobs
+            .get(linux)
+            .ok_or_else(|| format!("ci.yml has no {linux} job"))?;
+        assert!(
+            linux_body.contains(&format!("\n    steps: &{anchor}\n")),
+            "{linux} must define its steps as the anchor &{anchor}"
+        );
+        assert!(
+            jobs[mac].contains(&format!("\n    steps: *{anchor}\n")),
+            "{mac} must run {linux}'s steps through the alias *{anchor}"
+        );
+        assert!(
+            seen.contains(linux),
+            "CI success must still need {linux}, the Linux half of {mac}"
+        );
+    }
+    let suite = workflow_step_body(".github/workflows/ci.yml", "Test (macOS, every target)")?;
+    for needle in [
+        "if: runner.os == 'macOS'",
+        "python3 scripts/parallel-tests.py -- --all-features",
+    ] {
+        assert!(
+            suite.contains(needle),
+            "the macOS leg's suite step lacks {needle:?}:\n{suite}"
+        );
+    }
     Ok(())
 }
 
@@ -6375,7 +6617,21 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // scripts' tests" step names scripts/tests/test_prepare_commit.py,
     // scripts/prepare-commit.sh and scripts/check-rustfmt.sh. Measurement:
     // with the previous commit's ci.yml swapped back in, the scan reads 210.
-    const EXPECTED_REFERENCES: usize = 213;
+    // 213 -> 224: `.github/workflows/ci.yml` splits the Linux suite into the
+    // `test` job's shards and the `test-results` job, gives the macOS legs of
+    // Check and Symbol split jobs of their own, and folds the feature matrix
+    // into the self-hosted `features` and `features-x64` jobs:
+    // scripts/parallel-tests.py +3, scripts/check-feature-matrix.py +3,
+    // scripts/ci-disk-floor.sh +2, .github/feature-combos.txt +1,
+    // scripts/tests/test_parallel_tests_shards.py +1,
+    // scripts/tests/test_feature_matrix_groups.py +1,
+    // tests/site_journey_test.rs +1 (check-macos's comment) and
+    // tests/yang_export_test.rs +1 (the merge step's comment); the folded
+    // matrix's comments and cache steps took .cargo/config.toml -1 and
+    // tests/ci_cache_policy_test.rs -1. Measurement: with origin/main's
+    // ci.yml swapped back in, the scan reads 213; ci.yml's references go
+    // from 63 to 74, and pages.yml holds at 53.
+    const EXPECTED_REFERENCES: usize = 224;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

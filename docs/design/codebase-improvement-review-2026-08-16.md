@@ -242,7 +242,7 @@ claimed compatibility and pins collisions/differences in tests.
 **Evidence:** [`docs/examples.md:48-183`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L48-L183) relies on arbitrary capture content and
 [`docs/examples.md:86-92`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L86-L92) gives hypothetical output. Existing drift tests validate
 flags and generated mirrors, but not most command outcomes
-([`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs); [`tests/dev_docs_drift_test.rs:1627-1671`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs#L1627-L1671)).
+([`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs); [`tests/dev_docs_drift_test.rs:1636-1680`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs#L1636-L1680)).
 
 **Impact:** syntactically valid examples can still regress semantically.
 
@@ -319,7 +319,7 @@ API contract changes, validation and documentation make the mutation explicit.
 
 **Evidence:** `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 fails at [`crates/sipnab-plugin-example/src/lib.rs:146`](https://github.com/NormB/sipnab/blob/main/crates/sipnab-plugin-example/src/lib.rs#L146) with
-`manual_range_contains`. The CI command in [`.github/workflows/ci.yml:168-171`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L168-L171)
+`manual_range_contains`. The CI command in [`.github/workflows/ci.yml:173-176`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L173-L176)
 omits `--workspace`, so the example crate escapes the lint gate.
 
 **Recommendation:** use `(0..SHORT_CALL_MS).contains(&elapsed)` and change local
@@ -392,7 +392,7 @@ to satisfy a line-count target.
 
 **Priority / type / effort:** P3 / preventive suggestion / XS
 
-**Evidence:** the feature matrix at [`.github/workflows/ci.yml:360-386`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L360-L386) starts with
+**Evidence:** the feature matrix at [`.github/workflows/ci.yml:293-319`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L293-L319) starts with
 named features and does not run an empty `--no-default-features` build. During this
 review, `cargo check --no-default-features --lib` succeeded.
 

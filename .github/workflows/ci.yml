@@ -57,15 +57,20 @@ jobs:
     # routing it back is a change to the line below alone, and
     # tests/ci_runner_target_test.rs holds both halves.
     #
-    # `matrix.os` keeps its ubuntu-latest / macos-latest values so the step
-    # conditionals below (e.g. the published-test-count gate, ubuntu-only)
-    # are unchanged.
+    # The macOS leg is the job `check-macos` below, which runs these same
+    # steps (the YAML alias `*check-steps`) and which `CI success` does not
+    # need: see the comment on `check-macos`. `matrix.os` keeps its
+    # ubuntu-latest / macos-latest value in each, so the job names and the
+    # step conditionals below are unchanged.
+    #
+    # The suite itself runs in the `test` job, split into shards; this job
+    # runs everything else.
     runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-latest' }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
-    steps:
+        os: [ubuntu-latest]
+    steps: &check-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Do not leave GITHUB_TOKEN in .git/config for later steps or
@@ -201,9 +206,7 @@ jobs:
           npx --no-install tsc --noEmit
 
       # The examples too: scripts/smoke-clients.sh runs the one built from
-      # examples/tls_plaintext_records.rs, from beside the binary, and `cargo
-      # test` below builds every example anyway, so this adds a link, not a
-      # compile.
+      # examples/tls_plaintext_records.rs, from beside the binary.
       - name: Build
         run: cargo build --all-features --bins --examples
 
@@ -260,96 +263,26 @@ jobs:
       # decode_bitstream, decode_rtp_payloads), built once with `cargo build
       # --examples` as a user builds them and run as programs, with their
       # output checked against the ITU-T test vectors.
-      # The Test step below covers the root package only.
+      # The test job's Test step covers the root package only.
       - name: Run and check the G.729 examples
         run: cargo test -p sipnab-g729 --features std --test examples
 
-      - name: Test
-        env:
-          # tests/yang_export_test.rs writes every RFC 7951 document it checks
-          # here, and the YANG step below hands each one to yanglint. Empty,
-          # and therefore off, on macOS, where nothing reads them.
-          SIPNAB_YANG_EXPORT_DIR: ${{ runner.os == 'Linux' && format('{0}/yang-exports', runner.temp) || '' }}
-        # The test binaries run side by side, as the pre-commit hook runs
-        # them: scripts/parallel-tests.py builds with `cargo test`, records
-        # each binary, and runs the recordings in a pool of one job per core
-        # (at most 8). Plain `cargo test` ran the 406 binaries one at a time,
-        # 460 s of this step's 12.8 minutes on Linux on 2026-10-12. The
-        # output is cargo's, one block per binary, so the count rule below
-        # reads it unchanged, and the exit status is non-zero if any binary
-        # failed.
-        run: |
-          set -o pipefail
-          python3 scripts/parallel-tests.py -- --all-features 2>&1 | tee test-output.txt
-
-      # The sipnab-diagnosis YANG module, and what every door really emits for
-      # it, checked by two implementations that wrote neither: `pyang --lint`
-      # and libyang's `yanglint` compile the module, `pyang
-      # --check-update-from` holds each revision to the last (RFC 7950 section
-      # 11), and `yanglint -t data` validates each RFC 7951 export the Test
-      # step wrote -- CLI, REST and MCP, per fixture. The Rust suite proves the
-      # module is what the analysis's tables generate and that each document
-      # decodes to the plain JSON of the same run; only a YANG tool can prove
-      # either is valid YANG. Locally a missing tool is NOT CHECKED; here
-      # SIPNAB_YANG_REQUIRED makes it a failure, because this is the one place
-      # that must not be able to skip. See scripts/check-yang.py.
-      - name: Validate the YANG module and the RFC 7951 exports
-        if: runner.os == 'Linux'
-        env:
-          SIPNAB_YANG_REQUIRED: '1'
-        run: |
-          python3 -m venv .venv-yang
-          . .venv-yang/bin/activate
-          python3 -m pip install --require-hashes -r scripts/requirements-yang.txt
-          python3 scripts/check-yang.py --exports "$RUNNER_TEMP/yang-exports"
-
-      # The homepage's automated-test count is derived from this run, by the
-      # one rule in scripts/published-test-count.py, and never committed.
-      # This step applies the rule here so a run it cannot count (no result
-      # line, a FAILED binary, a total of zero) fails CI on the pull request
-      # rather than the deploy. On a push to main the next step hands the
-      # output to pages.yml, which applies the same rule and writes the data
-      # file the homepage template reads.
-      #
-      # The number used to be committed in website/templates/index.html and
-      # compared with this run. Every pull request that added a test edited
-      # that line, so any two such pull requests conflicted on it.
-      #
-      # This parses the run above rather than invoking cargo test again. The
-      # coverage job cannot host this: it runs with `--skip cli_goldens`, so
-      # its total is short of the real one by design.
-      #
-      # Linux only, deliberately. The suite is not the same size on every
-      # platform -- measured 3015 on ubuntu-latest against 3008 on
-      # macos-latest -- so a single advertised number cannot be true of both.
-      # The homepage figure describes the Linux suite.
-      # .githooks/pre-commit runs the same script on its `cargo test
-      # --features full` run; no_test_hides_behind_a_feature_outside_full in
-      # tests/site_journey_test.rs keeps that run the same suite as this one.
-      - name: Derive the published test count
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          set -euo pipefail
-          if ! actual=$(python3 scripts/published-test-count.py test-output.txt); then
-            echo "::error::the suite output cannot be counted, so the homepage would have no test count"
-            exit 1
-          fi
-          echo "published_test_count=$actual"
-
-      # pages.yml waits for this artifact from CI's run of the commit it
-      # deploys (scripts/fetch-ci-suite-output.py). Pushes only: pull
-      # requests never deploy.
-      - name: Hand the suite output to the site build
-        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: suite-output
-          path: test-output.txt
-          if-no-files-found: error
+      # The suite on macOS, whole, in this job. On Linux it runs split into
+      # shards in the `test` job, which is what the required `CI success`
+      # waits for; the macOS leg blocks no pull request (see `check-macos`),
+      # so splitting it would shorten nothing a merge waits for. On main the
+      # tag gate waits for every workflow of the commit, and Quality took
+      # 28.6 minutes on run 41620629650 (2026-11-03) against this job's 22.2.
+      # One job also keeps macOS to the one `cargo-check` cache entry it had,
+      # 4.07 GB of the repository's 10 GB.
+      - name: Test (macOS, every target)
+        if: runner.os == 'macOS'
+        run: python3 scripts/parallel-tests.py -- --all-features
 
       - name: Test the sipnab-bpf-types crate
-        # The Test step covers the sipnab package only, because `cargo test`
-        # without `-p` or `--workspace` leaves the other members out. This
+        # The test job's Test step covers the sipnab package only, because
+        # `cargo test` without `-p` or `--workspace` leaves the other members
+        # out. This
         # crate is published, and the examples on its README, which is also
         # its docs.rs front page, are doctests that assert how a perf sample
         # is read. Its own step, so its tests stay out of test-output.txt and
@@ -417,7 +350,7 @@ jobs:
       # These 11 tests drive the real TUI through a tmux PTY and are the only
       # coverage of it that exercises a terminal. They are #[ignore] by default
       # because they need tmux, so a plain `cargo test` skips them everywhere --
-      # locally, in the pre-commit hook, in the Test step above, and under
+      # locally, in the pre-commit hook, in the test job's Test step, and under
       # coverage. This step is the ONLY place they run.
       #
       # It carried `continue-on-error: true  # PTY tests can be flaky in CI`,
@@ -447,9 +380,11 @@ jobs:
           cargo test --features tui --test tui_e2e_test -- --ignored
 
       # The workspace's own executables are rebuilt by any change to the
-      # sources, so they are removed before the save; see the script.
+      # sources, so they are removed before the save; see the script. It runs
+      # on every run, not only before a save, so each run's log records the
+      # size an entry would have and how much of it was object files.
       - name: Prune the cargo cache
-        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
+        if: runner.environment == 'github-hosted'
         run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
       - name: Save the cargo cache
         if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
@@ -460,6 +395,273 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  # The macOS leg of Check: the same steps as `check`, through the YAML
+  # alias, and on macOS they include the whole suite.
+  #
+  # `CI success`, the one required status check, does not need this job, so
+  # a pull request neither waits for macOS nor turns red when GitHub cancels
+  # the macOS leg for capacity. On 2026-11-02 GitHub canceled Check
+  # (macos-latest) on both runs of pull request #601 (41510139494 and
+  # 41514782896) with "The job was not acquired by Runner of type hosted
+  # even after multiple attempts", and the rerun of the second took 27
+  # minutes (20:22:04 to 20:49:15 UTC). The job still runs on
+  # every pull request, so its result is shown there, and on every push
+  # to main. A failed job fails the workflow run whether or not `CI success`
+  # needs it, so a macOS failure on main is a red CI run on that commit, and
+  # the pre-push hook's tag gate refuses to tag a commit whose CI run is not
+  # green. the_macos_leg_blocks_main_and_no_pull_request in
+  # tests/site_journey_test.rs holds both halves.
+  check-macos:
+    # Slowest run measured on GitHub's runners: 27.7 min
+    timeout-minutes: 45
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest]
+    steps: *check-steps
+
+  # The suite: `cargo test --all-features`, split into shards that run at
+  # once. Compiling the test binaries is the larger half of the suite's time
+  # (7 min 40 s of the 12.3-minute Test step on Linux, run 41620629642,
+  # 2026-11-03), so each shard compiles only its own targets.
+  # scripts/parallel-tests.py --shard-index I --shard-count N is the one rule
+  # for which shard runs what: every integration-test target in exactly one
+  # shard, and the library and binary unit tests and the doctests in the
+  # first. The `shard:` list is the only place N is written; the step reads
+  # its index and count from `strategy`. Linux only: macOS runs the suite
+  # whole in `check-macos`.
+  # scripts/tests/test_parallel_tests_shards.py holds the rule, on this
+  # repository's real targets too, and the `test-results` job refuses a set
+  # of outputs that is not every shard with every target exactly once.
+  test:
+    # Slowest run measured on GitHub's runners: 27.7 min
+    timeout-minutes: 45
+    name: Test (${{ matrix.os }}, shard ${{ matrix.shard }})
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'ubuntu-24.04-arm' || 'macos-latest' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          # site_advertises_only_a_released_version asks git for tags; see
+          # the checkout in `check`.
+          fetch-tags: true
+          fetch-depth: 0
+      - name: Free disk space (Linux)
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        uses: ./.github/actions/free-disk
+
+      # The packages the suite ran with when it ran in `check`, so every
+      # test sees the same machine: yanglint for the YANG tests, cmake for
+      # libopus, tmux for the PTY tests' probes.
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libpcap-dev libasound2-dev libyang2-tools tmux cmake
+
+      - id: toolchain
+        uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+        with:
+          components: clippy, rustfmt
+          # plugin_example_test builds the example plugin for wasm32.
+          targets: wasm32-unknown-unknown
+
+      - uses: ./.github/actions/runner-target
+      # Every shard compiles the same dependencies, so one cache serves all
+      # of them, and only the first shard saves it.
+      - name: Restore the cargo cache
+        id: cargo-cache
+        if: runner.environment == 'github-hosted'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
+
+      # The tools `check` installs before the suite ran there: the pinned
+      # rustfmt, Go, Node.js and tshark.
+      - name: Install the pinned rustfmt (Linux)
+        if: runner.os == 'Linux'
+        run: rustup toolchain install "$(cat .rustfmt-toolchain)" --profile minimal --component rustfmt
+      - name: Set up Go for the suite (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - name: Set up Node.js for the suite (Linux)
+        if: runner.os == 'Linux'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - name: Install tshark for the suite (Linux)
+        if: runner.os == 'Linux'
+        uses: ./.github/actions/system-deps
+        with:
+          packages: tshark
+          debconf: wireshark-common wireshark-common/install-setuid boolean false
+
+      # The tests that decode G.729 read the fetched ITU-T package.
+      - uses: ./.github/actions/g729-vectors
+
+      - name: Test
+        env:
+          # tests/yang_export_test.rs writes every RFC 7951 document it checks
+          # here, and `test-results` hands each one to yanglint. Empty, and
+          # therefore off, on macOS, where nothing reads them.
+          SIPNAB_YANG_EXPORT_DIR: ${{ runner.os == 'Linux' && format('{0}/test-shard/yang-exports', runner.temp) || '' }}
+        # The shard's binaries run side by side, as the pre-commit hook runs
+        # the whole suite: scripts/parallel-tests.py builds with `cargo test`,
+        # records each binary, and runs the recordings in a pool of one job
+        # per core (at most 8). The output is cargo's, one block per binary,
+        # so `test-results` counts the shards' outputs together by the rule
+        # it applied to one unsharded run, and the exit status is non-zero if
+        # any binary failed.
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/test-shard"
+          python3 scripts/parallel-tests.py --shard-index ${{ strategy.job-index }} --shard-count ${{ strategy.job-total }} \
+            --manifest "$RUNNER_TEMP/test-shard/shard.json" -- --all-features 2>&1 \
+            | tee "$RUNNER_TEMP/test-shard/test-output.txt"
+
+      - name: Hand the shard's output to the total
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: test-shard-${{ matrix.os }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/test-shard
+          if-no-files-found: error
+          retention-days: 1
+
+      # Every run, so the log records the size the entry would have.
+      - name: Prune the cargo cache
+        if: runner.environment == 'github-hosted' && strategy.job-index == 0
+        run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
+      - name: Save the cargo cache
+        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true' && strategy.job-index == 0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  # The Linux shards' outputs, put back together and checked as one run.
+  test-results:
+    timeout-minutes: 15
+    name: Test results (ubuntu-latest)
+    needs: [test]
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Install yanglint
+        uses: ./.github/actions/system-deps
+        with:
+          packages: libyang2-tools
+      - name: Fetch the shards' outputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: test-shard-ubuntu-latest-*
+          path: ${{ runner.temp }}/shards
+
+      # One output from all the shards, in shard order, refused unless every
+      # shard reported exactly once and every target ran in exactly one of
+      # them. The YANG exports come from whichever shard ran
+      # tests/yang_export_test.rs; a file two shards wrote is refused.
+      - name: Merge the shards' outputs
+        run: |
+          set -euo pipefail
+          python3 scripts/parallel-tests.py merge --output test-output.txt "$RUNNER_TEMP"/shards/*
+          mkdir -p "$RUNNER_TEMP/yang-exports"
+          for f in "$RUNNER_TEMP"/shards/*/yang-exports/*.json; do
+            [ -e "$f" ] || continue
+            dest="$RUNNER_TEMP/yang-exports/$(basename "$f")"
+            if [ -e "$dest" ]; then
+              echo "::error::two shards wrote the YANG export $(basename "$f")"
+              exit 1
+            fi
+            cp "$f" "$dest"
+          done
+
+      # The sipnab-diagnosis YANG module, and what every door really emits for
+      # it, checked by two implementations that wrote neither: `pyang --lint`
+      # and libyang's `yanglint` compile the module, `pyang
+      # --check-update-from` holds each revision to the last (RFC 7950 section
+      # 11), and `yanglint -t data` validates each RFC 7951 export the test
+      # job's Test step wrote -- CLI, REST and MCP, per fixture. The Rust suite proves the
+      # module is what the analysis's tables generate and that each document
+      # decodes to the plain JSON of the same run; only a YANG tool can prove
+      # either is valid YANG. Locally a missing tool is NOT CHECKED; here
+      # SIPNAB_YANG_REQUIRED makes it a failure, because this is the one place
+      # that must not be able to skip. See scripts/check-yang.py.
+      - name: Validate the YANG module and the RFC 7951 exports
+        env:
+          SIPNAB_YANG_REQUIRED: '1'
+        run: |
+          python3 -m venv .venv-yang
+          . .venv-yang/bin/activate
+          python3 -m pip install --require-hashes -r scripts/requirements-yang.txt
+          python3 scripts/check-yang.py --exports "$RUNNER_TEMP/yang-exports"
+
+      # The homepage's automated-test count is derived from the suite's run, by the
+      # one rule in scripts/published-test-count.py, and never committed.
+      # This step applies the rule here so a run it cannot count (no result
+      # line, a FAILED binary, a total of zero) fails CI on the pull request
+      # rather than the deploy. On a push to main the next step hands the
+      # output to pages.yml, which applies the same rule and writes the data
+      # file the homepage template reads.
+      #
+      # The number used to be committed in website/templates/index.html and
+      # compared with this run. Every pull request that added a test edited
+      # that line, so any two such pull requests conflicted on it.
+      #
+      # This parses the shards' merged output rather than invoking cargo test
+      # again; the count is the sum over every binary, so splitting the run
+      # into shards does not change it. The
+      # coverage job cannot host this: it runs with `--skip cli_goldens`, so
+      # its total is short of the real one by design.
+      #
+      # Linux only, deliberately. The suite is not the same size on every
+      # platform -- measured 3015 on ubuntu-latest against 3008 on
+      # macos-latest -- so a single advertised number cannot be true of both.
+      # The homepage figure describes the Linux suite.
+      # .githooks/pre-commit runs the same script on its `cargo test
+      # --features full` run; no_test_hides_behind_a_feature_outside_full in
+      # tests/site_journey_test.rs keeps that run the same suite as this one.
+      - name: Derive the published test count
+        run: |
+          set -euo pipefail
+          if ! actual=$(python3 scripts/published-test-count.py test-output.txt); then
+            echo "::error::the suite output cannot be counted, so the homepage would have no test count"
+            exit 1
+          fi
+          echo "published_test_count=$actual"
+
+      # pages.yml waits for this artifact from CI's run of the commit it
+      # deploys (scripts/fetch-ci-suite-output.py). Pushes only: pull
+      # requests never deploy.
+      - name: Hand the suite output to the site build
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: suite-output
+          path: test-output.txt
+          if-no-files-found: error
 
   # Installer: unit tests for the platform/glibc detection and artifact
   # selection in website/static/install.sh (served at sipnab.com/install.sh).
@@ -480,15 +682,16 @@ jobs:
     timeout-minutes: 40
     name: Symbol split (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # The macOS half is the job `symbol-split-macos` below, which runs these
+    # same steps (the YAML alias `*symbol-split-steps`) and which `CI
+    # success` does not need, for the reason check-macos gives.
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-          - os: macos-latest
-            target: aarch64-apple-darwin
-    steps:
+    steps: &symbol-split-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Do not leave GITHUB_TOKEN in .git/config for later steps or
@@ -599,8 +802,8 @@ jobs:
 
       # The workspace's own executables are rebuilt by any change to the
       # sources, so they are removed before the save; see the script.
+      # Every run, so the log records the size the entry would have.
       - name: Prune the cargo cache
-        if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
         run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
       - name: Save the cargo cache
         if: github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
@@ -611,6 +814,25 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+
+  # The macOS half of the symbol split: the same steps as `symbol-split`,
+  # through the YAML alias. Like check-macos, `CI success` does not need it,
+  # so a pull request neither waits for it nor fails when GitHub cancels it
+  # for capacity, as GitHub did on pull request #631 (run 41725010284,
+  # 2026-11-03). It still runs on every pull request and every push to main,
+  # and on main a failure fails the CI run, which the pre-push hook's tag
+  # gate refuses to tag.
+  symbol-split-macos:
+    timeout-minutes: 40
+    name: Symbol split (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps: *symbol-split-steps
 
   install-sh:
     # Bounds how long this job can hold the main-branch concurrency
@@ -688,6 +910,10 @@ jobs:
           # third-party actions to read. Nothing here pushes with it:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
+      # The runner is a virtual machine on a host that runs other virtual
+      # machines; see features-x64.
+      - name: Refuse to start with less than 25 GB free
+        run: bash scripts/ci-disk-floor.sh 25
       - name: Install rpmbuild and patchelf
         # rpm and patchelf are what the release workflow installs before
         # calling the builder; ubuntu-latest ships neither. gcc builds the
@@ -864,78 +1090,49 @@ jobs:
   # suite still runs under `check`.
   features:
     # Bounds how long this job can hold the main-branch concurrency
-    # group, which never supersedes. Observed: 7.2 min slowest combo before
-    # 2026-09-29; 13.4 min, the headless recipe leg (its full test suite took
-    # 10.1 of them), on ubuntu-24.04-arm with no cargo cache to restore (pull
-    # request #601, run 40815803913). The timeout clears it by half again.
+    # group, which never supersedes. Observed: 13.4 min, the headless recipe
+    # leg alone (its full test suite took 10.1 of them), on ubuntu-24.04-arm
+    # with no cargo cache to restore (pull request #601, run 40815803913),
+    # before the combinations were folded into groups and moved to the
+    # overflow runners, where every run builds from nothing at the lowest
+    # CPU priority. The timeout leaves room for that.
     # Slowest run measured on GitHub's runners: 13.4 min
-    timeout-minutes: 30
-    name: Features (${{ matrix.features }})
-    # GitHub's ubuntu-24.04-arm, which keeps the aarch64 builds these legs had.
-    # Every push builds them, and the pre-push hook does not repeat them
-    # locally (Norm, 2026-09-29). From 2026-09-29 to 2026-10-27 they ran on the
-    # four aarch64 self-hosted runners; they moved back for the reason the
-    # check job above gives, and keep the shape that let them run there, so
-    # routing them back is a change to `runs-on:` alone.
-    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    name: Features (group ${{ matrix.group }}, aarch64)
+    # Self-hosted because: the 21 feature combinations queued for GitHub's 20 concurrent hosted jobs, and the aarch64 host's overflow runners take them from what its local gates leave idle.
+    #
+    # The combinations, the tests that run beside them, and what each needs
+    # are listed in .github/feature-combos.txt. They ran as 21 hosted jobs,
+    # one per combination, until 2026-11-03. A free account runs at most 20
+    # hosted jobs at once, across every workflow, and on pull request #626's
+    # runs those legs, two to four minutes each of which about 1.5 was setup,
+    # queued for up to 29 minutes and held the runners the long jobs waited
+    # for (runs 41640843394 and 41729921358). Now three groups build them one
+    # after another: two here, on the two aarch64 runners labeled `overflow`,
+    # whose services run at CPUWeight=1, IOWeight=1 and Nice=19, so they use
+    # only the CPU and I/O the host's local gates leave idle; and one on the
+    # x86_64 runner (`features-x64`). scripts/check-feature-matrix.py's
+    # `partition` decides which group runs which, and
+    # scripts/tests/test_feature_matrix_groups.py holds it to every
+    # combination.
+    #
+    # Pull requests reach a self-hosted runner here. The repository's fork
+    # pull request approval policy is `all_external_contributors` (checked
+    # 2026-11-03), so no workflow from a fork runs until a maintainer
+    # approves it, which is the condition the 2026-10-27 rule sets for a
+    # `pull_request` job on a self-hosted runner.
+    #
+    # The runner's own toolchain, targets and packages are used as they are:
+    # nothing is installed, and the script stops with the name of anything
+    # missing. The build directory is the job's own, under the runner's
+    # per-job temporary directory, and is removed however the job ends.
+    runs-on: [self-hosted, overflow]
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
     strategy:
       fail-fast: false
       matrix:
-        features:
-          - native
-          - tls
-          - api
-          - mcp
-          - hep
-          # Standalone metrics server must build without the `api` feature.
-          - metrics
-          - "tls,api"
-          - "native,tui,audio"
-          # The crate's default features, what a bare `cargo build` produces.
-          # the_feature_matrix_includes_the_default_feature_set keeps this
-          # equal to Cargo.toml's `default = [...]`.
-          - "native,tui,audio,metrics"
-          - "native,tui,tls,hep,api"
-          # The documented headless server build (README "Headless capture host").
-          - "native,hep,api,mcp,mcp-http"
-          # The eBPF uprobe backend, which every published *-linux-gnu binary
-          # now carries. Its USERSPACE half is what this leg compiles: the
-          # kernel half needs nightly and bpf-linker, which the release job
-          # installs and this one deliberately does not, so build.rs takes its
-          # degrading default here and emits the placeholder object. That is
-          # the split the two modes exist for -- this leg proves the
-          # `#[cfg(feature = "bpf")]` code and its tests still build, and
-          # `a_release_build_refuses_to_ship_without_the_kernel_programs`
-          # proves the release cannot ship the placeholder.
-          - bpf
-          # vCon export. In `full`, so `--all-features` already builds it --
-          # this leg is what proves it still builds WITHOUT tui, tls, api or
-          # mcp, which is the class of break `--all-features` cannot see.
-          - vcon
-          # Ogg Opus recordings: libopus, compiled with cmake. In `full`; this
-          # leg proves it builds with only `vcon` beside it.
-          - opus
-          # `audio` and `plugins` are each in `full` and so built by
-          # `--all-features`, but never ALONE until these legs: a
-          # `#[cfg(feature = "audio")]` or `"plugins"` block that leans on a
-          # sibling feature for an import compiles there and nowhere else.
-          - audio
-          - plugins
-          # Password-protected ZIP input. In `full`; this leg proves it builds
-          # without tui, tls, api or mcp, the only company it keeps being
-          # `native`.
-          - archive
-          # G.729 decoding. In `full`; this leg proves it builds with only
-          # `native` beside it, without the `vcon` HTTPS client that the
-          # online `sipnab g729 install` uses.
-          - g729
-          # The sets release.yml publishes: the static musl tarballs, and the
-          # gnu `-noaudio` .deb/.rpm with `bpf` added.
-          # ci_compiles_every_reduced_feature_set_the_release_publishes keeps
-          # these equal to what release.yml computes.
-          - "native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729"
-          - "native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729,bpf"
-          - wasm
+        group: [0, 1]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -943,127 +1140,53 @@ jobs:
           # third-party actions to read. Nothing here pushes with it:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
-          # The suite includes site_advertises_only_a_released_version, which
-          # asks git whether published_version has a matching tag. actions/
-          # checkout fetches NO tags by default, so that gate saw zero and
-          # refused to answer -- correctly, but it turned CI red on a release
-          # commit. Fetch them so the gate is real here rather than skipped
-          # where it matters most.
+          # The headless recipe's suite includes
+          # site_advertises_only_a_released_version, which asks git whether
+          # published_version has a matching tag. actions/checkout fetches NO
+          # tags by default, so that gate saw zero and refused to answer --
+          # correctly, but it turned CI red on a release commit. Fetch them so
+          # the gate is real here rather than skipped where it matters most.
           fetch-tags: true
           fetch-depth: 0
-      - name: Free disk space
-        if: runner.environment == 'github-hosted'
-        uses: ./.github/actions/free-disk
 
-      - name: Install system deps
-        uses: ./.github/actions/system-deps
+      # Each combination of this group, linted with its tests, then the
+      # tests the file lists beside it. Every command runs even after one
+      # fails, and the step fails if any did. The corpus variables are
+      # removed so no test reads captures outside the checkout. The pre-push
+      # hook leaves this to CI; the same script with no arguments runs every
+      # lint locally.
+      - name: Lint and test the feature combinations
+        run: env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/check-feature-matrix.py --group ${{ matrix.group }} --pool overflow
+
+      - name: Remove the build directory
+        if: always()
+        run: rm -rf "$CARGO_TARGET_DIR"
+
+  # The third group of feature combinations, lint only, on the x86_64 runner:
+  # the same script as `features`, which gives this pool only combinations
+  # that need neither tests nor a tool the runner lacks (it has clippy, and
+  # neither cmake nor the wasm32 target). The runner is a virtual machine on
+  # a host that runs other virtual machines, so the job refuses to start
+  # short of disk. The fork approval policy above covers it too.
+  features-x64:
+    # Not yet observed; bounded like the aarch64 groups.
+    timeout-minutes: 45
+    name: Features (group 2, x86_64)
+    # Self-hosted because: the 21 feature combinations queued for GitHub's 20 concurrent hosted jobs, and the x86_64 runner had no CI work routed to it.
+    runs-on: [self-hosted, X64]
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/cargo-target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          # cmake builds libopus for the `opus` leg.
-          packages: libpcap-dev libasound2-dev cmake
-
-      - id: toolchain
-        uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
-        with:
-          # The legs lint with clippy, which the minimal profile leaves out.
-          # The self-hosted machine has it installed, so the legs never asked
-          # for it there; on GitHub's runner every leg but wasm failed without
-          # it (2026-10-28). a_hosted_leg_installs_the_toolchain_components_its_steps_run
-          # holds it.
-          components: clippy
-      # checkout's clean (`git clean -ffdx`) deletes an in-workspace `target`
-      # at the start of every job, on a self-hosted runner too. So on a
-      # self-hosted runner the build directory lives outside the workspace,
-      # one per runner, bounded in size: see the action for where and why.
-      # It does nothing on a hosted runner.
-      - uses: ./.github/actions/runner-target
-      # The self-hosted runner's ~/.cargo is the machine's own and its target
-      # directory is the one above: nothing to restore, and nothing that
-      # should be uploaded.
-      # Restored on every run and saved, at the end of this job, from main
-      # only: tests/ci_cache_policy_test.rs says why.
-      - name: Restore the cargo cache
-        id: cargo-cache
-        if: runner.environment == 'github-hosted'
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          # Cache keys must not contain commas, and matrix.features has them
-          # (e.g. "native,tui,audio"); the key leaves the feature set out.
-          key: cargo-features-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-features-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
-
-      # wasm is lib-only: its test/bin targets are meaningless.
-      #
-      # `--target wasm32-unknown-unknown` is the whole point of this job and was
-      # missing. Without it the check compiled for the host, where the
-      # `cfg(target_arch = "wasm32")` dependency block is inert and the
-      # wasm32-only rustflags in .cargo/config.toml never apply — so it proved
-      # the `wasm` feature compiles for Linux and nothing about wasm. A real
-      # wasm32 build was broken on main (getrandom 0.3 missing `wasm_js`) while
-      # this job was green.
-      - name: Add wasm32 target
-        if: matrix.features == 'wasm'
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Check (lib only, wasm32)
-        if: matrix.features == 'wasm'
-        run: cargo check --target wasm32-unknown-unknown --no-default-features --features wasm --lib
-
-      # Clippy, not `cargo check`: it compiles the same code and also denies
-      # the lints that appear only in this feature combination, which neither
-      # `--all-features` nor the no-features clippy step can see.
-      # the_feature_matrix_lints_every_leg_with_its_tests requires it.
-      - name: Clippy (with tests)
-        if: matrix.features != 'wasm'
-        run: cargo clippy --no-default-features --features "${{ matrix.features }}" --tests -- -D warnings
-
-      # The headless recipe is the documented server build (README:
-      # "Headless capture host with HEP listener + REST API + MCP HTTP").
-      # Run its full test suite, not just a compile check, so the exact
-      # feature set users are told to ship stays green.
-      - name: Test (headless recipe)
-        if: matrix.features == 'native,hep,api,mcp,mcp-http'
-        run: cargo test --no-default-features --features "${{ matrix.features }}"
-
-      # Tests that exist only where a feature is ABSENT. `--all-features` and
-      # the pre-commit hook's `--features full` compile them out, and `cargo
-      # clippy --tests` above builds them without running them, so before
-      # these steps nothing executed them anywhere. Each runs in the leg whose
-      # combo is the absence it tests.
-      - name: Test (feature-gate refusals, no mcp and no hep)
-        if: matrix.features == 'native'
-        run: cargo test --no-default-features --features native --test feature_gate_test
-
-      - name: Test (vCon rules without opus)
-        if: matrix.features == 'vcon'
-        run: cargo test --no-default-features --features vcon --test vcon_rules_test
-
-      - name: Test (mcp without mcp-http)
-        if: matrix.features == 'mcp'
-        run: cargo test --no-default-features --features mcp --test app_servers_test
-
-      - name: Test (TUI snapshots without audio)
-        if: matrix.features == 'native,tui,tls,hep,api'
-        run: cargo test --no-default-features --features "${{ matrix.features }}" --test tui_snapshot_test
-
-      # The workspace's own executables are rebuilt by any change to the
-      # sources, so they are removed before the save; see the script.
-      - name: Prune the cargo cache
-        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
-        run: bash scripts/ci-cache-prune.sh "$GITHUB_WORKSPACE/target"
-      - name: Save the cargo cache
-        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.cargo-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ steps.cargo-cache.outputs.cache-primary-key }}
+          persist-credentials: false
+      - name: Refuse to start with less than 25 GB free
+        run: bash scripts/ci-disk-floor.sh 25
+      - name: Lint the feature combinations
+        run: env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/check-feature-matrix.py --group 2 --pool x64
+      - name: Remove the build directory
+        if: always()
+        run: rm -rf "$CARGO_TARGET_DIR"
 
   # What `cargo publish` would upload, built from its own files alone.
   # `tests/crate_package_test.rs` packages without compiling, so it catches a
@@ -1202,18 +1325,27 @@ jobs:
 
   ci-success:
     # Bounds how long this job can hold the main-branch concurrency
-    # group, which never supersedes. Observed: 0.0 min, but it waits on 14 needs.
+    # group, which never supersedes. Observed: 0.0 min, but it waits on 17 needs.
     timeout-minutes: 10
     name: CI success
     if: always()
-    # Every other job in this file, enforced by ci_success_gates_every_job
-    # in site_journey_test.rs. This list read [check, features, audit,
-    # fuzz-check] while the comment above claimed "every other job" —
-    # so install-sh and deb-package could both fail with the one required
-    # check on main still green.
-    needs: [check, install-sh, deb-package, rpm-packaging, homebrew-formula,
-            tsan-verdict, bench-scripts, features, crate-package, audit,
-            fuzz-check, code-scanning-clean, symbol-split, pre-push-scenarios]
+    # Every other job in this file but the macOS-only ones, enforced by
+    # ci_success_gates_every_job in site_journey_test.rs. This list read
+    # [check, features, audit, fuzz-check] while the comment above claimed
+    # "every other job" — so install-sh and deb-package could both fail with
+    # the one required check on main still green.
+    #
+    # The macOS-only job, check-macos, is left out on purpose, and this list
+    # is the one place that rule lives: a pull request neither waits for
+    # macOS nor fails when GitHub cancels a macOS job for capacity, and on
+    # main a macOS failure still fails the CI run, which the tag gate
+    # refuses. See the comment on check-macos;
+    # the_macos_leg_blocks_main_and_no_pull_request in site_journey_test.rs
+    # holds it.
+    needs: [check, test, test-results, install-sh, deb-package, rpm-packaging,
+            homebrew-formula, tsan-verdict, bench-scripts, features,
+            features-x64, crate-package, audit, fuzz-check,
+            code-scanning-clean, symbol-split, pre-push-scenarios]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all required jobs succeeded

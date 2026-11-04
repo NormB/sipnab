@@ -375,10 +375,11 @@ So `quality.yml` has a second job, `coverage-branch`.
 
 ### What actually gates a merge
 
-`ci-success` requires every other job in `ci.yml` — thirteen of them: **`check`,
-`install-sh`, `deb-package`, `rpm-packaging`, `homebrew-formula`,
-`tsan-verdict`, `bench-scripts`, `features`, `crate-package`, `audit`,
-`fuzz-check`, `code-scanning-clean`, `symbol-split`**.
+`ci-success` requires every other job in `ci.yml` but the macOS leg of Check — sixteen of them: **`check`,
+`test`, `test-results`, `install-sh`, `deb-package`, `rpm-packaging`,
+`homebrew-formula`, `tsan-verdict`, `bench-scripts`, `features`,
+`crate-package`, `audit`, `fuzz-check`, `code-scanning-clean`,
+`symbol-split`, `pre-push-scenarios`**.
 
 `ci_success_gates_every_job` in
 [`site_journey_test`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs) holds the list to that.
@@ -388,27 +389,60 @@ So `quality.yml` has a second job, `coverage-branch`.
 - So `install-sh` and `deb-package` could both fail with the
   one required check on main still green.
 
-The rest of this section describes four of them.
+`ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
+
+- On 2026-11-02 GitHub canceled Check (macos-latest) on both runs of pull request #601
+  (41510139494 and 41514782896) with "The job was not acquired by Runner of type hosted even after
+  multiple attempts".
+  The rerun of the second took 27 minutes (20:22:04 to 20:49:15 UTC).
+- So on a pull request, `CI success` neither waits for macOS nor fails when GitHub cancels the macOS leg.
+- `check-macos` still runs on every pull request, which shows its result, and on every push to `main`.
+- On `main`, a failed `check-macos` fails the CI workflow run of that commit.
+  A failed job fails its run whether or not another job needs it.
+  The pre-push hook's tag gate refuses to tag a commit whose CI run is not green,
+  so a macOS break on `main` blocks the release.
+- The rule lives in one place, `ci-success`'s `needs:` list.
+  `the_macos_leg_blocks_main_and_no_pull_request` in
+  [`site_journey_test`](https://github.com/NormB/sipnab/blob/main/tests/site_journey_test.rs) holds it:
+  - No job `CI success` needs, directly or through another job, runs on macOS only.
+  - No job runs on macOS beside another OS: `needs` takes a matrix job whole, so such a job would either block pull requests on macOS or leave its other leg out of the required check.
+  - The macOS jobs have no job-level `if:` or `continue-on-error`, and `ci.yml` runs on every push to `main` and every pull request.
+  - `check-macos` runs `check`'s steps through the YAML alias `*check-steps`, and `symbol-split-macos` runs `symbol-split`'s through `*symbol-split-steps`, so the legs cannot drift.
+- The macOS half of the symbol split is `symbol-split-macos`, by the same rule.
+  GitHub canceled it for capacity on pull request #631 (run 41725010284).
+
+The rest of this section describes five of them.
 Their contents are worth spelling out.
 
-- **`check`** (per-OS matrix):
+- **`check`** (Linux; `check-macos` runs the same steps on macOS):
   - `cargo build --all-features`
-  - `cargo test
-    --all-features`
+  - On macOS, `cargo test --all-features`, whole.
+    On Linux the suite runs in `test`, below.
   - `cargo clippy --workspace --all-features --all-targets -D warnings`
   - [`scripts/check-rustfmt.sh`](https://github.com/NormB/sipnab/blob/main/scripts/check-rustfmt.sh) (the pinned nightly rustfmt)
   - `cargo doc --no-deps --all-features --workspace`
   - plus the `--ignored` PTY TUI end-to-end tests
   - On Linux it also compiles the Python clients under `clients/python/`.
     It runs `pytest` over their tests and `scripts/tests`.
-- **`features`**: `cargo clippy --no-default-features --features X --tests
+- **`features`** and **`features-x64`**: `cargo clippy --no-default-features --features X --tests
   -- -D warnings` across twenty-one feature sets.
+  - [`.github/feature-combos.txt`](https://github.com/NormB/sipnab/blob/main/.github/feature-combos.txt) lists the sets, the tests that run beside them, and what each needs from the machine.
   - The sets: each of `native`, `tls`, `api`, `mcp`, `hep`,
     `metrics`, then `tls,api`, `native,tui,audio`, the default features
     `native,tui,audio,metrics`, `native,tui,tls,hep,api`,
     `native,hep,api,mcp,mcp-http`, each of `bpf`, `vcon`, `opus`, `audio`,
     `plugins`, `archive` and `g729`, the two reduced sets the release
     publishes, and `wasm`.
+  - Three jobs build them one after another, through [`scripts/check-feature-matrix.py`](https://github.com/NormB/sipnab/blob/main/scripts/check-feature-matrix.py) `--group I --pool P`.
+    Until 2026-11-03 each set was a hosted job of its own, and those 21 jobs queued for the account's 20 concurrent hosted jobs: on pull request #626's runs they queued up to 29 minutes.
+    - Two groups run on the two aarch64 runners labeled `overflow`, whose services run at CPUWeight=1, IOWeight=1 and Nice=19, so they use only the CPU and I/O the local gates leave idle.
+    - One group runs on the x86_64 runner (`X64`) and lints only: that runner has clippy, and neither cmake nor the wasm32 target.
+    - `partition` in the script decides which group runs which set, given each group's pool (`GROUPS`) and what each pool has (`POOLS`).
+      [`scripts/tests/test_feature_matrix_groups.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_feature_matrix_groups.py) holds it to every set and test CI checked on 2026-11-03.
+    - The jobs install nothing. A group first checks that the machine has what its pool promises, and stops with the name of anything missing.
+    - Each job builds in its own directory under the runner's per-job temporary directory, and its last step removes it, `if: always()`.
+    - The x86_64 job, and the RPM packaging job on the same runner, refuse to start with less than 25 GiB free ([`scripts/ci-disk-floor.sh`](https://github.com/NormB/sipnab/blob/main/scripts/ci-disk-floor.sh)).
+    - The repository's fork pull request approval policy is `all_external_contributors`, so no workflow from a fork reaches these runners before a maintainer approves it.
   - `wasm` is lib-only, and gets a `cargo check` of the library for the
     `wasm32-unknown-unknown` target instead.
   - Clippy, not `cargo check`: it compiles the same code and also denies
@@ -435,8 +469,39 @@ Their contents are worth spelling out.
   - `--tests` is what makes any of these real.
     Without it the lint compiles no test file at all, and every leg
     goes green over nothing.
+- **`test`** and **`test-results`**: `cargo test --all-features` on Linux, split into shards.
+  See [The suite in shards](#the-suite-in-shards).
 - **`audit`**: `cargo-audit` and `cargo-deny`.
 - **`fuzz-check`**: the `fuzz/` workspace compiles.
+
+#### The suite in shards
+
+The `test` job runs the Linux suite on four runners at once.
+
+- Measured on run 41620629642 (2026-11-03), before the split:
+  - Check (ubuntu-latest) took 20.3 minutes, 12.3 of them in its Test step.
+  - In that step, `cargo test` compiled the test binaries for 7 minutes 40 seconds (10:46:56 to 10:54:35 UTC) and ran them until the step ended at 10:59:12.
+  - Compiling is the larger half, so each shard compiles only its own targets.
+    A split of the run alone would save little.
+- [`scripts/parallel-tests.py`](https://github.com/NormB/sipnab/blob/main/scripts/parallel-tests.py) `--shard-index I --shard-count N` is the one rule for what each shard runs.
+  - It asks `cargo metadata` for the package's integration-test targets.
+  - `partition` puts the library and binary unit tests and the doctests in shard 0, weighed as `UNIT_WEIGHT` test binaries.
+  - It gives each target, in name order, to the shard with the least weight so far.
+  - The shard runs `cargo test --all-features` with one `--test NAME` for each target it holds, and shard 0 adds `--lib --bins` and a `--doc` run.
+  - Every shard also builds the examples, as plain `cargo test` does, because `examples_run_test` runs them.
+- The `shard:` matrix list is the only place that states N.
+  The step reads its index and count from `strategy.job-index` and `strategy.job-total`.
+- Each shard uploads its output, a manifest of what it ran and the YANG exports.
+- `test-results` runs once all four pass.
+  - `parallel-tests.py merge` refuses the set unless every shard reported exactly once and every target ran in exactly one shard.
+  - It writes the outputs in shard order as one `test-output.txt`.
+    The published test count is a sum over every binary's `test result` line, so it equals the count of the same suite run in one job.
+  - It validates the YANG module and exports, derives the published test count, and on a push to `main` uploads `suite-output` for `pages.yml`.
+- [`scripts/tests/test_parallel_tests_shards.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_parallel_tests_shards.py) holds the rule.
+  - It runs `partition` on the real target list for the shard count `ci.yml` gives.
+    The union of the shards must be every target, and the shards disjoint, so no shard can miss a new `tests/*.rs` file.
+  - Every `tests/*.rs` file must be one of `cargo metadata`'s test targets.
+- The shards share one cache family, `cargo-test`, which only shard 0 saves, on `main`.
 
 ### Dependabot bumps fail on a generated file, not on an API break
 
@@ -679,9 +744,9 @@ The homepage's automated-test count is not in the template.
 
 It is now generated at deploy time:
 
-- `ci.yml`'s Check job on Linux runs `cargo test --all-features`.
-  - It applies [`scripts/published-test-count.py`](https://github.com/NormB/sipnab/blob/main/scripts/published-test-count.py)
-    to the output (step "Derive the published test count").
+- `ci.yml` runs `cargo test --all-features` on Linux, in the `test` job's shards.
+  - The `test-results` job merges their outputs and applies [`scripts/published-test-count.py`](https://github.com/NormB/sipnab/blob/main/scripts/published-test-count.py)
+    to the result (step "Derive the published test count").
   - That step fails CI when the script cannot count the run.
   - On a push to `main` it uploads the output as the `suite-output` artifact.
 - `pages.yml` waits for that artifact from CI's run of the commit it deploys
@@ -768,17 +833,21 @@ The workflow-shape test holds each job's runner.
 
 - Every job runs on one GitHub-hosted image, or on `self-hosted` with exactly one pool label.
   - `jetson` is the four aarch64 runners.
+  - `overflow` is two of them, whose services run at the lowest CPU and I/O priority.
   - `X64` is the one x86_64 runner, a four-core VM with 6 GB of memory, registered for this repository only.
   - The test refuses a bare `self-hosted`: it takes either pool, so the job's architecture would depend on which was idle.
   - A hardware label names each pool, never a machine's name.
 - A self-hosted job says why in a `# Self-hosted because:` comment beside its `runs-on:`.
 - On the aarch64 runners: `memcheck.yml` (those runners have valgrind), `bench.yml` (its baseline is a property of that hardware),
   `reproducible.yml` (those runners have bpf-linker) and `self-hosted-smoke.yml` (it exists to prove that runner works).
-- On the x86_64 runner: the RPM packaging job.
-  It builds no Rust, and the runner has every package it names, so it installs nothing there.
+- On the `overflow` runners: two groups of the feature combinations.
+- On the x86_64 runner: the RPM packaging job and the third group of the feature combinations.
+  The RPM job builds no Rust, and the runner has every package it names, so it installs nothing there.
+- Only the four jobs above may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
+  `a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host` holds that, `an_x64_job_refuses_to_start_with_less_than_25_gb_free` the disk floor, and `a_pooled_job_builds_in_its_own_directory_and_removes_it` the build directory.
 - Everything else runs on GitHub's runners. The repository is public, so they cost nothing.
 
-The Linux leg of the Check job, the Features job and the `Quality` workflow's Coverage job run on GitHub's `ubuntu-24.04-arm`.
+The Linux leg of the Check job, the `test` shards and the `Quality` workflow's Coverage job run on GitHub's `ubuntu-24.04-arm`.
 
 - From 2026-10-18 to 2026-10-27 they ran on the aarch64 self-hosted runners.
   - On GitHub's runners they had been among the jobs that set the length of a pull request's run.
@@ -843,6 +912,10 @@ Now:
 - Before the save, [`scripts/ci-cache-prune.sh`](https://github.com/NormB/sipnab/blob/main/scripts/ci-cache-prune.sh) removes the
   executables built from the workspace crates.
   Any change to the sources rebuilds them.
+  - It also removes the object files (`*.o`) in each profile's `deps/`.
+    On macOS the dev profile's split-debuginfo is `unpacked`, so rustc leaves each crate's objects there for a debugger, while the build links the copies inside the `.rlib`.
+    The macOS Check entry was 3964 MB compressed on run 41605349593, from a target directory the old prune left at 20356804 KiB.
+  - The Check, Test and Symbol split jobs prune on every run, not only before a save, so each run's log shows the size an entry would have and how much of it was object files.
 - Each key names the OS, the architecture, the toolchain and Cargo.lock.
 - Each restore-key is a prefix of the job's own key.
 - The Coverage jobs keep no cargo cache.

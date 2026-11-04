@@ -174,6 +174,12 @@ fn target_dir_value(text: &str) -> Option<String> {
 /// Why `value` is not a per-runner directory outside the workspace, if it
 /// is not one.
 fn target_dir_defect(value: &str) -> Option<String> {
+    // The runner's per-job temporary directory: its own runner's, outside
+    // the workspace, and a pooled job removes it at the end
+    // (a_pooled_job_builds_in_its_own_directory_and_removes_it).
+    if value.starts_with("${{ runner.temp }}/") {
+        return None;
+    }
     if !(value.contains("RUNNER_NAME") || value.contains("runner.name")) {
         return Some(format!(
             "`{value}` does not include the runner name, so the four runners \
@@ -407,25 +413,30 @@ fn the_per_push_jobs_run_on_github_hosted_runners() -> Result<(), TestError> {
     let jobs = all_jobs()?;
     let arm = vec!["ubuntu-24.04-arm".to_string()];
 
-    let check = runs_on(job(&jobs, "ci.yml", "check")?)?;
-    assert_eq!(
-        runner_labels(check, "ubuntu-latest")?,
-        arm,
-        "ci.yml check: the Linux leg must run on ubuntu-24.04-arm (runs-on: {check})"
-    );
-    assert_eq!(
-        runner_labels(check, "macos-latest")?,
-        vec!["macos-latest".to_string()],
-        "ci.yml check: the macOS leg must stay on macos-latest (runs-on: {check})"
-    );
-    for (workflow, id) in [("ci.yml", "features"), ("quality.yml", "coverage")] {
-        let value = runs_on(job(&jobs, workflow, id)?)?;
+    for id in ["check", "test"] {
+        let value = runs_on(job(&jobs, "ci.yml", id)?)?;
         assert_eq!(
-            runner_labels(value, "")?,
+            runner_labels(value, "ubuntu-latest")?,
             arm,
-            "{workflow} {id} must run on ubuntu-24.04-arm (runs-on: {value})"
+            "ci.yml {id}: the Linux leg must run on ubuntu-24.04-arm (runs-on: {value})"
         );
     }
+    let mac = runs_on(job(&jobs, "ci.yml", "check-macos")?)?;
+    assert_eq!(
+        runner_labels(mac, "macos-latest")?,
+        vec!["macos-latest".to_string()],
+        "ci.yml check-macos: the macOS leg must stay on macos-latest (runs-on: {mac})"
+    );
+    // The feature combinations left GitHub's runners on 2026-11-03 for the
+    // pooled self-hosted runners;
+    // a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host
+    // holds them there.
+    let coverage = runs_on(job(&jobs, "quality.yml", "coverage")?)?;
+    assert_eq!(
+        runner_labels(coverage, "")?,
+        arm,
+        "quality.yml coverage must run on ubuntu-24.04-arm (runs-on: {coverage})"
+    );
     Ok(())
 }
 
@@ -455,10 +466,211 @@ const HOSTED_IMAGES: &[&str] = &[
     "macos-latest",
 ];
 
-/// The self-hosted pools, each by a hardware label: `jetson` is the four
-/// aarch64 runners, `X64` the one x86_64 runner. A hardware label, never a
-/// machine's name: tests/private_identity_test.rs B6 says why.
-const SELF_HOSTED_POOLS: &[&str] = &["jetson", "X64"];
+/// The self-hosted pools, each by a label that names no machine:
+/// `jetson` is the four aarch64 runners, `overflow` the two of them whose
+/// services run at the lowest CPU and I/O priority, and `X64` the one x86_64
+/// runner. Never a machine's name: tests/private_identity_test.rs B6 says why.
+const SELF_HOSTED_POOLS: &[&str] = &["jetson", "overflow", "X64"];
+
+/// The jobs that may take any `jetson` runner, and why each needs the
+/// aarch64 host itself rather than spare capacity on it. Every other
+/// self-hosted job takes the `overflow` runners, which use only the CPU and
+/// I/O the host's local gates leave idle, or the `X64` runner.
+const AARCH64_HOST_ONLY: &[(&str, &str, &str)] = &[
+    (
+        "bench.yml",
+        "throughput",
+        "the throughput baseline was measured on this hardware",
+    ),
+    (
+        "memcheck.yml",
+        "memcheck",
+        "valgrind is installed on the aarch64 runners",
+    ),
+    (
+        "reproducible.yml",
+        "reproducible",
+        "the eBPF toolchain's bpf-linker is installed there",
+    ),
+    (
+        "self-hosted-smoke.yml",
+        "smoke",
+        "it exists to prove an aarch64 runner can build",
+    ),
+];
+
+/// The pooled self-hosted jobs: those on `overflow` or `X64`.
+fn pooled_jobs() -> Result<Vec<Job>, TestError> {
+    let mut out = Vec::new();
+    for job in all_jobs()? {
+        let Some(sels) = selections(&job)? else {
+            continue;
+        };
+        if sels
+            .iter()
+            .any(|s| s.iter().any(|l| l == "overflow" || l == "X64"))
+        {
+            out.push(job);
+        }
+    }
+    Ok(out)
+}
+
+/// A self-hosted job takes the shared capacity, not the aarch64 host's own
+/// runners, unless it needs that host.
+///
+/// Runners 1 and 2 of the aarch64 host serve the jobs that need it; runners 3
+/// and 4 carry `overflow` and run at CPUWeight=1, IOWeight=1, Nice=19, so a
+/// job there uses only what the host's local gates leave idle. A job that
+/// named `jetson` for capacity would take a full-priority runner beside the
+/// local gates.
+#[test]
+fn a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host()
+-> Result<(), TestError> {
+    let mut defects = Vec::new();
+    let mut jetson = Vec::new();
+    for job in all_jobs()? {
+        let Some(sels) = selections(&job)? else {
+            continue;
+        };
+        if !sels.iter().any(|s| s.iter().any(|l| l == "jetson")) {
+            continue;
+        }
+        jetson.push(format!("{}:{}", job.workflow, job.id));
+        if !AARCH64_HOST_ONLY
+            .iter()
+            .any(|(w, j, _)| *w == job.workflow && *j == job.id)
+        {
+            defects.push(format!(
+                "{}:{} takes a `jetson` runner; take `[self-hosted, overflow]` or \
+                 `[self-hosted, X64]`, or add it to AARCH64_HOST_ONLY with the reason",
+                job.workflow, job.id
+            ));
+        }
+    }
+    for (w, j, _) in AARCH64_HOST_ONLY {
+        assert!(
+            jetson.iter().any(|x| *x == format!("{w}:{j}")),
+            "{w}:{j} is listed in AARCH64_HOST_ONLY but no longer takes a `jetson` runner"
+        );
+    }
+    assert!(defects.is_empty(), "{}", defects.join("\n"));
+    let pooled = pooled_jobs()?;
+    assert!(
+        pooled
+            .iter()
+            .any(|j| j.workflow == "ci.yml" && j.id == "features")
+            && pooled
+                .iter()
+                .any(|j| j.workflow == "ci.yml" && j.id == "features-x64"),
+        "the feature combinations must run on the pooled runners"
+    );
+    Ok(())
+}
+
+const DISK_FLOOR_SCRIPT: &str = "scripts/ci-disk-floor.sh";
+
+/// A job on the x86_64 runner refuses to start short of disk.
+///
+/// That runner is a virtual machine on a host that also runs other virtual
+/// machines; a build that filled its disk would stop them as well. So the
+/// step right after checkout, which brings the script, is the floor, before
+/// any other step.
+#[test]
+fn an_x64_job_refuses_to_start_with_less_than_25_gb_free() -> Result<(), TestError> {
+    let mut checked = 0;
+    for job in pooled_jobs()? {
+        let Some(sels) = selections(&job)? else {
+            continue;
+        };
+        if !sels.iter().any(|s| s.iter().any(|l| l == "X64")) {
+            continue;
+        }
+        checked += 1;
+        let steps = steps_of(&job.body);
+        assert!(
+            steps
+                .first()
+                .is_some_and(|s| s.contains("uses: actions/checkout@")),
+            "{}:{}: the first step must be the checkout",
+            job.workflow,
+            job.id
+        );
+        let floor = steps.get(1).map(String::as_str).unwrap_or_default();
+        assert!(
+            floor.contains(&format!("run: bash {DISK_FLOOR_SCRIPT} 25"))
+                && step_if(floor).is_none(),
+            "{}:{}: the step after checkout must be `bash {DISK_FLOOR_SCRIPT} 25`, \
+             unconditional, before any build:\n{floor}",
+            job.workflow,
+            job.id
+        );
+    }
+    assert!(
+        checked >= 2,
+        "only {checked} job(s) on the x86_64 runner found"
+    );
+    // The floor itself, driven: a floor no disk meets refuses, zero admits.
+    let run = |gb: &str| -> Result<std::process::Output, TestError> {
+        Ok(Command::new("bash")
+            .arg(repo().join(DISK_FLOOR_SCRIPT))
+            .arg(gb)
+            .arg(std::env::temp_dir())
+            .output()?)
+    };
+    let refused = run("999999999")?;
+    assert!(
+        !refused.status.success(),
+        "a floor above the free space must fail"
+    );
+    let text = String::from_utf8_lossy(&refused.stdout).into_owned()
+        + &String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        text.contains("::error::") && text.contains("999999999"),
+        "the refusal must say why, as a workflow error: {text}"
+    );
+    assert!(run("0")?.status.success(), "a floor of 0 GB must pass");
+    assert!(
+        !run("lots")?.status.success(),
+        "a non-number floor must be refused"
+    );
+    Ok(())
+}
+
+/// A pooled job builds in a directory of its own, and removes it however the
+/// job ends.
+///
+/// The pooled runners are persistent and shared with other work, and a
+/// build directory is tens of gigabytes. So the job points CARGO_TARGET_DIR
+/// under the runner's per-job temporary directory and a final step, `if:
+/// always()`, removes it.
+#[test]
+fn a_pooled_job_builds_in_its_own_directory_and_removes_it() -> Result<(), TestError> {
+    let pooled = pooled_jobs()?;
+    let mut checked = 0;
+    for job in &pooled {
+        if cargo_lines(&job.body).is_empty() && !job.body.contains("check-feature-matrix.py") {
+            continue;
+        }
+        checked += 1;
+        let label = format!("{}:{}", job.workflow, job.id);
+        let value = target_dir_value(&job.body)
+            .ok_or_else(|| format!("{label}: sets no CARGO_TARGET_DIR"))?;
+        assert!(
+            value.starts_with("${{ runner.temp }}/"),
+            "{label}: CARGO_TARGET_DIR `{value}` is not under the runner's per-job \
+             temporary directory"
+        );
+        let steps = steps_of(&job.body);
+        let last = steps.last().ok_or("no steps")?;
+        assert!(
+            step_if(last) == Some("always()") && last.contains("rm -rf \"$CARGO_TARGET_DIR\""),
+            "{label}: the last step must remove $CARGO_TARGET_DIR `if: always()`:\n{last}"
+        );
+    }
+    assert!(checked >= 2, "only {checked} pooled cargo job(s) found");
+    Ok(())
+}
 
 /// The comment a self-hosted job carries to say why it is not on GitHub's
 /// runners.
@@ -780,7 +992,9 @@ const NEEDS: &[(&str, &str)] = &[
     ("smoke-clients.sh", "tshark"),
     // libopus, which the `opus` feature builds with cmake (opusic-sys).
     ("--all-features", "cmake"),
-    ("- opus", "cmake"),
+    // The feature combinations, among them `opus`, from
+    // .github/feature-combos.txt.
+    ("check-feature-matrix.py", "cmake"),
     ("--all-features", "libpcap-dev"),
     ("--all-features", "libasound2-dev"),
 ];

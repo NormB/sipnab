@@ -440,21 +440,17 @@ fn compiled_features_names_every_feature_cargo_declares() -> Result<(), TestErro
     Ok(())
 }
 
-/// The combinations of ci.yml's `features:` matrix, as written.
+/// The combinations ci.yml's `features` job checks: the first word of each
+/// line of .github/feature-combos.txt, comments and blank lines aside.
 fn ci_feature_combos() -> Result<Vec<String>, TestError> {
-    let ci = read(".github/workflows/ci.yml")?;
-    Ok(
-        // The JOB is also called `features`, so anchoring on `trim() == "features:"`
-        // alone stops at the job header and reads nothing. The matrix key is
-        // nested; require the indent.
-        ci.lines()
-            .skip_while(|l| l.trim() != "features:" || l.len() - l.trim_start().len() < 6)
-            .skip(1)
-            .take_while(|l| l.trim_start().starts_with("- ") || l.trim_start().starts_with('#'))
-            .filter_map(|l| l.trim().strip_prefix("- "))
-            .map(|s| s.trim().trim_matches(['"', '\'']).to_string())
-            .collect(),
-    )
+    let text = read(".github/feature-combos.txt")?;
+    Ok(text
+        .lines()
+        .map(|l| l.split('#').next().unwrap_or_default().trim())
+        .filter(|l| !l.is_empty())
+        .filter_map(|l| l.split_whitespace().next())
+        .map(|w| w.trim_matches(['"', '\'']).to_string())
+        .collect())
 }
 
 /// CI compiles the `bpf` combination, with its test files.
@@ -478,20 +474,26 @@ fn the_feature_matrix_compiles_the_bpf_combo_with_its_tests() -> Result<(), Test
          only build of the backend published binaries now carry happens on a \
          release tag — the shape that shipped 0.5.113's .rpm broken"
     );
+    let script = read("scripts/check-feature-matrix.py")?;
     assert!(
-        ci.contains(r#"--features "${{ matrix.features }}" --tests"#),
-        "the feature-matrix check no longer passes `--tests`, so no test file \
-         is compiled and every leg is green over nothing"
+        script.contains(r#""--tests", "--", "-D", "warnings"]"#),
+        "scripts/check-feature-matrix.py no longer passes `--tests`, so no test \
+         file is compiled and every combination is green over nothing"
+    );
+    assert!(
+        ci.contains("python3 scripts/check-feature-matrix.py --group "),
+        "ci.yml no longer runs the feature combinations through \
+         scripts/check-feature-matrix.py"
     );
     Ok(())
 }
 
-/// The `features` job of ci.yml: its header up to the next top-level job.
-fn ci_features_job() -> Result<String, TestError> {
+/// One job of ci.yml: its header up to the next top-level job.
+fn ci_job(id: &str) -> Result<String, TestError> {
     let ci = read(".github/workflows/ci.yml")?;
     let body = ci
-        .split_once("\n  features:\n")
-        .ok_or("ci.yml has no top-level `features:` job")?
+        .split_once(&format!("\n  {id}:\n"))
+        .ok_or_else(|| format!("ci.yml has no top-level `{id}:` job"))?
         .1;
     // The next job header is a two-space-indented `name:` line on its own.
     let end = body
@@ -507,6 +509,16 @@ fn ci_features_job() -> Result<String, TestError> {
     Ok(body.lines().take(end).collect::<Vec<_>>().join("\n"))
 }
 
+/// ci.yml's two feature jobs, `features` (the aarch64 groups) and
+/// `features-x64` (the x86_64 group), one after the other.
+fn ci_features_job() -> Result<String, TestError> {
+    Ok(format!(
+        "{}\n{}",
+        ci_job("features")?,
+        ci_job("features-x64")?
+    ))
+}
+
 /// Every leg of the feature matrix is LINTED, not only compiled.
 ///
 /// The job ran `cargo check --tests` on each combination, and nothing linted a
@@ -518,50 +530,64 @@ fn ci_features_job() -> Result<String, TestError> {
 /// default features failed on main while every gate passed. Clippy checks what
 /// `cargo check` checks, so the lint step replaces the compile step rather
 /// than sitting beside it.
+///
+/// Since 2026-11-03 the combinations run in a few jobs through
+/// scripts/check-feature-matrix.py, so the lint lives in that script's
+/// `lint_command`, and the job must reach it on every group, unguarded.
 #[test]
 fn the_feature_matrix_lints_every_leg_with_its_tests() -> Result<(), TestError> {
+    // Both feature jobs: the aarch64 groups and the x86_64 group.
     let job = ci_features_job()?;
-    let runs: Vec<&str> = job
-        .lines()
-        .map(str::trim)
-        .filter_map(|l| l.strip_prefix("run: "))
-        .filter(|l| l.contains("${{ matrix.features }}"))
+    let want = "run: env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/check-feature-matrix.py --group ";
+    let lines: Vec<&str> = job.lines().map(str::trim).collect();
+    let runs: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with(want))
+        .map(|(i, _)| i)
         .collect();
-    assert!(
-        !runs.is_empty(),
-        "no `run:` line in ci.yml's features job names `${{{{ matrix.features }}}}`; \
-         the job scan went blind:\n{job}"
+    assert_eq!(
+        runs.len(),
+        2,
+        "ci.yml's feature jobs must each run `{want}...` once, so every group \
+         is linted:\n{job}"
     );
-    let want = r#"cargo clippy --no-default-features --features "${{ matrix.features }}" --tests -- -D warnings"#;
-    assert!(
-        runs.contains(&want),
-        "ci.yml's features job does not run `{want}`, so no leg of the matrix \
-         is linted and a lint that fires only on a partial feature set reaches \
-         main unread. It runs:\n{runs:#?}"
-    );
-    for run in &runs {
+    for at in runs {
+        let guard = lines[..at]
+            .iter()
+            .rev()
+            .take_while(|l| !l.starts_with("- "))
+            .find_map(|l| l.strip_prefix("if: "));
         assert!(
-            !run.starts_with("cargo check"),
-            "ci.yml's features job still compiles a leg with `{run}`, which \
-             checks types and never lints; `{want}` covers it"
+            guard.is_none(),
+            "a feature-combination step runs only `if: {}`, so some groups skip it",
+            guard.unwrap_or_default()
         );
     }
-    // The lint step must run on every native leg: only wasm is exempt, and it
-    // has its own wasm32 check.
-    let lines: Vec<&str> = job.lines().map(str::trim).collect();
-    let at = lines
-        .iter()
-        .position(|l| l.strip_prefix("run: ") == Some(want))
-        .ok_or("lint step vanished between scans")?;
-    let guard = lines[..at]
-        .iter()
-        .rev()
-        .take_while(|l| !l.starts_with("- "))
-        .find_map(|l| l.strip_prefix("if: "));
+    let script = read("scripts/check-feature-matrix.py")?;
+    let lint = script
+        .split_once("def lint_command(")
+        .and_then(|(_, rest)| rest.split_once("\ndef "))
+        .map(|(body, _)| body)
+        .ok_or("scripts/check-feature-matrix.py has no lint_command()")?;
+    let clippy = r#"return ["cargo", "clippy", "--no-default-features", "--features", features,
+            "--tests", "--", "-D", "warnings"]"#;
     assert!(
-        matches!(guard, None | Some("matrix.features != 'wasm'")),
-        "the matrix lint step runs only `if: {}`, so most legs skip it",
-        guard.unwrap_or_default()
+        lint.contains(clippy),
+        "lint_command() no longer lints a combination with clippy and its tests, \
+         so a lint that fires only on a partial feature set reaches main \
+         unread:\n{lint}"
+    );
+    // Only wasm is checked rather than linted, for wasm32: it is lib-only.
+    assert_eq!(
+        lint.matches(r#""cargo", "check""#).count(),
+        1,
+        "lint_command() compiles more than the wasm combination with `cargo \
+         check`, which checks types and never lints:\n{lint}"
+    );
+    assert!(
+        lint.contains(r#"if features == "wasm":"#),
+        "lint_command()'s `cargo check` is no longer limited to wasm:\n{lint}"
     );
     Ok(())
 }

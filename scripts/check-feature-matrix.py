@@ -11,20 +11,34 @@ everything ON. The only build that catches it is one combo at a time, which
 until now happened solely in CI, so the feedback loop for that class was a full
 push-and-wait cycle.
 
-The combo list is PARSED from .github/workflows/ci.yml rather than restated
-here. A gate that duplicates its source of truth drifts from it, and a local
-gate that checks a stale set of combos is worse than none: it reports a pass
-CI will contradict.
+The combo list is read from .github/feature-combos.txt, the file ci.yml's
+`features` job runs from, rather than restated here. A gate that duplicates
+its source of truth drifts from it, and a local gate that checks a stale set
+of combos is worse than none: it reports a pass CI will contradict.
+
+    check-feature-matrix.py                         lint every combo
+    check-feature-matrix.py --group I --pool P      CI: run group I on pool P
+
+CI folds the combos into a few groups (ci.yml's `features` and
+`features-x64` jobs), each on a pool of self-hosted runners. `GROUPS` names
+each group's pool, `POOLS` what each pool can run, and `partition` is the
+one rule for which group runs what: every combo in exactly one group, with
+the tests the file lists beside it, on a pool that has what it needs. A
+group first checks that the machine has what its pool promises, then lints
+its combos as this script always has, runs those tests, and fails if
+anything failed.
 
 Exit codes follow the convention the other pre-push gates use:
   0  every combo checked and passed
   1  a combo failed to compile
   2  could not run (no cargo, workflow file missing or unparsable)
 """
+import argparse
 import os
 import re
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 
 def _root() -> Path:
@@ -46,27 +60,160 @@ def _root() -> Path:
 
 ROOT = _root()
 WORKFLOW = ROOT / ".github/workflows/ci.yml"
+COMBOS = ROOT / ".github/feature-combos.txt"
+
+# A combo's lint, or one test target, costs about one unit; a full suite
+# costs SUITE_WEIGHT. Measured on run 41729921358: the leg that ran the
+# headless recipe's whole suite took 13.1 minutes, the others 1.6 to 4.6
+# with about 1.5 of setup each.
+SUITE_WEIGHT = 8
+
+
+# What each pool of runners can run beyond a lint: `tests` (test targets
+# and the full suite), and the tools a combination may need. `overflow` is
+# the aarch64 host's two lowest-priority runners, with clippy, the wasm32
+# target and cmake installed. `x64` is the x86_64 runner, a 4-core virtual
+# machine with clippy and neither the wasm32 target nor cmake, so it lints
+# only. Nothing is installed on either: a group that finds a tool missing
+# stops and says which.
+POOLS: dict[str, set[str]] = {
+    "overflow": {"tests", "wasm32", "cmake"},
+    "x64": set(),
+}
+# The pool each group runs on, by index; ci.yml runs each index once, on
+# that pool. Two overflow groups, because two runners carry `overflow`.
+GROUPS: list[str] = ["overflow", "overflow", "x64"]
+
+
+@dataclass
+class Combo:
+    """One feature combination and what CI runs with it beyond the lint."""
+
+    features: str
+    tests: list[str] = field(default_factory=list)
+    suite: bool = False
+    needs: list[str] = field(default_factory=list)
+
+    def requires(self) -> set[str]:
+        """What a pool must have to run this combination."""
+        out = set(self.needs)
+        if self.tests or self.suite:
+            out.add("tests")
+        return out
+
+    def weight(self) -> int:
+        return 1 + len(self.tests) + (SUITE_WEIGHT if self.suite else 0)
+
+
+def parse_combos(text: str) -> list[Combo]:
+    """The combinations of a feature-combos file, in file order.
+
+    One per line: the comma-separated features, then optionally `suite` (run
+    the whole test suite with them), `test=NAME` (run that test target with
+    them) or `needs=TOOL` (only a pool with TOOL can run it), separated by
+    spaces. `#` starts a comment.
+    """
+    out: list[Combo] = []
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        words = line.split()
+        combo = Combo(words[0].strip('"').strip("'"))
+        for word in words[1:]:
+            if word == "suite":
+                combo.suite = True
+            elif word.startswith("test=") and len(word) > len("test="):
+                combo.tests.append(word[len("test="):])
+            elif word.startswith("needs=") and len(word) > len("needs="):
+                combo.needs.append(word[len("needs="):])
+            else:
+                raise ValueError(f"line {n}: unknown annotation {word!r}")
+        if any(c.features == combo.features for c in out):
+            raise ValueError(f"line {n}: {combo.features!r} is listed twice")
+        out.append(combo)
+    if not out:
+        raise ValueError("no feature combination listed")
+    return out
 
 
 def combos() -> list[str]:
-    """The `features:` matrix, read off the workflow."""
-    if not WORKFLOW.is_file():
+    """The combinations, read off .github/feature-combos.txt."""
+    if not COMBOS.is_file():
         return []
-    text = WORKFLOW.read_text(encoding="utf-8")
-    # `features:` appears twice -- once as the JOB name and once as the matrix
-    # key -- so take the block that actually yields entries rather than the
-    # first one that matches. Comment lines are interleaved with the entries
-    # and must not terminate the block.
-    for m in re.finditer(r"\n( +)features:\n((?:(?: *#[^\n]*|\1  - [^\n]+)\n)+)", text):
-        out = []
-        for line in m.group(2).split("\n"):
-            line = line.strip()
-            if not line.startswith("- "):
-                continue
-            out.append(line[2:].strip().strip('"').strip("'"))
-        if out:
-            return out
-    return []
+    try:
+        return [c.features for c in parse_combos(COMBOS.read_text(encoding="utf-8"))]
+    except ValueError:
+        return []
+
+
+def partition(
+    items: list[Combo],
+    groups_pools: list[str] | None = None,
+    pools: dict[str, set[str]] | None = None,
+) -> list[list[Combo]]:
+    """Split the combinations into groups: the one rule for CI's jobs.
+
+    `groups_pools` names each group's pool (GROUPS by default), and `pools`
+    what each pool can run (POOLS). Heaviest first (name order on a tie),
+    each combination goes to the group with the least weight so far, the
+    lowest index on a tie, among the groups whose pool has what it requires.
+    The result depends only on the set of combinations; every one is in
+    exactly one group; and a combination no group can run, or a group that
+    would run nothing, is refused.
+    """
+    groups_pools = GROUPS if groups_pools is None else groups_pools
+    pools = POOLS if pools is None else pools
+    count = len(groups_pools)
+    if count < 1:
+        raise ValueError("there must be at least one group")
+    unknown = sorted(set(groups_pools) - set(pools))
+    if unknown:
+        raise ValueError(f"unknown pool(s) {unknown}")
+    groups: list[list[Combo]] = [[] for _ in range(count)]
+    load = [0] * count
+    for combo in sorted(items, key=lambda c: (-c.weight(), c.features)):
+        able = [k for k in range(count) if combo.requires() <= pools[groups_pools[k]]]
+        if not able:
+            raise ValueError(f"no group's pool can run {combo.features!r} (it requires {sorted(combo.requires())})")
+        i = min(able, key=lambda k: (load[k], k))
+        groups[i].append(combo)
+        load[i] += combo.weight()
+    empty = [i for i, g in enumerate(groups) if not g]
+    if empty:
+        raise ValueError(f"group(s) {empty} of {count} would run nothing")
+    return groups
+
+
+def lint_command(features: str) -> list[str]:
+    if features == "wasm":
+        # wasm is lib-only, and only the wasm32 target makes the check mean
+        # anything: on the host the wasm32-only dependencies and rustflags
+        # never apply.
+        return ["cargo", "check", "--target", "wasm32-unknown-unknown",
+                "--no-default-features", "--features", features, "--lib"]
+    # `--tests` is not optional. Without it no test file is built, and a
+    # break that lives in a test compiles nowhere -- the gate stays green
+    # while CI, which passes it, goes red. Clippy, not `cargo check`: a lint
+    # that fires only in one combination (a `return` left as a function's
+    # tail once a `#[cfg]` block compiled out) passes `cargo check`.
+    return ["cargo", "clippy", "--no-default-features", "--features", features,
+            "--tests", "--", "-D", "warnings"]
+
+
+def group_commands(group: list[Combo]) -> list[list[str]]:
+    """What one group runs, in order: each combo's lint, then its tests."""
+    cmds = []
+    for combo in group:
+        cmds.append(lint_command(combo.features))
+        for test in combo.tests:
+            cmds.append(["cargo", "test", "--no-default-features", "--features",
+                         combo.features, "--test", test])
+        if combo.suite:
+            # The suite's binaries side by side, as the Test job runs them.
+            cmds.append(["python3", "scripts/parallel-tests.py", "--",
+                         "--no-default-features", "--features", combo.features])
+    return cmds
 
 
 def workflow_env() -> dict[str, str]:
@@ -117,45 +264,111 @@ def report_lines(out: str) -> list[str]:
             if line.startswith(("error", "warning:")) or "-->" in line]
 
 
+def ci_env() -> dict[str, str] | None:
+    env = dict(os.environ)
+    wf = workflow_env()
+    if "RUSTFLAGS" not in wf:
+        return None
+    env.update({k: v for k, v in wf.items() if k in ("RUSTFLAGS", "RUSTDOCFLAGS")})
+    return env
+
+
+def missing_tools(pool: str) -> list[str]:
+    """What this machine lacks of what `pool` promises, by name."""
+    caps = POOLS[pool]
+    missing = []
+    if subprocess.run(["cargo", "clippy", "--version"], cwd=ROOT,
+                      capture_output=True).returncode != 0:
+        missing.append("clippy (rustup component add clippy)")
+    if "wasm32" in caps and not has_wasm_target():
+        missing.append("the wasm32-unknown-unknown target (rustup target add wasm32-unknown-unknown)")
+    if "cmake" in caps:
+        try:
+            ok = subprocess.run(["cmake", "--version"], capture_output=True).returncode == 0
+        except OSError:
+            ok = False
+        if not ok:
+            missing.append("cmake, which the opus combination builds libopus with")
+    return missing
+
+
+def run_group(index: int, pool: str) -> int:
+    """Run group `index` on `pool`, as ci.yml's feature jobs do.
+
+    Every command runs even after one fails; the exit status is 1 if any
+    failed. Nothing is skipped and nothing is installed: a tool the pool
+    promises and the machine lacks stops the group before it builds.
+    """
+    if not 0 <= index < len(GROUPS):
+        print(f"check-feature-matrix: group index {index} is outside 0..{len(GROUPS) - 1}")
+        return 2
+    if GROUPS[index] != pool:
+        print(f"check-feature-matrix: group {index} runs on the {GROUPS[index]!r} pool, "
+              f"not {pool!r}; ci.yml and GROUPS disagree")
+        return 2
+    try:
+        groups = partition(parse_combos(COMBOS.read_text(encoding="utf-8")))
+    except (OSError, ValueError) as e:
+        print(f"check-feature-matrix: {e}")
+        return 2
+    missing = missing_tools(pool)
+    if missing:
+        for m in missing:
+            print(f"::error::this {pool} runner lacks {m}")
+        return 2
+    env = ci_env()
+    if env is None:
+        print("no RUSTFLAGS in the workflow env block; refusing to check with "
+              "weaker flags than CI")
+        return 2
+    group = groups[index]
+    print(f"check-feature-matrix: group {index} of {len(GROUPS)} ({pool}): "
+          + "; ".join(c.features for c in group), flush=True)
+    failed = []
+    for cmd in group_commands(group):
+        print(f"::group::{' '.join(cmd)}", flush=True)
+        rc = subprocess.run(cmd, cwd=ROOT, env=env, check=False).returncode
+        print("::endgroup::", flush=True)
+        if rc != 0:
+            failed.append(" ".join(cmd))
+    for cmd in failed:
+        print(f"::error::failed: {cmd}")
+    return 1 if failed else 0
+
+
 def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--group", type=int)
+    p.add_argument("--pool", choices=sorted(POOLS))
+    a = p.parse_args()
+    if (a.group is None) != (a.pool is None):
+        p.error("--group and --pool go together")
     if subprocess.run(["cargo", "--version"], cwd=ROOT,
                       capture_output=True).returncode != 0:
         print("cargo is not on PATH")
         return 2
+    if a.group is not None:
+        return run_group(a.group, a.pool)
     names = combos()
     if not names:
-        print(f"no feature matrix found in {WORKFLOW.relative_to(ROOT)}")
+        print(f"no feature combinations found in {COMBOS.relative_to(ROOT)}")
         return 2
 
-    env = dict(os.environ)
-    wf = workflow_env()
-    if "RUSTFLAGS" not in wf:
+    env = ci_env()
+    if env is None:
         # Refuse rather than run a weaker check than CI. A gate that silently
         # drops `-Dwarnings` reports a pass CI will contradict, which is worse
         # than not running at all.
         print("no RUSTFLAGS in the workflow env block; refusing to check with "
               "weaker flags than CI")
         return 2
-    env.update({k: v for k, v in wf.items() if k in ("RUSTFLAGS", "RUSTDOCFLAGS")})
 
     failed, unchecked = [], []
     for f in names:
-        if f == "wasm":
-            if not has_wasm_target():
-                unchecked.append((f, "wasm32-unknown-unknown target not installed"))
-                continue
-            cmd = ["cargo", "check", "--target", "wasm32-unknown-unknown",
-                   "--no-default-features", "--features", f, "--lib"]
-        else:
-            # `--tests` is not optional. Without it no test file is built, and
-            # a break that lives in a test compiles nowhere -- the gate stays
-            # green while CI, which passes it, goes red.
-            # Clippy, not `cargo check`, because CI's Features job lints every
-            # leg: a lint that fires only in one combination (a `return` left
-            # as a function's tail once a `#[cfg]` block compiled out) passes
-            # `cargo check` and fails CI.
-            cmd = ["cargo", "clippy", "--no-default-features", "--features", f,
-                   "--tests", "--", "-D", "warnings"]
+        if f == "wasm" and not has_wasm_target():
+            unchecked.append((f, "wasm32-unknown-unknown target not installed"))
+            continue
+        cmd = lint_command(f)
         r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
         if r.returncode != 0:
             failed.append((f, r.stdout + r.stderr))

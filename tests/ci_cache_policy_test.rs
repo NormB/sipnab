@@ -61,21 +61,26 @@ const SAVE_ON_MISS: &str = "cache-hit != 'true'";
 /// - `cargo-check`: Linux aarch64 4.4 GB, macOS 1.8 GB. Check is the
 ///   slowest required job.
 /// - `cargo-symbol-split`: 0.27 GB and 0.20 GB.
-/// - `cargo-features`: no entry on 2026-10-09, when the feature matrix ran
-///   on the self-hosted runners and skipped the step. It runs on GitHub's
-///   runners again since 2026-10-27; its eighteen legs share one key, and
-///   main's first save after a miss is the entry they restore.
+/// - `cargo-features` is gone since 2026-11-03: the feature combinations run
+///   on self-hosted runners, in a build directory each job removes, and its
+///   entry (316 MiB that day) has nothing left to restore it.
 /// - `cargo-bench`: 0.87 GB.
 /// - `cargo-clippy-sarif`: 0.35 GB; a median of 3.7 minutes over 5 runs with
 ///   a hit, 5.5 over 7 with a miss.
 /// - `cargo-pages-wasm`: 0.30 GB, saved by main pushes only.
+/// - `cargo-test`: the Linux suite's shards, which compile the same
+///   dependencies and save one entry, from the first shard. Until 2026-11-03
+///   the suite ran in Check and its build was part of the `cargo-check`
+///   entry (Linux aarch64 1.20 GiB that day); the Check job on Linux with no
+///   entry to restore took 23.4 min against 20.2 and 22.1 with one, as
+///   ci.yml records.
 const CARGO_CACHE_FAMILIES: &[&str] = &[
     "cargo-bench",
     "cargo-check",
     "cargo-clippy-sarif",
-    "cargo-features",
     "cargo-pages-wasm",
     "cargo-symbol-split",
+    "cargo-test",
 ];
 
 /// One step that uses an `actions/cache` action.
@@ -479,6 +484,10 @@ const KEPT: &[(&str, bool)] = &[
     ("debug/deps/libserde_derive-2c3d.dylib", true),
     ("debug/build/ring-4e5f/build-script-build", true),
     ("debug/build/ring-4e5f/out/libring_core.a", false),
+    // A C compile's objects, inside a build script's output: kept, because
+    // the archive beside them is what the build links and the script does
+    // not run again while it is fresh.
+    ("debug/build/ring-4e5f/out/curve25519.o", false),
     ("debug/.fingerprint/serde-0a1b/lib-serde", false),
     (
         "aarch64-apple-darwin/release/deps/libtokio-6a7b.rlib",
@@ -496,6 +505,14 @@ const REMOVED: &[&str] = &[
     "profiling/deps/capture_bench-5555",
     "aarch64-apple-darwin/release/deps/sipnab-6666",
     "aarch64-apple-darwin/release/sipnab",
+    // The object files rustc leaves beside each crate on macOS, where the dev
+    // profile's split-debuginfo is `unpacked`: the debug information stays in
+    // them for a debugger to read, and the build links the copies inside the
+    // .rlib. The workspace's test binaries' and the dependencies' alike.
+    "debug/deps/sipnab-1111.sipnab.a1b2c3d4-cgu.0.rcgu.o",
+    "debug/deps/ci_cache_policy_test-2222.ci_cache_policy_test.e5f6-cgu.03.rcgu.o",
+    "debug/deps/serde-0a1b.serde.9a8b7c-cgu.1.rcgu.o",
+    "aarch64-apple-darwin/release/deps/tokio-6a7b.tokio.1f2e-cgu.0.rcgu.o",
 ];
 
 #[test]
@@ -506,7 +523,12 @@ fn the_prune_removes_workspace_executables_and_keeps_dependencies() -> Result<()
         write(&t.join(rel), *exec)?;
     }
     for rel in REMOVED {
-        write(&t.join(rel), !rel.contains("/incremental/"))?;
+        // Executables carry the execute bit; incremental state and object
+        // files, as rustc writes them, do not.
+        write(
+            &t.join(rel),
+            !rel.contains("/incremental/") && !rel.ends_with(".o"),
+        )?;
     }
     let rc = prune(&[arg(&t)?])?;
     assert_eq!(rc, 0, "the prune must exit 0");

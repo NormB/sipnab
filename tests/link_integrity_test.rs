@@ -1663,7 +1663,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // +2; asterisk-sipnab.md, freeswitch-sipnab.md, mcp-deploy.md and
     // mcp-tools-security.md +1 each. Same-page anchors counted. Counted per
     // page against origin/main 9124a6f08.
-    const EXPECTED_WIKI_LINKS: usize = 2380;
+    // 2380 -> 2381 (#626): internals/build-ci-release.md +1, the `test` and
+    // `test-results` entry of "What actually gates a merge" linking its new
+    // section "The suite in shards". Counted against origin/main 9124a6f08.
+    const EXPECTED_WIKI_LINKS: usize = 2381;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

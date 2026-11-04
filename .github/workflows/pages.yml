@@ -69,7 +69,8 @@ jobs:
     # cache. A warm cache is ~1 minute; the ceiling is for the cold case.
     # Raised 30 -> 90: the job now waits for CI's run of the same commit to
     # upload its suite output (fetch-ci-suite-output.py gives up at 60
-    # minutes; CI's Check job is bounded at 40 and can queue first).
+    # minutes; CI's test jobs are bounded at 45 and test-results at 15, and
+    # the run can queue first).
     timeout-minutes: 90
     runs-on: ubuntu-latest
     # A job-level block replaces the workflow-level one, so contents:read is
@@ -196,9 +197,10 @@ jobs:
       # The homepage's automated-test count, generated rather than committed.
       # It used to be a number in website/templates/index.html that every
       # pull request adding a test had to edit, so any two such pull requests
-      # conflicted on it. Now ci.yml's Check job on Linux runs the suite,
-      # derives the count with scripts/published-test-count.py (failing CI if
-      # it cannot) and uploads the run's output as `suite-output`. This step
+      # conflicted on it. Now ci.yml runs the suite on Linux (the `test`
+      # job's shards, merged by `test-results`), derives the count with
+      # scripts/published-test-count.py (failing CI if it cannot) and uploads
+      # the run's output as `suite-output`. This step
       # waits for that artifact from CI's run of the commit being deployed;
       # the next applies the same script to it and writes the data file the
       # template reads. Both run before `zola build`, which reads the file

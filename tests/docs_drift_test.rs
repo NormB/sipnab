@@ -146,6 +146,61 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // The feature-matrix entry: `scripts/check-feature-matrix.py --group I
+    // --pool P` runs one group. The script's flags, not sipnab's.
+    (
+        "group",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "pool",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    // The section on the suite in shards: `scripts/parallel-tests.py
+    // --shard-index I --shard-count N` runs one shard, which hands cargo
+    // `--test NAME` per target, and shard 0 `--lib --bins` and a `--doc` run.
+    // The script's flags and cargo's, not sipnab's.
+    (
+        "bins",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "doc",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "test",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "shard-index",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "shard-count",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `git commit --amend -S --no-edit` and
     // `git rebase --exec 'git commit --amend --no-edit -S' <base>`: how the
     // contributing guide and the build page say to re-sign a commit the
@@ -7617,11 +7672,36 @@ fn the_wasm_check_targets_wasm_in_both_the_hook_and_ci() -> Result<(), TestError
     const TRIPLE: &str = "wasm32-unknown-unknown";
     let hook = include_str!("../.githooks/pre-push");
     let ci = include_str!("../.github/workflows/ci.yml");
+    // CI's wasm check is the `wasm` combination, which ci.yml's feature jobs
+    // run through scripts/check-feature-matrix.py since 2026-11-03. The
+    // script writes the command as a list, one argument per string, in its
+    // `if features == "wasm":` branch; joined back into a line here.
+    assert!(
+        ci.contains("python3 scripts/check-feature-matrix.py --group "),
+        "ci.yml no longer runs the feature combinations, wasm among them, \
+         through scripts/check-feature-matrix.py"
+    );
+    let script = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/check-feature-matrix.py"),
+    )?;
+    let branch = script
+        .split_once(r#"if features == "wasm":"#)
+        .and_then(|(_, rest)| rest.split_once("return "))
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(list, _)| list)
+        .ok_or("scripts/check-feature-matrix.py has no wasm branch in lint_command()")?;
+    let ci_check = branch
+        .split(',')
+        .map(|a| a.trim().trim_matches(['[', '"']))
+        .map(|a| if a == "features" { "wasm" } else { a })
+        .collect::<Vec<_>>()
+        .join(" ");
 
     for (label, text) in [
-        (".githooks/pre-push", hook),
-        (".github/workflows/ci.yml", ci),
+        (".githooks/pre-push", hook.to_string()),
+        ("scripts/check-feature-matrix.py", ci_check),
     ] {
+        let text = text.as_str();
         // Anti-vacuity: a file that no longer runs a wasm check at all would
         // otherwise satisfy every assertion below by having nothing to check.
         let runs: Vec<&str> = text
