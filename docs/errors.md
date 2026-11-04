@@ -429,6 +429,17 @@ The suite file `{}` holds a rule the evaluator refused when it judged the captur
 
 **Exit code:** 2.
 
+### `--export-audio: no file written: {}`
+
+An operator switched persistence off over `POST /v1/persistence`, and the run
+reached its end with it still off. `{}` says so in words. So `--export-audio`
+wrote no WAV. The run is not failed for it: the gate did what the operator
+asked.
+
+**What to do:** Nothing, if you meant writing to be off. To have the file,
+switch persistence back on with `POST /v1/persistence` `{"enabled": true}`
+before the run ends.
+
 ### `--export-audio: {why}`
 
 `--export-audio <CALL-ID>` could not write the call's audio. `{why}` says which of these happened:
@@ -2060,6 +2071,23 @@ The `when` of the [`[[vcon.rule]]`](vcon.md#write-calls-by-rule) named `{name}` 
 
 **Exit code:** 1.
 
+### `[[vcon.rule]] {} writes no vCon container in this run: the terminal UI does not run the exporter. Add -N (--no-tui) to write the rule's containers; the TUI goes on without them`
+
+A warning, not a refusal: the run goes on. The run starts the terminal UI,
+and the config file defines a `[[vcon.rule]]`. The TUI does not run the vCon
+exporter, so the rule writes no container while it runs. The TUI opens with
+this notice on its status line, and status line 1 shows
+`vCon rules: not written here, use -N` for the whole session.
+
+- `{}` names each rule, such as `'support'`.
+- A run that finds no config file earlier in the
+  [search order](config-reference.md#file-locations) reads
+  `/etc/sipnab/sipnab.toml`. So a service's rules also apply to a run you
+  start to watch the TUI.
+
+**What to do:** Nothing, if you only meant to watch. To write the rule's
+containers, run with `-N`.
+
 ### `[[vcon.rule]] with live_audio = true serves call audio on the REST API, and --api {addr} is not a loopback address. Off loopback, live audio needs TLS (--api-tls-cert and --api-tls-key) and a signing key (--api-signing-key or --api-signing-key-file) to mint tokens with the audio scope; or bind --api to 127.0.0.1`
 
 A rule with `live_audio = true` serves call audio on the REST API. `--api` binds to an address other than loopback, without TLS and a signing key.
@@ -2529,6 +2557,18 @@ The interface delivers Ethernet frames. HEP delivers bare SIP text with no link,
 
 **Exit code:** 2.
 
+### `-O/--output holds a gap: {} packet(s) were not written while {}`
+
+An operator switched persistence off over `POST /v1/persistence` while the run
+wrote `-O`. Each packet captured while it was off stayed out of the file.
+
+- The first `{}` is how many packets the file leaves out.
+- The second says why, in the words every writer uses.
+- The file itself cannot show the gap, so the run says it at its end.
+
+**What to do:** Nothing, if you meant writing to be off. Compare the capture
+with other records knowing that this stretch is missing.
+
 ### `Output file may be incomplete: {e:#}`
 
 At the end of the run, the final flush of the `-O` capture file failed. So the end of the file may be missing.
@@ -2902,9 +2942,9 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 ### `--mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags ({})`
 
-`--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp`. The list includes `--export-vcon` only when you did not give `--vcon-out`.
+`--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp` on stdio. With `--mcp-transport http` the wire is a socket, and sipnab accepts the same flags. The list includes `--export-vcon` only when you did not give `--vcon-out`.
 
-**What to do:** Remove the listed flags from the `--mcp` run. For `--export-vcon`, add `--vcon-out FILE` so that sipnab writes the container to a file instead of standard output.
+**What to do:** Remove the listed flags from the `--mcp` run, or serve MCP with `--mcp-transport http`. For `--export-vcon`, add `--vcon-out FILE` so that sipnab writes the container to a file instead of standard output.
 
 **Exit code:** 2.
 

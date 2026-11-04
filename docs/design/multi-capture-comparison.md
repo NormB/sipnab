@@ -59,9 +59,9 @@ Call-ID in both files. That sounds like the answer. It is the problem, because
 sipnab's store is Call-ID-keyed and will *merge* the two observations rather than
 distinguish them.
 
-`DialogStore::merge` ([`dialog_store.rs:1627`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1627))
+`DialogStore::merge` ([`dialog_store.rs:1667`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1667))
 carries a doc section headed *"Same-Call-ID collisions are the normal case, not
-the rare one"* ([`:719`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L719)), and its stated
+the rare one"* ([`:759`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L759)), and its stated
 resolution is a sum, not a choice:
 
 > So a collision is not a contest to be won. The fragments are disjoint
@@ -182,7 +182,7 @@ pair of stores, which puts it under
 treatment the in-TUI `pcap-load` path already got.
 
 **`View` cannot address a second session.** Every data-bearing variant of the
-`View` enum ([`state.rs:1039-1087`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L1039-L1087)) is keyed on a
+`View` enum ([`state.rs:1045-1093`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L1045-L1093)) is keyed on a
 Call-ID or a `StreamKey` and nothing else: `CallFlow(String)`,
 `CallTimeline(String)`, `RawMessage { call_id, message_index }`, `MessageDiff {
 call_id, msg1_idx, msg2_idx }`, `StreamDetail(StreamKey)`. Two dialogs from two
@@ -221,7 +221,7 @@ calls. Under comparison it becomes the exact operation wanted, and the refusal
 must be relaxed *only* for a confirmed cross-session pair — not removed.
 
 The MCP surface has the single-capture ancestor of all three: `compare_dialogs`
-([`server.rs:7242`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7242)) takes two Call-IDs, projects state,
+([`server.rs:7247`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L7247)) takes two Call-IDs, projects state,
 final status code, message count, methods and hints for each, and names the keys
 that differ. Its shape is right and its scope is one store — both Call-IDs are
 looked up in the same `dialog_store`. Extending it to cross sessions is the same

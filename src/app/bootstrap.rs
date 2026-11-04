@@ -608,15 +608,13 @@ pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
 
     refuse_cores_without_their_outputs(cli, config);
     warn_degraded_run_shape(cli, config);
-    for msg in cli.inert_key_warnings(config) {
-        tracing::warn!("{msg}");
-    }
+    warn_settings_with_no_effect(cli, config);
     warn_vcon_rules(&vcon_rules);
 
     let mode = select_run_mode(cli);
     #[cfg(feature = "vcon")]
     warn_live_rtp(&vcon_rules, &mode, source.as_ref());
-    refuse_unread_detection(cli, config, &mode)?;
+    refuse_by_mode(cli, config, &mode)?;
 
     // Immediate mode picks the kernel ring format, so it can only be answered
     // once the consumer is known — which is here, and not in
@@ -1807,6 +1805,59 @@ fn degraded_run_warnings(cli: &Cli, config: &Config) -> Vec<String> {
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// Every refusal that depends on the run's mode, which `plan` knows only
+/// once it has chosen it, and the notice a TUI run with a `[[vcon.rule]]`
+/// gives.
+fn refuse_by_mode(cli: &Cli, config: &Config, mode: &RunMode) -> Result<(), PlanError> {
+    refuse_unread_detection(cli, config, mode)?;
+    // On stderr whatever the log level: a TUI run logs only errors, and this
+    // line has to be on the terminal before the TUI takes it, and after.
+    if let Some(notice) = tui_export_notice(cli, config, mode) {
+        stderr_line!("{notice}");
+    }
+    Ok(())
+}
+
+/// The notice a run that starts the TUI gives for the export rules its
+/// config file defines, or `None`.
+///
+/// The TUI loop runs no vCon exporter: no live sweep, no end-of-input
+/// export, no enrichment and no `live_rtp` fork, and the reports the
+/// exporter prints would land on the terminal the TUI owns. The export
+/// flags have always sent a run headless for that reason
+/// (`Cli::normalize`); a `[[vcon.rule]]` comes from the config file, which
+/// is read after that decision, so the TUI started and the rule wrote
+/// nothing and said nothing.
+///
+/// Said, and the run goes on: the plan logs it, the session opens with it on
+/// the status line, and status line 1 marks it for the whole session. Not
+/// refused, because the usual way to meet it is an interactive look at a
+/// server whose `/etc/sipnab/sipnab.toml` holds the service's rules, and
+/// `--no-config` would also drop the filters, thresholds and secrets that
+/// look needs.
+///
+/// Decided by [`Cli::exports_vcon`], the one rule for "this run writes vCon
+/// containers". In a TUI run only a config-file writer can make it true,
+/// because an export flag already chose the headless mode.
+#[must_use]
+pub fn tui_export_notice(cli: &Cli, config: &Config, mode: &RunMode) -> Option<String> {
+    if !matches!(mode, RunMode::Tui) || !cli.exports_vcon(config) {
+        return None;
+    }
+    let names: Vec<String> = config
+        .vcon
+        .rule
+        .iter()
+        .map(|r| format!("'{}'", r.name))
+        .collect();
+    Some(format!(
+        "[[vcon.rule]] {} writes no vCon container in this run: the terminal UI does not \
+         run the exporter. Add -N (--no-tui) to write the rule's containers; the TUI goes on \
+         without them",
+        names.join(", ")
+    ))
 }
 
 /// Refuse a security detection nothing in this mode will read.
@@ -5865,6 +5916,19 @@ fn warn_live_rtp(
     }
 }
 
+/// Log, once at startup, each setting this run accepts and does nothing
+/// with: a config-file key for a HEP side the run does not start, and a
+/// deprecated flag.
+fn warn_settings_with_no_effect(cli: &Cli, config: &Config) {
+    for msg in cli
+        .inert_key_warnings(config)
+        .into_iter()
+        .chain(cli.deprecated_flag_warnings())
+    {
+        tracing::warn!("{msg}");
+    }
+}
+
 /// Log, once at startup, each warning a resolved export rule calls for.
 fn warn_vcon_rules(rules: &[crate::app::batch::VconRule]) {
     for msg in rules
@@ -7328,6 +7392,57 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
 mod tests {
     use super::*;
     type TestError = Box<dyn std::error::Error>;
+
+    /// A config whose one `[[vcon.rule]]`, named `to-disk`, writes every call.
+    fn config_with_rule() -> Result<Config, TestError> {
+        Ok(toml::from_str(
+            "[[vcon.rule]]\nname = \"to-disk\"\nwhen = \"call_id =~ '.'\"\ndir = \"/srv/out\"\n",
+        )?)
+    }
+
+    /// A run that starts the TUI with a `[[vcon.rule]]` is told so, naming
+    /// the rule and the way to write its containers: the TUI loop runs no
+    /// exporter, so the rule writes nothing in it. The run continues: an
+    /// interactive look at a server whose config holds a rule needs its
+    /// filters, thresholds and secrets, which `--no-config` would drop.
+    ///
+    /// Only in a build with the exporter: without it a rule writes nothing
+    /// anywhere, `Cli::exports_vcon` does not count it, and there is nothing
+    /// to say.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_tui_run_with_a_configured_rule_is_told_and_continues() -> Result<(), TestError> {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap"])?;
+        let config = config_with_rule()?;
+        let notice = tui_export_notice(&cli, &config, &RunMode::Tui)
+            .ok_or("a TUI run with a rule that writes nothing must say so")?;
+        for needle in ["[[vcon.rule]] 'to-disk'", "-N", "writes no vCon container"] {
+            assert!(notice.contains(needle), "names {needle}: {notice}");
+        }
+        refuse_by_mode(&cli, &config, &RunMode::Tui)
+            .map_err(|e| format!("the TUI run continues; it was refused: {}", e.message))?;
+        Ok(())
+    }
+
+    /// The notice is for the TUI and for a config that writes: a headless
+    /// run writes the rule, and a TUI run without a rule has nothing to say.
+    #[test]
+    fn only_a_tui_run_with_a_writer_is_told() -> Result<(), TestError> {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["sipnab", "-I", "x.pcap"])?;
+        assert_eq!(
+            tui_export_notice(&cli, &config_with_rule()?, &RunMode::Batch),
+            None,
+            "a headless run writes the rule's containers"
+        );
+        assert_eq!(
+            tui_export_notice(&cli, &Config::default(), &RunMode::Tui),
+            None,
+            "a TUI run with no rule writes nothing and promises nothing"
+        );
+        Ok(())
+    }
 
     /// Off Linux, the refusal names the uprobe flags the user gave. It named
     /// `--uprobe-tls` for `--uprobe-library=` alone, which macOS CI caught in

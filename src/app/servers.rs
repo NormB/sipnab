@@ -723,6 +723,11 @@ pub fn start_servers(
                 } else {
                     None
                 },
+                // What this run's own --relay-stats-interval poll obtained.
+                // Reading it transmits nothing, so it is not behind the permit.
+                polled: Some(std::sync::Arc::clone(
+                    crate::output::relay_polled::PolledStore::global(),
+                )),
             },
             // The SAME engine the MCP arm below is handed, so both doors read
             // one findings ring. `armed_detections` comes from Selection for the
@@ -879,16 +884,14 @@ pub fn start_servers(
                 Some(dir) => s.with_file_root(dir),
                 None => s,
             };
+            // The same gate the REST door moves and the exporter reads.
+            let s = s.with_persistence_gate(Arc::clone(&persistence_gate));
             // The spool this run's `--export-vcon-when` writes into, so
             // `vcon_spool_status` reads the directory the capture fills.
             #[cfg(feature = "vcon")]
             let s = s.with_vcon_spools(selection.vcon_spools.clone());
             #[cfg(feature = "vcon")]
             let s = s.with_vcon_fetch(mcp_vcon_fetch.clone());
-            let s = match cli.mcp_args.mcp_sampling_budget {
-                Some(per_hour) => s.with_sampling_budget(per_hour),
-                None => s,
-            };
             // What a relay's HEP assertion is worth on this run. Without it
             // every run reported `port-gated-only`, `--hep-auth-mode hmac`
             // included.
@@ -919,6 +922,12 @@ pub fn start_servers(
             // seam declares what a control message is; this says which protocol
             // speaks it, so no layer above has to know.
             let s = s.with_control_decoder(std::sync::Arc::new(crate::rtpengine::NgControlDecoder));
+            // What this run's own --relay-stats-interval poll obtained, read by
+            // `relay_stats_polled`. Not behind the permit: reading it
+            // transmits nothing.
+            let s = s.with_relay_polled(std::sync::Arc::clone(
+                crate::output::relay_polled::PolledStore::global(),
+            ));
             let s = match (
                 cli.mcp_args.mcp_allow_relay_query,
                 relay_query_permit,

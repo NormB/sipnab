@@ -856,6 +856,42 @@ impl SipnabMcp {
         ]))
     }
 
+    /// The newest reading this run's own `--relay-stats-interval` poll
+    /// obtained (C5).
+    ///
+    /// Reads [`crate::output::relay_polled::PolledStore::answer`], the answer
+    /// `GET /v1/relay/stats/polled` returns. It sends the relay nothing, so it
+    /// is not behind `--mcp-allow-relay-query`, and it starts no poll: a
+    /// standing instruction to transmit stays the operator's, on the CLI.
+    ///
+    /// # Errors
+    ///
+    /// Only if the answer fails to serialize, which a struct of strings and
+    /// integers cannot.
+    #[tool(
+        name = "relay_stats_polled",
+        description = "Returns the newest reading of the relay's global \
+                       counters that this run's own --relay-stats-interval poll \
+                       obtained, tiered relay_reported, with when the relay \
+                       answered, the interval and its age in seconds. Sends \
+                       nothing to the relay and starts no poll, so it needs no \
+                       --mcp-allow-relay-query. outcome is ok, no_reading_yet \
+                       or not_polling; last_poll names a newer attempt that \
+                       failed. Same fields as GET /v1/relay/stats/polled.",
+        output_schema = schema_for_output::<crate::output::relay_polled::PolledAnswer>(),
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    pub async fn relay_stats_polled(&self) -> Result<CallToolResult, rmcp::ErrorData> {
+        let answer = self.relay_polled().map_or_else(
+            || crate::output::relay_polled::PolledStore::default().answer(chrono::Utc::now()),
+            |store| store.answer(chrono::Utc::now()),
+        );
+        Ok(CallToolResult::success(vec![
+            ContentBlock::json(answer)?,
+            ContentBlock::text(crate::mcp::shape::untrusted_note()),
+        ]))
+    }
+
     /// Compare the relay's per-call RTP count against this capture's (C4).
     ///
     /// A comparison, never a sum: both figures travel with their tiers, the
@@ -3714,6 +3750,73 @@ mod relay_handler_tests {
         assert_eq!(v["statistics"][0]["value"], "9000");
         assert!(v.get("names").is_none());
         assert!(carries_the_untrusted_note(&result));
+        Ok(())
+    }
+
+    /// A store holding one polled reading of `sessions`, polled every 5 s.
+    fn polled_store() -> Arc<crate::output::relay_polled::PolledStore> {
+        use crate::output::relay_polled::{PolledReading, PolledStore};
+        use crate::stats_vocab::{relay_reported, resolve_for_wire};
+        let store = Arc::new(PolledStore::default());
+        store.start(5);
+        store.record(PolledReading {
+            wire: resolve_for_wire(&relay_reported(&[(
+                "sessions".to_string(),
+                "3".to_string(),
+            )])),
+            relay: "relay at 192.0.2.10:22222".to_string(),
+            obtained_at: chrono::Utc::now(),
+        });
+        store
+    }
+
+    /// `relay_stats_polled` returns the reading the operator's poll obtained
+    /// and sends the relay nothing, even on a server that may ask it.
+    #[tokio::test]
+    async fn the_polled_reading_comes_back_without_transmitting() -> Result<(), TestError> {
+        let relay = Arc::new(RelayDouble {
+            statistics: Some(stats(&[("totals.RTP.packets", "9000")])),
+            ..Default::default()
+        });
+        let v = payload(
+            &asking(empty(), &relay)?
+                .with_relay_polled(polled_store())
+                .relay_stats_polled()
+                .await
+                .map_err(|e| format!("the poll's reading comes back: {e:?}"))?,
+        )?;
+        assert!(
+            relay.asked().is_empty(),
+            "nothing was sent: {:?}",
+            relay.asked()
+        );
+        assert_eq!(v["outcome"], "ok", "{v}");
+        assert_eq!(v["origin"], "polled", "{v}");
+        assert_eq!(v["interval_secs"], 5, "{v}");
+        assert_eq!(v["statistics"][0]["name"], "sessions", "{v}");
+        assert_eq!(v["statistics"][0]["tier"], "relay_reported", "{v}");
+        Ok(())
+    }
+
+    /// Reading the poll needs no `--mcp-allow-relay-query`, because it
+    /// transmits nothing; without a poll it says so rather than refusing.
+    #[tokio::test]
+    async fn the_polled_reading_needs_no_relay_access() -> Result<(), TestError> {
+        let v = payload(
+            &empty()
+                .with_relay_polled(polled_store())
+                .relay_stats_polled()
+                .await
+                .map_err(|e| format!("answered without relay access: {e:?}"))?,
+        )?;
+        assert_eq!(v["outcome"], "ok", "{v}");
+        let v = payload(
+            &empty()
+                .relay_stats_polled()
+                .await
+                .map_err(|e| format!("answered without a poll: {e:?}"))?,
+        )?;
+        assert_eq!(v["outcome"], "not_polling", "{v}");
         Ok(())
     }
 

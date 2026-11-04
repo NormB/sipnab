@@ -302,3 +302,6 @@ from anyone who can reach port 9060. So open that port only to:
   - The second machine can reach UDP port 9060 on the Homer machine.
   - sipnab's capture saw the call. Run it with `--report` and look for the
     Call-ID.
+
+[Collect and forward HEP](@/docs/hep.md) adds a shared secret, HEP over TCP and TLS,
+and what a collector outage costs a `--hep-send` agent.

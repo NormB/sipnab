@@ -576,6 +576,13 @@ sudo sipnab -N -d eth0 --rtpengine-control 127.0.0.1:22222 --relay-stats-interva
 Each reading marks itself `polled` and names the interval. So it reads as a
 timer's output rather than a one-shot answer.
 
+With `--api` or `--mcp` on the same run, the newest reading is readable
+without asking the relay again:
+[`GET /v1/relay/stats/polled`](rest-api.md#get-v1relaystatspolled) and the MCP
+tool `relay_stats_polled` return it, with its age. Neither needs
+`--api-allow-relay-query` or `--mcp-allow-relay-query`, because neither sends
+anything.
+
 ### Three numbers for one call, and none of them wins
 
 One call carries three different "loss" figures. Each one describes a

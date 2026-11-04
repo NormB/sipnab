@@ -142,6 +142,10 @@ fn bpf_display(generated: bool, bpf: &str, source: BpfSource, cols: usize) -> St
     fit_bpf_to_cols(&shown, cols)
 }
 
+/// What status line 1 says for the whole session when the config file's
+/// `[[vcon.rule]]` writes nothing in this TUI run.
+pub(in crate::tui) const VCON_RULES_UNRUN_MARKER: &str = "vCon rules: not written here, use -N";
+
 /// Render status line 1: `Live capture: any    Dialogs: 3 shown of 5    Autoscroll: on`.
 ///
 /// The capture source is colored good/bad for live/offline; a bold `PAUSED`
@@ -186,6 +190,15 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
             }
         )),
     ];
+    if app.vcon_rules_unrun {
+        spans.push(Span::raw(L1_GAP));
+        spans.push(Span::styled(
+            VCON_RULES_UNRUN_MARKER,
+            Style::default()
+                .fg(app.theme.bad)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     if app.paused {
         spans.push(Span::raw(L1_GAP));
         spans.push(Span::styled(
@@ -1272,6 +1285,37 @@ mod tests {
         let cell = buf.cell((src_col, 0)).ok_or("cell() returned None")?;
         assert_eq!(cell.symbol(), "F", "source span misaligned: {row:?}");
         assert_eq!(cell.fg, app.theme.bad, "source span not styled");
+        Ok(())
+    }
+
+    /// Status line 1 carries the unrun-rule marker for as long as the session
+    /// has one, and not otherwise.
+    #[test]
+    fn render_status_line1_marks_an_unrun_vcon_rule() -> Result<(), TestError> {
+        let row = |app: &App| -> Result<String, TestError> {
+            let w = 120u16;
+            let mut terminal = Terminal::new(TestBackend::new(w, 4))?;
+            terminal.draw(|frame| render_status_line1(frame, Rect::new(0, 0, w, 1), app))?;
+            let buf = terminal.backend().buffer();
+            (0..w)
+                .map(|x| {
+                    buf.cell((x, 0))
+                        .map(|c| c.symbol().to_string())
+                        .ok_or_else(|| "cell outside the buffer".into())
+                })
+                .collect()
+        };
+        let mut app = App::new_test();
+        assert!(
+            !row(&app)?.contains(VCON_RULES_UNRUN_MARKER),
+            "no marker without an unrun rule"
+        );
+        app.vcon_rules_unrun = true;
+        let marked = row(&app)?;
+        assert!(
+            marked.contains(VCON_RULES_UNRUN_MARKER),
+            "the marker is on status line 1: {marked:?}"
+        );
         Ok(())
     }
 

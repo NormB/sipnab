@@ -1757,9 +1757,11 @@ fn b5_the_machine_rule_spares_the_software_it_names() -> Result<(), TestError> {
     Ok(())
 }
 
-/// The hardware labels a self-hosted job may select its runner by: the four
-/// aarch64 runners' `jetson` and the x86_64 runner's `X64`.
-const HARDWARE_LABELS: &[&str] = &["jetson", "X64"];
+/// The labels a self-hosted job may select its runner by: the four aarch64
+/// runners' `jetson`, `overflow` on the two of them that run at the lowest
+/// priority, and the x86_64 runner's `X64`. Each names a pool, never a
+/// machine.
+const HARDWARE_LABELS: &[&str] = &["jetson", "overflow", "X64"];
 
 /// Whether a runner-label line selects its runner by a hardware label and
 /// names no machine.
@@ -1812,6 +1814,10 @@ fn b7_the_hardware_label_rule_refuses_a_bare_or_named_runner() {
     assert!(
         runner_label_is_hardware("    runs-on: [self-hosted, X64]"),
         "`runs-on: [self-hosted, X64]` must be admitted"
+    );
+    assert!(
+        runner_label_is_hardware("    runs-on: [self-hosted, overflow]"),
+        "`runs-on: [self-hosted, overflow]` must be admitted"
     );
     assert!(
         runner_label_is_hardware(

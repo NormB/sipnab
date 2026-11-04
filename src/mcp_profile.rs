@@ -148,7 +148,13 @@ pub const BUNDLES: &[(&str, &[&str])] = &[
     ),
     (
         "relay",
-        &["decode_ng", "query_relay", "relay_compare", "relay_stats"],
+        &[
+            "decode_ng",
+            "query_relay",
+            "relay_compare",
+            "relay_stats",
+            "relay_stats_polled",
+        ],
     ),
     (
         "tfps",
@@ -443,7 +449,8 @@ mod tests {
                 "get_sdp_timeline",
                 "query_relay",
                 "relay_compare",
-                "relay_stats"
+                "relay_stats",
+                "relay_stats_polled"
             ])
         );
         assert_eq!(sel.asked(), names(&["relay", "get_sdp_timeline"]));

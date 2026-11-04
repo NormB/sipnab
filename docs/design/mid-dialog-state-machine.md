@@ -127,10 +127,10 @@ already up is the normal way this tool is used.
 ### What it costs, which is more than a wrong label
 
 `Trying` is in the **active** set
-([`dialog_store.rs:876-886`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L876-L886)) and is not `InCall`,
+([`dialog_store.rs:916-926`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L916-L926)) and is not `InCall`,
 so a mid-dialog-seeded call is wrong in both directions on the two numbers
 operators graph: counted in `active_dialog_count` forever, invisible to
-`active_call_count` ([`:910-915`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L910-L915)), whose doc calls
+`active_call_count` ([`:950-955`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L950-L955)), whose doc calls
 it *"the concurrent-call figure — the one that maps to channels in use, to a
 carrier's simultaneous-call limit, and to the alert an operator actually
 wants."*
@@ -163,7 +163,7 @@ They test `dialog.method` as well as the state.
 Also affected: `Result: Trying` in the text report
 ([`call_report.rs:276-283`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L276-L283)); a dialog counted
 in none of the three outcome buckets in every machine-readable summary
-([`api.rs:936-938`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L936-L938)); an empty result set for
+([`api.rs:940-942`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L940-L942)); an empty result set for
 `state == "Canceled"` in the filter DSL
 ([`dsl.rs:1374-1378`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1374-L1378)); and an ended call rendering amber
 "in setup" indefinitely in the TUI, where `Trying` shares an arm with `Ringing`
@@ -280,7 +280,7 @@ the guards at the same time.
 **The seed method's only remaining job is the initial state**
 ([`dialog.rs:293-296`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L293-L296)), and for the two methods that
 matter it barely matters: since the creation branch now applies the creating
-message's own transition ([`dialog_store.rs:654`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L654)),
+message's own transition ([`dialog_store.rs:694`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L694)),
 a BYE-seeded dialog goes `Trying → Completed` on its own first message, and a
 CANCEL-seeded one goes `Trying → Canceled`. Which is exactly the outcome the
 pinned defect test is waiting for.
@@ -617,7 +617,7 @@ question is left standing rather than deleted so the reasoning survives.
   does not answer is how many cells real traffic exercises.
 - **Does the merge path need the same treatment?** `update_state` has a third
   call site on the absorb/merge path
-  ([`dialog_store.rs:1269`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1269)), and
+  ([`dialog_store.rs:1309`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1309)), and
   `merge_recovers_timestamp_order_from_permuted_stores`
   ([`arrival_order_parity_test.rs:433`](https://github.com/NormB/sipnab/blob/main/tests/arrival_order_parity_test.rs#L433))
   shows the offline merge is order-tolerant today. Whether it stays so under a

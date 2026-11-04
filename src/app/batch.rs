@@ -748,11 +748,17 @@ fn spawn_relay_stats_poller(
         return (None, None);
     };
     let interval = std::time::Duration::from_secs(target.secs);
+    let secs = target.secs;
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let mut poll = RelayStatsPoll::new(target, cli);
 
     match crate::app::relay_poller::spawn(interval, rx, move || poll.poll_once()) {
-        Ok(join) => (Some(tx), Some(join)),
+        Ok(join) => {
+            // REST `/v1/relay/stats/polled` and MCP `relay_stats_polled`
+            // read the readings from here, so a reader learns a poll runs.
+            crate::output::relay_polled::PolledStore::global().start(secs);
+            (Some(tx), Some(join))
+        }
         Err(e) => {
             tracing::warn!("could not start the relay statistics poller ({e}); nothing polled");
             (None, None)
@@ -891,11 +897,24 @@ impl RelayStatsPoll {
         }
         match result {
             Ok(crate::relay::types::ControlReply::Statistics(pairs)) => self.on_statistics(pairs),
-            Ok(other) => tracing::error!("{} answered {other:?}, not statistics", self.label),
+            Ok(other) => {
+                tracing::error!("{} answered {other:?}, not statistics", self.label);
+                self.publish_failure(
+                    crate::stats_vocab::StatisticsOutcome::Suspect,
+                    format!("{} answered something other than statistics", self.label),
+                );
+            }
             Err(e) => {
                 tracing::error!(
                     "{} did not answer the polled statistics request ({e})",
                     self.label
+                );
+                self.publish_failure(
+                    crate::relay::types::fetch_error_outcome(&e),
+                    format!(
+                        "{} did not answer the polled statistics request ({e})",
+                        self.label
+                    ),
                 );
             }
         }
@@ -922,6 +941,25 @@ impl RelayStatsPoll {
         let wire = resolve_for_wire(&relay_reported(&pairs));
         self.previous = Some(pairs);
         self.print_reading(&wire);
+        crate::output::relay_polled::PolledStore::global().record(
+            crate::output::relay_polled::PolledReading {
+                wire,
+                relay: self.label.clone(),
+                obtained_at: chrono::Utc::now(),
+            },
+        );
+    }
+
+    /// Keep a poll that obtained no reading where REST and MCP read it, beside
+    /// the reading it did not replace.
+    fn publish_failure(&self, outcome: crate::stats_vocab::StatisticsOutcome, detail: String) {
+        crate::output::relay_polled::PolledStore::global().record_failure(
+            crate::output::relay_polled::PollFailure {
+                at: chrono::Utc::now(),
+                outcome: outcome.as_wire_str(),
+                detail,
+            },
+        );
     }
 
     /// Print one reading in the form `--json` / `--json-pretty` chose.
@@ -4323,6 +4361,17 @@ impl BatchRunner {
         lp: &mut ReceiveLoop,
         packet: &capture::Packet,
     ) -> std::ops::ControlFlow<()> {
+        // The persistence gate covers `-O` as it covers the exporter: a
+        // closed gate keeps the packet out of the file, the decrypted
+        // export's hold included, and the run says how many at its end.
+        if self.writer.is_some()
+            && !crate::output::persistence::permits(
+                self.servers.as_ref().map(|s| s.persistence_gate.as_ref()),
+            )
+        {
+            lp.withheld_by_gate = lp.withheld_by_gate.saturating_add(1);
+            return std::ops::ControlFlow::Continue(());
+        }
         #[cfg(feature = "tls")]
         let held = match lp.decrypted_export.as_mut() {
             Some(x) if self.writer.is_some() => {
@@ -4618,6 +4667,13 @@ impl BatchRunner {
         {
             stderr_line!("Output file may be incomplete: {e:#}");
             lp.output_failed = true;
+        }
+        if lp.withheld_by_gate > 0 {
+            stderr_line!(
+                "-O/--output holds a gap: {} packet(s) were not written while {}",
+                lp.withheld_by_gate,
+                crate::output::persistence::WITHHELD
+            );
         }
     }
 
@@ -4942,6 +4998,9 @@ fn keylog_poll_due(watching: bool, since_last: impl FnOnce() -> std::time::Durat
 struct ReceiveLoop {
     /// Reused across packets so the hand-off costs no allocation per packet.
     new_orphans: Vec<(std::net::IpAddr, u16)>,
+    /// Packets `-O` did not write because the persistence gate was closed;
+    /// reported at the end of the run, because the file cannot say so.
+    withheld_by_gate: u64,
     /// Set when writing the -O output fails. The open path exits 1; the
     /// write and final-flush paths only logged, so a capture truncated by
     /// ENOSPC reported success and any `sipnab -O out.pcap && next-step`
@@ -5014,6 +5073,7 @@ impl ReceiveLoop {
         Self {
             new_orphans: Vec::new(),
             output_failed: false,
+            withheld_by_gate: 0,
             #[cfg(feature = "tls")]
             decrypted_export: (runner.export_mode == PcapExportMode::Decrypted
                 && cli.capture_args.output.is_some())
@@ -6742,13 +6802,10 @@ pub fn generate_reports(
         // The one-shot query flags (`--talkers`, `--call-tree`, `--expect`
         // and the rest), answered from these same final stores through the
         // same compiled filter. See `app::queries`.
-        && super::queries::render(&super::queries::QueryContext::new(
-            cli,
-            config,
-            dialog_store,
-            stream_store,
-            filter,
-        ))
+        && super::queries::render(
+            &super::queries::QueryContext::new(cli, config, dialog_store, stream_store, filter)
+                .with_gate(gate),
+        )
 }
 
 /// What `--since`/`--until` found when the window itself holds no dialog of

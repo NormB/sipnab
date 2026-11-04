@@ -37,6 +37,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 | Read a load test that reuses one Call-ID | [47. Follow a load generator's traffic by transaction, not by call](#follow-a-load-generator-s-traffic-by-transaction-not-by-call) |
 | Settle "we sent it" / "we never got it" | [27. Compare the same call at two nodes](#compare-the-same-call-at-two-nodes) |
 | Look only at the hour the problem happened | [67. Narrow a capture to when the problem happened](#narrow-a-capture-to-when-the-problem-happened) |
+| Find the calls someone transferred | [69. Find the transferred calls](#find-the-transferred-calls) |
 
 **Chase audio and quality complaints**
 
@@ -57,6 +58,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 
 | Goal | Recipe |
 |---|---|
+| Start a live capture and check it sees SIP | [68. Start a live capture](#start-a-live-capture) |
 | Watch one user's traffic live | [2. Live capture, narrow to a single user](#live-capture-narrow-to-a-single-user) |
 | Capture without running as root | [48. Run a live capture without giving sipnab root](#run-a-live-capture-without-giving-sipnab-root) |
 | Keep a capture running across reboots | [28. Run sipnab as a service](#run-sipnab-as-a-service) |
@@ -64,6 +66,7 @@ If you are new, [1. Triage a pcap fast](#triage-a-pcap-fast) is the broadest sta
 | Stop a week-long capture from eating the box | [43. Keep a long-running capture inside a memory budget](#keep-a-long-running-capture-inside-a-memory-budget) |
 | Read a very large capture faster | [19. Read a very large capture faster](#read-a-very-large-capture-faster) |
 | Read a call that spans several capture files | [39. Collect a directory of rotated captures into one analysis](#collect-a-directory-of-rotated-captures-into-one-analysis) |
+| Watch an old capture unfold at its own pace | [69. Replay a capture at its original pace](#replay-a-capture-at-its-original-pace) |
 | Read SIP split across TCP segments | [35. Read SIP that arrives in TCP segments or IP fragments](#read-sip-that-arrives-in-tcp-segments-or-ip-fragments) |
 | See the WebRTC leg of a call | [36. Read SIP over WebSocket from a WebRTC gateway](#read-sip-over-websocket-from-a-webrtc-gateway) |
 | Capture SIP inside a mobile or fabric tunnel | [37. Read SIP carried inside a GTP-U or VXLAN tunnel](#read-sip-carried-inside-a-gtp-u-or-vxlan-tunnel) |
@@ -249,6 +252,52 @@ It also tells a capture with nothing to judge apart from a clean one.
 
 ---
 
+## Start a live capture
+
+**Problem:** You want sipnab watching the SIP on this machine now, and to know
+it is seeing it.
+
+Live capture needs capture rights. Grant them to the binary once, then run it
+as yourself ([Capture live traffic without
+root](@/docs/install.md#capture-live-traffic-without-root) has the alternatives):
+
+```bash
+sipnab --setup-caps
+```
+
+On Linux, with no `-d`, sipnab captures on every interface at once, loopback
+included. Name one when you know where the SIP is:
+
+```bash
+sipnab -N -d eth0 --duration 30 --report
+```
+
+A name sipnab cannot open stops the run with exit `1`, and the next line lists
+every interface it can open, after `Available devices:`:
+
+```text
+Capture source failed to open: Failed to activate capture on 'eth9': libpcap error: No such device exists
+```
+
+**What to look for:**
+
+- The start of the run names the interface and the filter it installed:
+  `Capturing on 'hepx' (link_type=1, snaplen=65535)` on a lab bridge, and
+  `Auto-generated BPF filter:` followed by the expression.
+- The end of the run counts what it saw and what it dropped. One call through
+  that bridge ended with `Live capture on 'hepx' finished: 13 packets, no drops`.
+- `No SIP traffic found` on a link you know carries calls is
+  [A live capture that sees nothing](@/docs/troubleshooting.md#a-live-capture-that-sees-nothing).
+
+**Pitfalls:**
+
+- The kernel filters out SIP on a port other than 5060-5061. Widen
+  `--portrange` ([Read a capture whose SIP is not on port 5060](#read-a-capture-whose-sip-is-not-on-port-5060)).
+- A busy server can drop packets. [Tune capture on a busy
+  server](@/docs/tuning-capture.md) starts with how to tell.
+
+---
+
 ## Live capture, narrow to a single user
 
 **Problem:** A user reports their calls are flaky. Capture only their traffic in real time.
@@ -274,7 +323,7 @@ sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --jso
 
 **Pitfalls:**
 
-- Live capture needs `CAP_NET_RAW` (Linux) or root. `setcap cap_net_raw,cap_net_admin=eip $(which sipnab)` lets you skip `sudo` after the first run.
+- Live capture needs `CAP_NET_RAW` (Linux) or root. `sipnab --setup-caps` grants the binary `cap_net_raw,cap_net_admin+ep` once, and you skip `sudo` after that ([Start a live capture](#start-a-live-capture)).
 - The filter DSL evaluates against complete dialog records.
   - It evaluates once the dialog state machine has enough information.
   - That is typically after the first response.
@@ -290,7 +339,32 @@ sudo sipnab -N -d eth0 --filter "from.user == '1001' OR to.user == '1001'" --jso
 
 **Commands:**
 
-`sipnab -N --json` emits per-message records, not per-dialog summaries.
+Count the failed calls by their final response code. Each call counts once,
+under the code that ended it:
+
+```bash
+sipnab -N -I capture.pcap --count-by response_code --filter "state == 'Failed'" --no-cli-print --quiet
+```
+
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap):
+
+```text
+Dialogs by response_code: 4 values, 4 dialogs
+Value  Dialogs
+--------------
+404    1
+486    1
+503    1
+603    1
+```
+
+[Answer questions about a capture](@/docs/capture-queries.md) covers `--count-by`
+and the other counts: by user, address or codec, carrier metrics, and calls
+over time.
+
+To see every response the failed calls drew, provisional ones included, read
+the messages instead. `sipnab -N --json` emits per-message records, not
+per-dialog summaries.
 
 - It writes one JSON line per SIP message.
 - The `status_code` field is on response messages.
@@ -336,13 +410,13 @@ The histogram output looks like (`uniq -c` count, then status code):
 
 **Pitfalls:**
 
-- The histogram counts *all* response codes seen in messages of failed dialogs.
+- The `jq` histogram counts *all* response codes seen in messages of failed dialogs.
   - So a single failed call with `100 Trying → 488` contributes both 100 and 488.
-  - For just the final response per call, use `--call-report <id>` per dialog.
-- The dialog summary returned by the REST API (`/v1/dialogs`) has no `status_code` field.
-  - That's a per-message field.
-  - It is only available in CLI `--json` output, or via `/v1/dialogs/{id}`.
-  - That endpoint includes the full message list.
+  - For the final response per call, use `--count-by response_code`.
+- `status_code` is a per-message field, on `--json` lines and in the message
+  list of `/v1/dialogs/{id}`.
+  - The per-call field is `final_status_code`. `--json-dialogs` and every row
+    of the REST API's `/v1/dialogs` carry it.
 
 **Runnable example:** [Group failed calls by response code](@/docs/examples.md#group-failed-calls-by-response-code) works over REST. It:
 
@@ -504,22 +578,29 @@ Put sipnab on the collector host first. [The install guide](@/docs/install.md) c
 
 ### Configure the SIP server to mirror
 
-**OpenSIPS:**
+**OpenSIPS 3.6 and 4.0** (the same lines ran on 3.6.9 and 4.0.2):
 
 ```cfg
-loadmodule "proto_hep.so"
-modparam("proto_hep", "hep_id", "[hep_central]udp:capture.example.com:9060;version=3")
+socket=hep_udp:192.0.2.10:6061
 
-loadmodule "siptrace.so"
-modparam("siptrace", "trace_id", "[hep_central]uri=hep:hep_central")
+loadmodule "dialog.so"
+loadmodule "proto_hep.so"
+modparam("proto_hep", "hep_id", "[hep_central] capture.example.com:9060; transport=udp; version=3")
+modparam("proto_hep", "hep_capture_id", 101)
+loadmodule "tracer.so"
+modparam("tracer", "trace_id", "[tid]uri=hep:hep_central")
 
 route {
-    sip_trace("hep_central", "d", "sip");
-    # The rest of your routing logic follows here.
+    # The rest of your routing logic, then for each new call:
+    create_dialog();
+    trace("tid", "d");
 }
 ```
 
-Reload with `opensipsctl restart` (or `systemctl reload opensips` for graceful reload).
+Restart with `sudo systemctl restart opensips`. The `hep_udp` socket is what
+OpenSIPS sends HEP from: without one it refuses to start. [Collect and forward
+HEP](@/docs/hep.md#have-your-sip-server-send-hep) shows these lines running, and TCP
+and TLS.
 
 **rtpengine:**
 
@@ -546,20 +627,25 @@ loadmodule "siptrace.so"
 modparam("siptrace", "duplicate_uri", "sip:capture.example.com:9060")
 modparam("siptrace", "hep_mode_on", 1)
 modparam("siptrace", "hep_version", 3)
-
-route {
-    sip_trace();
-    # The rest of your routing logic follows here.
-}
+modparam("siptrace", "hep_capture_id", 102)
+modparam("siptrace", "trace_to_database", 0)
+modparam("siptrace", "trace_on", 1)
+modparam("siptrace", "trace_mode", 1)
 ```
+
+`trace_mode` 1 traces every message, so no route needs a `sip_trace()` call.
 
 **FreeSWITCH (mod_sofia):**
 
 ```xml
-<!-- conf/sip_profiles/external.xml -->
-<param name="capture-server" value="udp:capture.example.com:9060;hep=3"/>
+<!-- conf/autoload_configs/sofia.conf.xml, in <global_settings> -->
+<param name="capture-server" value="udp:capture.example.com:9060;hep=3;capture_id=100"/>
+<!-- conf/sip_profiles/internal.xml and external.xml -->
 <param name="sip-capture" value="yes"/>
 ```
+
+[Run sipnab beside FreeSWITCH](@/docs/freeswitch-sipnab.md#receive-freeswitch-s-own-copy-of-its-sip-hep)
+gives the commands that make both edits.
 
 ### Verify packets are arriving
 
@@ -643,7 +729,7 @@ Then the tracer mirrors the message it *sent* as well as the one it received:
 
 ```cfg
 route {
-    $var(tid) = "hep_central";
+    $var(tid) = "tid";
     trace($var(tid), "t", "sip");   # "t", not "m"
 }
 ```
@@ -654,11 +740,15 @@ At `"m"` (message) scope the tracer mirrors only the received copy.
   - The address OpenSIPS received is not the address the media flows to.
   - So streams come out orphaned: bound to no dialog.
 - At `"t"`, each advertised media endpoint is the socket the RTP actually uses.
+- `"t"` traces the one transaction it runs in. Called from the INVITE route,
+  it mirrored 7 of a call's 13 messages: the INVITE transaction, and not the
+  ACK or BYE. `"d"`, after `create_dialog()` as in the block above, mirrored
+  all 13. Both ran the same on OpenSIPS 3.6.9 and 4.0.2.
 
-Note also that `proto_hep` refuses to start without a HEP *listener* socket.
+Note also that `proto_hep` refuses to start without a HEP socket.
 It refuses even when the config only sends.
 Add `socket=hep_udp:127.0.0.1:9061` alongside your `hep_id`.
-Otherwise OpenSIPS exits with `No HEP listener defined!`.
+Otherwise OpenSIPS 4.0 exits with `No binding found for protocol proto_hep`.
 
 **Where this helps, and where it cannot.**
 
@@ -671,8 +761,9 @@ Otherwise OpenSIPS exits with `No HEP listener defined!`.
 
 **Pitfalls:**
 
-- HEP is UDP. It silently drops if the listener can't keep up.
-  - The `--hep-rate-limit 50000` default lets you tune.
+- Over UDP, HEP drops silently when the listener cannot keep up, and a sender cannot tell.
+  - `--hep-rate-limit` (default 50000 packets a second) bounds what the listener takes.
+  - [Carry HEP over TCP or TLS](@/docs/hep.md#carry-hep-over-tcp-or-tls) when a feed must not lose packets.
 - A routable HEP listener needs a guard.
   - sipnab refuses a non-loopback `--hep-listen` bind unless you pass one of these:
     - `--hep-allow 192.0.2.0/24` (repeatable),
@@ -711,7 +802,7 @@ The listener keeps a roster that answers all three.
 At the end of a bounded headless run:
 
 ```bash
-sipnab -N -L 0.0.0.0:9060 --hep-parse --hep-auth-file /etc/sipnab/hep.key --duration 600 --hep-senders
+sipnab -N -L 0.0.0.0:9060 --hep-auth-file /etc/sipnab/hep.key --duration 600 --hep-senders
 ```
 
 While a server runs, from the REST API or the MCP `hep_senders` tool:
@@ -1921,7 +2012,7 @@ It asks them beside the call's one-way diagnosis.
 In `-N` (non-interactive) mode, sipnab normally prints each captured SIP message to stdout. Then it emits the report.
 
 - Pass `--no-cli-print` to suppress the per-message dump. Then only the report reaches stdout.
-- (`-N` is not optional. Without it, sipnab tries to start the TUI, and the report output never reaches stdout.)
+- `--call-report` implies `-N`, so the TUI never starts. The commands below keep `-N` anyway. `--report` does not imply it, so a `--report` run needs `-N`.
 
 Markdown, to paste into a ticket or a markdown editor:
 
@@ -1951,7 +2042,7 @@ The report covers:
 
 **Tip:** combine with the filter from [3. Find every failed call, grouped by response code](#find-every-failed-call-grouped-by-response-code).
 That bulk-generates reports for every failed call.
-The CLI `--filter` outputs per-message records. So deduplicate to call_ids first:
+`--json-dialogs` prints one line per call, so each `call_id` appears once:
 
 - Create the reports directory:
 
@@ -1963,10 +2054,9 @@ The CLI `--filter` outputs per-message records. So deduplicate to call_ids first
 
   ```bash
   # Run all of these, in order.
-  # First pass: enumerate matching calls (no --no-cli-print here — we want the
-  # per-message JSON so jq can extract call_id).
-  sipnab -N -I capture.pcap --filter "state == 'Failed'" --json 2>/dev/null \
-    | jq -r '.call_id' | sort -u \
+  # First pass: one line per failed call.
+  sipnab -N -I capture.pcap --filter "state == 'Failed'" --json-dialogs --no-cli-print --quiet \
+    | jq -r '.call_id' \
     | while read cid; do
         # Second pass per call: --no-cli-print so only the report is written.
         sipnab -N -I capture.pcap --call-report "$cid" --markdown --no-cli-print \
@@ -2178,7 +2268,7 @@ Keyboard shortcuts match the TUI (`?` opens the help popup).
 
 **Problem:** A call works "most of the time". Nothing in the ladder looks wrong, and both vendors say their side is fine.
 
-`--lint` reads the signaling against RFC 3261. It reports what violates it, citing the section:
+`--lint` reads the signaling against the RFC sections it must obey: RFC 3261 and the RFCs on session timers ([RFC 4028](https://www.rfc-editor.org/rfc/rfc4028.html)), `Session-ID` ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)) and SDP offer/answer. It reports what violates them, citing the section:
 
 ```bash
 sipnab -N -I capture.pcap --lint
@@ -2231,6 +2321,25 @@ sipnab -N -I capture.pcap --analyze
 sipnab -N -I capture.pcap --json-analyze
 ```
 
+Against [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap),
+`--analyze --no-cli-print --quiet` prints:
+
+```text
+Capture analysis: 2 finding(s) across 5 dialog(s), 0 stream(s), 23 frame(s) read.
+
+1. [MAJOR] Call failed 5xx/6xx — 2 call(s)
+   The call ended on a server-class or global failure (RFC 3261 §21.5, §21.6). Unlike a 4xx these are never an ordinary call outcome: something on the path or at the far end was unable to serve the request.
+   Evidence:
+     - Call-ID decline-7c6d5e@198.51.100.30 | 198.51.100.30:5060 -> 198.51.100.40 | 2023-11-14 22:13:26.000 UTC | status_code=603 | Decline
+     - Call-ID unavail-4e5f60@192.0.2.50 | 192.0.2.50:5060 -> 192.0.2.60 | 2023-11-14 22:13:32.000 UTC | status_code=503 | Service Unavailable
+
+2. [MINOR] Call failed 4xx — 2 call(s)
+   The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy Here, 404 for a misdialled number, 480 for a phone that is off — so this is listed to be ruled out rather than acted on. The codes are named below; a run of 403 or 408 is not an ordinary outcome.
+   Evidence:
+     - Call-ID busy-3a2b1c@192.0.2.30 | 192.0.2.30:5060 -> 192.0.2.40 | 2023-11-14 22:13:23.000 UTC | status_code=486 | Busy Here
+     - Call-ID notfound-1b2c3d@203.0.113.30 | 203.0.113.30:5060 -> 203.0.113.40 | 2023-11-14 22:13:29.000 UTC | status_code=404 | Not Found
+```
+
 `--json-analyze` emits **one object**, not one line per finding.
 
 - The frames read and the dialogs examined are properties of the run, not of any finding.
@@ -2242,8 +2351,9 @@ sipnab -N -I capture.pcap --json-analyze
 
 - This is a summary, not a substitute for `--report`.
   - It tells you the capture's verdict, not each stream's jitter.
-- A capture whose SIP sits outside `--portrange` analyzes cleanly, because it saw no SIP.
-  - Check the packet counts in the same object before trusting a green result.
+- SIP outside `--portrange` is never counted, but the analysis says so.
+  - It opens with `THIS ANALYSIS IS INCOMPLETE` and a `[BLIND] SIP discarded by --portrange` finding that counts the messages, so such a capture never reads as clean.
+  - Widen the range, `--portrange 1-65535`, and read the capture again.
 
 **Runnable example:** [Triage a capture to one verdict](@/docs/examples.md#triage-a-capture-to-one-verdict) reads this object. It exits:
 
@@ -2735,7 +2845,7 @@ It refuses a private key that any other user on the host can read:
   sipnab -N \
     --hep-listen 0.0.0.0:9063 --hep-listen-transport tls \
     --hep-tls-cert /etc/sipnab/collector.pem --hep-tls-key /etc/sipnab/collector.key \
-    --hep-parse --hep-auth-file /etc/sipnab/hep.key
+    --hep-auth-file /etc/sipnab/hep.key
   ```
 
 **Pitfalls:**
@@ -2762,9 +2872,10 @@ It refuses a private key that any other user on the host can read:
   - A flag for either replaces both keys.
 - A `tcp` or `tls` sender connects at startup.
   - If the collector refuses that first connection, the run stops with exit 2 and `Failed to create HEP sender`. Start the collector first.
-- A `tcp` or `tls` sender rebuilds its connection when the collector restarts.
-  - It makes one attempt per packet.
-  - sipnab can lose the packet that discovers the break. It sends the packets after it on the new connection.
+- A `tcp` or `tls` sender rides out a collector restart.
+  - Packets queue while the collector is away, up to `--hep-send-queue` MiB (default 64), and replay in capture order when it answers.
+  - The sender redials with backoff. Each dial gives up after `--hep-send-timeout` seconds (default 3).
+  - [When the collector goes away](@/docs/hep.md#when-the-collector-goes-away) shows a restart and the counts it left.
 
 **Runnable example:** [See who feeds a HEP collector](@/docs/examples.md#see-who-feeds-a-hep-collector) lists each agent feeding a collector, and what the listener refused.
 
@@ -2819,7 +2930,9 @@ What the difference tells you:
   - Check NTP before reading timing differences as evidence.
 - A B2BUA **changes the `Call-ID`** between its legs by design.
   - So this recipe compares a proxy's two sides, not a B2BUA's.
-  - Correlate those by `From`/`To` and time instead.
+  - For a B2BUA, find the other leg's Call-ID first with
+    `--correlate <CALL-ID>`, then report each leg. See
+    [Follow one call across its legs](@/docs/follow-a-call.md).
 
 **Runnable example:** one node may see the signaling and another the media, as a proxy and an rtpengine relay do.
 Then neither report holds the whole call.
@@ -3024,6 +3137,38 @@ sipnab -N -I capture.pcap --one-way-delay 40 --report --no-cli-print
 - `--pdd-threshold` defaults to ITU-T E.721's target for an **international** connection.
   - A capture does not say what kind of call it holds.
   - A network that knows its traffic is local or toll wants a tighter number.
+
+The signaling and media findings have thresholds of their own, under
+`[diagnosis]` in the configuration file. Each finding and the setting that
+moves it:
+
+| Finding | Flag | Config key under `[diagnosis]` | Default |
+|---|---|---|---|
+| Slow post-dial delay, and the `pdd` term of `--problems` and `--slow-setup` | `--pdd-threshold` | `post_dial_delay_secs` | 11.0 s |
+| A `2xx` never acknowledged | `--ack-timeout` | `ack_timeout_secs` | 32.0 s |
+| An `INVITE` with no final response | `--no-final-response-timeout` | `no_final_response_secs` | 180.0 s |
+| Duration asymmetry between the two legs | `--duration-asymmetry-pct` and `--duration-asymmetry-secs` (a call must clear both) | `duration_asymmetry_pct`, `duration_asymmetry_secs` | 5.0 %, 2.0 s |
+| Late media after the `200 OK` | `--late-media-ms` | `late_media_ms` | 500 ms |
+| One-way audio withheld when comfort noise explains it | `--cn-suppression-ratio` | `cn_suppression_ratio` | 0.3 |
+
+A tighter late-media threshold reports a delay the default lets pass:
+
+```bash
+sipnab -N -I capture.pcap --late-media-ms 40 --json-dialogs --no-cli-print --quiet | jq -c '.diagnosis.hints'
+```
+
+Against [`tests/pcap-samples/sip-over-tcp.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-over-tcp.pcap),
+whose media starts 47 ms after the answer, the default prints `[]` and this
+prints:
+
+```json
+["Late media: RTP started 47 ms after 200 OK — far end was slow to send, or the media path wasn't ready when signaling completed."]
+```
+
+A looser duration threshold quiets a B2BUA whose legs never end together.
+[`tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap)
+reports `Duration asymmetry: A leg lasted 15.8s, B leg 11.5s (Δ 4.4s)` at the
+defaults, and nothing with `--duration-asymmetry-secs 5`.
 
 **Pitfalls:**
 
@@ -3425,6 +3570,9 @@ sipnab -N -I '/var/captures/*.pcap' --recursive --report --no-cli-print
 
 - One store serves the whole set.
   - So a dialog whose INVITE is in one file and whose BYE is in another comes out as one call.
+- Gzip-compressed files (`ring-3.pcap.gz`) join the set as they are, and so does every capture in a `.tgz` or a password-protected ZIP ([Archives read like directories](@/docs/cli.md#archives-read-like-directories)).
+  - sipnab stops inflating one input at `--max-gunzip-bytes` (1 GiB). Raise it for captures you compressed yourself.
+  - It reads a pcapng's embedded names and TLS secrets into memory only up to `--max-metadata-file-bytes` (2 GiB), and refuses a larger file. A `dumpcap -b` ring member can pass that. Raise it for captures you made.
 - `sipnab -N -I /var/captures --input-name 'tg.pcap[0-4]'` narrows a **directory** to the files worth reading.
   - sipnab matches the pattern against the filename alone.
   - So it behaves the same at every depth under `--recursive`.
@@ -3649,12 +3797,38 @@ Or keep capturing forever inside a fixed budget. Rotate, and delete the oldest c
 sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50 --split-keep 8
 ```
 
+`--split duration:N` rotates every N seconds instead. A 16-second run that
+rotated every 5 seconds and kept 2 files:
+
+```bash
+sipnab -N -d hepx -O rot/sip.pcapng --pcapng --split duration:5 --split-keep 2 --duration 16 --no-cli-print
+```
+
+```text
+INFO sipnab::capture::writer: Writing packets to 'rot/sip.pcapng' (pcapng, mode=raw)
+INFO sipnab::capture::writer: Rotating output to 'rot/sip_00001.pcapng' (seq=1, wrote 16624 bytes in 5.007842473s)
+INFO sipnab::capture::writer: Rotating output to 'rot/sip_00002.pcapng' (seq=2, wrote 16424 bytes in 5.003898045s)
+INFO sipnab::capture::writer: Deleted 'rot/sip.pcapng' to keep the last 2 split file(s) (--split-keep): 1 deleted so far this run
+INFO sipnab::app::batch: sipnab: 1 older split file(s) deleted by --split-keep (each one written by this run)
+```
+
+The first file takes the name you gave, and each rotation adds a five-digit
+number before the extension: `sip_00001.pcapng`, `sip_00002.pcapng`. A
+rotation happens when the next packet arrives after the bound, so a quiet link
+rotates late. [Collect a directory of rotated captures into one
+analysis](#collect-a-directory-of-rotated-captures-into-one-analysis) reads the
+set back as one capture.
+
 **What to look for:**
 
 - `filesize` counts **MiB**, the same unit `--split filesize` and `-B` use.
   - So `filesize:2048` stops at what a file browser calls 2 GiB.
 - `-n`/`--count` counts every packet received from the capture source.
   - On a HEP listener, that includes packets later dropped by the allowlist, the rate limiter or authentication.
+  - It works on a file too. `-n 100` on the sample capture ends with `Read 100 packets: 0 of 1 file(s) read in full, 1 stopped early`.
+- sipnab refuses a condition it cannot meet before it captures anything, with exit `2`:
+  - `--count 0`: `error: invalid value '0' for '--count <N>': 0 is not in 1..18446744073709551615`.
+  - `--autostop size:10`: `Invalid --autostop: Unknown autostop condition: 'size'. Expected 'duration' or 'filesize'`.
 
 **Pitfalls:**
 
@@ -3664,6 +3838,35 @@ sudo sipnab -N -d eth0 -O /var/capture/sip.pcapng --pcapng --split filesize:50 -
   - But leave it off whenever the capture is evidence you cannot retake.
 - A run killed mid-capture leaves behind whatever it had not yet deleted.
   - The next run does not adopt it.
+
+---
+
+## Replay a capture at its original pace
+
+**Problem:** You want to watch an old capture unfold as it happened: a TUI
+session for a colleague, or a script that reacts to calls as they arrive.
+
+`--replay` reads a capture file and waits out the gaps between its packets:
+
+```bash
+sipnab -N -I sample-call.pcap --replay
+```
+
+```text
+INFO sipnab::capture::file: Replaying from 'sample-call.pcap' with original timing
+22:13:20.000 192.0.2.10:5060 -> 192.0.2.20:5060 REGISTER UDP
+22:13:20.004 192.0.2.20:5060 -> 192.0.2.10:5060 401 Unauthorized UDP
+22:13:20.011 192.0.2.10:5060 -> 192.0.2.20:5060 REGISTER UDP
+22:13:20.017 192.0.2.20:5060 -> 192.0.2.10:5060 200 OK UDP
+```
+
+The sample capture spans 16.03 seconds, and the replay took 16.2 seconds.
+Without `--replay`, the same run took 0.05 seconds.
+
+**Pitfalls:**
+
+- `--replay` reads a file. It sends nothing onto the network.
+- `--cores` refuses it, because the parallel reader does not keep time.
 
 ---
 
@@ -3796,9 +3999,15 @@ Where a run must start as root, for example from a script that already runs unde
 sudo sipnab -N -d eth0 --user sipnab
 ```
 
+To also confine the run to a directory, the directory must hold an `etc/passwd` naming the user, because sipnab looks the user up after it changes root ([Confine it to a directory](@/docs/least-privilege.md#confine-it-to-a-directory) builds one):
+
+```bash
+sudo sipnab -N -d eth0 --user nobody --chroot /var/lib/sipnab/jail
+```
+
 **What to look for:**
 
-- `--setup-caps` sets `cap_net_raw,cap_net_admin+ep` via `setcap`, and exits.
+- `--setup-caps` sets `cap_net_raw,cap_net_admin+ep` via `setcap`, prints nothing, and exits.
   - It re-invokes itself through `sudo` when it is not already root.
   - `getcap "$(command -v sipnab)"` then prints `cap_net_admin,cap_net_raw=ep`.
 - The capability run logs `Capturing on 'eth0'` and nothing about privileges: it never had root to drop.
@@ -3826,6 +4035,7 @@ sudo sipnab -N -d eth0 --user sipnab
 - sipnab opens its capture device, keylog file or FIFO and config **before** the drop.
   - A keylog path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#decrypt-without-writing-the-keys-to-disk)).
   - It creates `-O` and `--split` files **after** the drop, as the drop user. See [An output file sipnab cannot create](@/docs/troubleshooting.md#an-output-file-sipnab-cannot-create).
+- `--sandbox` and `--seccomp` narrow the files and system calls the process can reach after startup ([Capture with the least privilege](@/docs/least-privilege.md)).
 - `--no-priv-drop` keeps the privileges for the rest of the run.
   - It is not the way to fix a permissions error.
   - Forging kill responses does not need it.
@@ -5063,6 +5273,58 @@ Without a file root it answers `"status":"unresolvable"`, with the reason
   instructions ([Untrusted capture text](@/docs/mcp-protocol.md#untrusted-capture-text)).
 - A tool from a bundle the server did not load answers `unknown_tool`
   ([Load only the tools an agent needs](@/docs/mcp-deploy.md#load-only-the-tools-an-agent-needs)).
+
+---
+
+## Find the transferred calls
+
+**Problem:** "Someone transferred the caller and then the call dropped." You need
+the calls that carried a transfer, and whether each transfer finished.
+
+A blind or attended transfer is a REFER inside the call
+([RFC 3515](https://www.rfc-editor.org/rfc/rfc3515.html)). The `Refer-To` header of the REFER names where the call should go. sipnab
+keeps the call in the state `Transferring` from the REFER until the NOTIFY
+that ends the transfer's subscription, then returns it to the call's own
+state. It needs no setting, and nothing changes on the PBX.
+
+List the calls whose messages carry a `Refer-To`:
+
+```bash
+sipnab -N -I capture.pcap --filter "header.Refer-To =~ '.'" --report --no-cli-print --quiet
+```
+
+Against [`tests/fixtures/refer/refer-transfer.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/refer/refer-transfer.pcap),
+two calls through a proxy in which Alice asks Bob to call Carol:
+
+```text
+Call-ID                          From           To             State        Code   Duration   Msgs   PDD      Tags
+-------------------------------------------------------------------------------------------------------------------------
+refer-done-1@example.com         alice          bob            Completed    200    0s         25     0.0s     -
+refer-pending-1@example.com      alice          bob            Transferring 200    0s         17     0.0s     -
+```
+
+- `refer-done-1@example.com` ran its transfer to the end: Bob reported
+  `200 OK` in a NOTIFY that terminated the subscription, and Alice hung up.
+- `refer-pending-1@example.com` is still `Transferring`: the capture ended
+  after a NOTIFY reporting `100 Trying`. A call left in this state at the end of
+  a long capture is a transfer that never reported its result.
+
+Narrow to one destination by matching the target, for example
+`--filter "header.Refer-To =~ 'carol'"`. Count the outcomes with
+`--count-by state` and the same filter.
+
+An exported vCon records the transfer as a `transfer` dialog object, with the
+party who asked for it, the party it moved and the target. For
+`refer-done-1@example.com`, `--export-vcon` writes
+`{"transferor":0,"transferee":1,"transfer_target":2}` in it. See
+[Export a call as a vCon](@/docs/vcon.md).
+
+**Pitfalls:**
+
+- `method` in the filter language is the method that opened the call, so
+  `method == 'REFER'` does not find a REFER inside an INVITE call. Match the
+  header instead.
+- A REFER outside an established call moves no call to `Transferring`.
 
 ---
 

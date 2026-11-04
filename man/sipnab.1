@@ -832,7 +832,7 @@ Directory the MCP file tools may read from and write to.
 Mebibytes of raw frames to retain so a LIVE pointer can be followed.
 .TP
 \fB\-\-mcp\-sampling\-budget\fR \fIPER_HOUR\fR
-Requests per hour sipnab may ask the CLIENT's model to narrate.
+Deprecated, and has no effect: sipnab never sends an MCP sampling request. Still accepted, so a command line that carries it keeps working; the run warns at startup.
 .TP
 \fB\-\-mcp\-allow\-shutdown\fR
 Allow the \fBshutdown_server\fR MCP tool to stop this process.
@@ -1266,7 +1266,7 @@ How many leading digits \fB\-\-talkers prefix\fR ranks the dialed number by (4 w
 How many rows a ranked query keeps (\fB\-\-count\-by\fR, \fB\-\-rates\-by\fR, \fB\-\-talkers\fR, and per dimension \fB\-\-compare\-captures\fR), or how many recent dialogs an endpoint rollup lists (\fB\-\-endpoint\-ip\fR, \fB\-\-endpoint\-user\fR); the rest are summed or counted. 50 when not given, the default page REST returns.
 .TP
 \fB\-\-call\-tree\fR \fICALL\-ID\fR
-Print every leg of one call as a tree across B2BUA, SBC and PBX hops: the legs sipnab matched to it by an identifier (\fBX\-Call\-ID\fR, \fBSession\-ID\fR, SDP origin, P\-Charging\-Vector, a Via branch), each leg's own matches, and the legs a timing guess suggests, which the walk does not follow.
+Print every leg of one call as a tree across B2BUA, SBC and PBX hops: the legs sipnab matched to it by an identifier (\fBSession\-ID\fR, a header named in \fB[sip] xcid_headers\fR, SDP origin, P\-Charging\-Vector, a Via branch, an OpenSIPS topology\-hiding Call\-ID or mapping), each leg's own matches, and the legs a timing guess suggests, which the walk does not follow.
 .TP
 \fB\-\-correlate\fR \fICALL\-ID\fR
 Print the other legs of one call and the strategy that matched each: an identifier the legs share, or a timing guess, with the gap between the two calls for a guess.

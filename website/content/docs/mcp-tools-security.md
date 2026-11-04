@@ -469,6 +469,8 @@ Whether the traffic obeys the RFCs, and which clause it broke. These turn "the c
 ### `evaluate_expectations`
 
 A pass/fail verdict on the loaded capture, and an exit code for a build.
+[Fail a build on what a capture shows](@/docs/expectations.md) covers the suite file
+and the same check from the command line.
 
 Use it to check a capture against written rules, such as "no 488
 responses" or "MOS p10 at least 4.0". The rules can live in a checked-in

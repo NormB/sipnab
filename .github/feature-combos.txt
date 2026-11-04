@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# SPDX-FileCopyrightText: The sipnab contributors
+#
+# The feature combinations CI lints one at a time, each with its tests
+# (`cargo clippy --no-default-features --features X --tests -- -D warnings`;
+# for `wasm`, `cargo check --target wasm32-unknown-unknown --lib`).
+# `--all-features` turns everything on and the no-features clippy step turns
+# everything off, so a break that appears only with SOME features off is
+# found here and nowhere else.
+#
+# ci.yml's `features` job runs these in a few jobs, through
+# `scripts/check-feature-matrix.py --group I --groups N`, and the same script
+# with no arguments lints them all locally. Format: the features, then
+# optionally `suite` (run the whole test suite with them) or `test=NAME` (run
+# that test target with them). A `test=` is a test that exists only where a
+# feature is ABSENT: `--all-features` and the pre-commit hook's
+# `--features full` compile it out, and the lint builds it without running
+# it, so this is the one place it runs.
+#
+# scripts/tests/test_feature_matrix_groups.py holds the list to every
+# combination and test CI checked on 2026-11-03.
+
+# The documented headless server build (README "Headless capture host"), with
+# its full test suite, so the exact set users are told to ship stays green.
+native,hep,api,mcp,mcp-http suite
+# Feature-gate refusals: no mcp and no hep.
+native test=feature_gate_test
+tls
+api
+# mcp without mcp-http.
+mcp test=app_servers_test
+hep
+# Standalone metrics server must build without the `api` feature.
+metrics
+tls,api
+native,tui,audio
+# The crate's default features, what a bare `cargo build` produces.
+# the_feature_matrix_includes_the_default_feature_set keeps this equal to
+# Cargo.toml's `default = [...]`.
+native,tui,audio,metrics
+# TUI snapshots without audio.
+native,tui,tls,hep,api test=tui_snapshot_test
+# The eBPF uprobe backend, which every published *-linux-gnu binary carries.
+# Its USERSPACE half is what this compiles: the kernel half needs nightly and
+# bpf-linker, which the release job installs and this one deliberately does
+# not, so build.rs takes its degrading default and emits the placeholder
+# object. This proves the `#[cfg(feature = "bpf")]` code and its tests still
+# build, and `a_release_build_refuses_to_ship_without_the_kernel_programs`
+# proves the release cannot ship the placeholder.
+bpf
+# vCon export, and its rules without opus. In `full`, so `--all-features`
+# already builds it; this proves it still builds WITHOUT tui, tls, api or
+# mcp, the class of break `--all-features` cannot see.
+vcon test=vcon_rules_test
+# Ogg Opus recordings: libopus, compiled with cmake. In `full`; this proves it
+# builds with only `vcon` beside it.
+opus needs=cmake
+# `audio` and `plugins` are each in `full` and so built by `--all-features`,
+# but never ALONE: a `#[cfg(feature = "audio")]` or `"plugins"` block that
+# leans on a sibling feature for an import compiles there and nowhere else.
+audio
+plugins
+# Password-protected ZIP input. In `full`; this proves it builds without tui,
+# tls, api or mcp, the only company it keeps being `native`.
+archive
+# G.729 decoding. In `full`; this proves it builds with only `native` beside
+# it, without the `vcon` HTTPS client that the online `sipnab g729 install`
+# uses.
+g729
+# The sets release.yml publishes: the static musl tarballs, and the gnu
+# `-noaudio` .deb/.rpm with `bpf` added.
+# ci_compiles_every_reduced_feature_set_the_release_publishes keeps these
+# equal to what release.yml computes.
+native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729
+native,tui,tls,hep,api,mcp,mcp-http,metrics,archive,g729,bpf
+# The library for wasm32.
+wasm needs=wasm32

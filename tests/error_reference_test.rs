@@ -884,7 +884,14 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 546 -> 547: src/app/batch.rs (#636), `--th-mappings: the mappings did not
 // serialize: {e}`, the --json failure of the new mapping listing, worded as
 // --hep-senders words its own. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 547;
+// 547 -> 548 (#639): src/app/bootstrap.rs, tui_export_refusal: a run that would
+// start the terminal UI with a `[[vcon.rule]]` is refused, naming the rule
+// (the TUI loop runs no vCon exporter). Nothing removed.
+// 548 -> 550 (#642): the persistence gate covers every content writer. One
+// template shared by src/app/batch.rs (stderr_line!) and src/app/tui_mode.rs
+// (warn!), `-O/--output holds a gap: ...`, and src/app/queries/b2.rs,
+// `--export-audio: no file written: ...`. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 550;
 
 // ---------------------------------------------------------------------------
 // The page gates

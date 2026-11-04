@@ -385,6 +385,100 @@ mod tui_e2e {
         Ok(())
     }
 
+    /// A TUI run whose config defines a `[[vcon.rule]]` starts, and status
+    /// line 1 says the rule writes nothing here for the whole session: the
+    /// TUI loop runs no vCon exporter. The run used to say nothing at all.
+    #[cfg(feature = "vcon")]
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    fn tui_marks_a_config_vcon_rule_it_does_not_run() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let out = dir.path().join("out");
+        let config = dir.path().join("rule.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "[[vcon.rule]]\nname = \"support\"\nwhen = \"call_id =~ '.'\"\ndir = \"{}\"\n",
+                out.display()
+            ),
+        )?;
+        let s = TuiSession::launch(
+            150,
+            40,
+            fixtures_dir(),
+            &["-I", "sip_call.pcap", "--config", &config.to_string_lossy()],
+        )?;
+        // The call list proves the run went on; the marker is on line 1.
+        s.wait_for("INVITE")?;
+        s.wait_for("vCon rules: not written here, use -N")?;
+        Ok(())
+    }
+
+    /// A TUI run that writes `-O` reports the persistence gate as authorized
+    /// over REST: the TUI writes the pcap, so the gate governs it. The TUI's
+    /// gate counts the writers the TUI runs, which `-O` is.
+    ///
+    /// Linux only: a TUI run logs nothing, so the kernel-chosen REST port is
+    /// read off the listening socket of the pane's process with `ss`.
+    #[cfg(all(feature = "api", target_os = "linux"))]
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    fn tui_gate_counts_the_pcap_it_writes() -> Result<(), TestError> {
+        use std::io::{Read, Write};
+        let dir = tempfile::tempdir()?;
+        let pcap = dir.path().join("out.pcap");
+        let s = TuiSession::launch(
+            150,
+            40,
+            fixtures_dir(),
+            &[
+                "-I",
+                "sip_call.pcap",
+                "-O",
+                &pcap.to_string_lossy(),
+                "--api",
+                "127.0.0.1:0",
+            ],
+        )?;
+        s.wait_for("INVITE")?;
+        // The pane's process is sipnab itself: the launch command `exec`s it.
+        let pid_out = tmux_for(&s.name)
+            .args(["display-message", "-p", "-t", &s.name, "#{pane_pid}"])
+            .output()?;
+        let pid = String::from_utf8_lossy(&pid_out.stdout).trim().to_string();
+        let needle = format!("pid={pid},");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let api = loop {
+            let ss = Command::new("ss").args(["-ltnpH"]).output()?;
+            let listing = String::from_utf8_lossy(&ss.stdout).into_owned();
+            if let Some(addr) = listing
+                .lines()
+                .find(|l| l.contains(&needle))
+                .and_then(|l| l.split_whitespace().nth(3))
+            {
+                break addr.to_string();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no listening socket for pid {pid}: {listing}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        let mut stream = std::net::TcpStream::connect(&api)?;
+        stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+        write!(
+            stream,
+            "GET /v1/persistence HTTP/1.1\r\nHost: {api}\r\nConnection: close\r\n\r\n"
+        )?;
+        let mut raw = String::new();
+        stream.read_to_string(&mut raw)?;
+        assert!(
+            raw.contains(r#""authorized":true"#),
+            "a TUI run writing -O has an authorized gate: {raw}"
+        );
+        Ok(())
+    }
+
     /// `-c` applies the F7 filter, and status line 3 shows it as the dialog's
     /// summary with the key that expands it; `F` shows the full expression
     /// and `F` again returns to the summary.

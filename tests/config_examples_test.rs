@@ -127,6 +127,11 @@ const FOREIGN_TOML: &[(&str, &str, &str)] = &[
         "rules",
         "an expectation suite: the text `evaluate_expectations` takes in `rules_toml`",
     ),
+    (
+        "docs/expectations.md",
+        "rules",
+        "an expectation suite: the `sipnab.expect.toml` that `--expect` reads",
+    ),
 ];
 
 /// Every ```` ```toml ```` fence in `docs/*.md` that is a sipnab config loads

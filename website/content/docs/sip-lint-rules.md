@@ -31,6 +31,10 @@ validation corpus, are in
 
 ## Lint a capture
 
+The linter is in every sipnab build. Reading a capture file needs no
+privileges, and the linter changes nothing on the system that produced the
+traffic.
+
 Add `--lint` to an offline run. `--no-cli-print` hides the per-message lines,
 and `-q` hides the log lines, so only the findings print.
 
@@ -72,6 +76,27 @@ Over MCP, the [`lint_dialog`](@/docs/mcp-tools-signaling.md#lint-dialog) and
 the same findings as structured fields, and
 [`explain_rule`](@/docs/mcp-tools-signaling.md#explain-rule) returns one rule's
 entry.
+
+Over REST, `GET /v1/dialogs/{call_id}/lint` returns one call's findings. With
+a server holding the same capture:
+
+```bash
+# Run all of these, in order.
+export SIPNAB_API_KEY="$(openssl rand -hex 32)"
+sipnab -N -I tests/pcap-samples/sip-lint-findings.pcap --api 127.0.0.1:8080 --no-cli-print --quiet &
+sleep 2
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dialogs/lint-clen@198.51.100.10/lint" | jq -c '{finding_count, findings: [.findings[] | {rule_id, severity, observed, expected}]}'
+kill %1
+```
+
+```json
+{"finding_count":1,"findings":[{"rule_id":"SIP-3261-20.14-CONTENT-LENGTH-MISMATCH","severity":"error","observed":"Content-Length 900, body 95 octets","expected":"Content-Length 95"}]}
+```
+
+In the terminal interface, select a call in the Call List and press `f`. The
+view lists that call's findings, each with its severity, RFC section, the
+message it came from, its rule, and what sipnab observed and expected. A call with none says
+`No RFC conformance findings — this call is clean.`
 
 ## Fail a CI job on a non-conformant capture
 

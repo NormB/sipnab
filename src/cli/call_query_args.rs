@@ -20,8 +20,9 @@ use crate::sip::endpoint::Selector;
 #[derive(clap::Args, Debug, Clone, Default)]
 pub struct CallQueryArgs {
     /// Print every leg of one call as a tree across B2BUA, SBC and PBX hops:
-    /// the legs sipnab matched to it by an identifier (`X-Call-ID`,
-    /// `Session-ID`, SDP origin, P-Charging-Vector, a Via branch), each leg's
+    /// the legs sipnab matched to it by an identifier (`Session-ID`, a header
+    /// named in `[sip] xcid_headers`, SDP origin, P-Charging-Vector, a Via
+    /// branch, an OpenSIPS topology-hiding Call-ID or mapping), each leg's
     /// own matches, and the legs a timing guess suggests, which the walk does
     /// not follow.
     ///

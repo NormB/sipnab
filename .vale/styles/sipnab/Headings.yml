@@ -135,6 +135,7 @@ exceptions:
   - REST
   - SSH
   - TCP
+  - SCTP
   - TLS
   # The key-exchange algorithm docs/tls-capture.md names in a heading. An
   # acronym, never a word.

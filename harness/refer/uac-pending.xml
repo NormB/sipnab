@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- SPDX-FileCopyrightText: The sipnab contributors -->
+<!-- The same call, but bob reports only 100 Trying for the transfer and
+     the capture ends before the transfer or the call does. -->
+<scenario name="refer uac, transfer still pending">
+  <send retrans="500">
+    <![CDATA[
+      INVITE sip:bob@[remote_ip]:[remote_port] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@example.com>;tag=[pid]al[call_number]
+      To: <sip:bob@example.com>
+      Call-ID: [call_id]
+      CSeq: 1 INVITE
+      Contact: <sip:alice@[local_ip]:[local_port]>
+      Max-Forwards: 70
+      Content-Type: application/sdp
+      Content-Length: [len]
+
+      v=0
+      o=alice [call_number] 1 IN IP[local_ip_type] [local_ip]
+      s=-
+      c=IN IP[media_ip_type] [media_ip]
+      t=0 0
+      m=audio [media_port] RTP/AVP 0
+      a=rtpmap:0 PCMU/8000
+    ]]>
+  </send>
+  <recv response="100" optional="true"/>
+  <recv response="180" optional="true"/>
+  <recv response="200" rtd="true" rrs="true"/>
+  <send>
+    <![CDATA[
+      ACK [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@example.com>;tag=[pid]al[call_number]
+      To: <sip:bob@example.com>[peer_tag_param]
+      Call-ID: [call_id]
+      [routes]
+      CSeq: 1 ACK
+      Max-Forwards: 70
+      Content-Length: 0
+    ]]>
+  </send>
+  <pause milliseconds="300"/>
+  <send retrans="500">
+    <![CDATA[
+      REFER [next_url] SIP/2.0
+      Via: SIP/2.0/[transport] [local_ip]:[local_port];branch=[branch]
+      From: <sip:alice@example.com>;tag=[pid]al[call_number]
+      To: <sip:bob@example.com>[peer_tag_param]
+      Call-ID: [call_id]
+      [routes]
+      CSeq: 2 REFER
+      Contact: <sip:alice@[local_ip]:[local_port]>
+      Refer-To: <sip:carol@example.com>
+      Referred-By: <sip:alice@example.com>
+      Max-Forwards: 70
+      Content-Length: 0
+    ]]>
+  </send>
+  <recv response="202"/>
+  <recv request="NOTIFY"/>
+  <send>
+    <![CDATA[
+      SIP/2.0 200 OK
+      [last_Via:]
+      [last_From:]
+      [last_To:]
+      [last_Call-ID:]
+      [last_CSeq:]
+      Content-Length: 0
+    ]]>
+  </send>
+</scenario>

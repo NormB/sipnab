@@ -440,6 +440,10 @@ pub struct TuiOptions {
     /// A notice for the status line when the session opens, about how the
     /// config was loaded: [`crate::config::config_notice`].
     pub startup_notice: Option<String>,
+    /// The notice for a config file whose `[[vcon.rule]]` this TUI run does
+    /// not carry out, when it has one: shown when the session opens, and
+    /// marked on status line 1 for the whole session.
+    pub vcon_rules_unrun: Option<String>,
 }
 
 /// Where a session's saves write, or why it may not save.
@@ -502,9 +506,11 @@ impl TuiOptions {
         app.set_names_save_path(self.name_setup.save_path);
         app.set_names_config_path(self.name_setup.config_path);
         // Every startup notice is shown; a later one must not hide an earlier.
+        app.vcon_rules_unrun = self.vcon_rules_unrun.is_some();
         let notices: Vec<String> = self
             .startup_notice
             .into_iter()
+            .chain(self.vcon_rules_unrun)
             .chain(
                 self.name_setup
                     .persist_refused

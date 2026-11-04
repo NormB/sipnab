@@ -129,9 +129,38 @@ impl PersistenceGate {
     }
 }
 
+/// Whether a content writer may write now, under `gate`.
+///
+/// THE rule every content writer asks: the vCon exporter, `-O`,
+/// `--export-audio` and the MCP file exports. `None` is a run with no
+/// companion server, where nothing can close a gate, so it writes.
+#[must_use]
+pub fn permits(gate: Option<&PersistenceGate>) -> bool {
+    gate.is_none_or(PersistenceGate::writes_permitted)
+}
+
+/// Why a content writer held its content back: one sentence, so every
+/// writer and every surface says the same thing.
+pub const WITHHELD: &str =
+    "persistence is off: an operator closed it with POST /v1/persistence {\"enabled\": false}";
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No gate writes; an open gate writes; a closed one does not.
+    #[test]
+    fn permits_is_the_gate_or_no_gate() {
+        assert!(permits(None), "a run with no server has nothing to close");
+        let gate = PersistenceGate::new(true);
+        assert!(permits(Some(&gate)), "an authorized gate starts open");
+        gate.set(false);
+        assert!(!permits(Some(&gate)), "a closed gate holds content back");
+        assert!(
+            !permits(Some(&PersistenceGate::new(false))),
+            "an unauthorized gate never permits"
+        );
+    }
     use std::sync::Arc;
     type TestError = Box<dyn std::error::Error>;
 

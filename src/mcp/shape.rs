@@ -165,8 +165,9 @@ pub fn sanitize_block(s: &str) -> String {
 /// text read as a new instruction block, and it costs nothing to remove.
 ///
 /// This is deliberately the same rule [`crate::mcp::sampling::sanitize`]
-/// applies in the other direction — that one guards what sipnab sends TO a
-/// model, this one guards what it hands BACK — so one threat model has one
+/// applies in the other direction — that one guards what sipnab would send TO
+/// a model (nothing sends it today), this one guards what it hands BACK — so
+/// one threat model has one
 /// implementation shape on both sides.
 ///
 /// The cap is applied on a character boundary, because a header is

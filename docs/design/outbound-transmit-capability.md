@@ -50,7 +50,7 @@ it is not the same guarantee:
    `KillUdpSocket::bind` ([`:322`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L322)) take it by
    reference, and `spawn_scanner_kill_worker`
    ([`:1542`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1542)) and `BatchRunner::new`
-   ([`batch.rs:2663`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2663)) by value. The sends themselves
+   ([`batch.rs:2769`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2769)) by value. The sends themselves
    take none, and that is the design rather than a gap: they happen in the
    scanner-kill worker, a process of its own, and a proof token cannot cross a
    pipe. The worker's capability is the descriptors it inherited — all of
@@ -82,8 +82,8 @@ let _ = handle.send_kill(KillRequest::SendResponse {
     dst_port: sip_msg.src_port,
 ```
 
-([`batch.rs:1879-1880`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1879-L1880), and identically at
-[`:1920-1921`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1920-L1921) for the `-K` path.)
+([`batch.rs:1917-1918`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1917-L1918), and identically at
+[`:1958-1959`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1958-L1959) for the `-K` path.)
 
 That is correct for its purpose — a scanner-kill reply must go back to the
 scanner, and there is nowhere else for it to go. It is also the entire reason the
@@ -118,7 +118,7 @@ The chain, verified:
   consumes it only for the kill worker
   ([`:731-734`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L731-L734)). The HEP sender block never looks at it.
 - It fires once per matched SIP message in the run loop
-  ([`batch.rs:1335`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1335)).
+  ([`batch.rs:1373`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1373)).
 - `bootstrap::plan`'s refusal tests only the kill flags —
   `cli.kill_scanner || !cli.kill_target.is_empty() || config.security.kill_scanner`
   ([`bootstrap.rs:245-247`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L245-L247)) — so no warning fires

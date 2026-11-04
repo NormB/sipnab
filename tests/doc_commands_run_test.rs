@@ -607,6 +607,25 @@ fn prepare(cmd: &str, sandbox: &Path, n: usize) -> Result<Option<Prepared>, Test
                 return Ok(None);
             }
             argv[i] = p.display().to_string();
+        } else if prev == "--expect" {
+            // A suite the evaluator accepts. `--expect` reads and checks its
+            // file while the command line is parsed, so an empty stand-in is
+            // refused as a usage error, and a page that leaves the suite to
+            // the reader (`sipnab.expect.toml`) would read as a broken
+            // command rather than one this gate could not set up.
+            // A suite the repository has, such as the fixture the CLI
+            // reference names, is judged as written.
+            let in_repo = repo().join(&argv[i]);
+            if !argv[i].starts_with('/') && in_repo.exists() {
+                argv[i] = in_repo.display().to_string();
+            } else {
+                let p = cwd.join("suite.expect.toml");
+                std::fs::write(
+                    &p,
+                    "[[rules]]\nmetric = \"count\"\nop = \">=\"\nvalue = 0\n",
+                )?;
+                argv[i] = p.display().to_string();
+            }
         } else if INPUT_FILE_FLAGS.contains(&prev.as_str()) {
             let p = cwd.join("input");
             std::fs::write(&p, "")?;

@@ -28,6 +28,7 @@ after it give:
 | GTP-U, VXLAN or GENEVE | yes | add `--capture-tunnels` |
 | Teredo or L2TPv2 | yes (L2TPv2 data messages only) | add `--capture-tunnels=3544` or `--capture-tunnels=1701` |
 | ESP | only when NULL-encrypted | pass your own BPF filter that adds it, such as `portrange 5060-5061 or ip proto 50` |
+| SCTP | yes, including a message split across DATA chunks | yes: the generated filter's `portrange` matches SCTP as well as UDP and TCP |
 | UDP-encapsulated ESP, or L2TPv3 over UDP | no | no |
 | anything else | no | no |
 
@@ -334,6 +335,35 @@ sipnab unwraps SIP carried over WebSocket
 sipnab reassembles IP fragments and TCP segments before it parses.
 So a SIP message split across packets reads as one message.
 `--no-reassembly` turns this off and parses every packet on its own.
+
+## SIP over SCTP
+
+sipnab reads SIP carried in SCTP DATA chunks ([RFC 4168](https://www.rfc-editor.org/rfc/rfc4168.html)),
+as it reads UDP and TCP, and needs no flag for it. It puts a message split
+across DATA chunks in separate packets back together before it parses it.
+
+```bash
+sipnab -N -I sip-over-sctp.pcap --report
+```
+
+A five-message call over SCTP, built with [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737.html) addresses, read as:
+
+```text
+22:13:20.000 192.0.2.10:5060 -> 192.0.2.20:5060 INVITE (SDP) SCTP
+22:13:20.500 192.0.2.20:5060 -> 192.0.2.10:5060 200 OK (SDP) SCTP
+22:13:21.000 192.0.2.10:5060 -> 192.0.2.20:5060 ACK SCTP
+22:13:21.500 192.0.2.10:5060 -> 192.0.2.20:5060 BYE SCTP
+22:13:22.000 192.0.2.20:5060 -> 192.0.2.10:5060 200 OK SCTP
+```
+
+The same capture with the INVITE split into two DATA chunks in two packets read
+6 packets as the same 5 SIP messages.
+
+- The transport column says `SCTP`.
+- `--portrange` applies to SCTP ports as it does to UDP and TCP.
+- A live capture needs nothing extra: libpcap compiles the generated filter's
+  `portrange 5060-5061` to match SCTP too (`tcpdump -d 'portrange 5060-5061'`
+  shows the comparison against IP protocol 132).
 
 ## STUN and TURN
 

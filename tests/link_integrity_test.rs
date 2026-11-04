@@ -1618,7 +1618,55 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // +10, docs/auth.md +3, docs/examples.md +2, docs/mcp-deploy.md +2,
     // docs/prometheus-metrics.md +2, docs/rest-api.md +2, docs/README.md +1,
     // docs/config-reference.md +1 and docs/mcp-estate.md +1.
-    const EXPECTED_WIKI_LINKS: usize = 2234;
+    // 2234 -> 2235 (#639, the TUI refusal of a `[[vcon.rule]]`): docs/errors.md +1,
+    // the new entry's link to the config search order in
+    // config-reference.md. Every other page held its count.
+    // 2235 -> 2237 (#642, the persistence gate covers every content writer):
+    // docs/README.md +1, the how-to index entry for "Stop writing call
+    // content partway through a run"; docs/vcon.md +1, that how-to's link to
+    // what the gate covers in rest-api.md. The how-to's renamed anchor
+    // changed two existing links and no count. Every other page held its
+    // count.
+    // 2237 -> 2247 (feat/surface-relay-polled, the polled relay reading and
+    // its how-to): cli-reference.md +1 (the `--relay-stats-interval` row's
+    // how-to), mcp-tools-relay.md +2 (the `relay_stats_polled` row and the
+    // how-to), mcp-tools.md +2 (its index row), relay-statistics.md +3 (the
+    // how-to's links to Before you start, the route and the tool), rest-api.md
+    // +1 (the how-to) and rtpengine.md +1 (to the route). Counted per page
+    // against origin/main 706e0e087; the train's other pages held their
+    // counts.
+    // 2247 -> 2326 (#640, the capture how-tos, one change): docs/hep.md +19,
+    // docs/least-privilege.md +11, docs/archives.md +5 (the three new pages:
+    // their tables of contents, step and troubleshooting cross-references, and
+    // the reference sections they point at); docs/examples.md +15 (the HEP
+    // server blocks, pitfalls and restart lines link hep.md or
+    // freeswitch-sipnab.md; the root recipe links least-privilege.md; two
+    // goal-table rows and the new live-capture and replay recipes' links);
+    // cli-reference.md +10 (the `-L`, `-H`, `--sandbox`, `--seccomp`,
+    // `--setup-caps`, `--chroot`, `--srtp-keys`, `--strip-secrets` and
+    // `--pcap-export-mode` rows and the Archives section link the task pages);
+    // README.md +3 (the three index entries); troubleshooting.md +3 (the
+    // export line and the two archive lines); tuning-capture.md +3; install.md
+    // +2; mcp-estate.md +2; homer-sipnab.md +1; tls-capture.md +1; and the
+    // pages that already discussed HEP now link hep.md: rest-api.md +2 (the
+    // export counts and the sender roster), mcp-deploy.md +1 (the listener
+    // guard) and vcon.md +1 (the HEP-fed live run). Counted per page against
+    // origin/main 9124a6f08, and again on the train's tree, where
+    // least-privilege.md has one more: its link to troubleshooting.md's
+    // output-file section, from the correction that `-O` is created after the
+    // drop.
+    // 2326 -> 2380 (#641, the analysis how-tos): capture-queries.md +11,
+    // follow-a-call.md +6 and expectations.md +5, their own links;
+    // cli-reference.md +5; mcp-tools-captures.md +5 (to the find-in-files
+    // section of capture-queries.md); examples.md +4; tui-walkthrough.md +4
+    // (+5, -1); README.md +3; mcp-estate.md +3; filter-dsl.md +2; plugins.md
+    // +2; asterisk-sipnab.md, freeswitch-sipnab.md, mcp-deploy.md and
+    // mcp-tools-security.md +1 each. Same-page anchors counted. Counted per
+    // page against origin/main 9124a6f08.
+    // 2380 -> 2381 (#626): internals/build-ci-release.md +1, the `test` and
+    // `test-results` entry of "What actually gates a merge" linking its new
+    // section "The suite in shards". Counted against origin/main 9124a6f08.
+    const EXPECTED_WIKI_LINKS: usize = 2381;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2881,7 +2929,11 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // from docs/README.md's How-to list.
     // 103 -> 104 (#638): docs/run-as-a-service.md, linked from
     // docs/README.md.
-    const EXPECTED_DOCS_PAGES: usize = 104;
+    // 104 -> 107 (#640): docs/hep.md, docs/archives.md and docs/least-privilege.md,
+    // the capture how-tos, each reached from docs/README.md.
+    // 107 -> 110 (#641): docs/capture-queries.md, docs/follow-a-call.md and
+    // docs/expectations.md.
+    const EXPECTED_DOCS_PAGES: usize = 110;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

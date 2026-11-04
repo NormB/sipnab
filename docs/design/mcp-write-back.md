@@ -59,7 +59,7 @@ at handshake.
 > //! dialog/stream stores (plus the optional alert engine).
 
 **As a runtime assertion to the client.** `get_info`
-([`server.rs:2364-2368`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2364-L2368)) sets the handshake
+([`server.rs:2362-2366`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2362-L2366)) sets the handshake
 `instructions` string every MCP client reads before it calls anything:
 
 > "sipnab MCP server — read-only access to captured SIP dialogs, RTP streams,
@@ -85,7 +85,7 @@ raw material and none of the interpretation. This is a real dead end, and it is
 the strongest argument on this page.
 
 **The read surface is rich enough that the asymmetry is conspicuous.** There are
-78 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
+79 tools ([`server.rs`](../../src/mcp/server.rs), `#[tool(` at `:938` through
 `:2260`), and several of them do genuine analysis rather than projection:
 `triage_call` (`:1927`), `check_codec_negotiation` (`:1999`),
 `diagnose_registration` (`:2085`), `compare_dialogs` (`:1722`). An agent that
@@ -132,7 +132,7 @@ because the incident is over.
 **The operator's screen is the tool's output.** sipnab has no other product. Every
 mutating verb proposed so far — tag a dialog, acknowledge a finding, name a host
 — edits the thing the operator is reading, and does so with no signal that it
-happened. `DialogStore::generation` ([`dialog_store.rs:1202`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1202))
+happened. `DialogStore::generation` ([`dialog_store.rs:1242`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1242))
 is bumped by every mutating method and exposed on no wire format: not in
 `DialogSummary` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56)), not in any REST
 response (`build_router`, [`api.rs:204-213`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L213) — eight
@@ -144,10 +144,10 @@ concrete rather than theoretical:
 
 - `DialogSummary.from_user` / `to_user` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56),
   populated at `:91-92`) are copied off the From/To URIs.
-- `get_message` ([`server.rs:5861`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5861)) returns headers and
+- `get_message` ([`server.rs:5865`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5865)) returns headers and
   body.
-- `search_messages` ([`server.rs:6319`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6319)) returns a
-  `snippet` built at [`:1391`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1391) from
+- `search_messages` ([`server.rs:6323`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6323)) returns a
+  `snippet` built at [`:1389`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1389) from
   `truncate_string(&String::from_utf8_lossy(&msg.raw), …)` — raw bytes off the
   wire, unmodified.
 
@@ -205,7 +205,7 @@ states the reasoning, and `:21-29` states why the fix is a type:
 > remembering.
 
 Both fixes reached MCP, and how they reached it is the point. `resolve_in_root`
-([`server.rs:1193`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1193)) accepts a bare filename and rejects
+([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177)) accepts a bare filename and rejects
 any separator, `..`, root prefix or drive letter *before* touching the
 filesystem — its doc comment (`:163-173`) argues that requiring one component
 has no middle ground, where "every clever normaliser eventually meets a symlink,
@@ -323,7 +323,7 @@ touching the analysis at all.
   Call-IDs, a verdict per call, free text — to a bare filename under
   `--mcp-file-root`.
 - It reaches the filesystem through `resolve_in_root`
-  ([`server.rs:1193`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1193)) exactly as `export_capture` and
+  ([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177)) exactly as `export_capture` and
   `export_audio` do, and therefore inherits `ProtectedInputs::check` and cannot
   land on a capture.
 - **Nothing reads it back.** No tool, no report, no REST route, no diagnosis.
@@ -344,7 +344,7 @@ store, no schema migration and no wire-visible generation counter.
 **What would change this.** Both of the following, not either:
 
 1. A wire-visible store identity — `generation`
-   ([`dialog_store.rs:1202`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1202)) surfaced on REST and
+   ([`dialog_store.rs:1242`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1242)) surfaced on REST and
    MCP responses — so a consumer can detect that what it is reading changed
    underneath it.
 2. A demonstrated need that `save_findings` does not meet, from someone who has
@@ -367,7 +367,7 @@ proposed the repair — that the guarantee is *no tool alters the analysis an
 operator is reading while leaving them reading it*. The repair has still not
 been made, and the same wording drift affects
 [`src/mcp/mod.rs:5`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L5) and the handshake string at
-[`server.rs:2365`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2365).
+[`server.rs:2363`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2363).
 
 **[Section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` has itself gone stale on one claim.** It states
 that the prompt-injection rule for tool descriptions "is convention, not

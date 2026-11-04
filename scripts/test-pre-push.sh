@@ -1101,24 +1101,20 @@ HOOK_CORPUS_SKIP=
 # by hand, and this scenario holds it to both cases: an ungated item that the
 # combo without the feature reports as dead code, and the same item gated.
 #
-# The fixture gets its own minimal workflow. check-feature-matrix.py reads the
-# combos and RUSTFLAGS from the crate it runs in, so without one it exits 2
-# and reports NOT CHECKED -- correct, and the reason this scenario has to
-# write one rather than rely on the real repo's.
+# The fixture gets its own minimal workflow and combination list.
+# check-feature-matrix.py reads the combos from .github/feature-combos.txt
+# and RUSTFLAGS from the workflow of the crate it runs in, so without them it
+# exits 2 and reports NOT CHECKED -- correct, and the reason this scenario
+# has to write them rather than rely on the real repo's.
 write_matrix_workflow() {
 	mkdir -p "$CRATE/.github/workflows"
 	cat >"$CRATE/.github/workflows/ci.yml" <<'EOF'
 name: CI
 env:
   RUSTFLAGS: -Dwarnings
-jobs:
-  features:
-    strategy:
-      matrix:
-        features:
-          - plain
-          - extra
+jobs: {}
 EOF
+	printf 'plain\nextra\n' >"$CRATE/.github/feature-combos.txt"
 	# Keeps every feature the EARLIER gates build (the reduced-combo gate
 	# checks tls/api/wasm) and adds two of its own. A scenario that narrowed
 	# this list would make the reduced-combo gate fail on a missing feature

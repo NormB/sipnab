@@ -146,6 +146,61 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // The feature-matrix entry: `scripts/check-feature-matrix.py --group I
+    // --pool P` runs one group. The script's flags, not sipnab's.
+    (
+        "group",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "pool",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    // The section on the suite in shards: `scripts/parallel-tests.py
+    // --shard-index I --shard-count N` runs one shard, which hands cargo
+    // `--test NAME` per target, and shard 0 `--lib --bins` and a `--doc` run.
+    // The script's flags and cargo's, not sipnab's.
+    (
+        "bins",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "doc",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "test",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "shard-index",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "shard-count",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // `git commit --amend -S --no-edit` and
     // `git rebase --exec 'git commit --amend --no-edit -S' <base>`: how the
     // contributing guide and the build page say to re-sign a commit the
@@ -876,6 +931,19 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "docs/internals/rtpengine-control-plane.md",
             "website/content/docs/internals/rtpengine-control-plane.md",
         ],
+    ),
+    // `--wait` and `--pipe` are systemd-run's. The archives page runs sipnab
+    // in a transient unit (`systemd-run --user --wait --pipe -p
+    // LoadCredential=archive-password:...`) to show the systemd credential
+    // source working, and those two flags keep the unit in the foreground and
+    // hand its output back. Scoped to that page and its generated mirror.
+    (
+        "wait",
+        &["docs/archives.md", "website/content/docs/archives.md"],
+    ),
+    (
+        "pipe",
+        &["docs/archives.md", "website/content/docs/archives.md"],
     ),
     // `--now` is systemd's, on `systemctl enable --now`. The cookbook's
     // "Run sipnab as a service" recipe gives a unit file and then the two
@@ -4318,9 +4386,13 @@ fn mcp_tool_table_lists_every_registered_tool() -> Result<(), TestError> {
     // OpenSIPS topology-hiding mappings the store holds. It reads and changes
     // nothing, so the split moves to 65 read-only of 78 and the thirteen
     // write-capable tools are unchanged.
+    // 78 -> 79 by `relay_stats_polled` (src/mcp/tools/relay.rs), which returns
+    // the newest reading of this run's own --relay-stats-interval poll. It
+    // sends nothing and changes nothing, so the split moves to 66 read-only
+    // of 79 and the thirteen write-capable tools are unchanged.
     assert_eq!(
         registered.len(),
-        78,
+        79,
         "found only {} #[tool(name = ...)] entries under src/mcp/ — the \
          attribute shape changed and this test is no longer reading the \
          registry: {registered:?}",
@@ -5082,7 +5154,16 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // `--diff-filter=A` lists those four markdown files.
     // 328 -> 330 (#638): docs/run-as-a-service.md, the systemd service page,
     // and its generated site mirror website/content/docs/run-as-a-service.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 330;
+    // 330 -> 336 (#640): the capture how-tos docs/hep.md, docs/archives.md and
+    // docs/least-privilege.md, and their site mirrors under
+    // website/content/docs/. Attributed against the staged diff:
+    // `--diff-filter=A` lists those six.
+    // 336 -> 342 (#641): docs/capture-queries.md, docs/follow-a-call.md and
+    // docs/expectations.md, the query, multi-leg and expectation-suite
+    // how-tos, and their three generated mirrors under website/content/docs/.
+    // Attributed against the staged diff: `--diff-filter=A` lists those six
+    // as the markdown files added.
+    const EXPECTED_MARKDOWN_FILES: usize = 342;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5853,7 +5934,21 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // listeners, what a client sees), docs/troubleshooting.md +2 (live
     // capture causes, listener answers), and the site mirror of each, +4, +4,
     // +2 and +2. No other changed page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1361;
+    // 1361 -> 1362: docs/design/surface-capability-matrix.md +1, the "Read
+    // the latest polled relay reading" row, which has no mirror.
+    // 1362 -> 1374 (#640, the capture how-tos, one change): docs/hep.md +2 (the
+    // auth-mode table and the troubleshooting table), docs/least-privilege.md
+    // +2 (the step table and the troubleshooting table), docs/archives.md +1
+    // (the troubleshooting table) and docs/tls-capture.md +1 (the
+    // `--pcap-export-mode` table), and each one's site mirror the same.
+    // Attributed per file against origin/main 9124a6f08: no other changed page
+    // gained or lost a table.
+    // 1374 -> 1396 (#641): capture-queries.md +2, follow-a-call.md +3,
+    // expectations.md +3, tui-walkthrough.md +1, examples.md +1 and
+    // plugins.md +1, and the site mirror of each of those six pages the same
+    // (+11). No other changed page gained or lost a table. Counted against
+    // origin/main 9124a6f08.
+    const EXPECTED_TABLES: usize = 1396;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -6354,11 +6449,13 @@ fn how_to_headings_stay_task_first() -> Result<(), TestError> {
         "read",
         "record",
         "register",
+        "replay",
         "run",
         "save",
         "search",
         "send",
         "set",
+        "start",
         "stream",
         "test",
         "trace",
@@ -7575,11 +7672,36 @@ fn the_wasm_check_targets_wasm_in_both_the_hook_and_ci() -> Result<(), TestError
     const TRIPLE: &str = "wasm32-unknown-unknown";
     let hook = include_str!("../.githooks/pre-push");
     let ci = include_str!("../.github/workflows/ci.yml");
+    // CI's wasm check is the `wasm` combination, which ci.yml's feature jobs
+    // run through scripts/check-feature-matrix.py since 2026-11-03. The
+    // script writes the command as a list, one argument per string, in its
+    // `if features == "wasm":` branch; joined back into a line here.
+    assert!(
+        ci.contains("python3 scripts/check-feature-matrix.py --group "),
+        "ci.yml no longer runs the feature combinations, wasm among them, \
+         through scripts/check-feature-matrix.py"
+    );
+    let script = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/check-feature-matrix.py"),
+    )?;
+    let branch = script
+        .split_once(r#"if features == "wasm":"#)
+        .and_then(|(_, rest)| rest.split_once("return "))
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(list, _)| list)
+        .ok_or("scripts/check-feature-matrix.py has no wasm branch in lint_command()")?;
+    let ci_check = branch
+        .split(',')
+        .map(|a| a.trim().trim_matches(['[', '"']))
+        .map(|a| if a == "features" { "wasm" } else { a })
+        .collect::<Vec<_>>()
+        .join(" ");
 
     for (label, text) in [
-        (".githooks/pre-push", hook),
-        (".github/workflows/ci.yml", ci),
+        (".githooks/pre-push", hook.to_string()),
+        ("scripts/check-feature-matrix.py", ci_check),
     ] {
+        let text = text.as_str();
         // Anti-vacuity: a file that no longer runs a wasm check at all would
         // otherwise satisfy every assertion below by having nothing to check.
         let runs: Vec<&str> = text

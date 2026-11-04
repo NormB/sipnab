@@ -155,7 +155,7 @@ task cards, which the generated-page mirror gate does not cover.
 **Evidence:** [`docs/README.md:20-29`](https://github.com/NormB/sipnab/blob/main/docs/README.md#L20-L29) promises tutorials that assume nothing and
 state what to expect. [`docs/tui-walkthrough.md:11-24`](https://github.com/NormB/sipnab/blob/main/docs/tui-walkthrough.md#L11-L24) instead begins with an
 unspecified `capture.pcap` or privileged live capture. The cookbook repeats the
-placeholder and approximate output ([`docs/examples.md:47-89`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L47-L89)). A redistributable
+placeholder and approximate output ([`docs/examples.md:48-92`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L48-L92)). A redistributable
 fixture already exists at [`website/static/demos/sample-call.pcap`](https://github.com/NormB/sipnab/raw/main/website/static/demos/sample-call.pcap).
 
 **Impact:** a first-time user cannot reproduce the tutorial without bringing
@@ -223,7 +223,7 @@ Every shell/config snippet is tested or labeled with its tested version/status.
 of the CLI matcher flags. [`docs/keybindings.md:1-24`](https://github.com/NormB/sipnab/blob/main/docs/keybindings.md#L1-L24) documents Sipnab's mappings rather
 than an upstream comparison, and CLI reference sections only label individual
 compatible flags (`docs/cli-reference.md:224-231,476`). The `-N` collision is
-notable ([`docs/cli-reference.md:576`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md#L576)).
+notable ([`docs/cli-reference.md:577`](https://github.com/NormB/sipnab/blob/main/docs/cli-reference.md#L577)).
 
 **Impact:** migration expectations are ambiguous and semantic differences can
 cause incorrect automation or operator muscle memory.
@@ -239,10 +239,10 @@ claimed compatibility and pins collisions/differences in tests.
 
 **Priority / type / effort:** P2 / test-coverage improvement / M–L
 
-**Evidence:** [`docs/examples.md:47-180`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L47-L180) relies on arbitrary capture content and
-[`docs/examples.md:83-89`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L83-L89) gives hypothetical output. Existing drift tests validate
+**Evidence:** [`docs/examples.md:48-183`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L48-L183) relies on arbitrary capture content and
+[`docs/examples.md:86-92`](https://github.com/NormB/sipnab/blob/main/docs/examples.md#L86-L92) gives hypothetical output. Existing drift tests validate
 flags and generated mirrors, but not most command outcomes
-([`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs); [`tests/dev_docs_drift_test.rs:1627-1671`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs#L1627-L1671)).
+([`tests/docs_drift_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/docs_drift_test.rs); [`tests/dev_docs_drift_test.rs:1636-1680`](https://github.com/NormB/sipnab/blob/main/tests/dev_docs_drift_test.rs#L1636-L1680)).
 
 **Impact:** syntactically valid examples can still regress semantically.
 
@@ -319,7 +319,7 @@ API contract changes, validation and documentation make the mutation explicit.
 
 **Evidence:** `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 fails at [`crates/sipnab-plugin-example/src/lib.rs:146`](https://github.com/NormB/sipnab/blob/main/crates/sipnab-plugin-example/src/lib.rs#L146) with
-`manual_range_contains`. The CI command in [`.github/workflows/ci.yml:168-171`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L168-L171)
+`manual_range_contains`. The CI command in [`.github/workflows/ci.yml:173-176`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L173-L176)
 omits `--workspace`, so the example crate escapes the lint gate.
 
 **Recommendation:** use `(0..SHORT_CALL_MS).contains(&elapsed)` and change local
@@ -392,7 +392,7 @@ to satisfy a line-count target.
 
 **Priority / type / effort:** P3 / preventive suggestion / XS
 
-**Evidence:** the feature matrix at [`.github/workflows/ci.yml:360-386`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L360-L386) starts with
+**Evidence:** the feature matrix at [`.github/workflows/ci.yml:293-319`](https://github.com/NormB/sipnab/blob/main/.github/workflows/ci.yml#L293-L319) starts with
 named features and does not run an empty `--no-default-features` build. During this
 review, `cargo check --no-default-features --lib` succeeded.
 
@@ -414,7 +414,7 @@ catches future accidental dependencies on `native` or another default feature.
 `sipnab.service` passes `-d %i` despite not being an instance unit
 (`packaging/sipnab.service:1,9`). It binds REST and standalone metrics
 non-loopback without credentials (`:9`), which REST refuses
-([`src/output/api.rs:443-465`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L443-L465); [`docs/rest-api.md:210-217`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L210-L217)) and metrics documents as
+([`src/output/api.rs:447-469`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L447-L469); [`docs/rest-api.md:210-217`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L210-L217)) and metrics documents as
 fail-closed ([`docs/rest-api.md:229-239`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L229-L239)). Yet [`docs/install.md:222-224`](https://github.com/NormB/sipnab/blob/main/docs/install.md#L222-L224) promises a
 packaged unit and service user.
 
@@ -476,7 +476,7 @@ either finds a Sipnab span in Tempo or explicitly says traces are unavailable.
 **Priority / type / effort:** P2 / capability improvement / M
 
 **Evidence:** REST health always returns literal `ok`
-([`src/output/api.rs:595-597`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L595-L597); [`docs/rest-api.md:263-265`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L263-L265)), and MCP health is also
+([`src/output/api.rs:599-601`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L599-L601); [`docs/rest-api.md:263-265`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L263-L265)), and MCP health is also
 unconditional ([`src/mcp/transport.rs:269-272`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L269-L272)). Existing capture state is not
 consulted by these probes.
 

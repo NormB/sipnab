@@ -77,7 +77,7 @@ copying. `--fail2ban` on its own now arms no detector, so it emits nothing — a
 an operator who asked for a jail log and receives an empty file will read it as
 "nothing attacked me". That is the most dangerous way for a security tool to be
 silent, so it says so, once, at startup
-([`batch.rs:2468-2475`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2468-L2475)):
+([`batch.rs:2506-2513`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2506-L2513)):
 
 > "--fail2ban writes scanner and registration-flood detections, but no detector
 > is running, so this run will emit nothing. An empty jail log means 'nothing was
@@ -91,7 +91,7 @@ safety.**
 
 The obvious repair for the above — arm the existing behavioral scanner detector
 from `--fail2ban` — was measured before it was made, and the measurement is
-recorded in the tree at [`batch.rs:2436-2444`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2436-L2444):
+recorded in the tree at [`batch.rs:2474-2482`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2474-L2482):
 
 > on a real carrier trunk […] produces 7008 detections naming 180 peers, because
 > the behavioral signature counts OPTIONS and the busiest "scanners" are the
@@ -123,7 +123,7 @@ suite.
 This is already how the tree behaves, and it should be written down as policy
 rather than left as a judgement call that happened to go well once. The
 `scanner_detector` is `Some` only when the kill path is active
-([`batch.rs:2445-2461`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2445-L2461)), and the comment above it declines
+([`batch.rs:2483-2499`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2483-L2499)), and the comment above it declines
 to arm it from `--fail2ban` "until the signature can tell a keepalive from an
 enumeration". That is the rule being applied. Section 4 is what it takes to
 satisfy it.

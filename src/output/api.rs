@@ -213,6 +213,10 @@ pub struct RelayRestConfig {
     /// `--api-allow-relay-query` is set. Its absence beside a present `relay` is
     /// exactly `not_permitted`.
     pub permit: Option<crate::security::transmit_guard::TransmitPermit>,
+    /// The newest reading this run's `--relay-stats-interval` poll obtained,
+    /// read by `GET /v1/relay/stats/polled`. Reading it transmits nothing, so
+    /// it needs neither `relay` nor `permit`. `None` reads as `not_polling`.
+    pub polled: Option<std::sync::Arc<crate::output::relay_polled::PolledStore>>,
 }
 
 /// Shared state passed to every axum handler via `State(...)`.
@@ -1115,6 +1119,9 @@ pub fn build_router(state: ApiState) -> Router {
         // with the static /names path. Polling (C5) is not offered here.
         .route("/v1/relay/stats", get(get_relay_stats))
         .route("/v1/relay/stats/names", get(get_relay_stat_names))
+        // The reading this run's own poll obtained: reading it transmits
+        // nothing, and starting a poll is still CLI only.
+        .route("/v1/relay/stats/polled", get(get_relay_stats_polled))
         .route("/v1/relay/stats/call/{call_id}", get(get_relay_stats_call))
         .route("/v1/relay/compare/{call_id}", get(get_relay_compare))
         .route("/v1/relay/holdings", get(get_relay_holdings))
@@ -6114,6 +6121,46 @@ async fn get_relay_stat_names(
     Ok(Json(body))
 }
 
+/// `GET /v1/relay/stats/polled` — the newest reading this run's
+/// `--relay-stats-interval` poll obtained (C5).
+///
+/// Answers [`crate::output::relay_polled::PolledStore::answer`], the answer
+/// the MCP `relay_stats_polled` tool returns. It transmits nothing, so unlike
+/// the other relay routes it needs no `--api-allow-relay-query`.
+#[utoipa::path(
+    get,
+    path = "/v1/relay/stats/polled",
+    tag = "relay",
+    summary = "The relay statistics this run last polled",
+    description = "The newest reading of the relay's own statistics that this run's \
+                   --relay-stats-interval poll obtained, tiered relay_reported, in the form \
+                   /v1/relay/stats returns with origin polled, interval_secs, obtained_at and \
+                   age_secs. Reading it sends nothing to the relay, so it needs no \
+                   --api-allow-relay-query; starting a poll is CLI only. outcome is ok, \
+                   no_reading_yet (the poll has obtained nothing; last_poll says why the \
+                   last attempt failed) or not_polling (this run does not poll). last_poll \
+                   is present when the newest attempt failed after the reading.",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "outcome=ok with the polled reading, or no_reading_yet / not_polling.", body = crate::output::relay_polled::PolledAnswer),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_relay_stats_polled(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let now = chrono::Utc::now();
+    let body = state.relay_query.polled.as_ref().map_or_else(
+        || crate::output::relay_polled::PolledStore::default().answer(now),
+        |store| store.answer(now),
+    );
+    Ok(Json(body))
+}
+
 /// `GET /v1/relay/stats/call/{call_id}` — the relay's per-call counters (C2).
 #[utoipa::path(
     get,
@@ -7695,6 +7742,7 @@ impl utoipa::Modify for BearerAuth {
         get_stats,
         get_relay_stats,
         get_relay_stat_names,
+        get_relay_stats_polled,
         get_relay_stats_call,
         get_relay_compare,
         get_relay_holdings,
@@ -7751,6 +7799,11 @@ impl utoipa::Modify for BearerAuth {
         schema::DimensionDiffView,
         schema::CaptureComparisonView,
         schema::RelayStatsResponse,
+        crate::output::relay_polled::PolledAnswer,
+        crate::output::relay_polled::PolledOutcome,
+        crate::output::relay_polled::PolledValue,
+        crate::output::relay_polled::PolledRefusal,
+        crate::output::relay_polled::LastPoll,
         schema::DialogList,
         schema::DialogSummary,
         schema::TimingSummary,
@@ -10034,6 +10087,7 @@ mod tests {
         let rq = RelayRestConfig {
             relay: Some(Arc::new(StubRelay)),
             permit: None,
+            polled: None,
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
         assert_eq!(v["outcome"], "not_permitted");
@@ -10097,6 +10151,7 @@ mod tests {
         let rq = RelayRestConfig {
             relay: Some(Arc::new(HoldsRelay)),
             permit: Some(live_permit()?),
+            polled: None,
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Holdings { max_calls: 10 }, &empty_streams());
         assert_eq!(v["outcome"], "ok");
@@ -10113,6 +10168,7 @@ mod tests {
         let rq = RelayRestConfig {
             relay: Some(Arc::new(HoldsRelay)),
             permit: Some(live_permit()?),
+            polled: None,
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Holding("call-x".into()), &empty_streams());
         assert_eq!(v["outcome"], "ok");
@@ -10264,6 +10320,7 @@ mod tests {
         Ok(RelayRestConfig {
             relay: Some(Arc::new(ScriptedRelay { wide, per_call })),
             permit: Some(live_permit()?),
+            polled: None,
         })
     }
 
@@ -12139,6 +12196,55 @@ mod tests {
         ] {
             assert_eq!(t[key], want, "th_callid.{key}: {v}");
         }
+        Ok(())
+    }
+
+    /// `GET /v1/relay/stats/polled` returns the reading the operator's
+    /// `--relay-stats-interval` poll obtained, with no relay access and no
+    /// `--api-allow-relay-query`: reading it transmits nothing. Without a
+    /// poll it says so.
+    #[tokio::test]
+    async fn relay_stats_polled_returns_the_polls_reading() -> Result<(), TestError> {
+        use crate::output::relay_polled::{PolledReading, PolledStore};
+        use crate::stats_vocab::{relay_reported, resolve_for_wire};
+        let get = |state: ApiState| async move {
+            let resp = build_router(state)
+                .oneshot(test_request("/v1/relay/stats/polled")?)
+                .await
+                .map_err(|e| format!("oneshot: {e:?}"))?;
+            let status = resp.status();
+            let body = body_to_string(resp.into_body()).await?;
+            Ok::<_, TestError>((status, body))
+        };
+        let (status, body) = get(make_state()).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let v: Value = serde_json::from_str(&body)?;
+        assert_eq!(v["outcome"], "not_polling", "{v}");
+
+        let store = Arc::new(PolledStore::default());
+        store.start(5);
+        store.record(PolledReading {
+            wire: resolve_for_wire(&relay_reported(&[(
+                "sessions".to_string(),
+                "3".to_string(),
+            )])),
+            relay: "relay at 192.0.2.10:22222".to_string(),
+            obtained_at: chrono::Utc::now(),
+        });
+        let mut state = make_state();
+        state.relay_query.polled = Some(Arc::clone(&store));
+        assert!(
+            state.relay_query.relay.is_none() && state.relay_query.permit.is_none(),
+            "the reading needs no relay access"
+        );
+        let (status, body) = get(state).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let v: Value = serde_json::from_str(&body)?;
+        assert_eq!(v["outcome"], "ok", "{v}");
+        assert_eq!(v["origin"], "polled", "{v}");
+        assert_eq!(v["interval_secs"], 5, "{v}");
+        assert_eq!(v["statistics"][0]["name"], "sessions", "{v}");
+        assert_eq!(v["statistics"][0]["tier"], "relay_reported", "{v}");
         Ok(())
     }
 

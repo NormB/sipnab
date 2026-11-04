@@ -5,9 +5,9 @@
 """Download the test-suite output of CI's run of one commit.
 
 pages.yml publishes the homepage's automated-test count, and that count must
-describe the suite at the commit being deployed. ci.yml's Check job on Linux
-already runs the full suite, derives the count with
-scripts/published-test-count.py, and uploads the run's output as the
+describe the suite at the commit being deployed. ci.yml's `test` job runs the
+full suite on Linux, in shards, and its `test-results` job merges their
+outputs, derives the count with scripts/published-test-count.py, and uploads the run's output as the
 `suite-output` artifact. The deploy reuses that run instead of running the
 suite a second time with a second copy of its setup.
 
@@ -46,8 +46,9 @@ def next_action(run, artifact_names):
     if run.get("status") == "completed":
         return "fail", (
             f"CI run {run['id']} finished without a {ARTIFACT} artifact "
-            f"(conclusion: {run.get('conclusion')}): the Check job on Linux did "
-            "not pass its Test and count steps, so there is no count to publish"
+            f"(conclusion: {run.get('conclusion')}): the Linux suite (ci.yml's test "
+            "and test-results jobs) did not pass its Test and count steps, so "
+            "there is no count to publish"
         )
     return "wait", f"CI run {run['id']} is {run.get('status')}"
 
@@ -84,7 +85,8 @@ def main(argv=None) -> int:
     ap.add_argument("--repo", required=True)
     ap.add_argument("--sha", required=True)
     ap.add_argument("--dest", required=True)
-    # CI's Check job is bounded at 40 minutes, and the run can queue first.
+    # CI's test jobs are bounded at 45 minutes and test-results at 15, and
+    # the run can queue first.
     ap.add_argument("--deadline-secs", type=int, default=3600)
     ap.add_argument("--poll-secs", type=int, default=30)
     args = ap.parse_args(argv)

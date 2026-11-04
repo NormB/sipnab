@@ -78,18 +78,18 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:2854`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2854)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:2905`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L2905)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
-- **Auto-detection.** [`src/app/bootstrap.rs:880`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L880) substitutes a default interface
+- **Auto-detection.** [`src/app/bootstrap.rs:878`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L878) substitutes a default interface
   when the plan produced `None`.
-- **Channel shape.** [`src/app/bootstrap.rs:926`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L926) picks a batched channel for
+- **Channel shape.** [`src/app/bootstrap.rs:924`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L924) picks a batched channel for
   `File` and a per-packet channel for everything else, because a live source's
   packets have to become visible the moment they arrive.
 - **Transmit permission.** `TransmitPermit::for_source`
   ([`src/security/transmit_guard.rs:88`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L88)) grants or refuses the scanner-kill path
   from the source *variant*: `Live` and `Hep` yes, `File` and `Uprobe` no.
-- **Thread spawn.** [`src/app/bootstrap.rs:936`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L936) branches to
+- **Thread spawn.** [`src/app/bootstrap.rs:934`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L934) branches to
   `start_multi_capture` for `--multi-device`, otherwise `start_capture`
   ([`src/capture/native.rs:471`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L471)), which matches the variant and spawns one named
   thread per arm.
@@ -102,7 +102,7 @@ uprobe reader — builds a `Packet` ([`src/capture/packet.rs:658`](https://githu
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
 ([`src/capture/channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)). The consumer is the batch receive loop at
-[`src/app/batch.rs:2831`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2831), which stops when the channel disconnects — that
+[`src/app/batch.rs:2869`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2869), which stops when the channel disconnects — that
 is, when the last sender clone drops.
 
 **A second source joins here and nowhere else.** The channel is already
@@ -195,7 +195,7 @@ Timing deserves a firmer no. "The stream started 40 ms after the 200 OK, so it
 belongs to that call" is a coincidence detector on a busy proxy, where dozens of
 calls answer per second and every one of them starts media. sipnab already
 carries a timing-based leg correlator at score 50 out of 100
-([`src/sip/dialog_store.rs:1419`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1419)), the lowest of seven strategies, and that is for
+([`src/sip/dialog_store.rs:1459`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1459)), the lowest of seven strategies, and that is for
 correlating *signaling to signaling* where a Call-ID is present as a
 cross-check. Using timing to attach media to a dialog has no such cross-check.
 It should stay out.
@@ -332,7 +332,7 @@ stamp only the name. Ordinals come from [`src/capture/file.rs:778`](https://gith
 `first_frame` is `None`, and nothing on a dialog or a stream records which source
 produced it. `input_origin` survives to the parser and then stops: `grep -rn
 input_origin src/sip/ src/rtp/ src/output/` finds only test fixtures, and the one
-real consumer is the scanner-kill gate at [`src/app/batch.rs:3680`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3680).
+real consumer is the scanner-kill gate at [`src/app/batch.rs:3718`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3718).
 
 That is the extension this feature needs, and it is small: stamp a per-source
 ordinal in the live and HEP readers so `frame_ref` starts returning `Some`, and
@@ -387,7 +387,7 @@ nothing.
 Each reader keeps a thread-local counter and stops at `config.count`
 ([`src/capture/hep.rs:1544`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1544) and its check; [`src/capture/live.rs:573`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L573)), and the
 consumer independently breaks at `total_count >= max_count`
-([`src/app/batch.rs:3051`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3051)). Because each reader gets a clone of the same
+([`src/app/batch.rs:3089`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3089)). Because each reader gets a clone of the same
 `CaptureConfig`, the per-reader copies are per source, so a member can stop
 itself while the other keeps going. The consumer's total still bounds the run,
 so the flag does not silently double — but the per-reader stop is a source-level
@@ -399,10 +399,10 @@ own start, and the starts are within milliseconds. No shared state needed.
 
 **Shutdown.** Already correct. Every reader polls `signals::shutdown_requested`,
 the coordinator drops its `tx` clone so the channel closes when the last reader
-exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:2831`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2831)).
+exits, and the batch loop breaks on `Disconnected` ([`src/app/batch.rs:2869`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2869)).
 When one member ends and the other continues — a HEP sender restarting while the
 NIC keeps capturing — the loop keeps running, which is correct: `source_exhausted`
-([`src/app/batch.rs:3175`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3175)) means every source is done, and with two sources it
+([`src/app/batch.rs:3213`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3213)) means every source is done, and with two sources it
 should keep meaning exactly that.
 
 One consequence to accept rather than fix: **the channel carries no
@@ -432,14 +432,14 @@ work; until it exists, this feature should not claim that a quiet HEP source
 means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
-([`src/app/bootstrap.rs:687`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L687)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:6856`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6856)) already names both reasons a
+([`src/app/bootstrap.rs:685`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L685)), so it never sees a live or HEP source. The existing
+`cores_ignored_warning` ([`src/app/bootstrap.rs:6920`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6920)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
 concrete casualty. It initializes on the first packet's `link_type`
-([`src/app/batch.rs:2846`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2846)), and the two members disagree: live capture yields
+([`src/app/batch.rs:2884`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2884)), and the two members disagree: live capture yields
 `DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:913`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L913)) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
 Ethernet, no IP, no UDP. That absence is deliberate and documented at
@@ -488,7 +488,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
   ([`src/capture/parse.rs:84`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L84) onward). Combining is coherent in principle and buys
   nothing over `-d` plus `--keylog`; leave it refused until someone asks.
 - **`--multi-device` with `-L`.** `--multi-device` reinterprets the `-d` string as
-  a comma-separated list ([`src/app/bootstrap.rs:936`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L936)). Composing a list with a
+  a comma-separated list ([`src/app/bootstrap.rs:934`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L934)). Composing a list with a
   HEP member is reasonable and should wait for stage three.
 - **`-O` with a composite.** See [section 5.2, "What breaks"](#52-what-breaks).
 - **`--cores > 1`.** Already warned, offline-only, no change.
@@ -496,8 +496,8 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 ### 6.3 What the operator gets told
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
-message ([`src/app/bootstrap.rs:629-655`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L629-L655)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:6856`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6856)), `-I` beating `-d` warns
+message ([`src/app/bootstrap.rs:627-653`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L627-L653)), `--cores` on a live source warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:6920`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6920)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

@@ -171,7 +171,15 @@ drop counters, and set -B/--buffer explicitly to pin a size.
 ```
 
 sipnab honors an explicit small `-B` exactly and never promotes it upward.
-`-B 1` on a constrained box means 1 MiB.
+`-B 1` on a constrained box means 1 MiB. It refuses `-B 0` and `--snaplen 0`,
+which would capture nothing, with exit `2`:
+
+```text
+error: invalid value '0' for '--buffer <MIB>': 0 is not in 1..=4294967295
+```
+
+The same values in `[capture]` stop the run with exit `1`:
+`invalid config value: [capture] snaplen must be > 0`.
 
 ### Request a buffer larger than 2047 MiB
 
@@ -262,6 +270,38 @@ sudo sipnab -N -d eth0 "host 203.0.113.10"
 Use a narrower filter first when drops persist while a core is at 100%. A
 larger buffer does not raise the rate at which sipnab reads packets. A filter
 lowers the number it has to read.
+
+**Keep the filter in `sipnab.toml`** for a capture you run often. A positional
+filter or `--bpf-file` replaces it for one run:
+
+```toml
+[capture]
+bpf_filter = "port 5060"
+```
+
+**The same filter applies to a capture file.** `-I` reads through it too: the
+sample capture's 633 packets came down to its 33 SIP messages, with the filter
+given either way:
+
+```bash
+sipnab -N -I sample-call.pcap --report --no-cli-print 'port 5060'
+```
+
+```text
+INFO sipnab::app::batch: sipnab: 33 packets captured, 33 SIP messages, 0 RTP packets across 0 streams
+```
+
+**Put the filter last.** Everything after the first word sipnab does not
+recognize as an option becomes the filter, options included. A SIP word there,
+as `sngrep` and `sipgrep` take, does not compile:
+
+```text
+Capture source failed to open: Failed to compile BPF filter 'INVITE --config /dev/null' against 'website/static/demos/sample-call.pcap'. sipnab reads only a capture (BPF) filter after its options. To match SIP text, use -e '<pattern>': sngrep and sipgrep take a match expression there first, and sipnab does not.: libpcap error: can't parse filter expression: syntax error
+```
+
+**Change it while the TUI runs.** `B` opens the
+[Capture filter editor](keybindings.md#capture-filter-editor), which narrows or
+widens the running filter and re-reads a capture file under the new one.
 
 > **Careful with RTP.**
 >
@@ -548,6 +588,50 @@ irrelevant. Look outside sipnab:
 - **A tap or SPAN port that is already oversubscribed**
   - If the mirror source is dropping, nothing on the capture host can recover
     it.
+
+### Read the interface's own counters
+
+sipnab's two drop counters describe its capture handle. The interface keeps
+counters of its own in `/sys/class/net`, and sipnab reports them beside its
+own on the runtime surface: REST `GET /v1/runtime` and the MCP `runtime_stats`
+tool. Start the capture with the REST API on:
+
+```bash
+sudo sipnab -N -d eth0 --api 127.0.0.1:8080
+```
+
+Then, from another terminal:
+
+```bash
+curl -s http://127.0.0.1:8080/v1/runtime | jq .interfaces
+```
+
+A run on a lab bridge, `hepx`, answered:
+
+```json
+[
+  {
+    "mtu": 1500,
+    "name": "hepx",
+    "operstate": "down",
+    "rx_bytes": 771185,
+    "rx_dropped": 0,
+    "rx_errors": 0,
+    "rx_missed_errors": 0,
+    "rx_packets": 1469,
+    "speed_mbps": null
+  }
+]
+```
+
+- `interface/driver` drops that climb with `rx_missed_errors` are the NIC
+  running out of ring: raise it with `ethtool -G`, or spread the load with RSS.
+- `kernel buffer` drops that climb while these stay flat are sipnab's own
+  ring: go back to [The kernel capture buffer](#the-kernel-capture-buffer--b----buffer).
+- A run with `--api` keeps serving after the capture ends, until you stop it
+  with Ctrl-C, so the numbers stay readable.
+- In the TUI, `h` opens [Capture health](keybindings.md#capture-health), with
+  the same loss counters.
 
 ### A different capture backend: `netmap:`
 

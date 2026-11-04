@@ -18,6 +18,9 @@
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
+#[path = "support/markdown.rs"]
+mod markdown;
+
 use std::path::Path;
 use std::process::Command;
 
@@ -458,6 +461,104 @@ fn srtp_keys_prints_warning() -> Result<(), TestError> {
     assert!(
         line.contains("WARN") && line.contains("use only in test environments"),
         "the manual-keys line must be a WARNING that says where the keys belong: {line}"
+    );
+    Ok(())
+}
+
+/// The page that documents the `--srtp-keys` file format for operators.
+const SRTP_KEYS_PAGE: &str = "docs/tls-capture.md";
+
+/// The heading of the section that shows the `--srtp-keys` file.
+const SRTP_KEYS_HEADING: &str = "### The `--srtp-keys` file";
+
+/// The example `--srtp-keys` file the operator page shows: the body of the
+/// first fenced block after [`SRTP_KEYS_HEADING`].
+fn documented_srtp_key_file() -> Result<String, TestError> {
+    let text = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(SRTP_KEYS_PAGE))?;
+    let heading = text
+        .lines()
+        .position(|l| l.trim_end() == SRTP_KEYS_HEADING)
+        .ok_or_else(|| format!("{SRTP_KEYS_PAGE} has no `{SRTP_KEYS_HEADING}` section"))?;
+    let fence = markdown::fences(&text)
+        .into_iter()
+        .find(|f| f.line > heading + 1)
+        .ok_or_else(|| format!("{SRTP_KEYS_PAGE}: no code block after `{SRTP_KEYS_HEADING}`"))?;
+    Ok(fence.body)
+}
+
+/// The lines of a key file that carry a key: neither blank nor a comment,
+/// the rule `parse_srtp_key_file` applies.
+fn key_lines(file: &str) -> Vec<&str> {
+    file.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
+
+/// The example key file on the operator page parses, line for line, with the
+/// key and salt lengths each line's suite requires. A page that shows a format
+/// the parser refuses sends the reader to a startup error they cannot explain.
+#[test]
+fn the_documented_srtp_key_file_parses() -> Result<(), TestError> {
+    use sipnab::rtp::srtp::{SrtpSuite, parse_srtp_key_file};
+    let body = documented_srtp_key_file()?;
+    let lines = key_lines(&body);
+    assert!(
+        lines.len() >= 2,
+        "the example should show more than one key line:\n{body}"
+    );
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("srtp.keys");
+    std::fs::write(&path, &body)?;
+    let keys = parse_srtp_key_file(&path)?;
+    assert_eq!(
+        keys.len(),
+        lines.len(),
+        "every key line of the example must yield one key:\n{body}"
+    );
+    for (key, line) in keys.iter().zip(&lines) {
+        let want_key = match key.suite {
+            SrtpSuite::AesCm256HmacSha1_80 => 32,
+            SrtpSuite::AesCm128HmacSha1_80 | SrtpSuite::AesCm128HmacSha1_32 => 16,
+            ref other => {
+                return Err(format!("`{line}` names no suite sipnab knows: {other:?}").into());
+            }
+        };
+        assert_eq!(
+            key.master_key.len(),
+            want_key,
+            "master key length for `{line}`"
+        );
+        assert_eq!(key.master_salt.len(), 14, "master salt length for `{line}`");
+        let ssrc = line
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("ssrc="))
+            .map(str::parse::<u32>)
+            .transpose()?;
+        assert_eq!(key.ssrc, ssrc, "the SSRC `{line}` names");
+    }
+    Ok(())
+}
+
+/// The example key file on the operator page loads in a real run, and the run
+/// announces the key count the page says to look for.
+#[test]
+fn the_documented_srtp_key_file_loads_in_a_run() -> Result<(), TestError> {
+    let body = documented_srtp_key_file()?;
+    let count = key_lines(&body).len();
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("srtp.keys");
+    std::fs::write(&path, &body)?;
+    let run = sipnab(&["-N", "-I", SIP_CALL, "--srtp-keys", s(&path)?])?;
+    assert_eq!(run.code, Some(0), "{}", run.dump());
+    let line = format!(
+        "SRTP decryption active: {count} key(s) from {}",
+        path.display()
+    );
+    assert!(
+        run.stderr.contains(&line),
+        "missing `{line}`\n{}",
+        run.dump()
     );
     Ok(())
 }

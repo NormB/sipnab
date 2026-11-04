@@ -1249,10 +1249,15 @@ Skipping 'session.tgz/lab/cell-trace.pcap': empty (0 bytes)
   identify what it is. A text file starts with printable bytes: a member
   `notes.txt` holding `call notes` reads `Skipping 'session.tgz/lab/notes.txt':
   not a capture (starts with 63 61 6c 6c, which is not pcap or pcapng)`.
-- **`ZIP data, which sipnab does not unwrap`** (or 7-Zip, `zstd`, `xz`,
-  `bzip2`, LZ4).
+- **`xz data, which sipnab does not unwrap`** (or `zstd`, `bzip2`, LZ4).
   - Unpack that member with the tool that made it.
   - Then point `-I` at what comes out.
+  - sipnab reads ZIP and 7z members itself, password-protected ones
+    included. A build without the `archive` feature names them here instead
+    ([Read captures from tar, ZIP and 7z archives](archives.md)).
+- **`encrypted, and no password was supplied`** or **`encrypted, and no
+  password supplied opens it`**: a locked ZIP or 7z member. Give sipnab the
+  password ([Read a password-protected ZIP or 7z](archives.md#read-a-password-protected-zip-or-7z)).
 - **`has link type N, which sipnab does not decode`**.
   - The member is a capture of something other than IP, such as an LTE or NR
     MAC log from a test handset.
@@ -1312,6 +1317,8 @@ no sender row. Its address appears under `refused_sources` with the reason:
 | `hmac_timestamp_out_of_window` | The sender's clock is off by more than `--hep-hmac-window`; fix NTP there |
 | `hmac_bad_mac` | A wrong key under `--hep-auth-mode hmac`, or a packet altered on the way |
 | `hmac_unsupported_version` | The sending sipnab predates the current HMAC token; upgrade it |
+| `hmac_bad_format` | The packet carries no HMAC token this listener can read: most often a sender in `--hep-auth-mode plain` against a listener in `hmac` mode. Set the same mode on both |
+| `hmac_replay` | A token this listener has already accepted, inside the window: a packet sent twice, or replayed |
 | `rate_limit_global`, `rate_limit_per_peer` | Traffic above `--hep-rate-limit` or `--hep-rate-limit-per-peer` |
 | `peer_tracking_full` | More senders at once than `[limits] max_tracked_peers` |
 | `malformed` | The bytes are not HEP; check the sender speaks HEP v3, or v2 over UDP |
@@ -1332,19 +1339,26 @@ The sender may itself be a sipnab (`--hep-send`). Then ask it too.
 
   Start the collector, or correct the address, then start the sender again.
 - Its `runtime_stats` or `GET /v1/runtime` carries `hep_export`.
-- A headless run ends with a `HEP export to {destination} over {transport}:
-  {sent} packet(s) sent, {failed}, {reconnects} reconnect(s); sent means
-  {delivery}` line. `{failed}` is `none failed`, or the number that failed
-  followed by each kind and its count, such as `3 failed (connect 3)`. A UDP
-  run of `sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --hep-send
-  127.0.0.1:19999 --no-cli-print` ends with `HEP export to 127.0.0.1:19999
-  over udp: 10 packet(s) sent, none failed, 0 reconnect(s); sent means handed
-  to the kernel: UDP reports no delivery, so a collector that is down produces
-  no failure here`.
-  - `connect` failures are reconnects to a collector that went down or became
-    unreachable.
-  - `tls_handshake` failures are a collector whose certificate the sender does
-    not accept.
+- A headless run ends with one `HEP export to` line. A UDP run of
+  `sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --hep-send
+  127.0.0.1:19999 --no-cli-print` ends with:
+
+  ```text
+  HEP export to 127.0.0.1:19999 over udp: 10 packet(s) sent, 10 queued, 0 replayed after an outage, none dropped, 0 still queued, none failed, 0 reconnect(s); sent means handed to the kernel: UDP reports no delivery, so a collector that is down produces no failure here unless its host refuses with ICMP
+  ```
+
+  - `none dropped`, or the number lost and each reason: `queue_full`,
+    `stopped` or `unsent_at_exit`. These are the only packets lost.
+  - `N failed attempt(s)`, with each kind and its count, such as
+    `9 failed attempt(s) (connect 8, write 1)`. A failed attempt keeps its
+    packet queued, so a failure is not a loss.
+    - `connect` and `write` failures are a collector that went down or became
+      unreachable. The sender redials with backoff and replays the queue.
+    - `tls_handshake` failures are a collector whose certificate the sender
+      does not accept.
+  - `replayed after an outage` counts what the sender held and delivered once
+    the collector came back. [When the collector goes
+    away](hep.md#when-the-collector-goes-away) shows a restart.
 
 Over UDP the sender cannot tell.
 

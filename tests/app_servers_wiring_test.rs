@@ -383,9 +383,9 @@ fn reply(reader: &mut BufReader<std::process::ChildStdout>, id: i64) -> serde_js
 /// `--mcp-allow-save-findings` reaches the server the batch path builds, and
 /// closing stdin ends the run with exit 0.
 ///
-/// The same session also carries `--mcp-allow-tls-capture` and
-/// `--mcp-sampling-budget`, so each toggle's arm of the builder runs on a real
-/// process; the write is the one whose effect a client can read back.
+/// The same session also carries `--mcp-allow-tls-capture`, so that toggle's
+/// arm of the builder runs on a real process too; the write is the one whose
+/// effect a client can read back.
 #[test]
 fn the_mcp_toggles_reach_the_server_and_closing_stdin_ends_the_run() -> Result<(), TestError> {
     let home = tempfile::tempdir()?;
@@ -398,8 +398,6 @@ fn the_mcp_toggles_reach_the_server_and_closing_stdin_ends_the_run() -> Result<(
             "--quiet",
             "--mcp-allow-save-findings",
             "--mcp-allow-tls-capture",
-            "--mcp-sampling-budget",
-            "5",
         ],
         home.path(),
         Stdio::piped(),
@@ -1158,5 +1156,35 @@ fn a_config_without_a_rule_does_not_authorize_persistence() -> Result<(), TestEr
 
     let (code, log) = run.terminate();
     assert_eq!(code, Some(0), "SIGTERM ends a served run cleanly:\n{log}");
+    Ok(())
+}
+
+// ── A deprecated flag says so ────────────────────────────────────────────
+
+/// `--mcp-sampling-budget` is still accepted, and the run says at startup
+/// that it has no effect.
+///
+/// sipnab never sends an MCP sampling request: SEP-2577 deprecated sampling,
+/// and the narration loop the flag once budgeted was never armed. The flag's
+/// help and the CLI reference promised that sipnab would ask the client's
+/// model to narrate alerts, and the run said nothing to the contrary.
+#[test]
+fn the_sampling_budget_flag_warns_at_startup() -> Result<(), TestError> {
+    let home = tempfile::tempdir()?;
+    let mut run = Spawned::start(
+        &["--mcp", "-N", "-I", CAPTURE, "--mcp-sampling-budget", "5"],
+        home.path(),
+        Stdio::null(),
+        Stdio::null(),
+    )?;
+    let warning = run
+        .after("--mcp-sampling-budget", Duration::from_secs(30))
+        .ok_or_else(|| format!("no warning naming the flag:\n{}", run.seen.join("\n")))?;
+    assert!(
+        warning.contains("no effect"),
+        "the warning says the flag does nothing: {warning}"
+    );
+    let (code, log) = run.terminate();
+    assert_eq!(code, Some(0), "the flag is still accepted:\n{log}");
     Ok(())
 }

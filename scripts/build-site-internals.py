@@ -268,6 +268,9 @@ DOCS_TO_SITE = {
     "sip-methods.md": "sip-methods.md",
     "sip-header-fields.md": "sip-header-fields.md",
     "filter-dsl.md": "filter-dsl.md",
+    "capture-queries.md": "capture-queries.md",
+    "follow-a-call.md": "follow-a-call.md",
+    "expectations.md": "expectations.md",
     "output-formats.md": "output-formats.md",
     "config-reference.md": "config.md",
     "rest-api.md": "api.md",
@@ -305,6 +308,9 @@ DOCS_TO_SITE = {
     # GitHub blob URLs and the site's own high-loss workflow ended by leaving
     # the site.
     "tuning-capture.md": "tuning-capture.md",
+    "least-privilege.md": "least-privilege.md",
+    "hep.md": "hep.md",
+    "archives.md": "archives.md",
     "encapsulations.md": "encapsulations.md",
     # Same reason again: registering docs/vcon.md in build-site-pages.py PAGES
     # only makes the site page exist. This map is what makes a generated page

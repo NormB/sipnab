@@ -288,6 +288,52 @@ SRTP keys arrive two ways, and sipnab reads both:
 handshakes. If you already hold SRTP master keys rather than a handshake,
 `--srtp-keys` takes them directly.
 
+A run that loaded the keys says so, with a count: `DTLS-SRTP active: N keylog
+entr(ies) from <file>` for `--dtls-keylog`, and `SRTP decryption active: N
+key(s) from <file>` for `--srtp-keys`.
+
+### The `--srtp-keys` file
+
+```text
+# One line per SRTP stream. ssrc= is the stream's SSRC in decimal.
+# key= is the master key and salt together, base64.
+ssrc=439041101 key=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0e
+# Or the key and the salt apart, and the crypto suite by its SDES name.
+ssrc=1584364171 key=AQIDBAUGBwgJCgsMDQ4PEA== salt=ERITFBUWFxgZGhscHR4= suite=AES_CM_128_HMAC_SHA1_80
+```
+
+- One key per line, as space-separated `name=value` fields in any order.
+  sipnab skips blank lines and lines starting with `#`.
+- Every line needs `key=`, in base64. Without `salt=` it holds the master key
+  followed by the master salt: 30 bytes for the 128-bit suites, 46 for
+  `AES_256_CM_HMAC_SHA1_80`. With `salt=`, each holds its own half.
+- `ssrc=` ties the key to one stream, by its SSRC as a decimal number (a
+  stream sipnab lists as `0x1a2b3c4d` is `439041101`). Without it, sipnab tries
+  the key on every stream, after the keys that name that stream.
+- `suite=` takes `AES_CM_128_HMAC_SHA1_80` (the default),
+  `AES_CM_128_HMAC_SHA1_32` or `AES_256_CM_HMAC_SHA1_80`.
+- A line sipnab cannot read stops the run with exit `1`, naming the file and
+  the line.
+
+```bash
+sipnab -N -I srtp-call.pcap --srtp-keys srtp.keys --export-audio call-2c9d47@192.0.2.10
+```
+
+```text
+INFO sipnab::app::batch: SRTP decryption active: 2 key(s) from srtp.keys
+WARN sipnab::app::batch: manual SRTP keys loaded from srtp.keys — use only in test environments
+Exported 6.0s stereo audio (300 + 300 frames, 8000Hz) to call-2c9d47_192.0.2.10.wav
+```
+
+That capture was the sample call with both RTP streams encrypted as SRTP
+(AES-CM-128, HMAC-SHA1-80) under the keys above. The WAV sipnab wrote matched,
+byte for byte, the one it writes from the unencrypted capture. Without
+`--srtp-keys`, the same export decoded the ciphertext as noise.
+
+Not run for this page: a DTLS-SRTP call with `--dtls-keylog`. No harness here
+produces one. The repository's test suite decrypts a synthetic DTLS-SRTP
+exchange ([`tests/decryption_wrapper_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/decryption_wrapper_matrix_test.rs)).
+
 Without a key, SRTP media is still measured.
 
 - Packet counts, loss, jitter and timing come from the RTP header. SRTP leaves
@@ -301,6 +347,57 @@ Without a key, SRTP media is still measured.
     many packets sipnab could not decrypt.
   - If sipnab decrypted only some packets, it marks the audio PARTIAL and
     counts the others.
+
+## Share a capture without its keys
+
+A pcapng can carry the TLS keys inside it, in a Decryption Secrets Block:
+eCapture writes one, and so does `--pcap-export-mode encrypted+dsb`. Anyone
+with the file can then read the calls. `--strip-secrets` writes a copy without
+them, and leaves the original as it was:
+
+```bash
+sipnab --strip-secrets shareable.pcapng -I with-keys.pcapng
+```
+
+It prints nothing and exits `0`. Check the copy by reading both:
+
+```bash
+sipnab -N -I with-keys.pcapng --portrange 1-65535 --report --no-cli-print
+```
+
+```text
+INFO sipnab::app::batch: TLS decryption active: 5 secret(s) from embedded DSB in with-keys.pcapng
+INFO sipnab::app::batch: sipnab: 25 packets captured, 7 SIP messages, 0 RTP packets across 0 streams
+```
+
+The same command on `shareable.pcapng` finds no secrets and reads `0 SIP
+messages` from the same 25 packets. The capture was a TLS 1.3 SIP call on port
+15061, made with [`harness/tls/make-tls-call.py`](https://github.com/NormB/sipnab/blob/main/harness/tls/make-tls-call.py).
+
+## Write the decrypted call to a file
+
+`--pcap-export-mode` decides what `-O` writes for traffic sipnab decrypted:
+
+| Mode | The file holds | Keys in the file |
+|---|---|---|
+| `raw` (default) | The packets as captured, still encrypted | None |
+| `encrypted+dsb` | The packets as captured, and the keys in a Decryption Secrets Block, so Wireshark decrypts them | Yes |
+| `decrypted` | One plain TCP frame per SIP message from TLS or WSS, and plain RTP for SRTP, on the captured addresses and times | None, but the content is readable |
+
+```bash
+sipnab -N -I tlscall.pcap --keylog tlscall.keylog --pcapng -O plain.pcapng --pcap-export-mode decrypted --no-cli-print
+```
+
+A `decrypted` run ends with a line of counts:
+
+```text
+sipnab: decrypted export: 7 SIP from TLS, 0 SIP from WSS, 0 RTP from SRTP; 0 TLS segments copied as captured, 25 captured segments replaced, 0 SRTCP copied as captured, 0 not rebuildable, 0 out of order, 0 discarded at stop
+```
+
+An `encrypted+dsb` run logs `Wrote DSB (992 bytes of key material)` instead.
+Treat a `decrypted` or `encrypted+dsb` file like the call itself.
+[Export encrypted packets for Wireshark](@/docs/cookbook.md#export-encrypted-packets-for-wireshark)
+has the three commands side by side.
 
 ## When the keys arrive after the call starts
 

@@ -58,7 +58,7 @@ A bundle is a named set of tools defined in sipnab's code.
 | [`captures`](@/docs/mcp-tools-captures.md) | 11 | Capture files in the file root: listing, searching, comparing, opening and exporting them, and the evidence that ties a finding to captured bytes. |
 | [`security`](@/docs/mcp-tools-security.md) | 6 | Who sent what: scanner and fraud findings, the busiest sources, one endpoint's activity, registration problems, pass/fail expectations, and fail2ban rules. |
 | [`media`](@/docs/mcp-tools-media.md) | 4 | Where a call's media endpoints came from, why a stream has no dialog, the facts under a quality score, and audio export. |
-| [`relay`](@/docs/mcp-tools-relay.md) | 4 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
+| [`relay`](@/docs/mcp-tools-relay.md) | 5 | Questions put to the configured media relay, and decoding the relay control messages sipnab captured. |
 | [`tfps`](@/docs/mcp-tools-tfps.md) | 7 | The toll-fraud prevention peer (TFPS): what it blocks and logs, and the operator's ban, unban and revert actions. |
 | [`server`](@/docs/mcp-tools-server.md) | 6 | The sipnab process and its capture path: capture health, HEP senders, resource use, build capabilities, the fleet inventory record, and shutdown. |
 | [`vcon`](@/docs/mcp-tools-vcon.md) | 7 | vCon conversation containers, exported, validated and analyzed, one at a time or a directory at once, read from the operator's store, the vCon export spool's counts, and the SIPREC recording metadata a call carried. |
@@ -139,17 +139,17 @@ resource.
 | captures | 11 | 12,723 | 30,211 |
 | security | 6 | 9,954 | 9,954 |
 | media | 4 | 3,480 | 16,048 |
-| relay | 4 | 4,199 | 20,607 |
+| relay | 5 | 4,777 | 24,044 |
 | tfps | 7 | 5,717 | 16,101 |
 | server | 6 | 5,976 | 35,136 |
 | vcon | 7 | 10,714 | 34,446 |
 | tls | 3 | 2,903 | 4,996 |
-| full | 78 | 91,558 | 303,522 |
+| full | 79 | 92,136 | 306,959 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
 
-> **Measured on sipnab 0.5.232 with `fleet_inventory` and `th_mappings` added** on a build with every feature.
+> **Measured on sipnab 0.5.232 with `fleet_inventory`, `th_mappings` and `relay_stats_polled` added** on a build with every feature.
 >
 > - Sizes, tool counts and bundle membership may change in later releases.
 > - A build without a feature does not register that feature's tools, so its
@@ -211,6 +211,7 @@ links to its section on the bundle's page.
 | [`reconcile_orphans`](@/docs/mcp-tools-media.md#reconcile-orphans) | [media](@/docs/mcp-tools-media.md) | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`relay_compare`](@/docs/mcp-tools-relay.md#relay-compare) | [relay](@/docs/mcp-tools-relay.md) | **Transmits.** Sets the relay's per-call RTP count beside sipnab's measured count, both tiers named and a word verdict, never a sum. Same gate as `query_relay` |
 | [`relay_stats`](@/docs/mcp-tools-relay.md#relay-stats) | [relay](@/docs/mcp-tools-relay.md) | **Transmits.** Asks the configured relay for its own counters (global, per-call, or the names it knows), tiered `relay_reported`. Same opt-in and live-source gate as `query_relay` |
+| [`relay_stats_polled`](@/docs/mcp-tools-relay.md#relay-stats-polled) | [relay](@/docs/mcp-tools-relay.md) | The newest reading of the relay's own counters that this run's `--relay-stats-interval` poll obtained, with its age. Sends nothing |
 | [`render_ladder`](@/docs/mcp-tools-signaling.md#render-ladder) | [signaling](@/docs/mcp-tools-signaling.md) | Call-flow ladder (Markdown / text), or an annotated Mermaid diagram |
 | [`rtp_stats`](@/docs/mcp-tools-core.md#rtp-stats) | [core](@/docs/mcp-tools-core.md) | One call's RTP quality and diagnosis, or a capture-wide stream sweep |
 | [`runtime_stats`](@/docs/mcp-tools-server.md#runtime-stats) | [server](@/docs/mcp-tools-server.md) | What sipnab is doing and what it costs the host: its own memory, threads, descriptors and CPU; the host's totals and the basis they came from; its share of them and whether that share is load-bearing; per-interface counters; store occupancy against the caps |
@@ -462,10 +463,10 @@ When `source_exhausted` is `false`, `total_matched` counts only what had
 loaded. Repeat the call, or poll `capture_status` until `source_exhausted`
 reads `true`, before treating a count as final.
 
-Twenty-two tools are the exception, because their answer cannot move with
+Twenty-three tools are the exception, because their answer cannot move with
 the load. How much of the capture sipnab has read says nothing about what
 their sources hold:
-- Thirteen read something other than the capture store:
+- Fourteen read something other than the capture store:
   - `explain_response_code`, `explain_rule`, `decode_evidence`, `decode_ng`,
     `show_evidence`, `list_captures`, `list_tls_libraries`,
     `server_capabilities`;
@@ -476,7 +477,9 @@ their sources hold:
   - `compare_captures`, which reads two files and never the loaded capture;
   - `analyze_vcon`, which analyzes a container the caller hands over;
   - `vcon_directory_report`, which reads the containers in a directory of the
-    file root.
+    file root;
+  - `relay_stats_polled`, which reads the relay's counters as this run's own
+    poll obtained them.
 - The other nine ask another process:
   - `query_relay` and `relay_stats` put the question to the media relay;
   - `tfps_status`, `tfps_banned`, `tfps_dropped`, `tfps_labels`, `tfps_ban`

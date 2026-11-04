@@ -56,6 +56,9 @@ pub struct QueryContext<'a> {
     /// (a call tree's legs): `--api-max-rows`, `[limits] api_max_rows`, or
     /// the default, the cap a REST server started by this run applies.
     pub row_cap: usize,
+    /// The persistence gate the run's servers move, which a query that
+    /// writes a file (`--export-audio`) obeys. `None` when no server runs.
+    pub gate: Option<&'a crate::output::persistence::PersistenceGate>,
 }
 
 impl<'a> QueryContext<'a> {
@@ -76,7 +79,18 @@ impl<'a> QueryContext<'a> {
             filter,
             alias: cli.alias_thresholds(config),
             row_cap: cli.api_row_cap(config),
+            gate: None,
         }
+    }
+
+    /// The persistence gate a query that writes a file obeys.
+    #[must_use]
+    pub fn with_gate(
+        mut self,
+        gate: Option<&'a crate::output::persistence::PersistenceGate>,
+    ) -> Self {
+        self.gate = gate;
+        self
     }
 
     /// The dialogs the compiled filter admits, with their streams.
@@ -372,6 +386,42 @@ mod tests {
         assert_eq!(form(&["--json-pretty"])?, AnswerForm::JsonPretty);
         assert_eq!(form(&["--json", "--markdown"])?, AnswerForm::Json);
         assert_eq!(form(&["--json", "--json-pretty"])?, AnswerForm::JsonPretty);
+        Ok(())
+    }
+
+    /// `--export-audio` writes no file while the persistence gate is closed,
+    /// and the run is not failed for it: an operator switched persistence
+    /// off, which is what happened, not an error. With the gate open the
+    /// same empty run fails, because the call is not there, so the two
+    /// answers cannot be confused.
+    #[test]
+    fn export_audio_writes_nothing_behind_a_closed_gate() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let wav = dir.path().join("call.wav");
+        let cli = Cli::try_parse_from([
+            "sipnab",
+            "-N",
+            "-I",
+            "x.pcap",
+            "--export-audio",
+            "absent@x",
+            "--export-audio-out",
+            &wav.to_string_lossy(),
+        ])?;
+        let dialogs = DialogStore::new(10, false);
+        let streams = StreamStore::new(10);
+        let gate = crate::output::persistence::PersistenceGate::new(true);
+        let open = QueryContext::new(&cli, &Config::default(), &dialogs, &streams, None)
+            .with_gate(Some(&gate));
+        assert!(!render(&open), "an open gate looks for the call and fails");
+        gate.set(false);
+        let closed = QueryContext::new(&cli, &Config::default(), &dialogs, &streams, None)
+            .with_gate(Some(&gate));
+        assert!(
+            render(&closed),
+            "a closed gate is the operator's choice, not a failure"
+        );
+        assert!(!wav.exists(), "no file is written behind a closed gate");
         Ok(())
     }
 

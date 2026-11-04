@@ -73,8 +73,8 @@ Every row below was read at the SHA in the header.
 |---|---|---|---|
 | Privilege drop: `setgroups(0, NULL)` → `setgid` → `setuid`, then a `getuid`/`getgid` readback | [`src/privilege.rs:86-90`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L86-L90), verified by `verify_dropped` ([`src/privilege.rs:822`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L822)) | Reaching other users' files, signaling their processes, opening a new privileged socket | Anything this process does as itself — its own memory, its own descriptors, `execve` |
 | `PR_SET_NO_NEW_PRIVS` | `set_no_new_privs` ([`src/privilege.rs:760`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L760)) behind `block_privilege_escalation` ([`src/privilege.rs:730`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L730)), called unconditionally from [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b | Regaining privilege through a setuid or setgid binary, on every run mode whether or not the process is root | `execve` itself, of anything already runnable |
-| Core dumps off: `prctl(PR_SET_DUMPABLE, 0)`, or `setrlimit(RLIMIT_CORE, 0)` on macOS | `disable_core_dumps` ([`src/privilege.rs:348`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L348)), called from [`src/app/bootstrap.rs:942`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L942) | Key material landing in a core file after a crash | Any live read of that key material |
-| `chroot` + `chdir("/")`, opt-in via `--chroot` | `do_chroot` ([`src/privilege.rs:792`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L792)), called from [`src/app/bootstrap.rs:775`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L775) | Naming a path outside the new root | Everything inside the new root, and every already-open descriptor |
+| Core dumps off: `prctl(PR_SET_DUMPABLE, 0)`, or `setrlimit(RLIMIT_CORE, 0)` on macOS | `disable_core_dumps` ([`src/privilege.rs:348`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L348)), called from [`src/app/bootstrap.rs:940`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L940) | Key material landing in a core file after a crash | Any live read of that key material |
+| `chroot` + `chdir("/")`, opt-in via `--chroot` | `do_chroot` ([`src/privilege.rs:792`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L792)), called from [`src/app/bootstrap.rs:773`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L773) | Naming a path outside the new root | Everything inside the new root, and every already-open descriptor |
 | WASM plugin host: no imports registered at all, plus fuel, memory and output caps | [`src/plugin/mod.rs:238`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L238), caps at [`:57`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L57), [`:61`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L61), [`:81`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L81) | A third-party plugin doing anything but returning findings | Anything in the host process, libpcap included |
 
 The plugin row is the one most likely to be mistaken for this page's subject.
@@ -132,7 +132,7 @@ asking to be spared, and cannot be undone once set.
 **Core dumps stay on unless decryption keys are loaded.**
 `disable_core_dumps` runs only when one of `--tls-key`, `--keylog`,
 `--srtp-keys` or `--dtls-keylog` is set and `--allow-coredump` is absent
-([`src/app/bootstrap.rs:936-942`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L936-L942)). An ordinary capture
+([`src/app/bootstrap.rs:934-940`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L934-L940)). An ordinary capture
 dumps core, and that core carries packet payloads.
 
 **Two of the four used to report success they did not achieve.** *Fixed
@@ -157,7 +157,7 @@ deliberately:
   is not, and `set_no_new_privs` reads the flag back with
   `PR_GET_NO_NEW_PRIVS` rather than trusting the return code.
 - `disable_core_dumps` is **fatal**, which is what its caller already assumed
-  ([`src/app/bootstrap.rs:957`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L957) exits 1 on error). It runs only
+  ([`src/app/bootstrap.rs:955`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L955) exits 1 on error). It runs only
   when TLS/SRTP/DTLS key material is resident AND the operator did not pass
   `--allow-coredump`; continuing past a refused `PR_SET_DUMPABLE` means a later
   crash writes those keys to disk. `--allow-coredump` is the escape hatch, and
@@ -224,13 +224,13 @@ configuration**. Enumerated from the code, everything below runs after
 | Idle wait | `libc::poll`, [`src/capture/live.rs:102-113`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L102-L113) | `poll`/`ppoll` |
 | Drop stats | `cap.stats()`, [`src/capture/live.rs:552`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L552); *"a `getsockopt` on Linux"*, [`:769`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L769) | `getsockopt` |
 | Fanout join | [`src/capture/live.rs:515`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L515) | `setsockopt` |
-| Output pcap, created **lazily on the first packet** | [`src/app/batch.rs:2233-2242`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2233-L2242) → [`src/capture/writer.rs:103`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L103) | file create + write |
+| Output pcap, created **lazily on the first packet** | [`src/app/batch.rs:2271-2280`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2271-L2280) → [`src/capture/writer.rs:103`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L103) | file create + write |
 | `--split` rotation, mid-run | [`src/capture/writer.rs:837`](https://github.com/NormB/sipnab/blob/main/src/capture/writer.rs#L837) | more file creates |
 | REST API listener bind | [`src/app/servers.rs:277`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L277) | socket/bind/listen/accept |
 | Metrics listener, raw TCP + threads | [`src/app/servers.rs:227`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L227) | the same, plus thread creation |
 | MCP over stdio | [`src/mcp/transport.rs:59-60`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L59-L60) | read/write on fds 0 and 1 |
 | MCP over HTTP, `mcp-http` | [`src/app/servers.rs:370-375`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L370-L375) | tokio reactor: epoll, eventfd, timerfd |
-| Syslog, eight lines after the drop | [`src/app/bootstrap.rs:838`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L838) → [`src/security/alerting.rs:960`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L960) | `AF_UNIX` connect to `/dev/log` |
+| Syslog, eight lines after the drop | [`src/app/bootstrap.rs:836`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L836) → [`src/security/alerting.rs:960`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L960) | `AF_UNIX` connect to `/dev/log` |
 | Signing keys read from files | [`src/app/servers.rs:442`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L442) | file open, after the drop *and* after any chroot |
 | `--keylog-watch` re-reads the keylog repeatedly | [`src/capture/decrypt.rs:592`](https://github.com/NormB/sipnab/blob/main/src/capture/decrypt.rs#L592) | file open + stat, for the life of the run |
 | Reverse DNS | [`src/names.rs:520`](https://github.com/NormB/sipnab/blob/main/src/names.rs#L520) | resolver sockets, `/etc/resolv.conf`, glibc NSS `dlopen` |
@@ -259,9 +259,9 @@ permissive feature anyone might enable.
 [`src/privilege.rs:3-16`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L3-L16) lists the call sequence as
 *"3. Open key files, bind API/metrics ports; 4. Call `drop_privileges()`"*. The
 code does the opposite: `drop_privileges` is at
-[`src/app/bootstrap.rs:830`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L830) and `start_servers` is reached
+[`src/app/bootstrap.rs:828`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L828) and `start_servers` is reached
 only after `launch` returns, from
-[`src/app/batch.rs:1951`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1951) or
+[`src/app/batch.rs:1989`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1989) or
 [`src/app/tui_mode.rs:428`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L428). Anyone deriving an allowlist from
 that comment would omit `socket`, `bind`, `listen` and `accept4` and ship a
 filter that kills every `--api` run. Correcting the comment is part of this work.
@@ -457,12 +457,12 @@ Verified ordering today:
 | Step | Site |
 |---|---|
 | `PR_SET_NO_NEW_PRIVS`, every run mode | [`src/privilege.rs:501`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L501) `block_privilege_escalation`, called from [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b |
-| `do_chroot` (needs root) | [`src/app/bootstrap.rs:775`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L775) |
-| `drop_privileges` → setgroups, setgid, setuid | [`src/app/bootstrap.rs:845`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L845), [`src/privilege.rs:68-72`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L68-L72) |
-| `init_syslog` | [`src/app/bootstrap.rs:838`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L838) |
-| `disable_core_dumps` (conditional on key material) | [`src/app/bootstrap.rs:957`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L957) |
-| `start_servers` — binds API, MCP, metrics | [`src/app/batch.rs:1951`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1951) |
-| receive loop; writer created on first packet | [`src/app/batch.rs:2146`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2146), [`:2242`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2242) |
+| `do_chroot` (needs root) | [`src/app/bootstrap.rs:773`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L773) |
+| `drop_privileges` → setgroups, setgid, setuid | [`src/app/bootstrap.rs:843`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L843), [`src/privilege.rs:68-72`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L68-L72) |
+| `init_syslog` | [`src/app/bootstrap.rs:836`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L836) |
+| `disable_core_dumps` (conditional on key material) | [`src/app/bootstrap.rs:955`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L955) |
+| `start_servers` — binds API, MCP, metrics | [`src/app/batch.rs:1989`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1989) |
+| receive loop; writer created on first packet | [`src/app/batch.rs:2184`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2184), [`:2280`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2280) |
 
 The first row runs on **every** start — that is the point of where it sits, and
 it is why it is first. Rows two and three run **only on a root start**, and the
@@ -502,7 +502,7 @@ routine case on the configuration most users run.
 
 **The writer stays lazy.** Making it eager would let the filter drop the file
 syscalls, but the writer needs `link_type`, which comes from the first packet
-([`src/app/batch.rs:2242`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2242)). Re-architecting that to tighten a
+([`src/app/batch.rs:2280`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2280)). Re-architecting that to tighten a
 syscall list is the wrong trade. Instead: seccomp permits the file syscalls,
 and **Landlock bounds where they may point** ([section 5, "Landlock: weaker, cheaper, and the one to ship first"](#5-landlock-weaker-cheaper-and-the-one-to-ship-first)). That division of labor is
 what G5 means by Landlock being *"additionally"* useful, and it is why the two
@@ -559,7 +559,7 @@ mis-derived seccomp list's degradation mode is a dead process.
 
 **Landlock and `--chroot` compose; neither replaces the other.** `do_chroot`
 runs before the drop because it needs root
-([`src/app/bootstrap.rs:771-775`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L771-L775)) and, once inside, the
+([`src/app/bootstrap.rs:769-773`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L769-L773)) and, once inside, the
 process can still reach everything in the new root. Landlock works after the
 drop, needs no privilege, and can be finer than a directory. G5's framing —
 Landlock for runs *without* `--chroot` — is right about the motivation and should
@@ -606,7 +606,7 @@ Reporting means three things:
    implemented".
 2. A field in the batch summary and in `capture_health` — the same structural
    discipline the rest of that response follows: a code, not a free string
-   ([`src/mcp/server.rs:1809-1819`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1809-L1819)).
+   ([`src/mcp/server.rs:1807-1817`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1807-L1817)).
 3. **`--require-sandbox`**, which turns degradation into a refusal. Opt-in,
    never the default, for the operator who would rather not capture than capture
    unsandboxed. Without this flag there is no way to express that preference; with

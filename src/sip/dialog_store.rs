@@ -117,6 +117,25 @@ pub enum CorrelationReason {
 }
 
 impl CorrelationReason {
+    /// Every strategy, in declaration order.
+    ///
+    /// The vocabulary a reader is promised: `tests/vocabulary_lists_test.rs`
+    /// holds every prose list of strategy names in `src/` to it, and checks
+    /// that it names each variant of this enum. Without it, the doc comments
+    /// that feed the OpenAPI and MCP schemas listed eight strategies after
+    /// `th_callid_mapping` became the ninth.
+    pub const ALL: [Self; 9] = [
+        Self::SessionId,
+        Self::SdpOrigin,
+        Self::XCallId,
+        Self::ChargingVectorRelatedIcid,
+        Self::ChargingVectorIcid,
+        Self::ViaBranch,
+        Self::TimingHeuristic,
+        Self::TopologyHidingCallid,
+        Self::TopologyHidingMapping,
+    ];
+
     /// The wire name for this strategy, and whether it is an identifier
     /// comparison rather than a guess.
     ///
@@ -220,6 +239,16 @@ pub enum CorrelationMethod {
 }
 
 impl CorrelationMethod {
+    /// Every method, in declaration order. See [`CorrelationReason::ALL`]
+    /// for the test that holds prose lists to it.
+    pub const ALL: [Self; 5] = [
+        Self::Decoded,
+        Self::Mapping,
+        Self::Header,
+        Self::Sdp,
+        Self::Timing,
+    ];
+
     /// The wire name: `decoded`, `mapping`, `header`, `sdp` or `timing`.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -525,6 +554,17 @@ pub enum ThCallidStatus {
 }
 
 impl ThCallidStatus {
+    /// Every status, in declaration order. See [`CorrelationReason::ALL`]
+    /// for the test that holds prose lists to it.
+    pub const ALL: [Self; 6] = [
+        Self::Decoded,
+        Self::NotConfigured,
+        Self::Undecodable,
+        Self::Unmatched,
+        Self::Mapped,
+        Self::Conflict,
+    ];
+
     /// The wire name: `decoded`, `no_secret`, `undecodable`, `unmatched`,
     /// `mapped` or `conflict`.
     #[must_use]

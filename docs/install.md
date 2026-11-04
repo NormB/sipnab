@@ -106,7 +106,7 @@ On Linux the installer chooses between two builds.
   - It lacks TUI audio playback, WASM plugins, vCon export and the eBPF uprobe
     backend.
   - It reads password-protected ZIP and 7z archives like every other release
-    build.
+    build ([Read captures from tar, ZIP and 7z archives](archives.md)).
 
 ## Download a release binary yourself
 
@@ -905,6 +905,9 @@ Prefer this to `sudo sipnab`.
 
 > macOS and other non-Linux platforms have no file capabilities. Run live
 > capture under `sudo` there.
+
+[Capture with the least privilege](least-privilege.md) goes further: the
+privilege drop, a chroot, and the Landlock and seccomp confinement.
 
 ## Feature flags
 

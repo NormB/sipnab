@@ -211,6 +211,10 @@ pub struct SipnabMcp {
     /// file-backed run cannot construct a `TransmitPermit`, so it cannot
     /// populate this field, so the tool has nothing to send with.
     relay_query: Option<RelayQueryAccess>,
+    /// The newest reading this run's `--relay-stats-interval` poll obtained,
+    /// read by `relay_stats_polled`. Reading it transmits nothing, so
+    /// it is apart from `relay_query`. `None` reads as `not_polling`.
+    relay_polled: Option<std::sync::Arc<crate::output::relay_polled::PolledStore>>,
     /// How captured control messages are decoded, chosen by the composition
     /// root so this layer never names a protocol.
     control_decoder: Option<std::sync::Arc<dyn crate::relay::ControlDecoder>>,
@@ -301,15 +305,11 @@ pub struct SipnabMcp {
     /// what lets `tools/list` stay small without the shapes becoming
     /// unreachable.
     output_schemas: Arc<std::collections::BTreeMap<String, Arc<rmcp::model::JsonObject>>>,
-    /// Governs whether sipnab may ask the client's model to narrate an
-    /// observation. Disabled unless the operator sets a budget.
-    ///
-    /// Shared across clones on purpose. `SipnabMcp` is `Clone`, and a budget
-    /// that copied with it would reset every time the server was cloned --
-    /// an hourly ceiling anything can reset is not a ceiling.
-    sampling: Arc<parking_lot::Mutex<super::sampling::Governor>>,
     /// The HEP authentication posture this run was started with, when one was.
     hep_auth_mode: Option<crate::cli::HepAuthMode>,
+    /// The persistence gate `POST /v1/persistence` moves. Every write into
+    /// the file root asks it; `None` when no gate was handed over.
+    persistence_gate: Option<Arc<crate::output::persistence::PersistenceGate>>,
     /// The append-only file every tool call is recorded to, or `None` when the
     /// operator asked for no such file.
     ///
@@ -434,6 +434,7 @@ impl SipnabMcp {
             #[cfg(feature = "archive")]
             archive_candidates: Arc::new(crate::capture::archive::password::run_candidates()),
             relay_query: None,
+            relay_polled: None,
             control_decoder: None,
             tfps: Default::default(),
             actions: Default::default(),
@@ -448,11 +449,9 @@ impl SipnabMcp {
             // block, so a batch of additions all edited the same region; a
             // group in its own file merges here instead, and this line is the
             // only one they share.
-            sampling: Arc::new(parking_lot::Mutex::new(
-                super::sampling::Governor::disabled(),
-            )),
             audit_sink: None,
             hep_auth_mode: None,
+            persistence_gate: None,
             subscriptions: super::subscribe::Subscriptions::new(),
             tool_router: router,
             carried_tools,
@@ -940,55 +939,21 @@ impl SipnabMcp {
         self
     }
 
+    /// The persistence gate `POST /v1/persistence` moves, which every file
+    /// this server writes obeys.
+    #[must_use]
+    pub fn with_persistence_gate(
+        mut self,
+        gate: Arc<crate::output::persistence::PersistenceGate>,
+    ) -> Self {
+        self.persistence_gate = Some(gate);
+        self
+    }
+
     /// Confine the file tools to `dir`. Without this they refuse to run.
     pub fn with_file_root(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
         self.file_root = Some(dir.into());
         self
-    }
-
-    /// Enable sampling with an hourly request budget.
-    ///
-    /// Without this the governor refuses every request as `Disabled`, which is
-    /// the default and the honest one: client support for sampling is thin, so
-    /// nothing in sipnab may depend on a narration arriving.
-    #[must_use]
-    pub fn with_sampling_budget(mut self, per_hour: u32) -> Self {
-        self.sampling = Arc::new(parking_lot::Mutex::new(
-            super::sampling::Governor::disabled().with_budget(per_hour),
-        ));
-        self
-    }
-
-    /// Record that the peer advertised the sampling capability.
-    ///
-    /// No longer test-only. `on_initialized` reads the capability out of the
-    /// handshake and calls the same setter, so this is the construction-time
-    /// spelling of a thing the live path now does for itself. It was named
-    /// `with_client_sampling_for_test` while nothing negotiated it, because a
-    /// builder that looked general-purpose would have implied otherwise.
-    ///
-    /// Mutates in place rather than rebuilding: the governor is shared behind
-    /// an `Arc<Mutex<..>>` across every clone rmcp makes per connection, and a
-    /// rebuild would drop the spend and dedupe state.
-    #[must_use]
-    pub fn with_client_sampling(self, advertised: bool) -> Self {
-        self.sampling.lock().set_client_sampling(advertised);
-        self
-    }
-
-    /// Whether a sampling request for `signature` may go out now.
-    ///
-    /// Exposed so a caller narrating an alert asks the governor rather than
-    /// keeping its own budget -- two budgets is two things to get wrong, and
-    /// the one that drifts is the one nobody reads.
-    ///
-    /// # Errors
-    ///
-    /// The [`Refusal`](super::sampling::Refusal) that applied.
-    pub fn may_sample(&self, signature: &str) -> Result<(), super::sampling::Refusal> {
-        self.sampling
-            .lock()
-            .allow(signature, std::time::Instant::now())
     }
 
     /// What a relay assertion delivered over a capture path was worth.
@@ -1100,6 +1065,24 @@ impl SipnabMcp {
             permit,
         });
         self
+    }
+
+    /// Let `relay_stats_polled` read what this run's own
+    /// `--relay-stats-interval` poll obtained.
+    #[must_use]
+    pub fn with_relay_polled(
+        mut self,
+        store: std::sync::Arc<crate::output::relay_polled::PolledStore>,
+    ) -> Self {
+        self.relay_polled = Some(store);
+        self
+    }
+
+    /// The store `relay_stats_polled` reads, if one was installed.
+    pub(crate) fn relay_polled(
+        &self,
+    ) -> Option<std::sync::Arc<crate::output::relay_polled::PolledStore>> {
+        self.relay_polled.clone()
     }
 
     /// The decoder `decode_ng` reads captured control messages with.
@@ -1327,7 +1310,21 @@ impl SipnabMcp {
         &self,
         name: &str,
     ) -> Result<std::path::PathBuf, rmcp::ErrorData> {
+        // The root first: a server with no `--mcp-file-root` refuses by
+        // naming that flag, which is the cause. Its gate is never authorized
+        // (nothing writes), so asking the gate first answered "persistence is
+        // off", which is true and names the wrong remedy.
         let target = self.resolve_in_root(name)?;
+        // Then the persistence gate: while an operator has switched
+        // persistence off, no tool writes call content into the root. Every
+        // file tool that writes resolves its output here, so this is the one
+        // place it is asked, before anything touches the file.
+        if !crate::output::persistence::permits(self.persistence_gate.as_deref()) {
+            return Err(errors::refuse(
+                Reason::NotEnabled,
+                crate::output::persistence::WITHHELD.to_string(),
+            ));
+        }
         self.protected_inputs
             .check(&target, "the requested filename", false)
             .map_err(|msg| errors::refuse(Reason::PathRefused, msg))?;
@@ -10009,48 +10006,6 @@ fn audit_args(arguments: Option<&rmcp::model::JsonObject>) -> String {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for SipnabMcp {
-    /// Read what the peer advertised at `initialize`.
-    ///
-    /// The client's capabilities exist only after the handshake, which is why
-    /// this is the one place that can know them. It retires a setter that was
-    /// named `with_client_sampling_for_test` precisely because nothing
-    /// negotiated it.
-    ///
-    /// # What deliberately does NOT happen here
-    ///
-    /// The live narration loop is not armed, and will not be.
-    /// [SEP-2577](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2577)
-    /// deprecates MCP sampling: in `rmcp` 3.1.4 `CreateMessageRequestParams`,
-    /// `SamplingMessage` and `Peer::create_message` all carry
-    /// `#[deprecated(..., note = "will be removed in a future release")]`, so a
-    /// send path cannot compile under this project's
-    /// `cargo clippy -- -D warnings` without an `#[allow(deprecated)]` over it.
-    ///
-    /// Building a loop onto a protocol feature with a scheduled removal buys a
-    /// maintenance burden and a migration. The governor, its budget, its dedupe
-    /// and — the part worth keeping — the injection hardening in
-    /// [`super::sampling`] stay: a preamble stating every value is untrusted
-    /// observation, only named fields, control characters removed, clamped on a
-    /// character boundary. None of that is sampling-specific. It is how this
-    /// codebase forwards attacker-written capture text to any model, and the
-    /// next surface that needs it will not have to invent it again.
-    ///
-    /// The capability is still read and still recorded, so `may_sample` gives a
-    /// truthful answer to anything that asks.
-    async fn on_initialized(&self, context: rmcp::service::NotificationContext<rmcp::RoleServer>) {
-        let advertised = context
-            .peer
-            .peer_info()
-            .is_some_and(|i| i.capabilities.sampling.is_some());
-        self.sampling.lock().set_client_sampling(advertised);
-        tracing::debug!(
-            target: "sipnab::mcp",
-            client_can_sample = advertised,
-            budget_per_hour = ?self.sampling.lock().budget_per_hour(),
-            "sampling capability negotiated"
-        );
-    }
-
     /// The workflows this server suggests, and the order inside each.
     async fn list_prompts(
         &self,
@@ -12556,6 +12511,42 @@ mod tests {
         Ok(())
     }
 
+    /// A closed persistence gate refuses every write into the file root, and
+    /// writes nothing; the reopened gate writes again.
+    ///
+    /// `export_capture`, `export_audio`, `build_evidence_package`,
+    /// `generate_repro` and `shutdown_server`'s `save_to` all resolve their output
+    /// through `resolve_in_root_for_write`, so this is where the gate is
+    /// asked. The gate covered only the vCon exporter, and an agent could go
+    /// on writing call content to disk after an operator had switched
+    /// persistence off.
+    #[test]
+    fn a_closed_persistence_gate_refuses_every_file_write() -> Result<(), TestError> {
+        let root = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let gate = Arc::new(crate::output::persistence::PersistenceGate::new(true));
+        let srv = server_with_dialog("gate@test")?
+            .with_file_root(root.path())
+            .with_persistence_gate(Arc::clone(&gate));
+        gate.set(false);
+        let err = srv
+            .resolve_in_root_for_write("closed.pcap")
+            .err()
+            .ok_or("a write while persistence is off must be refused")?;
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("persistence is off"),
+            "the refusal says why: {msg}"
+        );
+        assert!(
+            !root.path().join("closed.pcap").exists(),
+            "a refused write leaves no file"
+        );
+        gate.set(true);
+        srv.resolve_in_root_for_write("open.pcap")
+            .map_err(|e| format!("the reopened gate writes again: {e:?}"))?;
+        Ok(())
+    }
+
     /// `capture_status` reports SIP the portrange skipped (#95).
     ///
     /// `capture_status` carries what the capture DECLINED, under the same key
@@ -13288,7 +13279,9 @@ mod tests {
             ("captures", 13_000),
             ("security", 10_000),
             ("media", 3_500),
-            ("relay", 4_500),
+            // 4_500 -> 5_000 by `relay_stats_polled` (578 bytes): relay
+            // measured 4,777 over 5 tools.
+            ("relay", 5_000),
             ("tfps", 6_000),
             // 5_500 -> 6_000: `fleet_inventory`, the fleet inventory record,
             // joins the server bundle; server measured 5,976 over six tools.
@@ -13339,7 +13332,9 @@ mod tests {
             // 91,558 over 78 tools on the merged tree, the 89,972 the two
             // branches share plus 484 (`fleet_inventory`, server 5,492 ->
             // 5,976) and 1,102 (`th_mappings`, signaling 22,474 -> 23,576).
-            ("full", 92_000),
+            // full 92_000 -> 92_500: `relay_stats_polled`, as the relay row
+            // above says; full measured 92,136 over 79 tools.
+            ("full", 92_500),
         ];
         let sizes: std::collections::BTreeMap<String, usize> = empty_server()
             .with_output_schemas(false)

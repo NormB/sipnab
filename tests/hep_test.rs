@@ -224,6 +224,23 @@ impl HepListener {
         None
     }
 
+    #[cfg(feature = "api")]
+    /// Wait up to `wait` for a stderr line containing `needle`.
+    ///
+    /// # Returns
+    /// The text after `needle` on that line, trimmed, or `None` on timeout.
+    fn stderr_after(&self, needle: &str, wait: Duration) -> Option<String> {
+        let deadline = Instant::now() + wait;
+        while Instant::now() < deadline {
+            if let Ok(line) = self.stderr_rx.recv_timeout(Duration::from_millis(100))
+                && let Some(rest) = line.split(needle).nth(1)
+            {
+                return Some(rest.trim().to_string());
+            }
+        }
+        None
+    }
+
     /// Wait up to `wait` for a stderr line containing `needle`.
     ///
     /// # Returns
@@ -1832,5 +1849,120 @@ fn a_live_device_and_a_hep_listener_run_in_one_process() -> Result<(), TestError
     }
 
     let _ = terminate(&mut child);
+    Ok(())
+}
+
+// ── The persistence gate covers -O ───────────────────────────────────────
+
+#[cfg(feature = "api")]
+/// One HTTP/1.1 request with a body, answering the status and the body.
+fn http(addr: &str, method: &str, path: &str, body: &str) -> Result<(u16, String), TestError> {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(addr)?;
+    stream.set_read_timeout(Some(test_timeout(10)))?;
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer k\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )?;
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw)?;
+    let status = raw
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let body = raw.split("\r\n\r\n").nth(1).unwrap_or_default().to_string();
+    Ok((status, body))
+}
+
+#[cfg(feature = "api")]
+/// The synthetic INVITE, carrying `call_id` instead of [`CALL_ID`].
+fn invite_for(call_id: &str) -> Vec<u8> {
+    String::from_utf8_lossy(&invite_bytes())
+        .replace(CALL_ID, call_id)
+        .into_bytes()
+}
+
+/// `POST /v1/persistence {"enabled": false}` stops `-O` writing, and
+/// `{"enabled": true}` starts it again.
+///
+/// The gate paused the vCon writers only, while `-O` went on writing every
+/// captured packet to its pcap. The REST reference says the route stops "call
+/// content reaching disk" and that a token "can stop and start recording to
+/// disk", and `GET /v1/persistence` on a run with only `-O` answered
+/// `authorized: false` while the pcap grew. Three calls go through a live
+/// HEP listener: before the close, during it, and after the reopen. The pcap
+/// holds the first and the third and not the second.
+#[cfg(feature = "api")]
+#[test]
+fn closing_the_persistence_gate_stops_the_pcap_output() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let pcap = dir.path().join("out.pcap");
+    let pcap_arg = pcap.to_string_lossy().into_owned();
+    let srv = HepListener::spawn(&["-O", &pcap_arg, "--api", "127.0.0.1:0", "--api-key", "k"])?;
+    let api = srv
+        .stderr_after("REST API listening on ", test_timeout(30))
+        .ok_or("the REST API never reported its address")?;
+
+    let (status, body) = http(&api, "GET", "/v1/persistence", "")?;
+    assert_eq!(status, 200, "{body}");
+    let gate: serde_json::Value = serde_json::from_str(&body)?;
+    assert_eq!(
+        gate,
+        serde_json::json!({"authorized": true, "enabled": true}),
+        "-O writes call content, so the run is authorized and writing"
+    );
+
+    let before = "persist-before@127.0.0.1";
+    let during = "persist-during@127.0.0.1";
+    let after = "persist-after@127.0.0.1";
+
+    srv.send(&hep3_sip(&invite_for(before))?)?;
+    assert!(
+        srv.wait_for_stdout(before, test_timeout(10)).is_some(),
+        "the first call reached sipnab"
+    );
+
+    let (status, body) = http(&api, "POST", "/v1/persistence", r#"{"enabled":false}"#)?;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains(r#""enabled":false"#),
+        "the gate closed: {body}"
+    );
+    srv.send(&hep3_sip(&invite_for(during))?)?;
+    assert!(
+        srv.wait_for_stdout(during, test_timeout(10)).is_some(),
+        "the second call reached sipnab while the gate was closed"
+    );
+
+    let (status, body) = http(&api, "POST", "/v1/persistence", r#"{"enabled":true}"#)?;
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains(r#""enabled":true"#),
+        "the gate reopened: {body}"
+    );
+    srv.send(&hep3_sip(&invite_for(after))?)?;
+    assert!(
+        srv.wait_for_stdout(after, test_timeout(10)).is_some(),
+        "the third call reached sipnab"
+    );
+
+    let status = srv.stop()?;
+    assert!(status.success(), "a stopped run exits cleanly: {status}");
+    let written = String::from_utf8_lossy(&std::fs::read(&pcap)?).into_owned();
+    assert!(
+        written.contains(before),
+        "-O wrote the call before the close"
+    );
+    assert!(
+        !written.contains(during),
+        "-O wrote a call while the persistence gate was closed"
+    );
+    assert!(
+        written.contains(after),
+        "-O wrote the call after the reopen"
+    );
     Ok(())
 }

@@ -194,7 +194,7 @@ Elsewhere, contention is **asserted but never measured**. The oldest claim,
 [`implementation-plan-v6.md:368`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L368), says the store
 lock is *"read-heavy, write-rare, so RwLock contention is minimal"* — which is
 simply stale: the batch loop takes `dialog_store.write()` **once per packet**
-([`batch.rs:2243`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2243)), so at 2.3M pkts/s writes are the
+([`batch.rs:2281`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2281)), so at 2.3M pkts/s writes are the
 most frequent operation in the process, not a rare one. No benchmark in
 `benches/` acquires a lock; no metric reports contention. *We do not know what
 it costs, and neither does anyone else.*
@@ -207,7 +207,7 @@ Specific to this codebase, not in general.
 
 **The stores are the product, and four surfaces read them in-process.** The
 same `Arc<RwLock<DialogStore>>` / `Arc<RwLock<StreamStore>>` is held by the
-capture loop ([`batch.rs:864-875`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L864-L875)), the REST handlers,
+capture loop ([`batch.rs:870-881`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L870-L881)), the REST handlers,
 every MCP tool ([`mcp/server.rs`](../../src/mcp/server.rs)), the Prometheus
 exporter and the TUI. Forking the capture away from the servers turns every one
 of those reads into IPC. That is not a refactor; it is a new wire protocol,
@@ -262,12 +262,12 @@ security claim. Fix the sentence.
 
 ### R2 — Get `fork`/`exec` and stdout out of the store write locks *(P1, days)*
 Not a forking change — the opposite. The batch loop takes **both** store write
-locks at [`batch.rs:2243-2244`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2243-L2244) and holds them across
+locks at [`batch.rs:2281-2282`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2281-L2282) and holds them across
 the entire per-packet body, which includes:
 
 - `Command::spawn` (a real `fork`/`exec`) for `--on-*-exec` at
-  [`batch.rs:2038`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2038) and
-  [`:2348`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2348),
+  [`batch.rs:2076`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2076) and
+  [`:2386`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2386),
 - `Command::spawn` for `--alert-exec`, reached through
   `alert_engine.write().fire(..)` at
   [`:2072`, `:2122`, `:2160`, `:2172`, `:2185`](../../src/app/batch.rs),
@@ -284,7 +284,7 @@ the most expensive thing in the critical section, and it is there by accident.
 
 The nested `AlertEngine` lock is worse than it currently looks. The ordering
 `stores → alerts` exists only on this path; `security_findings`
-([`mcp/server.rs:6590`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6590)) takes `alerts.read()` and no
+([`mcp/server.rs:6594`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6594)) takes `alerts.read()` and no
 store lock, so there is no deadlock **today**. Nothing writes that ordering
 down, and nothing enforces it. The next MCP tool that reads an alert and then a
 dialog deadlocks the capture.
@@ -390,7 +390,7 @@ directly. Threads, not processes: there is nothing to isolate.
 **Open risk that must be settled first.** Packets would reach a worker
 interleaved across files and therefore out of timestamp order.
 `DialogStore::merge` is order-tolerant — `absorb_messages`
-([`dialog_store.rs:1089-1106`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1089-L1106)) sorts by
+([`dialog_store.rs:1129-1146`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1129-L1146)) sorts by
 timestamp and `replay_message_derived_state` re-runs the state machine — but a
 *live* worker store is fed by `process_message` in arrival order. **I could not
 determine whether out-of-order arrival within a single worker changes the

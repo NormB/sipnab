@@ -1880,21 +1880,43 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 There are two fields. "Not writing" has two causes an operator needs to tell
 apart:
 
-- `authorized` — whether the operator started this run to write content at
-  all: an export flag on the command line, or a `[[vcon.rule]]` in the config
-  file.
+- `authorized` — whether the operator started this run to write call content
+  to disk at all: one of the writers below, on the command line or as a
+  `[[vcon.rule]]` in the config file.
   Fixed when sipnab starts, and nothing over the network changes it.
 - `enabled` — whether content is reaching disk right now.
 
 `authorized: false` means this run was never going to write anything.
 `authorized: true, enabled: false` means somebody switched it off.
 
+**What the gate covers.** Every writer that puts call content on disk while
+the run captures:
+
+- `-O`/`--output`: sipnab writes no packet it captures while you have the
+  gate off, so the pcap has a gap. At the end of the run sipnab says how many
+  packets it left out.
+- vCon containers: `--export-vcon`, `--export-vcon-when` and every
+  `[[vcon.rule]]`.
+- `--export-audio`: sipnab writes no WAV at the end of the run.
+- The MCP tools that write into `--mcp-file-root`: `export_capture`,
+  `export_audio`, `build_evidence_package`, `generate_repro` and
+  `shutdown_server`'s `save_to`. sipnab refuses each while the gate is off.
+
+It does not cover:
+
+- what leaves the host over the network: `--hep-send`, a rule's
+  `live_audio` and `live_rtp`;
+- the save command of the terminal UI, which the operator at the terminal
+  runs;
+- `--evidence-out`, which writes findings rather than call content;
+- the audit and journal files.
+
 ---
 
 ### POST /v1/persistence
 
 Stop writing content, or start again up to what the command line allowed.
-[Stop writing containers partway through a run](vcon.md#stop-writing-containers-partway-through-a-run)
+[Stop writing call content partway through a run](vcon.md#stop-writing-call-content-partway-through-a-run)
 walks through it on a live run, and says what happens to the calls that end
 while writing is off.
 
@@ -1924,9 +1946,9 @@ rather than the request.
 
 - `{"enabled": true}` restores writing as far as
   the command line allowed and no further.
-- Starting sipnab without a persistence
-  flag and without a `[[vcon.rule]]` is the way to guarantee a run writes no
-  content. No API key changes that.
+- Starting sipnab without any of the writers above, and without a
+  `[[vcon.rule]]`, is the way to guarantee a run writes no content. No API
+  key changes that.
 - Anyone holding a token can switch recording off. Nobody can switch it on.
 
 **Body shape:** a JSON object with exactly the key `enabled`, carrying `true`
@@ -2934,7 +2956,9 @@ Every failure kind and every drop reason appears, zeros included.
   `queue_depth`.
 
 See [When the `--hep-send` collector goes
-away](cli-reference.md#when-the---hep-send-collector-goes-away).
+away](cli-reference.md#when-the---hep-send-collector-goes-away), and [When the
+collector goes away](hep.md#when-the-collector-goes-away) for the counts a
+collector restart left.
 
 **Over UDP, `packets_sent` means handed to
 the kernel.** A collector that is down produces no failure at all. `delivery` says
@@ -3150,7 +3174,8 @@ sending".
 The MCP tool `hep_senders` returns the same fields and values for the same
 roster, with its keys in alphabetical order and `source_exhausted` and
 `source_stopped_early` added.
-`--hep-senders` prints it at the end of a headless run. Prometheus carries only
+`--hep-senders` prints it at the end of a headless run ([See who feeds the
+listener](hep.md#see-who-feeds-the-listener)). Prometheus carries only
 the aggregate counts, with no per-sender label. See
 [Metrics](prometheus-metrics.md).
 
@@ -5069,6 +5094,38 @@ answer.
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
   http://127.0.0.1:8080/v1/relay/stats | jq .
 ```
+
+### GET /v1/relay/stats/polled
+
+The newest reading of the relay's global counters that this run's own
+`--relay-stats-interval` poll obtained, tiered `relay_reported`.
+
+- It sends nothing to the relay. It needs no `--api-allow-relay-query`.
+- Starting a poll is CLI only: a headless run started with
+  `--rtpengine-control` and `--relay-stats-interval` polls, and this route
+  reads what that poll obtained.
+- The reading has the form `GET /v1/relay/stats` returns, with `origin:
+  "polled"`, `interval_secs`, `obtained_at` and `age_secs`, the seconds since
+  the relay answered.
+
+`outcome` is one of three values:
+
+- `ok` with the reading,
+- `no_reading_yet` when the poll runs and has obtained nothing,
+- `not_polling` when this run does not poll.
+
+`last_poll` names the newest attempt (`unreachable` or `suspect`, with `at`
+and `detail`) when it failed after the reading it sits beside. A reader that
+sees `age_secs` grow while `last_poll` is present is reading a poll that has
+stopped getting answers.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  http://127.0.0.1:8080/v1/relay/stats/polled | jq '{outcome, age_secs, interval_secs}'
+```
+
+The MCP tool `relay_stats_polled` returns the same fields and values. [Read the newest poll without asking again](relay-statistics.md#read-the-newest-poll-without-asking-again)
+walks through it.
 
 ### GET /v1/relay/stats/names
 

@@ -386,6 +386,15 @@
     },
     {
       "file": "src/app/bootstrap.rs",
+      "call": "stderr_line!(\"{notice}\")",
+      "count": 1,
+      "carries": [
+        "[[vcon.rule]] {} writes no vCon container in this run: the terminal UI does not run the exporter. Add -N (--no-tui) to write the rule's containers; the TUI goes on without them"
+      ],
+      "why": "refuse_by_mode in bootstrap.rs prints tui_export_notice's format! literal, in this file."
+    },
+    {
+      "file": "src/app/bootstrap.rs",
       "call": "PlanError::refused( crate::settings::Origin::ConfigFile, message, )",
       "count": 1,
       "carries": [

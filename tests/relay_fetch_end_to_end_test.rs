@@ -38,6 +38,9 @@ include!("support/timeout.rs");
 include!("support/teardown.rs");
 include!("support/drain.rs");
 
+#[path = "support/mcp.rs"]
+mod mcp;
+
 type TestError = Box<dyn std::error::Error>;
 
 /// The Call-ID every per-call question names.
@@ -570,6 +573,139 @@ fn a_polled_reading_honors_json() -> Result<(), TestError> {
     let value: serde_json::Value = serde_json::from_str(line)
         .map_err(|e| format!("one JSON object per line: {e:?}\n{line}"))?;
     assert_eq!(value["interval_secs"], 1, "{line}");
+    Ok(())
+}
+
+/// `GET /v1/relay/stats/polled` returns what the run's own poll obtained,
+/// labeled polled with its interval and tier, and reading it asks the relay
+/// nothing: without `--api-allow-relay-query` this server may not ask at all.
+#[test]
+fn the_polled_reading_is_readable_over_rest() -> Result<(), TestError> {
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let relay = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        "statistics" => Answer::Body(statistics.clone()),
+        _ => Answer::Silent,
+    })?;
+    let mut run = Run::start(
+        &relay,
+        &["--relay-stats-interval", "1", "--api", "127.0.0.1:0"],
+    )?;
+    assert!(
+        run.wait_stderr("REST API listening on"),
+        "the REST API never came up:\n{}",
+        run.err.join("\n")
+    );
+    let api = run
+        .err
+        .iter()
+        .find_map(|l| l.split("REST API listening on ").nth(1))
+        .map(|a| a.trim().to_string())
+        .ok_or("the listening address")?;
+    assert!(
+        run.wait_stdout("polled", 1),
+        "the poll never printed a reading:\n{}",
+        run.out.join("\n")
+    );
+    let get = |path: &str| -> Result<serde_json::Value, TestError> {
+        use std::io::{Read, Write};
+        let mut s = std::net::TcpStream::connect(&api)?;
+        write!(
+            s,
+            "GET {path} HTTP/1.1\r\nHost: {api}\r\nConnection: close\r\n\r\n"
+        )?;
+        let mut text = String::new();
+        s.read_to_string(&mut text)?;
+        let body = text.split("\r\n\r\n").nth(1).ok_or("an HTTP response")?;
+        Ok(serde_json::from_str(body)?)
+    };
+    let v = get("/v1/relay/stats/polled")?;
+    assert_eq!(v["outcome"], "ok", "{v}");
+    assert_eq!(v["origin"], "polled", "{v}");
+    assert_eq!(v["interval_secs"], 1, "{v}");
+    let stats = v["statistics"].as_array().ok_or("statistics")?;
+    assert!(
+        !stats.is_empty(),
+        "the reading carries the relay's counters: {v}"
+    );
+    assert!(
+        stats.iter().all(|s| s["tier"] == "relay_reported"),
+        "every counter is the relay's own: {v}"
+    );
+    let asked = relay.asked()?;
+    assert!(
+        asked
+            .iter()
+            .all(|verb| verb == "list" || verb == "statistics"),
+        "only the poll's own asks reached the relay: {asked:?}"
+    );
+    let ask = get("/v1/relay/stats")?;
+    assert_eq!(
+        ask["outcome"], "not_permitted",
+        "asking still needs --api-allow-relay-query: {ask}"
+    );
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    Ok(())
+}
+
+/// A headless run that polls the relay can serve MCP over HTTP, and the MCP
+/// tool `relay_stats_polled` returns what the poll obtained. Over HTTP the
+/// wire is a socket, so the poll's stdout lines do not collide with it.
+#[test]
+fn the_polled_reading_is_readable_over_mcp_http() -> Result<(), TestError> {
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let relay = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        "statistics" => Answer::Body(statistics.clone()),
+        _ => Answer::Silent,
+    })?;
+    let mut run = Run::start(
+        &relay,
+        &[
+            "--relay-stats-interval",
+            "1",
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-bind",
+            "127.0.0.1:0",
+        ],
+    )?;
+    assert!(
+        run.wait_stderr("MCP HTTP server listening on"),
+        "the MCP server never came up:\n{}",
+        run.err.join("\n")
+    );
+    let addr = run
+        .err
+        .iter()
+        .find_map(|l| l.split("MCP HTTP server listening on ").nth(1))
+        .map(|a| a.trim().to_string())
+        .ok_or("the MCP listening address")?;
+    assert!(
+        run.wait_stdout("polled", 1),
+        "the poll never printed a reading:\n{}",
+        run.out.join("\n")
+    );
+    let session = mcp::establish_session(&addr).map_err(|e| e.to_string())?;
+    let reply = mcp::session_request(
+        &addr,
+        &session,
+        2,
+        "tools/call",
+        serde_json::json!({"name": "relay_stats_polled", "arguments": {}}),
+    )
+    .map_err(|e| e.to_string())?;
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("a text block: {reply}"))?;
+    let v: serde_json::Value = serde_json::from_str(text)?;
+    assert_eq!(v["outcome"], "ok", "{v}");
+    assert_eq!(v["origin"], "polled", "{v}");
+    assert_eq!(v["interval_secs"], 1, "{v}");
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "{}", done.dump());
     Ok(())
 }
 

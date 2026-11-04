@@ -229,6 +229,11 @@ const WITHOUT_IDENTITY: &[(&str, &str)] = &[
          statement about itself",
     ),
     (
+        "/v1/relay/stats/polled",
+        "the MCP `relay_stats` tool with `polled` is source-independent: the \
+         relay's statement about itself, as this run's poll obtained it",
+    ),
+    (
         "/v1/relay/stats/call/{call_id}",
         "the MCP `relay_stats` tool is source-independent: the relay's \
          statement about itself",

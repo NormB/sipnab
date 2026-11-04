@@ -171,6 +171,10 @@ in the terminal interface:
 
 Press `q`, then `y`, to quit.
 
+Asterisk writes nothing into the callee's leg that names the caller's, so
+sipnab ties the two legs by their timing. To tie them on a header instead, see
+[Follow one call across its legs](follow-a-call.md#copy-the-callers-call-id-into-a-header).
+
 ## Explain the call from the saved capture
 
 `--call-report` explains one call:

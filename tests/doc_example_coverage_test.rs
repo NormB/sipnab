@@ -46,6 +46,14 @@ const WAIVED: &[(&str, &str)] = &[
         "panic-selftest",
         "hidden internal panic-hook self-test, not user-facing",
     ),
+    // Deprecated and without effect: sipnab never sends an MCP sampling
+    // request (SEP-2577), and the run warns that the flag does nothing. An
+    // example would teach an invocation the run argues against, for a flag
+    // a later release removes. Drop this entry with the flag.
+    (
+        "mcp-sampling-budget",
+        "deprecated and has no effect; the run warns, and a later release removes it",
+    ),
 ];
 
 /// Every markdown doc that carries user-facing command examples. Read at

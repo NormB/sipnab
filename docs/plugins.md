@@ -20,8 +20,9 @@ sipnab already lets you *select* dialogs:
 What none of those do is *diagnose*:
 
 - express a site-specific fault pattern,
-- and have sipnab report it as a finding, with evidence, in `--call-report`
-  and the TUI and the JSON alike.
+- and have sipnab report it as a finding, with evidence, on the dialog it
+  describes. Today that is the `--json-dialogs` output only; see
+  [Known limits](#known-limits).
 
 That is the one hole a plugin fills.
 
@@ -235,6 +236,40 @@ Under a top-level `plugin_findings` array, separate from `signaling_diagnosis`.
 
 That separation is the point. A reader can always tell which findings sipnab
 stands behind and which came from third-party code.
+
+Against
+[`tests/pcap-samples/sip-over-tcp.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-over-tcp.pcap),
+a call answered and hung up 2.2 seconds later, the example plugin reports:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-over-tcp.pcap --json-dialogs --no-cli-print --quiet --plugin target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm | jq -c 'select(.plugin_findings != null) | {call_id, plugin_findings}'
+```
+
+```json
+{"call_id":"over-tcp-synth@198.51.100.100","plugin_findings":[{"evidence":[3,5],"id":"short-answered-call","plugin":"sipnab_plugin_example","summary":"Call answered and torn down after 2.2s (under 5s) — check routing, codec negotiation, or dial fraud."}]}
+```
+
+A dialog the plugin has nothing to say about carries no `plugin_findings`.
+
+## When a plugin does not load
+
+sipnab still reads the capture and prints every dialog, without the findings
+that plugin would have added. It logs the reason, and the run exits 1. The
+last line of `--json-dialogs` says so as well:
+
+```json
+{"sipnab_run":{"archives":{"cut_short":false},"files":{"given":1,"not_reached":0,"read_in_full":1,"skipped":0,"stopped_early":0},"input_complete":false,"plugins":{"failed":1,"loaded":0,"requested":1},"port_gate":{"sip_outside_portrange":0,"sip_outside_ws_ports":0},"reasons":["1 of 1 requested --plugin(s) did not load; findings they would have contributed are absent"],"retention":{"messages_dropped":0}}}
+```
+
+| Logged reason | Cause | What to do |
+|---|---|---|
+| `plugin <path>: cannot read plugin: <path>: No such file or directory` | The path is wrong | Give the path to the `.wasm` file |
+| `plugin <path>: not a valid WASM module` | The file is not WebAssembly, or a build for another target | Build for `wasm32-unknown-unknown` |
+| An ABI version refusal | Someone built the plugin against another plugin ABI version | Rebuild it against the ABI this sipnab reports |
+| `plugin <name> on <Call-ID>: <reason>` | The plugin loaded, then trapped, ran out of fuel or memory, or returned the wrong shape for one dialog | That dialog prints without the plugin's findings, and the other dialogs keep theirs. Fix the plugin |
+| sipnab refuses the command line, exit 2, at `--plugin` | A build without the `plugins` feature has no `--plugin` flag | Use a build that lists `plugins` in `sipnab --version` |
+
+[Error messages](errors.md) explains each message in full.
 
 ## Known limits
 

@@ -118,6 +118,9 @@ sees calls from the whole estate. The HEP listener is a plain UDP socket:
    `"[sipnab]uri=hep:capture01.example.net:9063;version=3;transport=udp"` with
    `Invalid key <version> in trace id!`: put the address in `hep_id` as above.
    [Add Homer to your voice stack](homer.md) explains each line.
+   [Collect and forward HEP](hep.md#have-your-sip-server-send-hep) shows the
+   OpenSIPS 4.0 form, which traces each call's whole dialog, and the page
+   gives the TCP and TLS forms.
 
    Kamailio (tested with 6.1.4) — `kamailio.cfg`:
 
@@ -227,7 +230,9 @@ sipnab can run there. Arrange two things:
 - **Port**: heplify-server owns udp/9060. So sipnab takes its own
   (udp/9063 above), and each proxy mirrors to **both** destinations.
   - OpenSIPS: add a second `trace_id` and a second `trace()` call.
-  - Kamailio: add a second duplicate destination.
+  - Kamailio's `siptrace` sends to one `duplicate_uri`, and a second one
+    replaces the first. [Connect sipnab to Homer](homer-sipnab.md#sipnab-as-a-second-receiver)
+    gives the two ways to run sipnab beside Homer with Kamailio.
   - If a sender can't dup, put a small UDP fan-out (e.g. socat) in front.
 - **Budget**: cap sipnab's footprint with `[limits]` (see
   [Understand the load on a busy server](mcp-deploy.md#understand-the-load-on-a-busy-server)).
@@ -536,7 +541,7 @@ degrees of one thing:
 | `session_id` | **Yes, by design** ([RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html)) | An identifier both ends agreed on | `true` |
 | `th_callid_decoded` | **Yes**, through OpenSIPS `topology_hiding("C")` with the secret configured ([how](opensips-sipnab.md#calls-through-topology-hiding)) | The hidden Call-ID decodes to the other leg's, and the From tags match | `true` |
 | `th_callid_mapping` | **Yes**, through OpenSIPS `topology_hiding("C")` with the script change | OpenSIPS named both Call-IDs in an `E_SIPNAB_TH_MAP` event | `true` |
-| `x_call_id` | Only if the box inserts it | An identifier, by vendor convention | `true` |
+| `x_call_id` | Only if the box inserts a header holding the other leg's Call-ID, **and** `[sip] xcid_headers` names that header ([how](follow-a-call.md#copy-the-callers-call-id-into-a-header)) | An identifier the operator configured | `true` |
 | `charging_vector_related_icid` | **Yes** — but only when the B2BUA chose to emit it ([RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) makes it a `MAY`) | The intermediary declared the link itself, in the parameter the RFC provides for it | `true` |
 | `sdp_origin` | Only if the box forwards SDP untouched | An identifier of the MEDIA session, not the dialog | `true` |
 | `charging_vector_icid` | Not by design — an ICID names ONE dialog and a B2BUA is two | An intermediary carried a per-dialog identifier onto a second dialog | `true` |
@@ -702,17 +707,23 @@ they swap direction across a B2BUA, and reports `strategy: session_id` with
 
 Nothing on the sipnab side needs changing. Enable `Session-ID` on each box,
 and later traces return identifier matches.
+[Pass RFC 7989 Session-ID through](follow-a-call.md#pass-rfc-7989-session-id-through)
+says which servers send it.
 
-**2. Use an identifier the network already carries.** This is what `x_call_id`,
+**2. Use an identifier the network already carries.** This is what
 `sdp_origin` and the two `P-Charging-Vector` strategies are. sipnab is already
 looking for them. You get an identifier match today with no configuration at
-all if any of these is true:
+all if either of these is true:
 
-- your SBC emits `X-Call-ID` by vendor convention,
-- it forwards SDP untouched so the
+- your SBC forwards SDP untouched so the
   [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) origin tuple survives,
 - it sits in a carrier network where RFC 7315 charging headers are on the wire
   anyway.
+
+A header that carries the other leg's Call-ID, such as an `X-Call-ID` your SBC
+adds, is the `x_call_id` strategy. It needs one line of configuration: sipnab
+reads no such header until `[sip] xcid_headers` names it. See
+[Copy the caller's Call-ID into a header](follow-a-call.md#copy-the-callers-call-id-into-a-header).
 
 Check before you plan work. Run `find_correlated` on a known B2BUA call and see
 what `strategy` comes back.
