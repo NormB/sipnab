@@ -132,6 +132,17 @@ exclude = [
   # results between runs and the old entry aged out, which is why this surfaced
   # now rather than when the link landed in 2092d3a.
   'linkedin\.com',
+  # CLA Assistant's README badge, an image their service renders, not
+  # documentation content. It failed the Dead links step on #651's Docs run
+  # 41879054421 (2026-11-04) and #658's run 41956761200 (2026-11-05), each time
+  # as "[TIMEOUT] https://cla-assistant.io/readme/badge/NormB/sipnab" with no
+  # other error, against `timeout = 30` above. Three requests to it from this
+  # host on 2026-11-05 got no answer within 70 s. The signing page on the same
+  # host, cla-assistant.io/NormB/sipnab, answered 200 in 0.26 s in the same
+  # minute, so only the badge path is excluded and the links people follow stay
+  # checked. tests/site_journey_test.rs still checks the badge's owner and
+  # repository.
+  'cla-assistant\.io/readme/badge/',
   # opensips.org serves an incomplete certificate chain: the server sends its
   # own certificate (CN=web.opensips.org) but not the Let's Encrypt intermediate
   # (YR1) that signed it. Verified 2026-09-23: `openssl s_client` reports
