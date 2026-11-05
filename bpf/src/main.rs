@@ -187,11 +187,11 @@ fn try_tls_write(ctx: &ProbeContext) -> Result<(), ()> {
     rec.daddr = [0u8; 16];
     rec.comm = bpf_get_current_comm().unwrap_or([0u8; 16]);
 
+    // The mask, here and nowhere earlier. See the comment on `READ_MAX`.
+    let copy = copy & READ_MAX;
     // SAFETY: reading userspace memory the application just handed the TLS
     // library. `bpf_probe_read_user_buf` faults safely and returns an error
     // rather than trapping if the pointer is bad.
-    // The mask, here and nowhere earlier. See the comment on `READ_MAX`.
-    let copy = copy & READ_MAX;
     unsafe {
         bpf_probe_read_user_buf(buf, &mut rec.data[..copy]).map_err(|_| ())?;
     }
@@ -203,6 +203,14 @@ fn try_tls_write(ctx: &ProbeContext) -> Result<(), ()> {
     // A record already parked for this thread means the previous write was
     // never followed by a send. Submit it now, with no addresses, rather than
     // dropping it or letting the next send stamp the wrong socket on it.
+    // SAFETY: `get` is unsafe because a preallocated hash map gives no
+    // atomicity between `insert` and `remove`, so a slot freed under a live
+    // reference can be reused and read as garbage. The key is this thread's
+    // id, and only this thread's two hooks write it: this one inserts it and
+    // `try_tcp_sendmsg` removes it. A thread runs one hook at a time, and the
+    // host never opens PENDING. So nothing can change the entry while
+    // `stale` lives, and it is last used by `output`, before this hook's own
+    // `insert` replaces it.
     if let Some(stale) = unsafe { PENDING.get(&rec.tid) } {
         EVENTS.output(ctx, stale, 0);
     }
@@ -226,6 +234,10 @@ fn try_tcp_sendmsg(ctx: &ProbeContext) -> Result<(), ()> {
     // Nothing parked means this send carried something other than the
     // plaintext we are following. Far and away the common case: this hook
     // fires for every TCP send on the box.
+    // SAFETY: as in `try_tls_write`: the key is this thread's id, written only
+    // by this thread's two hooks, which never run at once, and the host never
+    // opens PENDING. `parked` is copied into scratch below, before this hook's
+    // own `remove` frees the entry.
     let parked = unsafe { PENDING.get(&tid) }.ok_or(())?;
 
     let slot = SCRATCH.get_ptr_mut(0).ok_or(())?;

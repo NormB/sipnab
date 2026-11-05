@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Every `unsafe` block, extern block and `unsafe fn` in the tree states why it is sound.** The Rust style gate held eight sites as known debt: three in the eBPF probes, the libpcap, `pcap_next_ex`, dyld and unwinder declarations, a test's environment change, and two `unsafe fn` without a `# Safety` section. Each now has its `SAFETY` comment or `# Safety` section, and `src/rtp/g711.rs` says why its table skips rustfmt. The known-sites list no longer carries them, so a new undocumented site fails the gate.
+
 ## [0.5.233] - 2026-11-04
 
 ### Added

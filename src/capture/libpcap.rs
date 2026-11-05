@@ -140,6 +140,8 @@ pub fn running() -> LibpcapReport {
     // its own, because the symbol must come from exactly the libpcap the crate
     // links — the embedded static one in a musl build, the host's in a gnu
     // one, `/usr/lib/libpcap.A.dylib` on macOS.
+    // SAFETY: the declaration matches libpcap's own,
+    // `const char *pcap_lib_version(void)` in pcap/pcap.h.
     unsafe extern "C" {
         fn pcap_lib_version() -> *const std::ffi::c_char;
     }

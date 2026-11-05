@@ -631,11 +631,3 @@ PoisonedLock	tests/cli_flag_behavior_test.rs	4
 PoisonedLock	tests/metrics_counters_test.rs	1
 PoisonedLock	tests/quality_interval_period_test.rs	2
 PoisonedLock	tests/security_test.rs	1
-RustfmtSkipWithoutReason	src/rtp/g711.rs	1
-UnsafeFnWithoutSafetyDoc	src/crash/frames.rs	1
-UnsafeFnWithoutSafetyDoc	src/privilege.rs	1
-UnsafeWithoutSafety	bpf/src/main.rs	3
-UnsafeWithoutSafety	src/capture/libpcap.rs	1
-UnsafeWithoutSafety	src/capture/next_ex.rs	1
-UnsafeWithoutSafety	src/crash/frames.rs	2
-UnsafeWithoutSafety	tests/security_test.rs	1
