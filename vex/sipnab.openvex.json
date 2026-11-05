@@ -3,8 +3,8 @@
   "@id": "https://github.com/NormB/sipnab/blob/main/vex/sipnab.openvex.json",
   "author": "sipnab maintainers <n.brandinger@gmail.com>",
   "role": "Project maintainer",
-  "timestamp": "2026-11-03T00:00:00Z",
-  "version": 7,
+  "timestamp": "2026-11-05T00:00:00Z",
+  "version": 8,
   "tooling": "Hand-written; held to deny.toml and osv-scanner.toml by tests/vex_document_test.rs",
   "statements": [
     {
@@ -26,9 +26,9 @@
           ]
         }
       ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_cannot_be_controlled_by_adversary",
-      "impact_statement": "The Marvin Attack is an online chosen-ciphertext oracle: it needs a service that decrypts attacker-supplied RSA ciphertexts and leaks decryption timing back to the attacker. sipnab uses the rsa crate only under the optional `tls` feature, to decrypt offline the pre-master secret of an already-captured TLS 1.2 handshake with an operator-supplied key (`--tls-key`). No network-facing decryption oracle exists, nothing an attacker supplies is decrypted on demand, and no decryption timing is returned to anyone. No fixed rsa release exists as of 0.9.x. Re-evaluate if sipnab ever grows an online decryption path."
+      "status": "affected",
+      "status_notes": "The Marvin Attack needs many RSA decryptions of attacker-chosen ciphertexts whose timing the attacker can measure. No fixed rsa release exists (0.9.10; 0.10.0-rc.20 is not marked fixed). sipnab uses an rsa private key in two places. src/capture/rsa_key.rs decrypts, with an operator-supplied key (`--tls-key`, the optional `tls` feature), the pre-master secret of an already-captured TLS 1.2 handshake; capture is passive and nothing is sent back to whoever chose the ciphertext. src/output/vcon_jose.rs unwraps the content key of an encrypted vCon opened with an RSA key (`--vcon-key`, `--vcon-fetch-decrypt-key`, the optional `vcon` feature). Read from a file (`-I`) nobody can time it; a store read by `--vcon-fetch` or `--vcon-audio-fetch` chooses the ciphertext but sees only when the next request comes. POST /v1/vcon/validate, POST /v1/vcon/analyze and the MCP vCon tools open a container the caller supplies and answer that caller, so with an RSA `--vcon-key` a client holding the API key or MCP access can submit chosen ciphertexts and time the answers, limited by the per-peer rate limit (REST default 100 requests per second). RS256 signing uses ring, and encryption to a recipient uses only its public key. The risk is low, not zero; re-evaluated at every release.",
+      "action_statement": "Use an EC P-256 key for `encrypt_to`, `--vcon-key` and `--vcon-fetch-decrypt-key`: it uses ECDH-ES+A256KW and no rsa private-key operation. If you keep an RSA recipient key, give the REST API key and MCP access only to clients you would trust with that key's plaintext, and fetch encrypted vCons (`--vcon-fetch`, `--vcon-audio-fetch`) only from a store you trust."
     },
     {
       "vulnerability": {

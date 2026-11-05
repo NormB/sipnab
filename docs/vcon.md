@@ -1331,6 +1331,29 @@ beside the container as its own JWE:
   sipnab refuses an `alg` that is not that algorithm.
 - `--vcon-key` and `--vcon-fetch-decrypt-key` take an RSA or an EC P-256
   private key, and open the entry for that key.
+- **Use an EC P-256 key for `encrypt_to`.** An RSA recipient key works, but
+  sipnab opens a container with its private key (`--vcon-key`,
+  `--vcon-fetch-decrypt-key`) through the `rsa` crate, in
+  [`src/output/vcon_jose.rs`](https://github.com/NormB/sipnab/blob/main/src/output/vcon_jose.rs).
+  - That crate has the advisory RUSTSEC-2023-0071, a timing side channel in
+    RSA decryption, and no release that fixes it.
+  - The attack needs the attacker to choose the ciphertext of many
+    decryption calls and time each one. A file read with `-I` gives nobody that, and a store read by
+    `--vcon-fetch` sees only when the next request comes.
+  - `POST /v1/vcon/validate`, `POST /v1/vcon/analyze` and the MCP vCon tools
+    open a container the caller sends. With an RSA `--vcon-key`, a client
+    holding the API key or MCP access can send ciphertext of its choosing and
+    time the answers, at the rate limit.
+  - The risk is low, not zero. With an RSA key, give the API key and MCP
+    access only to clients you would trust with what the key decrypts, and
+    fetch only from a store you trust.
+  - An EC P-256 recipient key uses `ECDH-ES+A256KW` and no `rsa` private-key
+    operation.
+  - Signing is not affected: an RSA `sign_key` signs `RS256` through the
+    `ring` crate. An EC P-256 `sign_key` signs `ES256`; see the note on
+    section 5.2.2 above.
+  - sipnab's only other `rsa` private-key use is `--tls-key`, in
+    [`src/capture/rsa_key.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/rsa_key.rs).
 - sipnab does not check who issued either certificate or when it expires.
   - Whoever decrypts a container decides whether to trust the signer's chain.
   - The fetcher checks it with `--vcon-fetch-signer-ca` and
