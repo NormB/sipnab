@@ -519,7 +519,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.233",
+  "version": "0.5.234",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
