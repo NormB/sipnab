@@ -43,7 +43,8 @@ at handshake.
 > **Fails as.** An agent that quietly truncates or floods, and an operator who
 > cannot tell which.
 
-**As a security-model bullet.** [`docs/mcp.md`](../mcp.md) line 1205:
+**As a security-model bullet.** [`docs/mcp.md`](../mcp.md) line 1205, at
+`42250716e` (section 8 says where it went):
 
 > - **Read-only by design.** No tool mutates the dialog/stream/alert
 >   stores or sends SIP. systemd owns the capture lifecycle, or the
@@ -358,8 +359,9 @@ in section 6B: the flag is not what makes that tool safe.
 Neither is fixed here. Both are recorded so the next person does not re-derive
 them. Neither is a behavior change.
 
-**The read-only claim in [`docs/mcp.md:1205`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L1205) is now imprecise, and its second
-sentence is ungrammatical and false.** "No tool mutates the dialog/stream/alert
+**The read-only claim in [`docs/mcp.md`](../mcp.md), at line 1205 when this
+page was written (`42250716e`), is now imprecise, and its second sentence is
+ungrammatical and false.** "No tool mutates the dialog/stream/alert
 stores" is exactly true. "systemd owns the capture lifecycle, or the CLI flags,
 not by the LLM" contradicts `--mcp-allow-shutdown`, which hands the capture
 lifecycle to precisely the LLM. [Section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` flagged this and
@@ -368,6 +370,11 @@ operator is reading while leaving them reading it*. The repair has still not
 been made, and the same wording drift affects
 [`src/mcp/mod.rs:5`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L5) and the handshake string at
 [`server.rs:2363`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2363).
+
+That bullet is no longer in [`docs/mcp.md`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md). `4399a3781` rewrote it on
+2026-08-02, and the security model now lives in
+[`docs/mcp-protocol.md`](../mcp-protocol.md#security-model), whose first bullet
+calls the rule narrower than "read-only".
 
 **[Section 2, "Write-back MCP tools"](deferred-and-declined.md#2-write-back-mcp-tools) of `deferred-and-declined.md` has itself gone stale on one claim.** It states
 that the prompt-injection rule for tool descriptions "is convention, not

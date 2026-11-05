@@ -295,3 +295,112 @@ def test_an_untracked_page_under_docs_is_not_read(tmp_path, monkeypatch):
     monkeypatch.setattr(drift, "REPO", root)
     names = sorted(p.relative_to(root).as_posix() for p in drift.anchor_pages())
     assert names == ["docs/public.md"]
+
+
+# ── a cited line must exist ────────────────────────────────
+#
+# The agreement rule compares a citation's label with its own `#L` fragment and
+# never opens the file both of them name. So `[`mcp.md:1268`](...#L1268)`
+# passed on a 486-line page: both halves said 1268, and line 1268 does not
+# exist. Five citations in docs/design/ pointed past the end of their target on
+# 2026-11-04, and every gate here reported the tree clean.
+
+
+def _eof_repo(tmp_path, monkeypatch, lines=3):
+    """A repository root holding `docs/target.md` of exactly `lines` lines."""
+    (tmp_path / "docs").mkdir()
+    target = tmp_path / "docs" / "target.md"
+    target.write_text("".join(f"line {n}\n" for n in range(1, lines + 1)))
+    monkeypatch.setattr(drift, "REPO", tmp_path)
+    return tmp_path
+
+
+def _eof_page(root, body):
+    p = root / "docs" / "page.md"
+    p.write_text(body)
+    return p
+
+
+def test_a_citation_past_the_end_of_its_file_is_reported(tmp_path, monkeypatch):
+    """Both halves agree on line 4 of a 3-line file: the defect as found."""
+    root = _eof_repo(tmp_path, monkeypatch)
+    p = _eof_page(root, f"See [`docs/target.md:4`]({BLOB}/docs/target.md#L4).\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert "past_eof=1" in out, out
+    assert "docs/target.md:4" in out and "3 lines" in out, out
+
+
+def test_the_last_line_of_a_file_is_not_past_its_end(tmp_path, monkeypatch):
+    """The boundary, from the other side: line 3 of 3 exists."""
+    root = _eof_repo(tmp_path, monkeypatch)
+    p = _eof_page(root, f"See [`docs/target.md:3`]({BLOB}/docs/target.md#L3).\n")
+    rc, out = run_anchors([p])
+    assert rc == 0, out
+    assert "past_eof=0" in out and "resolved=1" in out, out
+
+
+def test_a_range_whose_end_is_past_the_file_is_reported(tmp_path, monkeypatch):
+    """A range that starts inside the file and ends outside it is as wrong as
+    one that starts outside, and comparing only the start would pass it."""
+    root = _eof_repo(tmp_path, monkeypatch)
+    p = _eof_page(root, f"See [`docs/target.md:2-4`]({BLOB}/docs/target.md#L2-L4).\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert "past_eof=1" in out, out
+
+
+def test_a_bare_label_with_a_relative_link_is_resolved_through_the_link(tmp_path, monkeypatch):
+    """`[`:9`](target.md#L9)` names no file in its label. The link does, relative
+    to the page carrying it."""
+    root = _eof_repo(tmp_path, monkeypatch)
+    p = _eof_page(root, "See [`:9`](target.md#L9).\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert "past_eof=1" in out and "resolved=1" in out, out
+
+
+def test_a_citation_without_a_fragment_is_still_checked_against_its_file(tmp_path, monkeypatch):
+    """The missing fragment belongs to `cited_line_numbers_link_to_the_line`;
+    the label still promises a line, and that line must exist."""
+    root = _eof_repo(tmp_path, monkeypatch)
+    p = _eof_page(root, f"See [`docs/target.md:9`]({BLOB}/docs/target.md).\n")
+    rc, out = run_anchors([p])
+    assert rc == 1, out
+    assert "past_eof=1" in out, out
+
+
+def test_a_target_that_cannot_be_resolved_is_neither_counted_nor_reported(tmp_path, monkeypatch):
+    """A missing file is `linked_code_targets_exist`'s failure, and another host
+    is nothing this repository can measure. Neither is counted as resolved, so
+    `resolved` cannot be inflated by citations nobody opened."""
+    root = _eof_repo(tmp_path, monkeypatch)
+    p = _eof_page(
+        root,
+        f"[`docs/gone.md:9`]({BLOB}/docs/gone.md#L9) and "
+        "[`x.md:9`](https://example.com/x.md#L9)\n",
+    )
+    rc, out = run_anchors([p])
+    assert rc == 0, out
+    assert "resolved=0" in out and "past_eof=0" in out, out
+
+
+def test_applying_leaves_a_citation_past_the_end_for_a_human(tmp_path, monkeypatch):
+    """No number the fixer could write is right: the label is the authority for
+    the agreement rule, and here the label itself is wrong. It must not be
+    rewritten, and the gate must still fail after `--apply`."""
+    root = _eof_repo(tmp_path, monkeypatch)
+    body = f"See [`docs/target.md:4`]({BLOB}/docs/target.md#L4).\n"
+    p = _eof_page(root, body)
+    rc, out = run_anchors([p], apply=True)
+    assert p.read_text() == body
+    assert rc == 1 and "past_eof=1" in out, out
+
+
+def test_the_predicate_reads_every_cited_line_against_the_length():
+    """The one rule both scans share, driven directly at its boundary."""
+    assert drift.beyond_eof(3, 3) is None
+    assert drift.beyond_eof(3, 4) == 4
+    assert drift.beyond_eof(3, 2, 4) == 4
+    assert drift.beyond_eof(3, 2, None) is None
+    assert drift.beyond_eof(0, 1) == 1

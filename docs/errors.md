@@ -318,6 +318,14 @@ A secret file given with `--hep-auth-file` or `--metrics-auth-file` is empty or 
 
 **Exit code:** 2.
 
+### `{flag} '{path}': {e}. {who} cannot read it, and a revocation list sipnab cannot read revokes nothing. Make it readable by that user (for example root:<its group> 0640)`
+
+A run started as root dropped privileges, and the user it dropped to cannot open the revocation list named by `--api-revoked-file` or `--mcp-revoked-file`. `{flag}` is the flag, `{path}` the path and `{e}` the reason, such as `Permission denied (os error 13)`. `{who}` names the user, for example `user 'nobody', which this run dropped privileges to,`. sipnab reads the list again whenever it changes, as that user, and a list it cannot read revokes nothing, so sipnab would accept a revoked token. sipnab accepts a list that does not exist yet: it revokes nothing until you write it.
+
+**What to do:** Make the file readable by the `--user` account, for example `chown root:sipnab` and `chmod 640` with `--user sipnab`.
+
+**Exit code:** 2.
+
 ### `--fraud-destination {bad:?} is not a destination sipnab can match: give ISO 3166-1 alpha-2 codes the dial plan labels (NANP for +1 numbers), comma-separated`
 
 One entry in the comma-separated `--fraud-destination` list is not a destination label sipnab knows.
@@ -2375,11 +2383,11 @@ A query flag, named by `{flag}`, computed its answer, and sipnab could not write
 
 ### `analysis serialization failed: {e}`
 
-`--json-analyze` prints the capture analysis as one JSON line, and converting the analysis to JSON failed. `{e}` is the serializer's error. The code comment calls this a bug in the analysis type. sipnab prints no `--json-analyze` line.
+`--json-analyze` prints the capture analysis as one JSON line, and converting the analysis to JSON failed. `{e}` is the serializer's error. The code comment calls this a bug in the analysis type. sipnab prints this message on stderr and no `--json-analyze` line, and writes no report after it.
 
 **What to do:** Use `--analyze` for the same analysis as a table.
 
-**Exit code:** None. sipnab logs the error, and the exit status does not change.
+**Exit code:** 1.
 
 ### `Call-ID '{call_id}' not found in tracked dialogs`
 
@@ -2618,11 +2626,11 @@ A `--plugin` (a WebAssembly analysis module) failed while it analyzed one dialog
 
 ### `RFC 7951 encoding failed: {e}`
 
-`--yang-analyze` prints the capture analysis encoded as RFC 7951 JSON (the JSON encoding of YANG-modeled data) against the `sipnab-diagnosis` model. Encoding failed. `{e}` is the reason. The code describes this as a mismatch inside sipnab between the analysis and its YANG table. sipnab prints no `--yang-analyze` line.
+`--yang-analyze` prints the capture analysis encoded as RFC 7951 JSON (the JSON encoding of YANG-modeled data) against the `sipnab-diagnosis` model. Encoding failed. `{e}` is the reason. The code describes this as a mismatch inside sipnab between the analysis and its YANG table. sipnab prints this message on stderr and no `--yang-analyze` line, and writes no report after it.
 
 **What to do:** Use `--json-analyze` for the same analysis as plain JSON, or `--analyze` for the table.
 
-**Exit code:** None. sipnab logs the error, and the exit status does not change.
+**Exit code:** 1.
 
 ### `--strip-secrets failed: {e}`
 
@@ -3825,7 +3833,7 @@ The flags listed in the first `{}` write their output when a run ends. They come
 
 ### `cannot create --redact-map '{}': {e}`
 
-sipnab could not create the `--redact-map` file. The text after the path is the operating system's reason.
+sipnab could not create the `--redact-map` file, which it first writes as a temporary file in the same directory. The text after the path is the operating system's reason. sipnab leaves nothing at the path.
 
 **What to do:** Check that the directory exists and that the user sipnab runs as can write to it.
 
@@ -4656,9 +4664,9 @@ The spool status found a failure record larger than it reads. `{shown}` is the r
 
 ### `writing --redact-map '{}': {e}`
 
-sipnab created the `--redact-map` file, but a write to it failed part way. The text after the path is the operating system's reason.
+A write of the `--redact-map` table failed part way. sipnab writes the table to a temporary file in the same directory and gives it the path's name only once the whole table is on disk. sipnab leaves no map at the path, whole or partial, and removes the temporary file. The text after the path is the operating system's reason.
 
-**What to do:** Check free space on that filesystem, delete the partial map file, and run the export again.
+**What to do:** Check free space on that filesystem, and run the export again.
 
 **Exit code:** 1.
 

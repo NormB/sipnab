@@ -3014,10 +3014,10 @@ pub struct SecurityArgs {
     /// block would disconnect, so the address-specific dialects comment their
     /// commands out for it and the fail2ban dialect puts it in `ignoreip`.
     ///
-    /// Needs a detector to have been armed (`--kill-scanner`, `--kill-ua`,
-    /// `--fraud-detect`, `--reg-flood`, `--digest-leak`); with none of them
-    /// nothing is ever accused, and the empty output says so rather than
-    /// reading as an all-clear.
+    /// Needs a detector to have been armed (`--kill-scanner`,
+    /// `--kill-scanner-detect-only`, `--fraud-detect`, `--reg-flood`,
+    /// `--digest-leak`); with none of them nothing is ever accused, and the
+    /// empty output says so rather than reading as an all-clear.
     #[arg(
         help_heading = "Security",
         long = "recommend-block",
@@ -8776,7 +8776,9 @@ pub fn resolve_named_secret(
 ) -> Result<Option<String>, String> {
     let flag = file_flag;
     if let Some(path) = file {
-        let contents = std::fs::read_to_string(path)
+        // Through `secret_files`: a run that drops privileges read the file
+        // before the drop, so a root-only secret still resolves after it.
+        let contents = crate::secret_files::read_to_string(path)
             .map_err(|e| format!("{flag} '{}': {e}", path.display()))?;
         let trimmed = contents.trim();
         if trimmed.is_empty() {

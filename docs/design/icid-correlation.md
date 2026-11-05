@@ -301,7 +301,7 @@ settled before anyone writes code, which is section 9's condition.
 
 **Yes, `identifier_match: true`, for both proposed reasons.** The field's
 meaning is documented at [`server.rs:4505`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4505) and in
-[`mcp.md:1268`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L1268) as *identifiers were compared* versus *this was a
+[`mcp-tools-signaling.md:753-756`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools-signaling.md#L753-L756) as *identifiers were compared* versus *this was a
 guess*. An icid comparison compares an opaque value that RFC 7315 requires to be
 globally unique. It is not a guess from timing or endpoint overlap, and
 reporting it as `false` would put it in a bucket whose defining property —
@@ -386,13 +386,20 @@ Three concrete follow-ons:
   any address in a fixture or a doc must come from [RFC 5737](https://www.rfc-editor.org/rfc/rfc5737.html)'s documentation
   ranges. (RFC 7315's own example uses `192.0.6.8`, which is **not** a
   documentation address — do not copy it.)
-- **[`backlog.md`](backlog.md) PA5's redaction inventory
-  ([`:1280`](https://github.com/NormB/sipnab/blob/main/docs/design/backlog.md#L1280)) does not list `P-Charging-Vector`.** It lists
+- **[`backlog.md`](backlog.md) PA5's redaction inventory does not list
+  `P-Charging-Vector`.** It lists
   `Call-ID` and SDP `o=` as *"internal hostnames and IPs"*, which is the same
   category. Adding this strategy without adding the header to that inventory
   would leave a redaction mode that redacts the two lesser sources of the same
   leak and not the greater one. That inventory line is a prerequisite of
   shipping, not a follow-up.
+
+  The inventory is no longer in this repository. It was part of the tracked
+  backlog when this page was written, and the backlog became a local, untracked
+  file on 2026-09-17 (`75c01a974`). PA5 shipped on 2026-08-28 as
+  [`src/output/redact.rs`](../../src/output/redact.rs), and its header table
+  replaces `P-Charging-Vector` at
+  [`redact.rs:974`](https://github.com/NormB/sipnab/blob/main/src/output/redact.rs#L974).
 - **A conformance lint is not proposed.** `Session-ID` earned one because
   malformedness there explains a *failed* correlation
   ([`session_id.rs:52-66`](https://github.com/NormB/sipnab/blob/main/src/sip/session_id.rs#L52-L66)). An icid has no
@@ -416,7 +423,7 @@ The shape, by file:
 | [`dialog_store.rs:43`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L43) | Two new `CorrelationReason` variants, each with the doc comment explaining its survival properties that the existing five carry |
 | [`dialog_store.rs:1074-1098`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1074-L1098) | Two new candidate blocks between `sdp_origin` and `via_branch`, following the established pattern: hoist the source dialog's values into a `HashSet` once before the candidate loop (as `src_origins` does at [`:1004`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1004)), parse the candidate side lazily inside the loop |
 | [`server.rs:4505`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4505) | Two new arms. **This is a compile error until written**, by design |
-| [`mcp.md:1264`](https://github.com/NormB/sipnab/blob/main/docs/mcp.md#L1264), [`mcp-deploy.md:824`](https://github.com/NormB/sipnab/blob/main/docs/mcp-deploy.md#L824), [`domain-primer.md:202`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L202) | Strategy tables and the "correlates legs five ways" sentence |
+| [`mcp-tools-signaling.md:695-705`](https://github.com/NormB/sipnab/blob/main/docs/mcp-tools-signaling.md#L695-L705), [`mcp-estate.md:539-549`](https://github.com/NormB/sipnab/blob/main/docs/mcp-estate.md#L539-L549), [`domain-primer.md:271-282`](https://github.com/NormB/sipnab/blob/main/docs/internals/domain-primer.md#L271-L282) | Strategy tables and the "correlates legs five ways" sentence |
 
 Three code-level facts that a naive implementation would get wrong:
 

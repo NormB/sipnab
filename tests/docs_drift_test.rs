@@ -5979,7 +5979,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // plugins.md +1, and the site mirror of each of those six pages the same
     // (+11). No other changed page gained or lost a table. Counted against
     // origin/main 9124a6f08.
-    const EXPECTED_TABLES: usize = 1396;
+    // 1396 -> 1397: bench/README.md gains the throughput gate's exit-code
+    // table. It has no site mirror, and no other changed page gained or lost
+    // a table.
+    const EXPECTED_TABLES: usize = 1397;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

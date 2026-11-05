@@ -98,25 +98,29 @@ class Combo:
     tests: list[str] = field(default_factory=list)
     suite: bool = False
     needs: list[str] = field(default_factory=list)
+    # The library's unit tests (`cargo test --lib`) with these features. The
+    # test targets above never include them, and nothing else runs them with
+    # features off.
+    lib: bool = False
 
     def requires(self) -> set[str]:
         """What a pool must have to run this combination."""
         out = set(self.needs)
-        if self.tests or self.suite:
+        if self.tests or self.suite or self.lib:
             out.add("tests")
         return out
 
     def weight(self) -> int:
-        return 1 + len(self.tests) + (SUITE_WEIGHT if self.suite else 0)
+        return 1 + len(self.tests) + int(self.lib) + (SUITE_WEIGHT if self.suite else 0)
 
 
 def parse_combos(text: str) -> list[Combo]:
     """The combinations of a feature-combos file, in file order.
 
     One per line: the comma-separated features, then optionally `suite` (run
-    the whole test suite with them), `test=NAME` (run that test target with
-    them) or `needs=TOOL` (only a pool with TOOL can run it), separated by
-    spaces. `#` starts a comment.
+    the whole test suite with them), `lib` (run the library's unit tests with
+    them), `test=NAME` (run that test target with them) or `needs=TOOL` (only
+    a pool with TOOL can run it), separated by spaces. `#` starts a comment.
     """
     out: list[Combo] = []
     for n, raw in enumerate(text.splitlines(), 1):
@@ -128,6 +132,10 @@ def parse_combos(text: str) -> list[Combo]:
         for word in words[1:]:
             if word == "suite":
                 combo.suite = True
+            elif word == "lib":
+                if combo.lib:
+                    raise ValueError(f"line {n}: `lib` is listed twice")
+                combo.lib = True
             elif word.startswith("test=") and len(word) > len("test="):
                 combo.tests.append(word[len("test="):])
             elif word.startswith("needs=") and len(word) > len("needs="):
@@ -211,6 +219,9 @@ def group_commands(group: list[Combo]) -> list[list[str]]:
     cmds = []
     for combo in group:
         cmds.append(lint_command(combo.features))
+        if combo.lib:
+            cmds.append(["cargo", "test", "--no-default-features", "--features",
+                         combo.features, "--lib"])
         for test in combo.tests:
             cmds.append(["cargo", "test", "--no-default-features", "--features",
                          combo.features, "--test", test])

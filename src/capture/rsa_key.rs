@@ -53,7 +53,9 @@ impl RsaKey {
 
     /// Load an RSA private key from a PEM file at `path`.
     pub fn from_pem_file(path: &Path) -> Result<Self> {
-        let pem = std::fs::read_to_string(path)
+        // Read before the privilege drop when this run drops; see
+        // `crate::secret_files`.
+        let pem = crate::secret_files::read_to_string(path)
             .with_context(|| format!("reading TLS private key from {}", path.display()))?;
         Self::from_pem(&pem)
     }

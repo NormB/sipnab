@@ -508,7 +508,9 @@ impl Drop for KeyLogEntry {
 /// Returns an error if the file cannot be opened or if individual lines
 /// contain invalid hex values.
 pub fn parse_keylog_file(path: &Path) -> Result<Vec<KeyLogEntry>> {
-    let contents = std::fs::read_to_string(path)
+    // `--dtls-keylog` is read before the privilege drop when this run drops;
+    // see `crate::secret_files`. A path that was not read then is read here.
+    let contents = crate::secret_files::read_to_string(path)
         .with_context(|| format!("Failed to read keylog file: {}", path.display()))?;
 
     let mut entries = Vec::new();

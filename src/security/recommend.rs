@@ -148,12 +148,33 @@ pub fn recommend(a: &AccusedSource, dialect: BlockDialect) -> String {
 /// clean one.
 #[must_use]
 pub fn nothing_to_recommend() -> String {
-    "# sipnab: no source was accused in this capture, so no block rule is\n\
-     # recommended. If no detector was armed, that silence means nothing was\n\
-     # LOOKED FOR, not that nothing happened -- arm one with --kill-scanner,\n\
-     # --kill-ua, --fraud-detect, --reg-flood or --digest-leak.\n"
-        .to_string()
+    format!(
+        "# sipnab: no source was accused in this capture, so no block rule is\n\
+         # recommended. If no detector was armed, that silence means nothing was\n\
+         # LOOKED FOR, not that nothing happened -- arm one with\n\
+         # {}.\n",
+        arming_flags_text()
+    )
 }
+
+/// [`ARMING_FLAGS`] as one list: "a, b or c".
+fn arming_flags_text() -> String {
+    match ARMING_FLAGS.split_last() {
+        Some((last, rest)) if !rest.is_empty() => format!("{} or {last}", rest.join(", ")),
+        Some((last, _)) => (*last).to_string(),
+        None => String::new(),
+    }
+}
+
+/// The flags that each arm a detector on their own, as the empty
+/// recommendation and the `--recommend-block` help name them.
+pub const ARMING_FLAGS: &[&str] = &[
+    "--kill-scanner",
+    "--kill-scanner-detect-only",
+    "--fraud-detect",
+    "--reg-flood",
+    "--digest-leak",
+];
 
 /// The counter-evidence line, in all three of its honest states.
 fn counter_evidence(a: &AccusedSource) -> String {
@@ -821,6 +842,29 @@ mod tests {
         assert!(
             text.contains("LOOKED FOR"),
             "an empty recommendation reads as an all-clear:\n{text}"
+        );
+        Ok(())
+    }
+
+    /// The empty answer names every flag in [`ARMING_FLAGS`], each one a
+    /// comment line's word, and not `--kill-ua`, which is refused when given
+    /// alone and so cannot be the way to arm a detector.
+    #[test]
+    fn the_empty_recommendation_names_every_arming_flag() -> Result<(), TestError> {
+        let text = nothing_to_recommend();
+        let words: Vec<&str> = text
+            .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
+            .collect();
+        for flag in ARMING_FLAGS {
+            assert!(words.contains(flag), "{flag} is not named:\n{text}");
+        }
+        assert!(
+            !words.contains(&"--kill-ua"),
+            "--kill-ua alone is refused, and the advice names it:\n{text}"
+        );
+        assert!(
+            text.lines().all(|l| l.starts_with("# ")),
+            "every line is a comment, so the output can be fed to a shell:\n{text}"
         );
         Ok(())
     }

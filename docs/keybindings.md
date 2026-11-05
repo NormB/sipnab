@@ -657,6 +657,15 @@ The help text can run past the screen, so it scrolls.
 
 Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **Mermaid/HTML**, **Markdown**, **WAV**, **SIPp XML**, **RTP JSON**
 
+**sipnab writes a CSV cell that a spreadsheet would run as a formula as text.**
+
+- The From and To users come from the SIP messages, so whoever places a call chooses them.
+- sipnab adds a leading `'` to a text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return, and quotes it.
+  - A spreadsheet then shows `=1+1` as text instead of running it (CWE-1236).
+- sipnab quotes a cell holding a comma, a double quote, a line feed or a carriage return, as [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180.html) requires.
+- sipnab writes the numeric and time columns (`messages`, `pdd_ms`, `setup_ms`, `created_at`) as it formats them.
+  - They hold no caller text, and a negative `pdd_ms` stays a number.
+
 ## Filter popup
 
 | Key | Action |

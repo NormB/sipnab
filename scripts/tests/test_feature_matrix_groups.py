@@ -313,3 +313,55 @@ def test_a_machine_missing_what_its_pool_needs_is_refused_with_the_reason(tmp_pa
     assert proc.returncode == 2
     assert "cmake" in proc.stdout
     assert calls(log) == []
+
+
+# --- Library unit tests with features off ----------------------------------
+#
+# `tui::render::popups::tests::the_popup_table_covers_every_popup_entry_point`
+# failed in every TUI build without `archive`, the default feature set among
+# them, and CI never saw it: the library's unit tests ran only under
+# `--all-features` and the hook's `--features full`, and this file named test
+# TARGETS, never the library. `lib` runs the library's unit tests with a
+# combination's features.
+
+
+def test_lib_is_parsed_and_runs_the_library_unit_tests():
+    combos = fm.parse_combos("native,tui,audio,metrics lib\ntls\n")
+    assert combos[0].lib and not combos[1].lib
+    cmds = fm.group_commands(combos)
+    assert ["cargo", "test", "--no-default-features", "--features", "native,tui,audio,metrics", "--lib"] in cmds
+    assert not any("--lib" in c and "tls" in c and c[:2] == ["cargo", "test"] for c in cmds)
+
+
+def test_lib_is_listed_once_per_combination():
+    with pytest.raises(ValueError):
+        fm.parse_combos("native lib lib\n")
+
+
+def test_lib_needs_a_pool_that_runs_tests():
+    combo = fm.parse_combos("native lib\n")[0]
+    assert "tests" in combo.requires()
+    with pytest.raises(ValueError):
+        fm.partition(fm.parse_combos("native lib\ntls\n"), ["small", "small"], POOLS)
+
+
+def test_lib_is_weighed_like_one_test_target():
+    plain, lib = fm.parse_combos("tls\nnative lib\n")
+    assert lib.weight() == plain.weight() + 1
+
+
+def default_features():
+    m = re.search(r'(?m)^default = \[([^\]]*)\]', (REPO / "Cargo.toml").read_text())
+    assert m, "Cargo.toml has no `default = [...]` line"
+    return ",".join(f.strip().strip('"') for f in m.group(1).split(",") if f.strip())
+
+
+def test_the_default_feature_set_runs_the_library_unit_tests():
+    """What a bare `cargo test --lib` compiles on a developer's machine."""
+    combos = {c.features: c for c in fm.parse_combos(COMBOS.read_text())}
+    default = default_features()
+    assert default in combos, f"the default feature set {default} is not in the matrix"
+    assert combos[default].lib, (
+        f"{default} does not run the library unit tests, so a unit test that "
+        "fails only with these features never fails in CI"
+    )

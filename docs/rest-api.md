@@ -426,9 +426,10 @@ sudo sipnab -N -d eth0 --user sipnab --api 0.0.0.0:8443 --api-key "secret" \
 ```
 
 `--api-allowed-host` names the host clients use in the URL. A root run reads
-the certificate and key after it drops to `--user`, so make them readable by
-that account (`chown root:sipnab`, `chmod 640`). See [Make a
-certificate](auth.md#make-a-certificate).
+the certificate and key before it drops to `--user`, so a key only root can
+read (`chmod 600`) works. A service that starts as `sipnab`, as the packaged
+unit does, reads them as `sipnab`: make them `root:sipnab`, `chmod 640`. See
+[Make a certificate](auth.md#make-a-certificate).
 
 - On a `0.0.0.0` bind, sipnab answers any IP address but no name it was not given.
 - Without it, sipnab refuses the request below with `403`

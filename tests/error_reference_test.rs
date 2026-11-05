@@ -891,7 +891,10 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // template shared by src/app/batch.rs (stderr_line!) and src/app/tui_mode.rs
 // (warn!), `-O/--output holds a gap: ...`, and src/app/queries/b2.rs,
 // `--export-audio: no file written: ...`. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 550;
+// 550 -> 551: src/app/bootstrap.rs (OPS-11), the refusal of a revocation
+// list the user a root run dropped to cannot read, carried by the resolved
+// `PlanError::new(2, refusal)` site. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 551;
 
 // ---------------------------------------------------------------------------
 // The page gates

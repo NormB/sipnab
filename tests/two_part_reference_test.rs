@@ -181,6 +181,28 @@ fn label_and_anchor_agree_across_the_documentation_tree() -> Result<(), TestErro
          two halves, so stripping fragments is the way to make it vacuous:\n{report}"
     );
 
+    // The second question the same scan asks: does the cited line exist at
+    // all? Agreement passed `mcp.md:1268` -> `#L1268` on a 486-line page,
+    // five times in docs/design/ (2026-11-04), because both halves named the
+    // same line and nothing opened the file. `resolved` is the anti-vacuity
+    // half: a link resolver that stopped resolving would report
+    // `past_eof=0` exactly like a clean tree. Measured 2026-11-04: 652 of 652
+    // examined resolved; the floor follows the `examined` one above.
+    let resolved = field(&report, "resolved")?;
+    assert!(
+        resolved >= 600,
+        "only {resolved} of {examined} line citation(s) resolved to a file, so \
+         the past-the-end check below is reading almost nothing:\n{report}"
+    );
+    assert_eq!(
+        field(&report, "past_eof")?,
+        0,
+        "a citation names a line its file does not have. Both halves can agree \
+         and still send a reader nowhere; re-point it at the content it meant \
+         (git log -S on the cited file finds what was there), or say in the \
+         page that the content is gone. `--apply` cannot fix this one.\n{report}"
+    );
+
     assert!(
         ok,
         "a citation's visible label and its `#L` anchor name different lines. \
@@ -280,6 +302,52 @@ fn a_stale_anchor_beside_a_fresh_label_is_reported() -> Result<(), TestError> {
         "the message must name BOTH numbers -- which half is stale is the whole \
          question:\n{report}"
     );
+    Ok(())
+}
+
+/// A citation whose two halves agree on a line past the end of its file fails.
+///
+/// The 2026-11-04 defect in one page. A `.md` label, because the drift rule
+/// already refused a `.rs` citation past the end and nothing refused this
+/// shape. `docs/README.md` is far shorter than ten million lines, so the
+/// fixture cannot start passing as that file grows; the control beside it
+/// cites line 1, which every file has.
+#[test]
+fn a_citation_past_the_end_of_its_file_is_reported() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
+    let blob = "https://github.com/NormB/sipnab/blob/main/docs/README.md";
+
+    let bad = fixture(
+        dir.path(),
+        "past-eof.md",
+        &format!("See [`docs/README.md:10000000`]({blob}#L10000000).\n"),
+    )?;
+    let (ok, report) = drift(&[&bad], false)?;
+    assert!(
+        !ok,
+        "a label and anchor that agree on line 10000000 of docs/README.md must \
+         fail; the line does not exist:\n{report}"
+    );
+    assert_eq!(field(&report, "past_eof")?, 1, "{report}");
+    assert_eq!(
+        field(&report, "disagreeing")?,
+        0,
+        "the halves agree, so this is not a disagreement:\n{report}"
+    );
+    assert!(
+        report.contains("docs/README.md:10000000") && report.contains("lines"),
+        "the message must name the cited line and the file's length:\n{report}"
+    );
+
+    let good = fixture(
+        dir.path(),
+        "first-line.md",
+        &format!("See [`docs/README.md:1`]({blob}#L1).\n"),
+    )?;
+    let (ok, report) = drift(&[&good], false)?;
+    assert!(ok, "line 1 exists in every file:\n{report}");
+    assert_eq!(field(&report, "resolved")?, 1, "{report}");
+    assert_eq!(field(&report, "past_eof")?, 0, "{report}");
     Ok(())
 }
 
@@ -412,6 +480,11 @@ fn what_the_anchor_fixer_writes_the_gate_accepts() -> Result<(), TestError> {
 /// `docs/…​.md:149-150` cross-references, and the 79 bare `[`:1928`](…)` labels
 /// used inside tables. None of those needs a symbol to be checkable for
 /// AGREEMENT, and all three are in the corpus that desynchronized.
+///
+/// The page form cites lines 1-2. It cited `docs/architecture.md:149-150`,
+/// copied from a design page whose citation pointed past the end of that
+/// 110-line file, and `a_citation_past_the_end_of_its_file_is_reported`
+/// refuses that shape now.
 #[test]
 fn the_agreement_rule_examines_forms_the_drift_rule_cannot_match() -> Result<(), TestError> {
     let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
@@ -419,7 +492,7 @@ fn the_agreement_rule_examines_forms_the_drift_rule_cannot_match() -> Result<(),
         dir.path(),
         "other-forms.md",
         "A range [`src/capture/device.rs:38-40`](https://github.com/NormB/sipnab/blob/main/src/capture/device.rs#L38-L40), \
-         a page [`docs/architecture.md:149-150`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md#L149-L150), \
+         a page [`docs/architecture.md:1-2`](https://github.com/NormB/sipnab/blob/main/docs/architecture.md#L1-L2), \
          and a bare [`:1928`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1928).\n",
     )?;
 

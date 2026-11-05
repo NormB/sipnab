@@ -135,6 +135,14 @@
   "under the old figure and inside the ~2% noise floor, and the same session",
   "measured 0.5.211 at 3.43 / 3.53 / 3.56M. Publishing the lowest replicate",
   "is the rule this file states; keeping 3.56M would publish a figure this",
-  "run did not produce at its floor."
+  "run did not produce at its floor.",
+  "",
+  "The floor is read twice since 2026-11-04. With --reference, the nightly",
+  "measures the latest release's binary alternately with the candidate and",
+  "judges the median candidate/reference RATIO against floor_pct; the",
+  "reference itself must reach floor_pct of cores_4_pkts_per_s, or the gate",
+  "refuses to judge (exit 3, host too loaded). Measured alone the gate read",
+  "load as a regression: 30.7% on 2026-10-15, 34.7% on 10-28, 54.5% on 11-04.",
+  "scripts/bench-verdict.py holds the rule."
  ]
 }

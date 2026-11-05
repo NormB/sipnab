@@ -3011,39 +3011,62 @@ fn confine_after_capture_start(
         None => None,
     };
 
-    // 16. Chroot BEFORE dropping privileges (chroot requires root).
-    // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
-    if let Some(chroot_dir) = effective_chroot(cli, config) {
-        privilege::do_chroot(std::path::Path::new(chroot_dir))
-            .map_err(|e| PlanError::new(1, format!("Failed to chroot: {e}")))?;
-    }
+    // 15c. Read every secret and credential file BEFORE the chroot and the
+    //      drop below. A root run drops to `--user` (or `nobody`), and maybe
+    //      into a chroot, and a root-only (0600) signing key, token, Basic
+    //      auth file or TLS key cannot be read after that: the run used to
+    //      stop with exit 2 at the first one (OPS-11). The files are read
+    //      here, in one phase, and `secret_files` answers for them from then
+    //      on. `read_secrets_then_confine` is what holds the order.
+    let (secrets, keylog_source) =
+        read_secrets_then_confine(secret_file_paths(cli, config), || {
+            // 16. Chroot BEFORE dropping privileges (chroot requires root).
+            // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
+            if let Some(chroot_dir) = effective_chroot(cli, config) {
+                privilege::do_chroot(std::path::Path::new(chroot_dir))
+                    .map_err(|e| PlanError::new(1, format!("Failed to chroot: {e}")))?;
+            }
 
-    // 15b. Open the keylog source while still privileged, for the same reason
-    // the raw kill socket is opened before the drop: after 16a this process may have
-    // dropped to an unprivileged user and chrooted, and the producer's pipe
-    // usually lives somewhere it can then no longer reach (`/run/...`).
-    //
-    // An inherited descriptor (`--keylog-fd`) needs no privilege at all, but is
-    // adopted here too so both spellings reach the decryptor by one path.
-    //
-    // A regular-file `--keylog` is opened here as well, and the decryptor then
-    // reads it through this source instead of opening the path itself, so each
-    // secret still loads once. Left for after the drop, a keylog private to the
-    // proxy that wrote it could not be read at all.
-    // Without the `tls` feature `--keylog-fd` was refused at 13a.
-    #[cfg(feature = "tls")]
-    let keylog_source = open_privileged_keylog_source(cli);
+            // 15b. Open the keylog source while still privileged, for the same reason
+            // the raw kill socket is opened before the drop: after 16a this process may have
+            // dropped to an unprivileged user and chrooted, and the producer's pipe
+            // usually lives somewhere it can then no longer reach (`/run/...`).
+            //
+            // An inherited descriptor (`--keylog-fd`) needs no privilege at all, but is
+            // adopted here too so both spellings reach the decryptor by one path.
+            //
+            // A regular-file `--keylog` is opened here as well, and the decryptor then
+            // reads it through this source instead of opening the path itself, so each
+            // secret still loads once. Left for after the drop, a keylog private to the
+            // proxy that wrote it could not be read at all.
+            // Without the `tls` feature `--keylog-fd` was refused at 13a.
+            #[cfg(feature = "tls")]
+            let keylog_source = open_privileged_keylog_source(cli);
 
-    // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
-    let effective_user = effective_user(cli, config);
-    let effective_no_priv_drop = cli.no_priv_drop(config);
-    privilege::drop_privileges(effective_user, effective_no_priv_drop)
-        .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
+            // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
+            let effective_user = effective_user(cli, config);
+            let effective_no_priv_drop = cli.no_priv_drop(config);
+            privilege::drop_privileges(effective_user, effective_no_priv_drop)
+                .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
+            #[cfg(feature = "tls")]
+            let confined: PrivilegedKeylog = keylog_source;
+            #[cfg(not(feature = "tls"))]
+            let confined: PrivilegedKeylog = ();
+            Ok(confined)
+        })?;
+    crate::secret_files::install(secrets);
+    #[cfg(not(feature = "tls"))]
+    let () = keylog_source;
 
     // 16a'. Every output created later must be creatable by the user this
     // process now runs as, or the run ends here rather than at the first
     // packet or the first finished call.
     unwritable_output_refusal(cli)?;
+
+    // 16a''. A revocation list is re-read whenever it changes, so it cannot be
+    // read once before the drop, and an unreadable one revokes nothing: the
+    // verifier treats it as empty. Refuse the run instead.
+    revocation_file_refusal(cli)?;
 
     // 16b. Initialize syslog if --syslog is set
     if cli.security_args.syslog {
@@ -3113,6 +3136,151 @@ fn confine_after_capture_start(
         #[cfg(feature = "tls")]
         keylog_source,
     })
+}
+
+/// What the confinement step hands back: the keylog source opened while
+/// privileged, in a build that has one.
+#[cfg(feature = "tls")]
+type PrivilegedKeylog = Option<crate::capture::keylog_source::KeylogSource>;
+/// What the confinement step hands back: nothing, without `tls`.
+#[cfg(not(feature = "tls"))]
+type PrivilegedKeylog = ();
+
+/// Read `paths`, THEN run `confine`: the chroot and the privilege drop.
+///
+/// The order is the point of the function. Every file in `paths` is read
+/// while the process still has the credentials and the root it started with;
+/// `confine` may then take both away. Reversed, a root-only (0600) file is
+/// unreadable by the time it is read, which is OPS-11.
+///
+/// # Errors
+///
+/// Whatever `confine` returns. A file that cannot be read is not an error
+/// here: it is kept, and reported by the reader that needs it.
+fn read_secrets_then_confine<T, E>(
+    paths: Vec<std::path::PathBuf>,
+    confine: impl FnOnce() -> Result<T, E>,
+) -> Result<(crate::secret_files::SecretFiles, T), E> {
+    let secrets = crate::secret_files::SecretFiles::read_all(paths);
+    let confined = confine()?;
+    Ok((secrets, confined))
+}
+
+/// Every secret or credential file a run reads once, at startup, and so
+/// reads before its privilege drop.
+///
+/// Each path is the setting's resolved value: the flag, else its config key
+/// where one exists. A path that this run will not use is harmless here: it is
+/// read and never asked for.
+///
+/// Decided elsewhere, and why:
+///
+/// - `--hep-auth-file` for `--hep-listen`, `[sip] th_callid_secret_file`,
+///   `--archive-password-file` and the vCon signing keys are read while the
+///   run is planned, which is already before the drop. `--hep-auth-file` is
+///   listed anyway, because the HEP sender and the MCP server read it again
+///   after the drop.
+/// - `--keylog` and `--keylog-fd` are opened before the drop by
+///   `open_privileged_keylog_source`, and a watched keylog is reopened by
+///   path later, so it is not read once here.
+/// - `--api-revoked-file` and `--mcp-revoked-file` are re-read whenever they
+///   change, so they cannot be read once. `revocation_file_refusal` stops the
+///   run when the user it dropped to cannot read one.
+/// - `[vcon_fetch]` files, read when `--api-allow-vcon-fetch` or
+///   `--mcp-allow-vcon-fetch` is set, are checked by
+///   `privilege::open_private_file`, whose rule depends on which user reads
+///   the file, so moving the read before the drop would change which files it
+///   accepts. They are not moved here.
+#[must_use]
+pub fn secret_file_paths(cli: &Cli, config: &Config) -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let (api_cert, api_key) = cli.api_tls_files(config);
+    let (mcp_cert, mcp_key) = cli.mcp_tls_files(config);
+    let (metrics_cert, metrics_key) = cli.metrics_tls_files(config);
+    let named: [Option<String>; 12] = [
+        cli.listener_args.api_signing_key_file.clone(),
+        cli.mcp_args.mcp_signing_key_file.clone(),
+        cli.mcp_args.mcp_token_file.clone(),
+        api_cert,
+        api_key,
+        mcp_cert,
+        mcp_key,
+        metrics_cert,
+        metrics_key,
+        cli.tls_args.tls_key.clone(),
+        cli.tls_args.srtp_keys.clone(),
+        cli.tls_args.dtls_keylog.clone(),
+    ];
+    let (hep_cert, hep_key) = cli.hep_tls_files(config);
+    let (hep_ca, hep_extra_ca) = cli.hep_tls_trust(config);
+    let paths: [Option<PathBuf>; 7] = [
+        cli.listener_args.metrics_auth_file.clone(),
+        cli.hep_args.hep_auth_file.clone(),
+        hep_cert,
+        hep_key,
+        hep_ca,
+        hep_extra_ca,
+        cli.output_args.redact_key_file.clone(),
+    ];
+    named
+        .into_iter()
+        .flatten()
+        .map(PathBuf::from)
+        .chain(paths.into_iter().flatten())
+        .collect()
+}
+
+/// Stop the run when this process, as the user it now runs as, cannot read a
+/// configured `--api-revoked-file` or `--mcp-revoked-file`.
+///
+/// # Errors
+///
+/// Exit code 2, naming the flag, the path and the reason.
+fn revocation_file_refusal(cli: &Cli) -> Result<(), PlanError> {
+    let lists = [
+        (
+            "--api-revoked-file",
+            cli.listener_args.api_revoked_file.as_deref(),
+        ),
+        (
+            "--mcp-revoked-file",
+            cli.mcp_args.mcp_revoked_file.as_deref(),
+        ),
+    ];
+    for (flag, path) in lists {
+        let Some(path) = path else { continue };
+        let opened = std::fs::File::open(path).map(drop);
+        if let Some(refusal) = revocation_refusal(flag, path, privilege::dropped_to(), &opened) {
+            return Err(PlanError::new(2, refusal));
+        }
+    }
+    Ok(())
+}
+
+/// The refusal for a revocation list that `open` could not open, or `None`.
+///
+/// A missing file is accepted, as it always was: no list yet means nothing is
+/// revoked. Any other failure is refused, because the verifier reads a list it
+/// cannot open as empty, and a revoked token would then be accepted.
+fn revocation_refusal(
+    flag: &str,
+    path: &str,
+    dropped_to: Option<&str>,
+    open: &std::io::Result<()>,
+) -> Option<String> {
+    let e = open.as_ref().err()?;
+    if e.kind() == std::io::ErrorKind::NotFound {
+        return None;
+    }
+    let who = dropped_to.map_or_else(
+        || "this process".to_string(),
+        |user| format!("user '{user}', which this run dropped privileges to,"),
+    );
+    Some(format!(
+        "{flag} '{path}': {e}. {who} cannot read it, and a revocation list \
+         sipnab cannot read revokes nothing. Make it readable by that user \
+         (for example root:<its group> 0640)"
+    ))
 }
 
 /// Keep loaded key material out of core files and swap.
@@ -12265,5 +12433,295 @@ mod decision_tests {
         assert_eq!(e.exit_code, 1);
         assert_eq!(e.message, "refusing: cannot read a.pcap: gone");
         Ok(())
+    }
+}
+
+/// OPS-11: the files a root run needs are read before it confines itself.
+#[cfg(test)]
+mod secret_read_tests {
+    use super::*;
+    use clap::Parser as _;
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The files are read BEFORE the confinement runs. The confinement here
+    /// does to the file what the drop does to a root-only one, as far as this
+    /// process can tell: it makes it unreadable, by removing it. A read placed
+    /// after the confinement finds nothing.
+    #[test]
+    fn secret_files_are_read_before_the_confinement_runs() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let key = dir.path().join("signing.key");
+        std::fs::write(&key, b"signing-secret\n")?;
+        let (secrets, confined) =
+            read_secrets_then_confine::<_, std::io::Error>(vec![key.clone()], || {
+                std::fs::remove_file(&key)?;
+                Ok("confined")
+            })?;
+        assert_eq!(confined, "confined", "the confinement's result is returned");
+        assert!(!key.exists(), "the confinement ran");
+        let read = secrets
+            .read(&key)
+            .ok_or("the file was not read before the confinement")??;
+        assert_eq!(read, b"signing-secret\n", "the bytes read before it");
+        Ok(())
+    }
+
+    /// A confinement that fails stops the run with its own error.
+    #[test]
+    fn a_failed_confinement_is_returned() {
+        let got = read_secrets_then_confine::<(), _>(Vec::new(), || {
+            Err(PlanError::new(
+                1,
+                "Failed to drop privileges: no".to_string(),
+            ))
+        });
+        assert!(
+            matches!(&got, Err(e) if e.exit_code == 1 && e.message.contains("drop")),
+            "{:?}",
+            got.err().map(|e| e.message)
+        );
+    }
+
+    /// Parse `args` after `sipnab -N`.
+    fn parse_cli(args: &[&str]) -> Result<Cli, TestError> {
+        Ok(Cli::try_parse_from(
+            ["sipnab", "-N"].iter().chain(args.iter()),
+        )?)
+    }
+
+    /// Every flag that names a secret or credential file read after the drop
+    /// puts its path in the list, each on its own, so a flag dropped from the
+    /// list fails here by name.
+    #[test]
+    fn every_secret_file_flag_is_read_before_the_drop() -> Result<(), TestError> {
+        let cases: &[(&str, &[&str])] = &[
+            (
+                "/s/api.signing",
+                &[
+                    "--api",
+                    "127.0.0.1:0",
+                    "--api-signing-key-file",
+                    "/s/api.signing",
+                ],
+            ),
+            (
+                "/s/mcp.signing",
+                &[
+                    "--mcp",
+                    "--mcp-transport",
+                    "http",
+                    "--mcp-signing-key-file",
+                    "/s/mcp.signing",
+                ],
+            ),
+            (
+                "/s/mcp.token",
+                &[
+                    "--mcp",
+                    "--mcp-transport",
+                    "http",
+                    "--mcp-token-file",
+                    "/s/mcp.token",
+                ],
+            ),
+            (
+                "/s/metrics.auth",
+                &[
+                    "--metrics",
+                    "127.0.0.1:0",
+                    "--metrics-auth-file",
+                    "/s/metrics.auth",
+                ],
+            ),
+            (
+                "/s/api.crt",
+                &[
+                    "--api",
+                    "127.0.0.1:0",
+                    "--api-tls-cert",
+                    "/s/api.crt",
+                    "--api-tls-key",
+                    "/s/x",
+                ],
+            ),
+            (
+                "/s/api.key",
+                &[
+                    "--api",
+                    "127.0.0.1:0",
+                    "--api-tls-cert",
+                    "/s/x",
+                    "--api-tls-key",
+                    "/s/api.key",
+                ],
+            ),
+            (
+                "/s/mcp.crt",
+                &[
+                    "--mcp",
+                    "--mcp-transport",
+                    "http",
+                    "--mcp-tls-cert",
+                    "/s/mcp.crt",
+                    "--mcp-tls-key",
+                    "/s/x",
+                ],
+            ),
+            (
+                "/s/mcp.key",
+                &[
+                    "--mcp",
+                    "--mcp-transport",
+                    "http",
+                    "--mcp-tls-cert",
+                    "/s/x",
+                    "--mcp-tls-key",
+                    "/s/mcp.key",
+                ],
+            ),
+            (
+                "/s/m.crt",
+                &[
+                    "--metrics",
+                    "127.0.0.1:0",
+                    "--metrics-tls-cert",
+                    "/s/m.crt",
+                    "--metrics-tls-key",
+                    "/s/x",
+                ],
+            ),
+            (
+                "/s/m.key",
+                &[
+                    "--metrics",
+                    "127.0.0.1:0",
+                    "--metrics-tls-cert",
+                    "/s/x",
+                    "--metrics-tls-key",
+                    "/s/m.key",
+                ],
+            ),
+            (
+                "/s/hep.auth",
+                &[
+                    "--hep-send",
+                    "127.0.0.1:9",
+                    "--hep-auth-file",
+                    "/s/hep.auth",
+                ],
+            ),
+            (
+                "/s/hep.ca",
+                &[
+                    "--hep-send",
+                    "127.0.0.1:9",
+                    "--hep-send-transport",
+                    "tls",
+                    "--hep-tls-ca",
+                    "/s/hep.ca",
+                ],
+            ),
+            (
+                "/s/hep.extra",
+                &[
+                    "--hep-send",
+                    "127.0.0.1:9",
+                    "--hep-send-transport",
+                    "tls",
+                    "--hep-tls-extra-ca",
+                    "/s/hep.extra",
+                ],
+            ),
+            (
+                "/s/hep.crt",
+                &[
+                    "-L",
+                    "127.0.0.1:0",
+                    "--hep-listen-transport",
+                    "tls",
+                    "--hep-tls-cert",
+                    "/s/hep.crt",
+                    "--hep-tls-key",
+                    "/s/x",
+                ],
+            ),
+            (
+                "/s/hep.key",
+                &[
+                    "-L",
+                    "127.0.0.1:0",
+                    "--hep-listen-transport",
+                    "tls",
+                    "--hep-tls-cert",
+                    "/s/x",
+                    "--hep-tls-key",
+                    "/s/hep.key",
+                ],
+            ),
+            ("/s/rsa.pem", &["--tls-key", "/s/rsa.pem"]),
+            ("/s/srtp.keys", &["--srtp-keys", "/s/srtp.keys"]),
+            ("/s/dtls.keylog", &["--dtls-keylog", "/s/dtls.keylog"]),
+            (
+                "/s/redact.key",
+                &["--redact", "--redact-key-file", "/s/redact.key"],
+            ),
+        ];
+        let config = Config::default();
+        for (want, args) in cases {
+            let paths = secret_file_paths(&parse_cli(args)?, &config);
+            assert!(
+                paths.iter().any(|p| p == std::path::Path::new(want)),
+                "`{}` names {want}, which is read after the drop unless it is \
+                 read here; the list was {paths:?}",
+                args.join(" ")
+            );
+        }
+        assert!(
+            secret_file_paths(&parse_cli(&[])?, &config).is_empty(),
+            "a run that names no secret file reads none"
+        );
+        Ok(())
+    }
+
+    /// A listener certificate and key given only in the config file are read
+    /// before the drop too: the run reads the resolved setting, not the flag.
+    #[test]
+    fn config_file_tls_files_are_read_before_the_drop() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.api.tls_cert = Some("/c/api.crt".to_string());
+        config.mcp.tls_key = Some("/c/mcp.key".to_string());
+        config.metrics.tls_cert = Some("/c/metrics.crt".to_string());
+        config.hep.tls_key = Some(std::path::PathBuf::from("/c/hep.key"));
+        let paths = secret_file_paths(&parse_cli(&[])?, &config);
+        for want in ["/c/api.crt", "/c/mcp.key", "/c/metrics.crt", "/c/hep.key"] {
+            assert!(
+                paths.iter().any(|p| p == std::path::Path::new(want)),
+                "{want} from the config file is missing from {paths:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A revocation list the dropped user cannot open stops the run; a
+    /// missing one does not, because no list yet means nothing is revoked.
+    #[test]
+    fn an_unreadable_revocation_list_is_refused_and_a_missing_one_is_not() {
+        let denied = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let refusal = revocation_refusal("--api-revoked-file", "/etc/r", Some("nobody"), &denied);
+        let text = refusal.unwrap_or_default();
+        assert!(text.starts_with("--api-revoked-file '/etc/r': "), "{text}");
+        assert!(text.contains("user 'nobody'"), "{text}");
+        assert!(text.contains("revokes nothing"), "{text}");
+        let missing = Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert_eq!(
+            revocation_refusal("--mcp-revoked-file", "/r", Some("nobody"), &missing),
+            None,
+            "a list that does not exist yet revokes nothing and is accepted"
+        );
+        assert_eq!(
+            revocation_refusal("--mcp-revoked-file", "/r", None, &Ok(())),
+            None,
+            "a list that opens is accepted"
+        );
     }
 }

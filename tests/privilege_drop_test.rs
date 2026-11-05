@@ -955,3 +955,309 @@ fn a_keylog_that_cannot_be_read_names_the_cause() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+// ── OPS-11: secret files are read before the drop ─────────────────────────
+
+/// Root-owned 0600 copies of `files`, as an operator protects a secret.
+///
+/// Each `(name, bytes)` is written into `dir` by this runner and then handed
+/// to root with `sudo -n install -m 0600 -o 0 -g 0`, so only root can
+/// read it. The owner and group are numeric because macOS has no group named
+/// `root` (gid 0 is `wheel` there), and `install -g root` fails on it. `dir` itself stays this runner's, so the tempdir can still delete
+/// the files.
+#[cfg(any(all(feature = "hep", feature = "tls"), feature = "api"))]
+fn root_only_files(
+    dir: &std::path::Path,
+    files: &[(&str, &[u8])],
+) -> Result<Vec<std::path::PathBuf>, TestError> {
+    let mut out = Vec::new();
+    for (name, bytes) in files {
+        let staged = dir.join(format!("{name}.staged"));
+        let path = dir.join(name);
+        std::fs::write(&staged, bytes)?;
+        let status = Command::new("sudo")
+            .args(["-n", "install", "-m", "0600", "-o", "0", "-g", "0"])
+            .arg(&staged)
+            .arg(&path)
+            .status()?;
+        assert!(
+            status.success(),
+            "sudo install of {} failed",
+            path.display()
+        );
+        std::fs::remove_file(&staged)?;
+        out.push(path);
+    }
+    Ok(out)
+}
+
+/// A working directory that `nobody` can write, for a root run that drops to
+/// it.
+///
+/// `sudo` resets the environment, so a coverage-instrumented sipnab gets no
+/// `LLVM_PROFILE_FILE` and writes its `.profraw` into its working directory
+/// when it exits, as `nobody`. The test's own working directory is the
+/// checkout, which `nobody` cannot write, so the profiler prints `LLVM Profile
+/// Error: Failed to write file ...: Permission denied` on stderr. That line is
+/// the profiler's, not sipnab's, and it would fail every assertion that no
+/// secret read was refused. sipnab changes its working directory only when it
+/// chroots, which these runs do not.
+#[cfg(any(all(feature = "hep", feature = "tls"), feature = "api"))]
+fn dir_nobody_can_write() -> Result<tempfile::TempDir, TestError> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir()?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777))?;
+    Ok(dir)
+}
+
+/// A self-signed certificate for `localhost` and its private key, as PEM.
+#[cfg(all(feature = "api", feature = "mcp-http", feature = "metrics"))]
+fn localhost_cert() -> Result<(String, String), TestError> {
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ECDSA_P256_SHA256)?;
+    let params = rcgen::CertificateParams::new(vec!["localhost".to_string()])?;
+    let cert = params.self_signed(&key)?;
+    Ok((cert.pem(), key.serialize_pem()))
+}
+
+/// The path as a `&str`, for an argv.
+#[cfg(any(all(feature = "hep", feature = "tls"), feature = "api"))]
+fn arg(p: &std::path::Path) -> Result<&str, TestError> {
+    Ok(p.to_str().ok_or("path is not UTF-8")?)
+}
+
+/// A root run that names root-only (0600) secret files, and sends HEP,
+/// reads them before it drops to `nobody` and finishes.
+///
+/// It used to read `--hep-auth-file` in the HEP sender's constructor, after
+/// the drop, and stop with exit 2: `HEP auth: --hep-auth-file '...':
+/// Permission denied (os error 13)`. `--tls-key` and `--srtp-keys` were read
+/// after the drop the same way.
+#[cfg(all(feature = "hep", feature = "tls"))]
+#[test]
+fn a_root_run_reads_its_root_only_hep_and_key_files_before_the_drop() -> Result<(), TestError> {
+    let test = "a_root_run_reads_its_root_only_hep_and_key_files_before_the_drop";
+    if !sudo_available() {
+        announce_skip(
+            test,
+            "passwordless sudo is not available, so sipnab cannot be run as root here",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let rsa = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/tls_rsa/key.pem"
+    ))?;
+    let srtp = b"ssrc=1234 key=YUJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0\n";
+    let files = root_only_files(
+        dir.path(),
+        &[
+            ("hep.auth", b"hep-shared-secret\n"),
+            ("rsa.pem", &rsa),
+            ("srtp.keys", srtp),
+        ],
+    )?;
+    let fixture = world_readable_fixture("secret-before-drop")?;
+    let run_dir = dir_nobody_can_write()?;
+    let out = Command::new("sudo")
+        .current_dir(run_dir.path())
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
+        .args([
+            "--hep-send",
+            "127.0.0.1:9",
+            "--hep-auth-file",
+            arg(&files[0])?,
+        ])
+        .args(["--tls-key", arg(&files[1])?, "--srtp-keys", arg(&files[2])?])
+        .output()?;
+    let _ = std::fs::remove_file(&fixture);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a root run with root-only secret files must read them before the drop \
+         and finish; it exited {:?}:\n{stderr}",
+        out.status.code()
+    );
+    assert!(!stderr.contains("Permission denied"), "{stderr}");
+    Ok(())
+}
+
+/// Wait up to `limit` for `child` (a `sudo` this test spawned) to exit; when
+/// it is still running then, send it SIGTERM, which sudo relays, and collect
+/// it.
+///
+/// # Returns
+/// The exit status when the run ended by itself within `limit`, `None` when it
+/// had to be stopped, and the collected output either way.
+#[cfg(feature = "api")]
+fn wait_or_stop(
+    mut child: std::process::Child,
+    limit: std::time::Duration,
+) -> Result<(Option<std::process::ExitStatus>, Output), TestError> {
+    let deadline = std::time::Instant::now() + limit;
+    let mut early = None;
+    while std::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            early = Some(status);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if early.is_none() {
+        let pid = libc::pid_t::try_from(child.id())?;
+        // SAFETY: kill(2) on the pid of the sudo process this test spawned and
+        // has not yet reaped, so the pid cannot have been reused.
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0, "kill sudo");
+    }
+    Ok((early, child.wait_with_output()?))
+}
+
+/// A root run that serves REST, MCP over HTTP and metrics over TLS, with every
+/// credential in a root-only (0600) file, starts all three as `nobody`.
+///
+/// It used to read each of these after the drop and stop with exit 2 on the
+/// first: `--metrics-auth-file`, `--api-signing-key-file`, `--mcp-token-file`,
+/// `--mcp-signing-key-file`, and the certificate and key of all three
+/// listeners. The run serves until it is stopped, so the test lets it run,
+/// sends SIGTERM to the `sudo` it started (which relays it), and requires that
+/// it was still running and then stopped cleanly.
+#[cfg(all(feature = "api", feature = "mcp-http", feature = "metrics"))]
+#[test]
+fn a_root_run_reads_its_root_only_server_credentials_before_the_drop() -> Result<(), TestError> {
+    let test = "a_root_run_reads_its_root_only_server_credentials_before_the_drop";
+    if !sudo_available() {
+        announce_skip(
+            test,
+            "passwordless sudo is not available, so sipnab cannot be run as root here",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let (cert, key) = localhost_cert()?;
+    let files = root_only_files(
+        dir.path(),
+        &[
+            ("metrics.auth", b"scrape:scrape-password\n"),
+            ("api.signing", b"api-signing-key-0123456789abcdef0123\n"),
+            ("mcp.token", b"mcp-static-token-0123456789abcdef\n"),
+            ("mcp.signing", b"mcp-signing-key-0123456789abcdef0123\n"),
+            ("cert.pem", cert.as_bytes()),
+            ("key.pem", key.as_bytes()),
+        ],
+    )?;
+    let [metrics_auth, api_signing, mcp_token, mcp_signing, cert, key] = files.as_slice() else {
+        return Err("expected six files".into());
+    };
+    let fixture = world_readable_fixture("server-secrets-before-drop")?;
+    let run_dir = dir_nobody_can_write()?;
+    let child = Command::new("sudo")
+        .current_dir(run_dir.path())
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
+        .args([
+            "--metrics",
+            "127.0.0.1:0",
+            "--metrics-auth-file",
+            arg(metrics_auth)?,
+        ])
+        .args([
+            "--metrics-tls-cert",
+            arg(cert)?,
+            "--metrics-tls-key",
+            arg(key)?,
+        ])
+        .args([
+            "--api",
+            "127.0.0.1:0",
+            "--api-signing-key-file",
+            arg(api_signing)?,
+        ])
+        .args(["--api-tls-cert", arg(cert)?, "--api-tls-key", arg(key)?])
+        .args([
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-bind",
+            "127.0.0.1:0",
+        ])
+        .args([
+            "--mcp-token-file",
+            arg(mcp_token)?,
+            "--mcp-signing-key-file",
+            arg(mcp_signing)?,
+        ])
+        .args(["--mcp-tls-cert", arg(cert)?, "--mcp-tls-key", arg(key)?])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    // A refusal arrives within a second of startup; five is the margin.
+    let (early, out) = wait_or_stop(child, std::time::Duration::from_secs(5))?;
+    let _ = std::fs::remove_file(&fixture);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        early.is_none(),
+        "the run stopped by itself before it was signaled, exit {:?}: a server \
+         credential was read after the drop:\n{stderr}",
+        early.and_then(|s| s.code())
+    );
+    assert!(
+        out.status.success(),
+        "SIGTERM must stop the run cleanly, got {:?}:\n{stderr}",
+        out.status.code()
+    );
+    assert!(!stderr.contains("Permission denied"), "{stderr}");
+    Ok(())
+}
+
+/// A revocation list only root can read stops a root run once it has dropped
+/// privileges, with exit 2 and the reason.
+///
+/// The list is re-read whenever it changes, so it cannot be read once before
+/// the drop like the other credential files. The verifier treats a list it
+/// cannot read as empty, so a run that went on would accept a revoked token.
+#[cfg(feature = "api")]
+#[test]
+fn a_root_only_revocation_list_stops_a_root_run_after_the_drop() -> Result<(), TestError> {
+    let test = "a_root_only_revocation_list_stops_a_root_run_after_the_drop";
+    if !sudo_available() {
+        announce_skip(
+            test,
+            "passwordless sudo is not available, so sipnab cannot be run as root here",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let files = root_only_files(dir.path(), &[("revoked", b"tok-1\n")])?;
+    let fixture = world_readable_fixture("revoked-after-drop")?;
+    let run_dir = dir_nobody_can_write()?;
+    let child = Command::new("sudo")
+        .current_dir(run_dir.path())
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
+        .args([
+            "--api",
+            "127.0.0.1:0",
+            "--api-revoked-file",
+            arg(&files[0])?,
+        ])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    // Without the refusal the run serves until it is stopped; five seconds
+    // is far past the moment the refusal is made.
+    let (early, out) = wait_or_stop(child, std::time::Duration::from_secs(5))?;
+    let _ = std::fs::remove_file(&fixture);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        early.is_some(),
+        "the run went on serving with a revocation list it cannot read:\n{stderr}"
+    );
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(stderr.contains("--api-revoked-file"), "{stderr}");
+    assert!(stderr.contains("revokes nothing"), "{stderr}");
+    Ok(())
+}

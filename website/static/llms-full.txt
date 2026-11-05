@@ -7494,9 +7494,10 @@ sudo sipnab -N -d eth0 --user sipnab --api 0.0.0.0:8443 --api-key "secret" \
 ```
 
 `--api-allowed-host` names the host clients use in the URL. A root run reads
-the certificate and key after it drops to `--user`, so make them readable by
-that account (`chown root:sipnab`, `chmod 640`). See [Make a
-certificate](auth.md#make-a-certificate).
+the certificate and key before it drops to `--user`, so a key only root can
+read (`chmod 600`) works. A service that starts as `sipnab`, as the packaged
+unit does, reads them as `sipnab`: make them `root:sipnab`, `chmod 640`. See
+[Make a certificate](auth.md#make-a-certificate).
 
 - On a `0.0.0.0` bind, sipnab answers any IP address but no name it was not given.
 - Without it, sipnab refuses the request below with `403`
@@ -15312,7 +15313,7 @@ the cause from there.
 | sipnab refused to start, or stopped with an error message | [Error messages](errors.md): look up the message by its text |
 | The systemd service does not start, or stops and stays down | [A service that does not start](#a-service-that-does-not-start) |
 | `Permission denied on 'eth0'` on a live capture | [Live capture says Permission denied](#live-capture-says-permission-denied) |
-| A run under `sudo` stops with `Permission denied` on a key, token or certificate file | [A key file sipnab cannot read after the drop](#a-key-file-sipnab-cannot-read-after-the-drop) |
+| A run stops with `Permission denied` on a key, token, certificate or revocation file | [A key file sipnab cannot read](#a-key-file-sipnab-cannot-read) |
 | A client of the REST API, MCP or metrics gets `401`, `403`, `404` or `503` | [A client the listener turns away](#a-client-the-listener-turns-away) |
 | A client or HEP sender fails the TLS handshake | [A TLS handshake that fails](#a-tls-handshake-that-fails) |
 | A setting in `sipnab.toml` has no effect | [A setting that has no effect](#a-setting-that-has-no-effect) |
@@ -16954,28 +16955,29 @@ depends on how sipnab runs:
 The lines under the message suggest `--setup-caps`, `sudo` and `setcap`
 whatever the cause. In the last two rows none of them helps.
 
-## A key file sipnab cannot read after the drop
+## A key file sipnab cannot read
 
 ```text
-INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
-metrics auth: --metrics-auth-file '/root/metrics.auth': Permission denied (os error 13)
+metrics auth: --metrics-auth-file '/etc/sipnab/metrics.auth': Permission denied (os error 13)
 ```
 
-A run started as root drops to `nobody`, or to the `--user` account, right
-after it opens the capture. It reads these files after the drop, as that
-account:
-
-- `--api-signing-key-file`, `--mcp-signing-key-file`, `--mcp-token-file`;
-- `--metrics-auth-file`;
-- the REST, MCP and metrics certificates and keys;
-- a HEP sender's `--hep-auth-file`.
-
-A file only root can read stops the run with exit status 2. For an MCP
-certificate or key the message is the path alone, such as
-`/etc/sipnab/mcp.key`. Run with `--user sipnab` and make the files
+A run started as root reads its key, token, credential and certificate files
+before it drops to `nobody` (or the `--user` account), so a file only root can
+read works there. This message means the user sipnab started as cannot read
+the file. Under the packaged unit that user is `sipnab`: make the file
 `root:sipnab` mode `640`, as [Make a certificate](auth.md#make-a-certificate)
-shows. A systemd unit with `User=sipnab` reads them as `sipnab` from the
-start.
+shows. For an MCP certificate or key the message is the path alone, such as
+`/etc/sipnab/mcp.key`.
+
+A revocation list is different, because sipnab reads it again whenever it
+changes, as the user it dropped to:
+
+```text
+--api-revoked-file '/etc/sipnab/revoked': Permission denied (os error 13). user 'nobody', which this run dropped privileges to, cannot read it, and a revocation list sipnab cannot read revokes nothing. Make it readable by that user (for example root:<its group> 0640)
+```
+
+The run stops with exit status 2. Make the file readable by the `--user`
+account, for example `root:sipnab` mode `640` with `--user sipnab`.
 
 ## A client the listener turns away
 
@@ -17985,6 +17987,12 @@ In the Save dialog, `Tab` cycles the format:
 `Enter` writes the file. `Shift+Tab` or `Up` / `Down` cycle the same list. With
 nothing selected, it saves everything.
 
+**sipnab saves a CSV cell that would start a spreadsheet formula as text.**
+
+- Whoever places the call chooses a From or To user such as `=1+1`.
+- sipnab writes it as `"'=1+1"`, so a spreadsheet shows it rather than running it.
+- [Keybindings](keybindings.md) lists the characters it guards.
+
 **The HTML diagram draws at most 200 messages.**
 
 - A call with more exports its first 200 as arrows.
@@ -18701,6 +18709,15 @@ The help text can run past the screen, so it scrolls.
 | (any char) | Insert character |
 
 Save formats: **PCAP**, **PCAP-NG**, **TXT**, **JSON**, **NDJSON**, **CSV**, **Mermaid/HTML**, **Markdown**, **WAV**, **SIPp XML**, **RTP JSON**
+
+**sipnab writes a CSV cell that a spreadsheet would run as a formula as text.**
+
+- The From and To users come from the SIP messages, so whoever places a call chooses them.
+- sipnab adds a leading `'` to a text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return, and quotes it.
+  - A spreadsheet then shows `=1+1` as text instead of running it (CWE-1236).
+- sipnab quotes a cell holding a comma, a double quote, a line feed or a carriage return, as [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180.html) requires.
+- sipnab writes the numeric and time columns (`messages`, `pdd_ms`, `setup_ms`, `created_at`) as it formats them.
+  - They hold no caller text, and a negative `pdd_ms` stays a number.
 
 ## Filter popup
 
@@ -23091,6 +23108,14 @@ A secret file given with `--hep-auth-file` or `--metrics-auth-file` is empty or 
 
 **Exit code:** 2.
 
+### `{flag} '{path}': {e}. {who} cannot read it, and a revocation list sipnab cannot read revokes nothing. Make it readable by that user (for example root:<its group> 0640)`
+
+A run started as root dropped privileges, and the user it dropped to cannot open the revocation list named by `--api-revoked-file` or `--mcp-revoked-file`. `{flag}` is the flag, `{path}` the path and `{e}` the reason, such as `Permission denied (os error 13)`. `{who}` names the user, for example `user 'nobody', which this run dropped privileges to,`. sipnab reads the list again whenever it changes, as that user, and a list it cannot read revokes nothing, so sipnab would accept a revoked token. sipnab accepts a list that does not exist yet: it revokes nothing until you write it.
+
+**What to do:** Make the file readable by the `--user` account, for example `chown root:sipnab` and `chmod 640` with `--user sipnab`.
+
+**Exit code:** 2.
+
 ### `--fraud-destination {bad:?} is not a destination sipnab can match: give ISO 3166-1 alpha-2 codes the dial plan labels (NANP for +1 numbers), comma-separated`
 
 One entry in the comma-separated `--fraud-destination` list is not a destination label sipnab knows.
@@ -25148,11 +25173,11 @@ A query flag, named by `{flag}`, computed its answer, and sipnab could not write
 
 ### `analysis serialization failed: {e}`
 
-`--json-analyze` prints the capture analysis as one JSON line, and converting the analysis to JSON failed. `{e}` is the serializer's error. The code comment calls this a bug in the analysis type. sipnab prints no `--json-analyze` line.
+`--json-analyze` prints the capture analysis as one JSON line, and converting the analysis to JSON failed. `{e}` is the serializer's error. The code comment calls this a bug in the analysis type. sipnab prints this message on stderr and no `--json-analyze` line, and writes no report after it.
 
 **What to do:** Use `--analyze` for the same analysis as a table.
 
-**Exit code:** None. sipnab logs the error, and the exit status does not change.
+**Exit code:** 1.
 
 ### `Call-ID '{call_id}' not found in tracked dialogs`
 
@@ -25391,11 +25416,11 @@ A `--plugin` (a WebAssembly analysis module) failed while it analyzed one dialog
 
 ### `RFC 7951 encoding failed: {e}`
 
-`--yang-analyze` prints the capture analysis encoded as RFC 7951 JSON (the JSON encoding of YANG-modeled data) against the `sipnab-diagnosis` model. Encoding failed. `{e}` is the reason. The code describes this as a mismatch inside sipnab between the analysis and its YANG table. sipnab prints no `--yang-analyze` line.
+`--yang-analyze` prints the capture analysis encoded as RFC 7951 JSON (the JSON encoding of YANG-modeled data) against the `sipnab-diagnosis` model. Encoding failed. `{e}` is the reason. The code describes this as a mismatch inside sipnab between the analysis and its YANG table. sipnab prints this message on stderr and no `--yang-analyze` line, and writes no report after it.
 
 **What to do:** Use `--json-analyze` for the same analysis as plain JSON, or `--analyze` for the table.
 
-**Exit code:** None. sipnab logs the error, and the exit status does not change.
+**Exit code:** 1.
 
 ### `--strip-secrets failed: {e}`
 
@@ -26598,7 +26623,7 @@ The flags listed in the first `{}` write their output when a run ends. They come
 
 ### `cannot create --redact-map '{}': {e}`
 
-sipnab could not create the `--redact-map` file. The text after the path is the operating system's reason.
+sipnab could not create the `--redact-map` file, which it first writes as a temporary file in the same directory. The text after the path is the operating system's reason. sipnab leaves nothing at the path.
 
 **What to do:** Check that the directory exists and that the user sipnab runs as can write to it.
 
@@ -27429,9 +27454,9 @@ The spool status found a failure record larger than it reads. `{shown}` is the r
 
 ### `writing --redact-map '{}': {e}`
 
-sipnab created the `--redact-map` file, but a write to it failed part way. The text after the path is the operating system's reason.
+A write of the `--redact-map` table failed part way. sipnab writes the table to a temporary file in the same directory and gives it the path's name only once the whole table is on disk. sipnab leaves no map at the path, whole or partial, and removes the temporary file. The text after the path is the operating system's reason.
 
-**What to do:** Check free space on that filesystem, delete the partial map file, and run the export again.
+**What to do:** Check free space on that filesystem, and run the export again.
 
 **Exit code:** 1.
 
@@ -59632,22 +59657,24 @@ deployment, make a small CA and sign one certificate for the capture host:
 
 Clients need `ca.pem`. Keep `ca.key` off the capture host.
 
-**sipnab reads most of these files after it drops root.** A run started as
-root, under `sudo` or as a root service, opens the capture, drops to `nobody`
-(or the `--user` account), and only then reads the REST and MCP signing keys
-and token files, the metrics credential, the REST and MCP certificates and
-keys, and a HEP sender's `--hep-auth-file`. A file only root can read then
-stops the run with exit status 2:
+**sipnab reads these files before it drops root.** A run started as root,
+under `sudo` or as a root service, opens the capture, reads its key and
+credential files, and then drops to `nobody` (or the `--user` account). So a
+file only root can read (`chmod 600`) works on a root run. That covers the
+REST and MCP signing keys and token files, the metrics credential, the REST,
+MCP, metrics and HEP certificates and keys, the HEP CA files and
+`--hep-auth-file`, `--tls-key`, `--srtp-keys`, `--dtls-keylog` and
+`--redact-key-file`.
 
-```text
-INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
-metrics auth: --metrics-auth-file '/root/metrics.auth': Permission denied (os error 13)
-```
+The exception is a revocation list, `--api-revoked-file` or
+`--mcp-revoked-file`. sipnab reads it again whenever it changes, as the user
+it dropped to, so that user must be able to read it. When it cannot, the run
+stops with exit status 2 right after the drop, because a list sipnab cannot
+read revokes nothing.
 
-For an MCP key the message is the path alone, such as `/etc/sipnab/mcp.key`,
-with no reason. sipnab reads the HEP listener's certificate, key and secret
-before the drop. So give the service its own account and its group read
-access, and name that account with `--user` on a root run:
+A systemd unit with `User=sipnab` starts as `sipnab` and drops nothing, so
+there every file must be readable by `sipnab`. Give the service its own
+account and its group read access:
 
 ```bash
 # Run all of these, in order.
@@ -59655,9 +59682,6 @@ sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin sipnab
 sudo chown root:sipnab capture01.key api-signing.key mcp-signing.key metrics.auth
 sudo chmod 640 capture01.key api-signing.key mcp-signing.key metrics.auth
 ```
-
-A systemd unit with `User=sipnab` starts as `sipnab` and drops nothing, so the
-same `640` files work there.
 
 ### Serve all four over TLS
 
@@ -67714,9 +67738,11 @@ not name, add `server_name: capture01.example.net` under `tls_config`.
 
 sipnab itself stops at startup, naming the file, when:
 
-- it cannot read the credential file after dropping privileges, for example
+- it cannot read the credential file, for example
   `metrics auth: --metrics-auth-file '/etc/sipnab/metrics.auth': Permission denied (os error 13)`.
-  Make the file the service user's, as above.
+  A root run reads it before it drops privileges, so this means the user
+  sipnab starts as cannot read it: under the packaged unit, `sipnab`. Make
+  the file the service user's, as above.
 - other users can read the key, or the key does not match the certificate.
   [Metrics TLS](prometheus-metrics.md#metrics-tls) lists every refusal.
 
@@ -80043,8 +80069,17 @@ rebuild, so nothing after them compares to them.
 ### Why the throughput gate runs nightly, not per push
 
 - The `Throughput` workflow runs [`bench/regression-gate.sh`](../../bench/regression-gate.sh) at 03:29 UTC daily.
-- It runs against the figure committed in [`bench/baseline.json`](../../bench/baseline.json).
-- It fails below a stated floor.
+- It measures the candidate and the latest release's binary alternately, five rounds, and prints the load average beside each round.
+- [`scripts/bench-verdict.py`](../../scripts/bench-verdict.py) judges the median candidate/reference ratio against the floor in [`bench/baseline.json`](../../bench/baseline.json).
+- When the reference itself measures under that floor of the baseline, the gate exits 3: the host was too loaded to judge.
+  That is a refusal, not a regression, which exits 1.
+- Before it measures, [`scripts/bench-quiet.py`](../../scripts/bench-quiet.py) waits up to 20 minutes for the host processor to be at least 90% idle.
+  The gate prints the host's state either way.
+
+Why a reference: measured alone, the gate read load as a regression.
+It measured 30.7% of baseline on 2026-10-15, 34.7% on 2026-10-28 and 54.5% on 2026-11-04.
+Each time an interleaved A/B on the same host measured the commit level with its predecessor.
+Load slows both binaries of a round. A regression slows only the candidate.
 
 It is nightly on purpose:
 
