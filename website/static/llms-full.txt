@@ -14225,7 +14225,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.233 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.234 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -20773,8 +20773,8 @@ out the end-of-run summary on stderr.
 | `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns. See [Fail a build on what a capture shows](expectations.md) |
 | `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-calls-the-relay-holds) |
 | `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Also the most held calls `--relay-sessions` queries. Needs `--relay-holdings` or `--relay-sessions`; `0` exits 2 |
-| `--relay-sessions` | -- | | Unreleased | Ask the relay named by `--rtpengine-control` which calls it holds and, for each, whether media reaches it each way; print the answer and exit. Sends one `list`, then one `query` per held call up to `--relay-holdings-max`. Each party's RTP socket gets a verdict from the relay's own counters and clock: `never_received`, `stalled` (no packet for more than 2 s while another socket of the call received one), `flowing` or `not_reported`. A call with an early media branch shows its counters with no verdict. Every value is `relay_reported`. Needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. Exits 0 with the answer and 1 when the relay did not answer its `list`. `--json` prints the body of `GET /v1/relay/sessions?scan=true`. See [Ask the relay whether media reaches it](#ask-the-relay-whether-media-reaches-it). Feature: `native`. How-to: [See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay) |
-| `--relay-sessions-call` | `<CALL-ID>` | | Unreleased | With `--relay-sessions`, ask about this Call-ID only: one `list` and one `query`, without querying the other held calls. REST's `call_id`. Needs `--relay-sessions` |
+| `--relay-sessions` | -- | | 0.5.234 | Ask the relay named by `--rtpengine-control` which calls it holds and, for each, whether media reaches it each way; print the answer and exit. Sends one `list`, then one `query` per held call up to `--relay-holdings-max`. Each party's RTP socket gets a verdict from the relay's own counters and clock: `never_received`, `stalled` (no packet for more than 2 s while another socket of the call received one), `flowing` or `not_reported`. A call with an early media branch shows its counters with no verdict. Every value is `relay_reported`. Needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. Exits 0 with the answer and 1 when the relay did not answer its `list`. `--json` prints the body of `GET /v1/relay/sessions?scan=true`. See [Ask the relay whether media reaches it](#ask-the-relay-whether-media-reaches-it). Feature: `native`. How-to: [See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay) |
+| `--relay-sessions-call` | `<CALL-ID>` | | 0.5.234 | With `--relay-sessions`, ask about this Call-ID only: one `list` and one `query`, without querying the other held calls. REST's `call_id`. Needs `--relay-sessions` |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
@@ -34914,7 +34914,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.233 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.234 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -35616,7 +35616,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.233"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.234"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -36299,7 +36299,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.233",
+  "version": "0.5.234",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -37238,7 +37238,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.233"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.234"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -46290,7 +46290,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.233",
+  "version": "0.5.234",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
