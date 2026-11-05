@@ -902,7 +902,12 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // src/cli.rs, `--relay-holdings-max bounds --relay-holdings or
 // --relay-sessions and needs one of them`, which clap's group could not
 // enforce (+1).
-const EXPECTED_TEMPLATES: usize = 553;
+// 553 -> 555 (STDIN-READ-IGNORES-STOP): src/app/bootstrap.rs,
+// `--vcon-fetch -: stopped while reading standard input; fetched nothing`
+// (+1), and src/app/vcon_fetch.rs, `{MODE_FLAG}: stopped before {uuid}; {}
+// uuid(s) not fetched` (+1), the two lines a stop signal logs. Nothing
+// removed.
+const EXPECTED_TEMPLATES: usize = 555;
 
 // ---------------------------------------------------------------------------
 // The page gates

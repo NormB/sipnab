@@ -1457,9 +1457,16 @@ fn log_at(level: tracing::Level, line: &str) {
     }
 }
 
+/// What [`prepare`] makes ready: the settings and the uuids, in order.
+pub type Prepared = (FetchSettings, Vec<String>);
+
 /// The settings and the uuids for a `--vcon-fetch` run, from the flags, the
 /// `[vcon_fetch]` keys and, when `-` was given, `stdin`'s text. `stdin` is
-/// called only then.
+/// called only then, and returns `None` when a stop signal ended its read.
+///
+/// # Returns
+///
+/// `None` when `stdin` was stopped: the run fetches nothing.
 ///
 /// # Errors
 ///
@@ -1469,17 +1476,20 @@ fn log_at(level: tracing::Level, line: &str) {
 pub fn prepare(
     args: &crate::cli::VconFetchArgs,
     keys: &crate::config::VconFetchConfig,
-    stdin: impl FnOnce() -> std::io::Result<String>,
-) -> Result<(FetchSettings, Vec<String>), (i32, String)> {
+    stdin: impl FnOnce() -> std::io::Result<Option<String>>,
+) -> Result<Option<Prepared>, (i32, String)> {
     let plan = FetchPlan::resolve_refusal(args, keys).map_err(|(o, m)| (o.exit_code(), m))?;
     let listed = if plan.from_stdin {
-        Some(stdin().map_err(|e| (2, format!("{MODE_FLAG} -: standard input: {e}")))?)
+        match stdin().map_err(|e| (2, format!("{MODE_FLAG} -: standard input: {e}")))? {
+            Some(text) => Some(text),
+            None => return Ok(None),
+        }
     } else {
         None
     };
     let uuids = plan.all_uuids(listed.as_deref()).map_err(|e| (2, e))?;
     let settings = plan.into_settings().map_err(|(o, m)| (o.exit_code(), m))?;
-    Ok((settings, uuids))
+    Ok(Some((settings, uuids)))
 }
 
 /// Run the fetcher over `uuids`, in order, logging what became of each.
@@ -1487,14 +1497,16 @@ pub fn prepare(
 /// # Returns
 ///
 /// The exit code: 2 when the settings are refused (the output directory
-/// cannot be made, or no CA loads); otherwise as [`exit_code`]. A `401` or
-/// `403` stops the run at that uuid.
+/// cannot be made, or no CA loads); otherwise as [`exit_code`], over the
+/// uuids asked for. A `401` or `403` stops the run at that uuid, and so does
+/// `stop` returning `true`, checked before each uuid: a stop signal asks for
+/// nothing more.
 ///
 /// # Side effects
 ///
 /// Creates the output directory, connects to the store, and writes one file
 /// per container.
-pub fn run(settings: FetchSettings, uuids: &[String]) -> i32 {
+pub fn run(settings: FetchSettings, uuids: &[String], stop: &dyn Fn() -> bool) -> i32 {
     if let Some(warning) = plaintext_warning(&settings.url) {
         tracing::warn!("{warning}");
     }
@@ -1506,7 +1518,14 @@ pub fn run(settings: FetchSettings, uuids: &[String]) -> i32 {
         }
     };
     let mut outcomes = Vec::new();
-    for uuid in uuids {
+    for (n, uuid) in uuids.iter().enumerate() {
+        if stop() {
+            tracing::warn!(
+                "{MODE_FLAG}: stopped before {uuid}; {} uuid(s) not fetched",
+                uuids.len() - n
+            );
+            break;
+        }
         let outcome = fetcher.fetch_one(uuid);
         let (level, line) = describe(uuid, &outcome);
         log_at(level, &line);
@@ -1882,7 +1901,7 @@ mod tests {
             &keys("")?,
             || {
                 read.set(true);
-                Ok(String::new())
+                Ok(Some(String::new()))
             },
         );
         assert!(!read.get(), "standard input was read without `-`");
@@ -1901,7 +1920,7 @@ mod tests {
             plan.all_uuids(Some("bbbb-2\naaaa-1\n"))?,
             ["aaaa-1", "bbbb-2"]
         );
-        let e = prepare(&args, &keys("")?, || Ok("not a uuid\n".into()))
+        let e = prepare(&args, &keys("")?, || Ok(Some("not a uuid\n".into())))
             .err()
             .ok_or("a bad list was accepted")?;
         assert_eq!(e.0, 2);
@@ -1909,6 +1928,40 @@ mod tests {
             e.1.contains("--vcon-fetch -") && e.1.contains("line 1"),
             "{}",
             e.1
+        );
+        Ok(())
+    }
+
+    /// A read of standard input that a stop signal ended prepares no run:
+    /// not even the uuids the command line gave are fetched.
+    #[test]
+    fn a_stopped_read_of_standard_input_prepares_no_run() -> TestResult {
+        use clap::Parser as _;
+        let dir = tempfile::tempdir()?;
+        let auth = dir.path().join("auth");
+        std::fs::write(&auth, "x-k: v\n")?;
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&auth, std::fs::Permissions::from_mode(0o600))?;
+        }
+        let args = crate::cli::Cli::try_parse_from([
+            "sipnab".to_string(),
+            "--vcon-fetch".into(),
+            "aaaa-1".into(),
+            "-".into(),
+            "--vcon-fetch-url=http://127.0.0.1:9/v/{uuid}".into(),
+            format!("--vcon-fetch-auth-file={}", auth.display()),
+        ])?
+        .vcon_fetch_args;
+        let prepared = prepare(&args, &keys("")?, || Ok(None)).map_err(|(_, m)| m)?;
+        assert!(prepared.is_none(), "a stopped read prepared a run");
+        let prepared = prepare(&args, &keys("")?, || Ok(Some("bbbb-2\n".into())))
+            .map_err(|(_, m)| m)?
+            .ok_or("a complete read prepared no run")?;
+        assert_eq!(
+            prepared.1,
+            ["aaaa-1", "bbbb-2"],
+            "the command line's uuids, then the list's"
         );
         Ok(())
     }

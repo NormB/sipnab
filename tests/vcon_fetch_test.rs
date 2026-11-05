@@ -1637,3 +1637,110 @@ fn the_binary_refuses_ca_and_extra_ca_together() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+// ── A stop signal (STDIN-READ-IGNORES-STOP) ─────────────────────────────
+
+#[cfg(target_os = "linux")]
+#[path = "support/held_stdin.rs"]
+mod held_stdin;
+
+#[cfg(target_os = "linux")]
+include!("support/timeout.rs");
+
+/// Start `--vcon-fetch <H1> -` against `store` with a standard input that
+/// never ends, wait until the run can take a signal, send `signal`, and
+/// return how the run ended. The run is waiting for the uuid list then: it
+/// reads standard input before it asks the store for anything.
+#[cfg(target_os = "linux")]
+fn stop_while_reading_stdin(
+    signal: libc::c_int,
+) -> Result<(std::process::ExitStatus, String, usize), TestError> {
+    let store = holding_store()?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?;
+    let mut run = held_stdin::HeldStdin::spawn(&fetch_args(&rig, &store.url(""), &[H1, "-"]))?;
+    run.wait_for_handlers(test_timeout(15))?;
+    run.signal(signal)?;
+    let (status, err) = run.wait_for_exit(test_timeout(10), "the signal")?;
+    Ok((status, err, store.requests().len()))
+}
+
+/// SIGTERM ends a run waiting for uuids on standard input. It fetches
+/// nothing, not even the uuid the command line gave, and exits 0, as
+/// SIGTERM's stop of any other run does. Until this fix the read waited for
+/// end-of-file and the run ignored the signal.
+#[cfg(target_os = "linux")]
+#[test]
+fn sigterm_stops_a_fetch_waiting_on_standard_input() -> Result<(), TestError> {
+    let (status, err, asked) = stop_while_reading_stdin(libc::SIGTERM)?;
+    assert_eq!(status.code(), Some(0), "{status}: {err}");
+    assert_eq!(asked, 0, "a stopped run asked the store: {err}");
+    assert!(
+        err.contains("--vcon-fetch -: stopped while reading standard input"),
+        "{err}"
+    );
+    Ok(())
+}
+
+/// SIGINT is the same stop as SIGTERM.
+#[cfg(target_os = "linux")]
+#[test]
+fn sigint_stops_a_fetch_waiting_on_standard_input() -> Result<(), TestError> {
+    let (status, err, asked) = stop_while_reading_stdin(libc::SIGINT)?;
+    assert_eq!(status.code(), Some(0), "{status}: {err}");
+    assert_eq!(asked, 0, "a stopped run asked the store: {err}");
+    Ok(())
+}
+
+/// SIGHUP is the same stop, and the run exits 129, as every run SIGHUP
+/// stops does.
+#[cfg(target_os = "linux")]
+#[test]
+fn sighup_stops_a_fetch_waiting_on_standard_input_with_129() -> Result<(), TestError> {
+    let (status, err, asked) = stop_while_reading_stdin(libc::SIGHUP)?;
+    assert_eq!(status.code(), Some(129), "{status}: {err}");
+    assert_eq!(asked, 0, "a stopped run asked the store: {err}");
+    Ok(())
+}
+
+/// A stop that arrives while the store answers one uuid ends the run before
+/// it asks for the next: one request, the answered container saved, and
+/// exit 0 for SIGTERM. The store sends the signal itself, from inside its
+/// first answer, so the order is fixed.
+#[cfg(target_os = "linux")]
+#[test]
+fn sigterm_between_uuids_asks_for_no_more() -> Result<(), TestError> {
+    use std::sync::atomic::AtomicI32;
+    let pid = Arc::new(AtomicI32::new(0));
+    let target = Arc::clone(&pid);
+    let sent = AtomicBool::new(false);
+    let store = FakeStore::start(move |req| {
+        // The pid is stored right after the spawn returns; a request cannot
+        // come before the run starts, but never signal pid 0 or less.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut child = target.load(Ordering::SeqCst);
+        while child <= 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            child = target.load(Ordering::SeqCst);
+        }
+        // Once: the signal is for the first answer only.
+        if child > 0 && !sent.swap(true, Ordering::SeqCst) {
+            // SAFETY: kill(2) on the test's own unreaped child, recorded at
+            // spawn by `HeldStdin`, which keeps it unreaped until it exits.
+            unsafe { libc::kill(child, libc::SIGTERM) };
+            // Give the handler time to run before the answer goes out.
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let uuid = req.target.rsplit('/').next().unwrap_or_default();
+        Reply::Json(200, container(uuid))
+    })?;
+    let rig = Rig::new(&store.url(""), StoreKind::Conserver)?;
+    let mut run = held_stdin::HeldStdin::spawn(&fetch_args(&rig, &store.url(""), &[H1, H2]))?;
+    pid.store(run.pid(), Ordering::SeqCst);
+    let (status, err) = run.wait_for_exit(test_timeout(20), "the store's first answer")?;
+    assert_eq!(status.code(), Some(0), "{status}: {err}");
+    assert_eq!(store.requests().len(), 1, "{err}");
+    assert!(rig.out(H1).exists(), "{err}");
+    assert!(!rig.out(H2).exists(), "{err}");
+    assert!(err.contains("--vcon-fetch: stopped before"), "{err}");
+    Ok(())
+}

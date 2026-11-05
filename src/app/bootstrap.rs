@@ -4982,6 +4982,8 @@ pub fn run_vcon_spool_status(cli: &Cli) -> Option<i32> {
 /// credential's file cannot be read or holds no credential, 1 if
 /// `[vcon_fetch] auth_file` named it and 2 if `--vcon-fetch-auth-file` did;
 /// 2 when `-` was given and standard input holds no usable uuid list;
+/// 0 when a stop signal ended the read of standard input (the caller's
+/// `release_run_and_exit` makes it 129 after SIGHUP);
 /// `Some(2)` when the `vcon` feature is not compiled in; `None` when
 /// `--vcon-fetch` was not given.
 ///
@@ -5001,12 +5003,26 @@ pub fn run_vcon_fetch(cli: &Cli, read: &Result<LoadedConfig, PlanError>) -> Opti
             Ok(loaded) => loaded,
             Err(code) => return Some(code),
         };
+        // A stop signal ends the wait for the list (STDIN-READ-IGNORES-STOP):
+        // a blocking read restarts after the signal and would wait for
+        // end-of-file.
         let read_stdin = || {
-            let mut text = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut text).map(|_| text)
+            crate::input_wait::read_to_string_unless_stopped(
+                &mut std::io::stdin(),
+                &crate::signals::shutdown_requested,
+            )
         };
         match prepare(&cli.vcon_fetch_args, &loaded.config.vcon_fetch, read_stdin) {
-            Ok((settings, uuids)) => Some(run(settings, &uuids)),
+            Ok(Some((settings, uuids))) => {
+                Some(run(settings, &uuids, &crate::signals::shutdown_requested))
+            }
+            // A stop, which exits 0, or 129 after SIGHUP, as every stop does.
+            Ok(None) => {
+                tracing::warn!(
+                    "--vcon-fetch -: stopped while reading standard input; fetched nothing"
+                );
+                Some(0)
+            }
             Err((code, msg)) => {
                 tracing::error!("{msg}");
                 Some(code)

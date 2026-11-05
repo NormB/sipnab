@@ -92,7 +92,7 @@ generators and proxies — where operators most want to compare two captures.
 ordered list (`input_set::resolve`,
 [`input_set.rs:355`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L355)), and streams every file
 into **one** `DialogStore` through one channel
-(`capture_files`, [`file.rs:456`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L456)). It is tempting to
+(`capture_files`, [`file.rs:513`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L513)). It is tempting to
 read that as "sipnab now has a cross-capture story, so the comparison request is
 satisfied."
 
@@ -107,7 +107,7 @@ the same traffic, packets present in both are counted twice
 ```
 
 and its companion in the read path, `overlap_message`
-([`file.rs:989`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L989)), repeats the consequence for the
+([`file.rs:1035`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1035)), repeats the consequence for the
 end-against-start case: *"they overlap by {by} ms, so packets present in both
 are counted twice."* The doc comment above `warn_on_overlap` is explicit that
 *"Overlap means the set is not one sequence — most often two capture runs, or

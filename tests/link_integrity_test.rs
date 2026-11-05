@@ -1676,7 +1676,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2390 -> 2391 (TUI-LOST-TERMINAL-SPIN): troubleshooting.md +1, the
     // symptom-table row for a terminal interface that outlives its
     // terminal. Counted against origin/main 0695a5fbb.
-    const EXPECTED_WIKI_LINKS: usize = 2391;
+    // 2391 -> 2392 (STDIN-READ-IGNORES-STOP): troubleshooting.md +1, the
+    // symptom-table row for a run that ignores SIGTERM while it waits for
+    // input. Counted against origin/main 653e42f21.
+    const EXPECTED_WIKI_LINKS: usize = 2392;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

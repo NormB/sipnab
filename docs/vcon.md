@@ -2545,6 +2545,13 @@ Or give `-` to read them from standard input, one per line:
 sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-out fetched < uuids.txt
 ```
 
+`SIGTERM`, `SIGINT` and `SIGHUP` stop a fetch. While sipnab waits for the
+list on standard input, it stops reading and fetches nothing, not even the
+uuids given on the command line. While it fetches, it finishes the uuid it is
+on and asks for no more. The run exits 0, or 129 after `SIGHUP`, unless a
+uuid fetched before the stop failed. 0.5.234 and earlier waited for the end of
+standard input and ignored the signal.
+
 Each fetcher flag has a key in the `[vcon_fetch]` section of the
 [config file](config-reference.md#vcon_fetch). The flag overrides the key. The exceptions are `--vcon-fetch`, `--vcon-fetch-out` and
 `--vcon-fetch-overwrite`. The

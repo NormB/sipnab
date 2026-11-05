@@ -448,6 +448,10 @@ pub mod stats_vocab;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod rtpengine;
 pub mod security;
+// Waits for input that a stop signal ends, beside the flag it checks.
+#[doc(hidden)]
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod input_wait;
 #[doc(hidden)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub mod signals;

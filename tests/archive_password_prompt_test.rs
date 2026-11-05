@@ -263,7 +263,13 @@ impl Session {
             if let Some(_status) = self.child.try_wait()? {
                 break;
             }
-            assert!(Instant::now() < deadline, "sipnab hung:\n{}", self.screen);
+            if Instant::now() >= deadline {
+                // This test's own unreaped child: kill and reap it, so a
+                // failing test leaves no process behind.
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                return Err(format!("sipnab hung:\n{}", self.screen).into());
+            }
             self.pump(Duration::from_millis(50));
         }
         self.pump(Duration::from_millis(50));
@@ -425,6 +431,70 @@ fn an_empty_entry_skips_the_archive() -> Result<(), TestError> {
     Ok(())
 }
 
+impl Session {
+    /// Send `signal` to sipnab, by the pid recorded at spawn, once it is
+    /// confirmed to be this unreaped child running the sipnab binary.
+    fn signal(&mut self, signal: libc::c_int) -> Result<(), TestError> {
+        if self.child.try_wait()?.is_some() {
+            return Err("sipnab already exited".into());
+        }
+        let pid = libc::pid_t::try_from(self.child.id())?;
+        let exe = std::fs::read_link(format!("/proc/{pid}/exe"))?;
+        if exe != std::fs::canonicalize(env!("CARGO_BIN_EXE_sipnab"))? {
+            return Err(format!("pid {pid} runs {}, not sipnab", exe.display()).into());
+        }
+        // SAFETY: kill(2) on this session's own unreaped child.
+        if unsafe { libc::kill(pid, signal) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(())
+    }
+}
+
+/// Send `signal` to a run waiting at the prompt, and return how it ended.
+fn signal_at_the_prompt(signal: libc::c_int, label: &str) -> Result<Finished, TestError> {
+    let root = tempfile::tempdir()?;
+    let tmp = tempfile::tempdir()?;
+    let password = mint(label);
+    let zip = locked_zip(root.path(), &format!("{label}@test"), &password)?;
+    let a = args(&zip.display().to_string());
+    let mut s = start(
+        &a.iter().map(String::as_str).collect::<Vec<_>>(),
+        tmp.path(),
+        true,
+    )?;
+    s.wait_for("attempt 1 of 3): ");
+    s.type_in(b"half");
+    s.signal(signal)?;
+    let done = s.finish()?;
+    assert!(
+        !done.stdout.contains(&format!("{label}@test")),
+        "a run stopped at the prompt reported the locked call: {}",
+        done.stdout
+    );
+    done.assert_terminal_restored();
+    Ok(done)
+}
+
+/// SIGTERM at the prompt stops the run as SIGTERM stops any run: the
+/// terminal restored, nothing read, exit 0. Until 0.5.235 it exited 130,
+/// the status of Ctrl-C typed at the prompt.
+#[test]
+fn sigterm_at_the_prompt_stops_with_0() -> Result<(), TestError> {
+    let done = signal_at_the_prompt(libc::SIGTERM, "sigterm")?;
+    assert_eq!(done.code, Some(0), "{}", done.stderr);
+    Ok(())
+}
+
+/// SIGHUP at the prompt stops the run and exits 129, as every run SIGHUP
+/// stops does.
+#[test]
+fn sighup_at_the_prompt_stops_with_129() -> Result<(), TestError> {
+    let done = signal_at_the_prompt(libc::SIGHUP, "sighup")?;
+    assert_eq!(done.code, Some(129), "{}", done.stderr);
+    Ok(())
+}
+
 #[test]
 fn ctrl_c_at_the_prompt_restores_the_terminal_and_stops() -> Result<(), TestError> {
     let root = tempfile::tempdir()?;
@@ -441,7 +511,9 @@ fn ctrl_c_at_the_prompt_restores_the_terminal_and_stops() -> Result<(), TestErro
     s.type_in(b"half");
     s.type_in(&[0x03]);
     let done = s.finish()?;
-    assert_ne!(done.code, Some(0), "{}", done.stderr);
+    // 130, the documented status of Ctrl-C typed at the prompt; a stop
+    // signal there is a stop like any other (0, or 129 after SIGHUP).
+    assert_eq!(done.code, Some(130), "{}", done.stderr);
     assert!(!done.stdout.contains("ctrlc@test"));
     done.assert_terminal_restored();
     Ok(())

@@ -62,16 +62,61 @@ pub struct OfflineGuard {
     _expansion: crate::capture::archive::Expansion,
 }
 
+/// What a file type is when it is not a regular file a capture can be read
+/// from more than once: a pipe or FIFO, a device or a socket. `None` for a
+/// regular file and for a directory, which `-I` expands. Pure.
+#[must_use]
+pub fn not_a_file_kind(file_type: std::fs::FileType) -> Option<&'static str> {
+    use std::os::unix::fs::FileTypeExt as _;
+    if file_type.is_fifo() {
+        Some("a pipe or FIFO")
+    } else if file_type.is_char_device() {
+        Some("a character device")
+    } else if file_type.is_block_device() {
+        Some("a block device")
+    } else if file_type.is_socket() {
+        Some("a socket")
+    } else {
+        None
+    }
+}
+
+/// Why `path` cannot be read as a capture, when it names (through any
+/// links) a pipe or FIFO, a device or a socket: the text after the quoted
+/// path, starting with `is`. `None` for a regular file, a directory, and a
+/// path whose type cannot be read, which the open then reports.
+///
+/// sipnab reads a capture from its start more than once: the first bytes,
+/// to tell a compressed file or an archive from a capture, and then the
+/// whole file, opened again. A pipe hands each byte out once, so such an
+/// input never worked, and waiting on it (for a FIFO's writer, or for a
+/// pipe's first bytes) ignored a stop signal (STDIN-READ-IGNORES-STOP).
+/// The type is read with `stat(2)`, which opens nothing and does not wait.
+#[must_use]
+pub fn not_a_file(path: &Path) -> Option<String> {
+    let kind = not_a_file_kind(std::fs::metadata(path).ok()?.file_type())?;
+    Some(format!(
+        "is {kind}, not a file: sipnab reads a capture from its start more than once, \
+         and a pipe, a FIFO or a device can be read only once. Save the capture to a file \
+         and name that file"
+    ))
+}
+
 /// [`open_offline`] with explicit inflation limits.
 ///
 /// # Errors
 ///
-/// As [`open_offline`].
+/// As [`open_offline`], and a path that names a pipe, a FIFO, a device or a
+/// socket ([`not_a_file`]), refused before it is opened.
 pub fn open_offline_with(
     path: &Path,
     limits: &crate::capture::archive::Limits,
 ) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
     use crate::capture::archive;
+
+    if let Some(why) = not_a_file(path) {
+        anyhow::bail!("'{}' {why}", archive::source_name(path));
+    }
 
     match archive::container_format(path) {
         Ok(Some(f)) if archive::unwraps(f) => {}
@@ -2083,6 +2128,64 @@ mod tests {
             sources,
             vec![format!("{root_name}/a.pcap"), format!("{root_name}/b.pcap")]
         );
+        Ok(())
+    }
+
+    /// A FIFO, a character device, a regular file, a directory and a
+    /// missing path: only the first two are refused, each by what it is.
+    #[test]
+    fn not_a_file_names_pipes_and_devices_only() -> Result<(), TestError> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let dir = tempfile::tempdir()?;
+        let fifo = dir.path().join("live.pcap");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes())?;
+        // SAFETY: mkfifo(3) with a valid NUL-terminated path.
+        if unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let why = not_a_file(&fifo).ok_or("a FIFO was taken for a file")?;
+        assert!(why.starts_with("is a pipe or FIFO, not a file"), "{why}");
+        let why = not_a_file(Path::new("/dev/null")).ok_or("a device was taken for a file")?;
+        assert!(
+            why.starts_with("is a character device, not a file"),
+            "{why}"
+        );
+        let file = dir.path().join("a.pcap");
+        std::fs::write(&file, b"x")?;
+        assert_eq!(not_a_file(&file), None, "a regular file");
+        assert_eq!(not_a_file(dir.path()), None, "a directory");
+        assert_eq!(
+            not_a_file(&dir.path().join("missing")),
+            None,
+            "a missing path"
+        );
+        Ok(())
+    }
+
+    /// `open_offline` refuses a FIFO without opening it: with no writer, an
+    /// open would wait for one, and a stop signal would not end the wait.
+    #[test]
+    fn open_offline_refuses_a_fifo_without_waiting() -> Result<(), TestError> {
+        use std::os::unix::ffi::OsStrExt as _;
+        let dir = tempfile::tempdir()?;
+        let fifo = dir.path().join("live.pcap");
+        let c_path = std::ffi::CString::new(fifo.as_os_str().as_bytes())?;
+        // SAFETY: mkfifo(3) with a valid NUL-terminated path.
+        if unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let opening = fifo.clone();
+        // On a thread, so an open that waits fails this test instead of
+        // hanging it.
+        std::thread::spawn(move || {
+            let _ = tx.send(open_offline(&opening).err().map(|e| format!("{e:#}")));
+        });
+        let err = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .map_err(|_| "open_offline waited on a FIFO with no writer")?
+            .ok_or("a FIFO opened as a capture")?;
+        assert!(err.contains("is a pipe or FIFO, not a file"), "{err}");
         Ok(())
     }
 

@@ -44,6 +44,7 @@ the cause from there.
 | `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
 | `Failed to create output file` for a `-O` path, or for a `--split` file mid-run | [An output file sipnab cannot create](#an-output-file-sipnab-cannot-create) |
 | A terminal interface still runs, and uses CPU, after its window or tmux session has gone | [A terminal interface that outlives its terminal](#a-terminal-interface-that-outlives-its-terminal) |
+| `sipnab --vcon-fetch -`, or a run given a pipe with `-I`, keeps running after `SIGTERM` | [A run that ignores SIGTERM while it waits for input](#a-run-that-ignores-sigterm-while-it-waits-for-input) |
 | sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
 | sipnab refused to start, or stopped with an error message | [Error messages](@/docs/errors.md): look up the message by its text |
 | The systemd service does not start, or stops and stays down | [A service that does not start](#a-service-that-does-not-start) |
@@ -1815,6 +1816,32 @@ The same later release makes a terminal interface whose terminal is still
 there stop on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
 0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
 process at once, with no end-of-run summary.
+
+## A run that ignores SIGTERM while it waits for input
+
+sipnab 0.5.234 and earlier have a defect: `sipnab --vcon-fetch -` whose
+standard input stays open with nothing to read keeps waiting. `SIGTERM`,
+`SIGINT` and `SIGHUP` do not stop it. A run given a FIFO or a pipe with `-I`
+(`-I /dev/stdin`, a process substitution, a named pipe) can wait the same way, and such
+an input never worked.
+
+- **Fix:** upgrade. A later release stops `--vcon-fetch -` within a second of
+  the signal. It fetches nothing and exits 0, or 129 after `SIGHUP`. It
+  refuses a FIFO, a pipe or a device given to `-I` at startup, with exit
+  status 1. Save the capture to a file and give that file instead.
+- **On 0.5.234 or earlier:** end the input. Close the program that writes to
+  sipnab's standard input, or end the `--vcon-fetch -` run with `SIGKILL`.
+  First check that the pid is that run. Replace 12345 with its pid:
+
+  ```bash
+  ps -o pid,stat,etime,args -p 12345
+  ```
+
+  Then end it:
+
+  ```bash
+  kill -KILL 12345
+  ```
 
 ## Send us a crash report
 

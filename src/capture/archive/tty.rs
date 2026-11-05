@@ -15,9 +15,12 @@
 //! editing by the kernel, and no signals from the keyboard. `RawMode`
 //! restores what it found when it drops, on Enter, on an error, and on
 //! Ctrl-C, which arrives as a byte this module handles rather than as a
-//! signal that could kill the process with echo still off. A SIGTERM from
-//! outside sets sipnab's shutdown flag, which the read loop checks between
-//! keystrokes, so that way out restores the terminal too.
+//! signal that could kill the process with echo still off. A SIGTERM,
+//! SIGINT or SIGHUP from outside sets sipnab's shutdown flag, which the read
+//! loop checks between keystrokes, so that way out restores the terminal too.
+//!
+//! Ctrl-C typed at the prompt exits 130. A stop signal is the stop it is for
+//! every other run: exit 0, or 129 after SIGHUP.
 
 use std::io::Write;
 use std::os::fd::AsRawFd;
@@ -37,6 +40,9 @@ pub enum Key {
     Eof,
     /// Ctrl-C: stop.
     Interrupt,
+    /// A stop signal (SIGTERM, SIGINT or SIGHUP) arrived while the prompt
+    /// waited: stop, as such a signal stops any run.
+    Stopped,
 }
 
 /// Apply one byte typed at the prompt to `line`.
@@ -177,23 +183,11 @@ impl TtyPrompter {
         let mut byte = Zeroizing::new([0u8; 1]);
         loop {
             if crate::signals::shutdown_requested() {
-                return Ok((line, Key::Interrupt, too_long));
+                return Ok((line, Key::Stopped, too_long));
             }
-            let mut pfd = libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: pfd is one valid pollfd for an open descriptor.
-            let ready = unsafe { libc::poll(&mut pfd, 1, 200) };
-            if ready < 0 {
-                let e = std::io::Error::last_os_error();
-                if e.kind() == std::io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(e);
-            }
-            if ready == 0 {
+            // Nothing within the interval, or a signal: check the flag again.
+            if crate::input_wait::poll_one(fd, libc::POLLIN, crate::input_wait::POLL_INTERVAL)? == 0
+            {
                 continue;
             }
             // SAFETY: byte is one writable byte.
@@ -232,6 +226,20 @@ impl TtyPrompter {
     }
 }
 
+/// The exit status and the log line for a key that ends the run, or `None`
+/// for one that does not. Pure.
+///
+/// Ctrl-C typed at the prompt exits 130. A stop signal exits 0, which
+/// `release_run_and_exit` makes 129 after SIGHUP: the status the same
+/// signal gives every other run.
+fn stop_status(key: Key) -> Option<(i32, &'static str)> {
+    match key {
+        Key::Interrupt => Some((130, "Interrupted at the archive password prompt")),
+        Key::Stopped => Some((0, "Stopped by a signal at the archive password prompt")),
+        Key::More | Key::Done | Key::Eof => None,
+    }
+}
+
 impl Prompter for TtyPrompter {
     fn ask(&mut self, request: &PromptRequest) -> PromptAnswer {
         let read = self.read_line(&prompt_text(request));
@@ -245,13 +253,13 @@ impl Prompter for TtyPrompter {
                 return PromptAnswer::Skip;
             }
         };
+        if let Some((code, why)) = stop_status(key) {
+            drop(line);
+            tracing::warn!("{why}");
+            super::release_run_and_exit(code);
+        }
         match key {
-            Key::Interrupt => {
-                drop(line);
-                tracing::warn!("Interrupted at the archive password prompt");
-                super::release_run_and_exit(130);
-            }
-            Key::Eof | Key::More => PromptAnswer::Skip,
+            Key::Interrupt | Key::Stopped | Key::Eof | Key::More => PromptAnswer::Skip,
             Key::Done if too_long => {
                 let _ = writeln!(
                     self.tty,
@@ -273,6 +281,24 @@ impl Prompter for TtyPrompter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ctrl-C exits 130 and a stop signal 0; no other key ends the run.
+    #[test]
+    fn only_ctrl_c_and_a_stop_end_the_run() {
+        assert_eq!(
+            stop_status(Key::Interrupt).map(|s| s.0),
+            Some(130),
+            "Ctrl-C typed at the prompt"
+        );
+        assert_eq!(
+            stop_status(Key::Stopped).map(|s| s.0),
+            Some(0),
+            "a stop signal, which release_run_and_exit makes 129 after SIGHUP"
+        );
+        for key in [Key::More, Key::Done, Key::Eof] {
+            assert_eq!(stop_status(key), None, "{key:?}");
+        }
+    }
 
     fn typed(bytes: &[u8]) -> (Vec<u8>, Key, bool) {
         let mut line = Zeroizing::new(Vec::with_capacity(8));
