@@ -152,21 +152,24 @@ pub fn extract_srtp_keys(crypto: &SdpCrypto) -> Result<SrtpKeyMaterial> {
     let suite = SrtpSuite::from_str(&crypto.suite);
 
     // Parse the key_params: "inline:<base64>[|<session_params>]"
+    // The length, never the value: key_params is the key (CAP-1).
     let inline_data = crypto.key_params.strip_prefix("inline:").with_context(|| {
         format!(
-            "SRTP key_params must start with 'inline:', got: {}",
-            crypto.key_params
+            "SRTP key_params must start with 'inline:'; this one does not ({} chars)",
+            crypto.key_params.len()
         )
     })?;
 
     // Strip optional session parameters after '|'
     let b64_part = inline_data.split('|').next().unwrap_or(inline_data);
 
-    let decoded = BASE64.decode(b64_part).with_context(|| {
-        // Never echo the candidate key material into the error/log.
-        format!(
-            "Invalid base64 in SRTP key_params ({} chars)",
-            b64_part.len()
+    // Never echo the candidate key material into the error/log, not even the
+    // one offending character the decoder's own message names.
+    let decoded = BASE64.decode(b64_part).map_err(|e| {
+        anyhow::anyhow!(
+            "Invalid base64 in SRTP key_params ({} chars): {}",
+            b64_part.len(),
+            base64_problem(&e)
         )
     })?;
 
@@ -272,9 +275,11 @@ pub fn parse_srtp_key_file(path: &Path) -> Result<Vec<SrtpKeyMaterial>> {
             continue;
         }
 
+        // The place, never the line: it holds the key and salt (CAP-1). The
+        // error below this one names the field that failed.
         let entry = parse_srtp_key_line(line).with_context(|| {
             format!(
-                "Invalid SRTP key entry at {}:{}: {line}",
+                "Invalid SRTP key entry at {}:{}",
                 path.display(),
                 line_num + 1
             )
@@ -283,6 +288,25 @@ pub fn parse_srtp_key_file(path: &Path) -> Result<Vec<SrtpKeyMaterial>> {
     }
 
     Ok(entries)
+}
+
+/// What is wrong with a base64 field, by position only.
+///
+/// The decoder's own message names the offending byte, which is a character
+/// of the secret; this names where it is and nothing of what it is.
+fn base64_problem(e: &base64::DecodeError) -> String {
+    match e {
+        base64::DecodeError::InvalidByte(offset, _) => {
+            format!("a character that is not base64 at offset {offset}")
+        }
+        base64::DecodeError::InvalidLength(len) => {
+            format!("{len} symbols, which no base64 encoding produces")
+        }
+        base64::DecodeError::InvalidLastSymbol { offset, .. } => {
+            format!("a final symbol that does not end the encoding, at offset {offset}")
+        }
+        base64::DecodeError::InvalidPadding => "padding in the wrong place".to_string(),
+    }
 }
 
 /// Parse a single line from the manual SRTP key file format.
@@ -324,15 +348,24 @@ fn parse_srtp_key_line(line: &str) -> Result<SrtpKeyMaterial> {
     let key_b64 = key_b64.context("Missing 'key=' in SRTP key line")?;
     let suite = SrtpSuite::from_str(suite_name.unwrap_or("AES_CM_128_HMAC_SHA1_80"));
 
-    let key_bytes = BASE64
-        .decode(key_b64)
-        // Never echo the candidate key material into the error/log.
-        .with_context(|| format!("Invalid base64 in key ({} chars)", key_b64.len()))?;
+    // Never echo the candidate key material into the error/log, not even the
+    // one offending character the decoder names.
+    let key_bytes = BASE64.decode(key_b64).map_err(|e| {
+        anyhow::anyhow!(
+            "Invalid base64 in the key field ({} chars): {}",
+            key_b64.len(),
+            base64_problem(&e)
+        )
+    })?;
 
     let (master_key, master_salt) = if let Some(sb64) = salt_b64 {
-        let salt_bytes = BASE64
-            .decode(sb64)
-            .with_context(|| format!("Invalid base64 in salt ({} chars)", sb64.len()))?;
+        let salt_bytes = BASE64.decode(sb64).map_err(|e| {
+            anyhow::anyhow!(
+                "Invalid base64 in the salt field ({} chars): {}",
+                sb64.len(),
+                base64_problem(&e)
+            )
+        })?;
         (key_bytes, salt_bytes)
     } else {
         // key contains key||salt concatenated
@@ -2334,6 +2367,102 @@ mod tests {
             ck_b, expected_b,
             "invalidated entry must re-derive correctly"
         );
+        Ok(())
+    }
+
+    /// A key file line that does not parse is reported by file, line number
+    /// and the field that failed, and the error never carries the key or
+    /// salt it held (CAP-1).
+    #[test]
+    fn a_bad_key_line_names_its_place_and_field_but_not_its_material() -> Result<(), TestError> {
+        // Each line holds a value no message may repeat, and the field the
+        // message must name.
+        let valid_key = "YUJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0";
+        let cases = [
+            (
+                "ssrc=1 key=KEYSECRETnotbase64!!".to_string(),
+                "KEYSECRETnotbase64",
+                "key",
+            ),
+            (
+                format!("ssrc=1 key={valid_key} salt=SALTSECRETnotbase64!!"),
+                "SALTSECRETnotbase64",
+                "salt",
+            ),
+            // Valid base64, too short for the suite: the material is the key.
+            (
+                "ssrc=1 key=U0hPUlRLRVlTRUNSRVQ=".to_string(),
+                "U0hPUlRLRVlTRUNSRVQ",
+                "material",
+            ),
+        ];
+        for (line, secret, field) in cases {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("srtp.keys");
+            std::fs::write(&path, format!("# keys\n{line}\n"))?;
+            let err = parse_srtp_key_file(&path)
+                .err()
+                .ok_or("a malformed line must be refused")?;
+            let text = format!("{err:#}");
+            assert!(
+                !text.contains(secret),
+                "the error repeats key material: {text}"
+            );
+            assert!(
+                !text.contains(valid_key),
+                "the error repeats the line's key: {text}"
+            );
+            assert!(
+                text.contains(&format!("{}:2", path.display())),
+                "the error names the file and line 2: {text}"
+            );
+            assert!(
+                text.contains(field),
+                "the error names the field `{field}`: {text}"
+            );
+            assert!(
+                !text.contains("Invalid symbol"),
+                "the decoder's message names a character of the key: {text}"
+            );
+        }
+        Ok(())
+    }
+
+    /// An SDES `a=crypto` key that does not parse is refused without
+    /// repeating the key from the SDP (CAP-1).
+    #[test]
+    fn a_bad_sdes_key_is_refused_without_its_material() -> Result<(), TestError> {
+        let cases = [
+            ("notinline:SDESSECRETvalue", "SDESSECRETvalue", "inline:"),
+            (
+                "inline:SDESSECRETnotbase64!!",
+                "SDESSECRETnotbase64",
+                "base64",
+            ),
+        ];
+        for (key_params, secret, names) in cases {
+            let crypto = crate::sip::sdp::SdpCrypto {
+                tag: 1,
+                suite: "AES_CM_128_HMAC_SHA1_80".to_string(),
+                key_params: key_params.to_string(),
+            };
+            let err = extract_srtp_keys(&crypto)
+                .err()
+                .ok_or("a malformed key must be refused")?;
+            let text = format!("{err:#}");
+            assert!(
+                !text.contains(secret),
+                "the error repeats the SDES key: {text}"
+            );
+            assert!(
+                !text.contains("Invalid symbol"),
+                "the error names a key character: {text}"
+            );
+            assert!(
+                text.contains(names),
+                "the error says what is wrong (`{names}`): {text}"
+            );
+        }
         Ok(())
     }
 }

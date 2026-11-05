@@ -519,9 +519,11 @@ pub fn parse_keylog_file(path: &Path) -> Result<Vec<KeyLogEntry>> {
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        // The place, never the line: it holds the secret (CAP-1). The error
+        // below this one names the field that failed.
         let entry = parse_keylog_line(line).with_context(|| {
             format!(
-                "Invalid keylog entry at {}:{}: {line}",
+                "Invalid keylog entry at {}:{}",
                 path.display(),
                 line_num + 1
             )
@@ -542,15 +544,20 @@ pub fn parse_keylog_line(line: &str) -> Result<KeyLogEntry> {
     let line = line.trim();
 
     let parts: Vec<&str> = line.splitn(3, ' ').collect();
+    // No error here repeats a field: the secret is key material, and a line
+    // that is not three fields may hold it anywhere (CAP-1).
     if parts.len() != 3 {
-        anyhow::bail!("Expected 'LABEL hex_random hex_secret', got: {line}");
+        anyhow::bail!(
+            "Expected three fields, LABEL client_random secret, got {}",
+            parts.len()
+        );
     }
 
     let label = parts[0].to_string();
-    let client_random =
-        decode_hex(parts[1]).with_context(|| format!("Invalid client_random hex: {}", parts[1]))?;
-    let secret =
-        decode_hex(parts[2]).with_context(|| format!("Invalid secret hex: {}", parts[2]))?;
+    let client_random = decode_hex(parts[1])
+        .with_context(|| format!("Invalid client_random hex ({} chars)", parts[1].len()))?;
+    let secret = decode_hex(parts[2])
+        .with_context(|| format!("Invalid secret hex ({} chars)", parts[2].len()))?;
 
     Ok(KeyLogEntry {
         label,
@@ -568,7 +575,7 @@ pub fn parse_keylog_line(line: &str) -> Result<KeyLogEntry> {
 fn decode_hex(hex: &str) -> Result<Vec<u8>> {
     let bytes = hex.as_bytes();
     if !bytes.len().is_multiple_of(2) {
-        anyhow::bail!("Odd-length hex string: {hex}");
+        anyhow::bail!("an odd number of hex digits");
     }
 
     /// Convert one hex ASCII digit `b` to its 0..=15 value, or error naming its
@@ -578,7 +585,7 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>> {
             b'0'..=b'9' => Ok(b - b'0'),
             b'a'..=b'f' => Ok(b - b'a' + 10),
             b'A'..=b'F' => Ok(b - b'A' + 10),
-            _ => anyhow::bail!("Invalid hex byte at position {pos}: 0x{b:02x}"),
+            _ => anyhow::bail!("a character that is not hex at position {pos}"),
         }
     }
 
@@ -1149,6 +1156,63 @@ mod tests {
             "client_random not zeroized/cleared"
         );
         assert!(entry.label.is_empty(), "label not zeroized/cleared");
+        Ok(())
+    }
+
+    /// A keylog line that does not parse is reported by file, line number and
+    /// the field that failed, and the error never carries the secret or the
+    /// client random it held (CAP-1).
+    #[test]
+    fn a_bad_keylog_line_names_its_place_and_field_but_not_its_values() -> Result<(), TestError> {
+        let random = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        let cases = [
+            // Not hex: the secret.
+            (
+                format!("CLIENT_RANDOM {random} 5ECRE7notHEXzz"),
+                "5ECRE7notHEXzz",
+                "secret",
+            ),
+            // Odd length: the secret.
+            (
+                format!("CLIENT_RANDOM {random} abcdef12345"),
+                "abcdef12345",
+                "secret",
+            ),
+            // Not hex: the client random.
+            (
+                "CLIENT_RANDOM R4ND0Mnothex 0011".to_string(),
+                "R4ND0Mnothex",
+                "client_random",
+            ),
+            // Two fields where three belong.
+            (format!("CLIENT_RANDOM {random}"), random, "fields"),
+        ];
+        for (line, value, field) in cases {
+            let dir = tempfile::tempdir()?;
+            let path = dir.path().join("keys.log");
+            std::fs::write(&path, format!("# SSL key log\n{line}\n"))?;
+            let err = parse_keylog_file(&path)
+                .err()
+                .ok_or("a malformed line must be refused")?;
+            let text = format!("{err:#}");
+            assert!(
+                !text.contains(value),
+                "the error repeats a key log value: {text}"
+            );
+            assert!(
+                !text.contains(random),
+                "the error repeats the line's client random: {text}"
+            );
+            assert!(
+                text.contains(&format!("{}:2", path.display())),
+                "the error names the file and line 2: {text}"
+            );
+            assert!(text.contains(field), "the error names `{field}`: {text}");
+            assert!(
+                !text.contains("0x"),
+                "the error names a byte of the line: {text}"
+            );
+        }
         Ok(())
     }
 }
