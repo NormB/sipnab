@@ -297,9 +297,10 @@ pub fn startup(cli: &Cli) -> Option<i32> {
 pub fn relay_holdings(
     cli: &Cli,
     relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    routing: Option<&crate::relay::engines::EngineRouting>,
     permit: &crate::security::transmit_guard::TransmitPermit,
 ) -> i32 {
-    b4::relay_holdings(cli, relay, permit)
+    b4::relay_holdings(cli, relay, routing, permit)
 }
 
 /// Answer `--relay-sessions` from `relay` and return the exit code: 0 with
@@ -309,9 +310,10 @@ pub fn relay_holdings(
 pub fn relay_sessions(
     cli: &Cli,
     relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    routing: Option<&crate::relay::engines::EngineRouting>,
     permit: &crate::security::transmit_guard::TransmitPermit,
 ) -> i32 {
-    b4::relay_sessions(cli, relay, permit)
+    b4::relay_sessions(cli, relay, routing, permit)
 }
 
 /// A file job a unit test declares to prove `run_startup_commands` reaches

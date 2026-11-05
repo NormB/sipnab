@@ -9,8 +9,8 @@
 //! held calls only when the scan key is pressed, once per press. Nothing is
 //! asked while the view is closed.
 //!
-//! The snapshot is taken by [`relay_sessions`], the function every other
-//! surface uses, on a worker thread, as [`super::relay_stats::spawn_ask`] does:
+//! The snapshot is taken by [`relay_sessions_routed`], the function every
+//! other surface uses, on a worker thread, as [`super::relay_stats::spawn_ask`] does:
 //! the input and render thread never waits on the relay. The text is rendered
 //! by the same functions `--relay-sessions` prints with, so a word cannot
 //! differ between surfaces.
@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use super::relay_stats::TuiRelayAccess;
 use crate::output::query::relay_sessions::{
-    RelaySessions, SessionCall, SessionsAsk, relay_sessions,
+    RelaySessions, Routed, SessionCall, SessionsAsk, relay_sessions_routed,
 };
 
 /// How often the open view refreshes when the run set no
@@ -110,6 +110,28 @@ pub fn spawn_snapshot(
     cap: u32,
     sip_ended: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 ) -> Receiver<RelaySessions> {
+    spawn_snapshot_for(
+        access,
+        selected,
+        scan,
+        cap,
+        sip_ended,
+        Arc::new(|_: &str| Vec::new()),
+    )
+}
+
+/// [`spawn_snapshot`], with `sdp_of` answering a Call-ID's SDP sightings,
+/// which choose its engine when an engine rule is configured. Read on the
+/// worker, like `sip_ended`.
+#[must_use]
+pub fn spawn_snapshot_for(
+    access: TuiRelayAccess,
+    selected: Option<String>,
+    scan: bool,
+    cap: u32,
+    sip_ended: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    sdp_of: crate::relay::engines::SdpLookup,
+) -> Receiver<RelaySessions> {
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("relay-sessions".to_owned())
@@ -120,8 +142,14 @@ pub fn spawn_snapshot(
                 cap,
                 list_limit: cap,
             };
-            let snapshot = relay_sessions(
+            let sdp = |c: &str| sdp_of(c);
+            let routed = access.routing.as_deref().map(|routing| Routed {
+                routing,
+                sdp_of: &sdp,
+            });
+            let snapshot = relay_sessions_routed(
                 access.relay.as_ref(),
+                routed.as_ref(),
                 &access.permit,
                 &ask,
                 sip_ended.as_ref(),
@@ -306,6 +334,7 @@ mod tests {
             relay,
             permit: TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?,
             addr: "192.0.2.10:22222".parse()?,
+            routing: None,
         })
     }
 
@@ -391,10 +420,12 @@ mod tests {
                 .map(|c| NotQueried {
                     call_id: (*c).to_string(),
                     sip_dialog: SipDialog::NotSeenEnded,
+                    engine: None,
                 })
                 .collect(),
             stall_seconds: 2,
             notes: Vec::new(),
+            engines: None,
         }
     }
 
@@ -484,6 +515,7 @@ mod tests {
                 is_media_subscriber: false,
                 sockets: vec![socket(30000, 2250), socket(30002, 0)],
             }],
+            engine: None,
         };
         let captured = |_: &str, port: u16, way: Way| match (port, way) {
             (30000, Way::ToRelay) => Some(2249),
@@ -505,5 +537,91 @@ mod tests {
             !text.contains("difference") && !text.contains(" 1\n"),
             "{text}"
         );
+    }
+
+    /// One engine that lists `m-1@example.invalid` and holds it.
+    struct Holder(&'static str);
+
+    impl ReadOnlyRelay for Holder {
+        fn list(&self, _: &TransmitPermit, _: u32) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: vec!["m-1@example.invalid".to_string()],
+                truncated: false,
+            }))
+        }
+        fn query(&self, _: &TransmitPermit, c: &str) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Call(crate::relay::types::CallView {
+                call_id: c.to_string(),
+                tags: Vec::new(),
+            }))
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("never asked")
+        }
+        fn describe(&self) -> String {
+            self.0.to_string()
+        }
+    }
+
+    /// With an engine rule the view's snapshot lists every engine and asks
+    /// the call's own engine, chosen from the SDP the view hands it.
+    #[test]
+    fn a_snapshot_with_an_engine_rule_asks_the_calls_engine() -> Result<(), TestError> {
+        use crate::relay::engines::{
+            Connect, EngineMap, EngineRouting, EngineRow, EngineRule, SdpSighting,
+        };
+        let rows = vec![
+            "203.0.113.5 30000-39999 192.0.2.5:2223".parse::<EngineRow>()?,
+            "203.0.113.5 40000-49999 192.0.2.6:2223".parse::<EngineRow>()?,
+        ];
+        let connect: Connect = Arc::new(|_| Arc::new(Holder("engine-b")));
+        let live = crate::capture::CaptureSource::Live {
+            device: "eth0".to_string(),
+        };
+        let access = TuiRelayAccess {
+            relay: Arc::new(Holder("engine-a")),
+            permit: TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?,
+            addr: "192.0.2.5:2223".parse()?,
+            routing: Some(Arc::new(EngineRouting::new(
+                EngineRule::Map(EngineMap::new(rows)?),
+                "192.0.2.5:2223".parse()?,
+                false,
+                connect,
+            ))),
+        };
+        let sdp_of: crate::relay::engines::SdpLookup = Arc::new(|_: &str| {
+            vec![SdpSighting {
+                at: chrono::DateTime::UNIX_EPOCH,
+                from_request: true,
+                address: "203.0.113.5".to_string(),
+                port: 40010,
+            }]
+        });
+        let rx = spawn_snapshot_for(
+            access,
+            Some("m-1@example.invalid".to_string()),
+            false,
+            32,
+            Arc::new(|_: &str| false),
+            sdp_of,
+        );
+        let snapshot = rx.recv_timeout(Duration::from_secs(10))?;
+        assert_eq!(
+            snapshot.engines.as_ref().map(Vec::len),
+            Some(2),
+            "a snapshot with an engine rule asks the calls engine"
+        );
+        let engine = snapshot
+            .calls
+            .first()
+            .and_then(|c| c.engine.as_ref())
+            .ok_or("the call names its engine")?;
+        assert_eq!(
+            engine.asked.as_deref(),
+            Some("relay (engine-b)"),
+            "a snapshot with an engine rule asks the calls engine"
+        );
+        assert!(engine.held_by_several_engines, "both engines list it");
+        Ok(())
     }
 }

@@ -76,19 +76,18 @@ fn render_expect(ctx: &QueryContext<'_>) -> bool {
 pub(super) fn relay_holdings(
     cli: &crate::cli::Cli,
     relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    routing: Option<&crate::relay::engines::EngineRouting>,
     permit: &crate::security::transmit_guard::TransmitPermit,
 ) -> i32 {
-    use crate::output::query::relay_holdings::{Holdings, ask};
+    use crate::output::query::relay_holdings::ask_engines;
 
     let max_calls = cli
         .gate_args
         .relay_holdings_max
         .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
-    let answer = ask(relay, permit, max_calls, chrono::Utc::now());
+    let answer = ask_engines(relay, routing, permit, max_calls, chrono::Utc::now());
     let json = !matches!(super::answer_form(cli), super::AnswerForm::Table(_));
-    if let Holdings::NotAnswered { .. } = &answer
-        && !json
-    {
+    if !answer.answered() && !json {
         stderr_line!(
             "--relay-holdings: {}",
             answer.render(crate::output::ReportFormat::Text).trim_end()
@@ -121,9 +120,10 @@ pub(super) fn relay_holdings(
 pub(super) fn relay_sessions(
     cli: &crate::cli::Cli,
     relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    routing: Option<&crate::relay::engines::EngineRouting>,
     permit: &crate::security::transmit_guard::TransmitPermit,
 ) -> i32 {
-    use crate::output::query::relay_sessions::{SessionsAsk, relay_sessions};
+    use crate::output::query::relay_sessions::{Routed, SessionsAsk, relay_sessions_routed};
 
     let cap = cli
         .gate_args
@@ -136,7 +136,21 @@ pub(super) fn relay_sessions(
         cap,
         list_limit: cap,
     };
-    let answer = relay_sessions(relay, permit, &ask, &|_| false, &chrono::Utc::now);
+    // No SIP has been read yet, so no call's SDP is known: with an engine
+    // rule each call is asked of the default engine, and the answer says so.
+    let no_sdp = |_: &str| Vec::new();
+    let routed = routing.map(|routing| Routed {
+        routing,
+        sdp_of: &no_sdp,
+    });
+    let answer = relay_sessions_routed(
+        relay,
+        routed.as_ref(),
+        permit,
+        &ask,
+        &|_| false,
+        &chrono::Utc::now,
+    );
     let json = !matches!(super::answer_form(cli), super::AnswerForm::Table(_));
     if !answer.answered() && !json {
         stderr_line!(

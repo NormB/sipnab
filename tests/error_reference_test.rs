@@ -907,7 +907,15 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // (+1), and src/app/vcon_fetch.rs, `{MODE_FLAG}: stopped before {uuid}; {}
 // uuid(s) not fetched` (+1), the two lines a stop signal logs. Nothing
 // removed.
-const EXPECTED_TEMPLATES: usize = 555;
+// 555 -> 562 (#664, engine selection): src/cli.rs, the five refusals
+// Cli::engine_selection raises through engine_refusal (`[relay] engines: {e}`,
+// `--rtpengine-engine / [relay] engines: {e}`, `{rule} needs
+// --rtpengine-control as well: ...`, the map beside
+// --rtpengine-trust-sdp-address, and --relay-previous-engine without a rule,
+// +5); src/app/bootstrap.rs, the two logged per-call refusals
+// `--relay-stats-call {call_id}: {unknown}` and `--relay-compare: call
+// {call_id}: {unknown}` (+2).
+const EXPECTED_TEMPLATES: usize = 562;
 
 // ---------------------------------------------------------------------------
 // The page gates

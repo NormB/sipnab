@@ -660,6 +660,7 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("relay-compare", Link::PerRun),
     ("relay-holdings", Link::PerRun),
     ("relay-holdings-max", Link::PerRun),
+    ("relay-previous-engine", Link::PerRun),
     ("relay-sessions", Link::PerRun),
     ("relay-sessions-call", Link::PerRun),
     ("relay-stats", Link::PerRun),
@@ -678,6 +679,11 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("rotate", Link::Pending),
     ("rtp", Link::Key("capture", "no_rtp", Merge::Off)),
     ("rtpengine-control", Link::Pending),
+    (
+        "rtpengine-engine",
+        Link::Key("relay", "engines", Merge::Union),
+    ),
+    ("rtpengine-trust-sdp-address", Link::PerRun),
     ("rtpproxy-control", Link::Pending),
     (
         "rtt-bad-ms",

@@ -355,6 +355,7 @@ pages = [
   { path = "docs/archives.md", menu = true },
   { path = "docs/rtpengine.md", menu = true },
   { path = "docs/relay-statistics.md", menu = true },
+  { path = "docs/relay-engines.md", menu = true },
 ]
 
 [[extra.docs_nav]]

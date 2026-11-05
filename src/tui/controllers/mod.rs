@@ -4056,10 +4056,12 @@ mod panel_view_tests {
                 .map(|c| NotQueried {
                     call_id: (*c).to_string(),
                     sip_dialog: SipDialog::NotSeenEnded,
+                    engine: None,
                 })
                 .collect(),
             stall_seconds: 2,
             notes: Vec::new(),
+            engines: None,
         }
     }
 

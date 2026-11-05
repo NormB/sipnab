@@ -29,6 +29,10 @@
 //! Adding one means adding a trait method -- a visible act in a diff rather
 //! than an oversight at a call site.
 
+// Engine selection names a relay to ask, which only a build that can ask
+// (`native`, where `ReadOnlyRelay` and the command line live) has use for.
+#[cfg(feature = "native")]
+pub mod engines;
 pub mod reconcile;
 pub mod rtpproxy;
 pub mod types;

@@ -257,6 +257,9 @@ pub struct SessionCall {
     pub unjudged: Option<String>,
     /// Every side the relay holds, with its sockets' counters.
     pub tags: Vec<SessionTag>,
+    /// Which engine was asked, when engine selection is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<CallEngine>,
 }
 
 /// A call the relay listed and this snapshot did not query.
@@ -269,6 +272,90 @@ pub struct NotQueried {
     pub call_id: String,
     /// Whether sipnab saw its SIP dialog end.
     pub sip_dialog: SipDialog,
+    /// Which engines listed it, when engine selection is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<ListedBy>,
+}
+
+/// Which engine a call was asked of, and why, when engine selection is on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct CallEngine {
+    /// The engine asked, or absent when no engine could be chosen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked: Option<String>,
+    /// `map_row`, `sdp_address`, `listed` (no SDP seen for the call, and
+    /// this engine's list names it), `default` (no SDP seen, and no engine's
+    /// list names it), or `unknown` (nothing was asked).
+    pub chosen_by: String,
+    /// Why, in words.
+    pub reason: String,
+    /// The engine the call's SDP named before it moved, when it moved and the
+    /// previous engine was asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous: Option<PreviousEngine>,
+    /// The engines whose `list` named this Call-ID.
+    pub listed_by: Vec<String>,
+    /// Whether two or more engines hold this Call-ID, by their lists or their
+    /// answers: a call that moved and left a session on the old engine.
+    pub held_by_several_engines: bool,
+}
+
+/// What the previous engine of a moved call said about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct PreviousEngine {
+    /// The engine asked.
+    pub relay: String,
+    /// `map_row` or `sdp_address`.
+    pub chosen_by: String,
+    /// Why this engine, in words.
+    pub reason: String,
+    /// `ok` when it answered about the call, `refused` when it declined (it
+    /// does not hold it), or `unreachable` or `suspect`.
+    pub outcome: String,
+    /// Whether it still holds the call.
+    pub holds: bool,
+    /// What it said when it did not answer with the call.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// Which engines listed a call this snapshot did not query.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct ListedBy {
+    /// The engines whose `list` named this Call-ID.
+    pub listed_by: Vec<String>,
+    /// Whether two or more engines list it.
+    pub held_by_several_engines: bool,
+}
+
+/// What one engine answered to `list`, when several engines are asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct EngineListing {
+    /// The engine.
+    pub relay: String,
+    /// `ok`, or `unreachable`, `refused` or `suspect`.
+    pub reach: String,
+    /// What went wrong when it did not answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// How many Call-IDs it returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<usize>,
+    /// Whether it returned as many as asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
 /// One snapshot of what the relay holds.
@@ -309,6 +396,9 @@ pub struct RelaySessions {
     pub stall_seconds: i64,
     /// What every reader should know about these verdicts.
     pub notes: Vec<String>,
+    /// What each engine answered to `list`, when engine selection is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engines: Option<Vec<EngineListing>>,
 }
 
 /// The kernel verdict for one socket's flags.
@@ -424,6 +514,7 @@ pub fn judge_call(view: &CallView, sip_dialog: SipDialog) -> SessionCall {
         directions,
         unjudged: branched.then(|| EARLY_MEDIA_UNJUDGED.to_string()),
         tags,
+        engine: None,
     }
 }
 
@@ -463,6 +554,7 @@ fn unanswered_call(
         directions: Vec::new(),
         unjudged: None,
         tags: Vec::new(),
+        engine: None,
     }
 }
 
@@ -482,6 +574,59 @@ fn sip_dialog_of(sip_ended: &dyn Fn(&str) -> bool, call_id: &str) -> SipDialog {
         SipDialog::Ended
     } else {
         SipDialog::NotSeenEnded
+    }
+}
+
+/// The calls one snapshot queries: the selected call, then on a scan the
+/// listed calls in Call-ID order, `ask.cap` in all.
+fn calls_to_query(listed: &[String], ask: &SessionsAsk<'_>) -> Vec<String> {
+    let mut to_query: Vec<String> = Vec::new();
+    if let Some(sel) = ask.selected {
+        to_query.push(sel.to_string());
+    }
+    if ask.scan {
+        // The cap bounds the whole scan, the selected call included: one
+        // `list` and at most `cap` queries per press.
+        let cap = usize::try_from(ask.cap)
+            .unwrap_or(usize::MAX)
+            .saturating_sub(to_query.len());
+        to_query.extend(
+            listed
+                .iter()
+                .filter(|c| Some(c.as_str()) != ask.selected)
+                .take(cap)
+                .cloned(),
+        );
+    }
+    to_query
+}
+
+/// Query one call on `relay`, named `label` in what the answer says.
+fn ask_call(
+    relay: &dyn ReadOnlyRelay,
+    label: &str,
+    permit: &TransmitPermit,
+    call_id: &str,
+    sip: SipDialog,
+) -> SessionCall {
+    match relay.query(permit, call_id) {
+        Ok(ControlReply::Call(view)) => judge_call(&view, sip),
+        Ok(ControlReply::Refused { reason }) => unanswered_call(
+            call_id,
+            StatisticsOutcome::Refused,
+            format!("{label} for call {call_id}: {reason}"),
+            sip,
+        ),
+        Ok(_) => unanswered_call(
+            call_id,
+            StatisticsOutcome::Suspect,
+            "the relay answered with something other than a call view".to_string(),
+            sip,
+        ),
+        Err(e) => {
+            let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);
+            unanswered_call(call_id, outcome, detail, sip)
+        }
     }
 }
 
@@ -516,6 +661,7 @@ pub fn relay_sessions(
         not_queried: Vec::new(),
         stall_seconds: STALL_SECONDS,
         notes: vec![DELETE_DELAY_NOTE.to_string(), STALL_NOTE.to_string()],
+        engines: None,
     };
     let unanswered = |out: &mut RelaySessions, outcome: StatisticsOutcome, detail: String| {
         out.reach = outcome.as_wire_str().to_string();
@@ -555,46 +701,11 @@ pub fn relay_sessions(
     listed.sort();
     listed.dedup();
 
-    let mut to_query: Vec<String> = Vec::new();
-    if let Some(sel) = ask.selected {
-        to_query.push(sel.to_string());
-    }
-    if ask.scan {
-        // The cap bounds the whole scan, the selected call included: one
-        // `list` and at most `cap` queries per press.
-        let cap = usize::try_from(ask.cap)
-            .unwrap_or(usize::MAX)
-            .saturating_sub(to_query.len());
-        to_query.extend(
-            listed
-                .iter()
-                .filter(|c| Some(c.as_str()) != ask.selected)
-                .take(cap)
-                .cloned(),
-        );
-    }
+    let to_query = calls_to_query(&listed, ask);
     for call_id in &to_query {
         let sip = sip_dialog_of(sip_ended, call_id);
-        let entry = match relay.query(permit, call_id) {
-            Ok(ControlReply::Call(view)) => judge_call(&view, sip),
-            Ok(ControlReply::Refused { reason }) => unanswered_call(
-                call_id,
-                StatisticsOutcome::Refused,
-                format!("{label} for call {call_id}: {reason}"),
-                sip,
-            ),
-            Ok(_) => unanswered_call(
-                call_id,
-                StatisticsOutcome::Suspect,
-                "the relay answered with something other than a call view".to_string(),
-                sip,
-            ),
-            Err(e) => {
-                let (outcome, detail) = super::relay_holdings::fetch_failure(&label, &e);
-                unanswered_call(call_id, outcome, detail, sip)
-            }
-        };
-        out.calls.push(entry);
+        out.calls
+            .push(ask_call(relay, &label, permit, call_id, sip));
     }
     out.not_queried = listed
         .iter()
@@ -602,9 +713,258 @@ pub fn relay_sessions(
         .map(|c| NotQueried {
             call_id: c.clone(),
             sip_dialog: sip_dialog_of(sip_ended, c),
+            engine: None,
         })
         .collect();
     out.obtained_at = clock().to_rfc3339();
+    out
+}
+
+/// How a snapshot chooses the engine for each call, when engine selection is
+/// on.
+pub struct Routed<'a> {
+    /// The run's engine rule.
+    pub routing: &'a crate::relay::engines::EngineRouting,
+    /// A call's SDP sightings, from the dialog store.
+    pub sdp_of: &'a dyn Fn(&str) -> Vec<crate::relay::engines::SdpSighting>,
+}
+
+/// [`relay_sessions`], with engine selection when `routed` is given.
+#[must_use]
+pub fn relay_sessions_routed(
+    relay: &dyn ReadOnlyRelay,
+    routed: Option<&Routed<'_>>,
+    permit: &TransmitPermit,
+    ask: &SessionsAsk<'_>,
+    sip_ended: &dyn Fn(&str) -> bool,
+    clock: &dyn Fn() -> DateTime<Utc>,
+) -> RelaySessions {
+    let Some(routed) = routed else {
+        return relay_sessions(relay, permit, ask, sip_ended, clock);
+    };
+    let routing = routed.routing;
+    let default = routing.default_engine();
+    // The default engine is the relay the surface handed in; every other
+    // engine is reached through the routing's constructor.
+    let with_engine = |addr: std::net::SocketAddr, f: &mut dyn FnMut(&dyn ReadOnlyRelay, &str)| {
+        if addr == default {
+            f(relay, &super::relay_holdings::relay_label(relay));
+        } else {
+            let r = routing.relay(addr);
+            f(r.as_ref(), &super::relay_holdings::relay_label(r.as_ref()));
+        }
+    };
+
+    // Which calls are held is asked of every engine the operator named.
+    let mut listings: Vec<EngineListing> = Vec::new();
+    let mut listed_by: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    let mut listed_at: std::collections::BTreeMap<String, Vec<std::net::SocketAddr>> =
+        std::collections::BTreeMap::new();
+    for addr in routing.listing_engines() {
+        with_engine(addr, &mut |r, label| {
+            let mut listing = EngineListing {
+                relay: label.to_string(),
+                reach: "ok".to_string(),
+                detail: None,
+                held: None,
+                truncated: None,
+            };
+            match r.list(permit, ask.list_limit) {
+                Ok(ControlReply::Calls(e)) => {
+                    listing.held = Some(e.call_ids.len());
+                    listing.truncated = Some(e.truncated);
+                    for c in e.call_ids {
+                        let at = listed_at.entry(c.clone()).or_default();
+                        if !at.contains(&addr) {
+                            at.push(addr);
+                        }
+                        let by = listed_by.entry(c).or_default();
+                        if !by.iter().any(|l| l == label) {
+                            by.push(label.to_string());
+                        }
+                    }
+                }
+                Ok(ControlReply::Refused { reason }) => {
+                    listing.reach = StatisticsOutcome::Refused.as_wire_str().to_string();
+                    listing.detail = Some(format!("{label}: {reason}"));
+                }
+                Ok(_) => {
+                    listing.reach = StatisticsOutcome::Suspect.as_wire_str().to_string();
+                    listing.detail = Some(
+                        "the relay answered with something other than a call list".to_string(),
+                    );
+                }
+                Err(e) => {
+                    let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);
+                    listing.reach = outcome.as_wire_str().to_string();
+                    listing.detail = Some(detail);
+                }
+            }
+            listings.push(listing);
+        });
+    }
+
+    let mut out = RelaySessions {
+        relay: listings
+            .iter()
+            .map(|l| l.relay.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        obtained_at: String::new(),
+        tier: TIER.to_string(),
+        reach: "ok".to_string(),
+        detail: None,
+        held: None,
+        list_limit: ask.list_limit,
+        truncated: None,
+        scan: ask.scan,
+        cap: ask.cap,
+        calls: Vec::new(),
+        not_queried: Vec::new(),
+        stall_seconds: STALL_SECONDS,
+        notes: vec![DELETE_DELAY_NOTE.to_string(), STALL_NOTE.to_string()],
+        engines: None,
+    };
+    let answered: Vec<&EngineListing> = listings.iter().filter(|l| l.reach == "ok").collect();
+    if answered.is_empty() {
+        // No engine answered: the snapshot is unanswered, in the first
+        // engine's words, and nothing else is sent.
+        if let Some(first) = listings.first() {
+            out.reach.clone_from(&first.reach);
+            out.detail.clone_from(&first.detail);
+        }
+        out.engines = Some(listings);
+        out.obtained_at = clock().to_rfc3339();
+        return out;
+    }
+    out.truncated = Some(answered.iter().any(|l| l.truncated == Some(true)));
+    let listed: Vec<String> = listed_by.keys().cloned().collect();
+    out.held = Some(listed.len());
+
+    let to_query = calls_to_query(&listed, ask);
+    for call_id in &to_query {
+        let sip = sip_dialog_of(sip_ended, call_id);
+        let by = listed_by.get(call_id).cloned().unwrap_or_default();
+        let mut holders: std::collections::BTreeSet<String> = by.iter().cloned().collect();
+        let at = listed_at.get(call_id).map_or(&[][..], Vec::as_slice);
+        let chosen = routing.select_listed(&(routed.sdp_of)(call_id), at);
+        let (mut entry, asked, chosen_by, reason) = match &chosen.current {
+            Ok(engine) => {
+                let mut asked = None;
+                let mut entry = None;
+                with_engine(engine.control, &mut |r, label| {
+                    entry = Some(ask_call(r, label, permit, call_id, sip));
+                    asked = Some(label.to_string());
+                });
+                let entry = entry.unwrap_or_else(|| {
+                    unanswered_call(
+                        call_id,
+                        StatisticsOutcome::Suspect,
+                        "no engine answered".to_string(),
+                        sip,
+                    )
+                });
+                if entry.outcome == "ok"
+                    && let Some(label) = &asked
+                {
+                    holders.insert(label.clone());
+                }
+                (
+                    entry,
+                    asked,
+                    engine.chosen_by_word().to_string(),
+                    engine.reason().unwrap_or_default(),
+                )
+            }
+            Err(unknown) => (
+                unanswered_call(
+                    call_id,
+                    StatisticsOutcome::NotConfigured,
+                    unknown.to_string(),
+                    sip,
+                ),
+                None,
+                "unknown".to_string(),
+                unknown.to_string(),
+            ),
+        };
+        let previous = match (&chosen.current, &chosen.previous) {
+            (Ok(_), Some(prev)) if routing.asks_previous() => {
+                let mut answer = None;
+                with_engine(prev.control, &mut |r, label| {
+                    answer = Some(ask_previous(r, label, permit, call_id, prev));
+                });
+                answer
+            }
+            _ => None,
+        };
+        if let Some(p) = previous.as_ref().filter(|p| p.holds) {
+            holders.insert(p.relay.clone());
+        }
+        entry.engine = Some(CallEngine {
+            asked,
+            chosen_by,
+            reason,
+            previous,
+            listed_by: by,
+            held_by_several_engines: holders.len() > 1,
+        });
+        out.calls.push(entry);
+    }
+    out.not_queried = listed
+        .iter()
+        .filter(|c| !to_query.contains(c))
+        .map(|c| {
+            let by = listed_by.get(c).cloned().unwrap_or_default();
+            NotQueried {
+                call_id: c.clone(),
+                sip_dialog: sip_dialog_of(sip_ended, c),
+                engine: Some(ListedBy {
+                    held_by_several_engines: by.len() > 1,
+                    listed_by: by,
+                }),
+            }
+        })
+        .collect();
+    out.engines = Some(listings);
+    out.obtained_at = clock().to_rfc3339();
+    out
+}
+
+/// Ask a moved call's previous engine whether it still holds the call.
+fn ask_previous(
+    relay: &dyn ReadOnlyRelay,
+    label: &str,
+    permit: &TransmitPermit,
+    call_id: &str,
+    engine: &crate::relay::engines::Engine,
+) -> PreviousEngine {
+    let mut out = PreviousEngine {
+        relay: label.to_string(),
+        chosen_by: engine.chosen_by_word().to_string(),
+        reason: engine.reason().unwrap_or_default(),
+        outcome: "ok".to_string(),
+        holds: false,
+        detail: None,
+    };
+    match relay.query(permit, call_id) {
+        Ok(ControlReply::Call(_)) => out.holds = true,
+        Ok(ControlReply::Refused { reason }) => {
+            out.outcome = StatisticsOutcome::Refused.as_wire_str().to_string();
+            out.detail = Some(format!("{label} for call {call_id}: {reason}"));
+        }
+        Ok(_) => {
+            out.outcome = StatisticsOutcome::Suspect.as_wire_str().to_string();
+            out.detail =
+                Some("the relay answered with something other than a call view".to_string());
+        }
+        Err(e) => {
+            let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);
+            out.outcome = outcome.as_wire_str().to_string();
+            out.detail = Some(detail);
+        }
+    }
     out
 }
 
@@ -656,10 +1016,12 @@ impl RelaySessions {
         );
         if !self.answered() {
             out.push_str(&format!(
-                "{}: {}\n\n",
+                "{}: {}\n",
                 self.reach,
                 super::clean(self.detail.as_deref().unwrap_or(""))
             ));
+            out.push_str(&self.render_engines());
+            out.push('\n');
             return out;
         }
         let held = self.held.unwrap_or(0);
@@ -686,10 +1048,37 @@ impl RelaySessions {
             super::plural(held as u64, "call"),
             if self.scan { " (scan)" } else { "" }
         ));
+        out.push_str(&self.render_engines());
         for note in &self.notes {
             out.push_str(&format!("Note: {note}.\n"));
         }
         out.push('\n');
+        out
+    }
+
+    /// One line per engine asked to `list`, when several are; nothing
+    /// otherwise.
+    fn render_engines(&self) -> String {
+        let Some(engines) = &self.engines else {
+            return String::new();
+        };
+        let mut out = String::new();
+        for e in engines {
+            if e.reach == "ok" {
+                out.push_str(&format!(
+                    "Engine {}: reachable; {} listed\n",
+                    super::clean(&e.relay),
+                    super::plural(e.held.unwrap_or(0) as u64, "call")
+                ));
+            } else {
+                out.push_str(&format!(
+                    "Engine {}: {}: {}\n",
+                    super::clean(&e.relay),
+                    e.reach,
+                    super::clean(e.detail.as_deref().unwrap_or(""))
+                ));
+            }
+        }
         out
     }
 
@@ -722,7 +1111,27 @@ impl RelaySessions {
             } else {
                 ""
             };
-            out.push_str(&format!("{mark}{}{ended}  {summary}\n", super::clean(id)));
+            let several = self
+                .calls
+                .iter()
+                .find(|c| c.call_id == *id)
+                .and_then(|c| c.engine.as_ref().map(|e| e.held_by_several_engines))
+                .or_else(|| {
+                    self.not_queried
+                        .iter()
+                        .find(|n| n.call_id == *id)
+                        .and_then(|n| n.engine.as_ref().map(|e| e.held_by_several_engines))
+                })
+                .unwrap_or(false);
+            let several = if several {
+                "  held by several engines"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "{mark}{}{ended}{several}  {summary}\n",
+                super::clean(id)
+            ));
         }
         out
     }
@@ -794,6 +1203,9 @@ impl SessionCall {
     #[must_use]
     pub fn render_as(&self, format: ReportFormat) -> String {
         let mut out = format!("Call {} ({TIER})\n", super::clean(&self.call_id));
+        if let Some(engine) = &self.engine {
+            out.push_str(&engine.render());
+        }
         if self.outcome != "ok" {
             out.push_str(&format!("{}\n", self.summary()));
             return out;
@@ -861,6 +1273,44 @@ impl SessionCall {
             ],
             &rows,
         ));
+        out
+    }
+}
+
+impl CallEngine {
+    /// Which engine was asked and why, what the previous engine said, and
+    /// whether several engines hold the call.
+    #[must_use]
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        if let Some(asked) = &self.asked {
+            out.push_str(&format!(
+                "Asked {} ({}).\n",
+                super::clean(asked),
+                super::clean(&self.reason)
+            ));
+        }
+        if let Some(p) = &self.previous {
+            let said = if p.holds {
+                "still holds this call; a session was left on the old engine".to_string()
+            } else if p.outcome == "refused" {
+                "does not hold this call".to_string()
+            } else {
+                format!(
+                    "{}: {}",
+                    p.outcome,
+                    super::clean(p.detail.as_deref().unwrap_or(""))
+                )
+            };
+            out.push_str(&format!(
+                "Previous engine {} ({}): {said}.\n",
+                super::clean(&p.relay),
+                super::clean(&p.reason)
+            ));
+        }
+        if self.held_by_several_engines {
+            out.push_str("Held by several engines.\n");
+        }
         out
     }
 }
@@ -1777,6 +2227,591 @@ mod tests {
             "{}",
             s.render(ReportFormat::Text)
         );
+        Ok(())
+    }
+
+    // ── Several engines (engine selection) ──────────────────────────────
+
+    /// One engine behind a scripted control address: the calls it lists, the
+    /// calls it holds when queried, and every ask it received.
+    struct EngineRelay {
+        name: &'static str,
+        lists: Vec<&'static str>,
+        holds: Vec<&'static str>,
+        down: bool,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl EngineRelay {
+        fn new(name: &'static str, lists: &[&'static str], holds: &[&'static str]) -> Arc<Self> {
+            Arc::new(Self {
+                name,
+                lists: lists.to_vec(),
+                holds: holds.to_vec(),
+                down: false,
+                asked: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn down(name: &'static str) -> Arc<Self> {
+            Arc::new(Self {
+                name,
+                lists: Vec::new(),
+                holds: Vec::new(),
+                down: true,
+                asked: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn asked(&self) -> Result<Vec<String>, TestError> {
+            Ok(self.asked.lock().map_err(|e| e.to_string())?.clone())
+        }
+
+        fn record(&self, what: String) -> anyhow::Result<()> {
+            self.asked
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .push(what);
+            Ok(())
+        }
+    }
+
+    impl ReadOnlyRelay for EngineRelay {
+        fn list(&self, _: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
+            self.record(format!("list {limit}"))?;
+            if self.down {
+                anyhow::bail!("no reply within 2s");
+            }
+            Ok(listed(&self.lists, false))
+        }
+        fn query(&self, _: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            self.record(format!("query {call_id}"))?;
+            if self.holds.contains(&call_id) {
+                Ok(ControlReply::Call(CallView {
+                    call_id: call_id.to_string(),
+                    ..two_party(rtp(2250, 140, true), rtp(2190, 140, true))
+                }))
+            } else {
+                Ok(ControlReply::Refused {
+                    reason: "Unknown call-id".to_string(),
+                })
+            }
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("a sessions snapshot never asks for statistics")
+        }
+        fn describe(&self) -> String {
+            self.name.to_string()
+        }
+    }
+
+    use crate::relay::engines::{
+        Connect, EngineMap, EngineRouting, EngineRow, EngineRule, SdpSighting,
+    };
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+
+    const D: &str = "192.0.2.1:2223";
+    const A: &str = "192.0.2.5:2223";
+    const B: &str = "192.0.2.6:2223";
+
+    /// The issue's NAT map, with `d` the default engine, and a connect that
+    /// hands out `a` and `b` by control address.
+    fn routing(
+        engine_a: &Arc<EngineRelay>,
+        engine_b: &Arc<EngineRelay>,
+        previous: bool,
+    ) -> Result<EngineRouting, TestError> {
+        let rows = vec![
+            "203.0.113.5 30000-39999 192.0.2.5:2223".parse::<EngineRow>()?,
+            "203.0.113.5 40000-49999 192.0.2.6:2223".parse::<EngineRow>()?,
+        ];
+        let (engine_a, engine_b) = (Arc::clone(engine_a), Arc::clone(engine_b));
+        let (a_addr, b_addr): (SocketAddr, SocketAddr) = (A.parse()?, B.parse()?);
+        let connect: Connect = Arc::new(move |addr| -> Arc<dyn ReadOnlyRelay + Send + Sync> {
+            if addr == a_addr {
+                Arc::clone(&engine_a) as Arc<dyn ReadOnlyRelay + Send + Sync>
+            } else if addr == b_addr {
+                Arc::clone(&engine_b) as Arc<dyn ReadOnlyRelay + Send + Sync>
+            } else {
+                EngineRelay::down("an engine no test named")
+            }
+        });
+        Ok(EngineRouting::new(
+            EngineRule::Map(EngineMap::new(rows)?),
+            D.parse()?,
+            previous,
+            connect,
+        ))
+    }
+
+    fn sighting(secs: i64, from_request: bool, address: &str, port: u16) -> SdpSighting {
+        SdpSighting {
+            at: at() + chrono::TimeDelta::seconds(secs),
+            from_request,
+            address: address.to_string(),
+            port,
+        }
+    }
+
+    /// `m-1` moved from the engine at 30000-39999 to the one at 40000-49999;
+    /// `u-1`'s SDP names media no row claims; every other call has no SDP.
+    fn sdp_of(call_id: &str) -> Vec<SdpSighting> {
+        match call_id {
+            "m-1@example.invalid" => vec![
+                sighting(0, true, "203.0.113.5", 30010),
+                sighting(1, false, "203.0.113.5", 30012),
+                sighting(60, true, "203.0.113.5", 40010),
+                sighting(61, false, "203.0.113.5", 40012),
+            ],
+            "u-1@example.invalid" => vec![
+                sighting(0, true, "203.0.113.9", 50000),
+                sighting(1, false, "203.0.113.9", 50002),
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    /// The moved call: listed by both engines, queried on the engine its
+    /// newest SDP names and on the previous one, and flagged because both
+    /// still hold it. The default engine is listed and never queried for it.
+    #[test]
+    fn a_moved_call_both_engines_hold_is_flagged() -> Result<(), TestError> {
+        let default_engine = ScriptedRelay::new(|_, _| Ok(listed(&[], false)));
+        let engine_a = EngineRelay::new(
+            "engine-a",
+            &["m-1@example.invalid"],
+            &["m-1@example.invalid"],
+        );
+        let engine_b = EngineRelay::new(
+            "engine-b",
+            &["m-1@example.invalid"],
+            &["m-1@example.invalid"],
+        );
+        let rules = routing(&engine_a, &engine_b, true)?;
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &sdp_of,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(None, true, 8),
+            &never,
+            &at,
+        );
+        assert_eq!(
+            default_engine.asked()?,
+            ["list 32"],
+            "the default engine is listed only"
+        );
+        assert_eq!(
+            engine_a.asked()?,
+            ["list 32", "query m-1@example.invalid"],
+            "a moved call both engines hold is flagged"
+        );
+        assert_eq!(
+            engine_b.asked()?,
+            ["list 32", "query m-1@example.invalid"],
+            "a moved call both engines hold is flagged"
+        );
+        assert_eq!(
+            snap.reach, "ok",
+            "a moved call both engines hold is flagged"
+        );
+        assert_eq!(
+            snap.held,
+            Some(1),
+            "one distinct Call-ID across the engines"
+        );
+        let engines = snap.engines.as_ref().ok_or("several engines are listed")?;
+        assert_eq!(
+            engines.len(),
+            3,
+            "a moved call both engines hold is flagged"
+        );
+        let call = snap.calls.first().ok_or("the moved call is queried")?;
+        assert_eq!(
+            call.outcome, "ok",
+            "a moved call both engines hold is flagged"
+        );
+        let engine = call.engine.as_ref().ok_or("the call names its engine")?;
+        assert_eq!(
+            engine.asked.as_deref(),
+            Some("relay (engine-b)"),
+            "a moved call both engines hold is flagged"
+        );
+        assert_eq!(
+            engine.chosen_by, "map_row",
+            "a moved call both engines hold is flagged"
+        );
+        assert_eq!(
+            engine.listed_by,
+            ["relay (engine-a)", "relay (engine-b)"],
+            "a moved call both engines hold is flagged"
+        );
+        assert!(
+            engine.held_by_several_engines,
+            "a moved call both engines hold is flagged"
+        );
+        let previous = engine.previous.as_ref().ok_or("the previous engine")?;
+        assert_eq!(
+            previous.relay, "relay (engine-a)",
+            "a moved call both engines hold is flagged"
+        );
+        assert!(previous.holds, "the old engine still holds the call");
+        let text = snap.render(ReportFormat::Text);
+        assert!(
+            text.contains("held by several engines"),
+            "the row is flagged: {text}"
+        );
+        assert!(
+            text.contains("Previous engine relay (engine-a)")
+                && text.contains("still holds this call"),
+            "the call says which engine was left holding it: {text}"
+        );
+        Ok(())
+    }
+
+    /// Without the previous-engine option only the current engine is
+    /// queried; the lists still show both engines hold the call.
+    #[test]
+    fn without_the_option_the_previous_engine_is_not_queried() -> Result<(), TestError> {
+        let default_engine = ScriptedRelay::new(|_, _| Ok(listed(&[], false)));
+        let engine_a = EngineRelay::new(
+            "engine-a",
+            &["m-1@example.invalid"],
+            &["m-1@example.invalid"],
+        );
+        let engine_b = EngineRelay::new(
+            "engine-b",
+            &["m-1@example.invalid"],
+            &["m-1@example.invalid"],
+        );
+        let rules = routing(&engine_a, &engine_b, false)?;
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &sdp_of,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(Some("m-1@example.invalid"), false, 8),
+            &never,
+            &at,
+        );
+        assert_eq!(
+            engine_a.asked()?,
+            ["list 32"],
+            "the previous engine is only listed"
+        );
+        let engine = snap
+            .calls
+            .first()
+            .and_then(|c| c.engine.as_ref())
+            .ok_or("the call names its engine")?;
+        assert!(
+            engine.previous.is_none(),
+            "without the option the previous engine is not queried"
+        );
+        assert!(engine.held_by_several_engines, "both lists name it");
+        Ok(())
+    }
+
+    /// A call whose SDP names media no row claims is not queried anywhere,
+    /// and says why.
+    #[test]
+    fn a_call_with_no_map_row_is_asked_of_no_engine() -> Result<(), TestError> {
+        let default_engine = ScriptedRelay::new(|_, _| Ok(listed(&["u-1@example.invalid"], false)));
+        let engine_a = EngineRelay::new("engine-a", &[], &[]);
+        let engine_b = EngineRelay::new("engine-b", &[], &[]);
+        let rules = routing(&engine_a, &engine_b, true)?;
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &sdp_of,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(None, true, 8),
+            &never,
+            &at,
+        );
+        assert_eq!(
+            default_engine.asked()?,
+            ["list 32"],
+            "no query to the default engine"
+        );
+        assert_eq!(
+            engine_a.asked()?,
+            ["list 32"],
+            "a call with no map row is asked of no engine"
+        );
+        assert_eq!(
+            engine_b.asked()?,
+            ["list 32"],
+            "a call with no map row is asked of no engine"
+        );
+        let call = snap.calls.first().ok_or("the listed call has an entry")?;
+        assert_eq!(
+            call.outcome, "not_configured",
+            "a call with no map row is asked of no engine"
+        );
+        assert!(
+            call.detail
+                .as_deref()
+                .is_some_and(|d| d.starts_with("engine unknown (no map row)")),
+            "{:?}",
+            call.detail
+        );
+        let engine = call.engine.as_ref().ok_or("the call names why")?;
+        assert_eq!(
+            engine.asked, None,
+            "a call with no map row is asked of no engine"
+        );
+        assert_eq!(
+            engine.chosen_by, "unknown",
+            "a call with no map row is asked of no engine"
+        );
+        Ok(())
+    }
+
+    /// A call with no SDP seen is asked of the engine whose list names it,
+    /// here the default; a selected call no engine lists is asked of the
+    /// default. Each answer says why.
+    #[test]
+    fn a_call_with_no_sdp_is_asked_of_the_default_engine() -> Result<(), TestError> {
+        let default_engine = ScriptedRelay::new(|verb, call| match (verb, call) {
+            ("list", _) => Ok(listed(&["c-1@example.invalid"], false)),
+            (_, call) => Ok(ControlReply::Call(CallView {
+                call_id: call.unwrap_or_default().to_string(),
+                ..two_party(rtp(10, 140, true), rtp(10, 140, true))
+            })),
+        });
+        let engine_a = EngineRelay::new("engine-a", &[], &[]);
+        let engine_b = EngineRelay::new("engine-b", &[], &[]);
+        let rules = routing(&engine_a, &engine_b, true)?;
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &sdp_of,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(Some("gone@example.invalid"), true, 8),
+            &never,
+            &at,
+        );
+        assert_eq!(
+            default_engine.asked()?,
+            [
+                "list 32",
+                "query gone@example.invalid",
+                "query c-1@example.invalid"
+            ],
+            "a call with no sdp is asked of the default engine"
+        );
+        let chosen: Vec<(&str, &str, Option<&str>)> = snap
+            .calls
+            .iter()
+            .filter_map(|c| {
+                c.engine
+                    .as_ref()
+                    .map(|e| (c.call_id.as_str(), e.chosen_by.as_str(), e.asked.as_deref()))
+            })
+            .collect();
+        assert_eq!(
+            chosen,
+            [
+                (
+                    "gone@example.invalid",
+                    "default",
+                    Some("relay (scripted at 192.0.2.10:22222)")
+                ),
+                (
+                    "c-1@example.invalid",
+                    "listed",
+                    Some("relay (scripted at 192.0.2.10:22222)")
+                ),
+            ],
+            "a call with no sdp is asked of the default engine"
+        );
+        Ok(())
+    }
+
+    /// A call with no SDP seen that only another engine lists is asked of
+    /// that engine, not the default, which does not hold it.
+    #[test]
+    fn a_call_with_no_sdp_is_asked_of_the_engine_that_lists_it() -> Result<(), TestError> {
+        let default_engine = ScriptedRelay::new(|_, _| Ok(listed(&[], false)));
+        let engine_a = EngineRelay::new("engine-a", &[], &[]);
+        let engine_b = EngineRelay::new(
+            "engine-b",
+            &["b-1@example.invalid"],
+            &["b-1@example.invalid"],
+        );
+        let rules = routing(&engine_a, &engine_b, true)?;
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &sdp_of,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(None, true, 8),
+            &never,
+            &at,
+        );
+        assert_eq!(
+            default_engine.asked()?,
+            ["list 32"],
+            "the default engine is not queried"
+        );
+        assert_eq!(
+            engine_b.asked()?,
+            ["list 32", "query b-1@example.invalid"],
+            "a call with no sdp is asked of the engine that lists it"
+        );
+        let engine = snap
+            .calls
+            .first()
+            .and_then(|c| c.engine.as_ref())
+            .ok_or("the call names its engine")?;
+        assert_eq!(
+            engine.chosen_by, "listed",
+            "a call with no sdp is asked of the engine that lists it"
+        );
+        assert_eq!(
+            snap.calls.first().map(|c| c.outcome.as_str()),
+            Some("ok"),
+            "a call with no sdp is asked of the engine that lists it"
+        );
+        Ok(())
+    }
+
+    /// One engine down does not hide what the others hold; the answer names
+    /// the engine that did not answer.
+    #[test]
+    fn one_engine_down_leaves_the_others_answer() -> Result<(), TestError> {
+        let default_engine = ScriptedRelay::new(|_, _| Ok(listed(&[], false)));
+        let engine_a = EngineRelay::down("engine-a");
+        let engine_b = EngineRelay::new(
+            "engine-b",
+            &["m-1@example.invalid"],
+            &["m-1@example.invalid"],
+        );
+        let rules = routing(&engine_a, &engine_b, true)?;
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &sdp_of,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(None, true, 8),
+            &never,
+            &at,
+        );
+        assert_eq!(snap.reach, "ok", "one engine down leaves the others answer");
+        let engines = snap.engines.as_ref().ok_or("the engines")?;
+        let down = engines
+            .iter()
+            .find(|e| e.relay == "relay (engine-a)")
+            .ok_or("engine-a is named")?;
+        assert_eq!(
+            down.reach, "unreachable",
+            "one engine down leaves the others answer"
+        );
+        assert!(
+            snap.render_status()
+                .contains("relay (engine-a): unreachable"),
+            "{}",
+            snap.render_status()
+        );
+        Ok(())
+    }
+
+    /// The default engine down and another engine up is still an answer:
+    /// the snapshot is answered when any engine answered its `list`.
+    #[test]
+    fn the_default_engine_down_leaves_the_others_answer() -> Result<(), TestError> {
+        let default_engine = ScriptedRelay::new(|_, _| anyhow::bail!("no reply within 2s"));
+        let engine_a = EngineRelay::new("engine-a", &[], &[]);
+        let engine_b = EngineRelay::new(
+            "engine-b",
+            &["m-1@example.invalid"],
+            &["m-1@example.invalid"],
+        );
+        let rules = routing(&engine_a, &engine_b, false)?;
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &sdp_of,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(None, true, 8),
+            &never,
+            &at,
+        );
+        assert!(snap.answered(), "{snap:?}");
+        assert_eq!(
+            snap.held,
+            Some(1),
+            "the default engine down leaves the others answer"
+        );
+        assert_eq!(
+            engine_b.asked()?,
+            ["list 32", "query m-1@example.invalid"],
+            "the default engine down leaves the others answer"
+        );
+        Ok(())
+    }
+
+    /// Every engine down is a snapshot that was not answered.
+    #[test]
+    fn every_engine_down_is_unanswered() -> Result<(), TestError> {
+        let default_engine = ScriptedRelay::new(|_, _| anyhow::bail!("no reply within 2s"));
+        let engine_a = EngineRelay::down("engine-a");
+        let engine_b = EngineRelay::down("engine-b");
+        let rules = routing(&engine_a, &engine_b, true)?;
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &sdp_of,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(None, true, 8),
+            &never,
+            &at,
+        );
+        assert!(!snap.answered(), "every engine down is unanswered");
+        assert_eq!(snap.reach, "unreachable", "every engine down is unanswered");
+        Ok(())
+    }
+
+    /// Without engine selection the answer carries no engine fields, so a
+    /// single-relay run reads exactly as it did.
+    #[test]
+    fn a_single_relay_answer_carries_no_engine_fields() -> Result<(), TestError> {
+        let relay = holding_three();
+        let snap =
+            relay_sessions_routed(&relay, None, &permit()?, &ask(None, true, 2), &never, &at);
+        let body = snap.body();
+        assert!(body.get("engines").is_none(), "{body}");
+        let calls = body["calls"].as_array().ok_or("calls")?;
+        assert!(calls.iter().all(|c| c.get("engine").is_none()), "{body}");
+        let nq = body["not_queried"].as_array().ok_or("not_queried")?;
+        assert!(nq.iter().all(|c| c.get("engine").is_none()), "{body}");
         Ok(())
     }
 }

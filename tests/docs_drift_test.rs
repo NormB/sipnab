@@ -5205,7 +5205,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // how-tos, and their three generated mirrors under website/content/docs/.
     // Attributed against the staged diff: `--diff-filter=A` lists those six
     // as the markdown files added.
-    const EXPECTED_MARKDOWN_FILES: usize = 342;
+    // 342 -> 344 (#664): docs/relay-engines.md and its generated mirror
+    // website/content/docs/relay-engines.md.
+    const EXPECTED_MARKDOWN_FILES: usize = 344;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -5995,7 +5997,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // a table.
     // 1397 -> 1399 (SG2 relay sessions): the verdict table in
     // docs/relay-statistics.md (+1) and its website mirror (+1).
-    const EXPECTED_TABLES: usize = 1399;
+    // 1399 -> 1407 (#664, engine selection): docs/relay-engines.md +3 (new:
+    // where each question goes, the example engines, the four SDP bodies),
+    // the `[relay]` table in docs/config-reference.md +1, and their site
+    // mirrors website/content/docs/relay-engines.md +3 and config.md +1.
+    // Counted per file against HEAD: no other changed page gained or lost a
+    // table.
+    const EXPECTED_TABLES: usize = 1407;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

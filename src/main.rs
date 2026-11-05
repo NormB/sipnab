@@ -131,11 +131,11 @@ fn main() {
 
     // 7b. --relay-holdings: ask the relay what it holds and exit, before any
     //     capture opens. The permit is decided from the planned source.
-    if let Some(code) = bootstrap::run_relay_holdings(&cli, plan.source.as_ref()) {
+    if let Some(code) = bootstrap::run_relay_holdings(&cli, &loaded.config, plan.source.as_ref()) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
     // 7c. --relay-sessions: the same, for the sessions snapshot.
-    if let Some(code) = bootstrap::run_relay_sessions(&cli, plan.source.as_ref()) {
+    if let Some(code) = bootstrap::run_relay_sessions(&cli, &loaded.config, plan.source.as_ref()) {
         sipnab::capture::archive::release_run_and_exit(code);
     }
 

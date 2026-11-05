@@ -995,6 +995,48 @@ static SPECS: &[Spec] = &[
         },
         &[],
     ),
+    // `--rtpengine-engine`: one engine row, `MEDIA LOW-HIGH CONTROL`. It
+    // needs `--rtpengine-control`. Two accepted rows on different media
+    // addresses, so the flag and the key combine without overlapping.
+    (
+        "rtpengine-engine",
+        Kind::Text {
+            accept: &[
+                "203.0.113.5 30000-39999 192.0.2.5:2223",
+                "203.0.113.6 40000-49999 192.0.2.6:2223",
+                "2001:db8::5 40000-40000 [2001:db8::10]:2223",
+                "203.0.113.7 1-65535 -> 192.0.2.7:2223",
+            ],
+            reject: &[
+                ("x", 2),
+                ("", 2),
+                ("203.0.113.5 30000-39999", 2),
+                ("203.0.113.5 39999-30000 192.0.2.5:2223", 2),
+                ("203.0.113.5 0-10 192.0.2.5:2223", 2),
+                ("203.0.113.5 30000-39999 192.0.2.5", 2),
+                ("media.example.com 30000-39999 192.0.2.5:2223", 2),
+            ],
+        },
+        &["--rtpengine-control", "127.0.0.1:22222"],
+    ),
+    // `--rtpengine-trust-sdp-address`: the control port, 1 to 65535. It needs
+    // `--rtpengine-control`.
+    (
+        "rtpengine-trust-sdp-address",
+        Kind::Int { lo: 1, hi: 65535 },
+        &["--rtpengine-control", "127.0.0.1:22222"],
+    ),
+    // `--relay-previous-engine`: needs an engine rule and `--rtpengine-control`.
+    (
+        "relay-previous-engine",
+        Kind::Switch,
+        &[
+            "--rtpengine-control",
+            "127.0.0.1:22222",
+            "--rtpengine-trust-sdp-address",
+            "2223",
+        ],
+    ),
     (
         "rtpproxy-control",
         Kind::Text {
@@ -3947,6 +3989,7 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.quality_bands(config)),
         format!("{:?}", cli.mcp_tool_selection(config)),
         format!("{:?}", cli.ws_port_range(config)),
+        format!("{:?}", cli.engine_selection(config)),
         format!("{:?}", cli.api_tls_files(config)),
         format!("{:?}", cli.mcp_tls_files(config)),
         format!("{:?}", cli.metrics_tls_files(config)),

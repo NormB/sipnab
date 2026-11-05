@@ -72,6 +72,7 @@ fn metrics_only() -> Selection {
         vcon_fetch: Default::default(),
         live_audio: Vec::new(),
         alias_thresholds: Default::default(),
+        relay_engines: None,
         persists_content: false,
     }
 }

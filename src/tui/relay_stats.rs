@@ -46,6 +46,9 @@ pub struct TuiRelayAccess {
     /// The relay's control address, for the answer to name its source. Never
     /// used to CHOOSE a destination -- the client already points at it.
     pub addr: SocketAddr,
+    /// The run's engine rule, when one is configured: which engine to ask
+    /// about one call, chosen from its SDP.
+    pub routing: Option<Arc<crate::relay::engines::EngineRouting>>,
 }
 
 /// Whether the relay-statistics view can ask, or which ST-S4 invocation refusal
@@ -327,12 +330,13 @@ pub fn spawn_ask(
     key: AskKey,
     sipnab_side: Option<u64>,
     origin: fmt::FetchOrigin,
+    sightings: Vec<crate::relay::engines::SdpSighting>,
 ) -> Receiver<RelayStatsReply> {
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
         .name("relay-stats-ask".to_owned())
         .spawn(move || {
-            let text = do_ask(&access, &key, sipnab_side, origin);
+            let text = do_ask_for(&access, &key, sipnab_side, origin, &sightings);
             // The receiver is dropped when the user leaves the view before the
             // answer lands; a failed send is that ordinary race, not an error.
             let _ = tx.send(RelayStatsReply { key, text });
@@ -346,15 +350,56 @@ pub fn spawn_ask(
 /// Perform one ask and compose its text. Transmits through the relay it is
 /// handed: the unit tests hand it a scripted relay holding no socket, and the
 /// wire is exercised live against the harness relay.
+#[cfg(test)]
 fn do_ask(
     access: &TuiRelayAccess,
     key: &AskKey,
     sipnab_side: Option<u64>,
     origin: fmt::FetchOrigin,
 ) -> String {
+    do_ask_for(access, key, sipnab_side, origin, &[])
+}
+
+/// [`do_ask`], with the call's SDP sightings that choose its engine when an
+/// engine rule is configured.
+fn do_ask_for(
+    access: &TuiRelayAccess,
+    key: &AskKey,
+    sipnab_side: Option<u64>,
+    origin: fmt::FetchOrigin,
+    sightings: &[crate::relay::engines::SdpSighting],
+) -> String {
     let (call_id, mode) = key;
     let obtained_at = chrono::Utc::now();
-    let label = answer_label(access.relay.as_ref(), access.addr, call_id.as_deref());
+    // A question about one call goes to the engine its SDP names when an
+    // engine rule is configured: the rule every relay surface uses. The
+    // relay's own counters and names go to the one relay the run names.
+    let per_call = matches!(mode, RelayStatsMode::Counters | RelayStatsMode::Compare);
+    let (relay, addr, reason) = match call_id.as_deref() {
+        Some(cid) if per_call => match crate::relay::engines::call_target(
+            &access.relay,
+            access.routing.as_deref(),
+            sightings,
+        ) {
+            crate::relay::engines::CallTarget::Ask {
+                relay,
+                control,
+                reason,
+            } => (relay, control.unwrap_or(access.addr), reason),
+            crate::relay::engines::CallTarget::Unknown(unknown) => {
+                return compose_outcome_text(
+                    StatisticsOutcome::NotConfigured,
+                    &format!("call {cid}: {unknown}"),
+                );
+            }
+        },
+        _ => (Arc::clone(&access.relay), access.addr, None),
+    };
+    let label = answer_label(relay.as_ref(), addr, call_id.as_deref());
+    let label = match reason {
+        Some(why) => format!("{label}, {why}"),
+        None => label,
+    };
     // ST-S4: a reply that arrived but could not be trusted (a mismatched cookie,
     // or one that could not be decoded) is `suspect`; everything else is
     // `unreachable`. Classified and worded by the function REST uses, so the
@@ -365,7 +410,7 @@ fn do_ask(
     };
     match mode {
         RelayStatsMode::Counters => match call_id {
-            Some(cid) => match access.relay.call_statistics(&access.permit, cid) {
+            Some(cid) => match relay.call_statistics(&access.permit, cid) {
                 Ok(reply) => {
                     compose_counters_or_names(&reply, &label, obtained_at, true, false, origin)
                 }
@@ -400,7 +445,7 @@ fn do_ask(
                     "a comparison needs a call to compare; open the relay-stats view from a call",
                 );
             };
-            match access.relay.call_statistics(&access.permit, cid) {
+            match relay.call_statistics(&access.permit, cid) {
                 Ok(reply) => compose_compare(&reply, cid, sipnab_side, &label, obtained_at),
                 Err(e) => fetch_failure(&e),
             }
@@ -515,6 +560,7 @@ mod tests {
             relay: Arc::clone(relay) as Arc<dyn ReadOnlyRelay + Send + Sync>,
             permit: TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?,
             addr: addr()?,
+            routing: None,
         })
     }
 
@@ -849,13 +895,114 @@ mod tests {
     fn a_spawned_ask_answers_on_its_channel_tagged_with_what_it_answers() -> Result<(), TestError> {
         let relay = counting_relay();
         let key = (Some("c@h".to_string()), RelayStatsMode::Counters);
-        let rx = spawn_ask(access(&relay)?, key.clone(), None, fmt::FetchOrigin::Asked);
+        let rx = spawn_ask(
+            access(&relay)?,
+            key.clone(),
+            None,
+            fmt::FetchOrigin::Asked,
+            Vec::new(),
+        );
         let reply = rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .map_err(|e| format!("the worker answers: {e:?}"))?;
         assert_eq!(reply.key, key);
         assert!(reply.text.contains("9000"), "{}", reply.text);
         assert_eq!(relay.asked()?, vec!["call_statistics c@h"]);
+        Ok(())
+    }
+
+    // ── engine selection: the engine a call's SDP names ─────────────────
+
+    /// Routing whose NAT map reaches `b` for 40000-49999, with the run's
+    /// default engine at 192.0.2.5.
+    fn routing(
+        b: &Arc<ScriptedRelay>,
+    ) -> Result<Arc<crate::relay::engines::EngineRouting>, TestError> {
+        use crate::relay::engines::{Connect, EngineMap, EngineRouting, EngineRow, EngineRule};
+        let rows = vec![
+            "203.0.113.5 30000-39999 192.0.2.5:2223".parse::<EngineRow>()?,
+            "203.0.113.5 40000-49999 192.0.2.6:2223".parse::<EngineRow>()?,
+        ];
+        let b = Arc::clone(b);
+        let connect: Connect =
+            Arc::new(move |_| Arc::clone(&b) as Arc<dyn ReadOnlyRelay + Send + Sync>);
+        Ok(Arc::new(EngineRouting::new(
+            EngineRule::Map(EngineMap::new(rows)?),
+            "192.0.2.5:2223".parse()?,
+            false,
+            connect,
+        )))
+    }
+
+    fn sighting(secs: i64, from_request: bool, port: u16) -> crate::relay::engines::SdpSighting {
+        crate::relay::engines::SdpSighting {
+            at: chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(secs),
+            from_request,
+            address: "203.0.113.5".to_string(),
+            port,
+        }
+    }
+
+    #[test]
+    fn a_call_ask_goes_to_the_engine_its_sdp_names() -> Result<(), TestError> {
+        let a = ScriptedRelay::new(|_, _| anyhow::bail!("the default engine is not asked"));
+        let b = ScriptedRelay::new(|_, _| Ok(stats(&[("totals.RTP.packets", "9000")])));
+        let mut acc = access(&a)?;
+        acc.routing = Some(routing(&b)?);
+        let moved = [
+            sighting(0, true, 30010),
+            sighting(60, true, 40010),
+            sighting(61, false, 40012),
+        ];
+        for mode in [RelayStatsMode::Counters, RelayStatsMode::Compare] {
+            let text = do_ask_for(
+                &acc,
+                &(Some("m-1@example.invalid".to_string()), mode),
+                Some(1),
+                fmt::FetchOrigin::Asked,
+                &moved,
+            );
+            assert!(text.contains("192.0.2.6:2223"), "{text}");
+            assert!(text.contains("40000-49999"), "the reason is named: {text}");
+        }
+        assert!(
+            a.asked()?.is_empty(),
+            "a call ask goes to the engine its sdp names"
+        );
+        assert_eq!(
+            b.asked()?.len(),
+            2,
+            "a call ask goes to the engine its sdp names"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_call_ask_with_no_map_row_asks_nothing() -> Result<(), TestError> {
+        let a = ScriptedRelay::new(|_, _| anyhow::bail!("not asked"));
+        let b = ScriptedRelay::new(|_, _| anyhow::bail!("not asked"));
+        let mut acc = access(&a)?;
+        acc.routing = Some(routing(&b)?);
+        let elsewhere = [crate::relay::engines::SdpSighting {
+            address: "203.0.113.9".to_string(),
+            ..sighting(0, true, 50000)
+        }];
+        let text = do_ask_for(
+            &acc,
+            &(
+                Some("x-1@example.invalid".to_string()),
+                RelayStatsMode::Counters,
+            ),
+            None,
+            fmt::FetchOrigin::Asked,
+            &elsewhere,
+        );
+        assert!(text.contains("not_configured"), "{text}");
+        assert!(text.contains("engine unknown (no map row)"), "{text}");
+        assert!(
+            a.asked()?.is_empty() && b.asked()?.is_empty(),
+            "a call ask with no map row asks nothing"
+        );
         Ok(())
     }
 }

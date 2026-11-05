@@ -3016,6 +3016,7 @@ mod tests {
             SdpExchange {
                 timestamp: t(0)?,
                 direction: OfferAnswer::Offer,
+                from_request: true,
                 codecs: vec!["PCMU".to_string(), "PCMA".to_string()],
                 media_addr: Some("10.0.0.1".to_string()),
                 media_port: Some(5004),
@@ -3026,6 +3027,7 @@ mod tests {
             SdpExchange {
                 timestamp: t(1)?,
                 direction: OfferAnswer::Answer,
+                from_request: false,
                 codecs: vec!["PCMU".to_string()],
                 media_addr: Some("10.0.0.9".to_string()),
                 media_port: Some(6000),
@@ -3036,6 +3038,7 @@ mod tests {
             SdpExchange {
                 timestamp: t(30)?,
                 direction: OfferAnswer::Offer,
+                from_request: true,
                 codecs: vec!["PCMU".to_string()],
                 media_addr: Some("10.0.0.1".to_string()),
                 media_port: Some(5004),

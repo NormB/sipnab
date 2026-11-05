@@ -1231,6 +1231,23 @@ persist_to_config = true
 "2001:db8::1" = "core6"
 ```
 
+### `[relay]`
+
+Which rtpengine engine sipnab asks about a call, chosen from the call's SDP.
+[Ask each call's rtpengine engine](@/docs/relay-engines.md) covers the rules.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `engines` | array of strings | `[]` | Engine rows, each `MEDIA-ADDRESS LOW-HIGH CONTROL-ADDRESS:PORT`: the SDP media address and port range an engine allocates from, and its `listen-ng` address. The rows are the allowlist: sipnab asks no engine about a call whose SDP no row claims. sipnab refuses rows that claim the same address and port (exit 1). Needs `--rtpengine-control` on the command line. `--rtpengine-engine` adds to them |
+
+```toml
+[relay]
+engines = [
+  "203.0.113.5 30000-39999 192.0.2.5:2223",
+  "203.0.113.5 40000-49999 192.0.2.6:2223",
+]
+```
+
 ### [crash]
 
 What happens when sipnab panics. The panic hook:
