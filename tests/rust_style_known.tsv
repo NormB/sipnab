@@ -52,7 +52,7 @@ AssertWithoutMessage	src/capture/device.rs	14
 AssertWithoutMessage	src/capture/dtls.rs	21
 AssertWithoutMessage	src/capture/fanout.rs	1
 AssertWithoutMessage	src/capture/file.rs	31
-AssertWithoutMessage	src/capture/hep.rs	276
+AssertWithoutMessage	src/capture/hep.rs	274
 AssertWithoutMessage	src/capture/hep_delivery.rs	15
 AssertWithoutMessage	src/capture/hep_export.rs	5
 AssertWithoutMessage	src/capture/hep_roster.rs	59

@@ -160,8 +160,11 @@ impl HepListener {
         let (port_tx, port_rx) = mpsc::channel();
         thread::spawn(move || {
             for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                // `127.0.0.1:PORT`, followed on a stream listener by its
+                // transport, as in `127.0.0.1:PORT (tcp)`.
                 if let Some(rest) = line.split("HEP listener started on ").nth(1)
-                    && let Some(p) = rest.trim().rsplit(':').next()
+                    && let Some(addr) = rest.split_whitespace().next()
+                    && let Some(p) = addr.rsplit(':').next()
                     && let Ok(p) = p.parse::<u16>()
                 {
                     let _ = port_tx.send(p);
@@ -374,6 +377,79 @@ fn sighup_stops_the_run_cleanly_and_exits_129() -> Result<(), TestError> {
         stderr.iter().any(|l| l.contains("packets captured")),
         "the stop must run the end-of-run summary, as SIGTERM does:\n{}",
         stderr.join("\n")
+    );
+    Ok(())
+}
+
+/// A TCP listener stopped by `--duration` reports every message its peer had
+/// delivered before the deadline (CAP-2).
+///
+/// The run is frozen with SIGSTOP right after the frames are written and
+/// resumed after its deadline, so the stop finds every frame still in the
+/// socket. The reader used to return at the stop without reading them, and
+/// the receive loop ended at its own deadline without reading what the
+/// listener had queued: a run lost what its sender had sent.
+#[test]
+fn a_duration_stop_reports_every_message_delivered_before_it() -> Result<(), TestError> {
+    const SENT: usize = 300;
+    let srv = HepListener::spawn(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-listen-transport",
+        "tcp",
+        "--duration",
+        "3",
+    ])?;
+    let mut peer = std::net::TcpStream::connect(("127.0.0.1", srv.port))?;
+    // An open stream, already being served: one message has come out the
+    // other end before the rest are written.
+    std::io::Write::write_all(&mut peer, &hep3_sip(&invite_bytes())?)?;
+    assert!(
+        srv.wait_for_stdout(CALL_ID, test_timeout(5)).is_some(),
+        "control: the listener serves the connection before the burst"
+    );
+    for n in 0..SENT {
+        let msg = format!(
+            "OPTIONS sip:bob@example.com SIP/2.0\r\n\
+             Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKcap2{n}\r\n\
+             From: <sip:alice@example.com>;tag={n}\r\n\
+             To: <sip:bob@example.com>\r\n\
+             Call-ID: cap2-{n}@127.0.0.1\r\n\
+             CSeq: 1 OPTIONS\r\n\
+             Content-Length: 0\r\n\r\n"
+        );
+        std::io::Write::write_all(&mut peer, &hep3_sip(msg.as_bytes())?)?;
+    }
+    let pid = libc::pid_t::try_from(srv.child.id())?;
+    // SAFETY: kill(2) on the child this test spawned and has not reaped, so
+    // the pid cannot have been reused.
+    let frozen = unsafe { libc::kill(pid, libc::SIGSTOP) };
+    assert_eq!(frozen, 0, "freeze the run");
+    thread::sleep(Duration::from_secs(4));
+    // SAFETY: as above: the child is stopped, not reaped.
+    let resumed = unsafe { libc::kill(pid, libc::SIGCONT) };
+    assert_eq!(resumed, 0, "resume the run");
+
+    let mut reported = std::collections::BTreeSet::new();
+    let deadline = Instant::now() + test_timeout(15);
+    while Instant::now() < deadline {
+        match srv.stdout_rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(line) => {
+                if let Some(rest) = line.split("cap2-").nth(1)
+                    && let Some(n) = rest.split('@').next()
+                {
+                    reported.insert(n.to_string());
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+    drop(peer);
+    assert_eq!(
+        reported.len(),
+        SENT,
+        "every message delivered before the deadline is reported"
     );
     Ok(())
 }
