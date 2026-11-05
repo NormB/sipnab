@@ -18,6 +18,9 @@
 //! that rots, and the failure mode is silent — the hook keeps printing OK for
 //! the gates it does run.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -147,7 +150,7 @@ fn the_check_script_is_present_and_executable() -> Result<(), TestError> {
 /// Cleared up by the caller in the same test that makes it, and built under
 /// `CARGO_TARGET_TMPDIR` so a crash leaves nothing outside `target/`.
 struct Fixture {
-    root: PathBuf,
+    root: test_scratch::ScratchDir,
 }
 
 impl Fixture {
@@ -158,8 +161,11 @@ impl Fixture {
     /// status 2 below ten gated modules or five optional crates, and a
     /// refusal must not be mistaken here for the verdict under test.
     fn new(name: &str, gate: &str) -> Result<Self, TestError> {
-        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-        let _ = std::fs::remove_dir_all(&root);
+        let root = test_scratch::ScratchDir::new_in(
+            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+            &format!("{name}-"),
+        )
+        .map_err(|e| format!("scratch dir: {e}"))?;
         let src = root.join("src");
         std::fs::create_dir_all(&src).map_err(|e| format!("create fixture src: {e}"))?;
 

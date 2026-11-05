@@ -25,6 +25,9 @@
 //! Regenerate expected output after an intentional change with:
 //!   `TRYCMD=overwrite cargo test --test cli_goldens`
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use support::TestError;
 
 #[path = "support/run.rs"]
@@ -71,14 +74,17 @@ fn cli_goldens() -> Result<(), TestError> {
     // it is per-target, inside `target/`, and removed by `cargo clean` along
     // with everything else this test builds.
     //
-    // The pid suffix is what `tests/temp_path_isolation_test.rs` demands, and
-    // it is right to: two `cargo test` runs against the same target directory
-    // would otherwise share this HOME, and the second one's cleanup below
-    // would delete a config the first was about to read. Exactly the collision
+    // A fresh guarded directory is what `tests/temp_path_isolation_test.rs`
+    // demands, and it is right to: two `cargo test` runs against the same
+    // target directory would otherwise share this HOME, and the second one's
+    // cleanup below would delete a config the first was about to read. Exactly the collision
     // that file's header records against `sipnab_test_bpf_filter.txt`, where
     // the symptom named `--bpf-file` rather than the harness.
-    let home = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("cli-goldens-home-{}", std::process::id()));
+    let home = test_scratch::ScratchDir::new_in(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "cli-goldens-home-",
+    )
+    .map_err(|e| format!("create the pinned HOME for CLI goldens: {e}"))?;
     std::fs::create_dir_all(&home)
         .map_err(|e| format!("create the pinned HOME for CLI goldens: {e}"))?;
     for stray in [".sipnabrc", ".config/sipnab/sipnab.toml"] {

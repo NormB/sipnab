@@ -27,7 +27,9 @@
 //! itself was refused, which satisfies every "this must fail" assertion here
 //! while proving nothing about the failure it names.
 
-use std::path::PathBuf;
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::process::Output;
 
 type TestError = Box<dyn std::error::Error>;
@@ -42,9 +44,9 @@ const CALL_A: &str = "1-1966@10.0.2.20";
 
 /// A temp directory unique to this PROCESS, so two harnesses running at once
 /// do not delete each other's output mid-assertion.
-fn tmp_dir(name: &str) -> Result<PathBuf, TestError> {
-    let dir = std::env::temp_dir().join(format!("sipnab-vcon-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn tmp_dir(name: &str) -> Result<test_scratch::ScratchDir, TestError> {
+    let dir = test_scratch::ScratchDir::new(&format!("sipnab-vcon-{name}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }

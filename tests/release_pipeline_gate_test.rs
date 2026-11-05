@@ -26,6 +26,9 @@
 //! new target, a new variant, or a changed `case` arm is covered the day it
 //! lands.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -153,15 +156,9 @@ fn feature_step_outputs(
     // Unique per CALL, not per (target, variant): two tests in this file run
     // the step for the same matrix entry concurrently, and a shared path meant
     // one test's cleanup deleted the other's output between write and read.
-    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "sipnab-featstep-{}-{}-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        target,
-        if variant.is_empty() { "plain" } else { variant }
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
+    // tempfile gives each call its own directory.
+    let dir = test_scratch::ScratchDir::new("sipnab-featstep-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let out_file = dir.join("github_output");
     std::fs::write(&out_file, "")?;
@@ -633,13 +630,8 @@ fn the_feature_matrix_includes_the_default_feature_set() -> Result<(), TestError
 /// * `required` — sets `SIPNAB_BPF_REQUIRED=1` when true.
 #[cfg(target_os = "linux")]
 fn run_build_script(path: &str, required: bool) -> Result<(bool, String), TestError> {
-    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "sipnab-buildrs-{}-{}-{required}",
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = test_scratch::ScratchDir::new("sipnab-buildrs-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let exe = dir.join("build_script");
 

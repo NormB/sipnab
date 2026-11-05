@@ -46,7 +46,10 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     // parse panics is dropped (src/pipeline.rs) and that an RTP frame whose
     // decoder panics is a decode error (src/rtp/audio_export.rs).
     ("src", 5, 3, 18),
-    ("tests", 0, 0, 2),
+    // tests panic 2 -> 5: the three probes in tests/temp_path_isolation_test.rs
+    // that a test directory is removed when its test body panics (TEMP-PATH-
+    // GATE-ACCEPTS-PID). The panic is the input under test, not error handling.
+    ("tests", 0, 0, 5),
 ];
 
 /// Every tracked `.rs` file, relative to the crate root.

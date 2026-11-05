@@ -517,18 +517,24 @@ mod tests {
         Ok(wat::parse_str(&wat)?)
     }
 
-    fn write_plugin(name: &str, bytes: &[u8]) -> Result<std::path::PathBuf, TestError> {
-        let dir = std::env::temp_dir().join(format!("sipnab-plugin-tests-{}", std::process::id()));
-        std::fs::create_dir_all(&dir)?;
+    /// Write `bytes` as `<name>.wasm` in a directory of its own, returned with
+    /// its guard: the caller holds the guard for as long as it reads the
+    /// file, and dropping it removes the directory, on a failing test too.
+    fn write_plugin(
+        name: &str,
+        bytes: &[u8],
+    ) -> Result<(crate::test_scratch::ScratchDir, std::path::PathBuf), TestError> {
+        let dir = crate::test_scratch::ScratchDir::new("sipnab-plugin-tests-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         let p = dir.join(format!("{name}.wasm"));
         std::fs::write(&p, bytes)?;
-        Ok(p)
+        Ok((dir, p))
     }
 
     #[test]
     fn a_conforming_plugin_returns_attributed_findings() -> Result<(), TestError> {
         let reply = r#"{"findings":[{"id":"custom","summary":"found it","evidence":[2]}]}"#;
-        let p = write_plugin("good", &wat_plugin(1, reply)?)?;
+        let (_plugin_dir, p) = write_plugin("good", &wat_plugin(1, reply)?)?;
         let plugin = Plugin::load(&p)?;
         let found = plugin.analyze("{}")?;
         assert_eq!(found.len(), 1);
@@ -541,7 +547,7 @@ mod tests {
 
     #[test]
     fn a_plugin_speaking_another_abi_is_refused_at_load() -> Result<(), TestError> {
-        let p = write_plugin("v99", &wat_plugin(99, r#"{"findings":[]}"#)?)?;
+        let (_plugin_dir, p) = write_plugin("v99", &wat_plugin(99, r#"{"findings":[]}"#)?)?;
         match Plugin::load(&p) {
             Err(PluginError::AbiVersion { found, expected }) => {
                 assert_eq!(found, 99);
@@ -556,7 +562,7 @@ mod tests {
     #[test]
     fn a_finding_without_evidence_is_rejected() -> Result<(), TestError> {
         let reply = r#"{"findings":[{"id":"vague","summary":"something","evidence":[]}]}"#;
-        let p = write_plugin("noevidence", &wat_plugin(1, reply)?)?;
+        let (_plugin_dir, p) = write_plugin("noevidence", &wat_plugin(1, reply)?)?;
         let plugin = Plugin::load(&p)?;
         match plugin.analyze("{}") {
             Err(PluginError::BadOutput(m)) => assert!(m.contains("evidence"), "{m}"),
@@ -577,7 +583,7 @@ mod tests {
             (func (export "sipnab_alloc") (param i32) (result i32) (i32.const 0))
             (func (export "sipnab_dealloc") (param i32 i32))
             (func (export "sipnab_analyze") (param i32 i32) (result i64) (i64.const 0)))"#;
-        let p = write_plugin("importer", &wat::parse_str(wat)?)?;
+        let (_plugin_dir, p) = write_plugin("importer", &wat::parse_str(wat)?)?;
         match Plugin::load(&p) {
             Err(PluginError::Abi(m)) => assert!(m.contains("import"), "{m}"),
             other => {
@@ -601,7 +607,7 @@ mod tests {
             (func (export "sipnab_analyze") (param i32 i32) (result i64)
               (loop $spin (br $spin))
               (i64.const 0)))"#;
-        let p = write_plugin("spinner", &wat::parse_str(wat)?)?;
+        let (_plugin_dir, p) = write_plugin("spinner", &wat::parse_str(wat)?)?;
         let plugin = Plugin::load(&p)?;
         match plugin.analyze("{}") {
             Err(PluginError::Trap(_)) => {}
@@ -629,7 +635,7 @@ mod tests {
             (func (export "sipnab_alloc") (param i32) (result i32) (i32.const 0))
             (func (export "sipnab_dealloc") (param i32 i32))
             (func (export "sipnab_analyze") (param i32 i32) (result i64) (i64.const 0)))"#;
-        let p = write_plugin("fatmem", &wat::parse_str(wat)?)?;
+        let (_plugin_dir, p) = write_plugin("fatmem", &wat::parse_str(wat)?)?;
         match Plugin::load(&p) {
             Err(PluginError::Trap(m)) | Err(PluginError::Abi(m)) => {
                 assert!(
@@ -646,7 +652,7 @@ mod tests {
 
     #[test]
     fn a_plugin_returning_garbage_is_reported_not_fatal() -> Result<(), TestError> {
-        let p = write_plugin("garbage", &wat_plugin(1, "not json at all")?)?;
+        let (_plugin_dir, p) = write_plugin("garbage", &wat_plugin(1, "not json at all")?)?;
         let plugin = Plugin::load(&p)?;
         match plugin.analyze("{}") {
             Err(PluginError::BadOutput(_)) => {}
@@ -700,7 +706,7 @@ mod tests {
     /// Without this, "reject everything" would pass the test above.
     #[test]
     fn a_plugin_at_a_normal_size_still_loads() -> Result<(), TestError> {
-        let p = write_plugin("normal", &wat_plugin(1, "[]")?)?;
+        let (_plugin_dir, p) = write_plugin("normal", &wat_plugin(1, "[]")?)?;
         assert!(
             Plugin::load(&p).is_ok(),
             "an ordinary plugin must still load"

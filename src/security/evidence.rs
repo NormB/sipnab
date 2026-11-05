@@ -242,7 +242,8 @@ mod tests {
     /// A path that cannot be opened fails when the run starts.
     #[test]
     fn an_unwritable_path_fails_at_open_not_at_the_first_finding() -> Result<(), TestError> {
-        let dir = std::env::temp_dir().join(format!("sipnab-ev-{}", std::process::id()));
+        let dir = crate::test_scratch::ScratchDir::new("sipnab-ev-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&dir)?;
         let bad = dir.join("no-such-dir").join("evidence.jsonl");
         assert!(EvidenceSink::open(&bad.to_string_lossy()).is_err());
@@ -255,7 +256,8 @@ mod tests {
     /// A file sink appends whole lines, one per finding, flushed as it goes.
     #[test]
     fn a_file_sink_appends_one_line_per_finding() -> Result<(), TestError> {
-        let dir = std::env::temp_dir().join(format!("sipnab-ev-app-{}", std::process::id()));
+        let dir = crate::test_scratch::ScratchDir::new("sipnab-ev-app-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("evidence.jsonl");
         let mut sink = EvidenceSink::open(&path.to_string_lossy())?;

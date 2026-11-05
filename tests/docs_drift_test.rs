@@ -17,6 +17,9 @@
 //! because it introspects the real clap `Cli`.
 #![cfg(feature = "native")]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use clap::CommandFactory;
 use std::collections::BTreeSet;
 
@@ -3426,7 +3429,8 @@ fn benchmark_harness_is_published() -> Result<(), TestError> {
 #[test]
 fn carrier_generator_produces_the_documented_corpus() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let tmp = std::env::temp_dir().join(format!("sipnab-carrier-{}.pcap", std::process::id()));
+    let scratch = test_scratch::ScratchDir::new("sipnab-carrier-")?;
+    let tmp = scratch.join("carrier.pcap");
 
     let out = std::process::Command::new("python3")
         .arg(repo.join("bench/carrier.py"))
@@ -3925,7 +3929,8 @@ fn theme_slots_are_documented_and_counted_correctly() -> Result<(), TestError> {
 #[test]
 fn third_party_notices_are_current() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let tmp = std::env::temp_dir().join(format!("sipnab-notices-{}.md", std::process::id()));
+    let scratch = test_scratch::ScratchDir::new("sipnab-notices-")?;
+    let tmp = scratch.join("notices.md");
 
     let out = std::process::Command::new("python3")
         .arg(repo.join("scripts/build-third-party-notices.py"))
@@ -8212,8 +8217,8 @@ fn llms_aggregates_are_current() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // pid and line, never a fixed path: two tests sharing one would race, and a
     // leftover from a killed run would be read as this run's output.
-    let tmp = std::env::temp_dir().join(format!("sipnab-llms-{}-{}", std::process::id(), line!()));
-    let _ = std::fs::remove_dir_all(&tmp);
+    let tmp =
+        test_scratch::ScratchDir::new("sipnab-llms-").map_err(|e| format!("scratch dir: {e}"))?;
 
     // argv[2] keeps the generator off the committed files. Without it this
     // gate would OVERWRITE the very thing it is checking and always pass.

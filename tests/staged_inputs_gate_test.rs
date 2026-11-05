@@ -19,6 +19,9 @@
 //! the commit alone, disagreed. The question "does this artifact describe the
 //! COMMIT" can only be asked of the index.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -60,7 +63,7 @@ fn run_in(dir: &Path) -> Result<(i32, String), TestError> {
 ///
 /// A real fixture rather than a mocked git: the whole rule is about what `git
 /// diff --cached` reports, and a fake index would test the fake.
-struct Scratch(PathBuf);
+struct Scratch(test_scratch::ScratchDir);
 
 /// A `git` that acts on the fixture and nothing else.
 ///
@@ -174,8 +177,8 @@ fn every_child_that_talks_to_git_scrubs_the_same_variables() -> Result<(), TestE
 
 impl Scratch {
     fn new(name: &str) -> Result<Self, TestError> {
-        let dir = std::env::temp_dir().join(format!("sipnab-staged-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = test_scratch::ScratchDir::new(&format!("sipnab-staged-{name}-"))
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(dir.join("src"))?;
         let git = |args: &[&str]| -> Result<(), TestError> {
             scrubbed_git(&dir).args(args).output()?;
@@ -197,12 +200,6 @@ impl Scratch {
     fn write(&self, rel: &str, body: &str) -> Result<(), TestError> {
         std::fs::write(self.0.join(rel), body)?;
         Ok(())
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -309,8 +306,8 @@ fn an_untracked_input_is_treated_as_a_modified_one() -> Result<(), TestError> {
 /// rediscovering.
 #[test]
 fn outside_a_work_tree_it_refuses_instead_of_passing() -> Result<(), TestError> {
-    let dir = std::env::temp_dir().join(format!("sipnab-nogit-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir =
+        test_scratch::ScratchDir::new("sipnab-nogit-").map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let (code, text) = run_in(&dir)?;
     let _ = std::fs::remove_dir_all(&dir);

@@ -966,14 +966,14 @@ mod tests {
         Ok(())
     }
 
-    /// A scratch directory tree for the discovery tests, removed on drop.
-    struct Tree(std::path::PathBuf);
+    /// A scratch directory tree for the discovery tests, removed on drop by
+    /// the guard it holds.
+    struct Tree(crate::test_scratch::ScratchDir);
 
     impl Tree {
         fn new(name: &str) -> Result<Self, TestError> {
-            let dir =
-                std::env::temp_dir().join(format!("sipnab-lintdisc-{name}-{}", std::process::id()));
-            let _ = std::fs::remove_dir_all(&dir);
+            let dir = crate::test_scratch::ScratchDir::new(&format!("sipnab-lintdisc-{name}-"))
+                .map_err(|e| format!("scratch dir: {e}"))?;
             std::fs::create_dir_all(&dir).map_err(|e| format!("scratch dir: {e:?}"))?;
             Ok(Self(dir))
         }
@@ -990,12 +990,6 @@ mod tests {
             std::fs::write(&f, "SIP-3261-20-URI-BRACKETS\n")
                 .map_err(|e| format!("write: {e:?}"))?;
             Ok(())
-        }
-    }
-
-    impl Drop for Tree {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 

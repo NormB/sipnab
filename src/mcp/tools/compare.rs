@@ -623,9 +623,9 @@ mod tests {
     /// Named per test rather than shared: two tests writing one root would
     /// each see the other's leftovers, and the name-already-taken rule these
     /// tests exercise would then depend on execution order.
-    fn root_with(tag: &str, names: &[&str]) -> Result<PathBuf, TestError> {
-        let root = std::env::temp_dir().join(format!("sipnab-cmp-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+    fn root_with(tag: &str, names: &[&str]) -> Result<crate::test_scratch::ScratchDir, TestError> {
+        let root = crate::test_scratch::ScratchDir::new(&format!("sipnab-cmp-{tag}-"))
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("create the file root: {e:?}"))?;
         for name in names {
             std::fs::copy(fixture(name), root.join(name))
@@ -1054,9 +1054,16 @@ mod tests {
     /// message-only test.
     #[tokio::test]
     async fn build_evidence_package_refuses_a_path_traversal() -> Result<(), TestError> {
-        let root = root_with("pkg-traversal", &[])?;
-        let outside = root.join("..").join("sipnab-cmp-escape-package");
-        let _ = std::fs::remove_dir_all(&outside);
+        // The file root sits inside a directory of this test's own, so `..`
+        // and the absolute candidate both name a place no other process
+        // shares: a regression that wrote there could not collide with a
+        // concurrent run, and the guard removes it either way.
+        let parent = crate::test_scratch::ScratchDir::new("sipnab-cmp-traversal-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
+        let root = parent.join("root");
+        std::fs::create_dir_all(&root).map_err(|e| format!("create the file root: {e:?}"))?;
+        let outside = parent.join("sipnab-cmp-escape-package");
+        let absolute = outside.to_string_lossy().into_owned();
         let server = server_from_fixture("sip-rtp-g711.pcap")?.with_file_root(&root);
         let call_id = server
             .dialog_store
@@ -1068,7 +1075,7 @@ mod tests {
 
         for bad in [
             "../sipnab-cmp-escape-package",
-            "/tmp/sipnab-cmp-escape-package",
+            absolute.as_str(),
             "sub/dir",
             "..",
         ] {
@@ -1097,7 +1104,6 @@ mod tests {
             0,
             "a refused traversal must leave nothing in the root either"
         );
-        let _ = std::fs::remove_dir_all(&root);
         Ok(())
     }
 
@@ -1107,9 +1113,8 @@ mod tests {
     #[tokio::test]
     async fn build_evidence_package_refuses_a_symlink_out_of_the_root() -> Result<(), TestError> {
         let root = root_with("pkg-symlink", &[])?;
-        let outside =
-            std::env::temp_dir().join(format!("sipnab-cmp-symlink-target-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&outside);
+        let outside = crate::test_scratch::ScratchDir::new("sipnab-cmp-symlink-target-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&outside)
             .map_err(|e| format!("create the target directory: {e:?}"))?;
         std::os::unix::fs::symlink(&outside, root.join("evidence"))

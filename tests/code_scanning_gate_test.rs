@@ -13,6 +13,9 @@
 //! analysis of the commit in question, then fails on any open alert. CI's
 //! aggregate job requires it and the pre-push tag check calls it.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -31,9 +34,8 @@ fn read(rel: &str) -> Result<String, TestError> {
 /// Runs the script in fixture mode: alerts and analyses come from JSON files,
 /// never the network, so every branch can be driven.
 fn run(alerts: &str, analyses: &str, sha: &str) -> Result<(i32, String), TestError> {
-    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("sipnab-cs-{}-{n}", std::process::id()));
+    let dir =
+        test_scratch::ScratchDir::new("sipnab-cs-").map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let a = dir.join("alerts.json");
     let b = dir.join("analyses.json");

@@ -22,15 +22,18 @@
 //! the test suite with `capinfos -I` and
 //! `tshark -T fields -e frame.interface_name`.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
 
 /// A fresh temp directory for one test.
-fn tmp_dir(name: &str) -> Result<PathBuf, TestError> {
-    let d = std::env::temp_dir().join(format!("sipnab-provenance-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn tmp_dir(name: &str) -> Result<test_scratch::ScratchDir, TestError> {
+    let d = test_scratch::ScratchDir::new(&format!("sipnab-provenance-{name}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&d)?;
     Ok(d)
 }

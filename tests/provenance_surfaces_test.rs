@@ -38,6 +38,9 @@
 //! orphaned streams, the ones no `Call-ID` explains, are precisely the streams
 //! an operator most needs to trace back to the wire.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use sipnab::capture::packet::Packet;
 use sipnab::capture::resolve::{parse_pointer, resolve};
 use sipnab::output::json::stream_to_json;
@@ -387,7 +390,8 @@ fn following_an_emitted_pointer_at_a_changed_capture_is_refused() -> Result<(), 
 
     // A byte-identical copy must still resolve: the refusal below has to come
     // from the contents differing, not merely from the path differing.
-    let dir = std::env::temp_dir().join(format!("sipnab-prov-{}", std::process::id()));
+    let dir =
+        test_scratch::ScratchDir::new("sipnab-prov-").map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let copy = dir.join("same.pcap");
     std::fs::copy(&src, &copy)?;

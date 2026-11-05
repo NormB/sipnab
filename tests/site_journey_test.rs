@@ -30,6 +30,8 @@ use std::process::Command;
 
 #[path = "support/mcp_reference.rs"]
 mod mcp_reference;
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
 
 /// The error a fallible test or helper returns: any error, boxed, so `?`
 /// works on I/O, parse and JSON errors alike.
@@ -159,12 +161,8 @@ fn assert_step_fails_on_bad_input(
         script = script.replace(from, to);
     }
 
-    let dir = std::env::temp_dir().join(format!(
-        "sipnab-step-{}-{}",
-        step_name.replace([' ', '(', ')', '/'], "-"),
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir =
+        test_scratch::ScratchDir::new("sipnab-step-").map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
     setup(&dir)?;
 

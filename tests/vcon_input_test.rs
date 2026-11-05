@@ -11,6 +11,9 @@
 //! except for the fields a vCon does not store. Those are asserted explicitly
 //! rather than skipped, so a test that silently compared nothing cannot pass.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
@@ -20,9 +23,9 @@ type TestError = Box<dyn std::error::Error>;
 const SAMPLE: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 
 /// A temp directory unique to this test and this process.
-fn tmp_dir(name: &str) -> Result<PathBuf, TestError> {
-    let dir = std::env::temp_dir().join(format!("sipnab-vconin-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn tmp_dir(name: &str) -> Result<test_scratch::ScratchDir, TestError> {
+    let dir = test_scratch::ScratchDir::new(&format!("sipnab-vconin-{name}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }

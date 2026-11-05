@@ -25,6 +25,11 @@
 #[path = "support/mcp.rs"]
 mod mcp;
 
+/// The guarded scratch directories the TUI tests' config homes live in.
+#[cfg(all(feature = "tui", unix))]
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 #[cfg(all(feature = "tui", unix))]
 mod tui_e2e {
     /// The error a test returns: any error, boxed, so `?` works on I/O,
@@ -53,8 +58,9 @@ mod tui_e2e {
     struct TuiSession {
         /// tmux session name, unique per process and per test.
         name: String,
-        /// The session's own XDG_CONFIG_HOME, removed when the session drops.
-        cfg_home: std::path::PathBuf,
+        /// The session's own XDG_CONFIG_HOME, removed when the session drops
+        /// by the guard it is.
+        cfg_home: crate::test_scratch::ScratchDir,
         /// The socket of the session's own tmux server, removed when the
         /// session drops: `tmux kill-server` leaves it behind.
         socket: std::path::PathBuf,
@@ -93,12 +99,10 @@ mod tui_e2e {
             //
             // A test that writes to $HOME is not a test, it is a side effect
             // with an assertion attached.
-            // pid spelled out rather than inherited via `name` (which already
-            // embeds it): `every_temp_path_is_unique_per_process` reads the
-            // statement, and a discriminator it cannot see is one it cannot
-            // enforce. Being unique is not the same as being checkably unique.
-            let cfg_home =
-                std::env::temp_dir().join(format!("sipnab-e2e-cfg-{}-{seq}", std::process::id()));
+            // A guarded directory: removed when the session drops, a panic
+            // included, and named by tempfile so no other process can take it.
+            let cfg_home = crate::test_scratch::ScratchDir::new("sipnab-e2e-cfg-")
+                .map_err(|e| format!("scratch dir: {e}"))?;
             std::fs::create_dir_all(&cfg_home)?;
 
             // tmux runs the command via the shell; cd first so the file browser
@@ -286,7 +290,6 @@ mod tui_e2e {
         fn drop(&mut self) {
             let _ = tmux_for(&self.name).arg("kill-server").status();
             let _ = std::fs::remove_file(&self.socket);
-            let _ = std::fs::remove_dir_all(&self.cfg_home);
         }
     }
 

@@ -686,14 +686,10 @@ mod tests {
     /// Named per test rather than per process: a fixed path shared by two tests
     /// in one binary is state they poison for each other, and the failure is a
     /// flake that only appears under a full run.
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sipnab-decode-evidence-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::create_dir_all(&dir);
-        dir
+    fn scratch(name: &str) -> Result<crate::test_scratch::ScratchDir, TestError> {
+        let dir = crate::test_scratch::ScratchDir::new(&format!("sipnab-decode-evidence-{name}-"))
+            .map_err(|e| format!("scratch dir: {e}"))?;
+        Ok(dir)
     }
 
     /// Copy one of the repo's sample captures into `root` and return its path.
@@ -764,7 +760,7 @@ mod tests {
     /// both sides together.
     #[tokio::test]
     async fn a_field_range_lands_on_that_header_in_the_capture() -> Result<(), TestError> {
-        let root = scratch("field-range");
+        let root = scratch("field-range")?;
         let capture = seed(&root, "sip-register.pcap")?;
         let frame = frame_bytes(&capture, 0)?;
 
@@ -811,7 +807,7 @@ mod tests {
     /// `show_evidence`.
     #[tokio::test]
     async fn a_digest_separates_verified_from_unverified() -> Result<(), TestError> {
-        let root = scratch("digest");
+        let root = scratch("digest")?;
         let capture = seed(&root, "sip-register.pcap")?;
         let digest = crate::capture::packet::frame_digest(&frame_bytes(&capture, 0)?);
         let server = server_rooted(&root);
@@ -846,7 +842,7 @@ mod tests {
     /// absence of an error.
     #[tokio::test]
     async fn the_link_type_comes_from_the_capture_not_from_ethernet() -> Result<(), TestError> {
-        let root = scratch("link-type");
+        let root = scratch("link-type")?;
         let capture = seed(&root, "linux-sll-pppoe.pcap")?;
 
         let value = decode(
@@ -881,7 +877,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_pointer_escaping_the_file_root_decodes_nothing() -> Result<(), TestError> {
-        let base = scratch("escape");
+        let base = scratch("escape")?;
         let root = base.join("root");
         let outside = base.join("outside");
         std::fs::create_dir_all(&root)?;
@@ -917,7 +913,7 @@ mod tests {
     #[tokio::test]
     async fn a_frame_that_is_not_sip_says_so_rather_than_showing_an_empty_message()
     -> Result<(), TestError> {
-        let root = scratch("not-sip");
+        let root = scratch("not-sip")?;
         let capture = seed(&root, "rtp-protocol.pcap")?;
 
         let value = decode(
@@ -947,7 +943,7 @@ mod tests {
     /// A blank pointer is refused rather than answered with an empty decode.
     #[tokio::test]
     async fn a_blank_pointer_is_refused() -> Result<(), TestError> {
-        let root = scratch("blank");
+        let root = scratch("blank")?;
         let err = server_rooted(&root)
             .decode_evidence(Parameters(DecodeEvidenceParams {
                 frame_ref: "   ".to_string(),
@@ -968,7 +964,7 @@ mod tests {
     /// A malformed pointer is a result with a reason, not a failed call.
     #[tokio::test]
     async fn a_malformed_pointer_answers_with_its_reason() -> Result<(), TestError> {
-        let root = scratch("malformed");
+        let root = scratch("malformed")?;
         let value = decode(&server_rooted(&root), "not a pointer at all", None).await?;
         assert_eq!(value["status"], "unresolvable", "{value}");
         assert!(

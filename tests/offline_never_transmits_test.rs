@@ -39,6 +39,9 @@
 //!    same socket by the same route and requires it to arrive. A listener that
 //!    can never receive anything would pass every no-transmit assertion.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::net::UdpSocket;
 use std::time::Duration;
 
@@ -83,12 +86,9 @@ fn scanner_capture(dir: &std::path::Path, port: u16) -> Result<std::path::PathBu
 }
 
 /// A fresh temp directory for one test's capture.
-fn tmp_dir(name: &str) -> Result<std::path::PathBuf, TestError> {
-    let d = std::env::temp_dir().join(format!(
-        "sipnab-offline-transmit-{name}-{}",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_dir_all(&d);
+fn tmp_dir(name: &str) -> Result<test_scratch::ScratchDir, TestError> {
+    let d = test_scratch::ScratchDir::new(&format!("sipnab-offline-transmit-{name}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&d)?;
     Ok(d)
 }

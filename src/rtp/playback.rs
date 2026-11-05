@@ -818,18 +818,16 @@ mod tests {
         #[cfg(unix)]
         fn new(tag: &str, mode: u32) -> Result<Self, TestError> {
             use std::os::unix::fs::PermissionsExt;
-            use std::sync::atomic::{AtomicU32, Ordering};
 
-            // A counter, not a timestamp: two tests can start in the same
-            // millisecond and must not collide on the directory name.
-            static SEQ: AtomicU32 = AtomicU32::new(0);
-            let path = std::env::temp_dir().join(format!(
-                "sipnab-playback-{}-{tag}-{}",
-                std::process::id(),
-                SEQ.fetch_add(1, Ordering::Relaxed)
-            ));
-            let _ = std::fs::remove_dir_all(&path);
-            std::fs::create_dir_all(&path).map_err(|e| format!("create scratch dir: {e:?}"))?;
+            // tempfile picks a name no other test or process can take. The
+            // directory is kept rather than left to tempfile's guard, because
+            // this type's own drop must first give a 0500 directory back its
+            // write bit before it can be removed.
+            let path = tempfile::Builder::new()
+                .prefix(&format!("sipnab-playback-{tag}-"))
+                .tempdir()
+                .map_err(|e| format!("create scratch dir: {e:?}"))?
+                .keep();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))
                 .map_err(|e| format!("set scratch dir mode: {e:?}"))?;
             Ok(Self { path })

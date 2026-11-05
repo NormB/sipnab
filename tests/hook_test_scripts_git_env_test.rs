@@ -244,6 +244,13 @@ fn test_pre_commit_sh_leaves_the_hooks_repository_alone() -> Result<(), TestErro
 
 /// `scripts/test-pre-push.sh` run from inside a hook leaves that hook's
 /// repository untouched.
+///
+/// Linux only: the script runs nowhere else. CI's "Git hook scenarios" job
+/// runs it on ubuntu-24.04-arm, and on macOS it stops without its summary line
+/// after the reduced-combo scenarios (seen on the PR #659 macOS job; tracked
+/// as TEST-PRE-PUSH-SH-STOPS-ON-DARWIN). The git sandbox it shares with
+/// test-pre-commit.sh is still exercised on macOS by the test above.
+#[cfg(target_os = "linux")]
 #[test]
 fn test_pre_push_sh_leaves_the_hooks_repository_alone() -> Result<(), TestError> {
     let script = "scripts/test-pre-push.sh";

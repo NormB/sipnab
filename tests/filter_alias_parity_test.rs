@@ -24,6 +24,9 @@
 
 #![cfg(feature = "vcon")]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -62,7 +65,11 @@ fn run(args: &[&str]) -> Result<(i32, String), TestError> {
 fn every_alias_filter_accepts_export_vcon_when_accepts() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
     let fixture = fixture.to_str().ok_or("fixture path")?;
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_parity");
+    let dir = test_scratch::ScratchDir::new_in(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "alias_parity-",
+    )
+    .map_err(|e| format!("scratch dir: {e}"))?;
 
     let mut diverged = Vec::new();
     let mut checked = 0;
@@ -123,8 +130,11 @@ fn every_alias_filter_accepts_export_vcon_when_accepts() -> Result<(), TestError
 fn a_raw_expression_still_works_on_both_surfaces() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
     let fixture = fixture.to_str().ok_or("fixture path")?;
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_raw");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = test_scratch::ScratchDir::new_in(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "alias_raw-",
+    )
+    .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
 
     let expr = "state == 'Completed'";
@@ -166,8 +176,11 @@ fn a_raw_expression_still_works_on_both_surfaces() -> Result<(), TestError> {
 fn a_malformed_expression_is_refused_by_both() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
     let fixture = fixture.to_str().ok_or("fixture path")?;
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_bad");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = test_scratch::ScratchDir::new_in(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "alias_bad-",
+    )
+    .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
 
     let bad = "state ==== nonsense((";
@@ -276,8 +289,11 @@ fn every_cli_filter_flag_is_resolved_in_the_plan() -> Result<(), TestError> {
 #[test]
 fn a_malformed_predicate_fails_before_writing_anything() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_earlyfail");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = test_scratch::ScratchDir::new_in(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "alias_earlyfail-",
+    )
+    .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
 
     let (code, _) = run(&[
@@ -311,8 +327,11 @@ fn a_malformed_predicate_fails_before_writing_anything() -> Result<(), TestError
 fn both_surfaces_select_the_same_dialogs_for_one_alias() -> Result<(), TestError> {
     let fixture = repo().join(FIXTURE);
     let fixture = fixture.to_str().ok_or("fixture")?;
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("alias_same_set");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = test_scratch::ScratchDir::new_in(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "alias_same_set-",
+    )
+    .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
 
     // `--filter` reports rows; `--export-vcon-when` writes one container per

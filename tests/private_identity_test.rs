@@ -51,6 +51,9 @@
 //! admits `X64` beside `jetson` and nothing else. A bare `[self-hosted]`
 //! names no pool and stays refused.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::collections::BTreeSet;
 use std::net::Ipv6Addr;
 use std::path::{Path, PathBuf};
@@ -717,10 +720,8 @@ fn run_message_script_env(
     bin: &std::ffi::OsStr,
     envs: &[(&str, &str)],
 ) -> Result<(i32, String), TestError> {
-    let dir = std::env::temp_dir().join(format!(
-        "sipnab-message-identity-{}-{tag}",
-        std::process::id()
-    ));
+    let dir = test_scratch::ScratchDir::new(&format!("sipnab-message-identity-{tag}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let file = dir.join("message.txt");
     std::fs::write(&file, message)?;
@@ -1014,10 +1015,8 @@ fn run_message_script_cargo_args(
     features: Option<&str>,
     tag: &str,
 ) -> Result<(i32, String, Vec<String>), TestError> {
-    let dir = std::env::temp_dir().join(format!(
-        "sipnab-message-features-{}-{tag}",
-        std::process::id()
-    ));
+    let dir = test_scratch::ScratchDir::new(&format!("sipnab-message-features-{tag}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let args_file = dir.join("cargo-args.txt");
     executable::write_executable(

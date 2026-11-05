@@ -36,6 +36,9 @@
 
 #![cfg(all(unix, feature = "native"))]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::io::Write as _;
 use std::process::{Command, Output};
 
@@ -96,18 +99,25 @@ fn sudo_available() -> bool {
 /// as a spurious "truncated dump file" abort.
 ///
 /// # Returns
-/// Path to the copied fixture in the system temp directory.
+/// The guard of the directory holding the copy, and the copy's path. The
+/// directory is removed when the guard drops.
 ///
 /// # Side effects
-/// Writes `sipnab-priv-guard-<tag>.pcap` into the system temp directory.
-fn world_readable_fixture(tag: &str) -> Result<std::path::PathBuf, TestError> {
+/// Writes `fixture.pcap` into a fresh `sipnab-priv-guard-<tag>-*` directory
+/// under the system temp directory.
+fn world_readable_fixture(
+    tag: &str,
+) -> Result<(test_scratch::ScratchDir, std::path::PathBuf), TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
     let src = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/sip_call.pcap");
-    let dst = std::env::temp_dir().join(format!(
-        "sipnab-priv-guard-{tag}-{}.pcap",
-        std::process::id()
-    ));
+    // A guarded directory, so a failing test leaves nothing behind, opened to
+    // 0755: tempfile makes it 0700, and the process this test drops to must
+    // still reach the capture inside it.
+    let dir = test_scratch::ScratchDir::new(&format!("sipnab-priv-guard-{tag}-"))?;
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))?;
+    let dst = dir.join("fixture.pcap");
     std::fs::copy(src, &dst)?;
-    Ok(dst)
+    Ok((dir, dst))
 }
 
 /// This process's `(uid, gid, euid, egid)`.
@@ -277,7 +287,7 @@ fn failed_privilege_drop_aborts_instead_of_running_as_root() -> Result<(), TestE
         );
         return Ok(());
     }
-    let fixture = world_readable_fixture("drop-fail")?;
+    let (_fixture_dir, fixture) = world_readable_fixture("drop-fail")?;
     let out = Command::new("sudo")
         .args([
             "-n",
@@ -311,7 +321,7 @@ fn successful_privilege_drop_still_processes_capture() -> Result<(), TestError> 
         );
         return Ok(());
     }
-    let fixture = world_readable_fixture("drop-success")?;
+    let (_fixture_dir, fixture) = world_readable_fixture("drop-success")?;
     let out = Command::new("sudo")
         .args([
             "-n",
@@ -535,7 +545,7 @@ fn the_shipped_binary_blocks_privilege_escalation_on_a_capture_run() -> Result<(
     // hook never ran" for a permission error.
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o777))?;
     let report = dir.path().join("no-new-privs");
-    let fixture = world_readable_fixture("no-new-privs")?;
+    let (_fixture_dir, fixture) = world_readable_fixture("no-new-privs")?;
 
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args([
@@ -886,7 +896,7 @@ fn a_keylog_only_root_can_read_is_loaded_before_the_drop() -> Result<(), TestErr
         );
         return Ok(());
     }
-    let fixture = world_readable_fixture("keylog-before-drop")?;
+    let (_fixture_dir, fixture) = world_readable_fixture("keylog-before-drop")?;
     use std::os::unix::fs::PermissionsExt as _;
     let private = tempfile::tempdir()?;
     // Set explicitly: `tempdir` honors the umask, which left it 0775 here and
@@ -930,7 +940,7 @@ fn a_keylog_only_root_can_read_is_loaded_before_the_drop() -> Result<(), TestErr
 #[cfg(feature = "tls")]
 #[test]
 fn a_keylog_that_cannot_be_read_names_the_cause() -> Result<(), TestError> {
-    let fixture = world_readable_fixture("keylog-cause")?;
+    let (_fixture_dir, fixture) = world_readable_fixture("keylog-cause")?;
     let dir = tempfile::tempdir()?;
     let missing = dir.path().join("not-written-yet.keys");
     let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
@@ -1057,7 +1067,7 @@ fn a_root_run_reads_its_root_only_hep_and_key_files_before_the_drop() -> Result<
             ("srtp.keys", srtp),
         ],
     )?;
-    let fixture = world_readable_fixture("secret-before-drop")?;
+    let (_fixture_dir, fixture) = world_readable_fixture("secret-before-drop")?;
     let run_dir = dir_nobody_can_write()?;
     let out = Command::new("sudo")
         .current_dir(run_dir.path())
@@ -1150,7 +1160,7 @@ fn a_root_run_reads_its_root_only_server_credentials_before_the_drop() -> Result
     let [metrics_auth, api_signing, mcp_token, mcp_signing, cert, key] = files.as_slice() else {
         return Err("expected six files".into());
     };
-    let fixture = world_readable_fixture("server-secrets-before-drop")?;
+    let (_fixture_dir, fixture) = world_readable_fixture("server-secrets-before-drop")?;
     let run_dir = dir_nobody_can_write()?;
     let child = Command::new("sudo")
         .current_dir(run_dir.path())
@@ -1231,7 +1241,7 @@ fn a_root_only_revocation_list_stops_a_root_run_after_the_drop() -> Result<(), T
     }
     let dir = tempfile::tempdir()?;
     let files = root_only_files(dir.path(), &[("revoked", b"tok-1\n")])?;
-    let fixture = world_readable_fixture("revoked-after-drop")?;
+    let (_fixture_dir, fixture) = world_readable_fixture("revoked-after-drop")?;
     let run_dir = dir_nobody_can_write()?;
     let child = Command::new("sudo")
         .current_dir(run_dir.path())

@@ -23,6 +23,9 @@
 
 #![cfg(feature = "mcp")]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::process::Command;
 use support::TestError;
 
@@ -428,9 +431,9 @@ fn capture_status_names_the_real_source() -> Result<(), TestError> {
 mod support;
 use support::{McpSession, call_tool_with_args, ok_payload};
 
-fn tmp_root(name: &str) -> Result<std::path::PathBuf, TestError> {
-    let d = std::env::temp_dir().join(format!("sipnab-mcp-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn tmp_root(name: &str) -> Result<test_scratch::ScratchDir, TestError> {
+    let d = test_scratch::ScratchDir::new(&format!("sipnab-mcp-{name}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&d)?;
     Ok(d)
 }

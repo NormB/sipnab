@@ -463,6 +463,8 @@ pub mod tui;
 pub mod wasm;
 
 #[cfg(test)]
+pub mod test_scratch;
+#[cfg(test)]
 pub mod test_utils;
 
 // Convenience re-exports for library consumers
