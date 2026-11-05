@@ -739,7 +739,23 @@ impl SipnabMcp {
 
         // Handed in by the composition root. This layer asks a relay a
         // question; which relay, and what speaks to it, is not its business.
-        let client = &access.relay;
+        // A question about one call goes to the engine its SDP names when an
+        // engine rule is configured.
+        let (client, relay_addr, engine) = match params.call_id.as_deref() {
+            Some(call_id) if params.sessions != Some(true) => {
+                match self.engine_for(&access, call_id) {
+                    Ok(target) => target,
+                    Err(unknown) => {
+                        return answer_json(&RelayAnswer::not_configured(
+                            "query",
+                            access.addr,
+                            format!("call {call_id}: {unknown}"),
+                        ));
+                    }
+                }
+            }
+            _ => (std::sync::Arc::clone(&access.relay), access.addr, None),
+        };
         if params.sessions == Some(true) {
             let payload = self.relay_sessions_answer(&access, &params)?;
             return Ok(CallToolResult::success(vec![
@@ -754,24 +770,41 @@ impl SipnabMcp {
         } else {
             "list"
         };
+        let max_calls = params
+            .max_calls
+            .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+        if params.call_id.is_none()
+            && let Some(routing) = access.routing.as_deref()
+        {
+            // Which calls are held is asked of every engine the operator named.
+            let holdings = crate::output::query::relay_holdings::ask_engines(
+                client.as_ref(),
+                Some(routing),
+                &access.permit,
+                max_calls,
+                chrono::Utc::now(),
+            );
+            return answer_json(&RelayAnswer::from_holdings(access.addr, &holdings)?);
+        }
         let reply = match params.call_id.as_deref() {
             Some(call_id) => client.query(&access.permit, call_id),
-            None => client.list(
-                &access.permit,
-                params
-                    .max_calls
-                    .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT),
-            ),
+            None => client.list(&access.permit, max_calls),
         };
         let payload = match reply {
-            Ok(reply) => RelayAnswer::from_reply(asked, access.addr, &reply),
+            Ok(reply) => RelayAnswer {
+                engine,
+                ..RelayAnswer::from_reply(asked, relay_addr, &reply)
+            },
             Err(e) => {
                 let detail = suspect_or_unreachable(
                     &relay_label(client.as_ref()),
                     &e,
                     "about what it holds; this is not an answer that it holds nothing",
                 )?;
-                RelayAnswer::suspect(asked, access.addr, detail)
+                RelayAnswer {
+                    engine,
+                    ..RelayAnswer::suspect(asked, relay_addr, detail)
+                }
             }
         };
         Ok(CallToolResult::success(vec![
@@ -831,8 +864,22 @@ impl SipnabMcp {
             ));
         };
 
-        let client = &access.relay;
         let call_id = params.call_id.as_deref();
+        // A question about one call goes to the engine its SDP names when an
+        // engine rule is configured; the relay's own counters go to the one
+        // relay the run names.
+        let (client, relay_addr, engine) = match call_id {
+            Some(cid) => match self.engine_for(&access, cid) {
+                Ok(target) => target,
+                Err(unknown) => {
+                    return answer_json(&RelayStatsAnswer {
+                        detail: Some(format!("call {cid}: {unknown}")),
+                        ..RelayStatsAnswer::base(access.addr, "not_configured")
+                    });
+                }
+            },
+            None => (std::sync::Arc::clone(&access.relay), access.addr, None),
+        };
         // names_only is a global concept -- "what can I even ask for" -- so it is
         // honored only without a call_id, matching the REST names route.
         let names_only = params.names_only.unwrap_or(false) && call_id.is_none();
@@ -841,7 +888,10 @@ impl SipnabMcp {
             None => client.statistics(&access.permit),
         };
         let payload = match reply {
-            Ok(reply) => RelayStatsAnswer::from_reply(access.addr, &reply, call_id, names_only),
+            Ok(reply) => RelayStatsAnswer {
+                engine: engine.clone(),
+                ..RelayStatsAnswer::from_reply(relay_addr, &reply, call_id, names_only)
+            },
             Err(e) => {
                 let label = relay_label(client.as_ref());
                 let label = match call_id {
@@ -855,7 +905,8 @@ impl SipnabMcp {
                 )?;
                 RelayStatsAnswer {
                     detail: Some(detail),
-                    ..RelayStatsAnswer::base(access.addr, "suspect")
+                    engine,
+                    ..RelayStatsAnswer::base(relay_addr, "suspect")
                 }
             }
         };
@@ -974,7 +1025,17 @@ impl SipnabMcp {
             }
         };
 
-        let reply = access.relay.call_statistics(&access.permit, call_id);
+        // The engine this call's SDP names, when an engine rule is configured.
+        let (client, relay_addr, engine) = match self.engine_for(&access, call_id) {
+            Ok(target) => target,
+            Err(unknown) => {
+                return answer_json(&RelayCompareAnswer {
+                    detail: Some(format!("call {call_id}: {unknown}")),
+                    ..RelayCompareAnswer::base(access.addr, call_id, "not_configured")
+                });
+            }
+        };
+        let reply = client.call_statistics(&access.permit, call_id);
 
         use crate::relay::types::ControlReply;
         use crate::stats_vocab::{
@@ -984,25 +1045,25 @@ impl SipnabMcp {
         let payload = match reply {
             Err(e) => {
                 let detail = suspect_or_unreachable(
-                    &format!("{}, call {call_id}", relay_label(access.relay.as_ref())),
+                    &format!("{}, call {call_id}", relay_label(client.as_ref())),
                     &e,
                     "about this call; this is not an answer that it holds nothing",
                 )?;
                 RelayCompareAnswer {
                     detail: Some(detail),
-                    ..RelayCompareAnswer::suspect(access.addr, call_id)
+                    ..RelayCompareAnswer::suspect(relay_addr, call_id)
                 }
             }
             Ok(ControlReply::Statistics(pairs)) => {
                 if let Some(reason) = relay_reply_refusal(&pairs) {
-                    RelayCompareAnswer::refused(access.addr, call_id, reason)
+                    RelayCompareAnswer::refused(relay_addr, call_id, reason)
                 } else {
                     let tiered = relay_reported(&pairs);
                     // ST-S4 condition 11: an oversized per-call total is a suspect
                     // answer carrying its digits, not an absent side.
                     match relay_compare_value(&tiered, "totals.RTP.packets") {
                         RelayCompareValue::Overflow(digits) => {
-                            RelayCompareAnswer::overflow(access.addr, call_id, digits)
+                            RelayCompareAnswer::overflow(relay_addr, call_id, digits)
                         }
                         resolved => {
                             let relay_side = if let RelayCompareValue::Counted(n) = resolved {
@@ -1011,7 +1072,7 @@ impl SipnabMcp {
                                 None
                             };
                             RelayCompareAnswer::from_outcome(
-                                access.addr,
+                                relay_addr,
                                 call_id,
                                 ready_comparison(relay_side, sipnab_side),
                             )
@@ -1019,8 +1080,9 @@ impl SipnabMcp {
                     }
                 }
             }
-            Ok(_) => RelayCompareAnswer::suspect(access.addr, call_id),
+            Ok(_) => RelayCompareAnswer::suspect(relay_addr, call_id),
         };
+        let payload = RelayCompareAnswer { engine, ..payload };
         Ok(CallToolResult::success(vec![
             ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
                 rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
@@ -1476,8 +1538,9 @@ pub struct RelayAnswer {
     ///
     /// Echoed from CONFIGURATION, which is the only place it can come from.
     pub relay_address: String,
-    /// `calls`, `call`, `statistics`, `sessions`, `refused`, or `suspect` (a reply arrived
-    /// and could not be trusted).
+    /// `calls`, `call`, `statistics`, `sessions`, `refused`, `suspect` (a reply arrived
+    /// and could not be trusted), or `not_configured` (an engine rule could
+    /// choose no engine for the call, so nothing was asked).
     pub outcome: String,
     /// What happened, naming the relay, on a `suspect` answer: the words
     /// `--relay-holdings` and REST use.
@@ -1524,8 +1587,74 @@ pub struct RelayAnswer {
     /// `GET /v1/relay/sessions` returns, without its `outcome`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<crate::output::query::relay_sessions::RelaySessions>,
+    /// Why this engine was asked, when an engine rule chose it from the
+    /// call's SDP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// With an engine rule, each engine's own answer to `list`: the
+    /// `engines` array `GET /v1/relay/holdings` returns.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engines: Option<serde_json::Value>,
+    /// With an engine rule, the Call-IDs two or more engines hold: a call that
+    /// moved and left a session on the old engine.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held_by_several_engines: Option<Vec<String>>,
     /// Version of this response shape.
     pub schema_version: u32,
+}
+
+/// A tool result carrying `payload` and the untrusted-content note, as every
+/// relay tool answers.
+///
+/// # Errors
+///
+/// `internal_error` when the payload does not serialize.
+fn answer_json<T: Serialize>(payload: &T) -> Result<CallToolResult, rmcp::ErrorData> {
+    Ok(CallToolResult::success(vec![
+        ContentBlock::json(serde_json::to_value(payload).map_err(|e| {
+            rmcp::ErrorData::internal_error(format!("serialization failed: {e}"), None)
+        })?)?,
+        ContentBlock::text(crate::mcp::shape::untrusted_note()),
+    ]))
+}
+
+/// The relay to ask about one call, its control address, and why it was
+/// chosen, or `None` for the reason when no engine rule chose it.
+type EngineFor = (
+    std::sync::Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>,
+    std::net::SocketAddr,
+    Option<String>,
+);
+
+impl SipnabMcp {
+    /// The relay to ask about `call_id`, its control address, and why it was
+    /// chosen, by the rule every relay surface uses
+    /// ([`crate::relay::engines::call_target`]): the configured relay, or with
+    /// an engine rule the engine the call's SDP in this server's dialog store
+    /// names.
+    ///
+    /// # Errors
+    ///
+    /// Why no engine may be asked about the call.
+    fn engine_for(
+        &self,
+        access: &crate::mcp::server::RelayQueryAccess,
+        call_id: &str,
+    ) -> Result<EngineFor, crate::relay::engines::Unknown> {
+        let sightings = crate::relay::engines::call_sightings(&self.dialog_store.read(), call_id);
+        match crate::relay::engines::call_target(
+            &access.relay,
+            access.routing.as_deref(),
+            &sightings,
+        ) {
+            crate::relay::engines::CallTarget::Ask {
+                relay,
+                control,
+                reason,
+            } => Ok((relay, control.unwrap_or(access.addr), reason)),
+            crate::relay::engines::CallTarget::Unknown(unknown) => Err(unknown),
+        }
+    }
 }
 
 impl SipnabMcp {
@@ -1537,7 +1666,9 @@ impl SipnabMcp {
         access: &crate::mcp::server::RelayQueryAccess,
         params: &QueryRelayParams,
     ) -> Result<RelayAnswer, rmcp::ErrorData> {
-        use crate::output::query::relay_sessions::{SessionsAsk, relay_sessions, sip_saw_end};
+        use crate::output::query::relay_sessions::{
+            Routed, SessionsAsk, relay_sessions_routed, sip_saw_end,
+        };
         let cap = params
             .max_calls
             .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
@@ -1549,8 +1680,15 @@ impl SipnabMcp {
         };
         let dialogs = std::sync::Arc::clone(&self.dialog_store);
         let ended = move |c: &str| sip_saw_end(&dialogs.read(), c);
-        let snapshot = relay_sessions(
+        let sdp_dialogs = std::sync::Arc::clone(&self.dialog_store);
+        let sdp_of = move |c: &str| crate::relay::engines::call_sightings(&sdp_dialogs.read(), c);
+        let routed = access.routing.as_deref().map(|routing| Routed {
+            routing,
+            sdp_of: &sdp_of,
+        });
+        let snapshot = relay_sessions_routed(
             access.relay.as_ref(),
+            routed.as_ref(),
             &access.permit,
             &ask,
             &ended,
@@ -1659,6 +1797,59 @@ impl RelayAnswer {
         }
     }
 
+    /// No engine may be asked about the call; `detail` says why.
+    fn not_configured(asked: &str, addr: std::net::SocketAddr, detail: String) -> Self {
+        Self {
+            detail: Some(detail),
+            ..Self::base(asked, addr, "not_configured")
+        }
+    }
+
+    /// Render what every engine answered to `list`, with an engine rule.
+    ///
+    /// Each engine's answer is the `engines` array REST returns. Some engine
+    /// answering is `outcome: "calls"` with every held Call-ID once; none
+    /// answering is the first engine's answer, mapped as a single relay's is.
+    ///
+    /// # Errors
+    ///
+    /// `internal_error` (-32603) when no engine answered at all.
+    fn from_holdings(
+        addr: std::net::SocketAddr,
+        holdings: &crate::output::query::relay_holdings::Holdings,
+    ) -> Result<Self, rmcp::ErrorData> {
+        let body = holdings.body();
+        let base = |outcome: &str| Self::base("list", addr, outcome);
+        match body["outcome"].as_str().unwrap_or("suspect") {
+            "ok" => Ok(Self {
+                call_ids: serde_json::from_value(body["call_ids"].clone()).ok(),
+                truncated: body["truncated"].as_bool(),
+                engines: Some(body["engines"].clone()),
+                held_by_several_engines: serde_json::from_value(
+                    body["held_by_several_engines"].clone(),
+                )
+                .ok(),
+                ..base("calls")
+            }),
+            "refused" => Ok(Self {
+                refusal: body["detail"].as_str().map(str::to_string),
+                ..base("refused")
+            }),
+            "suspect" => Ok(Self {
+                detail: body["detail"].as_str().map(str::to_string),
+                ..base("suspect")
+            }),
+            _ => Err(rmcp::ErrorData::internal_error(
+                format!(
+                    "{}. Nothing is known about what it holds; this is not an answer \
+                     that it holds nothing.",
+                    body["detail"].as_str().unwrap_or_default()
+                ),
+                None,
+            )),
+        }
+    }
+
     /// A reply arrived and could not be trusted; `detail` says why.
     fn suspect(asked: &str, addr: std::net::SocketAddr, detail: String) -> Self {
         Self {
@@ -1683,6 +1874,9 @@ impl RelayAnswer {
             call_id: None,
             tags: None,
             refusal: None,
+            engine: None,
+            engines: None,
+            held_by_several_engines: None,
             // This tool ASKED. That is the strongest reading on the scale, and
             // the only one no third party could have produced.
             delivery_trust: DeliveryTrust::Asked,
@@ -1735,9 +1929,14 @@ pub struct RelayStatsAnswer {
     /// blended with what sipnab measured.
     pub tier: String,
     /// `ok`, or `refused` when the relay declined (e.g. a Call-ID it does not
-    /// hold), or `suspect` when the reply was not statistics or could not be
-    /// trusted.
+    /// hold), `suspect` when the reply was not statistics or could not be
+    /// trusted, or `not_configured` when an engine rule could choose no
+    /// engine for the call (nothing was asked).
     pub outcome: String,
+    /// Why this engine was asked, when an engine rule chose it from the
+    /// call's SDP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
     /// What happened, naming the relay, when a reply arrived and could not be
     /// trusted: the words `--relay-stats` and REST use.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1784,6 +1983,7 @@ impl RelayStatsAnswer {
             names_source: None,
             names_note: None,
             refusal: None,
+            engine: None,
             delivery_trust: DeliveryTrust::Asked,
             delivery_note: DeliveryTrust::Asked.explain(),
             schema_version: 1,
@@ -1860,9 +2060,14 @@ pub struct RelayCompareAnswer {
     /// The call compared.
     pub call_id: String,
     /// `compared`, `sipnab_has_no_rtp`, `relay_does_not_hold_call`, `neither`,
-    /// `refused` (the relay said no), or `suspect` (the reply was not
-    /// statistics, or could not be trusted).
+    /// `refused` (the relay said no), `suspect` (the reply was not
+    /// statistics, or could not be trusted), or `not_configured` (an engine
+    /// rule could choose no engine for the call; nothing was asked).
     pub outcome: String,
+    /// Why this engine was asked, when an engine rule chose it from the
+    /// call's SDP.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
     /// What happened, naming the relay, when a reply arrived and could not be
     /// trusted: the words `--relay-compare` and REST use.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1916,6 +2121,7 @@ impl RelayCompareAnswer {
             verdict: None,
             note: None,
             refusal: None,
+            engine: None,
             delivery_trust: DeliveryTrust::Asked,
             delivery_note: DeliveryTrust::Asked.explain(),
             schema_version: 1,
@@ -3748,6 +3954,210 @@ mod relay_handler_tests {
         Ok(())
     }
 
+    // ── engine selection: the engine a call's SDP names ─────────────
+
+    /// The moved call, last seen on the engine at 40000-49999, and a call
+    /// whose SDP no row claims.
+    fn engines_store() -> Result<DialogStore, TestError> {
+        let mut store = crate::relay::engines::store_with_call(
+            "m-1@example.invalid",
+            &[
+                (true, "203.0.113.5", 30010),
+                (false, "203.0.113.5", 30012),
+                (true, "203.0.113.5", 40010),
+                (false, "203.0.113.5", 40012),
+            ],
+        )?;
+        let other = crate::relay::engines::store_with_call(
+            "x-1@example.invalid",
+            &[(true, "203.0.113.9", 50000), (false, "203.0.113.9", 50002)],
+        )?;
+        for d in other.iter() {
+            for m in &d.messages {
+                store.process_message(m.clone());
+            }
+        }
+        Ok(store)
+    }
+
+    /// A server over [`engines_store`] whose default engine (192.0.2.5) is
+    /// `a` and whose NAT map reaches `b` at 192.0.2.6.
+    fn routed(a: &Arc<RelayDouble>, b: &Arc<RelayDouble>) -> Result<SipnabMcp, TestError> {
+        use crate::relay::engines::{Connect, EngineMap, EngineRouting, EngineRow, EngineRule};
+        let rows = vec![
+            "203.0.113.5 30000-39999 192.0.2.5:2223".parse::<EngineRow>()?,
+            "203.0.113.5 40000-49999 192.0.2.6:2223".parse::<EngineRow>()?,
+        ];
+        let b = Arc::clone(b);
+        let connect: Connect = Arc::new(move |_| {
+            Arc::clone(&b) as Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>
+        });
+        let permit = TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
+            device: "eth0".to_string(),
+        })
+        .ok_or("a live source grants a permit")?;
+        Ok(server(engines_store()?, StreamStore::new(16))
+            .with_relay_query("192.0.2.5:2223".parse()?, a.clone(), permit)
+            .with_engine_routing(Some(Arc::new(EngineRouting::new(
+                EngineRule::Map(EngineMap::new(rows)?),
+                "192.0.2.5:2223".parse()?,
+                false,
+                connect,
+            )))))
+    }
+
+    #[tokio::test]
+    async fn a_call_question_goes_to_the_engine_its_sdp_names() -> Result<(), TestError> {
+        let a = Arc::new(RelayDouble::default());
+        let b = Arc::new(RelayDouble {
+            query: Some(ControlReply::Call(crate::relay::types::CallView {
+                call_id: "m-1@example.invalid".to_string(),
+                tags: Vec::new(),
+            })),
+            call_statistics: Some(stats(&[("totals.RTP.packets", "5")])),
+            ..Default::default()
+        });
+        let s = routed(&a, &b)?;
+        let v = payload(
+            &s.query_relay(Parameters(QueryRelayParams {
+                call_id: Some("m-1@example.invalid".to_string()),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        assert_eq!(v["outcome"], "call", "{v}");
+        assert_eq!(v["relay_address"], "192.0.2.6:2223", "{v}");
+        assert!(
+            v["engine"]
+                .as_str()
+                .is_some_and(|e| e.contains("40000-49999")),
+            "{v}"
+        );
+        let v = payload(
+            &s.relay_stats(Parameters(RelayStatsParams {
+                call_id: Some("m-1@example.invalid".to_string()),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        assert_eq!(v["relay_address"], "192.0.2.6:2223", "{v}");
+        let _ = s
+            .relay_compare(Parameters(RelayCompareParams {
+                call_id: "m-1@example.invalid".to_string(),
+            }))
+            .await;
+        assert!(
+            a.asked().is_empty(),
+            "the default engine was not asked: {:?}",
+            a.asked()
+        );
+        assert_eq!(
+            b.asked(),
+            [
+                "query m-1@example.invalid",
+                "call_statistics m-1@example.invalid",
+                "call_statistics m-1@example.invalid"
+            ],
+            "a call question goes to the engine its sdp names"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_call_with_no_map_row_is_asked_of_no_engine() -> Result<(), TestError> {
+        let a = Arc::new(RelayDouble::default());
+        let b = Arc::new(RelayDouble::default());
+        let s = routed(&a, &b)?;
+        let v = payload(
+            &s.query_relay(Parameters(QueryRelayParams {
+                call_id: Some("x-1@example.invalid".to_string()),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        assert_eq!(v["outcome"], "not_configured", "{v}");
+        assert!(v.to_string().contains("engine unknown (no map row)"), "{v}");
+        let v = payload(
+            &s.relay_stats(Parameters(RelayStatsParams {
+                call_id: Some("x-1@example.invalid".to_string()),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        assert_eq!(v["outcome"], "not_configured", "{v}");
+        let v = payload(
+            &s.relay_compare(Parameters(RelayCompareParams {
+                call_id: "x-1@example.invalid".to_string(),
+            }))
+            .await
+            .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        assert_eq!(v["outcome"], "not_configured", "{v}");
+        assert!(
+            a.asked().is_empty() && b.asked().is_empty(),
+            "a call with no map row is asked of no engine"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn listing_and_sessions_ask_every_engine() -> Result<(), TestError> {
+        let held = |ids: &[&str]| {
+            ControlReply::Calls(Enumeration {
+                call_ids: ids.iter().map(|c| (*c).to_string()).collect(),
+                truncated: false,
+            })
+        };
+        let a = Arc::new(RelayDouble {
+            list: Some(held(&["m-1@example.invalid"])),
+            ..Default::default()
+        });
+        let b = Arc::new(RelayDouble {
+            list: Some(held(&["m-1@example.invalid", "b-1@example.invalid"])),
+            query: Some(ControlReply::Call(crate::relay::types::CallView {
+                call_id: "m-1@example.invalid".to_string(),
+                tags: Vec::new(),
+            })),
+            ..Default::default()
+        });
+        let s = routed(&a, &b)?;
+        let v = payload(
+            &s.query_relay(Parameters(QueryRelayParams::default()))
+                .await
+                .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        assert_eq!(v["outcome"], "calls", "{v}");
+        assert_eq!(
+            v["call_ids"],
+            serde_json::json!(["b-1@example.invalid", "m-1@example.invalid"]),
+            "listing and sessions ask every engine"
+        );
+        assert_eq!(
+            v["held_by_several_engines"],
+            serde_json::json!(["m-1@example.invalid"]),
+            "listing and sessions ask every engine"
+        );
+        assert_eq!(v["engines"].as_array().map(Vec::len), Some(2), "{v}");
+        let v = payload(
+            &s.query_relay(Parameters(QueryRelayParams {
+                sessions: Some(true),
+                call_id: Some("m-1@example.invalid".to_string()),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        assert_eq!(
+            v["sessions"]["calls"][0]["engine"]["chosen_by"], "map_row",
+            "{v}"
+        );
+        Ok(())
+    }
+
     /// `max_calls` reaches the relay as its own `list` argument.
     #[tokio::test]
     async fn max_calls_is_passed_to_the_relay_unchanged() -> Result<(), TestError> {
@@ -4987,6 +5397,7 @@ mod sessions_answer_tests {
             not_queried: Vec::new(),
             stall_seconds: 2,
             notes: Vec::new(),
+            engines: None,
         }
     }
 

@@ -19,6 +19,13 @@ pub struct SdpExchange {
     pub timestamp: DateTime<Utc>,
     /// Whether this SDP is an offer or an answer.
     pub direction: OfferAnswer,
+    /// Whether a request carried this SDP, rather than a response.
+    ///
+    /// Not the same fact as [`Self::direction`]: in a delayed offer the 2xx
+    /// (a response) carries the offer and the ACK (a request) the answer. A
+    /// relay's rewritten address travels in both a request and a response,
+    /// which is how engine selection tells it from a party's own address.
+    pub from_request: bool,
     /// Codec names aggregated across all media descriptions' rtpmap entries
     /// (`m=` order, de-duplicated), so audio+video offers list both legs.
     pub codecs: Vec<String>,
@@ -157,6 +164,7 @@ pub fn track_sdp(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
     timeline.push(SdpExchange {
         timestamp: msg.timestamp,
         direction,
+        from_request: msg.is_request,
         codecs,
         media_addr,
         media_port,
@@ -190,6 +198,7 @@ pub fn track_transfer(timeline: &mut Vec<SdpExchange>, msg: &SipMessage) {
     timeline.push(SdpExchange {
         timestamp: msg.timestamp,
         direction: OfferAnswer::Offer,
+        from_request: true,
         codecs: Vec::new(),
         media_addr: None,
         media_port: None,
@@ -527,6 +536,38 @@ mod tests {
              a=sendrecv\r\n"
         )
         .into_bytes()
+    }
+
+    /// Each exchange records whether a request or a response carried it.
+    ///
+    /// Offer and answer cannot say this: in a delayed offer the 2xx (a
+    /// response) is the offer and the ACK (a request) the answer, so a relay's
+    /// rewritten address in the forwarded 2xx and the forwarded ACK reads
+    /// "answer" both times. Engine selection from SDP needs the direction of
+    /// travel, which is request or response.
+    #[test]
+    fn each_exchange_records_whether_a_request_carried_it() -> Result<(), TestError> {
+        let mut timeline = Vec::new();
+        track_sdp(&mut timeline, &make_invite_no_sdp(base_ts()?)?);
+        let sdp = sendrecv_sdp("PCMU", "192.0.2.20", 6000);
+        track_sdp(&mut timeline, &make_200_with_sdp(&sdp, base_ts()?)?);
+        let sdp = sendrecv_sdp("PCMU", "192.0.2.21", 6000);
+        track_sdp(&mut timeline, &make_ack_with_sdp(&sdp, base_ts()?)?);
+
+        assert_eq!(timeline.len(), 2, "the offerless INVITE leaves no exchange");
+        assert_eq!(
+            timeline[0].direction,
+            OfferAnswer::Offer,
+            "each exchange records whether a request carried it"
+        );
+        assert!(!timeline[0].from_request, "the 2xx is a response");
+        assert_eq!(
+            timeline[1].direction,
+            OfferAnswer::Answer,
+            "each exchange records whether a request carried it"
+        );
+        assert!(timeline[1].from_request, "the ACK is a request");
+        Ok(())
     }
 
     /// An SDP with no `a=rtpmap` still names its codecs. RFC 3551 Table 4

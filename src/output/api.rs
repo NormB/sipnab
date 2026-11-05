@@ -217,6 +217,10 @@ pub struct RelayRestConfig {
     /// read by `GET /v1/relay/stats/polled`. Reading it transmits nothing, so
     /// it needs neither `relay` nor `permit`. `None` reads as `not_polling`.
     pub polled: Option<std::sync::Arc<crate::output::relay_polled::PolledStore>>,
+    /// The run's engine rule, when one is configured: which engine to ask
+    /// about one call, chosen from its SDP. `None` asks `relay` everything,
+    /// as before engine selection existed.
+    pub routing: Option<std::sync::Arc<crate::relay::engines::EngineRouting>>,
 }
 
 /// Shared state passed to every axum handler via `State(...)`.
@@ -5847,6 +5851,17 @@ fn relay_rest_answer(
     ask: &RelayAsk,
     stream_store: &Arc<RwLock<StreamStore>>,
 ) -> Value {
+    relay_rest_answer_with(rq, ask, stream_store, None)
+}
+
+/// [`relay_rest_answer`], with the dialog store a question about one call
+/// reads that call's SDP from to choose its engine.
+fn relay_rest_answer_with(
+    rq: &RelayRestConfig,
+    ask: &RelayAsk,
+    stream_store: &Arc<RwLock<StreamStore>>,
+    dialogs: Option<&Arc<RwLock<DialogStore>>>,
+) -> Value {
     use crate::output::relay_statistics as fmt;
     use crate::relay::types::ControlReply;
     use crate::stats_vocab::{
@@ -5876,7 +5891,41 @@ fn relay_rest_answer(
         (Some(r), Some(p)) => (r, p),
     };
 
-    let label = crate::output::query::relay_holdings::relay_label(relay.as_ref());
+    // A question about one call goes to the engine that call's SDP names when
+    // an engine rule is configured, and to the one relay otherwise: the rule
+    // every relay surface uses. No engine may be asked is not_configured,
+    // naming why, and nothing is sent.
+    let call_of = match ask {
+        RelayAsk::Call(c) | RelayAsk::Compare(c) | RelayAsk::Holding(c) => Some(c.as_str()),
+        _ => None,
+    };
+    let (relay, label) = match call_of {
+        Some(call_id) => {
+            let sightings = dialogs
+                .map(|d| crate::relay::engines::call_sightings(&d.read(), call_id))
+                .unwrap_or_default();
+            match crate::relay::engines::call_target(relay, rq.routing.as_deref(), &sightings) {
+                crate::relay::engines::CallTarget::Ask { relay, reason, .. } => {
+                    let label = crate::output::query::relay_holdings::relay_label(relay.as_ref());
+                    let label = match reason {
+                        Some(why) => format!("{label}, {why}"),
+                        None => label,
+                    };
+                    (relay, label)
+                }
+                crate::relay::engines::CallTarget::Unknown(unknown) => {
+                    return to_value(fmt::relay_rest_outcome(
+                        O::NotConfigured,
+                        &format!("call {call_id}: {unknown}"),
+                    ));
+                }
+            }
+        }
+        None => (
+            Arc::clone(relay),
+            crate::output::query::relay_holdings::relay_label(relay.as_ref()),
+        ),
+    };
     let now = chrono::Utc::now();
     // A fetch that did not yield a trustworthy reply. ST-S4: a reply that
     // arrived but could not be trusted (a mismatched cookie) is `suspect` -- the
@@ -6021,7 +6070,9 @@ fn relay_rest_answer(
             scan,
             dialogs,
         } => {
-            use crate::output::query::relay_sessions::{SessionsAsk, relay_sessions};
+            use crate::output::query::relay_sessions::{
+                Routed, SessionsAsk, relay_sessions_routed,
+            };
             let cap = crate::relay::reconcile::DEFAULT_LIST_LIMIT;
             let ask = SessionsAsk {
                 selected: call_id.as_deref(),
@@ -6031,13 +6082,30 @@ fn relay_rest_answer(
             };
             let ended =
                 |c: &str| crate::output::query::relay_sessions::sip_saw_end(&dialogs.read(), c);
-            relay_sessions(relay.as_ref(), &permit, &ask, &ended, &chrono::Utc::now).body()
+            let sdp_of = |c: &str| crate::relay::engines::call_sightings(&dialogs.read(), c);
+            let routed = rq.routing.as_deref().map(|routing| Routed {
+                routing,
+                sdp_of: &sdp_of,
+            });
+            relay_sessions_routed(
+                relay.as_ref(),
+                routed.as_ref(),
+                &permit,
+                &ask,
+                &ended,
+                &chrono::Utc::now,
+            )
+            .body()
         }
         // The answer `--relay-holdings` prints too.
-        RelayAsk::Holdings { max_calls } => {
-            crate::output::query::relay_holdings::ask(relay.as_ref(), &permit, *max_calls, now)
-                .body()
-        }
+        RelayAsk::Holdings { max_calls } => crate::output::query::relay_holdings::ask_engines(
+            relay.as_ref(),
+            rq.routing.as_deref(),
+            &permit,
+            *max_calls,
+            now,
+        )
+        .body(),
         RelayAsk::Holding(call_id) => match relay.query(&permit, call_id) {
             Ok(ControlReply::Call(view)) => to_value(fmt::relay_rest_ok(
                 &json!({
@@ -6217,10 +6285,12 @@ async fn get_relay_stats_call(
     guard(&state, &headers, addr.ip())?;
     let rq = state.relay_query.clone();
     let ss = Arc::clone(&state.stream_store);
-    let body =
-        tokio::task::spawn_blocking(move || relay_rest_answer(&rq, &RelayAsk::Call(call_id), &ss))
-            .await
-            .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
+    let ds = Arc::clone(&state.dialog_store);
+    let body = tokio::task::spawn_blocking(move || {
+        relay_rest_answer_with(&rq, &RelayAsk::Call(call_id), &ss, Some(&ds))
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
     Ok(Json(body))
 }
 
@@ -6252,8 +6322,9 @@ async fn get_relay_compare(
     guard(&state, &headers, addr.ip())?;
     let rq = state.relay_query.clone();
     let ss = Arc::clone(&state.stream_store);
+    let ds = Arc::clone(&state.dialog_store);
     let body = tokio::task::spawn_blocking(move || {
-        relay_rest_answer(&rq, &RelayAsk::Compare(call_id), &ss)
+        relay_rest_answer_with(&rq, &RelayAsk::Compare(call_id), &ss, Some(&ds))
     })
     .await
     .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
@@ -6367,8 +6438,9 @@ async fn get_relay_holdings_call(
     guard(&state, &headers, addr.ip())?;
     let rq = state.relay_query.clone();
     let ss = Arc::clone(&state.stream_store);
+    let ds = Arc::clone(&state.dialog_store);
     let body = tokio::task::spawn_blocking(move || {
-        relay_rest_answer(&rq, &RelayAsk::Holding(call_id), &ss)
+        relay_rest_answer_with(&rq, &RelayAsk::Holding(call_id), &ss, Some(&ds))
     })
     .await
     .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
@@ -10228,6 +10300,7 @@ mod tests {
             relay: Some(Arc::new(StubRelay)),
             permit: None,
             polled: None,
+            routing: None,
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
         assert_eq!(v["outcome"], "not_permitted");
@@ -10293,6 +10366,7 @@ mod tests {
             relay: Some(Arc::new(HoldsRelay)),
             permit: Some(live_permit()?),
             polled: None,
+            routing: None,
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Holdings { max_calls: 10 }, &empty_streams());
         assert_eq!(v["outcome"], "ok");
@@ -10310,6 +10384,7 @@ mod tests {
             relay: Some(Arc::new(HoldsRelay)),
             permit: Some(live_permit()?),
             polled: None,
+            routing: None,
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Holding("call-x".into()), &empty_streams());
         assert_eq!(v["outcome"], "ok");
@@ -10462,6 +10537,7 @@ mod tests {
             relay: Some(Arc::new(ScriptedRelay { wide, per_call })),
             permit: Some(live_permit()?),
             polled: None,
+            routing: None,
         })
     }
 
@@ -10798,6 +10874,192 @@ mod tests {
             !names(&lacks)?.iter().any(|n| n == "rtpa_nlost"),
             "the version that does not list it does not invent it"
         );
+        Ok(())
+    }
+
+    // ── engine selection: the engine a call's SDP names ─────────────────
+
+    /// A scripted engine with a name of its own.
+    struct NamedEngine(&'static str, Scripted, Vec<&'static str>);
+
+    impl crate::relay::reconcile::ReadOnlyRelay for NamedEngine {
+        fn list(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            _l: u32,
+        ) -> anyhow::Result<ControlReply> {
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: self.2.iter().map(|c| (*c).to_owned()).collect(),
+                truncated: false,
+            }))
+        }
+        fn query(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            c: &str,
+        ) -> anyhow::Result<ControlReply> {
+            if self.2.contains(&c) {
+                Ok(ControlReply::Call(crate::relay::types::CallView {
+                    call_id: c.to_owned(),
+                    tags: Vec::new(),
+                }))
+            } else {
+                Ok(ControlReply::Refused {
+                    reason: "Unknown call-id".to_owned(),
+                })
+            }
+        }
+        fn statistics(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("not asked")
+        }
+        fn call_statistics(
+            &self,
+            _p: &crate::security::transmit_guard::TransmitPermit,
+            _call_id: &str,
+        ) -> anyhow::Result<ControlReply> {
+            self.1.produce()
+        }
+        fn describe(&self) -> String {
+            self.0.to_owned()
+        }
+    }
+
+    /// The default engine at 192.0.2.5 times out on every per-call ask; the
+    /// engine at 192.0.2.6 answers. The NAT map routes 40000-49999 to it.
+    fn routed_config(previous: bool) -> Result<RelayRestConfig, TestError> {
+        use crate::relay::engines::{Connect, EngineMap, EngineRouting, EngineRow, EngineRule};
+        let rows = vec![
+            "203.0.113.5 30000-39999 192.0.2.5:2223".parse::<EngineRow>()?,
+            "203.0.113.5 40000-49999 192.0.2.6:2223".parse::<EngineRow>()?,
+        ];
+        let connect: Connect = Arc::new(|_| {
+            Arc::new(NamedEngine(
+                "engine-b",
+                Scripted::Stats(vec![("totals.RTP.packets", "77")]),
+                vec!["m-1@example.invalid"],
+            ))
+        });
+        Ok(RelayRestConfig {
+            relay: Some(Arc::new(NamedEngine(
+                "engine-a",
+                Scripted::Timeout,
+                vec!["m-1@example.invalid"],
+            ))),
+            permit: Some(live_permit()?),
+            polled: None,
+            routing: Some(Arc::new(EngineRouting::new(
+                EngineRule::Map(EngineMap::new(rows)?),
+                "192.0.2.5:2223".parse()?,
+                previous,
+                connect,
+            ))),
+        })
+    }
+
+    /// The moved call, last seen on the engine at 40000-49999.
+    fn moved_dialogs() -> Result<Arc<RwLock<DialogStore>>, TestError> {
+        Ok(Arc::new(RwLock::new(
+            crate::relay::engines::store_with_call(
+                "m-1@example.invalid",
+                &[
+                    (true, "203.0.113.5", 30010),
+                    (false, "203.0.113.5", 30012),
+                    (true, "203.0.113.5", 40010),
+                    (false, "203.0.113.5", 40012),
+                ],
+            )?,
+        )))
+    }
+
+    #[test]
+    fn relay_rest_call_asks_the_engine_the_sdp_names() -> Result<(), TestError> {
+        let rq = routed_config(false)?;
+        let v = relay_rest_answer_with(
+            &rq,
+            &RelayAsk::Call("m-1@example.invalid".into()),
+            &empty_streams(),
+            Some(&moved_dialogs()?),
+        );
+        assert_eq!(v["outcome"], "ok", "{v}");
+        let relay = v["relay"].as_str().unwrap_or_default();
+        assert!(relay.contains("relay (engine-b)"), "{v}");
+        assert!(
+            relay.contains("chosen by engine row 203.0.113.5 40000-49999"),
+            "{v}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn relay_rest_call_with_no_map_row_asks_nothing() -> Result<(), TestError> {
+        let rq = routed_config(false)?;
+        let dialogs = Arc::new(RwLock::new(crate::relay::engines::store_with_call(
+            "x-1@example.invalid",
+            &[(true, "203.0.113.9", 50000), (false, "203.0.113.9", 50002)],
+        )?));
+        for ask in [
+            RelayAsk::Call("x-1@example.invalid".into()),
+            RelayAsk::Compare("x-1@example.invalid".into()),
+            RelayAsk::Holding("x-1@example.invalid".into()),
+        ] {
+            let v = relay_rest_answer_with(&rq, &ask, &empty_streams(), Some(&dialogs));
+            assert_eq!(v["outcome"], "not_configured", "{v}");
+            assert!(v.to_string().contains("engine unknown (no map row)"), "{v}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn relay_rest_holding_and_holdings_follow_the_engines() -> Result<(), TestError> {
+        let rq = routed_config(false)?;
+        let v = relay_rest_answer_with(
+            &rq,
+            &RelayAsk::Holding("m-1@example.invalid".into()),
+            &empty_streams(),
+            Some(&moved_dialogs()?),
+        );
+        assert_eq!(v["outcome"], "ok", "{v}");
+        assert!(
+            v["relay"].as_str().unwrap_or_default().contains("engine-b"),
+            "{v}"
+        );
+        let v = relay_rest_answer_with(
+            &rq,
+            &RelayAsk::Holdings { max_calls: 32 },
+            &empty_streams(),
+            Some(&moved_dialogs()?),
+        );
+        assert_eq!(v["engines"].as_array().map(Vec::len), Some(2), "{v}");
+        assert_eq!(
+            v["held_by_several_engines"],
+            json!(["m-1@example.invalid"]),
+            "relay rest holding and holdings follow the engines"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn relay_rest_sessions_name_each_calls_engine() -> Result<(), TestError> {
+        let rq = routed_config(true)?;
+        let dialogs = moved_dialogs()?;
+        let v = relay_rest_answer_with(
+            &rq,
+            &RelayAsk::Sessions {
+                call_id: Some("m-1@example.invalid".into()),
+                scan: false,
+                dialogs: Arc::clone(&dialogs),
+            },
+            &empty_streams(),
+            Some(&dialogs),
+        );
+        assert_eq!(v["outcome"], "ok", "{v}");
+        let engine = &v["calls"][0]["engine"];
+        assert_eq!(engine["asked"], "relay (engine-b)", "{v}");
+        assert_eq!(engine["previous"]["relay"], "relay (engine-a)", "{v}");
+        assert_eq!(engine["held_by_several_engines"], true, "{v}");
         Ok(())
     }
 

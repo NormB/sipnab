@@ -1147,6 +1147,24 @@ static KEY_SPECS: &[KeySpec] = &[
         },
     ),
     ("names", "enabled", KeyKind::Bool),
+    // `[relay] engines`: a row needs `--rtpengine-control` on the command
+    // line, which a key-only run cannot give, so the one value it accepts is
+    // the empty list. A well-formed row is refused naming the key, as is a
+    // malformed one; the flag rows prove a well-formed row is accepted.
+    (
+        "relay",
+        "engines",
+        KeyKind::Literal {
+            accept: &["[]"],
+            reject: &[
+                "[\"203.0.113.5 30000-39999 192.0.2.5:2223\"]",
+                "[\"x\"]",
+                "[\"203.0.113.5 39999-30000 192.0.2.5:2223\"]",
+                "[\"203.0.113.5 30000-40000 192.0.2.5:2223\", \"203.0.113.5 40000-49999 192.0.2.6:2223\"]",
+            ],
+            ctx: "",
+        },
+    ),
     (
         "names",
         "hosts_file",

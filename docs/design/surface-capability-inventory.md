@@ -11,9 +11,9 @@ reachable three ways and not four is visible only once these four are set
 beside one another. [`tests/capability_matrix_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/capability_matrix_test.rs) keeps
 this current and requires the matrix to account for every row here.
 
-Totals: CLI 399, TUI 25, REST 51, MCP 79.
+Totals: CLI 402, TUI 25, REST 51, MCP 79.
 
-## CLI flags (399)
+## CLI flags (402)
 
 - `--ack-timeout`
 - `--active-idle-window`
@@ -284,6 +284,7 @@ Totals: CLI 399, TUI 25, REST 51, MCP 79.
 - `--relay-compare`
 - `--relay-holdings`
 - `--relay-holdings-max`
+- `--relay-previous-engine`
 - `--relay-sessions`
 - `--relay-sessions-call`
 - `--relay-stats`
@@ -299,6 +300,8 @@ Totals: CLI 399, TUI 25, REST 51, MCP 79.
 - `--rotate`
 - `--rtp`
 - `--rtpengine-control`
+- `--rtpengine-engine`
+- `--rtpengine-trust-sdp-address`
 - `--rtpproxy-control`
 - `--rtt-bad-ms`
 - `--rtt-warn-ms`

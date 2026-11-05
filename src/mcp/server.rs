@@ -1063,7 +1063,22 @@ impl SipnabMcp {
             addr,
             relay,
             permit,
+            routing: None,
         });
+        self
+    }
+
+    /// Choose the engine for a question about one call from its SDP, by the
+    /// run's engine rule. Has no effect without [`Self::with_relay_query`]:
+    /// an engine rule routes questions the server may already ask.
+    #[must_use]
+    pub fn with_engine_routing(
+        mut self,
+        routing: Option<std::sync::Arc<crate::relay::engines::EngineRouting>>,
+    ) -> Self {
+        if let Some(access) = self.relay_query.as_mut() {
+            access.routing = routing;
+        }
         self
     }
 
@@ -20334,6 +20349,9 @@ pub(crate) struct RelayQueryAccess {
     pub relay: std::sync::Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>,
     /// Proof this run reads a live source and may put a packet on the wire.
     pub permit: crate::security::transmit_guard::TransmitPermit,
+    /// The run's engine rule, when one is configured: which engine to ask
+    /// about one call, chosen from its SDP.
+    pub routing: Option<std::sync::Arc<crate::relay::engines::EngineRouting>>,
 }
 
 /// Tool handlers and protocol methods that no in-process test called.

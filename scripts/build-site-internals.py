@@ -329,6 +329,7 @@ DOCS_TO_SITE = {
     "rtpproxy-relay.md": "rtpproxy-relay.md",
     "rtpproxy-sipnab.md": "rtpproxy-sipnab.md",
     "relay-statistics.md": "relay-statistics.md",
+    "relay-engines.md": "relay-engines.md",
     "homer.md": "homer.md",
     "homer-sipnab.md": "homer-sipnab.md",
     "prometheus.md": "prometheus.md",

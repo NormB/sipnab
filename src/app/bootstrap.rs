@@ -693,9 +693,27 @@ pub fn refuse_invalid_config(cli: &Cli, config: &Config) -> Result<(), PlanError
     portrange(cli, config)?;
     build_filter_expr(cli, config)?;
     mcp_tool_selection(cli, config)?;
+    engine_selection(cli, config)?;
     #[cfg(feature = "vcon")]
     vcon_rules(cli, config)?;
     Ok(())
+}
+
+/// The relay engine rule: `--rtpengine-engine` rows and `[relay] engines`,
+/// or `--rtpengine-trust-sdp-address`, refused by [`Cli::engine_selection`]
+/// before anything opens.
+///
+/// # Errors
+///
+/// A `PlanError` with the exit code of where the refused setting came from.
+fn engine_selection(cli: &Cli, config: &Config) -> Result<(), PlanError> {
+    cli.engine_selection(config).map(|_| ()).map_err(|e| {
+        // A refused flag is an argument error, exit 2; a refused `[relay]` key
+        // a config error, exit 1. `engine_selection` says which by the
+        // error's kind, as `ws_port_range` does.
+        let origin = crate::settings::Origin::of(matches!(e, crate::Error::CliValidation(_)));
+        PlanError::refused(origin, e.to_string())
+    })
 }
 
 /// The `[actions]` entries, and the `[action_limits]` every action passes
@@ -2286,12 +2304,17 @@ fn report_relay_stats_blocked(blocked: &RelayAskBlocked) {
 /// does), through the same gate `--relay-stats` passes, and the run ends with
 /// the answer. A refusal is the invocation's to fix, so it exits 2.
 #[must_use]
-pub fn run_relay_holdings(cli: &Cli, planned: Option<&CaptureSource>) -> Option<i32> {
+pub fn run_relay_holdings(
+    cli: &Cli,
+    config: &Config,
+    planned: Option<&CaptureSource>,
+) -> Option<i32> {
     if !cli.gate_args.relay_holdings {
         return None;
     }
     Some(run_relay_listing(
         cli,
+        config,
         planned,
         "--relay-holdings",
         crate::app::queries::relay_holdings,
@@ -2302,12 +2325,17 @@ pub fn run_relay_holdings(cli: &Cli, planned: Option<&CaptureSource>) -> Option<
 /// `None` otherwise. The same gate, order and refusals as
 /// [`run_relay_holdings`].
 #[must_use]
-pub fn run_relay_sessions(cli: &Cli, planned: Option<&CaptureSource>) -> Option<i32> {
+pub fn run_relay_sessions(
+    cli: &Cli,
+    config: &Config,
+    planned: Option<&CaptureSource>,
+) -> Option<i32> {
     if !cli.gate_args.relay_sessions {
         return None;
     }
     Some(run_relay_listing(
         cli,
+        config,
         planned,
         "--relay-sessions",
         crate::app::queries::relay_sessions,
@@ -2319,9 +2347,15 @@ pub fn run_relay_sessions(cli: &Cli, planned: Option<&CaptureSource>) -> Option<
 /// nothing was asked (exit 2).
 fn run_relay_listing(
     cli: &Cli,
+    config: &Config,
     planned: Option<&CaptureSource>,
     flag: &str,
-    answer: fn(&Cli, &dyn crate::relay::reconcile::ReadOnlyRelay, &TransmitPermit) -> i32,
+    answer: fn(
+        &Cli,
+        &dyn crate::relay::reconcile::ReadOnlyRelay,
+        Option<&crate::relay::engines::EngineRouting>,
+        &TransmitPermit,
+    ) -> i32,
 ) -> i32 {
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
 
@@ -2342,7 +2376,11 @@ fn run_relay_listing(
     match relay_ask(action, permit) {
         Ok(ask) => {
             let client = ControlClient::new(ask.socket, DEFAULT_CONTROL_TIMEOUT);
-            answer(cli, &client, &ask.permit)
+            // Planning refused an unusable engine rule, so an error cannot
+            // reach here.
+            let selection = cli.engine_selection(config).ok().flatten();
+            let routing = crate::app::relay_engines::routing(cli, selection.as_ref());
+            answer(cli, &client, routing.as_deref(), &ask.permit)
         }
         Err(blocked) => {
             report_relay_listing_blocked(flag, &blocked);
@@ -2428,7 +2466,7 @@ struct RelayStatsRendering<'a> {
 /// transmits, so it is reached only with a permit in hand, and its result is
 /// tiered `relay_reported`, resolved to the three-state wire form, and printed
 /// through the CLI's statistics formatter.
-fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
+fn report_relay_statistics(cli: &Cli, config: &Config, source: Option<&CaptureSource>) {
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
 
     let permit = source.and_then(TransmitPermit::for_source);
@@ -2465,10 +2503,13 @@ fn report_relay_statistics(cli: &Cli, source: Option<&CaptureSource>) {
         cli.rtp_args.relay_stats_call.as_deref()
     };
     let (fetched, label) = match per_call {
-        Some(call_id) => (
-            client.call_statistics(&ask.permit, call_id),
-            format!("rtpengine at {addr}, call {call_id}"),
-        ),
+        // A question about one call goes to the engine its SDP names. This
+        // run asks before it reads any SIP, so with an engine rule that is the
+        // default engine, and the label says why.
+        Some(call_id) => match fetch_call_statistics(cli, config, &ask, call_id) {
+            Some(fetched) => fetched,
+            None => return,
+        },
         None => (
             client.statistics(&ask.permit),
             format!("rtpengine at {addr}"),
@@ -2597,6 +2638,56 @@ fn print_relay_stat_values(
     }
 }
 
+/// The relay to ask about one call on a CLI run, by the rule every relay
+/// surface uses ([`crate::relay::engines::call_target`]): the
+/// `--rtpengine-control` relay at `socket`, or with an engine rule the engine
+/// `sightings` name.
+fn cli_call_target(
+    cli: &Cli,
+    config: &Config,
+    socket: std::net::SocketAddr,
+    sightings: &[crate::relay::engines::SdpSighting],
+) -> crate::relay::engines::CallTarget {
+    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+    let default: std::sync::Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync> =
+        std::sync::Arc::new(ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT));
+    // Planning refused an unusable engine rule, so an error cannot reach here.
+    let selection = cli.engine_selection(config).ok().flatten();
+    let routing = crate::app::relay_engines::routing(cli, selection.as_ref());
+    crate::relay::engines::call_target(&default, routing.as_deref(), sightings)
+}
+
+/// `label`, followed by why the engine was chosen when an engine rule chose
+/// it.
+fn labeled(label: String, reason: Option<String>) -> String {
+    match reason {
+        Some(why) => format!("{label}, {why}"),
+        None => label,
+    }
+}
+
+/// `--relay-stats-call`'s fetch and its label. The run asks before it reads
+/// any SIP, so the call's SDP is not known and an engine rule names the
+/// default engine; `None`, after logging why, when the rule names none.
+fn fetch_call_statistics(
+    cli: &Cli,
+    config: &Config,
+    ask: &RelayAsk,
+    call_id: &str,
+) -> Option<(anyhow::Result<crate::relay::types::ControlReply>, String)> {
+    let addr = ask.addr.as_str();
+    match cli_call_target(cli, config, ask.socket, &[]) {
+        crate::relay::engines::CallTarget::Ask { relay, reason, .. } => Some((
+            relay.call_statistics(&ask.permit, call_id),
+            labeled(format!("rtpengine at {addr}, call {call_id}"), reason),
+        )),
+        crate::relay::engines::CallTarget::Unknown(unknown) => {
+            tracing::error!("--relay-stats-call {call_id}: {unknown}");
+            None
+        }
+    }
+}
+
 /// Compare the relay's own per-call RTP packet count against sipnab's
 /// measurement, and print it (ST7 / C4).
 ///
@@ -2614,12 +2705,12 @@ fn print_relay_stat_values(
 /// and absent are different answers.
 pub fn report_relay_comparison(
     cli: &Cli,
+    config: &Config,
     source: &CaptureSource,
     call_id: &str,
     stream_store: &crate::rtp::stream_store::StreamStore,
+    dialog_store: &crate::sip::dialog_store::DialogStore,
 ) {
-    use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
-
     let permit = TransmitPermit::for_source(source);
     let action = relay_stats_action(
         true,
@@ -2633,21 +2724,35 @@ pub fn report_relay_comparison(
             return;
         }
     };
-    let addr = ask.addr.as_str();
+    // The engine this call's SDP names, when an engine rule is configured:
+    // the capture has drained, so the call's SDP is in the dialog store.
+    let sightings = crate::relay::engines::call_sightings(dialog_store, call_id);
+    let (client, control, reason) = match cli_call_target(cli, config, ask.socket, &sightings) {
+        crate::relay::engines::CallTarget::Ask {
+            relay,
+            control,
+            reason,
+        } => (relay, control, reason),
+        crate::relay::engines::CallTarget::Unknown(unknown) => {
+            tracing::error!("--relay-compare: call {call_id}: {unknown}");
+            return;
+        }
+    };
+    let addr_owned = control.map_or_else(|| ask.addr.clone(), |c| c.to_string());
+    let addr = addr_owned.as_str();
 
     // sipnab's own side, from the RTP it actually captured for the call. A
     // stream is created only when a packet arrives, so a call with any linked
     // stream has measured >= 1; NO linked stream means sipnab captured no RTP
     // for this call -- absent, NOT a measured zero (ST9). The two must not
     // render the same, so the absent case travels as `None`, never `Some(0)`.
-    let sipnab_side = if stream_store.streams_for(call_id).next().is_some() {
-        Some(stream_store.measured_packet_count_for(call_id))
-    } else {
-        None
-    };
+    let sipnab_side = stream_store
+        .streams_for(call_id)
+        .next()
+        .is_some()
+        .then(|| stream_store.measured_packet_count_for(call_id));
 
-    let client = ControlClient::new(ask.socket, DEFAULT_CONTROL_TIMEOUT);
-    let label = format!("rtpengine at {addr}");
+    let label = labeled(format!("rtpengine at {addr}"), reason);
     let comparison = RelayComparisonRendering {
         addr,
         call_id,
@@ -2971,7 +3076,7 @@ pub fn launch(
 
     // `--relay-stats`: print the relay's own counters, gated exactly as the
     // snapshot above is. Prints and returns; the run proceeds.
-    report_relay_statistics(cli, Some(&source));
+    report_relay_statistics(cli, config, Some(&source));
 
     let reconfigure = RuntimeReconfigure::for_source(cli, &source);
     let (capture, (reconfigure_control, reconfigure_outcomes)) =

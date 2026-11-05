@@ -252,6 +252,55 @@
         ],
         "type": "object"
       },
+      "CallEngine": {
+        "description": "Which engine a call was asked of, and why, when engine selection is on.",
+        "properties": {
+          "asked": {
+            "description": "The engine asked, or absent when no engine could be chosen.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "chosen_by": {
+            "description": "`map_row`, `sdp_address`, `listed` (no SDP seen for the call, and\nthis engine's list names it), `default` (no SDP seen, and no engine's\nlist names it), or `unknown` (nothing was asked).",
+            "type": "string"
+          },
+          "held_by_several_engines": {
+            "description": "Whether two or more engines hold this Call-ID, by their lists or their\nanswers: a call that moved and left a session on the old engine.",
+            "type": "boolean"
+          },
+          "listed_by": {
+            "description": "The engines whose `list` named this Call-ID.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "previous": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PreviousEngine",
+                "description": "The engine the call's SDP named before it moved, when it moved and the\nprevious engine was asked."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reason": {
+            "description": "Why, in words.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chosen_by",
+          "reason",
+          "listed_by",
+          "held_by_several_engines"
+        ],
+        "type": "object"
+      },
       "CallReport": {
         "additionalProperties": false,
         "description": "Serialized form of DialogJson (src/output/json.rs): the `--call-report --json` output and GET /v1/dialogs/{id}. The embedded `streams` items mirror stream.schema.json (kept self-contained, no cross-file $ref).",
@@ -3960,6 +4009,27 @@
         ],
         "type": "object"
       },
+      "ListedBy": {
+        "description": "Which engines listed a call this snapshot did not query.",
+        "properties": {
+          "held_by_several_engines": {
+            "description": "Whether two or more engines list it.",
+            "type": "boolean"
+          },
+          "listed_by": {
+            "description": "The engines whose `list` named this Call-ID.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "listed_by",
+          "held_by_several_engines"
+        ],
+        "type": "object"
+      },
       "LiveCall": {
         "description": "One call in progress, as `GET /v1/calls/live` and its events give it.",
         "properties": {
@@ -4047,6 +4117,17 @@
           "call_id": {
             "description": "The Call-ID.",
             "type": "string"
+          },
+          "engine": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ListedBy",
+                "description": "Which engines listed it, when engine selection is on."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "sip_dialog": {
             "$ref": "#/components/schemas/SipDialog",
@@ -4227,6 +4308,46 @@
           "name",
           "value",
           "tier"
+        ],
+        "type": "object"
+      },
+      "PreviousEngine": {
+        "description": "What the previous engine of a moved call said about it.",
+        "properties": {
+          "chosen_by": {
+            "description": "`map_row` or `sdp_address`.",
+            "type": "string"
+          },
+          "detail": {
+            "description": "What it said when it did not answer with the call.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "holds": {
+            "description": "Whether it still holds the call.",
+            "type": "boolean"
+          },
+          "outcome": {
+            "description": "`ok` when it answered about the call, `refused` when it declined (it\ndoes not hold it), or `unreachable` or `suspect`.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why this engine, in words.",
+            "type": "string"
+          },
+          "relay": {
+            "description": "The engine asked.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "relay",
+          "chosen_by",
+          "reason",
+          "outcome",
+          "holds"
         ],
         "type": "object"
       },
@@ -5743,6 +5864,17 @@
               "$ref": "#/components/schemas/Direction"
             },
             "type": "array"
+          },
+          "engine": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CallEngine",
+                "description": "Which engine was asked, when engine selection is on."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "outcome": {
             "description": "`ok`, or the classification when the relay did not answer about it:\n`refused`, `unreachable` or `suspect`.",

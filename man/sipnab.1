@@ -458,6 +458,15 @@ Seconds a dialog may go untouched and still count as active.
 \fB\-\-rtpengine\-control\fR \fIADDR\fR
 Ask an rtpengine relay about calls that were already up.
 .TP
+\fB\-\-rtpengine\-engine\fR \fIMEDIA LOW\-HIGH CONTROL\fR
+Map an SDP media address and port range to an rtpengine control address, so sipnab asks each call's own engine. Repeatable.
+.TP
+\fB\-\-rtpengine\-trust\-sdp\-address\fR \fICONTROL\-PORT\fR
+Send control queries to the media address the call's SDP names, on this control port. RISK: sipnab transmits to an address it read from captured traffic.
+.TP
+\fB\-\-relay\-previous\-engine\fR
+Also ask the engine a moved call's previous SDP named, and flag a call both engines still hold.
+.TP
 \fB\-\-rtpproxy\-control\fR \fIADDR:PORT\fR
 Read rtpproxy's control traffic on this UDP socket and name the calls its media belongs to.
 .TP

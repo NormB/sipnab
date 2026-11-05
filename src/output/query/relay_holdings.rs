@@ -35,10 +35,19 @@ pub enum Holdings {
     },
     /// No clean call list came back.
     NotAnswered {
+        /// Which relay was asked, from [`relay_label`].
+        relay: String,
         /// The ST-S4 classification.
         outcome: StatisticsOutcome,
         /// What happened, naming the relay.
         detail: String,
+    },
+    /// With engine selection: each engine's own answer, default engine first.
+    Several {
+        /// Each engine's answer, a `Held` or a `NotAnswered`.
+        engines: Vec<Holdings>,
+        /// When they were asked.
+        obtained_at: DateTime<Utc>,
     },
 }
 
@@ -88,25 +97,88 @@ pub fn ask(
             obtained_at: now,
         },
         Ok(ControlReply::Refused { reason }) => Holdings::NotAnswered {
+            relay: label.clone(),
             outcome: StatisticsOutcome::Refused,
             detail: format!("{label}: {reason}"),
         },
         Ok(_) => Holdings::NotAnswered {
+            relay: label,
             outcome: StatisticsOutcome::Suspect,
             detail: "the relay answered with something other than a call list".to_string(),
         },
         Err(e) => {
             let (outcome, detail) = fetch_failure(&label, &e);
-            Holdings::NotAnswered { outcome, detail }
+            Holdings::NotAnswered {
+                relay: label,
+                outcome,
+                detail,
+            }
         }
+    }
+}
+
+/// Ask which calls are held: the one relay, or with engine selection every
+/// engine the operator named, each with its own answer.
+#[must_use]
+pub fn ask_engines(
+    relay: &dyn ReadOnlyRelay,
+    routing: Option<&crate::relay::engines::EngineRouting>,
+    permit: &TransmitPermit,
+    max_calls: u32,
+    now: DateTime<Utc>,
+) -> Holdings {
+    let Some(routing) = routing else {
+        return ask(relay, permit, max_calls, now);
+    };
+    let engines = routing
+        .listing_engines()
+        .into_iter()
+        .map(|addr| {
+            if addr == routing.default_engine() {
+                ask(relay, permit, max_calls, now)
+            } else {
+                ask(routing.relay(addr).as_ref(), permit, max_calls, now)
+            }
+        })
+        .collect();
+    Holdings::Several {
+        engines,
+        obtained_at: now,
     }
 }
 
 impl Holdings {
     /// Whether the relay answered with a call list.
     #[must_use]
-    pub const fn answered(&self) -> bool {
-        matches!(self, Self::Held { .. })
+    pub fn answered(&self) -> bool {
+        match self {
+            Self::Held { .. } => true,
+            Self::NotAnswered { .. } => false,
+            Self::Several { engines, .. } => engines.iter().any(Self::answered),
+        }
+    }
+
+    /// Every Call-ID the answer holds, once each, in Call-ID order, and the
+    /// ones two or more engines hold.
+    fn union(engines: &[Self]) -> (Vec<String>, Vec<String>) {
+        let mut seen: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for e in engines {
+            if let Self::Held { calls, .. } = e {
+                let mut own: Vec<&str> = calls.call_ids.iter().map(String::as_str).collect();
+                own.sort_unstable();
+                own.dedup();
+                for c in own {
+                    *seen.entry(c).or_default() += 1;
+                }
+            }
+        }
+        let all = seen.keys().map(|c| (*c).to_string()).collect();
+        let several = seen
+            .iter()
+            .filter(|(_, n)| **n > 1)
+            .map(|(c, _)| (*c).to_string())
+            .collect();
+        (all, several)
     }
 
     /// The JSON `GET /v1/relay/holdings` returns: the call list wrapped
@@ -129,9 +201,55 @@ impl Holdings {
                 })
                 .to_string(),
             ),
-            Self::NotAnswered { outcome, detail } => fmt::relay_rest_outcome(*outcome, detail),
+            Self::NotAnswered {
+                outcome, detail, ..
+            } => fmt::relay_rest_outcome(*outcome, detail),
+            Self::Several {
+                engines,
+                obtained_at,
+            } => {
+                if !self.answered() {
+                    return engines
+                        .first()
+                        .map_or_else(|| json!({ "outcome": "suspect" }), |first| first.body());
+                }
+                let (all, several) = Self::union(engines);
+                let truncated = engines
+                    .iter()
+                    .any(|e| matches!(e, Self::Held { calls, .. } if calls.truncated));
+                let relays: Vec<String> = engines.iter().map(Self::relay_of).collect();
+                let each: Vec<Value> = engines
+                    .iter()
+                    .map(|e| {
+                        let mut b = e.body();
+                        b["relay"] = json!(Self::relay_of(e));
+                        b
+                    })
+                    .collect();
+                fmt::relay_rest_ok(
+                    &json!({
+                        "kind": "calls",
+                        "call_ids": all,
+                        "truncated": truncated,
+                        "relay": relays.join(", "),
+                        "obtained_at": obtained_at.to_rfc3339(),
+                        "origin": "asked",
+                        "held_by_several_engines": several,
+                        "engines": each,
+                    })
+                    .to_string(),
+                )
+            }
         };
         serde_json::from_str(&text).unwrap_or_else(|_| json!({ "outcome": "suspect" }))
+    }
+
+    /// The relay one engine's answer names.
+    fn relay_of(engine: &Self) -> String {
+        match engine {
+            Self::Held { relay, .. } | Self::NotAnswered { relay, .. } => relay.clone(),
+            Self::Several { .. } => String::new(),
+        }
     }
 
     /// The answer as text: which relay, when it was asked, how many calls it
@@ -168,8 +286,31 @@ impl Holdings {
                 out.push_str(&super::table(format, &["Call-ID"], &rows));
                 out
             }
-            Self::NotAnswered { outcome, detail } => {
+            Self::NotAnswered {
+                outcome, detail, ..
+            } => {
                 format!("{}: {}\n", outcome.as_wire_str(), super::clean(detail))
+            }
+            Self::Several { engines, .. } => {
+                let mut out = String::new();
+                for (i, e) in engines.iter().enumerate() {
+                    if i > 0 {
+                        out.push('\n');
+                    }
+                    out.push_str(&e.render(format));
+                }
+                let (_, several) = Self::union(engines);
+                if !several.is_empty() {
+                    out.push_str(&format!(
+                        "\nHeld by several engines: {}\n",
+                        several
+                            .iter()
+                            .map(|c| super::clean(c))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                out
             }
         }
     }
@@ -278,6 +419,180 @@ mod tests {
             answer
                 .render(ReportFormat::Text)
                 .starts_with("suspect: the relay answered with something other than a call list"),
+        );
+        Ok(())
+    }
+
+    // ── Several engines ─────────────────────────────────────────────────
+
+    /// An engine with a name, answering `list` with `ids`, or down.
+    struct Engine(&'static str, Option<Vec<&'static str>>);
+
+    impl ReadOnlyRelay for Engine {
+        fn list(&self, _: &TransmitPermit, _: u32) -> anyhow::Result<ControlReply> {
+            match &self.1 {
+                Some(ids) => Ok(listed(ids)),
+                None => anyhow::bail!("no reply within 2s"),
+            }
+        }
+        fn query(&self, _: &TransmitPermit, _: &str) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("holdings only list")
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("holdings only list")
+        }
+        fn describe(&self) -> String {
+            self.0.to_string()
+        }
+    }
+
+    fn routing(
+        a: Option<Vec<&'static str>>,
+        b: Option<Vec<&'static str>>,
+    ) -> Result<crate::relay::engines::EngineRouting, TestError> {
+        use crate::relay::engines::{Connect, EngineMap, EngineRouting, EngineRow, EngineRule};
+        use std::sync::Arc;
+        let rows = vec![
+            "203.0.113.5 30000-39999 192.0.2.5:2223".parse::<EngineRow>()?,
+            "203.0.113.5 40000-49999 192.0.2.6:2223".parse::<EngineRow>()?,
+        ];
+        let a_addr: std::net::SocketAddr = "192.0.2.5:2223".parse()?;
+        let connect: Connect = Arc::new(move |addr| -> Arc<dyn ReadOnlyRelay + Send + Sync> {
+            if addr == a_addr {
+                Arc::new(Engine("engine-a", a.clone()))
+            } else {
+                Arc::new(Engine("engine-b", b.clone()))
+            }
+        });
+        Ok(EngineRouting::new(
+            EngineRule::Map(EngineMap::new(rows)?),
+            "192.0.2.1:2223".parse()?,
+            false,
+            connect,
+        ))
+    }
+
+    /// Several engines: each is listed, the answer holds every Call-ID once,
+    /// and a Call-ID two engines hold is named as held by several.
+    #[test]
+    fn several_engines_are_each_listed_and_a_shared_call_is_named() -> Result<(), TestError> {
+        let r = routing(
+            Some(vec!["m-1@example.invalid"]),
+            Some(vec!["m-1@example.invalid", "b-1@example.invalid"]),
+        )?;
+        let answer = ask_engines(
+            &Engine("engine-d", Some(vec!["d-1@example.invalid"])),
+            Some(&r),
+            &permit()?,
+            32,
+            at()?,
+        );
+        assert!(
+            answer.answered(),
+            "several engines are each listed and a shared call is named"
+        );
+        let body = answer.body();
+        assert_eq!(
+            body["outcome"], "ok",
+            "several engines are each listed and a shared call is named"
+        );
+        assert_eq!(
+            body["call_ids"],
+            json!([
+                "b-1@example.invalid",
+                "d-1@example.invalid",
+                "m-1@example.invalid"
+            ]),
+            "several engines are each listed and a shared call is named"
+        );
+        assert_eq!(
+            body["held_by_several_engines"],
+            json!(["m-1@example.invalid"]),
+            "several engines are each listed and a shared call is named"
+        );
+        let engines = body["engines"].as_array().ok_or("engines")?;
+        assert_eq!(
+            engines.len(),
+            3,
+            "several engines are each listed and a shared call is named"
+        );
+        assert_eq!(
+            engines[0]["relay"], "relay (engine-d)",
+            "several engines are each listed and a shared call is named"
+        );
+        let text = answer.render(ReportFormat::Text);
+        assert!(text.contains("Holdings of relay (engine-a)"), "{text}");
+        assert!(
+            text.contains("Held by several engines: m-1@example.invalid"),
+            "{text}"
+        );
+        Ok(())
+    }
+
+    /// One engine down: the others' calls are still the answer, and the
+    /// engine that did not answer is named.
+    #[test]
+    fn one_engine_down_is_named_beside_the_others() -> Result<(), TestError> {
+        let r = routing(None, Some(vec!["b-1@example.invalid"]))?;
+        let answer = ask_engines(
+            &Engine("engine-d", Some(vec![])),
+            Some(&r),
+            &permit()?,
+            32,
+            at()?,
+        );
+        assert!(
+            answer.answered(),
+            "one engine down is named beside the others"
+        );
+        let body = answer.body();
+        let engines = body["engines"].as_array().ok_or("engines")?;
+        assert_eq!(
+            engines[1]["relay"], "relay (engine-a)",
+            "one engine down is named beside the others"
+        );
+        assert_eq!(
+            engines[1]["outcome"], "unreachable",
+            "one engine down is named beside the others"
+        );
+        assert!(
+            answer
+                .render(ReportFormat::Text)
+                .contains("unreachable: relay (engine-a) did not answer"),
+            "one engine down is named beside the others"
+        );
+        Ok(())
+    }
+
+    /// Every engine down is no answer.
+    #[test]
+    fn every_engine_down_is_no_answer() -> Result<(), TestError> {
+        let r = routing(None, None)?;
+        let answer = ask_engines(&Engine("engine-d", None), Some(&r), &permit()?, 32, at()?);
+        assert!(!answer.answered(), "every engine down is no answer");
+        assert_eq!(
+            answer.body()["outcome"],
+            "unreachable",
+            "every engine down is no answer"
+        );
+        Ok(())
+    }
+
+    /// Without engine selection the answer is the one relay's, unchanged.
+    #[test]
+    fn without_routing_the_answer_is_the_one_relays() -> Result<(), TestError> {
+        let one = ask_engines(
+            &Scripted(listed(&["a@192.0.2.10"])),
+            None,
+            &permit()?,
+            32,
+            at()?,
+        );
+        let plain = ask(&Scripted(listed(&["a@192.0.2.10"])), &permit()?, 32, at()?);
+        assert_eq!(one, plain, "without routing the answer is the one relays");
+        assert!(
+            one.body().get("engines").is_none(),
+            "without routing the answer is the one relays"
         );
         Ok(())
     }

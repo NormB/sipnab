@@ -3289,6 +3289,8 @@ fn server_selection(
         scanner_response: engines.scanner_response(),
         pipeline_options: crate::app::server_pipeline_options(cli, config),
         alias_thresholds: cli.alias_thresholds(config),
+        // Planning refused an unusable rule, so an error cannot reach here.
+        relay_engines: cli.engine_selection(config).ok().flatten(),
         persists_content: cli.persists_content(config),
         vcon_spools: crate::app::vcon_spool::spools(cli, config),
         vcon_fetch: config.vcon_fetch.clone(),
@@ -3945,11 +3947,14 @@ impl BatchRunner {
         //      derives from -- the same source the capture actually opened.
         if let Some(call_id) = self.cli.rtp_args.relay_compare.as_deref() {
             let ss_guard = self.stream_store.read();
+            let ds_guard = self.dialog_store.read();
             crate::app::bootstrap::report_relay_comparison(
                 &self.cli,
+                &self.config,
                 &handle.source,
                 call_id,
                 &ss_guard,
+                &ds_guard,
             );
         }
 

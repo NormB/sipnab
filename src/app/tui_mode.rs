@@ -250,6 +250,7 @@ fn tui_view_filter_detail(config: &Config) -> crate::tui::ViewFilterDetail {
 fn build_tui_relay_query(
     cli: &Cli,
     permit: Option<crate::security::transmit_guard::TransmitPermit>,
+    selection: Option<&crate::relay::engines::EngineSelection>,
 ) -> crate::tui::relay_stats::RelayQueryState {
     use crate::tui::relay_stats::{RelayQueryState, TuiRelayAccess};
     let Some(addr_str) = cli.rtp_args.rtpengine_control.as_deref() else {
@@ -269,6 +270,7 @@ fn build_tui_relay_query(
         relay,
         permit,
         addr,
+        routing: crate::app::relay_engines::routing(cli, selection),
     })
 }
 
@@ -745,7 +747,12 @@ pub fn run_tui_mode(
             action_trail: action_trail.clone(),
             // The relay-statistics view's ask state (ST8): a relay + permit when
             // this run can transmit, or which invocation refusal applies.
-            relay_query: build_tui_relay_query(&cli, relay.query_permit),
+            relay_query: build_tui_relay_query(
+                &cli,
+                relay.query_permit,
+                // Planning refused an unusable rule, so an error cannot reach here.
+                cli.engine_selection(&config).ok().flatten().as_ref(),
+            ),
             // The TFPS-observe view's locator: the same `tfps_ctl` resolution the
             // server door uses, so the view asks the peer this run was pointed at.
             tfps_access: cli.tfps_locator(&config),
@@ -1105,6 +1112,8 @@ fn start_tui_servers(
             scanner_response: detections.scanner_response,
             pipeline_options: crate::app::server_pipeline_options(cli, config),
             alias_thresholds: cli.alias_thresholds(config),
+            // Planning refused an unusable rule, so an error cannot reach here.
+            relay_engines: cli.engine_selection(config).ok().flatten(),
             // The TUI loop runs no vCon exporter: an export flag sends the
             // run headless (`Cli::normalize`), and a `[[vcon.rule]]` writes
             // nothing here (`bootstrap::tui_export_notice` says so). So the
@@ -2443,7 +2452,7 @@ mod tests {
     fn a_run_naming_no_relay_leaves_the_view_not_configured_even_when_live() -> Result<(), TestError>
     {
         use crate::tui::relay_stats::RelayQueryState;
-        let state = super::build_tui_relay_query(&cli_from(&[]), Some(live_permit()?));
+        let state = super::build_tui_relay_query(&cli_from(&[]), Some(live_permit()?), None);
         assert!(
             matches!(state, RelayQueryState::NotConfigured),
             "no relay named must read as not_configured"
@@ -2458,7 +2467,7 @@ mod tests {
     fn a_named_relay_on_a_run_without_a_permit_is_not_permitted() -> Result<(), TestError> {
         use crate::tui::relay_stats::RelayQueryState;
         let cli = cli_from(&["--rtpengine-control", "127.0.0.1:22222"]);
-        let state = super::build_tui_relay_query(&cli, None);
+        let state = super::build_tui_relay_query(&cli, None, None);
         assert!(
             matches!(state, RelayQueryState::NotPermitted),
             "a relay the run may not transmit to must read as not_permitted"
@@ -2474,7 +2483,7 @@ mod tests {
     {
         use crate::tui::relay_stats::RelayQueryState;
         let cli = cli_from(&["--rtpengine-control", "relay-without-a-port"]);
-        let state = super::build_tui_relay_query(&cli, Some(live_permit()?));
+        let state = super::build_tui_relay_query(&cli, Some(live_permit()?), None);
         assert!(
             matches!(state, RelayQueryState::NotConfigured),
             "an unparseable address names no relay"
@@ -2489,7 +2498,7 @@ mod tests {
     {
         use crate::tui::relay_stats::RelayQueryState;
         let cli = cli_from(&["--rtpengine-control", "127.0.0.1:22222"]);
-        match super::build_tui_relay_query(&cli, Some(live_permit()?)) {
+        match super::build_tui_relay_query(&cli, Some(live_permit()?), None) {
             RelayQueryState::Ready(access) => assert_eq!(
                 access.addr,
                 "127.0.0.1:22222".parse::<std::net::SocketAddr>()?,
@@ -2500,6 +2509,40 @@ mod tests {
             }
             RelayQueryState::NotPermitted => return Err("expected Ready, got NotPermitted".into()),
         }
+        Ok(())
+    }
+
+    /// With an engine rule the view's access carries the routing, around
+    /// the address the operator named; without one it carries none.
+    #[test]
+    fn an_engine_rule_gives_the_view_its_routing() -> Result<(), TestError> {
+        use crate::relay::engines::{EngineRule, EngineSelection};
+        use crate::tui::relay_stats::RelayQueryState;
+        let cli = cli_from(&["--rtpengine-control", "127.0.0.1:22222"]);
+        let selection = EngineSelection {
+            rule: EngineRule::TrustSdp { control_port: 2223 },
+            previous: false,
+        };
+        let RelayQueryState::Ready(access) =
+            super::build_tui_relay_query(&cli, Some(live_permit()?), Some(&selection))
+        else {
+            return Err("expected Ready".into());
+        };
+        let routing = access.routing.ok_or("the access carries the routing")?;
+        assert_eq!(
+            routing.default_engine(),
+            "127.0.0.1:22222".parse()?,
+            "an engine rule gives the view its routing"
+        );
+        let RelayQueryState::Ready(plain) =
+            super::build_tui_relay_query(&cli, Some(live_permit()?), None)
+        else {
+            return Err("expected Ready".into());
+        };
+        assert!(
+            plain.routing.is_none(),
+            "an engine rule gives the view its routing"
+        );
         Ok(())
     }
 

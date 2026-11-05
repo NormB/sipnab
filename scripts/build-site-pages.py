@@ -786,6 +786,18 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "for one call beside sipnab's, from the command line, REST, MCP or the "
         "terminal UI.",
     ),
+    # The engine-selection how-to (2026-11-05, #664). Weight 86, the next free
+    # one after least-privilege's 85.
+    (
+        "docs/relay-engines.md",
+        "relay-engines.md",
+        "Ask each call's rtpengine engine",
+        "Ask each call's rtpengine engine",
+        86,
+        "With several rtpengine engines behind one proxy, map each engine's "
+        "SDP media address and port range to its control address, ask each "
+        "call's own engine, and find a session left on the old engine.",
+    ),
     (
         "docs/homer.md",
         "homer.md",

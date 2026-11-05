@@ -1138,12 +1138,17 @@ impl App {
             let ended: Arc<dyn Fn(&str) -> bool + Send + Sync> = Arc::new(move |c: &str| {
                 crate::output::query::relay_sessions::sip_saw_end(&dialogs.read(), c)
             });
-            self.relay_sessions.rx = Some(relay_sessions::spawn_snapshot(
+            let sdp_dialogs = Arc::clone(&self.dialog_store);
+            let sdp_of: crate::relay::engines::SdpLookup = Arc::new(move |c: &str| {
+                crate::relay::engines::call_sightings(&sdp_dialogs.read(), c)
+            });
+            self.relay_sessions.rx = Some(relay_sessions::spawn_snapshot_for(
                 access,
                 selected,
                 scan,
                 crate::relay::reconcile::DEFAULT_LIST_LIMIT,
                 ended,
+                sdp_of,
             ));
             self.relay_sessions.asked_at = Some(now);
         }
@@ -1239,7 +1244,18 @@ impl App {
         self.relay_stats.text = "asking the relay…".to_string();
         self.relay_stats.pending = Some(want.clone());
         self.relay_stats_asked_at = Some(std::time::Instant::now());
-        self.relay_stats.rx = Some(relay_stats::spawn_ask(access, want, sipnab_side, origin));
+        // The call's SDP, read here on the UI thread, chooses its engine when
+        // an engine rule is configured.
+        let sightings = call_id.as_deref().map_or_else(Vec::new, |cid| {
+            crate::relay::engines::call_sightings(&self.dialog_store.read(), cid)
+        });
+        self.relay_stats.rx = Some(relay_stats::spawn_ask(
+            access,
+            want,
+            sipnab_side,
+            origin,
+            sightings,
+        ));
     }
 
     /// Refresh the store-derived caches and apply sticky-bottom autoscroll.
@@ -5208,6 +5224,7 @@ mod relay_sessions_drive_tests {
             relay: Arc::clone(relay) as Arc<dyn ReadOnlyRelay + Send + Sync>,
             permit: TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?,
             addr: "192.0.2.10:22222".parse()?,
+            routing: None,
         });
         Ok(app)
     }
@@ -5281,6 +5298,71 @@ mod relay_sessions_drive_tests {
             asked,
             ["list", "list", "query a@example.invalid"],
             "the scan asked about the held call once"
+        );
+        Ok(())
+    }
+
+    /// An app whose dialog store holds a call last seen on the engine at
+    /// 40000-49999, with an engine rule that reaches `b` there.
+    fn routed_app(a: &Arc<Counting>, b: &Arc<Counting>) -> Result<App, TestError> {
+        use crate::relay::engines::{Connect, EngineMap, EngineRouting, EngineRow, EngineRule};
+        let mut app = app_with(a)?;
+        app.dialog_store = Arc::new(RwLock::new(crate::relay::engines::store_with_call(
+            "m-1@example.invalid",
+            &[(true, "203.0.113.5", 40010), (false, "203.0.113.5", 40012)],
+        )?));
+        let rows = vec![
+            "203.0.113.5 30000-39999 192.0.2.10:22222".parse::<EngineRow>()?,
+            "203.0.113.5 40000-49999 192.0.2.6:2223".parse::<EngineRow>()?,
+        ];
+        let b = Arc::clone(b);
+        let connect: Connect =
+            Arc::new(move |_| Arc::clone(&b) as Arc<dyn ReadOnlyRelay + Send + Sync>);
+        if let relay_stats::RelayQueryState::Ready(access) = &mut app.relay_query {
+            access.routing = Some(Arc::new(EngineRouting::new(
+                EngineRule::Map(EngineMap::new(rows)?),
+                "192.0.2.10:22222".parse()?,
+                false,
+                connect,
+            )));
+        }
+        Ok(app)
+    }
+
+    /// The call views read the call's SDP from the app's dialog store and
+    /// ask the engine it names: the counters view and the sessions call view.
+    #[test]
+    fn the_call_views_ask_the_engine_the_dialog_stores_sdp_names() -> Result<(), TestError> {
+        let a = Arc::new(Counting::default());
+        let b = Arc::new(Counting::default());
+        let mut app = routed_app(&a, &b)?;
+        app.current_view = View::RelayStats {
+            call_id: Some("m-1@example.invalid".to_string()),
+            mode: RelayStatsMode::Counters,
+        };
+        app.drive_relay_stats();
+        let reply = app
+            .relay_stats
+            .rx
+            .take()
+            .ok_or("an ask in flight")?
+            .recv_timeout(std::time::Duration::from_secs(10))?;
+        assert!(reply.text.contains("192.0.2.6:2223"), "{}", reply.text);
+        app.current_view = View::RelayStats {
+            call_id: Some("m-1@example.invalid".to_string()),
+            mode: RelayStatsMode::SessionCall,
+        };
+        app.drive_relay_stats();
+        land(&mut app)?;
+        assert_eq!(
+            *b.asked.lock().map_err(|e| e.to_string())?,
+            ["list", "query m-1@example.invalid"],
+            "the engine the SDP names is listed and queried"
+        );
+        assert_eq!(
+            *a.asked.lock().map_err(|e| e.to_string())?,
+            ["list"],
+            "the default engine is only listed"
         );
         Ok(())
     }

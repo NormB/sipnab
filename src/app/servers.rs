@@ -163,6 +163,12 @@ pub struct Selection {
     /// Without them the doors compared against the shipped figures, and a
     /// `--pdd-threshold` reached the command line and stopped there.
     pub alias_thresholds: crate::sip::dsl::AliasThresholds,
+    /// The relay engine rule, resolved by the caller with
+    /// `cli.engine_selection(config)`, which planning already checked:
+    /// `--rtpengine-engine` / `[relay] engines` or
+    /// `--rtpengine-trust-sdp-address`. `None` asks `--rtpengine-control`
+    /// everything, as before engine selection existed.
+    pub relay_engines: Option<crate::relay::engines::EngineSelection>,
     /// Whether this run writes call content, resolved by the caller with
     /// `cli.persists_content(config)`: the persistence gate's ceiling.
     ///
@@ -728,6 +734,9 @@ pub fn start_servers(
                 polled: Some(std::sync::Arc::clone(
                     crate::output::relay_polled::PolledStore::global(),
                 )),
+                // The engine rule, from the same resolution the MCP arm
+                // below uses, so both doors choose a call's engine alike.
+                routing: crate::app::relay_engines::routing(cli, selection.relay_engines.as_ref()),
             },
             // The SAME engine the MCP arm below is handed, so both doors read
             // one findings ring. `armed_detections` comes from Selection for the
@@ -934,14 +943,21 @@ pub fn start_servers(
                 cli.rtp_args.rtpengine_control.as_deref(),
             ) {
                 (true, Some(permit), Some(addr)) => match addr.parse::<std::net::SocketAddr>() {
-                    Ok(sock) => s.with_relay_query(
-                        sock,
-                        std::sync::Arc::new(crate::rtpengine::control::ControlClient::new(
+                    Ok(sock) => s
+                        .with_relay_query(
                             sock,
-                            crate::rtpengine::control::DEFAULT_CONTROL_TIMEOUT,
+                            std::sync::Arc::new(crate::rtpengine::control::ControlClient::new(
+                                sock,
+                                crate::rtpengine::control::DEFAULT_CONTROL_TIMEOUT,
+                            )),
+                            permit,
+                        )
+                        // The engine rule, from the resolution the REST arm
+                        // above uses.
+                        .with_engine_routing(crate::app::relay_engines::routing(
+                            cli,
+                            selection.relay_engines.as_ref(),
                         )),
-                        permit,
-                    ),
                     Err(_) => s,
                 },
                 _ => s,
@@ -1247,6 +1263,7 @@ mod tests {
             scanner_response: Default::default(),
             pipeline_options: Default::default(),
             alias_thresholds: Default::default(),
+            relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
             vcon_fetch: Default::default(),

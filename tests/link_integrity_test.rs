@@ -1679,7 +1679,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2391 -> 2392 (STDIN-READ-IGNORES-STOP): troubleshooting.md +1, the
     // symptom-table row for a run that ignores SIGTERM while it waits for
     // input. Counted against origin/main 653e42f21.
-    const EXPECTED_WIKI_LINKS: usize = 2392;
+    // 2392 -> 2406 (#664, engine selection): relay-engines.md +8 (new: seven
+    // links to other pages and one to its own section), cli-reference.md +3
+    // (the how-to links of the three new flag rows), config-reference.md +1,
+    // README.md +1 and relay-statistics.md +1. Counted against origin/main.
+    const EXPECTED_WIKI_LINKS: usize = 2406;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2946,7 +2950,8 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // the capture how-tos, each reached from docs/README.md.
     // 107 -> 110 (#641): docs/capture-queries.md, docs/follow-a-call.md and
     // docs/expectations.md.
-    const EXPECTED_DOCS_PAGES: usize = 110;
+    // 110 -> 111 (#664): docs/relay-engines.md, reached from docs/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 111;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

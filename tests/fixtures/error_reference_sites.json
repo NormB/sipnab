@@ -319,16 +319,16 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError::refused(origin, e.to_string())",
-      "count": 1,
+      "count": 2,
       "carries": [],
-      "why": "apply_config in bootstrap.rs: the error from Cli::ws_port_range in src/cli.rs, whose two messages are the Error::CliValidation(format!(\"Invalid --ws-portrange: {e}\")) and Error::ConfigInvalid(format!(\"[capture] ws_ports: {e}\")) sites."
+      "why": "apply_config in bootstrap.rs: the error from Cli::ws_port_range in src/cli.rs, whose two messages are the Error::CliValidation(format!(\"Invalid --ws-portrange: {e}\")) and Error::ConfigInvalid(format!(\"[capture] ws_ports: {e}\")) sites. engine_selection in bootstrap.rs: the error from Cli::engine_selection in src/cli.rs, whose messages the src/cli.rs Error::CliValidation(message) and Error::ConfigInvalid(message) entries carry."
     },
     {
       "file": "src/app/bootstrap.rs",
       "call": "Error::CliValidation(_)",
-      "count": 1,
+      "count": 2,
       "carries": [],
-      "why": "Not a message: apply_config matches the error's kind with matches!(e, crate::Error::CliValidation(_)) to choose the exit code. It prints nothing."
+      "why": "Not a message: apply_config and engine_selection each match the error's kind with matches!(e, crate::Error::CliValidation(_)) to choose the exit code. They print nothing."
     },
     {
       "file": "src/app/batch.rs",
@@ -410,6 +410,29 @@
         "{flag} '{path}': {e}. {who} cannot read it, and a revocation list sipnab cannot read revokes nothing. Make it readable by that user (for example root:<its group> 0640)"
       ],
       "why": "revocation_file_refusal in bootstrap.rs returns revocation_refusal's one format! literal."
+    },
+    {
+      "file": "src/cli.rs",
+      "call": "Error::CliValidation(message)",
+      "count": 1,
+      "carries": [
+        "--relay-previous-engine needs an engine rule to name a previous engine: add --rtpengine-engine rows, [relay] engines, or --rtpengine-trust-sdp-address",
+        "--rtpengine-trust-sdp-address and an engine map (--rtpengine-engine or [relay] engines) are two rules for one question; the map is an allowlist and trusting SDP is none. Give one of them",
+        "--rtpengine-engine / [relay] engines: {e}",
+        "{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose SDP sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223"
+      ],
+      "why": "engine_refusal in cli.rs, for a refused engine setting from the command line: the literals Cli::engine_selection passes it."
+    },
+    {
+      "file": "src/cli.rs",
+      "call": "Error::ConfigInvalid(message)",
+      "count": 1,
+      "carries": [
+        "[relay] engines: {e}",
+        "--rtpengine-engine / [relay] engines: {e}",
+        "{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose SDP sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223"
+      ],
+      "why": "engine_refusal in cli.rs, for a refused [relay] engines setting: the literals Cli::engine_selection passes it."
     }
   ],
   "unresolved": [

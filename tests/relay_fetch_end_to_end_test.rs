@@ -1063,6 +1063,24 @@ fn http_get_json(addr: &str, path: &str) -> Result<serde_json::Value, TestError>
     Ok(serde_json::from_str(body.trim())?)
 }
 
+/// The HTTP status of `GET path`, read and discarded.
+fn http_status(addr: &str, path: &str) -> Result<u16, TestError> {
+    use std::io::{Read, Write};
+    let mut sock = std::net::TcpStream::connect(addr)?;
+    sock.set_read_timeout(Some(WAIT))?;
+    write!(
+        sock,
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut reply = String::new();
+    sock.read_to_string(&mut reply)?;
+    let code = reply
+        .split_whitespace()
+        .nth(1)
+        .ok_or("an HTTP status line")?;
+    Ok(code.parse()?)
+}
+
 /// `--relay-holdings-max` is the `limit` the relay is asked for, REST's
 /// `max_calls`. A relay that returns that many may hold more, and both forms
 /// say so without claiming it does: a relay holding exactly that many
@@ -1568,5 +1586,407 @@ fn rest_without_the_opt_in_and_a_scrape_send_nothing() -> Result<(), TestError> 
         "neither the refused ask nor the scrape transmitted"
     );
     drop(server.finish());
+    Ok(())
+}
+
+// ── engine selection: several engines behind one proxy (#664) ───────
+
+/// The NAT map's second row, routing media at 203.0.113.5 40000-49999 to
+/// the engine at `control`.
+fn engine_row(control: SocketAddr) -> String {
+    format!("203.0.113.5 40000-49999 {control}")
+}
+
+/// `--relay-holdings` with an engine map lists the default engine and every
+/// engine a row names, each under its own heading, and names a Call-ID both
+/// hold.
+#[test]
+fn relay_holdings_with_an_engine_map_lists_every_engine() -> Result<(), TestError> {
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => calls(&["moved-1@192.0.2.10"]),
+        _ => Answer::Silent,
+    })?;
+    let b = FakeRelay::start(|verb, _| match verb {
+        "list" => calls(&["moved-1@192.0.2.10", "only-b@192.0.2.10"]),
+        _ => Answer::Silent,
+    })?;
+    let row = engine_row(b.addr);
+    let done = run_to_exit(&[
+        "-L",
+        "127.0.0.1:0",
+        "--rtpengine-control",
+        &a.addr.to_string(),
+        "--rtpengine-engine",
+        &row,
+        "--relay-holdings",
+    ])?;
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    for engine in [a.addr, b.addr] {
+        assert!(
+            done.stdout.contains(&format!(
+                "Holdings of relay (rtpengine at {engine}), asked "
+            )),
+            "{engine}:\n{}",
+            done.dump()
+        );
+    }
+    assert!(
+        done.stdout
+            .contains("Held by several engines: moved-1@192.0.2.10"),
+        "{}",
+        done.dump()
+    );
+    assert_eq!(
+        a.asked()?,
+        ["list"],
+        "relay holdings with an engine map lists every engine"
+    );
+    assert_eq!(
+        b.asked()?,
+        ["list"],
+        "relay holdings with an engine map lists every engine"
+    );
+    Ok(())
+}
+
+/// A `--relay-sessions` run asks before it reads any SIP, so no call's SDP
+/// is seen: a held call is asked of the engine whose list names it, and a
+/// call no engine lists is asked of the default engine. Each answer says why.
+#[test]
+fn relay_sessions_with_an_engine_map_asks_each_call_of_the_engine_that_lists_it()
+-> Result<(), TestError> {
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => calls(&["on-a@192.0.2.10"]),
+        _ => unknown_call(),
+    })?;
+    let b = FakeRelay::start(|verb, _| match verb {
+        "list" => calls(&["on-b@192.0.2.10"]),
+        _ => unknown_call(),
+    })?;
+    let row = engine_row(b.addr);
+    let control = a.addr.to_string();
+    let base = [
+        "-L",
+        "127.0.0.1:0",
+        "--rtpengine-control",
+        control.as_str(),
+        "--rtpengine-engine",
+        row.as_str(),
+        "--relay-sessions",
+    ];
+    let done = run_to_exit(&base)?;
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    assert!(
+        done.stdout
+            .contains("sipnab has seen no SDP for this call; this engine's list names it"),
+        "{}",
+        done.dump()
+    );
+    assert_eq!(
+        a.asked()?,
+        ["list", "query"],
+        "on-a is asked of its own engine"
+    );
+    assert_eq!(
+        b.asked()?,
+        ["list", "query"],
+        "on-b is asked of its own engine"
+    );
+
+    let mut selected = base.to_vec();
+    selected.extend(["--relay-sessions-call", "nowhere@192.0.2.10"]);
+    let done = run_to_exit(&selected)?;
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    assert!(
+        done.stdout.contains(
+            "the default engine (--rtpengine-control): sipnab has seen no SDP for this call"
+        ),
+        "{}",
+        done.dump()
+    );
+    assert_eq!(
+        a.asked()?,
+        ["list", "query", "list", "query"],
+        "a call no engine lists is asked of the default engine"
+    );
+    assert_eq!(
+        b.asked()?,
+        ["list", "query", "list"],
+        "relay sessions with an engine map asks each call of the engine that lists it"
+    );
+    Ok(())
+}
+
+/// A HEP datagram carrying `sip`, from the proxy's address.
+fn hep_sip(sip: &str) -> Vec<u8> {
+    let ep = sipnab::capture::hep::HepEndpoint {
+        src_addr: std::net::IpAddr::from([192, 0, 2, 30]),
+        dst_addr: std::net::IpAddr::from([192, 0, 2, 31]),
+        src_port: 5060,
+        dst_port: 5060,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    sipnab::capture::hep::build_hep_v3(
+        &ep,
+        chrono::Utc::now(),
+        sipnab::capture::hep::HepProtocol::Sip,
+        0,
+        None,
+        sip.as_bytes(),
+    )
+}
+
+/// An INVITE (`request`) or its 200 carrying SDP that names 203.0.113.5 at
+/// `port`, for `call_id`.
+fn sip_with_sdp(call_id: &str, request: bool, cseq: u32, port: u16) -> String {
+    let sdp = format!(
+        "v=0\r\no=- 0 0 IN IP4 203.0.113.5\r\ns=-\r\nc=IN IP4 203.0.113.5\r\nt=0 0\r\n\
+         m=audio {port} RTP/AVP 0\r\na=sendrecv\r\n"
+    );
+    let start = if request {
+        "INVITE sip:callee@example.invalid SIP/2.0"
+    } else {
+        "SIP/2.0 200 OK"
+    };
+    format!(
+        "{start}\r\nVia: SIP/2.0/UDP 192.0.2.30:5060;branch=z9hG4bK-e{cseq}{request}\r\n\
+         From: <sip:caller@example.invalid>;tag=f1\r\nTo: <sip:callee@example.invalid>;tag=t1\r\n\
+         Call-ID: {call_id}\r\nCSeq: {cseq} INVITE\r\nContent-Type: application/sdp\r\n\
+         Content-Length: {}\r\n\r\n{sdp}",
+        sdp.len()
+    )
+}
+
+/// The whole path on loopback: SIP with SDP arrives over HEP, the dialog
+/// store records it, and a REST question about the call is sent to the
+/// engine the SDP names and not to the default engine.
+#[test]
+fn a_rest_call_question_goes_to_the_engine_the_captured_sdp_names() -> Result<(), TestError> {
+    const MOVED: &str = "moved-2@192.0.2.10";
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Silent,
+    })?;
+    let b = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Body(statistics.clone()),
+    })?;
+    let row = engine_row(b.addr);
+    let mut run = Run::start(
+        &a,
+        &[
+            "--rtpengine-engine",
+            &row,
+            "--api",
+            "127.0.0.1:0",
+            "--api-allow-relay-query",
+        ],
+    )?;
+    assert!(
+        run.wait_stderr("REST API listening on"),
+        "{}",
+        run.err.join("\n")
+    );
+    let hep = run
+        .err
+        .iter()
+        .find_map(|l| l.split("HEP listener started on ").nth(1))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .ok_or("the HEP listener's address")?;
+    let api = run
+        .err
+        .iter()
+        .find_map(|l| l.split("REST API listening on ").nth(1))
+        .map(|s| s.trim().to_string())
+        .ok_or("the REST address")?;
+    let sender = UdpSocket::bind("127.0.0.1:0")?;
+    sender.send_to(&hep_sip(&sip_with_sdp(MOVED, true, 1, 40010)), &hep)?;
+    sender.send_to(&hep_sip(&sip_with_sdp(MOVED, false, 1, 40012)), &hep)?;
+    // Ask only once the dialog store holds the call: a question asked before
+    // the SIP arrives has no SDP to read and would go to the default engine.
+    let dialog = format!("/v1/dialogs/{MOVED}");
+    let deadline = Instant::now() + WAIT;
+    while http_status(&api, &dialog)? != 200 {
+        assert!(
+            Instant::now() < deadline,
+            "the call never reached the dialog store"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let answer = http_get_json(&api, &format!("/v1/relay/stats/call/{MOVED}"))?;
+    assert_eq!(answer["outcome"], "ok", "{answer}");
+    assert!(
+        answer["relay"]
+            .as_str()
+            .is_some_and(|r| r.contains("chosen by engine row 203.0.113.5 40000-49999")),
+        "{answer}"
+    );
+    assert!(
+        b.asked()?.iter().any(|v| v == "query"),
+        "the engine the SDP names was asked: {:?}",
+        b.asked()?
+    );
+    let done = run.finish();
+    assert!(
+        !a.asked()?.iter().any(|v| v == "query"),
+        "the default engine was never asked about the call: {:?}\n{}",
+        a.asked()?,
+        done.dump()
+    );
+    Ok(())
+}
+
+/// `--relay-compare` runs after the capture, when the call's SDP has been
+/// read: it asks the engine the SDP names, and never the default engine.
+#[test]
+fn relay_compare_asks_the_engine_the_captured_sdp_names() -> Result<(), TestError> {
+    const MOVED: &str = "moved-3@192.0.2.10";
+    let query = fixture_body("rtpengine-query-12.5.1.bencode")?;
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Silent,
+    })?;
+    let b = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Body(query.clone()),
+    })?;
+    let row = engine_row(b.addr);
+    let mut run = Run::start(&a, &["--rtpengine-engine", &row, "--relay-compare", MOVED])?;
+    let hep = run
+        .err
+        .iter()
+        .find_map(|l| l.split("HEP listener started on ").nth(1))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .ok_or("the HEP listener's address")?;
+    let sender = UdpSocket::bind("127.0.0.1:0")?;
+    sender.send_to(&hep_sip(&sip_with_sdp(MOVED, true, 1, 40010)), &hep)?;
+    sender.send_to(&hep_sip(&sip_with_sdp(MOVED, false, 1, 40012)), &hep)?;
+    assert!(
+        run.wait_stdout("200 OK", 1),
+        "the answer was captured:\n{}",
+        run.out.join("\n")
+    );
+    let done = run.finish();
+    assert!(
+        b.asked()?.iter().any(|v| v == "query"),
+        "the engine the SDP names was asked: {:?}\n{}",
+        b.asked()?,
+        done.dump()
+    );
+    assert!(
+        !a.asked()?.iter().any(|v| v == "query"),
+        "the default engine was not asked about the call: {:?}",
+        a.asked()?
+    );
+    assert!(
+        done.stderr
+            .contains(&format!("reports 1862 RTP packet(s) for call {MOVED}")),
+        "{}",
+        done.dump()
+    );
+    Ok(())
+}
+
+/// Over MCP HTTP the same rule holds: `relay_stats` about a captured call is
+/// asked of the engine its SDP names.
+#[test]
+fn an_mcp_call_question_goes_to_the_engine_the_captured_sdp_names() -> Result<(), TestError> {
+    const MOVED: &str = "moved-4@192.0.2.10";
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Silent,
+    })?;
+    let b = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Body(statistics.clone()),
+    })?;
+    let row = engine_row(b.addr);
+    let mut run = Run::start(
+        &a,
+        &[
+            "--rtpengine-engine",
+            &row,
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-bind",
+            "127.0.0.1:0",
+            "--mcp-allow-relay-query",
+        ],
+    )?;
+    assert!(
+        run.wait_stderr("MCP HTTP server listening on"),
+        "{}",
+        run.err.join("\n")
+    );
+    let addr = run
+        .err
+        .iter()
+        .find_map(|l| l.split("MCP HTTP server listening on ").nth(1))
+        .map(|a| a.trim().to_string())
+        .ok_or("the MCP listening address")?;
+    let hep = run
+        .err
+        .iter()
+        .find_map(|l| l.split("HEP listener started on ").nth(1))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .ok_or("the HEP listener's address")?;
+    let sender = UdpSocket::bind("127.0.0.1:0")?;
+    sender.send_to(&hep_sip(&sip_with_sdp(MOVED, true, 1, 40010)), &hep)?;
+    sender.send_to(&hep_sip(&sip_with_sdp(MOVED, false, 1, 40012)), &hep)?;
+    let session = mcp::establish_session(&addr).map_err(|e| e.to_string())?;
+    // Ask only once the dialog store holds the call, as the REST test does.
+    let deadline = Instant::now() + WAIT;
+    let mut id = 2;
+    loop {
+        let reply = mcp::session_request(
+            &addr,
+            &session,
+            id,
+            "tools/call",
+            serde_json::json!({"name": "get_dialog", "arguments": {"call_id": MOVED}}),
+        )
+        .map_err(|e| e.to_string())?;
+        id += 1;
+        if reply.get("error").is_none() && reply["result"]["isError"] != true {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the call never reached the dialog store: {reply}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let reply = mcp::session_request(
+        &addr,
+        &session,
+        id,
+        "tools/call",
+        serde_json::json!({"name": "relay_stats", "arguments": {"call_id": MOVED}}),
+    )
+    .map_err(|e| e.to_string())?;
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("a text block: {reply}"))?
+        .to_string();
+    let v: serde_json::Value = serde_json::from_str(&text)?;
+    assert_eq!(v["relay_address"], b.addr.to_string(), "{v}");
+    assert!(
+        v["engine"]
+            .as_str()
+            .is_some_and(|e| e.contains("40000-49999")),
+        "{v}"
+    );
+    let _ = run.finish();
+    assert!(
+        !a.asked()?.iter().any(|v| v == "query"),
+        "the default engine was not asked about the call: {:?}",
+        a.asked()?
+    );
     Ok(())
 }

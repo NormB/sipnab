@@ -2117,6 +2117,70 @@ pub struct RtpArgs {
     #[arg(help_heading = "RTP", long = "rtpengine-control", value_name = "ADDR")]
     pub rtpengine_control: Option<String>,
 
+    /// Map an SDP media address and port range to an rtpengine control
+    /// address, so sipnab asks each call's own engine. Repeatable.
+    ///
+    /// For several rtpengine engines behind one proxy. Each engine writes its
+    /// own media address into the SDP it rewrites; the row says which
+    /// `listen-ng` address answers for that media. Write a row as
+    /// `MEDIA-ADDRESS LOW-HIGH CONTROL-ADDRESS:PORT`, quoted, for example
+    /// `--rtpengine-engine '203.0.113.5 30000-39999 192.0.2.5:2223'`. Behind
+    /// NAT, engines that share one public address differ by port range. An
+    /// IPv6 control address is written `[2001:db8::10]:2223`.
+    ///
+    /// **The map is the allowlist.** A call whose SDP names media no row
+    /// claims is reported as `engine unknown (no map row)` and no engine is
+    /// asked about it. Rows that claim the same address and port are refused.
+    ///
+    /// **Needs `--rtpengine-control`.** That engine is still the one asked
+    /// for the relay's own statistics, and about a call whose SDP sipnab has
+    /// not seen; the sessions view asks such a call of the engine whose list
+    /// names it. Questions about which calls are held (`--relay-holdings`,
+    /// the sessions view) are asked of it and of every engine a row names.
+    /// Config: `[relay] engines`, which this adds to.
+    #[arg(
+        help_heading = "RTP",
+        long = "rtpengine-engine",
+        value_name = "MEDIA LOW-HIGH CONTROL",
+        value_parser = clap::value_parser!(crate::relay::engines::EngineRow)
+    )]
+    pub rtpengine_engine: Vec<crate::relay::engines::EngineRow>,
+
+    /// Send control queries to the media address the call's SDP names, on
+    /// this control port. RISK: sipnab transmits to an address it read from
+    /// captured traffic.
+    ///
+    /// For a network where rtpengine's media address is also its control
+    /// address and no map is kept. The control port never appears in SIP, so
+    /// it is given here. An address counts as the engine's only when it was
+    /// seen in both a request's SDP and a response's, which is how a relay's
+    /// rewrite looks and a party's own address does not. Anyone who can put
+    /// SDP on the captured network can then make sipnab send `list` and
+    /// `query` to an address of their choosing. Prefer `--rtpengine-engine`.
+    ///
+    /// Needs `--rtpengine-control`, for the same questions as with a map, and
+    /// is refused beside `--rtpengine-engine` or `[relay] engines`. There is no
+    /// config key: this is a per-run decision.
+    #[arg(
+        help_heading = "RTP",
+        long = "rtpengine-trust-sdp-address",
+        value_name = "CONTROL-PORT",
+        value_parser = clap::value_parser!(u16).range(1..)
+    )]
+    pub rtpengine_trust_sdp_address: Option<u16>,
+
+    /// Also ask the engine a moved call's previous SDP named, and flag a call
+    /// both engines still hold.
+    ///
+    /// After a re-INVITE moves a call to another engine, the sessions view
+    /// asks the engine the newest SDP names. With this it also asks the one
+    /// before it; a call both hold is marked `held by several engines`, a
+    /// session left on the old engine. Needs `--rtpengine-engine` or
+    /// `--rtpengine-trust-sdp-address`. A per-run choice, with no config key:
+    /// each previous engine asked is one more `query` per call.
+    #[arg(help_heading = "RTP", long = "relay-previous-engine")]
+    pub relay_previous_engine: bool,
+
     /// Read rtpproxy's control traffic on this UDP socket and name the calls
     /// its media belongs to.
     ///
@@ -7470,6 +7534,89 @@ impl Cli {
         )
     }
 
+    /// The engine rule this run chooses a call's relay engine by, from
+    /// `--rtpengine-engine`, `[relay] engines`, `--rtpengine-trust-sdp-address`
+    /// and `--relay-previous-engine`.
+    ///
+    /// `None` when no rule is configured: every question goes to
+    /// `--rtpengine-control`, as before engine selection existed.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::CliValidation`] when the refused setting came from the
+    /// command line, [`crate::Error::ConfigInvalid`] when it came from
+    /// `[relay] engines`: a row that does not parse, rows that overlap, a map
+    /// beside trusted SDP addresses, a rule without `--rtpengine-control`, or
+    /// the previous-engine option without a rule.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn engine_selection(
+        &self,
+        config: &crate::config::Config,
+    ) -> Result<Option<crate::relay::engines::EngineSelection>, crate::Error> {
+        use crate::relay::engines::{EngineMap, EngineRow, EngineRule, EngineSelection};
+        let rtp = &self.rtp_args;
+        let mut rows: Vec<EngineRow> = rtp.rtpengine_engine.clone();
+        for row in &config.relay.engines {
+            rows.push(
+                row.parse::<EngineRow>()
+                    .map_err(|e| engine_refusal(false, format!("[relay] engines: {e}")))?,
+            );
+        }
+        let rows_from_flag = !rtp.rtpengine_engine.is_empty();
+        let previous = rtp.relay_previous_engine;
+        let (rule, from_flag) = match (rows.is_empty(), rtp.rtpengine_trust_sdp_address) {
+            (true, None) => {
+                if previous {
+                    return Err(engine_refusal(
+                        true,
+                        "--relay-previous-engine needs an engine rule to name a previous \
+                         engine: add --rtpengine-engine rows, [relay] engines, or \
+                         --rtpengine-trust-sdp-address"
+                            .to_string(),
+                    ));
+                }
+                return Ok(None);
+            }
+            (false, Some(_)) => {
+                return Err(engine_refusal(
+                    true,
+                    "--rtpengine-trust-sdp-address and an engine map \
+                     (--rtpengine-engine or [relay] engines) are two rules for one \
+                     question; the map is an allowlist and trusting SDP is none. Give \
+                     one of them"
+                        .to_string(),
+                ));
+            }
+            (true, Some(control_port)) => (EngineRule::TrustSdp { control_port }, true),
+            (false, None) => (
+                EngineRule::Map(EngineMap::new(rows).map_err(|e| {
+                    engine_refusal(
+                        rows_from_flag,
+                        format!("--rtpengine-engine / [relay] engines: {e}"),
+                    )
+                })?),
+                rows_from_flag,
+            ),
+        };
+        if rtp.rtpengine_control.is_none() {
+            let rule = match rule {
+                EngineRule::Map(_) => "--rtpengine-engine (or [relay] engines)",
+                EngineRule::TrustSdp { .. } => "--rtpengine-trust-sdp-address",
+            };
+            return Err(engine_refusal(
+                from_flag,
+                format!(
+                    "{rule} needs --rtpengine-control as well: that engine answers \
+                     the questions that are not about one call (the relay's \
+                     statistics, the poll, startup reconciliation) and about a call \
+                     whose SDP sipnab has not seen. Name one engine's listen-ng \
+                     address, for example --rtpengine-control 192.0.2.5:2223"
+                ),
+            ));
+        }
+        Ok(Some(EngineSelection { rule, previous }))
+    }
+
     /// Where the actions journal lives: `--journal-dir`, else `[journal]
     /// dir`, else `/var/lib/sipnab/journal`.
     #[must_use]
@@ -9071,6 +9218,17 @@ fn parse_quality_threshold(s: &str) -> Result<f64, String> {
     Ok(v)
 }
 
+/// A refused relay engine setting, as the error of where it came from: a flag
+/// is a command-line error (exit 2), a `[relay]` key a config error (exit 1).
+#[cfg(not(target_arch = "wasm32"))]
+fn engine_refusal(from_flag: bool, message: String) -> crate::Error {
+    if from_flag {
+        crate::Error::CliValidation(message)
+    } else {
+        crate::Error::ConfigInvalid(message)
+    }
+}
+
 /// Unit tests for CLI parsing, flag defaults, argument validation, and
 /// file-vs-inline secret resolution.
 #[cfg(test)]
@@ -9805,6 +9963,171 @@ mod tests {
             7_000,
             "the flag over the key"
         );
+        Ok(())
+    }
+
+    // ── engine selection: --rtpengine-engine and [relay] ────────────────
+
+    fn engine_cli(args: &[&str]) -> Result<Cli, TestError> {
+        Ok(Cli::try_parse_from(
+            std::iter::once("sipnab").chain(args.iter().copied()),
+        )?)
+    }
+
+    fn relay_config(toml_text: &str) -> Result<crate::config::Config, TestError> {
+        Ok(toml::from_str(toml_text)?)
+    }
+
+    #[test]
+    fn no_engine_rule_is_none_and_relay_control_alone_is_unchanged() -> Result<(), TestError> {
+        let cli = engine_cli(&["--rtpengine-control", "192.0.2.1:2223"])?;
+        assert!(
+            cli.engine_selection(&crate::config::Config::default())?
+                .is_none(),
+            "no engine rule is none and relay control alone is unchanged"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn engine_rows_from_flags_and_config_make_one_map() -> Result<(), TestError> {
+        use crate::relay::engines::EngineRule;
+        let cli = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-engine",
+            "203.0.113.5 30000-39999 192.0.2.5:2223",
+        ])?;
+        let config =
+            relay_config("[relay]\nengines = [\"203.0.113.5 40000-49999 192.0.2.6:2223\"]\n")?;
+        let sel = cli.engine_selection(&config)?.ok_or("a rule")?;
+        match &sel.rule {
+            EngineRule::Map(map) => {
+                let controls: Vec<String> =
+                    map.rows().iter().map(|r| r.control.to_string()).collect();
+                assert_eq!(
+                    controls,
+                    ["192.0.2.5:2223", "192.0.2.6:2223"],
+                    "engine rows from flags and config make one map"
+                );
+            }
+            other => return Err(format!("expected a map, got {other:?}").into()),
+        }
+        assert!(!sel.previous, "only --relay-previous-engine turns it on");
+        Ok(())
+    }
+
+    #[test]
+    fn trusting_sdp_takes_its_control_port() -> Result<(), TestError> {
+        use crate::relay::engines::EngineRule;
+        let cli = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-trust-sdp-address",
+            "2223",
+            "--relay-previous-engine",
+        ])?;
+        let sel = cli
+            .engine_selection(&crate::config::Config::default())?
+            .ok_or("a rule")?;
+        assert_eq!(
+            sel.rule,
+            EngineRule::TrustSdp { control_port: 2223 },
+            "trusting sdp takes its control port"
+        );
+        assert!(sel.previous, "trusting sdp takes its control port");
+        assert!(
+            engine_cli(&["--rtpengine-trust-sdp-address", "0"]).is_err(),
+            "port 0 names no control port"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_engine_rule_without_relay_control_is_refused() -> Result<(), TestError> {
+        let cli = engine_cli(&[
+            "--rtpengine-engine",
+            "203.0.113.5 30000-39999 192.0.2.5:2223",
+        ])?;
+        match cli.engine_selection(&crate::config::Config::default()) {
+            Err(crate::Error::CliValidation(why)) => {
+                assert!(why.contains("--rtpengine-control"), "{why}");
+            }
+            other => return Err(format!("a command-line refusal, got {other:?}").into()),
+        }
+        let from_file = engine_cli(&[])?;
+        let config =
+            relay_config("[relay]\nengines = [\"203.0.113.5 30000-39999 192.0.2.5:2223\"]\n")?;
+        assert!(
+            matches!(
+                from_file.engine_selection(&config),
+                Err(crate::Error::ConfigInvalid(_))
+            ),
+            "a [relay] engines rule without --rtpengine-control is the file's"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_map_beside_trusted_sdp_is_refused() -> Result<(), TestError> {
+        let cli = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-trust-sdp-address",
+            "2223",
+        ])?;
+        let config =
+            relay_config("[relay]\nengines = [\"203.0.113.5 30000-39999 192.0.2.5:2223\"]\n")?;
+        match cli.engine_selection(&config) {
+            Err(crate::Error::CliValidation(why)) => {
+                assert!(why.contains("--rtpengine-trust-sdp-address"), "{why}");
+            }
+            other => return Err(format!("a command-line refusal, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_bad_or_overlapping_config_row_is_refused_as_the_files() -> Result<(), TestError> {
+        let cli = engine_cli(&["--rtpengine-control", "192.0.2.1:2223"])?;
+        let bad =
+            relay_config("[relay]\nengines = [\"203.0.113.5 39999-30000 192.0.2.5:2223\"]\n")?;
+        match cli.engine_selection(&bad) {
+            Err(crate::Error::ConfigInvalid(why)) => {
+                assert!(why.starts_with("[relay] engines"), "{why}");
+            }
+            other => return Err(format!("a config refusal, got {other:?}").into()),
+        }
+        let flag_and_key = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-engine",
+            "203.0.113.5 30000-40000 192.0.2.5:2223",
+        ])?;
+        let overlapping =
+            relay_config("[relay]\nengines = [\"203.0.113.5 40000-49999 192.0.2.6:2223\"]\n")?;
+        match flag_and_key.engine_selection(&overlapping) {
+            Err(crate::Error::CliValidation(why)) => assert!(why.contains("overlap"), "{why}"),
+            other => {
+                return Err(format!("a command-line refusal (a flag row), got {other:?}").into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn the_previous_engine_option_without_a_rule_is_refused() -> Result<(), TestError> {
+        let cli = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--relay-previous-engine",
+        ])?;
+        match cli.engine_selection(&crate::config::Config::default()) {
+            Err(crate::Error::CliValidation(why)) => {
+                assert!(why.contains("--relay-previous-engine"), "{why}");
+            }
+            other => return Err(format!("a command-line refusal, got {other:?}").into()),
+        }
         Ok(())
     }
 

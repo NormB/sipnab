@@ -427,3 +427,47 @@ fn the_exec_queue_depth_reaches_the_engine_the_plan_builds() -> Result<(), TestE
     );
     Ok(())
 }
+
+/// An engine map with no `--rtpengine-control` is refused before anything
+/// runs, with the exit code of where the rows came from: 2 for a flag, 1 for
+/// `[relay] engines`.
+#[test]
+fn plan_refuses_an_engine_rule_it_cannot_use() -> Result<(), TestError> {
+    let err = bootstrap::plan(
+        &cli(&[
+            "-N",
+            "--rtpengine-engine",
+            "203.0.113.5 30000-39999 192.0.2.5:2223",
+        ]),
+        &Config::default(),
+    )
+    .err()
+    .ok_or("an engine row without --rtpengine-control is refused")?;
+    assert_eq!(
+        err.exit_code, 2,
+        "plan refuses an engine rule it cannot use"
+    );
+    assert!(
+        err.message.contains("--rtpengine-control"),
+        "{}",
+        err.message
+    );
+
+    let mut config = Config::default();
+    config.relay.engines = vec![
+        "203.0.113.5 30000-40000 192.0.2.5:2223".to_string(),
+        "203.0.113.5 40000-49999 192.0.2.6:2223".to_string(),
+    ];
+    let err = bootstrap::plan(
+        &cli(&["-N", "--rtpengine-control", "192.0.2.1:2223"]),
+        &config,
+    )
+    .err()
+    .ok_or("overlapping [relay] engines rows are refused")?;
+    assert_eq!(
+        err.exit_code, 1,
+        "plan refuses an engine rule it cannot use"
+    );
+    assert!(err.message.contains("overlap"), "{}", err.message);
+    Ok(())
+}
