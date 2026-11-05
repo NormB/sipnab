@@ -1656,9 +1656,10 @@ reason.
   refuses. A HEP listener with no allowlist or secret also exits 1.
 - **Exit status 101**: sipnab panicked. See
   [Send us a crash report](#send-us-a-crash-report).
-- **Active, then `inactive` with `Result=success`**: something sent `SIGHUP`.
-  sipnab does not handle it, systemd counts it as a clean stop, and
-  `Restart=on-failure` leaves the service down. Start it again.
+- **Exit status 129**: something sent `SIGHUP`. sipnab stopped as it does for
+  `SIGTERM`, and the packaged unit's `Restart=on-failure` starts it again.
+  0.5.233 and earlier did not handle `SIGHUP`: the service went `inactive`
+  with `Result=success` and stayed down until started again.
 
 [A service that does not start](run-as-a-service.md#a-service-that-does-not-start)
 lists each refusal message with its fix.

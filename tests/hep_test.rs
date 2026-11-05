@@ -326,6 +326,58 @@ fn the_listener_harness_stops_sipnab_with_a_clean_exit() -> Result<(), TestError
     Ok(())
 }
 
+/// SIGHUP stops a run the way SIGTERM does, with its summary, and exits 129.
+///
+/// sipnab had no SIGHUP handler, so the default action ended the process at
+/// once: no summary, no flush of `-O`, and an exit by signal 1. systemd counts
+/// an exit by SIGHUP as clean, so `Restart=on-failure` left the packaged
+/// service down with `Result=success` (OPS-5). A stop that exits 129
+/// (128 + SIGHUP, the shell's convention) is a failure to systemd, which
+/// restarts the service, and it still runs the shutdown path SIGTERM runs.
+#[test]
+fn sighup_stops_the_run_cleanly_and_exits_129() -> Result<(), TestError> {
+    let mut srv = HepListener::spawn_reporting(&["--hep-allow", "127.0.0.1/32"])?;
+    srv.send(&hep3_sip(&invite_bytes())?)?;
+    assert!(
+        srv.wait_for_stdout(CALL_ID, test_timeout(5)).is_some(),
+        "control: the listener ingests a datagram before it is hung up"
+    );
+    let pid = libc::pid_t::try_from(srv.child.id())?;
+    // SAFETY: kill(2) on the child this test spawned and has not reaped, so
+    // the pid cannot have been reused.
+    assert_eq!(unsafe { libc::kill(pid, libc::SIGHUP) }, 0, "send SIGHUP");
+    let deadline = Instant::now() + test_timeout(10);
+    let status = loop {
+        if let Some(status) = srv.child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            return Err("sipnab did not exit within 10 s of SIGHUP".into());
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        assert_eq!(
+            status.signal(),
+            None,
+            "SIGHUP must be handled, not end the process by its default action: {status}"
+        );
+    }
+    assert_eq!(
+        status.code(),
+        Some(129),
+        "a SIGHUP stop exits 128 + 1, so systemd's Restart=on-failure restarts it: {status}"
+    );
+    let stderr: Vec<String> = srv.stderr_rx.try_iter().collect();
+    assert!(
+        stderr.iter().any(|l| l.contains("packets captured")),
+        "the stop must run the end-of-run summary, as SIGTERM does:\n{}",
+        stderr.join("\n")
+    );
+    Ok(())
+}
+
 /// With `--hep-allow 10.0.0.0/8`, a loopback-sourced datagram is rejected by
 /// the allowlist before it can surface on stdout — proven by the positive
 /// per-packet drop log, not by waiting out a window of stdout silence.

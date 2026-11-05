@@ -152,17 +152,19 @@ fn main() {
     if matches!(plan.mode, RunMode::CoresFile) {
         run_cores_file(&cli, &loaded, &plan);
         // Returning from `main` runs no destructor for a static, so the
-        // members `-I` extracted are released explicitly on this way out too.
-        sipnab::capture::archive::release_run();
-        return;
+        // members `-I` extracted are released explicitly on this way out too,
+        // and the exit status is the one `release_run_and_exit` would give:
+        // 0, or 129 after SIGHUP.
+        sipnab::capture::archive::release_run_and_exit(0);
     }
 
     // 9-10. Launch the capture and hand it to the selected mode.
     launch_and_dispatch(cli, loaded, plan);
 
-    // A run that ends by returning, rather than through
-    // `release_run_and_exit`, releases what `-I` extracted here.
-    sipnab::capture::archive::release_run();
+    // A run that ends here, rather than through an earlier
+    // `release_run_and_exit`, releases what `-I` extracted and exits 0, or 129
+    // when SIGHUP stopped it (OPS-5).
+    sipnab::capture::archive::release_run_and_exit(0);
 }
 
 /// Step 0c of [`main`]: `sipnab fleet ...`, with `sipnab fleet` as the
