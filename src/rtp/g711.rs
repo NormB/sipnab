@@ -59,6 +59,8 @@ pub fn decode_frame(codec: G711Codec, input: &[u8]) -> Vec<i16> {
 ///
 /// Derived from ITU-T G.711 mu-law decoding formula, scaled to 16-bit range.
 /// Input is complemented, then decomposed into sign, exponent, and mantissa.
+// rustfmt::skip: eight entries per row, aligned by column, each row commented
+// with the code points it covers, so an entry can be checked against G.711.
 #[rustfmt::skip]
 static ULAW_TABLE: [i16; 256] = [
     -32124, -31100, -30076, -29052, -28028, -27004, -25980, -24956, // 0x00..0x07

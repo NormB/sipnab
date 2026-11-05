@@ -920,6 +920,13 @@ mod nss_preload {
     ///
     /// Errors are deliberately ignored: the lookup is expected to fail, and the
     /// only thing being bought is the module load it performs on the way.
+    ///
+    /// # Safety
+    ///
+    /// Only the dynamic loader may call it, through the `.init_array` entry
+    /// below, once, on the initial thread before `main`, when no other thread
+    /// exists. Called later from Rust, `getpwnam_r` would race the threads that
+    /// the test harness has started, which is the deadlock this exists to avoid.
     unsafe extern "C" fn preload_nss_backends() {
         let probe = c"sipnab-nss-preload-definitely-absent";
         // SAFETY: `libc::passwd` is a plain-old-data C struct of scalars and

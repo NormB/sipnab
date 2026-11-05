@@ -1940,11 +1940,11 @@ fn api_key_from_env_var() -> Result<(), TestError> {
         "api_key should be populated from SIPNAB_API_KEY env var"
     );
 
-    // Clean up
-
-    // SAFETY: remove_var in a test that set the var itself; other tests do not
-
-    // read SIPNAB_API_KEY concurrently.
+    // Clean up.
+    // SAFETY: this test set the variable itself, and it is
+    // `#[serial_test::serial]`, as is every other test in this file that
+    // parses a command line (clap reads the variable on every parse). So no
+    // other test in this binary reads the environment while it changes.
     unsafe {
         std::env::remove_var("SIPNAB_API_KEY");
     }

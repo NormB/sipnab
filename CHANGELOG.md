@@ -25,6 +25,9 @@ entry that carries them.
 
 - **A saved CSV no longer carries a caller's formula into a spreadsheet (CWE-1236).** The terminal UI's CSV save and the browser analyzer's CSV export wrote the From and To users as they arrived, and whoever places a call chooses them. A From user such as `=1+1`, or a `HYPERLINK` formula, became a live formula when the file was opened in a spreadsheet. A text cell that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is now written with a leading `'` and quoted, by one rule in `src/csv.rs` that both writers use. The numeric and time columns are written as sipnab formats them. The browser export had escaped nothing, so a comma in a From user also split its row there. A field holding a bare carriage return is now quoted too: written unquoted, it split the row for [RFC 4180](https://www.rfc-editor.org/rfc/rfc4180.html) readers.
 - **A refused `--duration` quotes the value as typed.** `--duration five-minutes` was refused as `Invalid duration value: 'five-minute'`, the text left once the unit was taken off. `--duration` and the `--alert-rule` window and cooldown now share one parser, which quotes the value exactly as given.
+### Changed
+
+- **Every `unsafe` block, extern block and `unsafe fn` in the tree states why it is sound.** The Rust style gate held eight sites as known debt: three in the eBPF probes, the libpcap, `pcap_next_ex`, dyld and unwinder declarations, a test's environment change, and two `unsafe fn` without a `# Safety` section. Each now has its `SAFETY` comment or `# Safety` section, and `src/rtp/g711.rs` says why its table skips rustfmt. The known-sites list no longer carries them, so a new undocumented site fails the gate.
 
 ## [0.5.233] - 2026-11-04
 
