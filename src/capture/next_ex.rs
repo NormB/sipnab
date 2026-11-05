@@ -159,6 +159,10 @@ pub(crate) fn next_packet<T: pcap::Activated + ?Sized>(
     // here against the same library, with no `#[link]` of their own, exactly as
     // `capture::libpcap::running` declares `pcap_lib_version`. The handle is
     // opaque, so it crosses as a void pointer.
+    // SAFETY: the declarations match pcap/pcap.h:
+    // `int pcap_next_ex(pcap_t *, struct pcap_pkthdr **, const u_char **)` and
+    // `char *pcap_geterr(pcap_t *)`. `pcap_t` is opaque, so a void pointer has
+    // its ABI, and the error text is only read, so `*const` is sound.
     unsafe extern "C" {
         fn pcap_next_ex(
             p: *mut std::ffi::c_void,

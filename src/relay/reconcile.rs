@@ -1044,6 +1044,7 @@ mod tests {
                                     advertised_endpoint: None,
                                     is_rtcp: p % 2 == 1,
                                     ssrcs: Vec::new(),
+                                    facts: Default::default(),
                                 })
                                 .collect(),
                         }],
@@ -1091,6 +1092,7 @@ mod tests {
                 advertised_endpoint: None,
                 is_rtcp: false,
                 ssrcs: Vec::new(),
+                facts: Default::default(),
             };
             Ok(ControlReply::Call(CallView {
                 call_id: call_id.to_owned(),
@@ -1585,6 +1587,7 @@ mod tests {
                     advertised_endpoint: None,
                     is_rtcp: false,
                     ssrcs: Vec::new(),
+                    facts: Default::default(),
                 })
                 .collect();
             if self.muxed {
@@ -1595,6 +1598,7 @@ mod tests {
                     advertised_endpoint: None,
                     is_rtcp: true,
                     ssrcs: Vec::new(),
+                    facts: Default::default(),
                 });
             }
             Ok(ControlReply::Call(CallView {
@@ -2007,6 +2011,7 @@ mod tests {
                         advertised_endpoint: None,
                         is_rtcp: false,
                         ssrcs: Vec::new(),
+                        facts: Default::default(),
                     }],
                 }],
             }))

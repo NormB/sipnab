@@ -837,6 +837,21 @@ fn relay_poll_target(
     })
 }
 
+/// Publish a poll's result where REST and MCP read it, THEN show it.
+///
+/// The order is the point. Shown first, a reader who saw the reading on
+/// stdout (or the failure in the log) and asked `GET /v1/relay/statistics`
+/// or MCP could get `no_reading_yet`, or the previous poll's answer.
+fn publish_then_show<T, R, S>(value: T, record: R, show: S)
+where
+    T: Clone,
+    R: FnOnce(T),
+    S: FnOnce(&T),
+{
+    record(value.clone());
+    show(&value);
+}
+
 /// One relay-statistics poller's state, moved onto the poll thread.
 struct RelayStatsPoll {
     /// Control client for the relay being polled.
@@ -897,18 +912,16 @@ impl RelayStatsPoll {
         }
         match result {
             Ok(crate::relay::types::ControlReply::Statistics(pairs)) => self.on_statistics(pairs),
+            // Recorded before it is logged, as a reading is recorded before
+            // it is printed: see `publish_then_show`.
             Ok(other) => {
-                tracing::error!("{} answered {other:?}, not statistics", self.label);
                 self.publish_failure(
                     crate::stats_vocab::StatisticsOutcome::Suspect,
                     format!("{} answered something other than statistics", self.label),
                 );
+                tracing::error!("{} answered {other:?}, not statistics", self.label);
             }
             Err(e) => {
-                tracing::error!(
-                    "{} did not answer the polled statistics request ({e})",
-                    self.label
-                );
                 self.publish_failure(
                     crate::relay::types::fetch_error_outcome(&e),
                     format!(
@@ -916,11 +929,15 @@ impl RelayStatsPoll {
                         self.label
                     ),
                 );
+                tracing::error!(
+                    "{} did not answer the polled statistics request ({e})",
+                    self.label
+                );
             }
         }
     }
 
-    /// Check one reading against the previous one, then print it.
+    /// Check one reading against the previous one, then publish and print it.
     fn on_statistics(&mut self, pairs: Vec<(String, String)>) {
         use crate::stats_vocab::{counter_stepped_backwards, relay_reported, resolve_for_wire};
         if let Some(prev) = &self.previous
@@ -940,13 +957,19 @@ impl RelayStatsPoll {
         }
         let wire = resolve_for_wire(&relay_reported(&pairs));
         self.previous = Some(pairs);
-        self.print_reading(&wire);
-        crate::output::relay_polled::PolledStore::global().record(
-            crate::output::relay_polled::PolledReading {
-                wire,
-                relay: self.label.clone(),
-                obtained_at: chrono::Utc::now(),
+        let relay = self.label.clone();
+        publish_then_show(
+            wire,
+            |wire| {
+                crate::output::relay_polled::PolledStore::global().record(
+                    crate::output::relay_polled::PolledReading {
+                        wire,
+                        relay,
+                        obtained_at: chrono::Utc::now(),
+                    },
+                );
             },
+            |wire| self.print_reading(wire),
         );
     }
 
@@ -4046,10 +4069,12 @@ impl BatchRunner {
             lp.output_failed = true;
         }
 
-        if self.limit_reached(lp, capture_config) {
-            ControlFlow::Break(())
-        } else {
-            ControlFlow::Continue(())
+        match self.limit_reached(lp, capture_config) {
+            None => ControlFlow::Continue(()),
+            Some(LimitStop::Now) => ControlFlow::Break(()),
+            Some(LimitStop::AfterInput) => {
+                finish_after_duration(&mut lp.finish_by, std::time::Instant::now())
+            }
         }
     }
 
@@ -4574,23 +4599,26 @@ impl BatchRunner {
         }
     }
 
-    /// Whether a `--count`, `--duration` or `--autostop` limit has been
-    /// reached.
-    fn limit_reached(&self, lp: &ReceiveLoop, capture_config: &CaptureConfig) -> bool {
+    /// Which `--count`, `--duration` or `--autostop` limit has been reached,
+    /// and how the loop ends on it; `None` when none has.
+    fn limit_reached(&self, lp: &ReceiveLoop, capture_config: &CaptureConfig) -> Option<LimitStop> {
         // Check --count limit
         if let Some(max_count) = capture_config.count
             && lp.total_count >= max_count
         {
-            return true;
+            return Some(LimitStop::Now);
         }
 
-        // Check --duration limit
+        // Check --duration limit. The capture source enforces the same
+        // limit on a clock that started earlier, then delivers what it holds
+        // and ends the input; ending here as well dropped what it had queued
+        // (CAP-2).
         if let Some(duration) = capture_config.duration
             && lp.start.elapsed() >= duration
         {
-            return true;
+            return Some(LimitStop::AfterInput);
         }
-        self.autostop_reached(lp)
+        self.autostop_reached(lp).then_some(LimitStop::Now)
     }
 
     /// Whether an `--autostop` duration or file-size limit has been reached,
@@ -4993,6 +5021,38 @@ fn keylog_poll_due(watching: bool, since_last: impl FnOnce() -> std::time::Durat
     watching && since_last() >= KEYLOG_POLL_INTERVAL
 }
 
+/// How the receive loop ends on a limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LimitStop {
+    /// At once: `--count` and `--autostop` are exact.
+    Now,
+    /// When the capture source has ended its input, or after
+    /// [`DURATION_FINISH_GRACE`]: `--duration`, which the source also enforces.
+    AfterInput,
+}
+
+/// How long a run past its `--duration` reads on, waiting for the capture
+/// source to deliver what it captured and end its input. A HEP stream reader
+/// drains for at most `HEP_STREAM_DRAIN_BUDGET` (1 s) after its own deadline,
+/// and its deadline comes first, because its clock started first.
+const DURATION_FINISH_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The receive loop's next step after `--duration` was reached at or before
+/// `now`: go on reading until [`DURATION_FINISH_GRACE`] after the first time
+/// this is asked, then stop. The input ending stops the loop before that, in
+/// `receive`.
+fn finish_after_duration(
+    finish_by: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+) -> std::ops::ControlFlow<()> {
+    let by = *finish_by.get_or_insert(now + DURATION_FINISH_GRACE);
+    if now >= by {
+        std::ops::ControlFlow::Break(())
+    } else {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
 /// What the receive loop carries from one packet to the next, and what the
 /// steps after it read.
 struct ReceiveLoop {
@@ -5059,6 +5119,9 @@ struct ReceiveLoop {
     /// Set once the capture channel closes, so the end-of-input release
     /// runs exactly once.
     input_ended: bool,
+    /// Set when `--duration` is reached: the loop reads on until the input
+    /// ends, or until this instant. See [`finish_after_duration`].
+    finish_by: Option<std::time::Instant>,
     /// SIP/RTP counts and emit-selection state.
     counters: PacketCounters,
 }
@@ -5103,6 +5166,7 @@ impl ReceiveLoop {
             start: std::time::Instant::now(),
             total_count: 0,
             input_ended: false,
+            finish_by: None,
             counters: PacketCounters {
                 sip_count: 0,
                 rtp_count: 0,
@@ -20565,6 +20629,83 @@ mod redaction_map_tests {
         assert!(
             left.is_empty(),
             "left behind after the failed write: {left:?}"
+        );
+        Ok(())
+    }
+}
+
+/// CAP-2: a `--duration` stop finishes the input the source already queued.
+#[cfg(test)]
+mod duration_finish_tests {
+    use super::*;
+
+    /// The first ask starts the grace period, the loop reads on through it,
+    /// and stops when it is over.
+    #[test]
+    fn a_duration_stop_reads_on_through_its_grace_and_then_stops() {
+        let t0 = std::time::Instant::now();
+        let mut by = None;
+        assert_eq!(
+            finish_after_duration(&mut by, t0),
+            std::ops::ControlFlow::Continue(()),
+            "the first ask reads on"
+        );
+        assert_eq!(
+            by,
+            Some(t0 + DURATION_FINISH_GRACE),
+            "the grace starts at the first ask"
+        );
+        let almost = t0 + DURATION_FINISH_GRACE - std::time::Duration::from_millis(1);
+        assert_eq!(
+            finish_after_duration(&mut by, almost),
+            std::ops::ControlFlow::Continue(()),
+            "a later ask inside the grace reads on, and does not move it"
+        );
+        assert_eq!(
+            by,
+            Some(t0 + DURATION_FINISH_GRACE),
+            "the grace did not move"
+        );
+        assert_eq!(
+            finish_after_duration(&mut by, t0 + DURATION_FINISH_GRACE),
+            std::ops::ControlFlow::Break(()),
+            "the loop stops when the grace is over"
+        );
+    }
+}
+
+/// A polled relay reading is published before anyone is shown it.
+#[cfg(test)]
+mod polled_publish_order_tests {
+    use super::*;
+
+    /// By the time the reading is printed, the store REST and MCP read
+    /// already holds it. Printed first, a reader who saw the line and asked
+    /// `GET /v1/relay/statistics` got `no_reading_yet` (CI on #657,
+    /// `the_polled_reading_is_readable_over_rest`).
+    #[test]
+    fn the_reading_is_recorded_before_it_is_shown() -> Result<(), Box<dyn std::error::Error>> {
+        let recorded = std::cell::RefCell::new(None);
+        let seen_by_show = std::cell::RefCell::new(None);
+        let wire = crate::stats_vocab::WireStatistics::default();
+        publish_then_show(
+            wire.clone(),
+            |w| *recorded.borrow_mut() = Some(w),
+            |w| *seen_by_show.borrow_mut() = Some((w.clone(), recorded.borrow().clone())),
+        );
+        let (shown, recorded_then) = seen_by_show
+            .into_inner()
+            .ok_or("the reading was never shown")?;
+        assert_eq!(shown, wire, "the reading shown is the reading");
+        assert_eq!(
+            recorded_then,
+            Some(wire.clone()),
+            "the store held the reading when it was shown"
+        );
+        assert_eq!(
+            recorded.into_inner(),
+            Some(wire),
+            "the reading was recorded"
         );
         Ok(())
     }

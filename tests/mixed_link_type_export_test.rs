@@ -22,6 +22,9 @@
 //! asking sipnab what it wrote. What matters is what a third party's reader
 //! sees, and that is a property of the bytes.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 
 /// The error a test returns: any error, boxed, so `?` works on I/O,
@@ -29,9 +32,9 @@ use std::path::{Path, PathBuf};
 type TestError = Box<dyn std::error::Error>;
 
 /// A fresh temp directory for one test.
-fn tmp_dir(name: &str) -> Result<PathBuf, TestError> {
-    let d = std::env::temp_dir().join(format!("sipnab-mixed-link-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+fn tmp_dir(name: &str) -> Result<test_scratch::ScratchDir, TestError> {
+    let d = test_scratch::ScratchDir::new(&format!("sipnab-mixed-link-{name}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&d)?;
     Ok(d)
 }

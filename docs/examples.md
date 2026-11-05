@@ -3990,7 +3990,7 @@ Where a run must start as root, for example from a script that already runs unde
 sudo sipnab -N -d eth0 --user sipnab
 ```
 
-To also confine the run to a directory, the directory must hold an `etc/passwd` naming the user, because sipnab looks the user up after it changes root ([Confine it to a directory](least-privilege.md#confine-it-to-a-directory) builds one):
+To also confine the run to a directory, name it with `--chroot`. sipnab looks the user up before it changes root, so an empty directory works ([Confine it to a directory](least-privilege.md#confine-it-to-a-directory)):
 
 ```bash
 sudo sipnab -N -d eth0 --user nobody --chroot /var/lib/sipnab/jail
@@ -4013,16 +4013,9 @@ sudo sipnab -N -d eth0 --user nobody --chroot /var/lib/sipnab/jail
   - Every upgrade, every rebuild, every package update drops it.
   - The failure looks like a permissions problem that appeared from nowhere.
   - Re-run `--setup-caps` after an upgrade.
-- **`--chroot` stops a root run at the privilege drop.**
-  - sipnab chroots first, then looks the drop user up, inside the new root. A directory with no `etc/passwd` has no such user:
-
-    ```text
-    INFO sipnab::privilege: Chrooted to /var/empty
-    Failed to drop privileges: User 'sipnab' not found. Create it with 'useradd -r -s /usr/sbin/nologin sipnab' or use --user <name>
-    ```
-
-  - It exits 1, with or without `--user`: the default `nobody` is not found either.
-  - Debian 13 has no `/var/empty` at all. There `--chroot /var/empty` fails before that, with `chroot(/var/empty) failed: No such file or directory`.
+- **`--chroot` needs a directory that exists.**
+  - Debian 13 has no `/var/empty` at all. There `--chroot /var/empty` exits 1 with `chroot(/var/empty) failed: No such file or directory`.
+  - 0.5.233 and earlier also looked the drop user up inside the new root, so a directory with no `etc/passwd` stopped every root run with `Failed to drop privileges: User 'nobody' not found`.
 - sipnab opens its capture device, keylog file or FIFO and config **before** the drop.
   - A keylog path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#decrypt-without-writing-the-keys-to-disk)).
   - It creates `-O` and `--split` files **after** the drop, as the drop user. See [An output file sipnab cannot create](troubleshooting.md#an-output-file-sipnab-cannot-create).

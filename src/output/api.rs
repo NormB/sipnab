@@ -1126,6 +1126,7 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/relay/compare/{call_id}", get(get_relay_compare))
         .route("/v1/relay/holdings", get(get_relay_holdings))
         .route("/v1/relay/holdings/{call_id}", get(get_relay_holdings_call))
+        .route("/v1/relay/sessions", get(get_relay_sessions))
         .route("/v1/runtime", get(get_runtime))
         .route("/v1/capabilities", get(get_capabilities))
         .route("/v1/inventory", get(get_inventory))
@@ -5823,6 +5824,16 @@ enum RelayAsk {
     },
     /// The ports and tags it holds for one call (query_relay per-call).
     Holding(String),
+    /// What it holds and whether media reaches it: `list`, then `query` for
+    /// the selected call and, on a scan, the held calls up to the cap.
+    Sessions {
+        /// The Call-ID to query, if any.
+        call_id: Option<String>,
+        /// Whether to query the held calls too.
+        scan: bool,
+        /// The dialog store, to say which calls sipnab saw end in SIP.
+        dialogs: Arc<RwLock<DialogStore>>,
+    },
 }
 
 /// Build the JSON body for a relay-statistics REST route (ST5).
@@ -6003,6 +6014,24 @@ fn relay_rest_answer(
                 )),
                 Err(e) => fetch_failure(&e),
             }
+        }
+        // The answer `--relay-sessions` prints too.
+        RelayAsk::Sessions {
+            call_id,
+            scan,
+            dialogs,
+        } => {
+            use crate::output::query::relay_sessions::{SessionsAsk, relay_sessions};
+            let cap = crate::relay::reconcile::DEFAULT_LIST_LIMIT;
+            let ask = SessionsAsk {
+                selected: call_id.as_deref(),
+                scan: *scan,
+                cap,
+                list_limit: cap,
+            };
+            let ended =
+                |c: &str| crate::output::query::relay_sessions::sip_saw_end(&dialogs.read(), c);
+            relay_sessions(relay.as_ref(), &permit, &ask, &ended, &chrono::Utc::now).body()
         }
         // The answer `--relay-holdings` prints too.
         RelayAsk::Holdings { max_calls } => {
@@ -6343,6 +6372,70 @@ async fn get_relay_holdings_call(
     })
     .await
     .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
+    Ok(Json(body))
+}
+
+/// Query parameters for `GET /v1/relay/sessions`.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct RelaySessionsParams {
+    /// A Call-ID to query on this ask, listed or not.
+    pub call_id: Option<String>,
+    /// `true` to query every held call too, up to 32 including `call_id`.
+    pub scan: Option<bool>,
+}
+
+/// `GET /v1/relay/sessions` — what the live relay holds and whether media
+/// reaches it each way (SG2).
+///
+/// # Arguments
+///
+/// * `state` — Shared application state (carries the relay access and the
+///   dialog store).
+/// * `addr` — Client socket address used for rate limiting.
+/// * `headers` — Request headers (auth).
+/// * `params` — an optional `call_id` and `scan`.
+///
+/// # Returns
+///
+/// 200 in every case — `outcome: ok` with the snapshot, or an ST-S4
+/// classification; 401/503 from the guard.
+///
+/// # Side effects
+///
+/// Transmits one `list` and up to 32 `query` requests to the relay on a
+/// blocking task; mutates the rate limiter.
+#[utoipa::path(
+    get,
+    path = "/v1/relay/sessions",
+    tag = "relay",
+    summary = "What the relay holds, and whether media reaches it",
+    description = "Asks the configured relay for its held calls (`list`), then `query` for `call_id` and, with `scan=true`, for every held call up to 32. For each party's RTP socket it returns a verdict from the relay's own counters and clock: `never_received` (0 packets in and the socket never `confirmed`), `stalled` (its `last packet` more than 2 s behind the newest in the same reply), `flowing`, or `not_reported`. A call with an early media branch has its sockets shown and no verdict. Calls listed and not queried are named in `not_queried`; `truncated` is true when `list` returned as many as asked for. Every value is `relay_reported`, and an absent value is absent, never 0. This TRANSMITS, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. The same snapshot `--relay-sessions --json` prints and the MCP `query_relay` tool returns with `sessions: true`. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
+    params(RelaySessionsParams),
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "outcome=ok with the snapshot, or a classification.", body = schema::RelaySessionsResponse),
+        (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
+    )
+)]
+async fn get_relay_sessions(
+    State(state): State<ApiState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(params): Query<RelaySessionsParams>,
+) -> Result<impl IntoResponse, Problem> {
+    guard(&state, &headers, addr.ip())?;
+    let rq = state.relay_query.clone();
+    let ss = Arc::clone(&state.stream_store);
+    let ask = RelayAsk::Sessions {
+        call_id: params.call_id,
+        scan: params.scan.unwrap_or(false),
+        dialogs: Arc::clone(&state.dialog_store),
+    };
+    let body = tokio::task::spawn_blocking(move || relay_rest_answer(&rq, &ask, &ss))
+        .await
+        .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
     Ok(Json(body))
 }
 
@@ -7402,6 +7495,51 @@ pub mod schema {
         pub messages: u64,
     }
 
+    /// `GET /v1/relay/sessions` — the sessions snapshot, or a classification.
+    ///
+    /// `outcome` is always present: `ok` with every snapshot field, or one of
+    /// the five ST-S4 classifications with `responsibility` and `detail` and no
+    /// snapshot. The snapshot fields are those of
+    /// [`crate::output::query::relay_sessions::RelaySessions`], which the CLI's
+    /// `--relay-sessions --json` and the MCP `query_relay` tool serialize too.
+    #[derive(Debug, Clone, ToSchema)]
+    pub struct RelaySessionsResponse {
+        /// `ok`, or `not_configured` / `not_permitted` / `unreachable` /
+        /// `refused` / `suspect`.
+        pub outcome: String,
+        /// Whose problem a non-`ok` outcome is.
+        pub responsibility: Option<String>,
+        /// What happened, on a non-`ok` outcome; on `ok`, absent unless the
+        /// relay's `list` was not answered.
+        pub detail: Option<String>,
+        /// Which relay answered.
+        pub relay: Option<String>,
+        /// When the snapshot was taken, RFC 3339.
+        pub obtained_at: Option<String>,
+        /// Always `relay_reported`.
+        pub tier: Option<String>,
+        /// `ok` when the relay answered its `list`.
+        pub reach: Option<String>,
+        /// How many Call-IDs `list` returned.
+        pub held: Option<u64>,
+        /// The `limit` the `list` asked for.
+        pub list_limit: Option<u32>,
+        /// Whether `list` returned as many as asked for.
+        pub truncated: Option<bool>,
+        /// Whether this ask scanned the held calls.
+        pub scan: Option<bool>,
+        /// The most held calls a scan queries.
+        pub cap: Option<u32>,
+        /// The calls queried, each with its directions and sockets.
+        pub calls: Option<Vec<crate::output::query::relay_sessions::SessionCall>>,
+        /// The calls listed and not queried.
+        pub not_queried: Option<Vec<crate::output::query::relay_sessions::NotQueried>>,
+        /// The threshold `stalled` uses, in seconds.
+        pub stall_seconds: Option<i64>,
+        /// What every reader should know about these verdicts.
+        pub notes: Option<Vec<String>>,
+    }
+
     /// `GET /v1/relay/...` — one envelope for every relay route (ST5): the four
     /// statistics routes and the two holdings routes.
     ///
@@ -7747,6 +7885,7 @@ impl utoipa::Modify for BearerAuth {
         get_relay_compare,
         get_relay_holdings,
         get_relay_holdings_call,
+        get_relay_sessions,
         get_runtime,
         get_capabilities,
         get_inventory,
@@ -7799,6 +7938,7 @@ impl utoipa::Modify for BearerAuth {
         schema::DimensionDiffView,
         schema::CaptureComparisonView,
         schema::RelayStatsResponse,
+        schema::RelaySessionsResponse,
         crate::output::relay_polled::PolledAnswer,
         crate::output::relay_polled::PolledOutcome,
         crate::output::relay_polled::PolledValue,
@@ -10129,6 +10269,7 @@ mod tests {
                         advertised_endpoint: None,
                         is_rtcp: false,
                         ssrcs: vec![0x1234],
+                        facts: Default::default(),
                     }],
                 }],
             }))

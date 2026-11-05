@@ -105,5 +105,56 @@ pub(super) fn relay_holdings(
     }
 }
 
+/// `--relay-sessions`: one snapshot of what the relay holds and whether media
+/// reaches it, the answer `GET /v1/relay/sessions?scan=true` returns, or with
+/// `--relay-sessions-call` the answer for that call alone.
+///
+/// A CLI run asks before any capture opens, so sipnab has seen no SIP: every
+/// call reads `not_seen_ended`, and the answer says the relay may still list
+/// a call for about 30 s after it ends.
+///
+/// # Returns
+///
+/// The exit code: 0 when the relay answered its `list` and the answer was
+/// written; 1 when it did not answer, declined, answered with something that
+/// cannot be trusted, or stdout refused the answer.
+pub(super) fn relay_sessions(
+    cli: &crate::cli::Cli,
+    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    permit: &crate::security::transmit_guard::TransmitPermit,
+) -> i32 {
+    use crate::output::query::relay_sessions::{SessionsAsk, relay_sessions};
+
+    let cap = cli
+        .gate_args
+        .relay_holdings_max
+        .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+    let selected = cli.gate_args.relay_sessions_call.as_deref();
+    let ask = SessionsAsk {
+        selected,
+        scan: selected.is_none(),
+        cap,
+        list_limit: cap,
+    };
+    let answer = relay_sessions(relay, permit, &ask, &|_| false, &chrono::Utc::now);
+    let json = !matches!(super::answer_form(cli), super::AnswerForm::Table(_));
+    if !answer.answered() && !json {
+        stderr_line!(
+            "--relay-sessions: {}: {}",
+            answer.reach,
+            answer.detail.as_deref().unwrap_or("")
+        );
+        return FAILED;
+    }
+    let written = super::write_answer(cli, "--relay-sessions", &answer.body(), |format| {
+        answer.render(format)
+    });
+    if written && answer.answered() {
+        0
+    } else {
+        FAILED
+    }
+}
+
 /// The exit status of a relay ask that brought back no call list.
 const FAILED: i32 = 1;

@@ -10818,8 +10818,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlink_out_of_the_file_root_is_refused() -> Result<(), TestError> {
-        let base =
-            std::env::temp_dir().join(format!("sipnab-mcp-root-symlink-{}", std::process::id()));
+        let base = crate::test_scratch::ScratchDir::new("sipnab-mcp-root-symlink-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         let root = base.join("root");
         let outside = base.join("outside");
         let _ = std::fs::remove_dir_all(&base);
@@ -10921,9 +10921,9 @@ mod tests {
         tag: &str,
         files: &[(&str, &str)],
         junk: &[(&str, &[u8])],
-    ) -> Result<std::path::PathBuf, TestError> {
-        let root = std::env::temp_dir().join(format!("sipnab-sweep-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+    ) -> Result<crate::test_scratch::ScratchDir, TestError> {
+        let root = crate::test_scratch::ScratchDir::new(&format!("sipnab-sweep-{tag}-"))
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
         for (name, source) in files {
             let from = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(source);
@@ -11359,7 +11359,7 @@ mod tests {
     /// Forty rotated captures where only the LAST holds the call: thirty-nine
     /// copies of a capture without it, then the one with it, named so they
     /// sort in that order.
-    fn forty_file_root(tag: &str) -> Result<std::path::PathBuf, TestError> {
+    fn forty_file_root(tag: &str) -> Result<crate::test_scratch::ScratchDir, TestError> {
         let names: Vec<String> = (0..40).map(|i| format!("rot-{i:02}.pcap")).collect();
         let files: Vec<(&str, &str)> = names
             .iter()
@@ -11858,7 +11858,13 @@ mod tests {
     #[cfg(feature = "api")]
     fn held_compare_root(
         tag: &str,
-    ) -> Result<(std::path::PathBuf, Arc<crate::mcp::sweep::TestHold>), TestError> {
+    ) -> Result<
+        (
+            crate::test_scratch::ScratchDir,
+            Arc<crate::mcp::sweep::TestHold>,
+        ),
+        TestError,
+    > {
         let root = sweep_root(
             tag,
             &[
@@ -12476,8 +12482,8 @@ mod tests {
     /// and would pass a test that only checked for an error.
     #[test]
     fn a_write_refuses_a_name_that_already_exists() -> Result<(), TestError> {
-        let root = std::env::temp_dir().join(format!("sipnab-mcp-clobber-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_scratch::ScratchDir::new("sipnab-mcp-clobber-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
 
         let staged = root.join("staged.pcap");
@@ -12882,9 +12888,8 @@ mod tests {
     #[tokio::test]
     async fn show_evidence_follows_a_pointer_into_the_capture_being_read() -> Result<(), TestError>
     {
-        let base =
-            std::env::temp_dir().join(format!("sipnab-show-evidence-self-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
+        let base = crate::test_scratch::ScratchDir::new("sipnab-show-evidence-self-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&base).map_err(|e| format!("mkdir root: {e:?}"))?;
         let capture = base.join("under-analysis.pcap");
         std::fs::copy(
@@ -12997,10 +13002,8 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn show_evidence_refuses_a_pointer_that_escapes_the_file_root() -> Result<(), TestError> {
-        let base = std::env::temp_dir().join(format!(
-            "sipnab-show-evidence-escape-{}",
-            std::process::id()
-        ));
+        let base = crate::test_scratch::ScratchDir::new("sipnab-show-evidence-escape-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         let root = base.join("root");
         let outside = base.join("outside");
         let _ = std::fs::remove_dir_all(&base);
@@ -13077,9 +13080,8 @@ mod tests {
     /// the defect `export_capture` had; this reports the limit instead.
     #[tokio::test]
     async fn show_evidence_says_a_live_pointer_has_no_frames_to_follow() -> Result<(), TestError> {
-        let root =
-            std::env::temp_dir().join(format!("sipnab-show-evidence-live-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_scratch::ScratchDir::new("sipnab-show-evidence-live-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("mkdir: {e:?}"))?;
 
         let result = server_with_dialog("live@test")?
@@ -13124,9 +13126,8 @@ mod tests {
     /// summary counts what actually resolved.
     #[tokio::test]
     async fn show_evidence_reports_each_pointer_independently() -> Result<(), TestError> {
-        let root =
-            std::env::temp_dir().join(format!("sipnab-show-evidence-mixed-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_scratch::ScratchDir::new("sipnab-show-evidence-mixed-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("mkdir: {e:?}"))?;
 
         let result = server_with_dialog("mixed@test")?
@@ -13175,9 +13176,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_plain_name_inside_the_file_root_still_resolves() -> Result<(), TestError> {
-        let root =
-            std::env::temp_dir().join(format!("sipnab-mcp-root-plain-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_scratch::ScratchDir::new("sipnab-mcp-root-plain-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("mkdir: {e:?}"))?;
 
         let srv = server_with_dialog("plain@test")?.with_file_root(&root);
@@ -13281,7 +13281,9 @@ mod tests {
             ("media", 3_500),
             // 4_500 -> 5_000 by `relay_stats_polled` (578 bytes): relay
             // measured 4,777 over 5 tools.
-            ("relay", 5_000),
+            // 5_000 -> 5_500 by `query_relay`'s `sessions` and `scan` (SG2,
+            // +332 bytes): relay measured 5,109 over 5 tools, full 92,468.
+            ("relay", 5_500),
             ("tfps", 6_000),
             // 5_500 -> 6_000: `fleet_inventory`, the fleet inventory record,
             // joins the server bundle; server measured 5,976 over six tools.
@@ -16524,10 +16526,12 @@ mod tests {
 
     /// A temp directory that is a valid `--mcp-file-root`, holding a copy of
     /// the G.711 fixture under `name`.
-    fn root_with_capture(dir: &str, name: &str) -> Result<std::path::PathBuf, TestError> {
-        let root =
-            std::env::temp_dir().join(format!("sipnab-open-capture-{dir}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+    fn root_with_capture(
+        dir: &str,
+        name: &str,
+    ) -> Result<crate::test_scratch::ScratchDir, TestError> {
+        let root = crate::test_scratch::ScratchDir::new(&format!("sipnab-open-capture-{dir}-"))
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("create the file root: {e:?}"))?;
         std::fs::copy(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -17417,9 +17421,8 @@ mod tests {
     /// An explicit suppression file applies, is named, and its effect is counted.
     #[tokio::test]
     async fn an_explicit_suppression_file_is_applied_named_and_counted() -> Result<(), TestError> {
-        let root =
-            std::env::temp_dir().join(format!("sipnab-mcp-supp-explicit-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_scratch::ScratchDir::new("sipnab-mcp-supp-explicit-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("root: {e:?}"))?;
         std::fs::write(
             root.join(".sipnablint"),
@@ -17488,9 +17491,8 @@ mod tests {
     /// "my patterns matched nothing".
     #[tokio::test]
     async fn a_named_suppression_file_that_is_missing_is_refused() -> Result<(), TestError> {
-        let root =
-            std::env::temp_dir().join(format!("sipnab-mcp-supp-missing-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = crate::test_scratch::ScratchDir::new("sipnab-mcp-supp-missing-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("root: {e:?}"))?;
         let server = server_with_dialog("supp-2@example.com")?.with_file_root(&root);
 
@@ -21256,9 +21258,12 @@ mod archive_password_tests {
 
     /// A file root holding an AES ZIP of the G.711 fixture, locked with the
     /// minted password `label`.
-    fn root_with_locked_zip(tag: &str, label: &str) -> Result<std::path::PathBuf, TestError> {
-        let root = std::env::temp_dir().join(format!("sipnab-mcp-pw-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+    fn root_with_locked_zip(
+        tag: &str,
+        label: &str,
+    ) -> Result<crate::test_scratch::ScratchDir, TestError> {
+        let root = crate::test_scratch::ScratchDir::new(&format!("sipnab-mcp-pw-{tag}-"))
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&root).map_err(|e| format!("mkdir root: {e:?}"))?;
         let pcap = std::fs::read(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

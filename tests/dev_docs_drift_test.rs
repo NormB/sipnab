@@ -25,6 +25,9 @@
 //! 8. every mirrored page carrying a diagram declares `has_diagrams`, and the
 //!    page template loads the mermaid bundle on exactly that flag.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 
 type TestError = Box<dyn std::error::Error>;
@@ -934,7 +937,12 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // tests/site_journey_test.rs a second time each.
     // 751 -> 753: docs/internals/profiling.md links scripts/bench-quiet.py
     // and scripts/bench-verdict.py from the throughput gate's section.
-    const EXPECTED_CODE_LINKS: usize = 753;
+    // 753 -> 754 (ATTRIBUTION-DETECTOR-DRIFT): docs/internals/build-ci-release.md
+    // links scripts/commit-message-check.sh from the pre-push gate list.
+    // Counted against origin/main 03d904afa.
+    // 754 -> 755 (TEMP-PATH-GATE-ACCEPTS-PID): docs/internals/testing.md links
+    // src/test_scratch.rs from the helper table.
+    const EXPECTED_CODE_LINKS: usize = 755;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1307,8 +1315,8 @@ fn every_mermaid_block_is_introduced_by_prose() -> Result<(), TestError> {
 #[test]
 fn build_wiki_leaves_no_relative_links_in_the_output() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::env::temp_dir().join(format!("sipnab-wiki-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&out);
+    let out =
+        test_scratch::ScratchDir::new("sipnab-wiki-").map_err(|e| format!("scratch dir: {e}"))?;
 
     let run = std::process::Command::new("python3")
         .arg(repo.join("scripts/build-wiki.py"))
@@ -1544,12 +1552,8 @@ fn every_internals_page_is_published_to_the_site() -> Result<(), TestError> {
 /// script. Regenerate into a temp dir and compare byte-for-byte.
 #[test]
 fn site_internals_mirror_is_current() -> Result<(), TestError> {
-    let tmp = std::env::temp_dir().join(format!(
-        "sipnab-site-internals-{}-{}",
-        std::process::id(),
-        line!()
-    ));
-    let _ = std::fs::remove_dir_all(&tmp);
+    let tmp = test_scratch::ScratchDir::new("sipnab-site-internals-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
 
     let out = std::process::Command::new("python3")
         .arg(repo().join("scripts/build-site-internals.py"))
@@ -2131,12 +2135,8 @@ fn release_artifact_counts_match_the_build_matrix() -> Result<(), TestError> {
 /// why the count of generated pages cannot answer that question.
 #[test]
 fn site_pages_mirror_is_current() -> Result<(), TestError> {
-    let tmp = std::env::temp_dir().join(format!(
-        "sipnab-site-pages-{}-{}",
-        std::process::id(),
-        line!()
-    ));
-    let _ = std::fs::remove_dir_all(&tmp);
+    let tmp = test_scratch::ScratchDir::new("sipnab-site-pages-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&tmp)?;
 
     // argv[2], not just argv[1]. The generator defaults its llms.txt and

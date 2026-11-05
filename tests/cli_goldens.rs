@@ -25,8 +25,13 @@
 //! Regenerate expected output after an intentional change with:
 //!   `TRYCMD=overwrite cargo test --test cli_goldens`
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use support::TestError;
 
+#[path = "support/run.rs"]
+mod run_support;
 #[path = "support/mod.rs"]
 mod support;
 
@@ -60,20 +65,26 @@ fn cli_goldens() -> Result<(), TestError> {
     // `$SIPNAB_CONFIG` is pointed inside it at a file that is never created --
     // an exported `SIPNAB_CONFIG` outranks `$HOME` in the search, so pinning
     // one without the other would leave the same hole one entry higher up.
+    // `$XDG_CONFIG_HOME` is pinned inside it too, for the same reason: it
+    // outranks `$HOME/.config`. All three come from
+    // `run_support::config_isolation`, the list `run()` uses.
     // A miss there logs at `debug!`, which `SIPNAB_LOG=off` already silences.
     //
     // CARGO_TARGET_TMPDIR rather than the process-wide system temp directory:
     // it is per-target, inside `target/`, and removed by `cargo clean` along
     // with everything else this test builds.
     //
-    // The pid suffix is what `tests/temp_path_isolation_test.rs` demands, and
-    // it is right to: two `cargo test` runs against the same target directory
-    // would otherwise share this HOME, and the second one's cleanup below
-    // would delete a config the first was about to read. Exactly the collision
+    // A fresh guarded directory is what `tests/temp_path_isolation_test.rs`
+    // demands, and it is right to: two `cargo test` runs against the same
+    // target directory would otherwise share this HOME, and the second one's
+    // cleanup below would delete a config the first was about to read. Exactly the collision
     // that file's header records against `sipnab_test_bpf_filter.txt`, where
     // the symptom named `--bpf-file` rather than the harness.
-    let home = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("cli-goldens-home-{}", std::process::id()));
+    let home = test_scratch::ScratchDir::new_in(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "cli-goldens-home-",
+    )
+    .map_err(|e| format!("create the pinned HOME for CLI goldens: {e}"))?;
     std::fs::create_dir_all(&home)
         .map_err(|e| format!("create the pinned HOME for CLI goldens: {e}"))?;
     for stray in [".sipnabrc", ".config/sipnab/sipnab.toml"] {
@@ -113,14 +124,13 @@ fn pinned_cases(home: &std::path::Path) -> trycmd::TestCases {
         .env("LINES", support::FIXED_ROWS.to_string())
         // trycmd merges stderr; sipnab's tracing logs carry wall-clock
         // timestamps. Silence them so goldens pin only deterministic stdout.
-        .env("SIPNAB_LOG", "off")
-        .env("HOME", home.to_string_lossy().into_owned())
-        .env(
-            "SIPNAB_CONFIG",
-            home.join("no-such-config.toml")
-                .to_string_lossy()
-                .into_owned(),
-        );
+        .env("SIPNAB_LOG", "off");
+    // The same pins `run_support::run` applies, from the one list: this copy
+    // used to pin HOME and SIPNAB_CONFIG only, so an exported
+    // XDG_CONFIG_HOME/sipnab/sipnab.toml still reached every golden.
+    for (key, value) in run_support::config_isolation(home) {
+        cases.env(key, value.to_string_lossy().into_owned());
+    }
     cases
 }
 

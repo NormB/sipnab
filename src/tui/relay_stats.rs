@@ -405,16 +405,11 @@ fn do_ask(
                 Err(e) => fetch_failure(&e),
             }
         }
-        // Holdings is the relay's full held set, independent of any call scope
-        // (like Names), so it ignores `call_id`.
-        RelayStatsMode::Holdings => {
-            match access
-                .relay
-                .list(&access.permit, crate::relay::reconcile::DEFAULT_LIST_LIMIT)
-            {
-                Ok(reply) => compose_holdings(&reply, &label, obtained_at),
-                Err(e) => fetch_failure(&e),
-            }
+        // The sessions modes are answered by the sessions snapshot
+        // (`super::relay_sessions`), never by this one-shot ask; nothing is
+        // transmitted from here for them.
+        RelayStatsMode::Sessions | RelayStatsMode::SessionCall | RelayStatsMode::SessionCompare => {
+            String::new()
         }
     }
 }
@@ -782,25 +777,24 @@ mod tests {
         Ok(())
     }
 
-    /// Holdings ask the relay's `list` with the bounded default limit, even
-    /// when the view is scoped to a call, and render what it holds.
+    /// The sessions modes are never asked through the one-shot path: their
+    /// snapshot is taken by the sessions worker, so this transmits nothing.
     #[test]
-    fn holdings_ask_list_with_the_default_limit_regardless_of_the_call() -> Result<(), TestError> {
-        let relay = counting_relay();
-        let text = do_ask(
-            &access(&relay)?,
-            &(Some("c@h".to_string()), RelayStatsMode::Holdings),
-            None,
-            fmt::FetchOrigin::Asked,
-        );
-        assert_eq!(
-            relay.asked()?,
-            vec![format!(
-                "list {}",
-                crate::relay::reconcile::DEFAULT_LIST_LIMIT
-            )]
-        );
-        assert!(text.contains("Holding 2 calls:"), "{text}");
+    fn the_sessions_modes_send_nothing_through_the_one_shot_ask() -> Result<(), TestError> {
+        for mode in [
+            RelayStatsMode::Sessions,
+            RelayStatsMode::SessionCall,
+            RelayStatsMode::SessionCompare,
+        ] {
+            let relay = counting_relay();
+            let _text = do_ask(
+                &access(&relay)?,
+                &(Some("c@h".to_string()), mode),
+                None,
+                fmt::FetchOrigin::Asked,
+            );
+            assert!(relay.asked()?.is_empty(), "{mode:?} asked the relay");
+        }
         Ok(())
     }
 
@@ -815,7 +809,6 @@ mod tests {
             (Some("c@h".to_string()), RelayStatsMode::Counters),
             (None, RelayStatsMode::Names),
             (Some("c@h".to_string()), RelayStatsMode::Compare),
-            (None, RelayStatsMode::Holdings),
         ];
         for key in &modes {
             let relay = silent();

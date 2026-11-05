@@ -145,6 +145,44 @@ pub struct RelayStream {
     /// from the relay: an SSRC follows the media even when the addresses do
     /// not survive the path.
     pub ssrcs: Vec<u32>,
+    /// What the relay counted on this socket, and when, as it reported it.
+    pub facts: RelayStreamFacts,
+}
+
+/// Packets, bytes and errors one relay socket counted in one direction.
+///
+/// Each field is its own `Option`: a relay version that reports packets and
+/// bytes but no errors keeps the two it reported. `None` is "not reported",
+/// never zero.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StreamCounters {
+    /// Packets, where the relay reported them.
+    pub packets: Option<u64>,
+    /// Bytes, where the relay reported them.
+    pub bytes: Option<u64>,
+    /// Errors, where the relay reported them.
+    pub errors: Option<u64>,
+}
+
+/// What a relay reported about one of its sockets, beyond the join keys.
+///
+/// Every field is absent when the relay did not report it. Nothing here is
+/// sipnab's measurement: these are the relay's own counters, read from its
+/// answer and never mixed with what a capture saw.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelayStreamFacts {
+    /// The media section this socket belongs to, as the relay numbered it.
+    pub media_index: Option<u32>,
+    /// What arrived at this socket from the far side.
+    pub ingress: StreamCounters,
+    /// What the relay sent out of this socket.
+    pub egress: StreamCounters,
+    /// When the relay last received a packet here, in whole seconds on the
+    /// relay's own clock.
+    pub last_packet: Option<i64>,
+    /// The socket's flags as the relay wrote them, or `None` when the answer
+    /// carried no flags list.
+    pub flags: Option<Vec<String>>,
 }
 /// One side of a call, as the relay holds it.
 #[derive(Debug, Clone, PartialEq, Eq)]

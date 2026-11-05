@@ -475,10 +475,15 @@ fn the_pre_push_hook_refuses_an_unsigned_commit_before_any_cargo_gate() -> Resul
     git(&f.root, &["reset", "-q", "--hard", &f.base])?;
     let good = f.signed("signed via hook", &f.trusted)?;
     let (ok, out) = hook(&f, &line("main", &good, &f.base))?;
-    assert!(!ok, "with no cargo the hook still stops, later: {out}");
     assert!(
-        out.contains("cargo not found"),
-        "a signed push passes the signature gate and reaches the cargo check: {out}"
+        !ok,
+        "with no cargo the hook still stops, at a later gate: {out}"
+    );
+    // The message gate comes next and, with no cargo to run its check, fails
+    // closed; what this test holds is that the signature gate let it through.
+    assert!(
+        out.contains("every pushed commit is signed"),
+        "a signed push passes the signature gate: {out}"
     );
     Ok(())
 }

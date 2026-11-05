@@ -7,6 +7,9 @@
 //! verifying that SIP messages are detected, parsed, tracked into dialogs,
 //! and output in the requested format.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 #[path = "support/mod.rs"]
 mod support;
 
@@ -443,7 +446,8 @@ fn headless_pcapng_export_is_self_describing() -> Result<(), TestError> {
     // capture source as the interface name, and the producing app/OS — so
     // tshark/capinfos no longer show "unknown"/no application. Pre-fix, none of
     // these were written by the headless path.
-    let dir = std::env::temp_dir().join(format!("sipnab-snb0001-{}", std::process::id()));
+    let dir = test_scratch::ScratchDir::new("sipnab-snb0001-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let names = dir.join("names.hosts");
     std::fs::write(&names, "1.2.3.4 sbc-edge.example\n")?;

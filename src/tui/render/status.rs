@@ -751,7 +751,7 @@ pub(in crate::tui) fn fkey_bar_items(
                 ("F1", "Help"),
                 ("?", "Names"),
                 ("K", "Compare"),
-                ("H", "Holdings"),
+                ("H", "Sessions"),
                 ("\u{2191}\u{2193}", "Scroll"),
             ],
             View::BpfFilter => vec![

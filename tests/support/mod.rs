@@ -77,7 +77,12 @@ pub fn deterministic_env(cmd: &mut Command) -> &mut Command {
 /// `hep_test` used to discard its listener's profile because the listener was
 /// SIGKILLed; it is no longer, and that coverage now counts.
 pub fn discard_coverage_profile(cmd: &mut Command) -> &mut Command {
-    let dir = std::env::temp_dir().join(format!("sipnab-discarded-cov-{}", std::process::id()));
+    // Shared on purpose, and named once: it must outlive every child handed
+    // to it, which no guard here can promise. It sits under the per-target
+    // temp directory, which `cargo clean` empties, and cargo llvm-cov merges
+    // only the `*.profraw` at the top of its target directory, never this
+    // subdirectory. Each child names its own file by pid (`%p`).
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("discarded-coverage");
     let _ = std::fs::create_dir_all(&dir);
     // %p so concurrent children cannot collide with each other either.
     cmd.env("LLVM_PROFILE_FILE", dir.join("discarded-%p.profraw"))

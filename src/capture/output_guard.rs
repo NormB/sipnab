@@ -341,10 +341,9 @@ mod tests {
     type TestError = Box<dyn std::error::Error>;
 
     /// A temp directory holding two capture-shaped files.
-    fn fixture(name: &str) -> Result<PathBuf, TestError> {
-        let d =
-            std::env::temp_dir().join(format!("sipnab-output-guard-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
+    fn fixture(name: &str) -> Result<crate::test_scratch::ScratchDir, TestError> {
+        let d = crate::test_scratch::ScratchDir::new(&format!("sipnab-output-guard-{name}-"))
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&d).map_err(|e| format!("create temp dir: {e:?}"))?;
         std::fs::write(d.join("a.pcap"), b"not really a pcap")
             .map_err(|e| format!("write a: {e:?}"))?;

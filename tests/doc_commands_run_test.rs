@@ -36,6 +36,9 @@
 
 #![cfg(feature = "full")]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -751,11 +754,8 @@ fn every_documented_command_runs_or_says_why_not() -> Result<(), TestError> {
         all.len()
     );
 
-    let sandbox = std::env::temp_dir().join(format!(
-        "sipnab-doc-commands-{}-{}",
-        std::process::id(),
-        all.len()
-    ));
+    let sandbox = test_scratch::ScratchDir::new("sipnab-doc-commands-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&sandbox)?;
 
     let mut tally: BTreeMap<Plan, usize> = BTreeMap::new();
@@ -1077,7 +1077,8 @@ fn derive_path_flags() -> BTreeMap<String, bool> {
 /// `/var/log` or the repository root.
 #[test]
 fn no_argument_names_a_path_outside_the_sandbox_or_the_repository() -> Result<(), TestError> {
-    let sandbox = std::env::temp_dir().join(format!("sipnab-doc-paths-{}", std::process::id()));
+    let sandbox = test_scratch::ScratchDir::new("sipnab-doc-paths-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&sandbox)?;
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let mut escapes = Vec::new();
@@ -1176,7 +1177,8 @@ fn a_documented_relative_output_lands_in_the_sandbox_not_the_repository() -> Res
     let before = std::fs::metadata(repo().join("runs.jsonl"))
         .ok()
         .and_then(|m| m.modified().ok());
-    let sandbox = std::env::temp_dir().join(format!("sipnab-doc-relative-{}", std::process::id()));
+    let sandbox = test_scratch::ScratchDir::new("sipnab-doc-relative-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&sandbox)?;
     let p = prepare(line, &sandbox, 0)?.ok_or("the example splits into words")?;
     let out = Command::new(&p.argv[0])
@@ -1415,7 +1417,8 @@ fn every_address_flag_is_classified_as_a_bind_a_send_or_a_filter() -> Result<(),
 /// anywhere but the discard port.
 #[test]
 fn no_documented_command_binds_publicly_or_transmits_off_the_host() -> Result<(), TestError> {
-    let sandbox = std::env::temp_dir().join(format!("sipnab-doc-addrs-{}", std::process::id()));
+    let sandbox = test_scratch::ScratchDir::new("sipnab-doc-addrs-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&sandbox)?;
     let mut offenses = Vec::new();
     let mut addressed = 0_usize;
@@ -1656,7 +1659,8 @@ fn privilege_escalation_is_never_run_but_printing_a_filter_is() -> Result<(), Te
 /// wins: it is part of what the example says.
 #[test]
 fn every_command_gets_a_home_of_its_own_inside_the_sandbox() -> Result<(), TestError> {
-    let sandbox = std::env::temp_dir().join(format!("sipnab-doc-home-{}", std::process::id()));
+    let sandbox = test_scratch::ScratchDir::new("sipnab-doc-home-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&sandbox)?;
     let p = prepare("sipnab --version", &sandbox, 7)?.ok_or("splits into words")?;
     let last = |env: &[(String, String)], key: &str| {

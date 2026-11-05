@@ -479,7 +479,8 @@ mod tests {
     /// it has finished that file, and completes once released.
     #[test]
     fn a_comparison_stops_at_a_hold_on_its_read() -> Result<(), TestError> {
-        let dir = std::env::temp_dir().join(format!("sipnab-compare-hold-{}", std::process::id()));
+        let dir = crate::test_scratch::ScratchDir::new("sipnab-compare-hold-")
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir: {e}"))?;
         let a = dir.join("a.pcap");
         std::fs::copy(fixture("sip-rtp-g711.pcap"), &a).map_err(|e| format!("copy: {e}"))?;

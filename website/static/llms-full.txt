@@ -5272,7 +5272,7 @@ Where a run must start as root, for example from a script that already runs unde
 sudo sipnab -N -d eth0 --user sipnab
 ```
 
-To also confine the run to a directory, the directory must hold an `etc/passwd` naming the user, because sipnab looks the user up after it changes root ([Confine it to a directory](least-privilege.md#confine-it-to-a-directory) builds one):
+To also confine the run to a directory, name it with `--chroot`. sipnab looks the user up before it changes root, so an empty directory works ([Confine it to a directory](least-privilege.md#confine-it-to-a-directory)):
 
 ```bash
 sudo sipnab -N -d eth0 --user nobody --chroot /var/lib/sipnab/jail
@@ -5295,16 +5295,9 @@ sudo sipnab -N -d eth0 --user nobody --chroot /var/lib/sipnab/jail
   - Every upgrade, every rebuild, every package update drops it.
   - The failure looks like a permissions problem that appeared from nowhere.
   - Re-run `--setup-caps` after an upgrade.
-- **`--chroot` stops a root run at the privilege drop.**
-  - sipnab chroots first, then looks the drop user up, inside the new root. A directory with no `etc/passwd` has no such user:
-
-    ```text
-    INFO sipnab::privilege: Chrooted to /var/empty
-    Failed to drop privileges: User 'sipnab' not found. Create it with 'useradd -r -s /usr/sbin/nologin sipnab' or use --user <name>
-    ```
-
-  - It exits 1, with or without `--user`: the default `nobody` is not found either.
-  - Debian 13 has no `/var/empty` at all. There `--chroot /var/empty` fails before that, with `chroot(/var/empty) failed: No such file or directory`.
+- **`--chroot` needs a directory that exists.**
+  - Debian 13 has no `/var/empty` at all. There `--chroot /var/empty` exits 1 with `chroot(/var/empty) failed: No such file or directory`.
+  - 0.5.233 and earlier also looked the drop user up inside the new root, so a directory with no `etc/passwd` stopped every root run with `Failed to drop privileges: User 'nobody' not found`.
 - sipnab opens its capture device, keylog file or FIFO and config **before** the drop.
   - A keylog path under `/run` is unreachable afterwards ([7f. Decrypt without writing the keys to disk](#decrypt-without-writing-the-keys-to-disk)).
   - It creates `-O` and `--split` files **after** the drop, as the drop user. See [An output file sipnab cannot create](troubleshooting.md#an-output-file-sipnab-cannot-create).
@@ -12305,6 +12298,44 @@ values a program keys on.
 
 ---
 
+### GET /v1/relay/sessions
+
+What the live relay holds, and whether media reaches it each way.
+
+- It sends one `list`, then one `query` for `?call_id=<CALL-ID>` and, with
+  `?scan=true`, one per held call, up to 32 in all.
+- It TRANSMITS, so it sits behind `--api-allow-relay-query` on a live source,
+  and reads `not_permitted`/`not_configured` otherwise.
+- Each party's RTP socket gets a `verdict` from the relay's own counters and
+  clock: `never_received` (0 packets in, and the socket never `confirmed`),
+  `stalled` (its `last packet` more than 2 s behind the newest in the same
+  reply, with `no_packet_for_s`), `flowing`, or `not_reported`.
+- A call with an early media branch carries `unjudged` and no `directions`;
+  its sockets' counters are still there.
+- `not_queried` names every listed call this ask did not query, and
+  `truncated` is true when `list` returned as many as it asked for.
+- `sip_dialog` is `ended` for a call whose SIP dialog this server saw end,
+  else `not_seen_ended`: the relay keeps a deleted call for its delete delay,
+  30 s by default, and does not mark it.
+- Every value is `relay_reported`. A value the relay did not report is
+  absent, never 0.
+
+It is the same snapshot `--relay-sessions --json` prints and the MCP
+`query_relay` tool returns with `sessions: true`.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/relay/sessions?scan=true" | jq .
+```
+
+The body carries `outcome: ok` with the snapshot, or one of the five
+classifications when the relay did not answer its `list`. A call the relay
+declined to answer about is in `calls` with its own `outcome` and `detail`.
+[See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay)
+shows a live answer.
+
+---
+
 ## Add operator notes to a capture
 
 The REST API has no route that reads or writes operator notes. Add notes in
@@ -16930,9 +16961,10 @@ reason.
   refuses. A HEP listener with no allowlist or secret also exits 1.
 - **Exit status 101**: sipnab panicked. See
   [Send us a crash report](#send-us-a-crash-report).
-- **Active, then `inactive` with `Result=success`**: something sent `SIGHUP`.
-  sipnab does not handle it, systemd counts it as a clean stop, and
-  `Restart=on-failure` leaves the service down. Start it again.
+- **Exit status 129**: something sent `SIGHUP`. sipnab stopped as it does for
+  `SIGTERM`, and the packaged unit's `Restart=on-failure` starts it again.
+  0.5.233 and earlier did not handle `SIGHUP`: the service went `inactive`
+  with `Result=success` and stayed down until started again.
 
 [A service that does not start](run-as-a-service.md#a-service-that-does-not-start)
 lists each refusal message with its fix.
@@ -18677,12 +18709,20 @@ shows the view against a live relay.
 | Key | Action |
 |-----|--------|
 | ? | Show the names the relay knows (what you can ask for) |
-| K | Compare the relay's per-call count against this capture's (per-call view only) |
-| H | Show what the relay holds now: the Call-IDs of up to 32 calls (press again to return to the counters) |
-| Up / k, Down / j | Scroll |
+| K | Compare the relay's per-call count against this capture's (per-call view only); in one call of the sessions view, set each relay socket's counts beside what this capture saw on it (press again to return) |
+| H | Open the relay sessions: each held call (up to 32) and whether media reaches the relay each way (press again to return to the counters) |
+| Up / k, Down / j | Scroll; in the sessions list, move the cursor |
+| Enter | In the sessions list, open the call under the cursor: its directions and the relay's counters per socket |
+| a | In the sessions views, ask the relay about every held call once (up to 32) |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
-| Esc / S | Close |
+| Esc / S | Close; from one call of the sessions view, Esc returns to the list |
+
+The sessions view refreshes the relay's call list and the call under the
+cursor every `--relay-stats-interval` seconds, or every 2 s without it, and
+only while it is open.
+[See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay)
+explains the verdicts.
 
 ## Help
 
@@ -19855,7 +19895,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--bpf-file` | `<FILE>` | -- | 0.3.0 | Read the BPF capture filter from a file. It takes precedence over the positional filter and replaces `[capture] bpf_filter`, and like them it applies to `-I` capture files as well as live capture. Config: `[capture] bpf_filter` |
 | `--capture-tunnels` | `[<PORTS>]` | off | 0.5.80 | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default: it takes every packet on those ports, which on a mobile core is the entire user plane, because a BPF filter cannot reach the inner port behind a GTP-U extension-header chain. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | 0.3.0 | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth). At least 1: sipnab refuses `0` |
-| `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2` |
+| `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2`. At the deadline sipnab stops capturing and still reports what had already arrived: a TCP or TLS `--hep-listen` reads what its open connections hold, for up to 1 second, and the run reads on for up to 3 seconds for the capture to deliver it. 0.5.233 and earlier dropped it |
 | `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
@@ -20732,7 +20772,9 @@ out the end-of-run summary on stderr.
 | `--find-in-files` | `<PATH>...` | | 0.5.231 | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
 | `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns. See [Fail a build on what a capture shows](expectations.md) |
 | `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-calls-the-relay-holds) |
-| `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Needs `--relay-holdings`; `0` exits 2 |
+| `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Also the most held calls `--relay-sessions` queries. Needs `--relay-holdings` or `--relay-sessions`; `0` exits 2 |
+| `--relay-sessions` | -- | | Unreleased | Ask the relay named by `--rtpengine-control` which calls it holds and, for each, whether media reaches it each way; print the answer and exit. Sends one `list`, then one `query` per held call up to `--relay-holdings-max`. Each party's RTP socket gets a verdict from the relay's own counters and clock: `never_received`, `stalled` (no packet for more than 2 s while another socket of the call received one), `flowing` or `not_reported`. A call with an early media branch shows its counters with no verdict. Every value is `relay_reported`. Needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. Exits 0 with the answer and 1 when the relay did not answer its `list`. `--json` prints the body of `GET /v1/relay/sessions?scan=true`. See [Ask the relay whether media reaches it](#ask-the-relay-whether-media-reaches-it). Feature: `native`. How-to: [See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay) |
+| `--relay-sessions-call` | `<CALL-ID>` | | Unreleased | With `--relay-sessions`, ask about this Call-ID only: one `list` and one `query`, without querying the other held calls. REST's `call_id`. Needs `--relay-sessions` |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
@@ -21557,6 +21599,36 @@ classification instead of a list:
 ```json
 {"detail":"relay (rtpengine at 127.0.0.1:22222) did not answer (no reply from 127.0.0.1:22222 within 2s); asked, nothing came back","outcome":"unreachable","responsibility":"relay_or_network"}
 ```
+
+### Ask the relay whether media reaches it
+
+`--relay-sessions` goes one step past `--relay-holdings`: for each held call
+it asks the relay what it counted on each of the call's sockets, and says per
+direction whether media reaches the relay. It needs the same live source and
+exits the same way. [See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay)
+shows it against a live relay and explains each verdict. With
+`--relay-sessions-call <CALL-ID>` it asks about that call alone, listed or
+not. A Call-ID the relay does not hold comes back in the relay's own words,
+and the run still exits `0`, because the relay answered its `list`:
+
+```sh
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions --relay-sessions-call gone-1@192.0.2.21 2>/dev/null
+```
+
+```text
+Sessions of relay (rtpengine at 192.0.2.11:22222), asked 2026-11-04T17:20:52.730910958+00:00 (relay_reported)
+reachable; 0 calls listed; queried 0 of 0; also asked about 1 call the relay did not list
+Note: a relay keeps a call it was told to delete for its delete delay (30 s by default) and its answer does not mark it; a call sipnab did not see end in SIP may have ended up to about 30 s ago.
+Note: stalled means no packet for more than 2 s while another socket of the same call received one; silence suppression, comfort noise, hold and loss bursts were not measured and can also produce it.
+
+gone-1@192.0.2.21  refused: relay (rtpengine at 192.0.2.11:22222) for call gone-1@192.0.2.21: Unknown call-id
+
+Call gone-1@192.0.2.21 (relay_reported)
+refused: relay (rtpengine at 192.0.2.11:22222) for call gone-1@192.0.2.21: Unknown call-id
+```
+
+This example writes the harness relay's address as `192.0.2.11` and its
+clients' as `192.0.2.21`.
 
 ## Dialog
 
@@ -23361,7 +23433,7 @@ A `--hep-allow` entry is not a valid address or CIDR range. That flag is the lis
 
 ### `Invalid --duration: {e}`
 
-sipnab could not parse the `--duration` value. `{e}` is the reason: the value is empty, the number is not a whole number, or the result is too large. The accepted forms are a whole number of seconds, optionally followed by `s`, `m` or `h`.
+sipnab could not parse the `--duration` value. `{e}` is the reason: the value is empty, the number is not a whole number, or the result is too large. It quotes the value exactly as you typed it, for example `Invalid duration value: 'five-minutes'`. The accepted forms are a whole number of seconds, optionally followed by `s`, `m` or `h`.
 
 **What to do:** Use a form such as `--duration 30`, `--duration 30s`, `--duration 5m` or `--duration 1h`.
 
@@ -25972,17 +26044,17 @@ Asking the relay sends a packet. sipnab does not transmit during a run without a
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
-### `--relay-holdings needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
+### `{flag} needs a relay to ask. Name one with --rtpengine-control <addr>, for example --rtpengine-control 127.0.0.1:22222.`
 
-`--relay-holdings` asks a media relay which calls it holds, but the run has no relay address to ask. The command line refuses `--relay-holdings` without `--rtpengine-control` before this point, so this message is a fallback. sipnab asked nothing.
+`{flag}` is `--relay-holdings` or `--relay-sessions`. Each asks a media relay which calls it holds, but the run has no relay address to ask. The command line refuses either flag without `--rtpengine-control` before this point, so this message is a fallback. sipnab asked nothing.
 
 **What to do:** Add `--rtpengine-control <ip:port>`, for example `--rtpengine-control 127.0.0.1:22222`.
 
 **Exit code:** 2.
 
-### `--relay-holdings will not ask a relay on a run that reads a file: asking transmits. Ask from a live source (-d <device> or -L <addr>).`
+### `{flag} will not ask a relay on a run that reads a file: asking transmits. Ask from a live source (-d <device> or -L <addr>).`
 
-Asking the relay sends a packet. sipnab transmits only on a run that watches a live source: a network interface or a HEP listener. This run reads a capture file, so `--relay-holdings` asked nothing and printed no answer.
+`{flag}` is `--relay-holdings` or `--relay-sessions`. Asking the relay sends a packet. sipnab transmits only on a run that watches a live source: a network interface or a HEP listener. This run reads a capture file, so the flag asked nothing, sent no datagram and printed no answer.
 
 **What to do:** Ask from a live source, for example `-d <device>` or `-L <addr>`.
 
@@ -25997,6 +26069,20 @@ Asking the relay sends a packet. sipnab transmits only on a run that watches a l
 - `suspect`: a reply arrived that sipnab cannot trust: one for another request, one sipnab cannot decode, or one that is not a call list.
 
 This is not a relay that holds no calls. That answer prints `The relay holds no calls.` and exits 0.
+
+**What to do:** For `unreachable`, check that `--rtpengine-control` names the relay's ng control port and that the relay is running. For `refused`, read the relay's reason. For `suspect`, ask again. If it repeats, look at the relay, or at something else answering on its port.
+
+**Exit code:** 1.
+
+### `--relay-sessions: {}: {}`
+
+`--relay-sessions` asked the relay which calls it holds, and its `list` got no call list back, so sipnab sent no `query`. The first `{}` names the classification and the second what happened:
+
+- `unreachable`: no reply arrived within the timeout. Over UDP, a relay that is down, a filtered port and a lost reply look the same.
+- `refused`: the relay answered and declined, in its own words.
+- `suspect`: a reply arrived that sipnab cannot trust: one for another request, one sipnab cannot decode, or one that is not a call list.
+
+This is not a relay that holds no calls. That answer prints `The relay holds no calls.` and exits 0. A call the relay declined to answer about is in the answer with its own classification, and does not produce this message.
 
 **What to do:** For `unreachable`, check that `--rtpengine-control` names the relay's ng control port and that the relay is running. For `refused`, read the relay's reason. For `suspect`, ask again. If it repeats, look at the relay, or at something else answering on its port.
 
@@ -26801,6 +26887,14 @@ The forwarder's replace URL holds no `{uuid}`.
 - vCon is a JSON format for a recorded conversation.
 
 **What to do:** Add `--vcon-forward` to run the forwarder, or remove the named option.
+
+**Exit code:** 2.
+
+### `--relay-holdings-max bounds --relay-holdings or --relay-sessions and needs one of them`
+
+You gave `--relay-holdings-max` without either flag it bounds. It caps the Call-IDs `--relay-holdings` asks for and the held calls `--relay-sessions` queries, so alone it does nothing. sipnab asked the relay nothing.
+
+**What to do:** Add `--relay-holdings` or `--relay-sessions`, or remove `--relay-holdings-max`.
 
 **Exit code:** 2.
 
@@ -38761,12 +38855,12 @@ resource.
 | captures | 11 | 12,723 | 30,211 |
 | security | 6 | 9,954 | 9,954 |
 | media | 4 | 3,480 | 16,048 |
-| relay | 5 | 4,777 | 24,044 |
+| relay | 5 | 5,109 | 31,609 |
 | tfps | 7 | 5,717 | 16,101 |
 | server | 6 | 5,976 | 35,136 |
 | vcon | 7 | 10,714 | 34,446 |
 | tls | 3 | 2,903 | 4,996 |
-| full | 79 | 92,136 | 306,959 |
+| full | 79 | 92,468 | 314,524 |
 
 Bytes are the compact JSON of each tool's `tools/list` entry, summed over the
 bundle.
@@ -38829,7 +38923,7 @@ links to its section on the bundle's page.
 | [`list_tls_libraries`](mcp-tools-tls.md#list_tls_libraries) | [tls](mcp-tools-tls.md) | which TLS libraries this host runs, and whether sipnab could read their plaintext without keys |
 | [`media_diagnostics`](mcp-tools-media.md#media_diagnostics) | [media](mcp-tools-media.md) | The facts under the MOS: QoS marking, jitter grounding, delay provenance, silence, and what the far end reported |
 | [`open_capture`](mcp-tools-captures.md#open_capture) | [captures](mcp-tools-captures.md) | **Destructive.** Replaces every dialog and stream with another capture from `--mcp-file-root`. Needs `--mcp-allow-open-capture`; loads in the background |
-| [`query_relay`](mcp-tools-relay.md#query_relay) | [relay](mcp-tools-relay.md) | **Transmits.** Asks the configured relay what it holds right now. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
+| [`query_relay`](mcp-tools-relay.md#query_relay) | [relay](mcp-tools-relay.md) | **Transmits.** Asks the configured relay what it holds right now, or with `sessions` whether media reaches it per call and direction. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
 | [`reconcile_orphans`](mcp-tools-media.md#reconcile_orphans) | [media](mcp-tools-media.md) | Why each RTP stream with no dialog lacks one: a relay named the endpoint but no signaling arrived, SDP named it but no dialog claims it, or nothing named it at all |
 | [`relay_compare`](mcp-tools-relay.md#relay_compare) | [relay](mcp-tools-relay.md) | **Transmits.** Sets the relay's per-call RTP count beside sipnab's measured count, both tiers named and a word verdict, never a sum. Same gate as `query_relay` |
 | [`relay_stats`](mcp-tools-relay.md#relay_stats) | [relay](mcp-tools-relay.md) | **Transmits.** Asks the configured relay for its own counters (global, per-call, or the names it knows), tiered `relay_reported`. Same opt-in and live-source gate as `query_relay` |
@@ -45025,7 +45119,7 @@ the three tools that transmit in use, with the server they need.
 | Tool | Parameters | Returns |
 |---|---|---|
 | [`decode_ng`](#decode_ng) | `frame_ref` | Decodes the relay control message one pointer names: the command, the call, whether it carries SDP, and which delivery path carried it |
-| [`query_relay`](#query_relay) | `call_id?`, `max_calls?` | **Transmits.** Asks the configured relay what it holds right now. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
+| [`query_relay`](#query_relay) | `call_id?`, `max_calls?`, `sessions?`, `scan?` | **Transmits.** Asks the configured relay what it holds right now, or with `sessions` whether media reaches it per call and direction. Needs `--mcp-allow-relay-query` and a live source; the destination comes from operator configuration only |
 | [`relay_stats`](#relay_stats) | `call_id?`, `names_only?` | **Transmits.** Asks the configured relay for its own counters (global, per-call, or the names it knows), tiered `relay_reported`. Same opt-in and live-source gate as `query_relay` |
 | [`relay_stats_polled`](#relay_stats_polled) | -- | The newest reading of the relay's own counters that this run's `--relay-stats-interval` poll obtained, with its age. Sends nothing; needs no opt-in |
 | [`relay_compare`](#relay_compare) | `call_id` | **Transmits.** Sets the relay's per-call RTP count beside sipnab's measured count, both tiers named and a word verdict, never a sum. Same gate as `query_relay` |
@@ -45116,7 +45210,9 @@ may be somebody's laptop now.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id?` | string? | One Call-ID to ask the relay about. | **Switches modes** — the tool enumerates what the relay holds. |
-| `max_calls?` | u32? | Enumeration only. A cap on the Call-IDs the relay returns. | The relay's own default. |
+| `max_calls?` | u32? | Enumeration and sessions. A cap on the Call-IDs the relay returns, and on the calls a sessions scan queries. | The relay's own default; 32 for sessions. |
+| `sessions?` | bool? | `true` returns the sessions snapshot: `list`, then `query` for `call_id` and, with `scan`, for the held calls, each direction with a verdict. | The tool answers as before. |
+| `scan?` | bool? | With `sessions`, `true` queries every held call too, up to `max_calls`. | The tool asks about `call_id` alone. |
 
 `max_calls` takes its name from what it bounds rather than from `limit`,
 because it is the relay's own `list` argument traveling to another process
@@ -45137,6 +45233,16 @@ the same ones `--relay-holdings` and `GET /v1/relay/holdings` report:
 | suspect | a reply arrived that sipnab could not trust: a reply to another request, no cookie framing, not bencode, or missing what its answer needs | a success with `outcome: "suspect"` and a `detail` that reads `relay (rtpengine at ADDR): REASON; the reply was discarded and not read` |
 
 `relay_stats` and `relay_compare` report the same three classes the same way.
+
+With `sessions: true` the answer is `asked: "sessions"`, `outcome: "sessions"`,
+and a `sessions` field holding the snapshot `GET /v1/relay/sessions` returns,
+without its `outcome`: per queried call, each party's direction with a
+`verdict` of `never_received`, `stalled`, `flowing` or `not_reported`, the
+relay's counters per socket, `sip_dialog`, and the held calls not queried in
+`not_queried`. The fields are additive. Without `sessions` the answer stays
+as before. The tool reports a `list` the relay did not answer in the three
+classes above. [See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay)
+shows a live answer.
 
 ```jsonc
 // query_relay { "call_id": "call-2c9d47@192.0.2.10" }
@@ -50406,23 +50512,17 @@ INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=6553
 `--chroot DIR` (or `[privilege] chroot`) changes the root directory to `DIR`
 after the interface opens and before the drop.
 
-sipnab looks the user up after it changes root, so `DIR` must hold an
-`etc/passwd` that names that user. A directory without one stops the run with
-exit `1`:
+sipnab looks the user up before it changes root, so `DIR` needs no
+`etc/passwd`: an empty directory works. 0.5.233 and earlier looked the user
+up inside `DIR` and stopped with `Failed to drop privileges: User 'nobody' not
+found` unless `DIR` held an `etc/passwd` naming the user.
 
-```text
-Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>
-```
-
-A directory that does not exist stops it too: `Failed to chroot:
-chroot(/var/empty) failed: No such file or directory (os error 2)`. Debian and
-Ubuntu have no `/var/empty`. Make a directory with only the user's entries:
+A directory that does not exist stops the run with exit `1`: `Failed to
+chroot: chroot(/var/empty) failed: No such file or directory (os error 2)`.
+Debian and Ubuntu have no `/var/empty`. Make an empty directory for it:
 
 ```bash
-# Run all of these, in order.
-sudo mkdir -p /var/lib/sipnab/jail/etc
-grep '^nobody:' /etc/passwd | sudo tee /var/lib/sipnab/jail/etc/passwd >/dev/null
-grep '^nogroup:' /etc/group | sudo tee /var/lib/sipnab/jail/etc/group >/dev/null
+sudo mkdir -p /var/lib/sipnab/jail
 ```
 
 ```bash
@@ -50516,7 +50616,7 @@ the script derived no allowlist here.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Permission denied on 'eth0'. Grant capture capabilities once`, exit 1 | The binary has no capabilities, or something replaced it since | `sipnab --setup-caps` again |
-| `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | `--chroot` without an `etc/passwd` for the user, or a user that does not exist | Add the entries to the directory, or create the user |
+| `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | The user does not exist on this host. With `--chroot`, 0.5.233 and earlier also printed this when the directory held no `etc/passwd` naming the user | Create the user, or name another with `--user`. On 0.5.233 or earlier, upgrade, or add the user's entries to the directory |
 | `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
 | `--sandbox required` refuses | No Landlock in this kernel | `best-effort`, or a kernel with Landlock |
 | `--seccomp enforce` refuses | No `SIPNAB_SECCOMP_ALLOWLIST`, or one it cannot read | Derive a list on this host |
@@ -60164,12 +60264,13 @@ the [Security section of the CLI reference](cli-reference.md#security).
 
 ## Stop, rotate and reconfigure
 
-sipnab handles three signals:
+sipnab handles four signals:
 
 | Signal | What sipnab does |
 |---|---|
 | `SIGTERM` (`systemctl stop`) | Stops capturing, flushes the open `-O` file, prints the end-of-run summary, and exits 0. |
 | `SIGINT` (Ctrl-C) | The same as `SIGTERM`. |
+| `SIGHUP` | The same stop as `SIGTERM`, then exits 129. |
 | `SIGUSR1` | Starts a new `-O` file at the next captured packet. |
 
 A stop under systemd ends with lines such as these:
@@ -60180,25 +60281,35 @@ INFO sipnab::app::batch: sipnab: 0 packets captured, 0 SIP messages, 0 RTP packe
 sipnab.service: Deactivated successfully.
 ```
 
-**`SIGHUP` is not handled.** It ends the process at once, with no summary and
-no flush. systemd counts a process ended by `SIGHUP` as a clean exit, so
-`Restart=on-failure` does not restart it, and the service stays down:
+**`SIGHUP` restarts the service.** sipnab stops as it does for `SIGTERM`, with
+the flush and the summary, and exits 129 (128 + 1, the status a shell reports
+for a process `SIGHUP` ended). systemd counts a non-zero exit as a failure, so
+the packaged unit's `Restart=on-failure` starts sipnab again after
+`RestartSec=5`:
 
 ```bash
 # Run all of these, in order.
 sudo kill -HUP "$(systemctl show -p MainPID --value sipnab)"
-systemctl show -p ActiveState,Result,ExecMainCode,ExecMainStatus sipnab
+sleep 7
+systemctl show -p ActiveState,NRestarts sipnab
+journalctl -u sipnab -n 5 -o cat
 ```
 
 ```text
-Result=success
-ExecMainCode=2
-ExecMainStatus=1
-ActiveState=inactive
+ActiveState=active
+NRestarts=1
+sipnab.service: Main process exited, code=exited, status=129/n/a
+sipnab.service: Scheduled restart job, restart counter is at 1.
 ```
 
-That state held past the unit's `RestartSec=5`. `ExecMainCode=2` means a signal ended the process, and `ExecMainStatus=1` is
-`SIGHUP`. The packaged unit has no `ExecReload=`, so `systemctl reload`
+`SIGHUP` does not reload the configuration in place. A root start reads its
+key files and looks up the `--user` account before it drops privileges, and
+the process it drops to cannot read them again. The restart reads everything
+afresh. 0.5.233 and earlier did not handle `SIGHUP`: it ended the process with
+no summary and no flush, systemd recorded `Result=success`, and the service
+stayed down.
+
+The packaged unit has no `ExecReload=`, so `systemctl reload`
 refuses:
 
 ```text
@@ -65508,6 +65619,364 @@ holds and the proxy does not is a candidate. rtpengine removes a session
 whose media stopped only after its RTP `timeout` setting has passed, so a
 call that ended a short time ago can still appear.
 
+## See whether media reaches the relay
+
+For each call the relay holds, sipnab can say per direction whether the
+relay is receiving that party's media. Use it during a "no audio" or
+"one-way audio" incident: it names the party whose media never reached the
+relay, from one answer of the relay's and on the relay's own clock.
+
+### What it needs
+
+- **On the relay: nothing to change.** sipnab sends rtpengine's `list` and
+  `query` on its `listen-ng` address. Neither creates, changes or deletes a
+  call.
+- **`--rtpengine-control <listen-ng address>`** on the sipnab command line,
+  and a live source (`-d` or `-L`), as for every request on this page.
+- **For REST**, start the server with `--api-allow-relay-query`. **For MCP**,
+  start it with `--mcp-allow-relay-query`. Without the opt-in the request
+  sends nothing.
+- **To mark a hung-up call `ended`**, sipnab must see that call's SIP: a TUI,
+  REST or MCP run that captures the signaling. A `--relay-sessions` run asks
+  before it reads any packet, so it can only say that the relay may still
+  list a call for about 30 s after it ends.
+
+The output in this section came from this build of sipnab against the
+harness relay, rtpengine 12.5.1 in userspace, with calls placed by SIPp
+through OpenSIPS. This page writes the relay's address as `192.0.2.11` and
+the SIP test clients' as `192.0.2.21`.
+
+### Ask from the command line
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions 2>/dev/null
+```
+
+`-L 127.0.0.1:0` is a HEP listener that receives nothing. It is enough to
+make the run live, so it needs no privileges. sipnab sends one `list`, then
+one `query` per held call, up to `--relay-holdings-max` (32 by default),
+prints the answer and exits 0:
+
+```text
+Sessions of relay (rtpengine at 192.0.2.11:22222), asked 2026-11-04T16:01:54.067925771+00:00 (relay_reported)
+reachable; 2 calls listed; queried 2 of 2 (scan)
+Note: a relay keeps a call it was told to delete for its delete delay (30 s by default) and its answer does not mark it; a call sipnab did not see end in SIP may have ended up to about 30 s ago.
+Note: stalled means no packet for more than 2 s while another socket of the same call received one; silence suppression, comfort noise, hold and loss bursts were not measured and can also produce it.
+
+sg2-nomedia-1-104@192.0.2.21  from 104SIPpTag001: never received; from 1SIPpTag0110: flowing
+sg2-twoway-1-105@192.0.2.21  from 105SIPpTag091: flowing; from 1SIPpTag0111: flowing
+
+Call sg2-nomedia-1-104@192.0.2.21 (relay_reported)
+sipnab did not see its SIP dialog end; the relay may still list a call for about 30 s after it ends.
+from 104SIPpTag001 to 192.0.2.11:30038: never received
+from 1SIPpTag0110 to 192.0.2.11:30000: flowing
+Tag            Relay socket      Kind  In pkts  In bytes  In errs  Out pkts  Out bytes  Out errs  Last packet  Forwarding
+-------------------------------------------------------------------------------------------------------------------------
+104SIPpTag001  192.0.2.11:30038  rtp   0        0         0        243       41796      0         1793808109   userspace
+104SIPpTag001  192.0.2.11:30039  rtcp  0        0         0        0         0          0         1793808109   userspace
+1SIPpTag0110   192.0.2.11:30000  rtp   245      42140     0        0         0          0         1793808114   userspace
+1SIPpTag0110   192.0.2.11:30001  rtcp  0        0         0        0         0          0         1793808109   userspace
+```
+
+The first call's caller sent no media, and the answer says so: the relay
+counted 0 packets in on that party's socket and never confirmed it. The
+second call's media reaches the relay both ways. Each call's table, the
+second one's included, follows.
+
+How to read a direction:
+
+| Verdict | Meaning |
+|---|---|
+| `flowing` | packets are arriving on that party's RTP socket |
+| `never received` | the socket counted 0 packets in, and the relay never marked it `confirmed` |
+| `no packet for N s` (`stalled`) | its last packet is more than 2 s behind the newest one of any RTP socket of the same call, in the same answer |
+| `not reported by this relay version` (`not_reported`) | the relay's answer lacked the counters, the last-packet time or the flags |
+
+- **`stalled` compares sockets of one call.** When every socket of a call
+  stops together, none trails another, so the call still reads `flowing`.
+  The `Last packet` column is the relay's own time in seconds.
+- **A call with an early media branch** (a parallel fork that sent early
+  media) shows its counters and no verdict. rtpengine can count the answered
+  party's media on the early branch's socket, and a verdict per socket would
+  call a live party silent.
+- **`Forwarding`** is `kernel` when the relay flags the socket `kernelized`
+  without `no kernel support`, and `userspace` otherwise.
+- **Absent is not zero.** A counter the relay did not report reads
+  `not reported`, and the JSON leaves it out.
+
+To ask about one call only, with one `list` and one `query`:
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions --relay-sessions-call sg2-twoway-1-105@192.0.2.21 --json 2>/dev/null
+```
+
+`--json` prints one object on one line, the body of `GET /v1/relay/sessions`.
+Here it is pretty-printed and shortened to one tag and one socket:
+
+```json
+{
+  "calls": [
+    {
+      "call_id": "sg2-twoway-1-105@192.0.2.21",
+      "directions": [
+        {
+          "from_tag": "105SIPpTag091",
+          "local_address": "192.0.2.11",
+          "local_port": 30014,
+          "media_index": 1,
+          "verdict": "flowing"
+        },
+        {
+          "from_tag": "1SIPpTag0111",
+          "local_address": "192.0.2.11",
+          "local_port": 30048,
+          "media_index": 1,
+          "verdict": "flowing"
+        }
+      ],
+      "outcome": "ok",
+      "sip_dialog": "not_seen_ended",
+      "tags": [
+        {
+          "in_dialogue_with": [
+            "1SIPpTag0111"
+          ],
+          "is_media_subscriber": false,
+          "sockets": [
+            {
+              "egress": {
+                "bytes": 135020,
+                "errors": 0,
+                "packets": 785
+              },
+              "endpoint": "192.0.2.21:6000",
+              "ingress": {
+                "bytes": 135020,
+                "errors": 0,
+                "packets": 785
+              },
+              "kernel": "userspace",
+              "kind": "rtp",
+              "last_packet": 1793808124,
+              "local_address": "192.0.2.11",
+              "local_port": 30014,
+              "media_index": 1
+            }
+          ],
+          "tag": "105SIPpTag091"
+        }
+      ]
+    }
+  ],
+  "cap": 32,
+  "held": 2,
+  "list_limit": 32,
+  "not_queried": [
+    {
+      "call_id": "sg2-nomedia-1-104@192.0.2.21",
+      "sip_dialog": "not_seen_ended"
+    }
+  ],
+  "notes": [
+    "a relay keeps a call it was told to delete for its delete delay (30 s by default) and its answer does not mark it; a call sipnab did not see end in SIP may have ended up to about 30 s ago",
+    "stalled means no packet for more than 2 s while another socket of the same call received one; silence suppression, comfort noise, hold and loss bursts were not measured and can also produce it"
+  ],
+  "obtained_at": "2026-11-04T16:02:04.870332099+00:00",
+  "outcome": "ok",
+  "reach": "ok",
+  "relay": "relay (rtpengine at 192.0.2.11:22222)",
+  "scan": false,
+  "stall_seconds": 2,
+  "tier": "relay_reported",
+  "truncated": false
+}
+```
+
+`not_queried` names the held calls this answer did not ask about, so a call
+never drops out of the answer. `truncated` is true when `list` returned as
+many Call-IDs as it asked for, and the relay may then hold more.
+
+### Ask over REST and MCP
+
+Start a server with both opt-ins:
+
+```bash
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 \
+  --api 127.0.0.1:18731 --api-allow-relay-query \
+  --mcp --mcp-transport http --mcp-bind 127.0.0.1:18732 --mcp-allow-relay-query
+```
+
+`GET /v1/relay/sessions` takes `call_id` (one call to query) and `scan=true`
+(every held call, up to 32). Without `scan`, sipnab asks only `list` and
+`call_id`:
+
+```bash
+curl -s "http://127.0.0.1:18731/v1/relay/sessions?call_id=sg2-nomedia-1-104@192.0.2.21" | jq '.calls[0].directions'
+```
+
+```json
+[
+  {
+    "from_tag": "104SIPpTag001",
+    "local_address": "192.0.2.11",
+    "local_port": 30038,
+    "media_index": 1,
+    "verdict": "never_received"
+  },
+  {
+    "from_tag": "1SIPpTag0110",
+    "local_address": "192.0.2.11",
+    "local_port": 30000,
+    "media_index": 1,
+    "verdict": "flowing"
+  }
+]
+```
+
+Over MCP, call `query_relay` with `{"sessions": true, "scan": true}`. The
+answer has `"asked": "sessions"`, `"outcome": "sessions"`, and the same
+snapshot under `sessions`. The two calls above came back as:
+
+```text
+sg2-nomedia-1-104@192.0.2.21 [('104SIPpTag001', 'never_received'), ('1SIPpTag0110', 'flowing')]
+sg2-twoway-1-105@192.0.2.21 [('105SIPpTag091', 'flowing'), ('1SIPpTag0111', 'flowing')]
+```
+
+That listing is each `calls[]` entry's `call_id` and its `directions`, read
+from the tool's JSON.
+
+### Tell a call that ended from one that is up
+
+rtpengine keeps a hung-up call for its delete delay, 30 s by default, and
+answers for it as it did while the call was up. Asked a few seconds after
+the first call above hung up, the relay still listed it:
+
+```text
+sg2-nomedia-1-104@192.0.2.21  from 104SIPpTag001: never received; from 1SIPpTag0110: flowing
+```
+
+Its callee still reads `flowing`: that socket was the newest of its call, so
+nothing trailed it.
+
+A run that sees the SIP marks such a call. Start the server capturing the
+bridge the SIP crosses:
+
+```bash
+sudo sipnab -N -d br-0b7ba286bc5b --rtpengine-control 192.0.2.11:22222 --api 127.0.0.1:18741 --api-allow-relay-query
+```
+
+Then a 5 s call, asked about after its BYE, reads:
+
+```bash
+curl -s "http://127.0.0.1:18741/v1/relay/sessions?call_id=sg2-short-1-114@192.0.2.21" | jq '.calls[0] | {call_id, sip_dialog, directions}'
+```
+
+```json
+{
+  "call_id": "sg2-short-1-114@192.0.2.21",
+  "sip_dialog": "ended",
+  "directions": [
+    {
+      "from_tag": "114SIPpTag001",
+      "local_address": "192.0.2.11",
+      "local_port": 30040,
+      "media_index": 1,
+      "verdict": "never_received"
+    },
+    {
+      "from_tag": "1SIPpTag0112",
+      "local_address": "192.0.2.11",
+      "local_port": 30036,
+      "media_index": 1,
+      "verdict": "flowing"
+    }
+  ]
+}
+```
+
+`br-0b7ba286bc5b` is the harness's Docker bridge. Replace it with the
+interface your SIP crosses.
+
+### Watch it in the terminal UI
+
+Open the relay view with `S`, then press `H`:
+
+```text
+┌ Relay sessions — what the relay holds
+│Sessions of relay (rtpengine at 192.0.2.11:22222), asked 2026-11-04T16:03:55.240602811+00:00 (relay_reported)
+│reachable; 1 call listed; queried 1 of 1
+│Note: a relay keeps a call it was told to delete for its delete delay (30 s by default) and its answer does not mark it; a call sipnab did not see end in SIP
+│may have ended up to about 30 s ago.
+│Note: stalled means no packet for more than 2 s while another socket of the same call received one; silence suppression, comfort noise, hold and loss bursts
+│were not measured and can also produce it.
+│
+│> sg2-tui-1-121@192.0.2.21  from 121SIPpTag091: flowing; from 1SIPpTag0113: flowing
+│
+│Enter opens the call under the cursor; a asks every held call once (up to the cap).
+```
+
+- While the view is open it asks for the list and the call under the cursor
+  every `--relay-stats-interval` seconds, or every 2 s without it
+  (`DEFAULT_REFRESH_SECS` (2) in [`src/tui/relay_sessions.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/relay_sessions.rs)). It asks
+  nothing once you close it.
+- `a` asks about every held call once, up to 32. Up and Down move the
+  cursor, and Enter opens that call's directions and socket table.
+- In one call's view, `K` sets each relay socket's counts beside what this
+  capture saw on it, two tiers named and never subtracted. Captured on the
+  harness bridge, starting partway through the call:
+
+```text
+Call sg2-tui-1-121@192.0.2.21: relay sockets beside this capture
+relay_reported is what the relay counted; sipnab_measured is what this capture saw.
+121SIPpTag091 192.0.2.11:30010 (rtp)
+  in:  relay_reported 2023  sipnab_measured 768
+  out: relay_reported 2023  sipnab_measured 768
+121SIPpTag091 192.0.2.11:30011 (rtcp)
+  in:  relay_reported 0  sipnab_measured not captured
+  out: relay_reported 0  sipnab_measured not captured
+```
+
+The relay counts from the start of the call and the capture from when it
+started, so the two differ. `not captured` means this capture has no
+stream to or from that socket. On a run that captures no media, such as
+`-L`, every socket reads `not captured`.
+
+### Check that it worked
+
+- `--relay-sessions` exits 0, and its second line starts `reachable;`.
+- Every call the relay holds is in the answer, as a row with verdicts or as
+  `not queried`.
+- On a call with audio both ways, both directions read `flowing`. If they do
+  not, read the troubleshooting list below before suspecting the relay.
+
+### When the sessions answer is not what you expect
+
+- **`--relay-sessions will not ask a relay on a run that reads a file:
+  asking transmits. Ask from a live source (-d <device> or -L <addr>).`** and
+  exit 2. The run reads a capture file, and sends nothing.
+- **`--relay-sessions: unreachable: relay (rtpengine at 192.0.2.11:22299) did
+  not answer (no reply from 192.0.2.11:22299 within 2s); asked, nothing came
+  back`** and exit 1. No relay answers at that address. Use the relay's
+  `listen-ng` value. sipnab sends no `query` after an unanswered `list`.
+- **`error: the following required arguments were not provided:
+  --rtpengine-control <ADDR>`.** `--relay-sessions` and
+  `--relay-sessions-call` need the relay's address.
+- **`not_permitted` from `GET /v1/relay/sessions`.** The server lacks
+  `--api-allow-relay-query`, or reads a capture file. It sent nothing.
+- **A call that hung up still reads `flowing`.** The relay keeps it for its
+  delete delay. Ask from a run that sees the SIP, which marks it `ended`.
+- **A direction reads `no packet for N s` on a call with audio.** The
+  sending phone may suppress silence or send comfort noise, or the call may
+  be on hold. Those cases were not measured, and can make a live party trail
+  by more than 2 s.
+- **A call shows its counters and "early media branch".** The call forked
+  and one branch sent early media; read the socket table instead of a
+  verdict.
+- **A held call reads `not queried`.** The scan stops at the cap, 32 by
+  default, the selected call included. Raise it with
+  `--relay-holdings-max`, or ask about that call with
+  `--relay-sessions-call`.
+
 ## Compare the relay's count with your capture
 
 For one call, put the relay's RTP packet count beside the count sipnab
@@ -65715,7 +66184,7 @@ the answer arrives. Inside it:
 | Key | Shows |
 |---|---|
 | `?` | the names the relay knows |
-| `H` | the Call-IDs the relay holds now, up to 32 (press again for the counters) |
+| `H` | the relay sessions: each held call and whether media reaches the relay each way ([see above](#watch-it-in-the-terminal-ui); press again for the counters) |
 | `K` | the relay's count beside this capture's, in a call's view only |
 | `Esc` or `S` | closes the view |
 
@@ -73331,7 +73800,7 @@ The workflow runs on `pull_request_target`.
 - A change you make to any of those three files takes effect only after it
   reaches `main`.
 
-**`pre-push`** adds fifteen hard gates. All of them mirror CI exactly. Any of
+**`pre-push`** adds sixteen hard gates. All of them mirror CI exactly. Any of
 them blocks the push:
 
 | Gate | Why it is not covered by `cargo test` |
@@ -73349,6 +73818,7 @@ them blocks the push:
 | `codespell` over CI's path list | Spelling likewise, and it reads `src/` too — the hits that broke CI were in doc comments. |
 | `scripts/tag-signature-check.sh` on every pushed `v*` tag | A release tag carries the name of the maintainer who publishes it. The tag must be an annotated tag with a good SSH signature from a key in `.github/allowed_signers`. Nothing in `cargo test` sees a tag. |
 | `scripts/commit-signature-check.sh` on every pushed commit, before any other gate | Branch protection on `main` requires signed commits, and GitHub applies that only at merge time: a pull request with an unsigned commit shows every check green and stays blocked with no reason given. The gate refuses a commit without a good signature, names it, and prints the command that re-signs it. A good signature from a key that `.github/allowed_signers` does not list passes with a note, because GitHub checks the key against the GitHub account that owns the committer email of the commit. Nothing in `cargo test` sees the commits a push carries. |
+| `scripts/commit-message-check.sh` on every pushed commit, after the signature gate | The commit-msg hook judges a message when you write it. A commit made with `--no-verify`, or before the hook knew a form, still leaves the machine unless something reads its stored message again. This gate does: the same class rules, a private identity or an AI credit, over the whole message. |
 
 CI's full feature matrix is not in the hook. That matrix is every combination
 `.github/workflows/ci.yml` lists, linted with clippy under its
@@ -73439,13 +73909,20 @@ Write what a reader can act on:
   `runs-on: [self-hosted, jetson]`, never by the machine's name.
 
 The same file also refuses AI attribution (class H). It checks tracked files
-and commit messages, in any letter case. It refuses:
+and commit messages, in any letter case and behind a leading `#`. The
+commit-msg hook, the pre-push hook and CI's pull-request check all run it. It
+refuses:
 
-- a `Co-Authored-By:` trailer that names an AI assistant or the company that
-  makes it,
-- a "Generated with" line that names Claude Code,
+- a `Co-Authored-By:`, `Assisted-By:` or `Generated-By:` trailer that names an
+  AI assistant or the company that makes it, Claude, Copilot, ChatGPT, Gemini,
+  Codex, Cursor and the others `tests/support/ai_attribution.rs` lists,
+- a "Generated with" or "Generated by" line that names one,
 - the assistant's no-reply address,
 - a session-link trailer.
+
+`git commit -m` keeps a line that starts with `#` and everything below a
+scissors line, so the commit-msg hook reads those too. It stops at a scissors
+line only for a message git opens in an editor, which git cuts there.
 
 Naming an MCP client is not attribution. These are all accepted:
 
@@ -75868,10 +76345,11 @@ with no `mod.rs` chain. Each test binary compiles its own copy.
 | Helper | Provides |
 |---|---|
 | [`mod.rs`](../../tests/support/mod.rs) | Shared normalization (`normalize()`) used to compare output across platforms; self-tested by `support_selftest`. |
-| [`run.rs`](../../tests/support/run.rs) | The canonical binary-spawn helper for CLI/output/config integration tests — one place that knows how to find and invoke the built binary. |
+| [`run.rs`](../../tests/support/run.rs) | The canonical binary-spawn helper for CLI/output/config integration tests — one place that knows how to find and invoke the built binary. It runs the binary with `HOME`, `XDG_CONFIG_HOME` and `SIPNAB_CONFIG` pointed into an empty directory, so no developer's own config reaches a test. `config_isolation` is that list, and `cli_goldens` uses it too. |
 | [`server.rs`](../../tests/support/server.rs) | REST API spawn harness: start the server on an ephemeral port, wait for readiness, tear down. |
 | [`mcp.rs`](../../tests/support/mcp.rs) | The same for HTTP MCP, including the JSON-RPC framing. |
 | [`teardown.rs`](../../tests/support/teardown.rs) | `terminate()`, the one way a harness stops the binary it spawned: SIGTERM, a bounded wait, and SIGKILL only for a child still running after it. `Child::kill()` is SIGKILL, and a process killed that way never writes its coverage profile. Pulled in with `include!` rather than `#[path]`. |
+| [`src/test_scratch.rs`](../../src/test_scratch.rs) | `ScratchDir`, a test directory under the system temp directory with a random name, removed when the guard drops, on a failing test as well as a passing one. The library's unit tests use it as `crate::test_scratch`; integration tests mount the same file with `#[path = "../src/test_scratch.rs"]`. `temp_path_isolation_test` refuses a temp path named by the process id or by a fixed name. |
 | [`schema.rs`](../../tests/support/schema.rs) | JSON-Schema validation against [`tests/schemas/`](../../tests/schemas). |
 | [`tui_fixtures.rs`](../../tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
 | [`executable.rs`](../../tests/support/executable.rs) | `write_executable()`, the one way a test writes a file it then runs: a child process writes it, so this process never holds it open for writing and an `exec` cannot fail with `ETXTBSY` ("Text file busy") while another test thread forks. `executable_stub_test` refuses a file written in-process and then made executable. |
@@ -77745,10 +78223,13 @@ Four places pulled from it, and each now does something else:
 - no Docker Hub image in what `cross` builds in
 - one codespell pin that CI and the hooks share
 
-[`pre-push`](../../.githooks/pre-push) adds fifteen hard gates that `cargo test`
+[`pre-push`](../../.githooks/pre-push) adds sixteen hard gates that `cargo test`
 does not cover:
 
 - a check that every pushed commit carries a good signature
+- a check that no pushed commit message names a private identity or credits
+  an AI assistant, read whole through
+  [`scripts/commit-message-check.sh`](../../scripts/commit-message-check.sh)
 - [`scripts/check-rustfmt.sh`](../../scripts/check-rustfmt.sh)
 - `cargo clippy --workspace --all-features --all-targets
   -D warnings`
@@ -78022,7 +78503,7 @@ The hook greps the tree for that list instead of carrying its own copy.
 - The first draft did hand-keep the list.
   It went stale inside an hour, when a twelfth binary landed mid-review.
 
-**When it runs.** Last, after the fifteen hard gates.
+**When it runs.** Last, after the sixteen hard gates.
 
 - Each of those fails in seconds.
 - Spending a minute on the corpus only to hear that the tree does not

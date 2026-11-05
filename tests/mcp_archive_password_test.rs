@@ -12,6 +12,9 @@
 //! The encrypted ZIP and its password are made here, at test time.
 #![cfg(all(feature = "mcp", feature = "archive"))]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::io::Write;
 
 #[path = "support/mcp.rs"]
@@ -36,9 +39,9 @@ fn mint(label: &str) -> String {
 }
 
 /// A file root holding `evidence.zip`: the SIPp scenario, AES-locked.
-fn root_with_locked_zip(tag: &str, password: &str) -> Result<std::path::PathBuf, TestError> {
-    let root = std::env::temp_dir().join(format!("sipnab-mcp-zip-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+fn root_with_locked_zip(tag: &str, password: &str) -> Result<test_scratch::ScratchDir, TestError> {
+    let root = test_scratch::ScratchDir::new(&format!("sipnab-mcp-zip-{tag}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&root)?;
     let pcap = std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -8402,6 +8402,12 @@ impl Cli {
     }
 
     pub fn validate(&self) -> Result<(), crate::Error> {
+        if self.gate_args.listing_cap_without_a_listing() {
+            return Err(crate::Error::CliValidation(
+                "--relay-holdings-max bounds --relay-holdings or --relay-sessions and needs one of them"
+                    .to_string(),
+            ));
+        }
         // A forwarder option names something only the forwarder does. clap's
         // `requires = "vcon_forward"` does not fire when an argument that
         // conflicts with `--vcon-forward` (a capture input) is present, so the

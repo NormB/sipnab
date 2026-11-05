@@ -38,7 +38,8 @@
 //!   starts talking to a stranger.
 
 use crate::relay::types::{
-    CallView, ControlReply, Enumeration, ReadOnlyCommand, RelayStream, RelayTag,
+    CallView, ControlReply, Enumeration, ReadOnlyCommand, RelayStream, RelayStreamFacts, RelayTag,
+    StreamCounters,
 };
 use std::fmt;
 
@@ -301,6 +302,40 @@ fn ssrcs_from(v: Option<&Value<'_>>, out: &mut Vec<u32>) {
     }
 }
 
+/// Read a `stats`-shaped dictionary into counters, each field on its own.
+///
+/// A field the dictionary does not carry, or carries as something other than
+/// a non-negative integer, is `None`: one unreadable field never takes the
+/// others with it, and none is read as zero.
+fn counters_from(v: Option<&Value<'_>>) -> StreamCounters {
+    let field = |counter: &[u8]| {
+        v.and_then(|d| d.get_int(counter))
+            .and_then(|n| u64::try_from(n).ok())
+    };
+    StreamCounters {
+        packets: field(b"packets"),
+        bytes: field(b"bytes"),
+        errors: field(b"errors"),
+    }
+}
+
+/// Read a stream's `flags` list as the relay wrote it, or `None` when the
+/// stream carries no list.
+fn flags_from(v: Option<&Value<'_>>) -> Option<Vec<String>> {
+    let Some(Value::List(items)) = v else {
+        return None;
+    };
+    Some(
+        items
+            .iter()
+            .filter_map(|x| match x {
+                Value::Bytes(b) => Some(String::from_utf8_lossy(b).into_owned()),
+                _ => None,
+            })
+            .collect(),
+    )
+}
+
 /// Parse a `query` reply for `call_id`.
 ///
 /// `call_id` is the one that was ASKED about. See [`CallView`] for why it
@@ -473,6 +508,20 @@ pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlRe
                         let mut ssrcs = Vec::new();
                         ssrcs_from(s.get(b"ingress SSRCs"), &mut ssrcs);
                         ssrcs_from(s.get(b"egress SSRCs"), &mut ssrcs);
+                        let facts = RelayStreamFacts {
+                            media_index: media
+                                .get_int(b"index")
+                                .and_then(|n| u32::try_from(n).ok()),
+                            // `stats` is what ARRIVED at this socket and
+                            // `stats_out` what the relay sent from it: in a
+                            // recorded one-way call the silent callee's socket
+                            // has `stats.packets` 0 and `stats_out.packets`
+                            // equal to the caller's `stats.packets`.
+                            ingress: counters_from(s.get(b"stats")),
+                            egress: counters_from(s.get(b"stats_out")),
+                            last_packet: s.get_int(b"last packet"),
+                            flags: flags_from(s.get(b"flags")),
+                        };
                         streams.push(RelayStream {
                             local_address,
                             local_port,
@@ -480,6 +529,7 @@ pub fn parse_query_reply(body: &[u8], call_id: &str) -> anyhow::Result<ControlRe
                             advertised_endpoint: endpoint_str(s.get(b"advertised endpoint")),
                             is_rtcp,
                             ssrcs,
+                            facts,
                         });
                     }
                 }
@@ -2221,6 +2271,163 @@ mod query_reply_tests {
         );
         Ok(())
     }
+
+    /// A one-way call recorded on the harness relay (rtpengine 12.5.1,
+    /// userspace): the callee sent nothing. Rewritten to RFC 5737 addresses.
+    const ONE_WAY: &[u8] = include_bytes!("../../tests/fixtures/rtpengine/h-oneway-query.bencode");
+
+    /// The stream on `port` in a parsed `reply`.
+    fn stream_on(reply: &[u8], port: u16) -> Result<RelayStream, TestError> {
+        let ControlReply::Call(call) = parse_query_reply(reply, "c@example.invalid")? else {
+            return Err("expected a call view".into());
+        };
+        call.tags
+            .iter()
+            .flat_map(|t| t.streams.iter())
+            .find(|s| s.local_port == port)
+            .cloned()
+            .ok_or_else(|| format!("no stream on port {port}").into())
+    }
+
+    /// Each relay socket keeps what the relay counted on it, both ways, with
+    /// the time of its last packet and its flags: `stats` is what arrived,
+    /// `stats_out` is what the relay sent, and the two are never swapped.
+    #[test]
+    fn a_socket_keeps_its_counters_both_ways_its_last_packet_and_its_flags() -> Result<(), TestError>
+    {
+        let caller = stream_on(ONE_WAY, 30030)?;
+        assert_eq!(
+            caller.facts.media_index,
+            Some(1),
+            "Each relay socket keeps what the relay counted on it, both ways, with the time of its last packet and its flags"
+        );
+        assert_eq!(
+            caller.facts.ingress,
+            StreamCounters {
+                packets: Some(2250),
+                bytes: Some(387_000),
+                errors: Some(0),
+            },
+            "Each relay socket keeps what the relay counted on it, both ways, with the time of its last packet and its flags"
+        );
+        assert_eq!(
+            caller.facts.egress,
+            StreamCounters {
+                packets: Some(0),
+                bytes: Some(0),
+                errors: Some(0),
+            },
+            "Each relay socket keeps what the relay counted on it, both ways, with the time of its last packet and its flags"
+        );
+        assert_eq!(
+            caller.facts.last_packet,
+            Some(1_793_791_903),
+            "Each relay socket keeps what the relay counted on it, both ways, with the time of its last packet and its flags"
+        );
+        assert_eq!(
+            caller.facts.flags.as_deref(),
+            Some(
+                &[
+                    "RTP".to_string(),
+                    "filled".to_string(),
+                    "confirmed".to_string(),
+                    "kernelized".to_string(),
+                    "no kernel support".to_string(),
+                ][..]
+            ),
+            "Each relay socket keeps what the relay counted on it, both ways, with the time of its last packet and its flags"
+        );
+
+        let callee = stream_on(ONE_WAY, 30016)?;
+        assert_eq!(
+            callee.facts.ingress.packets,
+            Some(0),
+            "Each relay socket keeps what the relay counted on it, both ways, with the time of its last packet and its flags"
+        );
+        assert_eq!(
+            callee.facts.egress.packets,
+            Some(2250),
+            "Each relay socket keeps what the relay counted on it, both ways, with the time of its last packet and its flags"
+        );
+        assert_eq!(
+            callee.facts.last_packet,
+            Some(1_793_791_858),
+            "Each relay socket keeps what the relay counted on it, both ways, with the time of its last packet and its flags"
+        );
+        Ok(())
+    }
+
+    /// `reply` with every dictionary entry named in `keys` removed, at any
+    /// depth, re-encoded in its original key order. Used to build the shape a
+    /// relay version that does not report a field would send, from a real one.
+    fn without(reply: &[u8], keys: &[&[u8]]) -> Result<Vec<u8>, TestError> {
+        use crate::rtpengine::bencode::{self, Value};
+        fn strip<'a>(v: &Value<'a>, keys: &[&[u8]]) -> Value<'a> {
+            match v {
+                Value::Dict(entries) => Value::Dict(
+                    entries
+                        .iter()
+                        .filter(|(k, _)| !keys.contains(k))
+                        .map(|(k, v)| (*k, strip(v, keys)))
+                        .collect(),
+                ),
+                Value::List(items) => Value::List(items.iter().map(|i| strip(i, keys)).collect()),
+                other => other.clone(),
+            }
+        }
+        let decoded = bencode::decode(reply)?;
+        let mut out = Vec::new();
+        bencode::encode(&strip(&decoded, keys), &mut out);
+        Ok(out)
+    }
+
+    /// A relay version that reports packets and bytes but no errors keeps the
+    /// packets and bytes. One missing field never takes the others with it.
+    #[test]
+    fn a_missing_errors_field_leaves_packets_and_bytes_reported() -> Result<(), TestError> {
+        let reply = without(ONE_WAY, &[&b"errors"[..]])?;
+        let caller = stream_on(&reply, 30030)?;
+        assert_eq!(
+            caller.facts.ingress,
+            StreamCounters {
+                packets: Some(2250),
+                bytes: Some(387_000),
+                errors: None,
+            },
+            "A relay version that reports packets and bytes but no errors keeps the packets and bytes"
+        );
+        Ok(())
+    }
+
+    /// What a reply does not carry is absent, never zero: no `stats`, no
+    /// `stats_out`, no `last packet` and no `flags` read as `None`.
+    #[test]
+    fn what_the_reply_does_not_carry_is_absent_never_zero() -> Result<(), TestError> {
+        let reply = without(
+            ONE_WAY,
+            &[&b"stats"[..], b"stats_out", b"last packet", b"flags"],
+        )?;
+        let caller = stream_on(&reply, 30030)?;
+        assert_eq!(
+            caller.facts.ingress,
+            StreamCounters::default(),
+            "What a reply does not carry is absent, never zero"
+        );
+        assert_eq!(
+            caller.facts.egress,
+            StreamCounters::default(),
+            "What a reply does not carry is absent, never zero"
+        );
+        assert_eq!(
+            caller.facts.last_packet, None,
+            "What a reply does not carry is absent, never zero"
+        );
+        assert_eq!(
+            caller.facts.flags, None,
+            "What a reply does not carry is absent, never zero"
+        );
+        Ok(())
+    }
 }
 
 /// rtpengine, as a relay the reconciler can read.
@@ -2272,5 +2479,361 @@ impl crate::relay::reconcile::ReadOnlyRelay for ControlClient {
 
     fn describe(&self) -> String {
         format!("rtpengine at {}", self.addr())
+    }
+}
+
+/// The relay sessions verdicts, read from real recorded replies through the
+/// real parser.
+///
+/// The replies were recorded on 2026-11-04 from rtpengine 12.5.1.31: the `h-`
+/// ones from the harness relay in userspace (`--table=-1`), the `v-` ones from
+/// a lab relay forwarding in the kernel (`xt_RTPENGINE` loaded). Addresses were
+/// rewritten to RFC 5737 ranges and Call-IDs and tags to example values;
+/// integers and key order are as the relay wrote them. They live here rather
+/// than beside the verdict rule because the rule's module may not name the
+/// relay that produced them.
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "native"))]
+mod session_fixture_tests {
+    use super::*;
+    use crate::output::query::relay_sessions::{
+        Direction, KernelVerdict, MediaVerdict, SessionCall, SessionsAsk, SipDialog, judge_call,
+        relay_sessions,
+    };
+    use crate::relay::reconcile::ReadOnlyRelay;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A recorded reply body by file name.
+    fn fixture(name: &str) -> Result<Vec<u8>, TestError> {
+        let path = format!(
+            "{}/tests/fixtures/rtpengine/{name}.bencode",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        Ok(std::fs::read(&path).map_err(|e| format!("{path}: {e}"))?)
+    }
+
+    /// The recorded `query` reply `name`, parsed and judged.
+    fn judged(name: &str) -> Result<SessionCall, TestError> {
+        judged_bytes(&fixture(name)?)
+    }
+
+    fn judged_bytes(body: &[u8]) -> Result<SessionCall, TestError> {
+        match parse_query_reply(body, "c@example.invalid")? {
+            ControlReply::Call(view) => Ok(judge_call(&view, SipDialog::NotSeenEnded)),
+            other => Err(format!("expected a call view, got {other:?}").into()),
+        }
+    }
+
+    /// Each direction as (sending tag, relay port, verdict, seconds behind).
+    fn verdicts(call: &SessionCall) -> Vec<(String, u16, MediaVerdict, Option<i64>)> {
+        call.directions
+            .iter()
+            .map(|d: &Direction| {
+                (
+                    d.from_tag.clone(),
+                    d.local_port,
+                    d.verdict,
+                    d.no_packet_for_s,
+                )
+            })
+            .collect()
+    }
+
+    fn row(
+        tag: &str,
+        port: u16,
+        v: MediaVerdict,
+        behind: Option<i64>,
+    ) -> (String, u16, MediaVerdict, Option<i64>) {
+        (tag.to_string(), port, v, behind)
+    }
+
+    /// A one-way call: the caller's media reaches the relay and the callee's
+    /// never does, on both relays. The callee's socket counted 0 in and is not
+    /// `confirmed`, although its `last packet` is the answer time and not the
+    /// call's creation time (harness: 1793791858 against 1793791857).
+    #[test]
+    fn a_one_way_call_is_flowing_one_way_and_never_received_the_other() -> Result<(), TestError> {
+        assert_eq!(
+            verdicts(&judged("h-oneway-query")?),
+            [
+                row("callee-tag-1", 30016, MediaVerdict::NeverReceived, None),
+                row("caller-tag-1", 30030, MediaVerdict::Flowing, None),
+            ],
+            "A one-way call"
+        );
+        assert_eq!(
+            verdicts(&judged("v-oneway-kernel-query")?),
+            [
+                row("callee-tag-1", 32686, MediaVerdict::NeverReceived, None),
+                row("caller-tag-1", 30400, MediaVerdict::Flowing, None),
+            ],
+            "A one-way call"
+        );
+        Ok(())
+    }
+
+    /// A two-way call is flowing both ways, in userspace and in the kernel.
+    #[test]
+    fn a_two_way_call_is_flowing_both_ways() -> Result<(), TestError> {
+        for name in ["h-twoway-query", "v-twoway-kernel-query"] {
+            let call = judged(name)?;
+            assert_eq!(call.directions.len(), 2, "{name}");
+            assert!(
+                call.directions
+                    .iter()
+                    .all(|d| d.verdict == MediaVerdict::Flowing),
+                "{name}: {:?}",
+                verdicts(&call)
+            );
+        }
+        Ok(())
+    }
+
+    /// A caller silent for 10 s (pcap ground truth 10.1 s and 10.2 s) is
+    /// stalled with the lag the reply itself shows; the callee is flowing.
+    #[test]
+    fn a_caller_silent_for_ten_seconds_is_stalled_with_its_lag() -> Result<(), TestError> {
+        let h = judged("h-silent10s-query")?;
+        assert_eq!(
+            verdicts(&h),
+            [
+                row("callee-tag-1", 30024, MediaVerdict::Flowing, None),
+                row("caller-tag-1", 30026, MediaVerdict::Stalled, Some(10)),
+            ],
+            "A caller silent for 10 s (pcap ground truth 10.1 s and 10.2 s) is stalled with the lag the reply itself shows"
+        );
+        let v = judged("v-silent10s-kernel-query")?;
+        let caller = v
+            .directions
+            .iter()
+            .find(|d| d.from_tag == "caller-tag-1")
+            .ok_or("a caller direction")?;
+        assert_eq!(caller.verdict, MediaVerdict::Stalled, "{:?}", verdicts(&v));
+        let callee = v
+            .directions
+            .iter()
+            .find(|d| d.from_tag == "callee-tag-1")
+            .ok_or("a callee direction")?;
+        assert_eq!(callee.verdict, MediaVerdict::Flowing, "{:?}", verdicts(&v));
+        Ok(())
+    }
+
+    /// The recorded parallel fork: the answered branch's socket counted 0 in
+    /// while that party's 2260 packets were counted on the early branch's
+    /// socket. No direction is judged; every socket's counters are shown.
+    #[test]
+    fn a_forked_call_with_an_early_media_branch_is_not_judged() -> Result<(), TestError> {
+        let call = judged("h-fork-query")?;
+        assert!(call.directions.is_empty(), "{:?}", verdicts(&call));
+        assert!(call.unjudged.is_some(), "The recorded parallel fork");
+        let ingress = |tag: &str, port: u16| {
+            call.tags
+                .iter()
+                .find(|t| t.tag == tag)
+                .and_then(|t| t.sockets.iter().find(|s| s.local_port == port))
+                .and_then(|s| s.ingress.packets)
+        };
+        assert_eq!(
+            ingress("early-tag-1", 30022),
+            Some(2260),
+            "The recorded parallel fork"
+        );
+        assert_eq!(
+            ingress("callee-tag-1", 30018),
+            Some(0),
+            "The recorded parallel fork"
+        );
+        assert_eq!(
+            ingress("caller-tag-1", 30008),
+            Some(2189),
+            "The recorded parallel fork"
+        );
+        Ok(())
+    }
+
+    /// Kernel forwarding: the harness relay flags every received RTP socket
+    /// `kernelized` AND `no kernel support`, which is userspace; the lab relay
+    /// with the module loaded flags them `kernelized` alone, which is kernel.
+    #[test]
+    fn kernelized_without_no_kernel_support_is_kernel_and_with_it_userspace()
+    -> Result<(), TestError> {
+        let rtp_kernel = |call: &SessionCall| -> Vec<KernelVerdict> {
+            call.tags
+                .iter()
+                .flat_map(|t| t.sockets.iter())
+                .filter(|s| s.kind == "rtp" && s.ingress.packets.unwrap_or(0) > 0)
+                .map(|s| s.kernel)
+                .collect()
+        };
+        assert_eq!(
+            rtp_kernel(&judged("h-twoway-query")?),
+            [KernelVerdict::Userspace, KernelVerdict::Userspace],
+            "Kernel forwarding"
+        );
+        assert_eq!(
+            rtp_kernel(&judged("v-twoway-kernel-query")?),
+            [KernelVerdict::Kernel, KernelVerdict::Kernel],
+            "Kernel forwarding"
+        );
+        Ok(())
+    }
+
+    /// `reply` with every dictionary entry named in `keys` removed.
+    fn without(reply: &[u8], keys: &[&[u8]]) -> Result<Vec<u8>, TestError> {
+        use crate::rtpengine::bencode::{self, Value};
+        fn strip<'a>(v: &Value<'a>, keys: &[&[u8]]) -> Value<'a> {
+            match v {
+                Value::Dict(entries) => Value::Dict(
+                    entries
+                        .iter()
+                        .filter(|(k, _)| !keys.contains(k))
+                        .map(|(k, v)| (*k, strip(v, keys)))
+                        .collect(),
+                ),
+                Value::List(items) => Value::List(items.iter().map(|i| strip(i, keys)).collect()),
+                other => other.clone(),
+            }
+        }
+        let mut out = Vec::new();
+        bencode::encode(&strip(&bencode::decode(reply)?, keys), &mut out);
+        Ok(out)
+    }
+
+    /// A relay version that reports no `last packet`, or no `stats`, gets
+    /// `not_reported` on every direction: never `flowing`, never
+    /// `never_received`.
+    #[test]
+    fn a_reply_without_last_packet_or_stats_is_not_reported() -> Result<(), TestError> {
+        let one_way = fixture("h-oneway-query")?;
+        for key in [&b"last packet"[..], b"stats"] {
+            let call = judged_bytes(&without(&one_way, &[key])?)?;
+            assert_eq!(
+                call.directions.len(),
+                2,
+                "A relay version that reports no `last packet`, or no `stats`, gets `not_reported` on every direction"
+            );
+            assert!(
+                call.directions
+                    .iter()
+                    .all(|d| d.verdict == MediaVerdict::NotReported),
+                "{}: {:?}",
+                String::from_utf8_lossy(key),
+                verdicts(&call)
+            );
+        }
+        Ok(())
+    }
+
+    /// A relay that answers from recorded bytes through the real parsers.
+    struct Recorded {
+        list: &'static str,
+        query: &'static str,
+    }
+
+    impl ReadOnlyRelay for Recorded {
+        fn list(&self, _: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
+            let body = fixture(self.list).map_err(|e| anyhow::anyhow!("{e}"))?;
+            parse_list_reply(&body, limit)
+        }
+        fn query(&self, _: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            let body = fixture(self.query).map_err(|e| anyhow::anyhow!("{e}"))?;
+            parse_query_reply(&body, call_id)
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("not recorded")
+        }
+        fn describe(&self) -> String {
+            "a recorded relay".to_string()
+        }
+    }
+
+    fn permit() -> Result<TransmitPermit, TestError> {
+        Ok(
+            TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
+                device: "eth0".to_owned(),
+            })
+            .ok_or("a live source grants a permit")?,
+        )
+    }
+
+    /// A relay holding 40 calls answers `limit 32` with exactly 32 and no key
+    /// that says more exist: the snapshot says it may hold more. Asked for
+    /// 1000 it returns all 40, and the snapshot does not.
+    #[test]
+    fn exactly_the_limit_returned_is_truncated_and_fewer_is_not() -> Result<(), TestError> {
+        let at = chrono::Utc::now;
+        let ask = |list_limit| SessionsAsk {
+            selected: None,
+            scan: false,
+            cap: 32,
+            list_limit,
+        };
+        let full = Recorded {
+            list: "v-40calls-list-32",
+            query: "v-twoway-kernel-query",
+        };
+        let limit = 32;
+        let s = relay_sessions(&full, &permit()?, &ask(limit), &|_| false, &at);
+        assert_eq!(
+            (s.held, s.truncated),
+            (Some(limit as usize), Some(true)),
+            "a relay holding 40 calls answers `limit {limit}` with exactly {limit} and no key \
+             that says more exist"
+        );
+
+        let all = Recorded {
+            list: "v-40calls-list-1000",
+            query: "v-twoway-kernel-query",
+        };
+        let s = relay_sessions(&all, &permit()?, &ask(1000), &|_| false, &at);
+        assert_eq!(
+            (s.held, s.truncated),
+            (Some(40), Some(false)),
+            "A relay holding 40 calls answers `limit 32` with exactly 32 and no key that says more exist"
+        );
+        assert_eq!(
+            s.not_queried.len(),
+            40,
+            "A relay holding 40 calls answers `limit 32` with exactly 32 and no key that says more exist"
+        );
+        Ok(())
+    }
+
+    /// 63 s into a call, after its BYE, the relay still lists and answers for
+    /// it with nothing marking it deleted. Only sipnab's own SIP can say it
+    /// ended; without it, the answer says the relay may still list it.
+    #[test]
+    fn a_call_in_delete_delay_is_marked_only_by_sipnab_s_own_sip() -> Result<(), TestError> {
+        let at = chrono::Utc::now;
+        let relay = Recorded {
+            list: "h-12calls-list-1000",
+            query: "h-twoway-query-after-bye",
+        };
+        let ask = SessionsAsk {
+            selected: Some("sg6-12calls-list-1000-1@example.invalid"),
+            scan: false,
+            cap: 32,
+            list_limit: 1000,
+        };
+        let seen = relay_sessions(&relay, &permit()?, &ask, &|_| true, &at);
+        assert_eq!(
+            seen.calls[0].sip_dialog,
+            SipDialog::Ended,
+            "63 s into a call, after its BYE, the relay still lists and answers for it with nothing marking it deleted"
+        );
+        let unseen = relay_sessions(&relay, &permit()?, &ask, &|_| false, &at);
+        assert_eq!(
+            unseen.calls[0].sip_dialog,
+            SipDialog::NotSeenEnded,
+            "63 s into a call, after its BYE, the relay still lists and answers for it with nothing marking it deleted"
+        );
+        assert!(
+            unseen
+                .render(crate::output::ReportFormat::Text)
+                .contains("about 30 s"),
+            "63 s into a call, after its BYE, the relay still lists and answers for it with nothing marking it deleted"
+        );
+        Ok(())
     }
 }

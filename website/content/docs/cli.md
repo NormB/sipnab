@@ -303,7 +303,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--bpf-file` | `<FILE>` | -- | 0.3.0 | Read the BPF capture filter from a file. It takes precedence over the positional filter and replaces `[capture] bpf_filter`, and like them it applies to `-I` capture files as well as live capture. Config: `[capture] bpf_filter` |
 | `--capture-tunnels` | `[<PORTS>]` | off | 0.5.80 | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default: it takes every packet on those ports, which on a mobile core is the entire user plane, because a BPF filter cannot reach the inner port behind a GTP-U extension-header chain. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | 0.3.0 | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth). At least 1: sipnab refuses `0` |
-| `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2` |
+| `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2`. At the deadline sipnab stops capturing and still reports what had already arrived: a TCP or TLS `--hep-listen` reads what its open connections hold, for up to 1 second, and the run reads on for up to 3 seconds for the capture to deliver it. 0.5.233 and earlier dropped it |
 | `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
@@ -1180,7 +1180,9 @@ out the end-of-run summary on stderr.
 | `--find-in-files` | `<PATH>...` | | 0.5.231 | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
 | `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns. See [Fail a build on what a capture shows](@/docs/expectations.md) |
 | `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native`. How-to: [Ask a media relay about itself](@/docs/relay-statistics.md#list-the-calls-the-relay-holds) |
-| `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Needs `--relay-holdings`; `0` exits 2 |
+| `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Also the most held calls `--relay-sessions` queries. Needs `--relay-holdings` or `--relay-sessions`; `0` exits 2 |
+| `--relay-sessions` | -- | | Unreleased | Ask the relay named by `--rtpengine-control` which calls it holds and, for each, whether media reaches it each way; print the answer and exit. Sends one `list`, then one `query` per held call up to `--relay-holdings-max`. Each party's RTP socket gets a verdict from the relay's own counters and clock: `never_received`, `stalled` (no packet for more than 2 s while another socket of the call received one), `flowing` or `not_reported`. A call with an early media branch shows its counters with no verdict. Every value is `relay_reported`. Needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. Exits 0 with the answer and 1 when the relay did not answer its `list`. `--json` prints the body of `GET /v1/relay/sessions?scan=true`. See [Ask the relay whether media reaches it](#ask-the-relay-whether-media-reaches-it). Feature: `native`. How-to: [See whether media reaches the relay](@/docs/relay-statistics.md#see-whether-media-reaches-the-relay) |
+| `--relay-sessions-call` | `<CALL-ID>` | | Unreleased | With `--relay-sessions`, ask about this Call-ID only: one `list` and one `query`, without querying the other held calls. REST's `call_id`. Needs `--relay-sessions` |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
 
 ### Call volume over time
@@ -2005,6 +2007,36 @@ classification instead of a list:
 ```json
 {"detail":"relay (rtpengine at 127.0.0.1:22222) did not answer (no reply from 127.0.0.1:22222 within 2s); asked, nothing came back","outcome":"unreachable","responsibility":"relay_or_network"}
 ```
+
+### Ask the relay whether media reaches it
+
+`--relay-sessions` goes one step past `--relay-holdings`: for each held call
+it asks the relay what it counted on each of the call's sockets, and says per
+direction whether media reaches the relay. It needs the same live source and
+exits the same way. [See whether media reaches the relay](@/docs/relay-statistics.md#see-whether-media-reaches-the-relay)
+shows it against a live relay and explains each verdict. With
+`--relay-sessions-call <CALL-ID>` it asks about that call alone, listed or
+not. A Call-ID the relay does not hold comes back in the relay's own words,
+and the run still exits `0`, because the relay answered its `list`:
+
+```sh
+sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions --relay-sessions-call gone-1@192.0.2.21 2>/dev/null
+```
+
+```text
+Sessions of relay (rtpengine at 192.0.2.11:22222), asked 2026-11-04T17:20:52.730910958+00:00 (relay_reported)
+reachable; 0 calls listed; queried 0 of 0; also asked about 1 call the relay did not list
+Note: a relay keeps a call it was told to delete for its delete delay (30 s by default) and its answer does not mark it; a call sipnab did not see end in SIP may have ended up to about 30 s ago.
+Note: stalled means no packet for more than 2 s while another socket of the same call received one; silence suppression, comfort noise, hold and loss bursts were not measured and can also produce it.
+
+gone-1@192.0.2.21  refused: relay (rtpengine at 192.0.2.11:22222) for call gone-1@192.0.2.21: Unknown call-id
+
+Call gone-1@192.0.2.21 (relay_reported)
+refused: relay (rtpengine at 192.0.2.11:22222) for call gone-1@192.0.2.21: Unknown call-id
+```
+
+This example writes the harness relay's address as `192.0.2.11` and its
+clients' as `192.0.2.21`.
 
 ## Dialog
 

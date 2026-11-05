@@ -23,6 +23,9 @@
 //! branches nobody has watched execute. It deletes files; being wrong is
 //! expensive in the one direction that cannot be undone.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -537,13 +540,16 @@ fn the_conflict_marker_predicate_sees_markers_and_not_underlines() -> Result<(),
 
 /// A throwaway tree for the cleaner to act on.
 struct Fixture {
-    root: PathBuf,
+    root: test_scratch::ScratchDir,
 }
 
 impl Fixture {
     fn new(name: &str) -> Result<Self, TestError> {
-        let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-        let _ = std::fs::remove_dir_all(&root);
+        let root = test_scratch::ScratchDir::new_in(
+            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+            &format!("{name}-"),
+        )
+        .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(root.join(".git")).map_err(|e| format!("fixture .git: {e}"))?;
         Ok(Self { root })
     }
@@ -771,8 +777,11 @@ fn the_cleaner_reports_what_it_reclaimed() -> Result<(), TestError> {
 /// decline rather than do its best.
 #[test]
 fn the_cleaner_refuses_a_root_that_is_not_a_checkout() -> Result<(), TestError> {
-    let root = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("clean_notarepo");
-    let _ = std::fs::remove_dir_all(&root);
+    let root = test_scratch::ScratchDir::new_in(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "clean_notarepo-",
+    )
+    .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&root).map_err(|e| format!("mkdir: {e}"))?;
     std::fs::write(root.join("important.rs"), "fn main() {}").map_err(|e| format!("write: {e}"))?;
 

@@ -345,6 +345,7 @@ pub mod config;
 pub mod crash;
 pub mod crypto;
 pub mod cursor;
+pub mod duration;
 pub mod error;
 pub mod expect;
 pub mod llmnr;
@@ -461,6 +462,8 @@ pub mod tui;
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 
+#[cfg(test)]
+pub mod test_scratch;
 #[cfg(test)]
 pub mod test_utils;
 

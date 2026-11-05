@@ -17,6 +17,9 @@
 //! and a symlink pointing at it are all the same file, which is exactly how the
 //! shell produces this mistake in the first place.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 
 /// Any error a test can return; `?` converts into it.
@@ -24,13 +27,7 @@ type TestError = Box<dyn std::error::Error>;
 
 /// One test's temp directory, used as the path it names, and removed when the
 /// test is done with it.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+struct Scratch(test_scratch::ScratchDir);
 
 impl std::ops::Deref for Scratch {
     type Target = Path;
@@ -42,8 +39,8 @@ impl std::ops::Deref for Scratch {
 
 /// A fresh temp directory for one test.
 fn tmp_dir(name: &str) -> Result<Scratch, TestError> {
-    let d = std::env::temp_dir().join(format!("sipnab-clobber-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
+    let d = test_scratch::ScratchDir::new(&format!("sipnab-clobber-{name}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&d)?;
     Ok(Scratch(d))
 }

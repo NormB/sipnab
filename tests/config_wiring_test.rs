@@ -4301,3 +4301,106 @@ fn contrib_example_vcon_forward_block_uncommented_is_a_real_config() -> Result<(
     assert_eq!(v.interval, Some(5));
     Ok(())
 }
+
+// ── run() is isolated from the developer's own config ───────────────────
+
+/// Environment variables a child would inherit, as (name, value).
+type Ambient = Vec<(&'static str, std::ffi::OsString)>;
+
+/// A config file planted in every place `Config::load` searches from the
+/// environment: `$SIPNAB_CONFIG`, `$XDG_CONFIG_HOME/sipnab/sipnab.toml`,
+/// `$HOME/.config/sipnab/sipnab.toml` and `$HOME/.sipnabrc`. Returns the
+/// directory holding them and the ambient environment that points at them.
+///
+/// The planted files stand in for a developer's real ones. They are handed to
+/// [`run_support::run_with_ambient`] as the environment the child would
+/// otherwise inherit, rather than set on this process: changing this
+/// process's `HOME` would race every other test in the binary.
+fn planted_user_config(which: &[&str]) -> Result<(tempfile::TempDir, Ambient), TestError> {
+    let dir = tempfile::tempdir()?;
+    let home = dir.path().join("home");
+    let xdg = dir.path().join("xdg");
+    let body = "[theme]\n";
+    let mut ambient = vec![
+        ("HOME", home.clone().into_os_string()),
+        ("XDG_CONFIG_HOME", xdg.clone().into_os_string()),
+    ];
+    for source in which {
+        let file = match *source {
+            "SIPNAB_CONFIG" => {
+                let f = dir.path().join("env.toml");
+                ambient.push(("SIPNAB_CONFIG", f.clone().into_os_string()));
+                f
+            }
+            "XDG_CONFIG_HOME" => xdg.join("sipnab/sipnab.toml"),
+            "HOME/.config" => home.join(".config/sipnab/sipnab.toml"),
+            "HOME/.sipnabrc" => home.join(".sipnabrc"),
+            other => return Err(format!("unknown config source {other}").into()),
+        };
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&file, body)?;
+    }
+    std::fs::create_dir_all(&home)?;
+    Ok((dir, ambient))
+}
+
+const ALL_USER_SOURCES: [&str; 4] = [
+    "SIPNAB_CONFIG",
+    "XDG_CONFIG_HOME",
+    "HOME/.config",
+    "HOME/.sipnabrc",
+];
+
+/// A developer's config does not reach a `run()` child.
+///
+/// `run()` passed no `-f` and pinned neither `HOME` nor `SIPNAB_CONFIG`, so
+/// every caller without `-f` read whatever `~/.sipnabrc` the machine running
+/// it held, and a result depended on whose machine ran it.
+#[test]
+fn run_ignores_a_config_planted_in_every_user_location() -> Result<(), TestError> {
+    let (_dir, ambient) = planted_user_config(&ALL_USER_SOURCES)?;
+    let (out, err, code) =
+        run_support::run_with_ambient(&ambient, &["--dump-config"], Some("off"))?;
+    assert_eq!(code, Some(0), "--dump-config failed:\n{err}");
+    assert!(
+        out.contains("# No config file loaded (defaults only)"),
+        "a run() child loaded the developer's config:\n{out}"
+    );
+    Ok(())
+}
+
+/// Negative control: the planted file is a config the binary loads when it is
+/// named, so the test above is not passing on a file sipnab would refuse.
+#[test]
+fn run_still_loads_a_config_named_with_dash_f() -> Result<(), TestError> {
+    let (dir, ambient) = planted_user_config(&["HOME/.sipnabrc"])?;
+    let rc = dir.path().join("home/.sipnabrc");
+    let rc = rc.to_string_lossy();
+    let (out, err, code) =
+        run_support::run_with_ambient(&ambient, &["-f", &rc, "--dump-config"], Some("off"))?;
+    assert_eq!(code, Some(0), "--dump-config -f failed:\n{err}");
+    assert!(
+        out.contains(&format!("# Loaded from: {rc}")),
+        "an explicit -f must still load:\n{out}"
+    );
+    Ok(())
+}
+
+/// Edge: each user location on its own is ignored, so pinning one source does
+/// not leave the next one in the search order open.
+#[test]
+fn run_ignores_each_user_config_location_alone() -> Result<(), TestError> {
+    for source in ALL_USER_SOURCES {
+        let (_dir, ambient) = planted_user_config(&[source])?;
+        let (out, err, code) =
+            run_support::run_with_ambient(&ambient, &["--dump-config"], Some("off"))?;
+        assert_eq!(code, Some(0), "{source}: --dump-config failed:\n{err}");
+        assert!(
+            out.contains("# No config file loaded (defaults only)"),
+            "{source}: a run() child loaded a config planted there:\n{out}"
+        );
+    }
+    Ok(())
+}

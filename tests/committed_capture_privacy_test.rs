@@ -27,6 +27,9 @@
 //! stays a human decision, recorded in the backlog under LIVE4, and this file
 //! deliberately does not pretend to cover it.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 
 type TestError = Box<dyn std::error::Error>;
@@ -338,11 +341,8 @@ fn every_pattern_has_a_literal_example() -> Result<(), TestError> {
 #[test]
 fn a_match_across_a_chunk_boundary_is_still_found() -> Result<(), TestError> {
     let (needle, _) = SUBSCRIBER_IDENTIFIERS[0];
-    let dir = std::env::temp_dir().join(format!(
-        "sipnab-boundary-{}-{}",
-        std::process::id(),
-        needle.len()
-    ));
+    let dir = test_scratch::ScratchDir::new("sipnab-boundary-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("temp dir: {e}"))?;
     let path = dir.join("straddle.pcap");
 

@@ -17,6 +17,9 @@
 //! because it introspects the real clap `Cli`.
 #![cfg(feature = "native")]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use clap::CommandFactory;
 use std::collections::BTreeSet;
 
@@ -659,6 +662,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "CONTRIBUTING.md",
             "website/content/docs/contributing.md",
         ],
+    ),
+    // git's `--no-verify`, which skips the commit-msg hook: the pre-push
+    // message gate exists for a commit made that way.
+    (
+        "no-verify",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
     // `rustup toolchain install ... --component rustfmt`, the command that
     // installs the pinned rustfmt the format gate runs.
@@ -3420,7 +3429,8 @@ fn benchmark_harness_is_published() -> Result<(), TestError> {
 #[test]
 fn carrier_generator_produces_the_documented_corpus() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let tmp = std::env::temp_dir().join(format!("sipnab-carrier-{}.pcap", std::process::id()));
+    let scratch = test_scratch::ScratchDir::new("sipnab-carrier-")?;
+    let tmp = scratch.join("carrier.pcap");
 
     let out = std::process::Command::new("python3")
         .arg(repo.join("bench/carrier.py"))
@@ -3919,7 +3929,8 @@ fn theme_slots_are_documented_and_counted_correctly() -> Result<(), TestError> {
 #[test]
 fn third_party_notices_are_current() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let tmp = std::env::temp_dir().join(format!("sipnab-notices-{}.md", std::process::id()));
+    let scratch = test_scratch::ScratchDir::new("sipnab-notices-")?;
+    let tmp = scratch.join("notices.md");
 
     let out = std::process::Command::new("python3")
         .arg(repo.join("scripts/build-third-party-notices.py"))
@@ -5982,7 +5993,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1396 -> 1397: bench/README.md gains the throughput gate's exit-code
     // table. It has no site mirror, and no other changed page gained or lost
     // a table.
-    const EXPECTED_TABLES: usize = 1397;
+    // 1397 -> 1399 (SG2 relay sessions): the verdict table in
+    // docs/relay-statistics.md (+1) and its website mirror (+1).
+    const EXPECTED_TABLES: usize = 1399;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")
@@ -7613,6 +7626,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         14 => "fourteen",
         15 => "fifteen",
         16 => "sixteen",
+        17 => "seventeen",
         n => {
             return Err(format!(
                 "no spelling for {n} gates; add one rather than dropping the check"
@@ -7636,7 +7650,7 @@ fn documented_pre_push_gate_count_matches_the_hook() -> Result<(), TestError> {
         // spelled number next to "hard gate" is the drift this catches.
         for wrong in [
             "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen",
-            "fourteen", "fifteen",
+            "fourteen", "fifteen", "sixteen",
         ] {
             if wrong == spelled {
                 continue;
@@ -8203,8 +8217,8 @@ fn llms_aggregates_are_current() -> Result<(), TestError> {
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     // pid and line, never a fixed path: two tests sharing one would race, and a
     // leftover from a killed run would be read as this run's output.
-    let tmp = std::env::temp_dir().join(format!("sipnab-llms-{}-{}", std::process::id(), line!()));
-    let _ = std::fs::remove_dir_all(&tmp);
+    let tmp =
+        test_scratch::ScratchDir::new("sipnab-llms-").map_err(|e| format!("scratch dir: {e}"))?;
 
     // argv[2] keeps the generator off the committed files. Without it this
     // gate would OVERWRITE the very thing it is checking and always pass.
@@ -8584,6 +8598,7 @@ fn the_gate_count_spelling_table_covers_one_more_than_today() -> Result<(), Test
         (14, "fourteen"),
         (15, "fifteen"),
         (16, "sixteen"),
+        (17, "seventeen"),
     ];
     let want = spellings
         .iter()

@@ -52,7 +52,7 @@ AssertWithoutMessage	src/capture/device.rs	14
 AssertWithoutMessage	src/capture/dtls.rs	21
 AssertWithoutMessage	src/capture/fanout.rs	1
 AssertWithoutMessage	src/capture/file.rs	31
-AssertWithoutMessage	src/capture/hep.rs	276
+AssertWithoutMessage	src/capture/hep.rs	274
 AssertWithoutMessage	src/capture/hep_delivery.rs	15
 AssertWithoutMessage	src/capture/hep_export.rs	5
 AssertWithoutMessage	src/capture/hep_roster.rs	59
@@ -63,7 +63,7 @@ AssertWithoutMessage	src/capture/libpcap.rs	15
 AssertWithoutMessage	src/capture/live.rs	53
 AssertWithoutMessage	src/capture/mapped.rs	20
 AssertWithoutMessage	src/capture/merged.rs	2
-AssertWithoutMessage	src/capture/mod.rs	87
+AssertWithoutMessage	src/capture/mod.rs	78
 AssertWithoutMessage	src/capture/native.rs	26
 AssertWithoutMessage	src/capture/next_ex.rs	6
 AssertWithoutMessage	src/capture/output_guard.rs	21
@@ -221,7 +221,7 @@ AssertWithoutMessage	src/rtpengine/control.rs	20
 AssertWithoutMessage	src/rtpengine/ng.rs	13
 AssertWithoutMessage	src/sandbox.rs	30
 AssertWithoutMessage	src/seccomp.rs	30
-AssertWithoutMessage	src/security/alerting.rs	48
+AssertWithoutMessage	src/security/alerting.rs	41
 AssertWithoutMessage	src/security/ami.rs	9
 AssertWithoutMessage	src/security/destination.rs	17
 AssertWithoutMessage	src/security/detectors.rs	16
@@ -246,7 +246,7 @@ AssertWithoutMessage	src/sip/diagnosis.rs	68
 AssertWithoutMessage	src/sip/dialog.rs	74
 AssertWithoutMessage	src/sip/dialog_state_machine.rs	2
 AssertWithoutMessage	src/sip/dialog_store.rs	147
-AssertWithoutMessage	src/sip/dsl.rs	291
+AssertWithoutMessage	src/sip/dsl.rs	290
 AssertWithoutMessage	src/sip/endpoint.rs	14
 AssertWithoutMessage	src/sip/group_metrics.rs	16
 AssertWithoutMessage	src/sip/lint/dialog.rs	20
@@ -292,7 +292,7 @@ AssertWithoutMessage	src/tui/controllers/file_open.rs	81
 AssertWithoutMessage	src/tui/controllers/filter_dialog.rs	53
 AssertWithoutMessage	src/tui/controllers/g729_offer.rs	11
 AssertWithoutMessage	src/tui/controllers/loss_map.rs	8
-AssertWithoutMessage	src/tui/controllers/mod.rs	125
+AssertWithoutMessage	src/tui/controllers/mod.rs	124
 AssertWithoutMessage	src/tui/controllers/name_dialog.rs	12
 AssertWithoutMessage	src/tui/controllers/quit_confirm.rs	2
 AssertWithoutMessage	src/tui/controllers/save_dialog.rs	3
@@ -304,7 +304,7 @@ AssertWithoutMessage	src/tui/help.rs	24
 AssertWithoutMessage	src/tui/loss_map.rs	1
 AssertWithoutMessage	src/tui/mod.rs	183
 AssertWithoutMessage	src/tui/msg_raw.rs	5
-AssertWithoutMessage	src/tui/relay_stats.rs	10
+AssertWithoutMessage	src/tui/relay_stats.rs	9
 AssertWithoutMessage	src/tui/render/mod.rs	44
 AssertWithoutMessage	src/tui/render/popups.rs	18
 AssertWithoutMessage	src/tui/render/status.rs	41
@@ -631,11 +631,3 @@ PoisonedLock	tests/cli_flag_behavior_test.rs	4
 PoisonedLock	tests/metrics_counters_test.rs	1
 PoisonedLock	tests/quality_interval_period_test.rs	2
 PoisonedLock	tests/security_test.rs	1
-RustfmtSkipWithoutReason	src/rtp/g711.rs	1
-UnsafeFnWithoutSafetyDoc	src/crash/frames.rs	1
-UnsafeFnWithoutSafetyDoc	src/privilege.rs	1
-UnsafeWithoutSafety	bpf/src/main.rs	3
-UnsafeWithoutSafety	src/capture/libpcap.rs	1
-UnsafeWithoutSafety	src/capture/next_ex.rs	1
-UnsafeWithoutSafety	src/crash/frames.rs	2
-UnsafeWithoutSafety	tests/security_test.rs	1

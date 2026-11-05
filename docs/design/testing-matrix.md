@@ -49,15 +49,15 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 397 | 322 | 33 | 42 | 0 |
-| HTTP routes | 50 | 50 | -- | 0 | 0 |
+| CLI flags | 399 | 323 | 33 | 43 | 0 |
+| HTTP routes | 51 | 51 | -- | 0 | 0 |
 | MCP tools | 79 | 79 | -- | 0 | 0 |
 
 **No row can ever say `none`, and that is the point.** `flag_coverage_test` already requires every flag's `--name` token to appear somewhere in the test corpus, and it defines "referenced" as exactly that. A coverage metric built on mentions therefore reports 100% for this project no matter what is actually exercised -- which is what a yes/no "tested" column would have shown. The rows at `referenced` are the ones that gate passes and this document does not.
 
 ## What a person found that the detector could not
 
-The generator understates. Of the 42 flags it could only call
+The generator understates. Of the 43 flags it could only call
 `referenced`, a read of the tests found 76 with a real behavior test --
 evidence that arrives through a config-file equivalent sharing the flag's
 resolver, through a golden file, or through a library-level test, none of
@@ -333,7 +333,7 @@ behind them.
 | `--mcp-allow-shutdown` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_diagnostic_tools_test.rs`, `tests/mcp_elicitation_test.rs` |  |  |
 | `--retain-audio` |  |  | MCP (Model Context Protocol) | e2e | `tests/api_test.rs`, `tests/batch_run_paths_test.rs` +9 |  |  |
 | `--mcp-allow-open-capture` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_archive_password_test.rs`, `tests/mcp_completeness_test.rs` +4 | **behavior** | the real binary runs WITH the flag; refusal without it, 1 dialog -> 1334 with it |
-| `--mcp-allow-relay-query` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_protocol_features_test.rs` |  |  |
+| `--mcp-allow-relay-query` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_protocol_features_test.rs`, `tests/relay_fetch_end_to_end_test.rs` |  |  |
 | `--mcp-allow-vcon-fetch` |  |  | MCP (Model Context Protocol) | e2e | `tests/mcp_protocol_features_test.rs` |  |  |
 | `--mcp-allow-tls-capture` |  |  | MCP (Model Context Protocol) | e2e | `tests/app_servers_wiring_test.rs` | **behavior** | default-deny and opt-in effect asserted; the one-line CLI hop is untested |
 | `--mcp-allow-save-findings` |  |  | MCP (Model Context Protocol) | e2e | `tests/app_servers_wiring_test.rs`, `tests/config_wiring_test.rs` +2 |  |  |
@@ -457,7 +457,7 @@ behind them.
 | `--vcon-resign-out` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/feature_gate_test.rs` +1 |  |  |
 | `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +48 |  |  |
 | `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/call_report_siprec_test.rs` +35 |  |  |
-| `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +6 |  |  |
+| `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +7 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |
 | `--timeline` |  |  | Queries | e2e | `tests/cli_timeline_test.rs` |  |  |
 | `--count-by` |  | `DIMENSION` | Queries | e2e | `tests/cli_count_by_test.rs`, `tests/config_cli_flag_values_test.rs` |  |  |
@@ -479,6 +479,8 @@ behind them.
 | `--expect` |  | `FILE` | Queries | e2e | `tests/cli_expect_test.rs` |  |  |
 | `--relay-holdings` |  |  | Queries | e2e | `tests/config_cli_flag_values_test.rs`, `tests/relay_fetch_end_to_end_test.rs` |  |  |
 | `--relay-holdings-max` |  | `CALLS` | Queries | e2e | `tests/relay_fetch_end_to_end_test.rs` |  |  |
+| `--relay-sessions` |  |  | Queries | e2e | `tests/config_cli_flag_values_test.rs`, `tests/relay_fetch_end_to_end_test.rs` |  |  |
+| `--relay-sessions-call` |  |  | Queries | referenced | `tests/relay_fetch_end_to_end_test.rs` |  |  |
 | `--panic-selftest` |  |  | Config (hidden) | referenced | `tests/crash_test.rs` |  |  |
 
 ## HTTP routes
@@ -512,6 +514,7 @@ behind them.
 | `/v1/relay/compare/{call_id}` | exercised | `tests/api_capture_identity_test.rs`, `tests/relay_rest_test.rs` |
 | `/v1/relay/holdings` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/relay/holdings/{call_id}` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` |
+| `/v1/relay/sessions` | exercised | `tests/api_capture_identity_test.rs`, `tests/relay_fetch_end_to_end_test.rs` |
 | `/v1/relay/stats` | exercised | `tests/api_capture_identity_test.rs`, `tests/app_servers_wiring_test.rs` +2 |
 | `/v1/relay/stats/call/{call_id}` | exercised | `tests/api_capture_identity_test.rs`, `tests/relay_rest_test.rs` |
 | `/v1/relay/stats/names` | exercised | `tests/api_capture_identity_test.rs`, `tests/relay_rest_test.rs` |
@@ -585,7 +588,7 @@ behind them.
 | `list_tls_libraries` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
 | `media_diagnostics` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_diagnostic_tools_test.rs` +2 |
 | `open_capture` | exercised | `tests/mcp_archive_password_test.rs`, `tests/mcp_completeness_test.rs` +5 |
-| `query_relay` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |
+| `query_relay` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` +1 |
 | `reconcile_orphans` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +3 |
 | `relay_compare` | exercised | `tests/mcp_completeness_test.rs`, `tests/mcp_protocol_features_test.rs` +1 |
 | `relay_stats` | exercised | `tests/mcp_protocol_features_test.rs`, `tests/mcp_stdio_test.rs` |

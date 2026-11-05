@@ -366,11 +366,11 @@ mod tui_state {
         Ok(())
     }
 
-    /// `H` inside the relay-stats view toggles the holdings mode (ST8) — the
-    /// Call-IDs the relay is holding — and, pressed again, returns to the
-    /// counters. Holdings is a global set, so it needs no call scope.
+    /// `H` inside the relay-stats view opens the relay sessions view (SG2) —
+    /// what the relay holds and whether media reaches it — and, pressed
+    /// again, returns to the counters. It needs no call scope.
     #[test]
-    fn h_toggles_holdings_in_relay_stats() -> Result<(), TestError> {
+    fn h_toggles_sessions_in_relay_stats() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.handle_key(KeyCode::Char('S'));
         app.handle_key(KeyCode::Char('H'));
@@ -378,9 +378,9 @@ mod tui_state {
             *app.current_view(),
             View::RelayStats {
                 call_id: None,
-                mode: RelayStatsMode::Holdings,
+                mode: RelayStatsMode::Sessions,
             },
-            "H shows the relay's holdings"
+            "H shows the relay sessions"
         );
         app.handle_key(KeyCode::Char('H'));
         assert_eq!(

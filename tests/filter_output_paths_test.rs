@@ -20,6 +20,9 @@
 //! capture (the parts must sum to the whole and none may be the whole).
 #![cfg(feature = "native")]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 /// The error a test returns: any error, boxed, so `?` works on I/O,
 /// parse and JSON errors alike.
 type TestError = Box<dyn std::error::Error>;
@@ -460,8 +463,11 @@ fn call_report_names_a_dialog_regardless_of_the_filter() -> Result<(), TestError
 /// disclosure warning depend on the old answer.
 #[test]
 fn a_dialog_filter_does_not_narrow_the_output_capture() -> Result<(), TestError> {
-    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("o_filter_pin");
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir = test_scratch::ScratchDir::new_in(
+        std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+        "o_filter_pin-",
+    )
+    .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let filtered = dir.join("filtered.pcap");
     let plain = dir.join("plain.pcap");

@@ -894,7 +894,15 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 550 -> 551: src/app/bootstrap.rs (OPS-11), the refusal of a revocation
 // list the user a root run dropped to cannot read, carried by the resolved
 // `PlanError::new(2, refusal)` site. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 551;
+// 551 -> 553 (SG2 relay sessions): src/app/bootstrap.rs, the two
+// `--relay-holdings` refusals became `{flag} needs a relay to ask` and
+// `{flag} will not ask a relay on a run that reads a file`, shared with
+// `--relay-sessions` (2 removed, 2 added); src/app/queries/b4.rs,
+// `--relay-sessions: {}: {}` (its `list` got no call list back, +1); and
+// src/cli.rs, `--relay-holdings-max bounds --relay-holdings or
+// --relay-sessions and needs one of them`, which clap's group could not
+// enforce (+1).
+const EXPECTED_TEMPLATES: usize = 553;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -19,10 +19,21 @@
 //! It reaches past one developer's machine. CI runs on a self-hosted runner, so
 //! a CI job and a local build share one `/tmp`.
 //!
-//! The fix is a per-process discriminator (`std::process::id()`) or
-//! `tempfile::tempdir()`, both already used elsewhere in this tree.
+//! The fix is `tempfile::tempdir()` (or `tempfile::Builder` with a prefix):
+//! a name no other process can pick, removed when its guard drops, which
+//! happens on a panic as well as on a pass.
+//!
+//! A per-process discriminator (`std::process::id()`) used to be accepted as
+//! the alternative. It is unique per process, but the directory is removed
+//! only by the test's own last line, so every failing or killed run leaves it
+//! behind. On 2026-10-27 the temp directory of the machine that runs these
+//! tests held 23,710 `sipnab*` test directories, about 600 per test name and
+//! 16 GB in all. So a pid-named path is refused like a fixed one.
 
 use std::path::PathBuf;
+
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -41,7 +52,68 @@ const DELIBERATELY_SHARED: &[(&str, &str)] = &[
          is about absence, so two processes agreeing on the path is harmless -- \
          neither creates it.",
     ),
+    (
+        "sipnab-selftest-unwritten.pcap",
+        "tests/support_selftest.rs: a path formatted into a string for the \
+         normalizer and never created, so no two processes can collide on it.",
+    ),
+    (
+        "crate-package",
+        "tests/crate_package_test.rs: the CARGO_TARGET_DIR `cargo package` \
+         builds into, under CARGO_TARGET_TMPDIR. Cargo locks a target directory, \
+         so concurrent runs wait for each other, and reusing it is the build \
+         cache that keeps the test fast.",
+    ),
+    (
+        "discarded-coverage",
+        "tests/support/mod.rs: where child processes that are killed write their \
+         coverage profiles, named by their own pid (%p). It has to outlive every \
+         child it is handed to, so no guard can own it; it lives under \
+         CARGO_TARGET_TMPDIR, only an instrumented build writes into it, \
+         `cargo clean` removes it, and cargo llvm-cov merges only the profiles \
+         at the top of its target directory, never this subdirectory.",
+    ),
 ];
+
+/// The fewest `.rs` files the walk of `src/` and `tests/` may read: 884 on
+/// 2026-11-04, so a walk that skips a directory tree falls below it.
+const MIN_RS_FILES: usize = 800;
+
+/// What one statement that names a shared root does with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Site {
+    /// Joins a literal listed in [`DELIBERATELY_SHARED`].
+    Shared,
+    /// Named by the process id: unique per process, but removed only by the
+    /// test's own last line, so a failing run leaves it behind.
+    PerProcess,
+    /// Any other name: the same in every process, so concurrent runs collide.
+    Fixed,
+}
+
+/// Classify one statement that names a shared root.
+fn classify(stmt: &str) -> Site {
+    if stmt.contains("process::id()") {
+        return Site::PerProcess;
+    }
+    let literal = stmt
+        .find(".join(\"")
+        .map(|j| &stmt[j + 7..])
+        .and_then(|rest| rest.find('"').map(|e| &rest[..e]));
+    match literal {
+        Some(lit) if DELIBERATELY_SHARED.iter().any(|(k, _)| *k == lit) => Site::Shared,
+        _ => Site::Fixed,
+    }
+}
+
+/// Whether the gate refuses a site of this kind: everything but a listed,
+/// reasoned sharer.
+fn refused(site: Site) -> bool {
+    site != Site::Shared
+}
+
+/// The calls that name a directory other processes share.
+const SHARED_ROOTS: [&str; 2] = ["temp_dir()", "env!(\"CARGO_TARGET_TMPDIR\")"];
 
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -74,11 +146,12 @@ fn every_temp_path_is_unique_per_process() -> Result<(), TestError> {
     let mut allowed = 0usize;
     let mut offenders: Vec<String> = Vec::new();
 
-    for path in rs_files() {
-        let text = std::fs::read_to_string(&path)?;
+    let files = rs_files();
+    for path in &files {
+        let text = std::fs::read_to_string(path)?;
         let rel = path
             .strip_prefix(repo())
-            .unwrap_or(&path)
+            .unwrap_or(path)
             .display()
             .to_string();
 
@@ -92,7 +165,15 @@ fn every_temp_path_is_unique_per_process() -> Result<(), TestError> {
             continue;
         }
 
-        for (idx, _) in text.match_indices("temp_dir()") {
+        // Both shared roots: the system temp directory, and the per-target
+        // one Cargo hands integration tests, which every run of this target
+        // directory shares and only `cargo clean` empties.
+        let mut uses: Vec<usize> = SHARED_ROOTS
+            .iter()
+            .flat_map(|root| text.match_indices(root).map(|(i, _)| i))
+            .collect();
+        uses.sort_unstable();
+        for idx in uses {
             // A mention in a COMMENT is prose about the rule, not a use of it.
             //
             // The scan reads raw text, so `/// ... temp_dir() ...` counted as a
@@ -155,26 +236,18 @@ fn every_temp_path_is_unique_per_process() -> Result<(), TestError> {
             }
 
             sites += 1;
-
-            if stmt.contains("process::id()") {
+            let site = classify(stmt);
+            if site == Site::PerProcess {
                 per_process += 1;
-                continue;
             }
-
-            let line_no = text[..idx].lines().count();
-            let literal = stmt
-                .find(".join(\"")
-                .map(|j| &stmt[j + 7..])
-                .and_then(|rest| rest.find('"').map(|e| &rest[..e]));
-
-            match literal {
-                Some(lit) if DELIBERATELY_SHARED.iter().any(|(k, _)| *k == lit) => {
-                    allowed += 1;
-                }
-                _ => offenders.push(format!(
+            if refused(site) {
+                let line_no = text[..idx].lines().count();
+                offenders.push(format!(
                     "{rel}:{line_no}: {}",
                     stmt.split_whitespace().collect::<Vec<_>>().join(" ")
-                )),
+                ));
+            } else {
+                allowed += 1;
             }
         }
     }
@@ -183,16 +256,31 @@ fn every_temp_path_is_unique_per_process() -> Result<(), TestError> {
     // this one walks the tree itself rather than taking a file list, so a bad
     // walk would silently check zero sites. The floors are measured, and being
     // ABOVE them is fine -- below means the walk or the extractor broke.
+    // The tree no longer holds a refused site, so the count of sites is the
+    // deliberately shared ones; the walk is checked by how many files it read.
     assert!(
-        sites >= 20,
-        "found only {sites} temp_dir() sites; expected >= 20. The walk or the \
-         match broke -- this gate is not checking what it claims to."
+        files.len() >= MIN_RS_FILES,
+        "read only {} .rs files; expected >= {MIN_RS_FILES}. The walk broke -- \
+         this gate is not checking what it claims to.",
+        files.len()
     );
     assert!(
-        per_process >= 15,
-        "only {per_process} sites carry a per-process discriminator; expected \
-         >= 15. Either the codebase regressed or the detector stopped matching."
+        sites >= DELIBERATELY_SHARED.len(),
+        "found only {sites} temp_dir() sites, fewer than the {} deliberately \
+         shared ones. The match broke.",
+        DELIBERATELY_SHARED.len()
     );
+    assert!(
+        offenders.is_empty(),
+        "these temp paths are either identical in every process, so two \
+         concurrent runs collide, or named by the process id, so a failing run \
+         leaves them behind ({per_process} of them):\n  {}\n\nUse \
+         tempfile::tempdir() or tempfile::Builder, whose guard removes the \
+         directory when it drops, on a panic too. If a site must be shared, add \
+         its literal to DELIBERATELY_SHARED with the reason.",
+        offenders.join("\n  ")
+    );
+
     assert_eq!(
         allowed,
         DELIBERATELY_SHARED.len(),
@@ -201,14 +289,133 @@ fn every_temp_path_is_unique_per_process() -> Result<(), TestError> {
          into permission nobody needs.",
         DELIBERATELY_SHARED.len()
     );
+    Ok(())
+}
 
+/// A panicking test body leaves no directory behind when it holds its
+/// directory through [`test_scratch::ScratchDir`], the guard every test in
+/// this tree uses.
+///
+/// The test body runs on its own thread so its panic can be observed: the
+/// guard drops while the panic unwinds, before `join` returns.
+#[test]
+fn a_panicking_body_removes_its_tempdir() -> Result<(), TestError> {
+    let made = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let seen = std::sync::Arc::clone(&made);
+    let body = std::thread::spawn(move || -> std::io::Result<()> {
+        let dir = test_scratch::ScratchDir::new("sipnab-panic-probe-")?;
+        std::fs::write(dir.path().join("evidence"), b"x")?;
+        if let Ok(mut slot) = seen.lock() {
+            *slot = Some(dir.path().to_path_buf());
+        }
+        panic!("the test body fails");
+    });
+    let joined = body.join();
     assert!(
-        offenders.is_empty(),
-        "these temp paths are identical in every process, so two concurrent \
-         runs collide:\n  {}\n\nUse tempfile::tempdir(), or append \
-         std::process::id() to the name. If a site must be shared, add its \
-         literal to DELIBERATELY_SHARED with the reason.",
-        offenders.join("\n  ")
+        joined.is_err(),
+        "the probe body was meant to panic; it returned {:?}",
+        joined.ok()
+    );
+    let path = made
+        .lock()
+        .map_err(|e| format!("probe mutex: {e}"))?
+        .clone()
+        .ok_or("the probe body never created its directory")?;
+    assert!(
+        !path.exists(),
+        "{} outlived the panic that ended its test",
+        path.display()
     );
     Ok(())
+}
+
+/// Negative control: the pattern the gate now refuses, a pid-named directory
+/// removed on the test's last line, survives the same panic. Without this the
+/// test above could pass because the probe never wrote anything.
+#[test]
+fn a_panicking_body_leaks_a_pid_named_directory() -> Result<(), TestError> {
+    let probe = tempfile::tempdir()?;
+    let path = probe
+        .path()
+        .join(format!("sipnab-pid-probe-{}", std::process::id()));
+    let inner = path.clone();
+    let body = std::thread::spawn(move || -> std::io::Result<()> {
+        std::fs::create_dir_all(&inner)?;
+        // The cleanup line such a test ends with is never reached.
+        panic!("the test body fails");
+    });
+    let joined = body.join();
+    assert!(
+        joined.is_err(),
+        "the probe body was meant to panic; it returned {:?}",
+        joined.ok()
+    );
+    assert!(
+        path.exists(),
+        "the pid-named probe was removed, so the control does not reproduce the leak"
+    );
+    Ok(())
+}
+
+/// Edge: a guard handed out by a helper, the shape most fixtures in this tree
+/// use. The directory survives the helper's return (a guard dropped inside the
+/// helper would delete it before the test used it), and is still removed when
+/// the test body that holds it panics.
+#[test]
+fn a_helper_returned_guard_outlives_the_helper_and_not_the_panic() -> Result<(), TestError> {
+    fn fixture() -> std::io::Result<test_scratch::ScratchDir> {
+        let dir = test_scratch::ScratchDir::new("sipnab-helper-probe-")?;
+        std::fs::write(dir.join("staged"), b"x")?;
+        Ok(dir)
+    }
+    let made = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let seen = std::sync::Arc::clone(&made);
+    let body = std::thread::spawn(move || -> std::io::Result<()> {
+        let dir = fixture()?;
+        let staged = dir.join("staged");
+        if let Ok(mut slot) = seen.lock() {
+            *slot = Some((dir.path().to_path_buf(), staged.exists()));
+        }
+        panic!("the test body fails");
+    });
+    let joined = body.join();
+    assert!(
+        joined.is_err(),
+        "the probe body was meant to panic; it returned {:?}",
+        joined.ok()
+    );
+    let (path, existed) = made
+        .lock()
+        .map_err(|e| format!("probe mutex: {e}"))?
+        .clone()
+        .ok_or("the probe body never built its fixture")?;
+    assert!(
+        existed,
+        "the fixture's file was gone when the test used it, so the guard dropped inside the helper"
+    );
+    assert!(
+        !path.exists(),
+        "{} outlived the panic that ended its test",
+        path.display()
+    );
+    Ok(())
+}
+
+/// The rule itself, on statements of each kind: a pid-named path and a fixed
+/// one are refused, a listed sharer is not. The tree no longer holds a refused
+/// site, so without this a gate that stopped refusing would still pass.
+#[test]
+fn the_rule_refuses_a_pid_named_or_fixed_path_and_spares_a_listed_one() {
+    let pid = "let d = std::env::temp_dir().join(format!(\"sipnab-x-{}\", std::process::id()));";
+    assert_eq!(classify(pid), Site::PerProcess, "a pid-named path");
+    assert!(refused(classify(pid)), "a pid-named path is refused");
+    let fixed = "let d = std::env::temp_dir().join(\"sipnab-fixed\");";
+    assert_eq!(classify(fixed), Site::Fixed, "a fixed name");
+    assert!(refused(classify(fixed)), "a fixed name is refused");
+    let listed = format!(
+        "let d = std::env::temp_dir().join(\"{}\");",
+        DELIBERATELY_SHARED[0].0
+    );
+    assert_eq!(classify(&listed), Site::Shared, "a listed sharer");
+    assert!(!refused(classify(&listed)), "a listed sharer is spared");
 }

@@ -253,6 +253,11 @@ pub const MAX_FRAMES: usize = 256;
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 pub fn loaded_images() -> Vec<Image> {
     /// Called once per loaded object; `data` is the `Vec<Image>` being built.
+    ///
+    /// # Safety
+    ///
+    /// Only `dl_iterate_phdr` calls it, with `info` valid for the call and
+    /// `data` the `&mut Vec<Image>` passed to that `dl_iterate_phdr` call.
     unsafe extern "C" fn each(
         info: *mut libc::dl_phdr_info,
         _size: libc::size_t,
@@ -324,6 +329,11 @@ pub fn loaded_images() -> Vec<Image> {
 /// `.dSYM`, which is what `atos -o` and `llvm-symbolizer` take.
 #[cfg(target_os = "macos")]
 pub fn loaded_images() -> Vec<Image> {
+    // SAFETY: the declarations match <mach-o/dyld.h>: `uint32_t
+    // _dyld_image_count(void)`, `const struct mach_header
+    // *_dyld_get_image_header(uint32_t)`, `intptr_t
+    // _dyld_get_image_vmaddr_slide(uint32_t)` and `const char
+    // *_dyld_get_image_name(uint32_t)`. The header is only an address here.
     unsafe extern "C" {
         fn _dyld_image_count() -> u32;
         fn _dyld_get_image_header(index: u32) -> *const u8;
@@ -401,6 +411,11 @@ pub fn frame_addresses() -> Vec<usize> {
     const CONTINUE: libc::c_int = 0;
     /// `_URC_END_OF_STACK`: stop.
     const STOP: libc::c_int = 5;
+    // SAFETY: the declarations match <unwind.h>: `_Unwind_Reason_Code
+    // _Unwind_Backtrace(_Unwind_Trace_Fn, void *)`, whose trace function takes
+    // `(struct _Unwind_Context *, void *)` and returns the reason code (a C
+    // enum, so `int`), and `_Unwind_Ptr _Unwind_GetIP(struct _Unwind_Context *)`,
+    // a pointer-sized unsigned integer. The context is opaque.
     unsafe extern "C" {
         fn _Unwind_Backtrace(
             trace: extern "C" fn(*mut UnwindContext, *mut libc::c_void) -> libc::c_int,

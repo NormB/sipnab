@@ -19,6 +19,9 @@
 //! the commit alone, disagreed. The question "does this artifact describe the
 //! COMMIT" can only be asked of the index.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -60,7 +63,7 @@ fn run_in(dir: &Path) -> Result<(i32, String), TestError> {
 ///
 /// A real fixture rather than a mocked git: the whole rule is about what `git
 /// diff --cached` reports, and a fake index would test the fake.
-struct Scratch(PathBuf);
+struct Scratch(test_scratch::ScratchDir);
 
 /// A `git` that acts on the fixture and nothing else.
 ///
@@ -174,8 +177,8 @@ fn every_child_that_talks_to_git_scrubs_the_same_variables() -> Result<(), TestE
 
 impl Scratch {
     fn new(name: &str) -> Result<Self, TestError> {
-        let dir = std::env::temp_dir().join(format!("sipnab-staged-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = test_scratch::ScratchDir::new(&format!("sipnab-staged-{name}-"))
+            .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(dir.join("src"))?;
         let git = |args: &[&str]| -> Result<(), TestError> {
             scrubbed_git(&dir).args(args).output()?;
@@ -197,12 +200,6 @@ impl Scratch {
     fn write(&self, rel: &str, body: &str) -> Result<(), TestError> {
         std::fs::write(self.0.join(rel), body)?;
         Ok(())
-    }
-}
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -309,8 +306,8 @@ fn an_untracked_input_is_treated_as_a_modified_one() -> Result<(), TestError> {
 /// rediscovering.
 #[test]
 fn outside_a_work_tree_it_refuses_instead_of_passing() -> Result<(), TestError> {
-    let dir = std::env::temp_dir().join(format!("sipnab-nogit-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let dir =
+        test_scratch::ScratchDir::new("sipnab-nogit-").map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir)?;
     let (code, text) = run_in(&dir)?;
     let _ = std::fs::remove_dir_all(&dir);
@@ -378,12 +375,15 @@ fn the_pre_commit_hook_runs_the_staged_inputs_check() -> Result<(), TestError> {
 /// Whether a test file that runs `git` inside its own fixture handles the
 /// hook environment at all.
 ///
-/// Two patterns are correct and this accepts both, because they are the same
-/// decision made two ways:
+/// These patterns are correct and this accepts each, because they are the same
+/// decision made in different ways:
 ///
 /// * **Scrub it** — `env_remove("GIT_DIR")`, what this file's fixtures do.
 ///   The child then discovers the fixture the way an ordinary invocation
 ///   would.
+/// * **Scrub every `GIT_*`** — a loop over the environment that removes each
+///   variable whose name starts `GIT_`, as `scripts/lib-git-sandbox.sh` does
+///   in shell and the hook-script fixtures do in Rust.
 /// * **Set it** — `.env("GIT_DIR", &fixture)`, what `corpus_push_gate_test`
 ///   does when it points the gate at a throwaway gitdir on purpose.
 ///
@@ -392,7 +392,9 @@ fn the_pre_commit_hook_runs_the_staged_inputs_check() -> Result<(), TestError> {
 /// assertion in the test is about state it never wrote.
 fn handles_the_hook_environment(src: &str) -> bool {
     let scrubs = src.contains(r#"env_remove("GIT_DIR")"#)
-        || src.contains(r#"env_remove(var)"#) && src.contains(r#""GIT_DIR""#);
+        || src.contains(r#"env_remove(var)"#) && src.contains(r#""GIT_DIR""#)
+        // Every exported GIT_* variable removed, GIT_DIR among them.
+        || src.contains(r#"starts_with("GIT_")"#) && src.contains(".env_remove(");
     let sets = src.contains(r#".env("GIT_DIR""#);
     scrubs || sets
 }
@@ -496,6 +498,24 @@ fn the_hook_environment_rule_tells_the_three_cases_apart() -> Result<(), TestErr
     assert!(handles_the_hook_environment(
         "const HOOK_GIT_ENV: &[&str] = &[\"GIT_DIR\"];\n cmd.env_remove(var);"
     ));
+    // Scrubbing every exported GIT_* variable, the form
+    // scripts/lib-git-sandbox.sh's clear_git_env takes and the hook-script
+    // and commit-msg fixtures use: GIT_DIR is one of them.
+    assert!(
+        handles_the_hook_environment(
+            "for (key, _) in std::env::vars_os() {\n\
+             if key.to_string_lossy().starts_with(\"GIT_\") { cmd.env_remove(key); } }"
+        ),
+        "removing every GIT_* variable removes GIT_DIR"
+    );
+    // A GIT_ prefix test that removes nothing is not a scrub.
+    assert!(
+        !handles_the_hook_environment(
+            "if key.starts_with(\"GIT_\") { println!(\"{key:?}\"); }\n\
+             Command::new(\"git\").current_dir(&fixture).output()"
+        ),
+        "reading GIT_* without removing it must still be reported"
+    );
     // Setting it on purpose.
     assert!(handles_the_hook_environment(
         r#"cmd.env("GIT_DIR", &gitdir);"#

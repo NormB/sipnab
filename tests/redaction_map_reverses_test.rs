@@ -34,6 +34,9 @@
 
 #![cfg(feature = "vcon")]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
@@ -53,7 +56,7 @@ fn bin() -> PathBuf {
 
 /// One redacted export: the containers, and the map that should reverse them.
 struct Export {
-    dir: PathBuf,
+    dir: test_scratch::ScratchDir,
     mappings: Vec<(String, String)>,
     containers: Vec<serde_json::Value>,
 }
@@ -65,8 +68,11 @@ impl Export {
 
     /// The same export under a caller-chosen key.
     fn run_with_key(name: &str, key_bytes: [u8; 32]) -> Result<Self, TestError> {
-        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = test_scratch::ScratchDir::new_in(
+            std::path::Path::new(env!("CARGO_TARGET_TMPDIR")),
+            &format!("{name}-"),
+        )
+        .map_err(|e| format!("scratch dir: {e}"))?;
         std::fs::create_dir_all(dir.join("out")).map_err(|e| format!("fixture dir: {e}"))?;
 
         // A FIXED key, so the run is reproducible and a failure can be read.

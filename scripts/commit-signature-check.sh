@@ -30,9 +30,11 @@
 # $SIPNAB_ALLOWED_SIGNERS, which the tests use).
 set -euo pipefail
 
+# shellcheck source=scripts/lib-pushed-range.sh
+. "$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)/lib-pushed-range.sh"
+
 root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 signers=${SIPNAB_ALLOWED_SIGNERS:-$root/.github/allowed_signers}
-zero=0000000000000000000000000000000000000000
 
 # git log's %G? letter, per commit. Which letters pass is the whole rule:
 #
@@ -65,14 +67,13 @@ describe() {
 bad=0
 notes=""
 while read -r local_ref local_sha _remote_ref remote_sha; do
-	[ -n "${local_sha:-}" ] || continue
-	[ "$local_sha" = "$zero" ] && continue
-	# A ref naming no commit (a tag on a tree or blob) pushes no commit.
-	tip=$(git rev-parse -q --verify "$local_sha^{commit}" 2>/dev/null) || continue
-	range=("$tip" --not --remotes)
-	if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha^{commit}" 2>/dev/null; then
-		range+=("$remote_sha")
-	fi
+	# Which commits this ref sends: scripts/lib-pushed-range.sh, the rule the
+	# message check shares. Nothing for a deleted ref or one naming no commit.
+	range=()
+	while IFS= read -r word; do
+		range+=("$word")
+	done < <(pushed_range "${local_sha:-}" "${remote_sha:-}")
+	[ "${#range[@]}" -gt 0 ] || continue
 	# Fail closed: a range git cannot list is a range nobody checked.
 	if ! commits=$(git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$signers" \
 		log --format='%H%x1f%G?%x1f%GK%x1f%s' "${range[@]}"); then

@@ -4793,23 +4793,60 @@ mod tests {
     /// state_to_str maps every DialogState variant to its expected name.
     #[test]
     fn state_to_str_covers_all_variants() -> Result<(), TestError> {
-        let cases = [
-            (DialogState::Trying, "Trying"),
-            (DialogState::Ringing, "Ringing"),
-            (DialogState::InCall, "InCall"),
-            (DialogState::Completed, "Completed"),
-            (DialogState::Canceled, "Canceled"),
-            (DialogState::Failed, "Failed"),
-            (DialogState::Registered, "Registered"),
-            (DialogState::Expired, "Expired"),
-            (DialogState::Pending, "Pending"),
-            (DialogState::Active, "Active"),
-            (DialogState::Terminated, "Terminated"),
-            (DialogState::Transferring, "Transferring"),
-        ];
-        for (state, expected) in cases {
-            assert_eq!(state_to_str(&state), expected);
+        // The spelling `--filter "state == '...'"` must accept for each state,
+        // written as a match with no wildcard: a new variant does not compile
+        // here until its spelling is stated. The states come from
+        // `DialogState::ALL`, which its own test holds to the enum, so no
+        // state can be left out of this check as `Redirected` once was.
+        fn spelling(state: &DialogState) -> &'static str {
+            match state {
+                DialogState::Trying => "Trying",
+                DialogState::Ringing => "Ringing",
+                DialogState::InCall => "InCall",
+                DialogState::Completed => "Completed",
+                DialogState::Canceled => "Canceled",
+                DialogState::Failed => "Failed",
+                DialogState::Redirected => "Redirected",
+                DialogState::Registered => "Registered",
+                DialogState::Expired => "Expired",
+                DialogState::Pending => "Pending",
+                DialogState::Active => "Active",
+                DialogState::Terminated => "Terminated",
+                DialogState::Transferring => "Transferring",
+            }
         }
+        for state in DialogState::ALL {
+            assert_eq!(state_to_str(&state), spelling(&state), "{state:?}");
+        }
+        Ok(())
+    }
+
+    /// A dialog a 302 redirected matches `state == 'Redirected'` and not
+    /// another state: the filter reaches the one state the old table missed.
+    #[test]
+    fn redirected_state() -> Result<(), TestError> {
+        let dialog = make_dialog_with_response(302, "Moved Temporarily")?;
+        assert_eq!(
+            *dialog.state(),
+            DialogState::Redirected,
+            "a 302 redirects the dialog"
+        );
+        let matches = |text: &str| -> Result<bool, TestError> {
+            Ok(FilterExpr::parse(text)?.matches_dialog(
+                &dialog,
+                &[],
+                CaptureMedia::Absent,
+                MosDelay::unknown(),
+            ))
+        };
+        assert!(
+            matches("state == 'Redirected'")?,
+            "the filter names the Redirected state"
+        );
+        assert!(
+            !matches("state == 'Failed'")?,
+            "a redirected dialog is not Failed"
+        );
         Ok(())
     }
 

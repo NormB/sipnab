@@ -29,6 +29,8 @@ pub mod find_files;
 pub mod rates;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod relay_holdings;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod relay_sessions;
 pub mod talkers;
 pub mod th_mappings;
 pub mod timeline;

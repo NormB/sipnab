@@ -2584,6 +2584,9 @@ fn serve_hep_stream<R: std::io::Read>(
     let mut chunk = vec![0u8; HEP_STREAM_READ_CHUNK];
     loop {
         if shared.stopping() {
+            // What the peer delivered before the stop is part of the run:
+            // forward it rather than drop it with the connection (CAP-2).
+            drain_hep_stream(stream, &mut chunk, &mut buf, peer, shared, tx);
             return;
         }
         // Everything whole in the buffer, before asking for more bytes.
@@ -2592,6 +2595,48 @@ fn serve_hep_stream<R: std::io::Read>(
         }
         if read_stream_chunk(stream, &mut chunk, &mut buf, peer).is_break() {
             return;
+        }
+    }
+}
+
+/// The longest a reader spends forwarding what a connection already holds
+/// once the listener stops. A peer that keeps sending cannot hold the stop
+/// past it.
+const HEP_STREAM_DRAIN_BUDGET: Duration = Duration::from_secs(1);
+
+/// Forward what a stream connection holds when the listener stops: the whole
+/// packets already in `buf`, then what the socket has buffered, read until a
+/// read finds nothing within [`HEP_STREAM_READ_TIMEOUT`], the peer closes, or
+/// [`HEP_STREAM_DRAIN_BUDGET`] runs out.
+///
+/// A `--count` stop still ends at the count: [`HepStreamShared::forward_whole_packets`]
+/// breaks there, and so does a pipeline that has gone.
+///
+/// # Side effects
+///
+/// Reads the connection and forwards packets to `tx`, as the reader does.
+fn drain_hep_stream<R: std::io::Read>(
+    stream: &mut R,
+    chunk: &mut [u8],
+    buf: &mut Vec<u8>,
+    peer: IpAddr,
+    shared: &HepStreamShared<'_, '_>,
+    tx: &PacketTx,
+) {
+    let deadline = Instant::now() + HEP_STREAM_DRAIN_BUDGET;
+    loop {
+        if shared.forward_whole_packets(buf, peer, tx).is_break() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            tracing::debug!("HEP stream from {peer}: stop reached with data still arriving");
+            return;
+        }
+        match stream.read(chunk) {
+            Ok(0) => return,
+            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+            // The read timeout ticked with nothing new: the socket is drained.
+            Err(_) => return,
         }
     }
 }
@@ -6533,6 +6578,101 @@ mod tests {
         assert!(
             matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
             "the listener stops cleanly once the count is reached"
+        );
+        Ok(())
+    }
+
+    /// A TCP listener stopped by `--duration` delivers every packet that
+    /// reached it before the deadline (CAP-2).
+    ///
+    /// The pipeline holds 64 packets and nothing reads it until the deadline
+    /// has passed, so at the stop the rest sit in the reader's buffer and the
+    /// socket. The reader used to check the stop before forwarding them, and
+    /// returned with them unread: a run lost the packets its sender had
+    /// already delivered.
+    #[test]
+    fn a_duration_stop_delivers_what_the_peer_sent_before_it() -> Result<(), TestError> {
+        duration_stop_delivers_a_burst(HepTransport::Tcp, None, |bind| {
+            // A plain socket, so "sent" means written to the kernel, not
+            // queued in a sender thread.
+            Ok(Box::new(std::net::TcpStream::connect(bind)?))
+        })
+    }
+
+    /// The same over TLS: the reader drains through the TLS session.
+    #[test]
+    fn a_duration_stop_delivers_what_a_tls_peer_sent_before_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (ca, cert, key) = test_chain(dir.path())?;
+        duration_stop_delivers_a_burst(HepTransport::Tls, Some((cert, key)), move |bind| {
+            let mut roots = rustls::RootCertStore::empty();
+            for c in crate::tls_files::pem_certificates(&ca)? {
+                roots.add(c)?;
+            }
+            let cfg = rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
+                .with_safe_default_protocol_versions()?
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let name = rustls::pki_types::ServerName::try_from("127.0.0.1")?;
+            let conn = rustls::ClientConnection::new(std::sync::Arc::new(cfg), name)?;
+            Ok(Box::new(rustls::StreamOwned::new(
+                conn,
+                std::net::TcpStream::connect(bind)?,
+            )))
+        })
+    }
+
+    /// Start a listener on `transport` with a 1.5 s `--duration`, write 300
+    /// packets through the stream `connect` opens, read nothing until the
+    /// deadline has passed, and require all 300.
+    fn duration_stop_delivers_a_burst(
+        transport: HepTransport,
+        tls: Option<(std::path::PathBuf, std::path::PathBuf)>,
+        connect: impl FnOnce(&str) -> Result<Box<dyn std::io::Write>, TestError>,
+    ) -> Result<(), TestError> {
+        const SENT: usize = 300;
+        let (socket, bind) = loopback_tcp()?;
+        let deadline = Duration::from_millis(1500);
+        let config = CaptureConfig {
+            duration: Some(deadline),
+            ..CaptureConfig::default()
+        };
+        let started = Instant::now();
+        let (rx, done) = start_listener(socket, transport, tls, vec![], None, config);
+        let mut peer = connect(&bind)?;
+        let endpoint = v4_endpoint();
+        for n in 0..SENT {
+            let body = format!("OPTIONS sip:a@b SIP/2.0\r\nCSeq: {n} OPTIONS\r\n\r\n");
+            let frame = build_hep_v3(
+                &endpoint,
+                Utc::now(),
+                HepProtocol::Sip,
+                12,
+                None,
+                body.as_bytes(),
+            );
+            peer.write_all(&frame)?;
+        }
+        peer.flush()?;
+        assert!(
+            started.elapsed() < deadline,
+            "precondition: every packet was sent before the deadline"
+        );
+        // Read nothing until the deadline has passed.
+        std::thread::sleep(deadline + Duration::from_millis(500) - started.elapsed());
+        let mut got = 0usize;
+        while rx.recv_timeout(Duration::from_secs(2)).is_ok() {
+            got += 1;
+        }
+        // Held open to here: the stop, not the peer, ends the connection.
+        drop(peer);
+        assert_eq!(
+            got, SENT,
+            "every packet sent before the deadline is delivered ({transport})"
+        );
+        assert!(
+            matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
+            "the listener stops cleanly at the deadline"
         );
         Ok(())
     }
@@ -11224,23 +11364,81 @@ mod tests {
             Ok(())
         }
 
-        /// A reader on a listener that is winding down reads nothing more, even
-        /// with bytes waiting and no limit reached.
+        /// A reader on a listener that is winding down passes on what the
+        /// peer had already delivered, then stops (CAP-2).
+        ///
+        /// This rule used to be "reads nothing more, even with bytes waiting",
+        /// which is how a `--duration` stop dropped packets its sender had
+        /// delivered. What bounds the stop now is the drain budget, which the
+        /// test below holds.
         #[test]
-        fn a_reader_stops_once_the_listener_is_winding_down() -> Result<(), TestError> {
+        fn a_reader_winding_down_passes_on_what_is_waiting_then_stops() -> Result<(), TestError> {
             use std::sync::atomic::Ordering;
             let opts = opts(&[], None);
             let config = limits(None, None);
             let shared = shared(&opts, &config);
             let (tx, rx) = crate::capture::channel::packet_channel(16);
             shared.stop.store(true, Ordering::Relaxed);
-            let mut stream = std::io::Cursor::new(stream_packet());
+            let waiting = stream_packet();
+            let mut stream = std::io::Cursor::new(waiting.clone());
 
             serve_hep_stream(&mut stream, PEER, &shared, &tx);
 
-            assert_eq!(shared.received.load(Ordering::Relaxed), 0);
-            assert_eq!(stream.position(), 0, "nothing may be read");
-            assert_eq!(delivered(&rx), 0);
+            assert_eq!(
+                shared.received.load(Ordering::Relaxed),
+                1,
+                "the waiting packet is read"
+            );
+            assert_eq!(
+                stream.position(),
+                u64::try_from(waiting.len())?,
+                "the reader reads what was waiting, and no further"
+            );
+            assert_eq!(delivered(&rx), 1, "the waiting packet is passed on");
+            Ok(())
+        }
+
+        /// A peer that never pauses cannot hold a stop: the reader gives up
+        /// draining after the budget.
+        #[test]
+        fn a_winding_down_reader_stops_draining_a_peer_that_never_pauses() -> Result<(), TestError>
+        {
+            use std::sync::atomic::Ordering;
+            /// A stream that always has another whole packet ready.
+            struct Endless(Vec<u8>, usize);
+            impl std::io::Read for Endless {
+                fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+                    let mut n = 0;
+                    while n < out.len() {
+                        out[n] = self.0[self.1 % self.0.len()];
+                        self.1 += 1;
+                        n += 1;
+                    }
+                    Ok(n)
+                }
+            }
+            let opts = opts(&[], None);
+            let config = limits(None, None);
+            let shared = shared(&opts, &config);
+            // Read on another thread, so the pipeline never fills and blocks.
+            let (tx, rx) = crate::capture::channel::packet_channel(1 << 16);
+            shared.stop.store(true, Ordering::Relaxed);
+            let mut stream = Endless(stream_packet(), 0);
+            let begun = Instant::now();
+            std::thread::scope(|scope| {
+                scope.spawn(move || while rx.recv_timeout(Duration::from_secs(5)).is_ok() {});
+                serve_hep_stream(&mut stream, PEER, &shared, &tx);
+                drop(tx);
+            });
+            let took = begun.elapsed();
+            assert!(
+                took >= HEP_STREAM_DRAIN_BUDGET,
+                "the reader drained for its budget, not less: {took:?}"
+            );
+            assert!(
+                took < HEP_STREAM_DRAIN_BUDGET + Duration::from_secs(2),
+                "the reader stopped draining at its budget: {took:?}"
+            );
             Ok(())
         }
 

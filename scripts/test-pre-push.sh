@@ -33,6 +33,23 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
 HOOK="$REPO_ROOT/.githooks/pre-push"
 
+# Every git command below must act on a throwaway repository, never on the one
+# whose hook (or whose GIT_DIR-carrying shell) runs this script: see
+# scripts/lib-git-sandbox.sh. Cleared once, here, for the whole script and the
+# hook it runs. Inherited, the fixture's own `git commit` fired the calling
+# repository's pre-commit hook, which ran this script again: 285 levels deep
+# on 2026-10-28 before it was stopped.
+. "$REPO_ROOT/scripts/lib-git-sandbox.sh"
+clear_git_env
+
+# The hook's message gate (scripts/commit-message-check.sh) builds
+# private_identity_test to read each pushed message. Its rule uses nothing
+# from the crate, and CI's "Git hook scenarios" runner has no system
+# libraries to link the `full` feature set, so a scenario's push failed
+# closed at that gate instead of reaching the gate it was about. The
+# scenarios build it with no features, as .github/workflows/pr-text.yml does.
+export SIPNAB_MESSAGE_FEATURES=none
+
 PASS=0
 FAIL=0
 
@@ -150,6 +167,7 @@ mkdir -p "$CRATE/src"
 # A git work tree from the start: the format gate, scripts/check-rustfmt.sh,
 # takes its file list from git and refuses to run outside a work tree.
 ( cd "$CRATE" && git init -q . )
+require_own_git_dir "$CRATE"
 
 cat >"$CRATE/Cargo.toml" <<'EOF'
 [package]
@@ -664,8 +682,9 @@ EOF
 # commit.gpgsign from signing it with that machine's own key.
 ssh-keygen -q -t ed25519 -N "" -C trusted -f "$TMP/trusted" </dev/null
 ssh-keygen -q -t ed25519 -N "" -C untrusted -f "$TMP/untrusted" </dev/null
+( cd "$CRATE" && git init -q . ) >/dev/null 2>&1
+require_own_git_dir "$CRATE"
 ( cd "$CRATE" \
-	&& git init -q . \
 	&& git config user.email t@example.com \
 	&& git config user.name test \
 	&& git add -A \

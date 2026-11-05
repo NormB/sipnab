@@ -243,6 +243,10 @@ const WITHOUT_IDENTITY: &[(&str, &str)] = &[
         "the MCP `query_relay` tool is source-independent: what the relay holds",
     ),
     (
+        "/v1/relay/sessions",
+        "asks the live relay what it holds and what it counted per socket; not capture-derived",
+    ),
+    (
         "/v1/relay/holdings/{call_id}",
         "the MCP `query_relay` tool is source-independent: what the relay holds",
     ),

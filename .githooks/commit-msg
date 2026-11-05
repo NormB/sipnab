@@ -44,9 +44,26 @@ if [ ! -r "$MSG_CHECK" ]; then
 	exit 0
 fi
 
+# Read what git will store. git strips a message it opens in an editor and
+# cuts it at a scissors line; a message given with -m, -F or -C it stores
+# whole, scissors line included, so a credit placed below one used to pass.
+# scripts/lib-commit-mode.sh decides from the `git commit` command line that
+# runs this hook; when it cannot tell, the message is read whole.
+MSG_WHOLE=1
+MSG_MODE="${MSG_ROOT:-.}/scripts/lib-commit-mode.sh"
+if [ -r "$MSG_MODE" ]; then
+	# shellcheck source=scripts/lib-commit-mode.sh
+	. "$MSG_MODE"
+	# The parent's words, split on purpose: only its flags are read.
+	# shellcheck disable=SC2046
+	if commit_edits_message $(ps -o args= -p "$PPID" 2>/dev/null); then
+		MSG_WHOLE=
+	fi
+fi
+
 # `&& rc=0 || rc=$?` keeps `set -e` from ending the hook before the result
 # is printed.
-MSG_OUT=$(bash "$MSG_CHECK" "$1" 2>&1) && rc=0 || rc=$?
+MSG_OUT=$(SIPNAB_MESSAGE_WHOLE=$MSG_WHOLE bash "$MSG_CHECK" "$1" 2>&1) && rc=0 || rc=$?
 case $rc in
 0) echo -e "${GREEN}OK${NC}" ;;
 1)

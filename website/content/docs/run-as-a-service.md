@@ -304,12 +304,13 @@ the [Security section of the CLI reference](@/docs/cli.md#security).
 
 ## Stop, rotate and reconfigure
 
-sipnab handles three signals:
+sipnab handles four signals:
 
 | Signal | What sipnab does |
 |---|---|
 | `SIGTERM` (`systemctl stop`) | Stops capturing, flushes the open `-O` file, prints the end-of-run summary, and exits 0. |
 | `SIGINT` (Ctrl-C) | The same as `SIGTERM`. |
+| `SIGHUP` | The same stop as `SIGTERM`, then exits 129. |
 | `SIGUSR1` | Starts a new `-O` file at the next captured packet. |
 
 A stop under systemd ends with lines such as these:
@@ -320,25 +321,35 @@ INFO sipnab::app::batch: sipnab: 0 packets captured, 0 SIP messages, 0 RTP packe
 sipnab.service: Deactivated successfully.
 ```
 
-**`SIGHUP` is not handled.** It ends the process at once, with no summary and
-no flush. systemd counts a process ended by `SIGHUP` as a clean exit, so
-`Restart=on-failure` does not restart it, and the service stays down:
+**`SIGHUP` restarts the service.** sipnab stops as it does for `SIGTERM`, with
+the flush and the summary, and exits 129 (128 + 1, the status a shell reports
+for a process `SIGHUP` ended). systemd counts a non-zero exit as a failure, so
+the packaged unit's `Restart=on-failure` starts sipnab again after
+`RestartSec=5`:
 
 ```bash
 # Run all of these, in order.
 sudo kill -HUP "$(systemctl show -p MainPID --value sipnab)"
-systemctl show -p ActiveState,Result,ExecMainCode,ExecMainStatus sipnab
+sleep 7
+systemctl show -p ActiveState,NRestarts sipnab
+journalctl -u sipnab -n 5 -o cat
 ```
 
 ```text
-Result=success
-ExecMainCode=2
-ExecMainStatus=1
-ActiveState=inactive
+ActiveState=active
+NRestarts=1
+sipnab.service: Main process exited, code=exited, status=129/n/a
+sipnab.service: Scheduled restart job, restart counter is at 1.
 ```
 
-That state held past the unit's `RestartSec=5`. `ExecMainCode=2` means a signal ended the process, and `ExecMainStatus=1` is
-`SIGHUP`. The packaged unit has no `ExecReload=`, so `systemctl reload`
+`SIGHUP` does not reload the configuration in place. A root start reads its
+key files and looks up the `--user` account before it drops privileges, and
+the process it drops to cannot read them again. The restart reads everything
+afresh. 0.5.233 and earlier did not handle `SIGHUP`: it ended the process with
+no summary and no flush, systemd recorded `Result=success`, and the service
+stayed down.
+
+The packaged unit has no `ExecReload=`, so `systemctl reload`
 refuses:
 
 ```text

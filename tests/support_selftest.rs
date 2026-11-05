@@ -86,7 +86,8 @@ fn scrubs_temp_paths() -> Result<(), TestError> {
 /// moment someone added a write.
 #[test]
 fn scrubs_paths_under_the_platform_temp_directory() -> Result<(), TestError> {
-    let f = std::env::temp_dir().join(format!("sipnab-selftest-{}.pcap", std::process::id()));
+    // Never created, only formatted, so one fixed name serves every process.
+    let f = std::env::temp_dir().join("sipnab-selftest-unwritten.pcap");
     let line = format!("wrote {} ok", f.display());
     assert_eq!(
         normalize(&line)?,

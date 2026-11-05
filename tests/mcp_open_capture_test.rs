@@ -18,6 +18,9 @@
 
 #![cfg(feature = "mcp")]
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 #[path = "support/mcp.rs"]
 mod support;
 
@@ -35,10 +38,9 @@ const FIRST: &str = "tests/pcap-samples/sip-rtp-g711.pcap";
 const SECOND: &str = "sipp-branch-scenario.pcapng";
 
 /// A temp directory holding `SECOND`, usable as `--mcp-file-root`.
-fn root_with_second(name: &str) -> Result<std::path::PathBuf, TestError> {
-    let root =
-        std::env::temp_dir().join(format!("sipnab-open-capture-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+fn root_with_second(name: &str) -> Result<test_scratch::ScratchDir, TestError> {
+    let root = test_scratch::ScratchDir::new(&format!("sipnab-open-capture-{name}-"))
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&root)?;
     std::fs::copy(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

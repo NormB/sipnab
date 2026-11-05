@@ -5245,6 +5245,44 @@ values a program keys on.
 
 ---
 
+### GET /v1/relay/sessions
+
+What the live relay holds, and whether media reaches it each way.
+
+- It sends one `list`, then one `query` for `?call_id=<CALL-ID>` and, with
+  `?scan=true`, one per held call, up to 32 in all.
+- It TRANSMITS, so it sits behind `--api-allow-relay-query` on a live source,
+  and reads `not_permitted`/`not_configured` otherwise.
+- Each party's RTP socket gets a `verdict` from the relay's own counters and
+  clock: `never_received` (0 packets in, and the socket never `confirmed`),
+  `stalled` (its `last packet` more than 2 s behind the newest in the same
+  reply, with `no_packet_for_s`), `flowing`, or `not_reported`.
+- A call with an early media branch carries `unjudged` and no `directions`;
+  its sockets' counters are still there.
+- `not_queried` names every listed call this ask did not query, and
+  `truncated` is true when `list` returned as many as it asked for.
+- `sip_dialog` is `ended` for a call whose SIP dialog this server saw end,
+  else `not_seen_ended`: the relay keeps a deleted call for its delete delay,
+  30 s by default, and does not mark it.
+- Every value is `relay_reported`. A value the relay did not report is
+  absent, never 0.
+
+It is the same snapshot `--relay-sessions --json` prints and the MCP
+`query_relay` tool returns with `sessions: true`.
+
+```bash
+curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
+  "http://127.0.0.1:8080/v1/relay/sessions?scan=true" | jq .
+```
+
+The body carries `outcome: ok` with the snapshot, or one of the five
+classifications when the relay did not answer its `list`. A call the relay
+declined to answer about is in `calls` with its own `outcome` and `detail`.
+[See whether media reaches the relay](@/docs/relay-statistics.md#see-whether-media-reaches-the-relay)
+shows a live answer.
+
+---
+
 ## Add operator notes to a capture
 
 The REST API has no route that reads or writes operator notes. Add notes in

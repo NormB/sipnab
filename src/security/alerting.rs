@@ -119,28 +119,11 @@ impl AlertRule {
 
 /// Parse a duration string with suffix: `10s`, `5m`, `2h`.
 ///
-/// Returns `None` if the format is invalid.
+/// Returns `None` if the format is invalid or the unit is missing. The rule is
+/// [`crate::duration::parse`]'s, shared with `--duration`, except that a
+/// window must say its unit.
 fn parse_duration(s: &str) -> Option<Duration> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    // Split on the last character, not the last byte — a multibyte final
-    // character (e.g. "10µ") would make `split_at(len - 1)` panic.
-    let suffix = s.chars().next_back()?;
-    let num_part = &s[..s.len() - suffix.len_utf8()];
-    let value: u64 = num_part.parse().ok()?;
-
-    // `value * 60` / `value * 3600` panicked in debug and wrapped in release on
-    // a window/cooldown large enough to overflow `u64` seconds; these fields
-    // come from operator-supplied `--alert-rule` text, so reject the overflow.
-    match suffix {
-        's' => Some(Duration::from_secs(value)),
-        'm' => value.checked_mul(60).map(Duration::from_secs),
-        'h' => value.checked_mul(3600).map(Duration::from_secs),
-        _ => None,
-    }
+    crate::duration::parse(s, crate::duration::BareNumber::Refused).ok()
 }
 
 // ── Shared tumbling-window rate limiter ──────────────────────────────
@@ -1189,33 +1172,6 @@ mod tests {
             + chrono::Duration::seconds(secs) // 2024-01-15T12:00:00Z
     }
 
-    /// A multibyte final character is rejected as an invalid suffix instead
-    /// of panicking on a non-boundary `split_at`.
-    #[test]
-    fn parse_duration_multibyte_suffix_is_invalid() -> Result<(), TestError> {
-        assert_eq!(parse_duration("10µ"), None);
-        assert_eq!(parse_duration("5秒"), None);
-        assert_eq!(parse_duration("µ"), None);
-        Ok(())
-    }
-
-    /// A window/cooldown whose value overflows `u64` seconds once the `m`/`h`
-    /// multiplier is applied is rejected (`None`), not a panic. `value * 60`
-    /// panicked in debug and wrapped in release; `--alert-rule` window and
-    /// cooldown fields flow here from operator-supplied text.
-    #[test]
-    fn parse_duration_overflow_is_rejected_not_panic() -> Result<(), TestError> {
-        assert_eq!(parse_duration("18446744073709551615m"), None);
-        assert_eq!(parse_duration("18446744073709551615h"), None);
-        // The largest hour count that still fits keeps working.
-        assert_eq!(
-            parse_duration("5124095576030431h"),
-            Some(Duration::from_secs(18_446_744_073_709_551_600))
-        );
-        assert_eq!(parse_duration("5124095576030432h"), None);
-        Ok(())
-    }
-
     /// A basic rule parses name/threshold/window and defaults cooldown to 2x.
     #[test]
     fn parse_rule_basic() -> Result<(), TestError> {
@@ -1283,6 +1239,22 @@ mod tests {
         let result = AlertRule::parse("bad:10/1x");
         assert!(result.is_err(), "should fail with invalid window suffix");
         Ok(())
+    }
+
+    /// A window or cooldown must say its unit: a bare number is refused,
+    /// where `--duration` would read it as seconds.
+    #[test]
+    fn a_window_or_cooldown_without_a_unit_is_refused() {
+        assert_eq!(
+            AlertRule::parse_inner("scanner:10/60").err().as_deref(),
+            Some("invalid window '60' — use suffix s/m/h"),
+            "a bare window"
+        );
+        assert_eq!(
+            AlertRule::parse_inner("scanner:10/1m:120").err().as_deref(),
+            Some("invalid cooldown '120' — use suffix s/m/h"),
+            "a bare cooldown"
+        );
     }
 
     /// A rule with an empty name fails to parse.

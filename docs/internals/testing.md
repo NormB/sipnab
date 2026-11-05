@@ -55,10 +55,11 @@ with no `mod.rs` chain. Each test binary compiles its own copy.
 | Helper | Provides |
 |---|---|
 | [`mod.rs`](../../tests/support/mod.rs) | Shared normalization (`normalize()`) used to compare output across platforms; self-tested by `support_selftest`. |
-| [`run.rs`](../../tests/support/run.rs) | The canonical binary-spawn helper for CLI/output/config integration tests — one place that knows how to find and invoke the built binary. |
+| [`run.rs`](../../tests/support/run.rs) | The canonical binary-spawn helper for CLI/output/config integration tests — one place that knows how to find and invoke the built binary. It runs the binary with `HOME`, `XDG_CONFIG_HOME` and `SIPNAB_CONFIG` pointed into an empty directory, so no developer's own config reaches a test. `config_isolation` is that list, and `cli_goldens` uses it too. |
 | [`server.rs`](../../tests/support/server.rs) | REST API spawn harness: start the server on an ephemeral port, wait for readiness, tear down. |
 | [`mcp.rs`](../../tests/support/mcp.rs) | The same for HTTP MCP, including the JSON-RPC framing. |
 | [`teardown.rs`](../../tests/support/teardown.rs) | `terminate()`, the one way a harness stops the binary it spawned: SIGTERM, a bounded wait, and SIGKILL only for a child still running after it. `Child::kill()` is SIGKILL, and a process killed that way never writes its coverage profile. Pulled in with `include!` rather than `#[path]`. |
+| [`src/test_scratch.rs`](../../src/test_scratch.rs) | `ScratchDir`, a test directory under the system temp directory with a random name, removed when the guard drops, on a failing test as well as a passing one. The library's unit tests use it as `crate::test_scratch`; integration tests mount the same file with `#[path = "../src/test_scratch.rs"]`. `temp_path_isolation_test` refuses a temp path named by the process id or by a fixed name. |
 | [`schema.rs`](../../tests/support/schema.rs) | JSON-Schema validation against [`tests/schemas/`](../../tests/schemas). |
 | [`tui_fixtures.rs`](../../tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
 | [`executable.rs`](../../tests/support/executable.rs) | `write_executable()`, the one way a test writes a file it then runs: a child process writes it, so this process never holds it open for writing and an `exec` cannot fail with `ETXTBSY` ("Text file busy") while another test thread forks. `executable_stub_test` refuses a file written in-process and then made executable. |

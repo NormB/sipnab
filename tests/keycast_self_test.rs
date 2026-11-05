@@ -20,6 +20,9 @@
 //! and guards (1) by running it under `-O` as well and proving that a broken
 //! expectation still fails there.
 
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -91,7 +94,8 @@ fn the_checks_survive_python_dash_o() -> Result<(), TestError> {
          no longer proving anything; update the pattern"
     );
 
-    let dir = std::env::temp_dir().join(format!("sipnab-keycast-{}", std::process::id()));
+    let dir = test_scratch::ScratchDir::new("sipnab-keycast-")
+        .map_err(|e| format!("scratch dir: {e}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("tmpdir: {e}"))?;
     let broken = dir.join("keycast_broken.py");
     std::fs::write(&broken, &broken_src).map_err(|e| format!("write broken copy: {e}"))?;
