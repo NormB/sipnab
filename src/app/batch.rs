@@ -837,6 +837,21 @@ fn relay_poll_target(
     })
 }
 
+/// Publish a poll's result where REST and MCP read it, THEN show it.
+///
+/// The order is the point. Shown first, a reader who saw the reading on
+/// stdout (or the failure in the log) and asked `GET /v1/relay/statistics`
+/// or MCP could get `no_reading_yet`, or the previous poll's answer.
+fn publish_then_show<T, R, S>(value: T, record: R, show: S)
+where
+    T: Clone,
+    R: FnOnce(T),
+    S: FnOnce(&T),
+{
+    record(value.clone());
+    show(&value);
+}
+
 /// One relay-statistics poller's state, moved onto the poll thread.
 struct RelayStatsPoll {
     /// Control client for the relay being polled.
@@ -897,18 +912,16 @@ impl RelayStatsPoll {
         }
         match result {
             Ok(crate::relay::types::ControlReply::Statistics(pairs)) => self.on_statistics(pairs),
+            // Recorded before it is logged, as a reading is recorded before
+            // it is printed: see `publish_then_show`.
             Ok(other) => {
-                tracing::error!("{} answered {other:?}, not statistics", self.label);
                 self.publish_failure(
                     crate::stats_vocab::StatisticsOutcome::Suspect,
                     format!("{} answered something other than statistics", self.label),
                 );
+                tracing::error!("{} answered {other:?}, not statistics", self.label);
             }
             Err(e) => {
-                tracing::error!(
-                    "{} did not answer the polled statistics request ({e})",
-                    self.label
-                );
                 self.publish_failure(
                     crate::relay::types::fetch_error_outcome(&e),
                     format!(
@@ -916,11 +929,15 @@ impl RelayStatsPoll {
                         self.label
                     ),
                 );
+                tracing::error!(
+                    "{} did not answer the polled statistics request ({e})",
+                    self.label
+                );
             }
         }
     }
 
-    /// Check one reading against the previous one, then print it.
+    /// Check one reading against the previous one, then publish and print it.
     fn on_statistics(&mut self, pairs: Vec<(String, String)>) {
         use crate::stats_vocab::{counter_stepped_backwards, relay_reported, resolve_for_wire};
         if let Some(prev) = &self.previous
@@ -940,13 +957,19 @@ impl RelayStatsPoll {
         }
         let wire = resolve_for_wire(&relay_reported(&pairs));
         self.previous = Some(pairs);
-        self.print_reading(&wire);
-        crate::output::relay_polled::PolledStore::global().record(
-            crate::output::relay_polled::PolledReading {
-                wire,
-                relay: self.label.clone(),
-                obtained_at: chrono::Utc::now(),
+        let relay = self.label.clone();
+        publish_then_show(
+            wire,
+            |wire| {
+                crate::output::relay_polled::PolledStore::global().record(
+                    crate::output::relay_polled::PolledReading {
+                        wire,
+                        relay,
+                        obtained_at: chrono::Utc::now(),
+                    },
+                );
             },
+            |wire| self.print_reading(wire),
         );
     }
 
@@ -20648,5 +20671,42 @@ mod duration_finish_tests {
             std::ops::ControlFlow::Break(()),
             "the loop stops when the grace is over"
         );
+    }
+}
+
+/// A polled relay reading is published before anyone is shown it.
+#[cfg(test)]
+mod polled_publish_order_tests {
+    use super::*;
+
+    /// By the time the reading is printed, the store REST and MCP read
+    /// already holds it. Printed first, a reader who saw the line and asked
+    /// `GET /v1/relay/statistics` got `no_reading_yet` (CI on #657,
+    /// `the_polled_reading_is_readable_over_rest`).
+    #[test]
+    fn the_reading_is_recorded_before_it_is_shown() -> Result<(), Box<dyn std::error::Error>> {
+        let recorded = std::cell::RefCell::new(None);
+        let seen_by_show = std::cell::RefCell::new(None);
+        let wire = crate::stats_vocab::WireStatistics::default();
+        publish_then_show(
+            wire.clone(),
+            |w| *recorded.borrow_mut() = Some(w),
+            |w| *seen_by_show.borrow_mut() = Some((w.clone(), recorded.borrow().clone())),
+        );
+        let (shown, recorded_then) = seen_by_show
+            .into_inner()
+            .ok_or("the reading was never shown")?;
+        assert_eq!(shown, wire, "the reading shown is the reading");
+        assert_eq!(
+            recorded_then,
+            Some(wire.clone()),
+            "the store held the reading when it was shown"
+        );
+        assert_eq!(
+            recorded.into_inner(),
+            Some(wire),
+            "the reading was recorded"
+        );
+        Ok(())
     }
 }
