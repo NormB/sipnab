@@ -1271,3 +1271,98 @@ fn a_root_only_revocation_list_stops_a_root_run_after_the_drop() -> Result<(), T
     assert!(stderr.contains("revokes nothing"), "{stderr}");
     Ok(())
 }
+
+// ── OPS-8: the drop user is resolved before the chroot ────────────────────
+
+/// A root run with `--chroot` into a directory that holds no password
+/// database still drops to `--user` and finishes.
+///
+/// The user used to be looked up after the chroot, inside the new root, where
+/// `getpwnam_r` finds no `/etc/passwd`, so every `--chroot` run stopped with
+/// `Failed to drop privileges: User 'nobody' not found` and exit 1.
+#[test]
+fn a_root_run_with_chroot_resolves_the_drop_user_first() -> Result<(), TestError> {
+    let test = "a_root_run_with_chroot_resolves_the_drop_user_first";
+    if !sudo_available() {
+        announce_skip(
+            test,
+            "passwordless sudo is not available, so sipnab cannot be run as root here",
+        );
+        return Ok(());
+    }
+    let jail = tempfile::tempdir()?;
+    let (_fixture_dir, fixture) = world_readable_fixture("chroot-drop")?;
+    let out = Command::new("sudo")
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args([
+            "-N",
+            "-q",
+            "-I",
+            fixture.to_str().ok_or("path is not UTF-8")?,
+        ])
+        .args(["--user", "nobody", "--chroot"])
+        .arg(jail.path())
+        .output()?;
+    let _ = std::fs::remove_file(&fixture);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "a --chroot run must resolve --user before it enters the new root; \
+         it exited {:?}:\n{stderr}",
+        out.status.code()
+    );
+    assert!(!stderr.contains("not found"), "{stderr}");
+    Ok(())
+}
+
+/// The drop target resolved before a chroot drops the process inside it, and
+/// the same lookup made inside the chroot fails, which is why it must come
+/// first.
+#[test]
+fn a_drop_target_resolved_before_the_chroot_still_drops_inside_it() -> Result<(), TestError> {
+    let jail = tempfile::tempdir()?;
+    root_child_passes(
+        "a_drop_target_resolved_before_the_chroot_still_drops_inside_it",
+        "child_resolves_then_chroots_then_drops",
+        &[(CHROOT_DIR_ENV, jail.path().as_os_str())],
+    )?;
+    Ok(())
+}
+
+/// Resolve `nobody`, chroot into an empty directory, show that a lookup there
+/// fails, then drop to the target resolved first.
+#[test]
+#[ignore = "child role: spawned by a_drop_target_resolved_before_the_chroot_still_drops_inside_it"]
+fn child_resolves_then_chroots_then_drops() -> Result<(), TestError> {
+    if !spawned_by_parent("child_resolves_then_chroots_then_drops") {
+        return Ok(());
+    }
+    let jail = std::env::var_os(CHROOT_DIR_ENV).ok_or("the parent passes the new root")?;
+    let (uid, gid) = account_ids("nobody")?;
+    let target = sipnab::privilege::resolve_drop_target(Some("nobody"), false)?
+        .ok_or("a root process with a user to drop to resolves a target")?;
+    assert_eq!(
+        (target.uid(), target.gid()),
+        (uid, gid),
+        "the target is the account the password database names"
+    );
+
+    sipnab::privilege::do_chroot(std::path::Path::new(&jail))?;
+    let inside = sipnab::privilege::resolve_drop_target(Some("nobody"), false);
+    assert!(
+        inside.is_err(),
+        "inside a root with no /etc/passwd the lookup must fail; that failure \
+         is why the target is resolved first. Got {inside:?}"
+    );
+
+    sipnab::privilege::drop_to(&target)?;
+    let (ruid, rgid, euid, egid) = credentials();
+    assert_eq!(
+        (ruid, rgid, euid, egid),
+        (uid, gid, uid, gid),
+        "the drop inside the chroot reached the account resolved outside it"
+    );
+    println!("{CHILD_COMPLETE}");
+    Ok(())
+}

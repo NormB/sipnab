@@ -3040,6 +3040,15 @@ fn confine_after_capture_start(
         None => None,
     };
 
+    // 15d. Resolve the drop user BEFORE the chroot. The lookup reads the
+    //      password database, and the new root normally holds none: resolved
+    //      after the chroot, every `--chroot` run stopped with "User 'nobody'
+    //      not found" (OPS-8). The drop at 16a uses this target and makes no
+    //      lookup of its own.
+    let drop_target =
+        privilege::resolve_drop_target(effective_user(cli, config), cli.no_priv_drop(config))
+            .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
+
     // 15c. Read every secret and credential file BEFORE the chroot and the
     //      drop below. A root run drops to `--user` (or `nobody`), and maybe
     //      into a chroot, and a root-only (0600) signing key, token, Basic
@@ -3072,11 +3081,12 @@ fn confine_after_capture_start(
             #[cfg(feature = "tls")]
             let keylog_source = open_privileged_keylog_source(cli);
 
-            // 16a. Drop privileges now that capture devices are open and chroot is applied (D15)
-            let effective_user = effective_user(cli, config);
-            let effective_no_priv_drop = cli.no_priv_drop(config);
-            privilege::drop_privileges(effective_user, effective_no_priv_drop)
-                .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
+            // 16a. Drop privileges now that capture devices are open and chroot
+            // is applied (D15), to the target resolved at 15d.
+            if let Some(target) = &drop_target {
+                privilege::drop_to(target)
+                    .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
+            }
             #[cfg(feature = "tls")]
             let confined: PrivilegedKeylog = keylog_source;
             #[cfg(not(feature = "tls"))]

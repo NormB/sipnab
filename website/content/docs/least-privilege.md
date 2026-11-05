@@ -101,23 +101,17 @@ INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=6553
 `--chroot DIR` (or `[privilege] chroot`) changes the root directory to `DIR`
 after the interface opens and before the drop.
 
-sipnab looks the user up after it changes root, so `DIR` must hold an
-`etc/passwd` that names that user. A directory without one stops the run with
-exit `1`:
+sipnab looks the user up before it changes root, so `DIR` needs no
+`etc/passwd`: an empty directory works. 0.5.233 and earlier looked the user
+up inside `DIR` and stopped with `Failed to drop privileges: User 'nobody' not
+found` unless `DIR` held an `etc/passwd` naming the user.
 
-```text
-Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>
-```
-
-A directory that does not exist stops it too: `Failed to chroot:
-chroot(/var/empty) failed: No such file or directory (os error 2)`. Debian and
-Ubuntu have no `/var/empty`. Make a directory with only the user's entries:
+A directory that does not exist stops the run with exit `1`: `Failed to
+chroot: chroot(/var/empty) failed: No such file or directory (os error 2)`.
+Debian and Ubuntu have no `/var/empty`. Make an empty directory for it:
 
 ```bash
-# Run all of these, in order.
-sudo mkdir -p /var/lib/sipnab/jail/etc
-grep '^nobody:' /etc/passwd | sudo tee /var/lib/sipnab/jail/etc/passwd >/dev/null
-grep '^nogroup:' /etc/group | sudo tee /var/lib/sipnab/jail/etc/group >/dev/null
+sudo mkdir -p /var/lib/sipnab/jail
 ```
 
 ```bash
@@ -211,7 +205,7 @@ the script derived no allowlist here.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Permission denied on 'eth0'. Grant capture capabilities once`, exit 1 | The binary has no capabilities, or something replaced it since | `sipnab --setup-caps` again |
-| `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | `--chroot` without an `etc/passwd` for the user, or a user that does not exist | Add the entries to the directory, or create the user |
+| `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | The user does not exist on this host. With `--chroot`, 0.5.233 and earlier also printed this when the directory held no `etc/passwd` naming the user | Create the user, or name another with `--user`. On 0.5.233 or earlier, upgrade, or add the user's entries to the directory |
 | `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
 | `--sandbox required` refuses | No Landlock in this kernel | `best-effort`, or a kernel with Landlock |
 | `--seccomp enforce` refuses | No `SIPNAB_SECCOMP_ALLOWLIST`, or one it cannot read | Derive a list on this host |

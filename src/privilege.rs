@@ -52,19 +52,90 @@ pub fn dropped_to() -> Option<&'static str> {
 /// implied by calling this — precisely because both of the early returns above
 /// would otherwise skip it.
 ///
+/// [`resolve_drop_target`] then [`drop_to`]. A run that chroots between the
+/// two must call them separately: the lookup reads the password database,
+/// which the new root normally does not hold.
+///
 /// # Errors
 ///
 /// Returns an error if the target user cannot be resolved, or if any of the
 /// underlying syscalls (`setgroups`, `setgid`, `setuid`) fail.
 pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<()> {
-    if drop_is_skipped(target_user, no_priv_drop, is_root()) {
-        return Ok(());
+    match resolve_drop_target(target_user, no_priv_drop)? {
+        Some(target) => drop_to(&target),
+        None => Ok(()),
+    }
+}
+
+/// The account a privilege drop switches to, looked up in the password
+/// database.
+///
+/// Resolved apart from the drop so the lookup can happen while the database
+/// is reachable: `--chroot` enters a root that normally has no `/etc/passwd`,
+/// and a lookup made there finds no user (OPS-8). The supplementary groups
+/// need no lookup, because the drop clears them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropTarget {
+    /// The account's name, for the log line and [`dropped_to`].
+    user: String,
+    /// Its uid.
+    uid: u32,
+    /// Its primary gid.
+    gid: u32,
+}
+
+impl DropTarget {
+    /// The account's name.
+    #[must_use]
+    pub fn user(&self) -> &str {
+        &self.user
     }
 
-    let user = target_user.unwrap_or(DEFAULT_DROP_USER);
+    /// The account's uid.
+    #[must_use]
+    pub fn uid(&self) -> u32 {
+        self.uid
+    }
 
-    // Resolve user to UID/GID
+    /// The account's primary gid.
+    #[must_use]
+    pub fn gid(&self) -> u32 {
+        self.gid
+    }
+}
+
+/// The account [`drop_to`] will switch to, or `None` when no drop happens
+/// (see [`drop_is_skipped`]).
+///
+/// # Errors
+///
+/// The user does not exist, or its name holds a NUL byte.
+pub fn resolve_drop_target(
+    target_user: Option<&str>,
+    no_priv_drop: bool,
+) -> Result<Option<DropTarget>> {
+    if drop_is_skipped(target_user, no_priv_drop, is_root()) {
+        return Ok(None);
+    }
+    let user = target_user.unwrap_or(DEFAULT_DROP_USER);
     let (uid, gid) = resolve_user(user)?;
+    Ok(Some(DropTarget {
+        user: user.to_string(),
+        uid,
+        gid,
+    }))
+}
+
+/// Switch to `target`, resolved earlier by [`resolve_drop_target`]. Makes no
+/// lookup, so it works inside a chroot.
+///
+/// # Errors
+///
+/// Any of `setgroups`, `setgid` or `setuid` fails, or the process does not hold
+/// the target's ids afterwards.
+pub fn drop_to(target: &DropTarget) -> Result<()> {
+    let DropTarget { user, uid, gid } = target;
+    let (uid, gid) = (*uid, *gid);
 
     // Groups first, and as ONE step — see `drop_group_credentials` for why the
     // two halves cannot be separated or reordered on macOS.
@@ -91,7 +162,7 @@ pub fn drop_privileges(target_user: Option<&str>, no_priv_drop: bool) -> Result<
     // Recorded only after the verification, so `dropped_to()` never names a
     // user the process is not actually running as. A second drop in one
     // process (none exists today) keeps the first name: `set` is first-wins.
-    let _ = DROPPED_TO.set(user.to_string());
+    let _ = DROPPED_TO.set(user.clone());
 
     Ok(())
 }
