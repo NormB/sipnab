@@ -1350,11 +1350,18 @@ fn child_resolves_then_chroots_then_drops() -> Result<(), TestError> {
 
     sipnab::privilege::do_chroot(std::path::Path::new(&jail))?;
     let inside = sipnab::privilege::resolve_drop_target(Some("nobody"), false);
+    // On Linux the account database is files under `/`, so inside the new
+    // root the lookup finds nothing: the failure OPS-8 hit. macOS answers
+    // `getpwnam` from opendirectoryd over IPC, and CI measured the lookup
+    // succeeding inside the chroot there, so only the drop below is asserted.
+    #[cfg(target_os = "linux")]
     assert!(
         inside.is_err(),
         "inside a root with no /etc/passwd the lookup must fail; that failure \
          is why the target is resolved first. Got {inside:?}"
     );
+    #[cfg(not(target_os = "linux"))]
+    let _ = inside;
 
     sipnab::privilege::drop_to(&target)?;
     let (ruid, rgid, euid, egid) = credentials();
