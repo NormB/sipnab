@@ -146,8 +146,10 @@ and how the maintainer checks it.
 [`vex/sipnab.openvex.json`](vex/sipnab.openvex.json) publishes advisories in
 OpenVEX form.
 
-- It lists each advisory the dependency scanners report that does not affect
-  sipnab, with the reason.
+- It lists each advisory the dependency scanners report and the project
+  accepts. Most are `not_affected`, with the reason.
+- RUSTSEC-2023-0071 (the `rsa` crate) is `affected` at low risk: its
+  statement says where sipnab uses an RSA private key and what to do.
 - [`deny.toml`](deny.toml) and [`osv-scanner.toml`](osv-scanner.toml)
   configure the same exceptions with the same reasons.
 - A test holds all three to one list.

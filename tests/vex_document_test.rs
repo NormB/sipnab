@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 // SPDX-FileCopyrightText: The sipnab contributors
 //! The OpenVEX document states, in machine-readable form, every advisory the
-//! project has accepted as not affecting it.
+//! project has accepted: as not affecting it, or as affecting it at a risk it
+//! accepts, with what a user can do about it.
 //!
 //! OpenSSF Baseline VM-04.02 asks for vulnerabilities that do not affect the
 //! project to be published in VEX form. The accepted exceptions already live in
@@ -92,8 +93,89 @@ fn the_vex_document_is_openvex() -> Result<(), TestError> {
     Ok(())
 }
 
+/// What is wrong with one VEX statement of an accepted exception, or `None`.
+///
+/// An exception is `not_affected`, with an OpenVEX justification and an
+/// `impact_statement` saying why, or `affected` at a risk the project accepts,
+/// with the `action_statement` OpenVEX requires for that status and no
+/// justification (OpenVEX gives one to `not_affected` only).
+fn statement_problem(s: &serde_json::Value) -> Option<String> {
+    match s["status"].as_str() {
+        Some("not_affected") => {}
+        Some("affected") => {
+            if !s["justification"].is_null() {
+                return Some("an affected statement carries no justification".into());
+            }
+            if !s["action_statement"].as_str().is_some_and(|t| t.len() > 40) {
+                return Some("an affected statement says what to do in `action_statement`".into());
+            }
+            return None;
+        }
+        other => {
+            return Some(format!(
+                "an accepted exception is not_affected or affected, not {other:?}"
+            ));
+        }
+    }
+    let why = s["justification"].as_str().unwrap_or_default();
+    if !JUSTIFICATIONS.contains(&why) {
+        return Some(format!("justification {why:?} is not an OpenVEX one"));
+    }
+    if !s["impact_statement"].as_str().is_some_and(|t| t.len() > 40) {
+        return Some("say why in `impact_statement`, as the scanner configs do".into());
+    }
+    None
+}
+
+/// The rule on synthetic statements, both ways.
 #[test]
-fn every_accepted_advisory_has_a_not_affected_statement_and_no_other() -> Result<(), TestError> {
+fn the_statement_rule_takes_not_affected_and_affected_with_their_fields() {
+    let reason = "a reason long enough to say why this advisory is accepted here";
+    let good_not_affected = serde_json::json!({
+        "status": "not_affected",
+        "justification": "vulnerable_code_not_in_execute_path",
+        "impact_statement": reason,
+    });
+    assert_eq!(
+        statement_problem(&good_not_affected),
+        None,
+        "not_affected with its fields"
+    );
+    let good_affected = serde_json::json!({
+        "status": "affected",
+        "action_statement": reason,
+        "status_notes": reason,
+    });
+    assert_eq!(
+        statement_problem(&good_affected),
+        None,
+        "affected with an action statement"
+    );
+    for (bad, why) in [
+        (
+            serde_json::json!({"status": "affected", "status_notes": reason}),
+            "affected without an action",
+        ),
+        (
+            serde_json::json!({"status": "affected", "action_statement": reason,
+                "justification": "vulnerable_code_not_in_execute_path"}),
+            "a justification on an affected statement",
+        ),
+        (
+            serde_json::json!({"status": "not_affected", "impact_statement": reason}),
+            "not_affected without a justification",
+        ),
+        (
+            serde_json::json!({"status": "fixed", "impact_statement": reason}),
+            "a status an exception cannot have",
+        ),
+    ] {
+        assert!(statement_problem(&bad).is_some(), "{why} must be refused");
+    }
+}
+
+#[test]
+fn every_accepted_advisory_has_a_vex_statement_and_no_other() -> Result<(), TestError> {
     let doc = document()?;
     let statements = doc["statements"]
         .as_array()
@@ -104,20 +186,9 @@ fn every_accepted_advisory_has_a_not_affected_statement_and_no_other() -> Result
             .as_str()
             .unwrap_or_default()
             .to_string();
-        assert_eq!(
-            s["status"].as_str(),
-            Some("not_affected"),
-            "{name}: an accepted exception is stated as not_affected"
-        );
-        let why = s["justification"].as_str().unwrap_or_default();
-        assert!(
-            JUSTIFICATIONS.contains(&why),
-            "{name}: justification {why:?} is not an OpenVEX one"
-        );
-        assert!(
-            s["impact_statement"].as_str().is_some_and(|t| t.len() > 40),
-            "{name}: say why in `impact_statement`, as the scanner configs do"
-        );
+        if let Some(problem) = statement_problem(s) {
+            return Err(format!("{name}: {problem}").into());
+        }
         assert!(
             s["products"].as_array().is_some_and(|p| !p.is_empty()),
             "{name}: names no product"

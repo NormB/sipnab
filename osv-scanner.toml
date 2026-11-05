@@ -20,15 +20,16 @@
 id = "RUSTSEC-2023-0071"
 # Also filed as CVE-2023-49092 and GHSA-c827-hfw6-qwvm.
 reason = """
-rsa "Marvin Attack" timing sidechannel. This is an ONLINE chosen-ciphertext \
-oracle attack: it requires a service that decrypts attacker-supplied RSA \
-ciphertexts and leaks decryption timing back to the attacker. sipnab uses the \
-rsa crate only under the optional `tls` feature, for offline passive \
-decryption of a pre-master secret from an already-captured TLS handshake \
-(`--tls-key`). No network-facing decryption oracle exists, and nothing an \
-attacker supplies is decrypted on demand, so the attack does not apply. No \
-fixed rsa release exists as of 0.9.x -- this is not waiting out a pending \
-upgrade. Re-evaluate if sipnab ever grows an online decryption path.\
+rsa "Marvin Attack" timing side channel; no fixed rsa release exists \
+(0.9.10; 0.10.0-rc.20 is not marked fixed). sipnab uses an rsa private key in \
+src/capture/rsa_key.rs (`--tls-key`: passive decryption of a captured TLS 1.2 \
+pre-master, answering nobody) and src/output/vcon_jose.rs (opening an \
+encrypted vCon with an RSA key). POST /v1/vcon/validate, POST \
+/v1/vcon/analyze and the MCP vCon tools open a container the caller supplies, \
+so a client holding the API key or MCP access could time RSA decryptions, at \
+the rate limit. Low risk, not zero: vex/sipnab.openvex.json states it as \
+affected, with the mitigation (an EC P-256 recipient key, or API, MCP and \
+store access only for trusted parties). Re-checked every release.\
 """
 
 [[IgnoredVulns]]

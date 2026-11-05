@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **The `rsa` advisory (RUSTSEC-2023-0071) is now stated as affecting sipnab at low risk, with what to do, and the vCon guide recommends an EC P-256 recipient key.** `deny.toml`, `osv-scanner.toml`, CI's `cargo audit` step and the VEX statement said the `rsa` crate (the Marvin timing side channel, no fixed release) served `--tls-key` alone, with no online decryption path. Opening an encrypted vCon with an RSA key also decrypts through it, and `POST /v1/vcon/validate`, `POST /v1/vcon/analyze` and the MCP vCon tools open a container the caller sends, so a client holding the API key or MCP access could time RSA decryptions at the rate limit. All four now name `src/capture/rsa_key.rs` and `src/output/vcon_jose.rs` and give that path. `vex/sipnab.openvex.json` states the advisory `affected`, with the action: use an EC P-256 `encrypt_to`/recipient key, or with an RSA key give API, MCP and store access only to trusted parties. [docs/vcon.md](docs/vcon.md) says the same. `tests/rsa_private_key_scope_test.rs` finds every file whose production code names `RsaPrivateKey` and fails when any of the five texts leaves one out, and `tests/vex_document_test.rs` accepts an `affected` exception only with an `action_statement` and no justification.
+
 ## [0.5.234] - 2026-11-05
 
 ### Added
