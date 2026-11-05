@@ -35,6 +35,7 @@ the cause from there.
 | Somebody handed you a `.tgz` or `.tar` of captures, and the run looks short | [An archive of captures](#an-archive-of-captures) |
 | `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
 | `Failed to create output file` for a `-O` path, or for a `--split` file mid-run | [An output file sipnab cannot create](#an-output-file-sipnab-cannot-create) |
+| A terminal interface still runs, and uses CPU, after its window or tmux session has gone | [A terminal interface that outlives its terminal](#a-terminal-interface-that-outlives-its-terminal) |
 | sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
 | sipnab refused to start, or stopped with an error message | [Error messages](errors.md): look up the message by its text |
 | The systemd service does not start, or stops and stays down | [A service that does not start](#a-service-that-does-not-start) |
@@ -1656,7 +1657,8 @@ reason.
   refuses. A HEP listener with no allowlist or secret also exits 1.
 - **Exit status 101**: sipnab panicked. See
   [Send us a crash report](#send-us-a-crash-report).
-- **Exit status 129**: something sent `SIGHUP`. sipnab stopped as it does for
+- **Exit status 129**: something sent `SIGHUP`, or the terminal of a terminal
+  interface run went away. sipnab stopped as it does for
   `SIGTERM`, and the packaged unit's `Restart=on-failure` starts it again.
   0.5.233 and earlier did not handle `SIGHUP`: the service went `inactive`
   with `Result=success` and stayed down until started again.
@@ -1778,6 +1780,33 @@ Then check, in order:
   ([Keep a long-running capture inside a memory
   budget](examples.md#keep-a-long-running-capture-inside-a-memory-budget)).
   A restart empties them.
+
+## A terminal interface that outlives its terminal
+
+sipnab 0.5.234 has a defect: a terminal interface run whose terminal goes
+away keeps running. You closed the window, the SSH session dropped, or
+something killed the tmux server, and `sipnab` still shows in `ps` in state `R`, using
+CPU. It does not stop on `SIGTERM`.
+
+- **Fix:** upgrade. A later release stops on its own within a second of
+  losing its terminal, and exits 129.
+- **On 0.5.234:** end the process with `SIGKILL`. First check that the pid
+  is that run. Replace 12345 with its pid:
+
+  ```bash
+  ps -o pid,stat,etime,args -p 12345
+  ```
+
+  Then end it:
+
+  ```bash
+  kill -KILL 12345
+  ```
+
+The same later release makes a terminal interface whose terminal is still
+there stop on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
+0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
+process at once, with no end-of-run summary.
 
 ## Send us a crash report
 

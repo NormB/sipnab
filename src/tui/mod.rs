@@ -60,6 +60,7 @@ mod controllers;
 mod render;
 mod save;
 mod state;
+mod terminal_input;
 mod test_api;
 mod theme;
 
@@ -2317,21 +2318,62 @@ pub fn run_tui_with_pause(
         app.status_error = Some(first.clone());
     }
 
+    // The terminal the loop waits on itself: crossterm's own wait never
+    // returns once the terminal has hung up (see `terminal_input`).
+    let input = terminal_input::TerminalInput::open()?;
+    // The loop's errors are terminal reads and writes, and one that fails
+    // because the terminal has gone is the same lost terminal, not a failure
+    // of the run.
+    let outcome = event_loop(&mut terminal, &mut app, &input);
+    let (outcome, hung_up) = terminal_input::settle(outcome, || input.gone().unwrap_or(false));
+    if hung_up {
+        tracing::warn!("the terminal has gone; stopping");
+        crate::signals::request_hangup();
+        // ratatui's Terminal shows the cursor when it drops, and reports a
+        // failure with `eprintln!`, which panics when standard error is the
+        // terminal that has gone. Nothing can be shown on that terminal, so
+        // the Terminal is not dropped.
+        std::mem::forget(terminal);
+    }
+    outcome
+}
+
+/// The TUI's event loop, until the operator quits, a stop is requested, or
+/// the terminal goes away.
+///
+/// # Returns
+///
+/// `Ok(true)` when the terminal has gone, `Ok(false)` for any other end.
+///
+/// # Errors
+///
+/// Drawing a frame, writing a terminal mode, or reading an event failed.
+fn event_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &mut App,
+    input: &terminal_input::TerminalInput,
+) -> Result<bool> {
     // Terminal-side mouse-capture state, reconciled with the F12 toggle
     // flag after each input drain (the controller layer only flips the
     // flag; all terminal I/O stays here).
     let mut mouse_captured = true;
     let mut pasting = false;
+    let mut interest = terminal_input::Interest::Input;
 
-    // Main event loop
     loop {
         if app.should_quit {
+            break;
+        }
+        // SIGTERM, SIGINT and SIGHUP set this flag, and so does a stop asked
+        // for over MCP. The TUI ends through its own exit path, which
+        // restores the terminal; the exit status is decided after it returns.
+        if crate::signals::shutdown_requested() {
             break;
         }
 
         // Background work: apply a finished pcap load (or refresh its
         // progress line) and drain detached-worker completion messages.
-        controllers::poll_pcap_load(&mut app);
+        controllers::poll_pcap_load(app);
         app.drain_async_messages();
         // Absorb any runtime BPF-filter install outcome the capture loop(s)
         // reported, promoting a confirmed apply or surfacing a rejection.
@@ -2345,8 +2387,8 @@ pub fn run_tui_with_pause(
         // mutates `app` while sync_caches holds a store read guard.
         app.drive_relay_stats();
         app.drive_tfps();
-        controllers::g729_offer::offer_if_due(&mut app);
-        let drew = draw_frame(&mut terminal, &mut app)?;
+        controllers::g729_offer::offer_if_due(app);
+        let drew = draw_frame(terminal, app)?;
 
         // Deferred work runs here, AFTER the frame that painted its
         // "Saving…"/"Decoding…" status — the work itself may block. A
@@ -2356,30 +2398,43 @@ pub fn run_tui_with_pause(
         if drew {
             app.run_pending_save();
             app.run_pending_audio();
-            controllers::g729_offer::run_pending_install(&mut app);
+            controllers::g729_offer::run_pending_install(app);
         }
 
         // Poll with adaptive timeout, then drain every queued event before
         // the next redraw — a paste or key burst must not be metered out at
         // one event per frame.
-        let timeout = app.poll_timeout();
-        if event::poll(timeout)? {
-            loop {
-                match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        handle_key_event(&mut app, key);
-                    }
-                    Event::Mouse(m) => {
-                        controllers::handle_mouse_event(&mut app, m.kind);
-                    }
-                    Event::Paste(text) => controllers::handle_paste(&mut app, &text),
-                    _ => {}
+        //
+        // The wait is this loop's own, on the terminal, so a terminal that
+        // has gone ends the run; crossterm is asked only for events already
+        // there (a zero timeout), after a check that the terminal is still
+        // there. A lost terminal is the hang-up SIGHUP reports, and the run
+        // stops the way SIGHUP stops it, exiting 129.
+        let found = input.wait(app.poll_timeout(), interest)?;
+        let mut crossterm_had_events = false;
+        while !app.should_quit {
+            // Before every crossterm read, so neither a hang-up the wait
+            // reported nor one during a slow key below (a save, a decode)
+            // reaches crossterm's read, which would never return.
+            if input.gone()? {
+                return Ok(true);
+            }
+            if !event::poll(Duration::ZERO)? {
+                break;
+            }
+            crossterm_had_events = true;
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    handle_key_event(app, key);
                 }
-                if app.should_quit || !event::poll(std::time::Duration::ZERO)? {
-                    break;
+                Event::Mouse(m) => {
+                    controllers::handle_mouse_event(app, m.kind);
                 }
+                Event::Paste(text) => controllers::handle_paste(app, &text),
+                _ => {}
             }
         }
+        interest = terminal_input::next_interest(found, crossterm_had_events);
 
         // Apply an F12 mouse-capture toggle to the terminal. While capture
         // is off the terminal's native drag-to-select works (wheel
@@ -2415,7 +2470,7 @@ pub fn run_tui_with_pause(
         app.reconcile_dialog_count(current_count);
     }
 
-    Ok(())
+    Ok(false)
 }
 
 /// A status-line message and whether it reports a failure. Carried by
