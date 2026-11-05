@@ -350,6 +350,15 @@ until `SIGKILL` ended it. The TUI of 0.5.234 also kept running after
 `SIGTERM`, `SIGINT` and `SIGHUP`, and that of 0.5.233 and earlier after
 `SIGTERM` and `SIGINT`.
 
+A run that waits for input stops on the same signals, with the same status:
+`--vcon-fetch -` while it waits for its uuid list on standard input, and the
+archive password prompt. 0.5.234 and earlier: `--vcon-fetch -` waited for the
+end of standard input and ignored all three signals, and a signal at the
+archive password prompt exited 130. sipnab refuses a FIFO, a pipe or a device
+given to `-I` (`-I /dev/stdin`, for example) at startup. In 0.5.234 and earlier,
+such an input never worked, and the run could wait on it with all three
+signals ignored.
+
 The packaged unit has no `ExecReload=`, so `systemctl reload`
 refuses:
 

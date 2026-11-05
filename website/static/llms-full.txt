@@ -15341,6 +15341,7 @@ the cause from there.
 | `--export-vcon` refuses, cannot find the call, or writes no audio | [A vCon export that fails](#a-vcon-export-that-fails) |
 | `Failed to create output file` for a `-O` path, or for a `--split` file mid-run | [An output file sipnab cannot create](#an-output-file-sipnab-cannot-create) |
 | A terminal interface still runs, and uses CPU, after its window or tmux session has gone | [A terminal interface that outlives its terminal](#a-terminal-interface-that-outlives-its-terminal) |
+| `sipnab --vcon-fetch -`, or a run given a pipe with `-I`, keeps running after `SIGTERM` | [A run that ignores SIGTERM while it waits for input](#a-run-that-ignores-sigterm-while-it-waits-for-input) |
 | sipnab itself stopped with "sipnab panicked at" | [Send us a crash report](#send-us-a-crash-report) |
 | sipnab refused to start, or stopped with an error message | [Error messages](errors.md): look up the message by its text |
 | The systemd service does not start, or stops and stays down | [A service that does not start](#a-service-that-does-not-start) |
@@ -17112,6 +17113,32 @@ The same later release makes a terminal interface whose terminal is still
 there stop on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
 0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
 process at once, with no end-of-run summary.
+
+## A run that ignores SIGTERM while it waits for input
+
+sipnab 0.5.234 and earlier have a defect: `sipnab --vcon-fetch -` whose
+standard input stays open with nothing to read keeps waiting. `SIGTERM`,
+`SIGINT` and `SIGHUP` do not stop it. A run given a FIFO or a pipe with `-I`
+(`-I /dev/stdin`, a process substitution, a named pipe) can wait the same way, and such
+an input never worked.
+
+- **Fix:** upgrade. A later release stops `--vcon-fetch -` within a second of
+  the signal. It fetches nothing and exits 0, or 129 after `SIGHUP`. It
+  refuses a FIFO, a pipe or a device given to `-I` at startup, with exit
+  status 1. Save the capture to a file and give that file instead.
+- **On 0.5.234 or earlier:** end the input. Close the program that writes to
+  sipnab's standard input, or end the `--vcon-fetch -` run with `SIGKILL`.
+  First check that the pid is that run. Replace 12345 with its pid:
+
+  ```bash
+  ps -o pid,stat,etime,args -p 12345
+  ```
+
+  Then end it:
+
+  ```bash
+  kill -KILL 12345
+  ```
 
 ## Send us a crash report
 
@@ -22646,7 +22673,7 @@ store by uuid and writes each to a file.
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `--vcon-fetch` | `<UUID>...` | -- | 0.5.209 | Read the container with each uuid from the store and write it to `<uuid>.vcon.json` in `--vcon-fetch-out`. `-` reads more uuids from standard input, one per line, and passes over blank lines and lines starting with `#`. The fetcher asks once for a uuid given twice. A uuid is 1 to 64 characters, each a letter, a digit or `-`. Exit `0` when the fetcher wrote every container and the schema accepts each, `1` when it wrote none for some uuid (`404`, another status, a size or shape refusal, a file that exists) or the schema refuses one, `2` when sipnab refuses the settings, `3` when the store answered `401` or `403`: the fetcher then asks for nothing more. Needs a URL and a credential, each from its flag or its `[vcon_fetch]` key; without one sipnab refuses the run with exit `2`, naming both |
+| `--vcon-fetch` | `<UUID>...` | -- | 0.5.209 | Read the container with each uuid from the store and write it to `<uuid>.vcon.json` in `--vcon-fetch-out`. `-` reads more uuids from standard input, one per line, and passes over blank lines and lines starting with `#`. The fetcher asks once for a uuid given twice. A uuid is 1 to 64 characters, each a letter, a digit or `-`. Exit `0` when the fetcher wrote every container and the schema accepts each, `1` when it wrote none for some uuid (`404`, another status, a size or shape refusal, a file that exists) or the schema refuses one, `2` when sipnab refuses the settings, `3` when the store answered `401` or `403`: the fetcher then asks for nothing more. A stop signal (`SIGTERM`, `SIGINT`, `SIGHUP`) ends the wait for standard input, and the run then fetches nothing; during the fetches it asks for no more uuids. Such a run exits `0`, or `129` after `SIGHUP`, unless a uuid fetched before the stop failed. Needs a URL and a credential, each from its flag or its `[vcon_fetch]` key; without one sipnab refuses the run with exit `2`, naming both |
 | `--vcon-fetch-kind` | `<KIND>` | `generic` | 0.5.209 | The kind of store: `generic`, `vcon-store`, `conserver` or `vcon-mcp`. A kind supplies the read path after the path the URL names, the header when the credential is a bare key, and the removal of what the store wraps around the container. `generic` supplies nothing. The table: [Fetch a stored vCon](vcon.md#fetch-a-stored-vcon). Config: `[vcon_fetch] kind` |
 | `--vcon-fetch-url` | `<URL>` | -- | 0.5.209 | The store, `http://` or `https://`. With a `--vcon-fetch-kind` other than `generic`, the store's base URL: the kind adds its read path after the path the URL names. The fetcher takes a URL holding `{uuid}` as written, the uuid filled in, for any kind, and the `generic` kind needs one. sipnab refuses credentials in the URL. Plain `http://` to a host other than loopback logs a warning. Config: `[vcon_fetch] url` |
 | `--vcon-fetch-auth-file` | `<FILE>` | -- | 0.5.209 | File holding the credential, as the forwarder's auth file does: one `Header-Name: value` line, or, with a `--vcon-fetch-kind` other than `generic`, the bare key, which the kind sends in its header. Refused when other users can read it (`chmod 600` it). A file sipnab cannot read, or one that holds no credential, stops the fetcher with exit 2; the same file named by `[vcon_fetch] auth_file` exits 1. The value never appears in a log line or an error. Config: `[vcon_fetch] auth_file` |
@@ -22818,7 +22845,8 @@ Scripts can rely on these:
 | `2` | Invalid usage — bad flag value or combination given on the command line, or a flag whose feature is not compiled into this binary. A refusal that a flag takes part in (a flag value, or a pair with one half from a flag and the other from the config file) is this code |
 | `3` | A check failed — the tool worked and the input failed a check you asked for. `--lint --lint-fail-on <severity>` found a conformance finding at or above that severity, an `--expect` rule failed, `--vcon-validate` found the container invalid, or the vCon forwarder stopped because the store answered `401` or `403` (`--vcon-forward`). Distinct from `1` on purpose: `1` means the tool failed, `3` means the input did |
 | `101` | Internal failure — sipnab panicked. Its panic hook writes a crash report and ends the process with `101`. With `[crash] core = true` it aborts instead, so the kernel can write a core dump, and the shell reports the signal (`134` for `SIGABRT`) |
-| `130` | Interrupted — Ctrl-C at the archive password prompt (an encrypted `.zip` or `.7z` input read on a terminal). sipnab reads nothing more and exits |
+| `129` | Stopped by `SIGHUP`, or the terminal of a terminal interface run went away. sipnab stops as it does for `SIGTERM`, which exits `0` like `SIGINT`, and exits `129` instead, so a supervisor that restarts on failure restarts it. A run that would have exited non-zero keeps that code |
+| `130` | Interrupted — Ctrl-C typed at the archive password prompt (an encrypted `.zip` or `.7z` input read on a terminal). sipnab reads nothing more and exits. A stop signal at the prompt is a stop like any other: `0`, or `129` after `SIGHUP` |
 
 `--expect` exits with its suite's verdict, the `exit_code` its report
 carries: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran
@@ -22960,6 +22988,7 @@ each one covers in full.
 | `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. |
 | `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
 | `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
+| `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away. `SIGTERM` and `SIGINT` stop it the same way and exit `0`. |
 | `130` | You pressed Ctrl-C at the archive password prompt. |
 
 ## What this page covers
@@ -26991,6 +27020,22 @@ The credential file is larger than 8192 bytes. It must hold one line. `{from}` i
 **What to do:** Correct or remove the line the message names, or comment it out with `#`.
 
 **Exit code:** 2.
+
+### `--vcon-fetch -: stopped while reading standard input; fetched nothing`
+
+A stop signal (`SIGTERM`, `SIGINT` or `SIGHUP`) arrived while `--vcon-fetch -` waited for its uuid list on standard input. sipnab stopped reading and fetched nothing, not even the uuids the command line gave. 0.5.234 and earlier kept waiting for the end of the input and ignored the signal.
+
+**What to do:** Nothing, when you sent the stop. To fetch the list, run again with standard input that ends: a file (`< uuids.txt`) or a command that exits.
+
+**Exit code:** 0, or 129 after `SIGHUP`.
+
+### `{MODE_FLAG}: stopped before {uuid}; {} uuid(s) not fetched`
+
+A stop signal (`SIGTERM`, `SIGINT` or `SIGHUP`) arrived while `--vcon-fetch` fetched its list. sipnab finished the uuid it was fetching and asked for no more. `{MODE_FLAG}` is `--vcon-fetch`, `{uuid}` is the first uuid not fetched, and `{}` is how many were not fetched, that one included.
+
+**What to do:** Nothing, when you sent the stop. To fetch the rest, run again with the uuids not fetched. A container already written is a file that exists, so leave it out, or add `--vcon-fetch-overwrite`.
+
+**Exit code:** 0, or 129 after `SIGHUP`, when the fetcher wrote every container it asked for before the stop and the schema accepts each. Otherwise 1.
 
 ### `` names `{name}`, which the forwarder writes itself; name the header that authenticates ``
 
@@ -54972,6 +55017,13 @@ Or give `-` to read them from standard input, one per line:
 sipnab --vcon-fetch - --vcon-fetch-kind conserver --vcon-fetch-url http://127.0.0.1:8000 --vcon-fetch-auth-file conserver.key --vcon-fetch-out fetched < uuids.txt
 ```
 
+`SIGTERM`, `SIGINT` and `SIGHUP` stop a fetch. While sipnab waits for the
+list on standard input, it stops reading and fetches nothing, not even the
+uuids given on the command line. While it fetches, it finishes the uuid it is
+on and asks for no more. The run exits 0, or 129 after `SIGHUP`, unless a
+uuid fetched before the stop failed. 0.5.234 and earlier waited for the end of
+standard input and ignored the signal.
+
 Each fetcher flag has a key in the `[vcon_fetch]` section of the
 [config file](config-reference.md#vcon_fetch). The flag overrides the key. The exceptions are `--vcon-fetch`, `--vcon-fetch-out` and
 `--vcon-fetch-overwrite`. The
@@ -60369,6 +60421,15 @@ signal arrives. 0.5.234 did not: such a TUI kept running and using CPU
 until `SIGKILL` ended it. The TUI of 0.5.234 also kept running after
 `SIGTERM`, `SIGINT` and `SIGHUP`, and that of 0.5.233 and earlier after
 `SIGTERM` and `SIGINT`.
+
+A run that waits for input stops on the same signals, with the same status:
+`--vcon-fetch -` while it waits for its uuid list on standard input, and the
+archive password prompt. 0.5.234 and earlier: `--vcon-fetch -` waited for the
+end of standard input and ignored all three signals, and a signal at the
+archive password prompt exited 130. sipnab refuses a FIFO, a pipe or a device
+given to `-I` (`-I /dev/stdin`, for example) at startup. In 0.5.234 and earlier,
+such an input never worked, and the run could wait on it with all three
+signals ignored.
 
 The packaged unit has no `ExecReload=`, so `systemctl reload`
 refuses:
@@ -77430,7 +77491,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 141 `unsafe` blocks are libc FFI.
+- Most of this crate's 142 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.

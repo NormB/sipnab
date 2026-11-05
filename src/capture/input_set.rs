@@ -782,6 +782,11 @@ fn expand_one(
         return expand_dir(&path, opts, name_pat, tally);
     }
     if path.exists() {
+        // A pipe, a FIFO or a device cannot be read twice, and opening or
+        // reading one can wait forever: refused before either.
+        if let Some(why) = crate::capture::file::not_a_file(&path) {
+            bail!("'{spec}' {why}");
+        }
         // A directly named file is not filtered — see the module docs. Saying
         // so is the point: applying the pattern would drop a capture the
         // operator named, and ignoring it would leave them believing they had

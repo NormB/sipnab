@@ -69,6 +69,7 @@ each one covers in full.
 | `2` | The command line is wrong: a bad flag value or combination, or a flag whose feature this build lacks. An `--expect` suite that judged nothing, or one sipnab cannot read, also exits `2`. |
 | `3` | The tool worked and the input failed a check you asked for: `--lint-fail-on`, a failed `--expect` rule, an invalid container under `--vcon-validate`, or the vCon forwarder refused with `401` or `403`. |
 | `101` | sipnab panicked, an internal failure. Report it with the crash report sipnab wrote. With `[crash] core = true` the process aborts instead, and the shell shows the signal (`134`). |
+| `129` | `SIGHUP` stopped the run, or the terminal of a terminal interface run went away. `SIGTERM` and `SIGINT` stop it the same way and exit `0`. |
 | `130` | You pressed Ctrl-C at the archive password prompt. |
 
 ## What this page covers
@@ -4100,6 +4101,22 @@ The credential file is larger than 8192 bytes. It must hold one line. `{from}` i
 **What to do:** Correct or remove the line the message names, or comment it out with `#`.
 
 **Exit code:** 2.
+
+### `--vcon-fetch -: stopped while reading standard input; fetched nothing`
+
+A stop signal (`SIGTERM`, `SIGINT` or `SIGHUP`) arrived while `--vcon-fetch -` waited for its uuid list on standard input. sipnab stopped reading and fetched nothing, not even the uuids the command line gave. 0.5.234 and earlier kept waiting for the end of the input and ignored the signal.
+
+**What to do:** Nothing, when you sent the stop. To fetch the list, run again with standard input that ends: a file (`< uuids.txt`) or a command that exits.
+
+**Exit code:** 0, or 129 after `SIGHUP`.
+
+### `{MODE_FLAG}: stopped before {uuid}; {} uuid(s) not fetched`
+
+A stop signal (`SIGTERM`, `SIGINT` or `SIGHUP`) arrived while `--vcon-fetch` fetched its list. sipnab finished the uuid it was fetching and asked for no more. `{MODE_FLAG}` is `--vcon-fetch`, `{uuid}` is the first uuid not fetched, and `{}` is how many were not fetched, that one included.
+
+**What to do:** Nothing, when you sent the stop. To fetch the rest, run again with the uuids not fetched. A container already written is a file that exists, so leave it out, or add `--vcon-fetch-overwrite`.
+
+**Exit code:** 0, or 129 after `SIGHUP`, when the fetcher wrote every container it asked for before the stop and the schema accepts each. Otherwise 1.
 
 ### `` names `{name}`, which the forwarder writes itself; name the header that authenticates ``
 

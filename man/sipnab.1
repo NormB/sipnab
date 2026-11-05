@@ -1474,8 +1474,11 @@ A check failed \(em the tool worked and the input failed a check you asked for. 
 .B 101
 Internal failure \(em sipnab panicked. Its panic hook writes a crash report and ends the process with \fB101\fR. With \fB[crash] core = true\fR it aborts instead, so the kernel can write a core dump, and the shell reports the signal (\fB134\fR for \fBSIGABRT\fR).
 .TP
+.B 129
+Stopped by \fBSIGHUP\fR, or the terminal of a terminal interface run went away. sipnab stops as it does for \fBSIGTERM\fR, which exits \fB0\fR like \fBSIGINT\fR, and exits \fB129\fR instead, so a supervisor that restarts on failure restarts it. A run that would have exited non\-zero keeps that code.
+.TP
 .B 130
-Interrupted \(em Ctrl\-C at the archive password prompt (an encrypted \fB.zip\fR or \fB.7z\fR input read on a terminal). sipnab reads nothing more and exits.
+Interrupted \(em Ctrl\-C typed at the archive password prompt (an encrypted \fB.zip\fR or \fB.7z\fR input read on a terminal). sipnab reads nothing more and exits. A stop signal at the prompt is a stop like any other: \fB0\fR, or \fB129\fR after \fBSIGHUP\fR.
 .\" END GENERATED EXIT STATUS
 .SH LICENSE
 MIT OR Apache-2.0. Copyright 2024-2026 Norm Brandinger.

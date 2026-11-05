@@ -147,27 +147,13 @@ impl TerminalInput {
             // POLLHUP, POLLERR and POLLNVAL are reported whatever `events` asks.
             Interest::HangupOnly => 0,
         };
-        let mut pfd = libc::pollfd {
-            fd: self.fd,
-            events,
-            revents: 0,
-        };
-        let millis = libc::c_int::try_from(timeout.as_millis()).unwrap_or(libc::c_int::MAX);
-        // SAFETY: `pfd` is one valid pollfd for a descriptor this value keeps
-        // open.
-        let ready = unsafe { libc::poll(&mut pfd, 1, millis) };
-        if ready < 0 {
-            let e = io::Error::last_os_error();
-            // A signal: the caller checks the stop flag before waiting again.
-            if e.kind() == io::ErrorKind::Interrupted {
-                return Ok(Wait::Idle);
-            }
-            return Err(e);
-        }
-        let queued = (pfd.revents & libc::POLLIN != 0)
+        // A signal reads as nothing happened (0, so `Idle`): the caller
+        // checks the stop flag before waiting again.
+        let revents = crate::input_wait::poll_one(self.fd, events, timeout)?;
+        let queued = (revents & libc::POLLIN != 0)
             .then(|| self.queued())
             .flatten();
-        Ok(classify(pfd.revents, queued))
+        Ok(classify(revents, queued))
     }
 
     /// The bytes waiting to be read (`FIONREAD`), or `None` when the terminal
@@ -321,6 +307,22 @@ mod tests {
         }
     }
 
+    /// Wait for what `interest` names for up to 5 s, waiting again after an
+    /// `Idle`. `wait` reports a signal that interrupts `poll(2)` as `Idle`,
+    /// so one wait can end early with nothing seen; a pre-commit run of the
+    /// whole library test binary on 2026-11-05 saw one such `Idle` here.
+    #[cfg(target_os = "linux")]
+    fn wait_past_idle(input: &TerminalInput, interest: Interest) -> io::Result<Wait> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let found = input.wait(left, interest)?;
+            if found != Wait::Idle || left.is_zero() {
+                return Ok(found);
+            }
+        }
+    }
+
     /// The real descriptor: a pty whose master side closes reads as gone,
     /// and one that is open and quiet reads as idle; written input reads as
     /// input.
@@ -360,7 +362,7 @@ mod tests {
         let mut master = File::from(master);
         master.write_all(b"x\n")?;
         assert_eq!(
-            input.wait(Duration::from_secs(5), Interest::Input)?,
+            wait_past_idle(&input, Interest::Input)?,
             Wait::Input,
             "written bytes are input"
         );
@@ -373,7 +375,7 @@ mod tests {
         drop(master);
         assert!(input.gone()?, "a closed master is a hang-up");
         assert_eq!(
-            input.wait(Duration::from_secs(5), Interest::Input)?,
+            wait_past_idle(&input, Interest::Input)?,
             Wait::Gone,
             "a hang-up wins over the pending input"
         );
