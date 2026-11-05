@@ -64,6 +64,156 @@ mod tui_e2e {
         /// The socket of the session's own tmux server, removed when the
         /// session drops: `tmux kill-server` leaves it behind.
         socket: std::path::PathBuf,
+        /// The session's tmux server, started by this test as its own child
+        /// (`tmux -D`), so it is reaped here and, on Linux, dies with the
+        /// thread that started it ([`spawn_server`]).
+        server: Option<std::process::Child>,
+        /// The pane's process, which is sipnab: the launch command `exec`s it.
+        sipnab: PaneProcess,
+    }
+
+    /// The process a pane runs, identified by its pid and its start time, so
+    /// a pid the kernel has reused for another process is never taken for it
+    /// and never signaled.
+    #[derive(Debug, Clone)]
+    struct PaneProcess {
+        /// The pid tmux reported for the pane.
+        pid: libc::pid_t,
+        /// Its start time as [`process_state`] reads it, `None` when it could
+        /// not be read.
+        start: Option<String>,
+    }
+
+    impl PaneProcess {
+        /// The pane's process now, by the pid tmux reports for it.
+        fn of(name: &str) -> Result<Self, TestError> {
+            let out = tmux_for(name)
+                .args(["display-message", "-p", "-t", name, "#{pane_pid}"])
+                .output()?;
+            let pid: libc::pid_t = String::from_utf8_lossy(&out.stdout).trim().parse()?;
+            Ok(PaneProcess {
+                pid,
+                start: process_state(pid).map(|(_, start)| start),
+            })
+        }
+
+        /// Whether the process is still running: it exists, it is the same
+        /// process (same start time), and it is not a zombie.
+        fn running(&self) -> bool {
+            match process_state(self.pid) {
+                Some((state, start)) => Some(start) == self.start && state != 'Z',
+                None => false,
+            }
+        }
+
+        /// Wait up to `within` for the process to end.
+        fn ended_within(&self, within: Duration) -> bool {
+            let deadline = Instant::now() + within;
+            while self.running() {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            true
+        }
+
+        /// SIGKILL the process, if it is still the one the pane ran.
+        fn kill(&self) {
+            if self.running() {
+                // SAFETY: kill(2) on the pane process this test started,
+                // checked by start time to be that process still.
+                unsafe {
+                    libc::kill(self.pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    /// The state letter and start time of `pid`, or `None` when it does not
+    /// exist. Linux reads `/proc/<pid>/stat` (state, and the start time in
+    /// clock ticks since boot); elsewhere `ps -o stat=,lstart=`.
+    fn process_state(pid: libc::pid_t) -> Option<(char, String)> {
+        #[cfg(target_os = "linux")]
+        {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            // Fields after the parenthesized command name, which may itself
+            // hold spaces: state is the first, start time the 20th.
+            let rest = stat.rsplit_once(')')?.1;
+            let fields: Vec<&str> = rest.split_whitespace().collect();
+            Some((
+                fields.first()?.chars().next()?,
+                (*fields.get(19)?).to_string(),
+            ))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let out = Command::new("ps")
+                .args(["-o", "stat=,lstart=", "-p", &pid.to_string()])
+                .output()
+                .ok()?;
+            let text = String::from_utf8_lossy(&out.stdout);
+            let (state, start) = text.trim().split_once(char::is_whitespace)?;
+            Some((state.chars().next()?, start.trim().to_string()))
+        }
+    }
+
+    /// How long sipnab has to end on its own once its tmux server is gone.
+    const SIPNAB_END_TIMEOUT: Duration = Duration::from_secs(15);
+
+    /// Start the tmux server for socket `name` as this test's own child,
+    /// in the foreground (`-D`), and wait until it listens.
+    ///
+    /// tmux daemonizes a server it starts for `new-session`, so a test that
+    /// dies (killed by a hook's timeout, say) leaves that server and every
+    /// pane running: nothing kills them. A server that is the test's child
+    /// is reaped by the session's Drop, and on Linux it is SIGKILLed by the
+    /// kernel when the thread that started it ends (`PR_SET_PDEATHSIG`), so
+    /// it cannot outlive the test. Its panes then lose their terminal, and
+    /// sipnab ends on a lost terminal.
+    fn spawn_server(name: &str) -> Result<std::process::Child, TestError> {
+        let mut cmd = tmux_for(name);
+        cmd.arg("-D")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::process::CommandExt as _;
+            // SAFETY: prctl(2) is async-signal-safe, and the closure runs in
+            // the forked child before exec.
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+        let mut server = cmd.spawn()?;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        // `start-server` would start a daemonized server of its own if this
+        // one were not up yet, so wait for this one's socket to answer.
+        while !tmux_for(name)
+            .args(["-N", "list-sessions"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+        {
+            if let Some(status) = server.try_wait()? {
+                return Err(format!("the tmux server for {name} exited: {status}").into());
+            }
+            if Instant::now() >= deadline {
+                let _ = server.kill();
+                let _ = server.wait();
+                return Err(format!("the tmux server for {name} did not start within 10 s").into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Ok(server)
     }
 
     impl TuiSession {
@@ -118,6 +268,7 @@ mod tui_e2e {
                     .join(" "),
             );
 
+            let mut server = spawn_server(&name)?;
             let status = tmux_for(&name)
                 .args([
                     "new-session",
@@ -131,17 +282,48 @@ mod tui_e2e {
                     &cmd,
                 ])
                 .status()?;
+            if !status.success() {
+                let _ = server.kill();
+                let _ = server.wait();
+            }
             assert!(status.success(), "tmux new-session failed");
             let out = tmux_for(&name)
                 .args(["display-message", "-p", "#{socket_path}"])
                 .output()?;
             let socket = std::path::PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+            let sipnab = PaneProcess::of(&name)?;
 
             Ok(TuiSession {
                 name,
                 cfg_home,
                 socket,
+                server: Some(server),
+                sipnab,
             })
+        }
+
+        /// End the session: kill its tmux server, reap it, and wait for
+        /// sipnab to end on its own, as it must once its terminal is gone.
+        /// A sipnab still running after [`SIPNAB_END_TIMEOUT`] is SIGKILLed,
+        /// so no test leaves one behind, and this returns `false`.
+        ///
+        /// Idempotent: Drop calls it too.
+        fn close(&mut self) -> bool {
+            let _ = tmux_for(&self.name).arg("kill-server").status();
+            if let Some(mut server) = self.server.take() {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while matches!(server.try_wait(), Ok(None)) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                let _ = server.kill();
+                let _ = server.wait();
+            }
+            let _ = std::fs::remove_file(&self.socket);
+            if self.sipnab.ended_within(SIPNAB_END_TIMEOUT) {
+                return true;
+            }
+            self.sipnab.kill();
+            false
         }
 
         /// Default-size launch loading the bundled SIP call fixture.
@@ -288,8 +470,15 @@ mod tui_e2e {
         /// removal of that server's socket and of the session's own
         /// XDG_CONFIG_HOME, so a run leaves nothing in the temp directories.
         fn drop(&mut self) {
-            let _ = tmux_for(&self.name).arg("kill-server").status();
-            let _ = std::fs::remove_file(&self.socket);
+            if !self.close() {
+                eprintln!(
+                    "sipnab (pid {}) of session {} was still running {} s after its tmux \
+                     server ended; killed",
+                    self.sipnab.pid,
+                    self.name,
+                    SIPNAB_END_TIMEOUT.as_secs()
+                );
+            }
         }
     }
 
@@ -362,6 +551,74 @@ mod tui_e2e {
             !socket.exists(),
             "{socket:?} is still on disk after the session dropped"
         );
+        Ok(())
+    }
+
+    /// Ending a session ends its sipnab: killing the tmux server takes the
+    /// pane's terminal away, and sipnab must end on its own. 0.5.234 kept
+    /// running in a busy loop instead, and hook runs left them behind
+    /// (TUI-LOST-TERMINAL-SPIN).
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    fn a_closed_session_ends_its_sipnab() -> Result<(), TestError> {
+        let mut session = TuiSession::launch_sip_call()?;
+        session.wait_for("INVITE")?;
+        assert!(session.sipnab.running(), "control: sipnab runs in the pane");
+        assert!(
+            session.close(),
+            "sipnab was still running {} s after its tmux server was killed",
+            SIPNAB_END_TIMEOUT.as_secs()
+        );
+        Ok(())
+    }
+
+    /// A tmux server SIGKILLed outright, as when the test dies: sipnab ends
+    /// on its own too.
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    fn sipnab_ends_when_its_tmux_server_is_killed() -> Result<(), TestError> {
+        let mut session = TuiSession::launch_sip_call()?;
+        session.wait_for("INVITE")?;
+        let server = session.server.as_mut().ok_or("the session has no server")?;
+        server.kill()?;
+        server.wait()?;
+        let ended = session.sipnab.ended_within(SIPNAB_END_TIMEOUT);
+        assert!(
+            ended,
+            "sipnab was still running {} s after its tmux server was SIGKILLed",
+            SIPNAB_END_TIMEOUT.as_secs()
+        );
+        Ok(())
+    }
+
+    /// The session's server dies with the thread that started it, so a test
+    /// that dies before its Drop runs leaves no server and no sipnab behind.
+    /// The session is not dropped in that thread: it is handed out, the
+    /// thread ends, and the kernel kills the server (`PR_SET_PDEATHSIG`).
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "needs tmux on PATH; run by CI with --ignored"]
+    fn a_session_does_not_outlive_the_thread_that_started_it() -> Result<(), TestError> {
+        let session = std::thread::spawn(|| -> Result<_, String> {
+            let session = TuiSession::launch_sip_call().map_err(|e| e.to_string())?;
+            session.wait_for("INVITE").map_err(|e| e.to_string())?;
+            Ok(std::mem::ManuallyDrop::new(session))
+        })
+        .join()
+        .map_err(|_| "the launching thread panicked")??;
+        let mut session = std::mem::ManuallyDrop::into_inner(session);
+        let ended = session.sipnab.ended_within(SIPNAB_END_TIMEOUT);
+        let server_gone = session
+            .server
+            .as_mut()
+            .map(|s| matches!(s.try_wait(), Ok(Some(_))))
+            .unwrap_or(false);
+        drop(session);
+        assert!(
+            server_gone,
+            "the tmux server outlived the thread that started it"
+        );
+        assert!(ended, "sipnab outlived the thread that started its session");
         Ok(())
     }
 

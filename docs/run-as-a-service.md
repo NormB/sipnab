@@ -341,6 +341,15 @@ afresh. 0.5.233 and earlier did not handle `SIGHUP`: it ended the process with
 no summary and no flush, systemd recorded `Result=success`, and the service
 stayed down.
 
+The terminal interface stops on the same signals, leaves the alternate
+screen, and exits with the same status. When its terminal goes away (you
+close the window, the SSH session drops, or something kills the tmux server),
+sipnab stops as it does for `SIGHUP` and exits 129, whether or not the
+signal arrives. 0.5.234 did not: such a TUI kept running and using CPU
+until `SIGKILL` ended it. The TUI of 0.5.234 also kept running after
+`SIGTERM`, `SIGINT` and `SIGHUP`, and that of 0.5.233 and earlier after
+`SIGTERM` and `SIGINT`.
+
 The packaged unit has no `ExecReload=`, so `systemctl reload`
 refuses:
 

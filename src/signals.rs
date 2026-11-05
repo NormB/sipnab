@@ -102,6 +102,16 @@ pub fn request_shutdown() {
     FLAGS.request_shutdown();
 }
 
+/// Request the stop SIGHUP requests: shutdown, ending in
+/// [`HANGUP_EXIT_CODE`].
+///
+/// For a hang-up the process learns of without the signal: the TUI calls it
+/// when its terminal reports that it has gone, which a process whose
+/// terminal is not its controlling terminal sees with no SIGHUP at all.
+pub fn request_hangup() {
+    FLAGS.request_hangup();
+}
+
 /// The status the process exits with when the run would exit `code`.
 ///
 /// Every exit of a run goes through this, through
