@@ -5898,4 +5898,141 @@ mod engine_sighting_claim_tests {
         );
         Ok(())
     }
+
+    /// An IPv4 header and a UDP header around `payload`, from `src` to
+    /// `dst`. sipnab does not verify the checksums it reads, so they are 0.
+    fn ipv4_udp(src: SocketAddr, dst: SocketAddr, payload: &[u8]) -> Result<Vec<u8>, TestError> {
+        let (std::net::IpAddr::V4(s), std::net::IpAddr::V4(d)) = (src.ip(), dst.ip()) else {
+            return Err("IPv4 only".into());
+        };
+        let total = u16::try_from(20 + 8 + payload.len())?;
+        let mut f = vec![0x45, 0];
+        f.extend_from_slice(&total.to_be_bytes());
+        f.extend_from_slice(&[0, 0, 0, 0, 64, 17, 0, 0]);
+        f.extend_from_slice(&s.octets());
+        f.extend_from_slice(&d.octets());
+        f.extend_from_slice(&src.port().to_be_bytes());
+        f.extend_from_slice(&dst.port().to_be_bytes());
+        f.extend_from_slice(&u16::try_from(8 + payload.len())?.to_be_bytes());
+        f.extend_from_slice(&[0, 0]);
+        f.extend_from_slice(payload);
+        Ok(f)
+    }
+
+    /// `inner` inside GRE (RFC 2784, no options) inside IPv4 from `src` to
+    /// `dst`: what the outer interface of a GRE tunnel carries.
+    fn ipv4_gre(src: [u8; 4], dst: [u8; 4], inner: &[u8]) -> Result<Vec<u8>, TestError> {
+        let total = u16::try_from(20 + 4 + inner.len())?;
+        let mut f = vec![0x45, 0];
+        f.extend_from_slice(&total.to_be_bytes());
+        f.extend_from_slice(&[0, 0, 0, 0, 64, 47, 0, 0]);
+        f.extend_from_slice(&src);
+        f.extend_from_slice(&dst);
+        f.extend_from_slice(&[0, 0, 0x08, 0x00]);
+        f.extend_from_slice(inner);
+        Ok(f)
+    }
+
+    /// A Linux cooked capture v2 header (`-d any`): the protocol, the index
+    /// of the interface the frame crossed, and its ARPHRD type.
+    fn sll2(ifindex: u32, arphrd: u16, ip: &[u8]) -> Vec<u8> {
+        let mut f = Vec::new();
+        f.extend_from_slice(&0x0800u16.to_be_bytes());
+        f.extend_from_slice(&0u16.to_be_bytes());
+        f.extend_from_slice(&ifindex.to_be_bytes());
+        f.extend_from_slice(&arphrd.to_be_bytes());
+        f.push(4); // sent by this host
+        f.push(0); // no link-layer address: a tunnel has none
+        f.extend_from_slice(&[0; 8]);
+        f.extend_from_slice(ip);
+        f
+    }
+
+    /// A Linux cooked capture v1 header, as older libpcap writes `-i any`.
+    fn sll(arphrd: u16, ip: &[u8]) -> Vec<u8> {
+        let mut f = Vec::new();
+        f.extend_from_slice(&4u16.to_be_bytes()); // sent by this host
+        f.extend_from_slice(&arphrd.to_be_bytes());
+        f.extend_from_slice(&0u16.to_be_bytes());
+        f.extend_from_slice(&[0; 8]);
+        f.extend_from_slice(&0x0800u16.to_be_bytes());
+        f.extend_from_slice(ip);
+        f
+    }
+
+    /// The engine a captured frame of `link_type` names, read the way a live
+    /// capture reads it: `parse_packet`, then the classifier.
+    fn engine_of(frame: Vec<u8>, link_type: i32) -> Result<Option<EngineIdentity>, TestError> {
+        let len = frame.len();
+        let pkt = crate::capture::packet::Packet::new(
+            chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            frame,
+            len,
+            len,
+            None,
+            link_type,
+        );
+        let pp = crate::capture::parse::parse_packet(&pkt)?;
+        Ok(claim(&pp, Some(2223)).flatten().map(|(_, s)| s.engine))
+    }
+
+    /// `-d any` on the proxy's host: one capture sees the requests the proxy
+    /// sends to an engine on the LAN (eth0, ARPHRD_ETHER) and to an engine
+    /// reached through a tunnel (ARPHRD_IPGRE, and ARPHRD_NONE as WireGuard
+    /// and tun report), in SLL2 and SLL alike. Each request names the address
+    /// it was sent to.
+    #[test]
+    fn any_interface_names_each_engine_by_the_address_the_proxy_sent_to() -> Result<(), TestError> {
+        let lan: SocketAddr = "192.0.2.5:2223".parse()?;
+        let remote: SocketAddr = "198.51.100.2:2223".parse()?;
+        let to_lan = ipv4_udp(proxy()?, lan, OFFER)?;
+        let to_remote = ipv4_udp("198.51.100.1:40000".parse()?, remote, OFFER)?;
+        for (frame, link, what, want) in [
+            (sll2(2, 1, &to_lan), 276, "SLL2 eth0", lan),
+            (sll2(9, 778, &to_remote), 276, "SLL2 GRE tunnel", remote),
+            (
+                sll2(11, 0xFFFE, &to_remote),
+                276,
+                "SLL2 WireGuard or tun",
+                remote,
+            ),
+            (sll(1, &to_lan), 113, "SLL eth0", lan),
+            (sll(778, &to_remote), 113, "SLL GRE tunnel", remote),
+        ] {
+            assert_eq!(
+                engine_of(frame, link)?,
+                Some(EngineIdentity::ListenNg(want)),
+                "{what}: the engine is the address the request was sent to"
+            );
+        }
+        Ok(())
+    }
+
+    /// The outer interface of a GRE or IP-in-IP tunnel carries the same
+    /// request inside the tunnel's header. sipnab opens it and names the
+    /// inner destination, never the tunnel's far end, so `-d any`, which sees
+    /// both copies, names one engine.
+    #[test]
+    fn a_request_inside_gre_names_the_inner_destination() -> Result<(), TestError> {
+        let remote: SocketAddr = "198.51.100.2:2223".parse()?;
+        let inner = ipv4_udp("198.51.100.1:40000".parse()?, remote, OFFER)?;
+        let outer = ipv4_gre([203, 0, 113, 1], [203, 0, 113, 2], &inner)?;
+        assert_eq!(
+            engine_of(sll2(2, 1, &outer), 276)?,
+            Some(EngineIdentity::ListenNg(remote)),
+            "the inner destination, not 203.0.113.2"
+        );
+        // IP-in-IP (protocol 4): the inner packet follows the outer header.
+        let total = u16::try_from(20 + inner.len())?;
+        let mut ipip = vec![0x45, 0];
+        ipip.extend_from_slice(&total.to_be_bytes());
+        ipip.extend_from_slice(&[0, 0, 0, 0, 64, 4, 0, 0, 203, 0, 113, 1, 203, 0, 113, 2]);
+        ipip.extend_from_slice(&inner);
+        assert_eq!(
+            engine_of(sll2(2, 1, &ipip), 276)?,
+            Some(EngineIdentity::ListenNg(remote)),
+            "IP-in-IP: the inner destination, not 203.0.113.2"
+        );
+        Ok(())
+    }
 }

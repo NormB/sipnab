@@ -6008,7 +6008,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // mirror website/content/docs/relay-engines.md (+1). Counted per file
     // against origin/main 88679170e: no other changed page gained or lost a
     // table.
-    const EXPECTED_TABLES: usize = 1409;
+    // 1409 -> 1413 (#664 follow-ups, every listed engine): the "What it
+    // costs" and "OpenSIPS and Kamailio" tables in docs/relay-engines.md
+    // (+2) and their site mirror website/content/docs/relay-engines.md (+2).
+    // Counted per file against origin/main 86a902663: no other changed page
+    // gained or lost a table.
+    const EXPECTED_TABLES: usize = 1413;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

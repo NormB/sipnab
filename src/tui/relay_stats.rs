@@ -378,14 +378,20 @@ fn do_ask_for(
     let (call_id, mode) = key;
     let obtained_at = chrono::Utc::now();
     // A question about one call goes to the engine its newest ng offer or
-    // SDP names when an engine rule is configured: the rule every relay surface uses. The
-    // relay's own counters and names go to the one relay the run names.
+    // SDP names when an engine rule is configured: the rule every relay
+    // surface uses. The relay's own counters go to every listed engine, and
+    // its names to the one relay the run names.
     let per_call = matches!(mode, RelayStatsMode::Counters | RelayStatsMode::Compare);
     let (relay, addr, reason) = match call_id.as_deref() {
-        Some(cid) if per_call => match crate::relay::engines::call_target(
+        Some(cid) if per_call => match crate::relay::engines::call_target_listed(
             &access.relay,
             access.routing.as_deref(),
             sightings,
+            cid,
+            &crate::relay::engines::EngineLists::new(
+                &access.permit,
+                crate::relay::reconcile::DEFAULT_LIST_LIMIT,
+            ),
         ) {
             crate::relay::engines::CallTarget::Ask {
                 relay,
@@ -422,12 +428,29 @@ fn do_ask_for(
                 }
                 Err(e) => fetch_failure(&e),
             },
-            None => match access.relay.statistics(&access.permit) {
-                Ok(reply) => {
-                    compose_counters_or_names(&reply, &label, obtained_at, false, false, origin)
+            // The relay's own counters, from every listed engine, each under
+            // its own heading.
+            None => crate::relay::engines::listed_relays(
+                &access.relay,
+                access.addr,
+                access.routing.as_deref(),
+            )
+            .iter()
+            .map(|(addr, engine)| {
+                let label = answer_label(engine.as_ref(), *addr, None);
+                match engine.statistics(&access.permit) {
+                    Ok(reply) => {
+                        compose_counters_or_names(&reply, &label, obtained_at, false, false, origin)
+                    }
+                    Err(e) => {
+                        let (outcome, detail) =
+                            crate::output::query::relay_holdings::fetch_failure(&label, &e);
+                        compose_outcome_text(outcome, &detail)
+                    }
                 }
-                Err(e) => fetch_failure(&e),
-            },
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
         },
         // Names never label themselves polled: `?` is a one-shot question, and
         // its own header states the source.
@@ -980,6 +1003,79 @@ mod tests {
             2,
             "a call ask goes to the engine its sdp names"
         );
+        Ok(())
+    }
+
+    /// A call the TUI has seen nothing for is asked of the engine whose list
+    /// names it.
+    #[test]
+    fn an_unseen_call_ask_goes_to_the_engine_whose_list_names_it() -> Result<(), TestError> {
+        let a = ScriptedRelay::new(|method, _| {
+            Ok(match method {
+                "list" => ControlReply::Calls(Enumeration {
+                    call_ids: Vec::new(),
+                    truncated: false,
+                }),
+                _ => stats(&[("totals.RTP.packets", "1")]),
+            })
+        });
+        let b = ScriptedRelay::new(|method, _| {
+            Ok(match method {
+                "list" => ControlReply::Calls(Enumeration {
+                    call_ids: vec!["u-1@example.invalid".to_string()],
+                    truncated: false,
+                }),
+                _ => stats(&[("totals.RTP.packets", "9000")]),
+            })
+        });
+        let mut acc = access(&a)?;
+        acc.routing = Some(routing(&b)?);
+        let text = do_ask_for(
+            &acc,
+            &(
+                Some("u-1@example.invalid".to_string()),
+                RelayStatsMode::Counters,
+            ),
+            None,
+            fmt::FetchOrigin::Asked,
+            &crate::relay::engines::CallEvidence::default(),
+        );
+        assert!(text.contains("192.0.2.6:2223"), "{text}");
+        assert!(text.contains("this engine's list names it"), "{text}");
+        assert_eq!(a.asked()?, ["list 32"], "the default: one list");
+        assert_eq!(
+            b.asked()?,
+            ["list 32", "call_statistics u-1@example.invalid"],
+            "the engine whose list names it: one list, then the question"
+        );
+        Ok(())
+    }
+
+    /// The relay's own counters, asked with no call, come from every listed
+    /// engine, each under its own heading.
+    #[test]
+    fn the_relays_own_counters_come_from_every_engine() -> Result<(), TestError> {
+        let a = ScriptedRelay::new(|_, _| Ok(stats(&[("sessions", "1")])));
+        let b = ScriptedRelay::new(|_, _| Ok(stats(&[("sessions", "2")])));
+        let mut acc = access(&a)?;
+        acc.routing = Some(routing(&b)?);
+        let text = do_ask_for(
+            &acc,
+            &(None, RelayStatsMode::Counters),
+            None,
+            fmt::FetchOrigin::Asked,
+            &crate::relay::engines::CallEvidence::default(),
+        );
+        assert!(
+            text.contains("(192.0.2.10:22222)"),
+            "the default engine: {text}"
+        );
+        assert!(
+            text.contains("(192.0.2.6:2223)"),
+            "the other engine: {text}"
+        );
+        assert_eq!(a.asked()?, ["statistics"], "the default, once");
+        assert_eq!(b.asked()?, ["statistics"], "the other engine, once");
         Ok(())
     }
 

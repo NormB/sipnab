@@ -1011,10 +1011,12 @@ fn leftover_session(
         detail: None,
     };
     let Some(control) = left.control else {
-        out.detail = Some(format!(
-            "no {} row names it",
-            crate::cli::RELAY_NG_ENGINE_FLAG
-        ));
+        let mut detail = format!("no {} row names it", crate::cli::RELAY_NG_ENGINE_FLAG);
+        if let Some(words) = crate::relay::engines::suggested_row_words(left.engine, left.reported)
+        {
+            detail.push_str(&format!(". {words}"));
+        }
+        out.detail = Some(detail);
         return out;
     };
     if !asks {
@@ -2536,7 +2538,13 @@ mod tests {
                 at: at() + chrono::TimeDelta::seconds(secs),
                 engine: EngineIdentity::HomerId(id),
                 verb: EngineVerb::Offer,
-                reported_listen_ng: None,
+                // What each unlisted engine's HEP copy reports: 2009 a
+                // listen-ng another host can reach, 2008 its loopback.
+                reported_listen_ng: match id {
+                    2009 => Some(std::net::SocketAddr::from(([192, 0, 2, 9], 2223))),
+                    2008 => Some(std::net::SocketAddr::from(([127, 0, 0, 1], 2223))),
+                    _ => None,
+                },
             };
             crate::relay::engines::CallEvidence {
                 sdp: Vec::new(),
@@ -2692,11 +2700,111 @@ mod tests {
                 relay: None,
                 status: "not_asked".to_string(),
                 detail: Some(format!(
-                    "no {} row names it",
-                    crate::cli::RELAY_NG_ENGINE_FLAG
+                    "no {flag} row names it. To list it, add {flag} '2009 192.0.2.9:2223', \
+                     or ng_engines = [\"2009 192.0.2.9:2223\"] in the config file's [relay] \
+                     section",
+                    flag = crate::cli::RELAY_NG_ENGINE_FLAG
                 )),
             }],
-            "flagged and not asked"
+            "flagged, not asked, and given the row its HEP copy names"
+        );
+        Ok(())
+    }
+
+    /// A leftover on an address a captured offer reached and no row names is
+    /// given the row that would list it, and is never asked.
+    #[test]
+    fn a_leftover_at_a_captured_address_is_given_its_row() -> Result<(), TestError> {
+        use crate::relay_vocab::{EngineIdentity, EngineSighting, EngineVerb};
+        let default_engine = ScriptedRelay::new(|_, _| Ok(listed(&[], false)));
+        let engine_a = EngineRelay::new("engine-a", &[], &[]);
+        let engine_b = EngineRelay::new(
+            "engine-b",
+            &["l-1@example.invalid"],
+            &["l-1@example.invalid"],
+        );
+        let rules = ng_routing(&engine_a, &engine_b, true)?;
+        let evidence = |call_id: &str| crate::relay::engines::CallEvidence {
+            sdp: Vec::new(),
+            ng: if call_id == "l-1@example.invalid" {
+                vec![
+                    EngineSighting {
+                        at: at(),
+                        engine: EngineIdentity::ListenNg(std::net::SocketAddr::from((
+                            [192, 0, 2, 99],
+                            2223,
+                        ))),
+                        verb: EngineVerb::Offer,
+                        reported_listen_ng: None,
+                    },
+                    EngineSighting {
+                        at: at() + chrono::TimeDelta::seconds(60),
+                        engine: EngineIdentity::HomerId(2002),
+                        verb: EngineVerb::Offer,
+                        reported_listen_ng: None,
+                    },
+                ]
+            } else {
+                Vec::new()
+            },
+        };
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &evidence,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(None, true, 8),
+            &never,
+            &at,
+        );
+        let engine = snap
+            .calls
+            .first()
+            .and_then(|c| c.engine.as_ref())
+            .ok_or("an engine")?;
+        assert_eq!(
+            engine
+                .leftovers
+                .iter()
+                .map(|l| l.detail.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(format!(
+                "no {flag} row names it. To list it, add {flag} '192.0.2.99:2223', or \
+                 ng_engines = [\"192.0.2.99:2223\"] in the config file's [relay] section",
+                flag = crate::cli::RELAY_NG_ENGINE_FLAG
+            ))],
+            "flagged, given its row, and not asked"
+        );
+        assert_eq!(engine_a.asked()?, ["list 32"], "nothing else asked");
+        Ok(())
+    }
+
+    /// A leftover on an unlisted engine whose HEP copy reported its loopback
+    /// is given no row: no other host can reach that address. Nothing is
+    /// asked of it either.
+    #[test]
+    fn a_leftover_reporting_loopback_is_given_no_row() -> Result<(), TestError> {
+        let (snap, engine_a, _) = leftover_snapshot(true, true, 2008)?;
+        assert_eq!(engine_a.asked()?, ["list 32"], "nothing else asked");
+        let engine = snap
+            .calls
+            .first()
+            .and_then(|c| c.engine.as_ref())
+            .ok_or("an engine")?;
+        assert_eq!(
+            engine
+                .leftovers
+                .iter()
+                .map(|l| l.detail.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(format!(
+                "no {} row names it",
+                crate::cli::RELAY_NG_ENGINE_FLAG
+            ))],
+            "flagged and not asked, with no row"
         );
         Ok(())
     }

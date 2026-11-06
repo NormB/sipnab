@@ -19,7 +19,6 @@ use crate::config::{Config, LoadedConfig};
 use crate::output::stdout::{out, outln};
 use crate::output::{ColorMode, EventExecEngine, OutputOptions};
 use crate::privilege;
-use crate::relay::reconcile::Reconciler;
 use crate::rtpengine::control::ControlClient;
 use crate::security::transmit_guard::TransmitPermit;
 use crate::sip::{dsl::FilterExpr, matcher::SipMatcher};
@@ -2099,8 +2098,9 @@ fn open_keylog_fifo(path: &std::path::Path) -> Option<crate::capture::keylog_sou
 /// second reconciler would start with a full budget and re-ask every question
 /// the first one had already answered.
 pub struct ReadyReconciler {
-    /// The reconciler, holding the run's port index and its remaining budget.
-    pub reconciler: Reconciler<ControlClient>,
+    /// One reconciler per listed engine, each holding its port index and its
+    /// remaining budget.
+    pub reconciler: crate::relay::reconcile::Reconcilers<ControlClient>,
     /// The run's permission to transmit, without which neither question is
     /// callable.
     pub permit: TransmitPermit,
@@ -2502,10 +2502,46 @@ fn report_relay_statistics(cli: &Cli, config: &Config, source: Option<&CaptureSo
     } else {
         cli.rtp_args.relay_stats_call.as_deref()
     };
+    // The relay's own counters come from every listed engine, each printed
+    // as its own table or document. Planning refused an unusable engine rule,
+    // so an error cannot reach here.
+    if per_call.is_none() && !listing {
+        let selection = cli.engine_selection(config).ok().flatten();
+        if let Some(routing) = crate::app::relay_engines::routing(cli, selection.as_ref())
+            && routing.listing_engines().len() > 1
+        {
+            for socket in routing.listing_engines() {
+                // The address as the operator typed it names the default
+                // engine, as it always has.
+                let engine_addr = if socket == ask.socket {
+                    addr.to_string()
+                } else {
+                    socket.to_string()
+                };
+                let label = format!("rtpengine at {engine_addr}");
+                let fetched =
+                    ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT).statistics(&ask.permit);
+                show_relay_statistics(
+                    fetched,
+                    &RelayStatsRendering {
+                        addr: &engine_addr,
+                        label: &label,
+                        obtained_at: chrono::Utc::now(),
+                        listing,
+                        per_call,
+                        json: cli.output_args.json,
+                        json_pretty: cli.output_args.json_pretty,
+                    },
+                );
+            }
+            return;
+        }
+    }
     let (fetched, label) = match per_call {
         // A question about one call goes to the engine its newest ng offer
         // or SDP names. This run asks before it reads any traffic, so with an
-        // engine rule that is the default engine, and the label says why.
+        // engine rule it is the engine whose list names the call, else the
+        // default engine, and the label says why.
         Some(call_id) => match fetch_call_statistics(cli, config, &ask, call_id) {
             Some(fetched) => fetched,
             None => return,
@@ -2515,23 +2551,32 @@ fn report_relay_statistics(cli: &Cli, config: &Config, source: Option<&CaptureSo
             format!("rtpengine at {addr}"),
         ),
     };
+    show_relay_statistics(
+        fetched,
+        &RelayStatsRendering {
+            addr,
+            label: &label,
+            obtained_at,
+            listing,
+            per_call,
+            json: cli.output_args.json,
+            json_pretty: cli.output_args.json_pretty,
+        },
+    );
+}
+
+/// Print one relay's `--relay-stats` answer, or log why there is none.
+fn show_relay_statistics(
+    fetched: anyhow::Result<crate::relay::types::ControlReply>,
+    r: &RelayStatsRendering<'_>,
+) {
+    let addr = r.addr;
     match fetched {
         Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
             // ST7: a machine-readable form that AGREES with the table, chosen the
             // same way the per-message path chooses -- pretty first, else
             // compact, else text.
-            print_relay_statistics(
-                &pairs,
-                &RelayStatsRendering {
-                    addr,
-                    label: &label,
-                    obtained_at,
-                    listing,
-                    per_call,
-                    json: cli.output_args.json,
-                    json_pretty: cli.output_args.json_pretty,
-                },
-            );
+            print_relay_statistics(&pairs, r);
         }
         Ok(other) => {
             tracing::error!("relay at {addr} answered {other:?}, not statistics");
@@ -2639,22 +2684,33 @@ fn print_relay_stat_values(
 }
 
 /// The relay to ask about one call on a CLI run, by the rule every relay
-/// surface uses ([`crate::relay::engines::call_target`]): the
-/// `--rtpengine-control` relay at `socket`, or with an engine rule the engine
-/// `evidence` names.
+/// surface uses ([`crate::relay::engines::call_target_listed`]): the
+/// `--rtpengine-control` relay at `ask`, or with an engine rule the engine
+/// `evidence` names, or for a call sipnab has seen nothing for, the engine
+/// whose `list` names `call_id`.
 fn cli_call_target(
     cli: &Cli,
     config: &Config,
-    socket: std::net::SocketAddr,
+    ask: &RelayAsk,
+    call_id: &str,
     evidence: &crate::relay::engines::CallEvidence,
 ) -> crate::relay::engines::CallTarget {
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
     let default: std::sync::Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync> =
-        std::sync::Arc::new(ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT));
+        std::sync::Arc::new(ControlClient::new(ask.socket, DEFAULT_CONTROL_TIMEOUT));
     // Planning refused an unusable engine rule, so an error cannot reach here.
     let selection = cli.engine_selection(config).ok().flatten();
     let routing = crate::app::relay_engines::routing(cli, selection.as_ref());
-    crate::relay::engines::call_target(&default, routing.as_deref(), evidence)
+    crate::relay::engines::call_target_listed(
+        &default,
+        routing.as_deref(),
+        evidence,
+        call_id,
+        &crate::relay::engines::EngineLists::new(
+            &ask.permit,
+            crate::relay::reconcile::DEFAULT_LIST_LIMIT,
+        ),
+    )
 }
 
 /// `label`, followed by why the engine was chosen when an engine rule chose
@@ -2679,12 +2735,23 @@ fn fetch_call_statistics(
     match cli_call_target(
         cli,
         config,
-        ask.socket,
+        ask,
+        call_id,
         &crate::relay::engines::CallEvidence::default(),
     ) {
-        crate::relay::engines::CallTarget::Ask { relay, reason, .. } => Some((
+        crate::relay::engines::CallTarget::Ask {
+            relay,
+            control,
+            reason,
+        } => Some((
             relay.call_statistics(&ask.permit, call_id),
-            labeled(format!("rtpengine at {addr}, call {call_id}"), reason),
+            labeled(
+                format!(
+                    "rtpengine at {}, call {call_id}",
+                    control.map_or_else(|| addr.to_string(), |c| c.to_string())
+                ),
+                reason,
+            ),
         )),
         crate::relay::engines::CallTarget::Unknown(unknown) => {
             tracing::error!("--relay-stats-call {call_id}: {unknown}");
@@ -2733,7 +2800,7 @@ pub fn report_relay_comparison(
     // rule is configured: the capture has drained, so both are in the dialog
     // store.
     let sightings = crate::relay::engines::call_sightings(dialog_store, call_id);
-    let (client, control, reason) = match cli_call_target(cli, config, ask.socket, &sightings) {
+    let (client, control, reason) = match cli_call_target(cli, config, &ask, call_id, &sightings) {
         crate::relay::engines::CallTarget::Ask {
             relay,
             control,
@@ -2974,7 +3041,11 @@ pub struct RelayControl {
 /// Never fails the run. A capture is still worth reading when the relay is
 /// down; refusing to start over an enrichment would be the wrong trade, and
 /// the summary line says what was and was not learned.
-fn relay_startup_snapshot(cli: &Cli, source: Option<&CaptureSource>) -> RelayControl {
+fn relay_startup_snapshot(
+    cli: &Cli,
+    config: &Config,
+    source: Option<&CaptureSource>,
+) -> RelayControl {
     use crate::relay::reconcile::Reconciler;
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
     use crate::security::transmit_guard::TransmitPermit;
@@ -3002,11 +3073,23 @@ fn relay_startup_snapshot(cli: &Cli, source: Option<&CaptureSource>) -> RelayCon
         }
     };
 
-    let mut reconciler = Reconciler::new(ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT));
+    // Every engine the run lists: `--rtpengine-control`, then each other
+    // engine an engine map row or an ng engine row names, so a call that was
+    // up before sipnab started is named whichever engine carries it. Planning
+    // refused an unusable engine rule, so an error cannot reach here.
+    let selection = cli.engine_selection(config).ok().flatten();
+    let engines = crate::app::relay_engines::routing(cli, selection.as_ref())
+        .map_or_else(|| vec![socket], |r| r.listing_engines());
+    let mut reconciler = crate::relay::reconcile::Reconcilers::new(
+        engines
+            .into_iter()
+            .map(|e| Reconciler::new(ControlClient::new(e, DEFAULT_CONTROL_TIMEOUT)))
+            .collect(),
+    );
     // The instant the relay answered, which is what the endpoint expiry clock
     // in the stream store measures from -- not the instant a store was built.
     let taken_at = chrono::Utc::now();
-    if let Some(summary) = reconciler.at_startup(&permit) {
+    for summary in reconciler.at_startup(&permit) {
         tracing::info!("{summary}");
     }
     // TAKE rather than copy: what startup learned is applied here, once. The
@@ -3078,7 +3161,7 @@ pub fn launch(
     // reason `may_transmit` is: `-d any` and device auto-detection mean the
     // source the caller planned is not always the one that opened, and asking
     // the relay is exactly as gated as any other transmit.
-    let relay = relay_startup_snapshot(cli, Some(&source));
+    let relay = relay_startup_snapshot(cli, config, Some(&source));
 
     // `--relay-stats`: print the relay's own counters, gated exactly as the
     // snapshot above is. Prints and returns; the run proceeds.
@@ -8004,7 +8087,8 @@ mod tests {
             paths: vec![std::path::PathBuf::from("/tmp/evidence.pcap")],
         };
 
-        let control = super::relay_startup_snapshot(&cli, Some(&file));
+        let control =
+            super::relay_startup_snapshot(&cli, &crate::config::Config::default(), Some(&file));
 
         assert_eq!(
             control.snapshot.taken_at, None,
@@ -8024,7 +8108,8 @@ mod tests {
             device: "eth0".to_owned(),
         };
 
-        let control = super::relay_startup_snapshot(&cli, Some(&live));
+        let control =
+            super::relay_startup_snapshot(&cli, &crate::config::Config::default(), Some(&live));
 
         assert_eq!(control.snapshot.taken_at, None);
         assert!(control.snapshot.links.is_empty());
@@ -8041,7 +8126,8 @@ mod tests {
             device: "eth0".to_owned(),
         };
 
-        let control = super::relay_startup_snapshot(&cli, Some(&live));
+        let control =
+            super::relay_startup_snapshot(&cli, &crate::config::Config::default(), Some(&live));
 
         assert_eq!(
             control.snapshot.taken_at, None,

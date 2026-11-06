@@ -3095,7 +3095,7 @@ mod processor_tests {
             std::time::Duration::from_millis(10),
         );
         let ready = crate::app::bootstrap::ReadyReconciler {
-            reconciler: crate::relay::reconcile::Reconciler::new(client),
+            reconciler: crate::relay::reconcile::Reconciler::new(client).into(),
             permit,
         };
         let relay = start_relay_reconciler(Some(ready), &streams);

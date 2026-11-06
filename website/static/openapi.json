@@ -4229,6 +4229,16 @@
               "null"
             ]
           },
+          "engines": {
+            "description": "Each listed engine's own newest reading, `--rtpengine-control` first,\nwhen the poll asks more than one engine. The fields above are the\nfirst engine's.",
+            "items": {
+              "$ref": "#/components/schemas/PolledEngine"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
           "interval_secs": {
             "description": "The poll's interval in seconds, as the operator configured it (`ok`,\n`no_reading_yet`).",
             "format": "int64",
@@ -4296,6 +4306,70 @@
           }
         },
         "required": [
+          "outcome"
+        ],
+        "type": "object"
+      },
+      "PolledEngine": {
+        "description": "One engine's newest reading, in a poll that asks several.",
+        "properties": {
+          "age_secs": {
+            "description": "Seconds since it answered, on this server's clock (`ok`).",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "last_poll": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LastPoll",
+                "description": "Its newest attempt, when it failed after the reading."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "obtained_at": {
+            "description": "When it answered, RFC 3339 (`ok`).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/PolledOutcome",
+            "description": "`ok` when it has a reading, else `no_reading_yet`."
+          },
+          "refusals": {
+            "description": "Statistics it refused (`ok`).",
+            "items": {
+              "$ref": "#/components/schemas/PolledRefusal"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "relay": {
+            "description": "The engine, named as the run's log names it.",
+            "type": "string"
+          },
+          "statistics": {
+            "description": "Its counters, each with its tier (`ok`).",
+            "items": {
+              "$ref": "#/components/schemas/PolledValue"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "relay",
           "outcome"
         ],
         "type": "object"

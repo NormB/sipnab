@@ -294,6 +294,85 @@ impl fmt::Display for NgEngineRow {
     }
 }
 
+impl NgEngineRow {
+    /// The row with `port` as its `listen-ng` port when it gave a bare
+    /// address, unchanged when it named a port of its own.
+    #[must_use]
+    pub fn with_default_port(mut self, port: u16) -> Self {
+        if self.control.port() == 0 {
+            self.control.set_port(port);
+        }
+        self
+    }
+
+    /// The row as the command-line flag that adds it, quoted for a shell:
+    /// `--rtpengine-ng-engine '2001 192.0.2.5:2223'`.
+    #[must_use]
+    pub fn flag_text(&self) -> String {
+        format!("{} '{self}'", crate::cli::RELAY_NG_ENGINE_FLAG)
+    }
+
+    /// The row as the config-file line that adds it, for the `[relay]`
+    /// section: `ng_engines = ["2001 192.0.2.5:2223"]`.
+    #[must_use]
+    pub fn config_line(&self) -> String {
+        format!("ng_engines = [\"{self}\"]")
+    }
+}
+
+/// The ng engine row that would list the engine with `homer_id`, from the
+/// `listen-ng` address its HEP copy reported.
+///
+/// `None` when nothing was reported, or when the address is loopback or
+/// unspecified: neither names an address another host can reach. The row is
+/// a suggestion an operator reads. sipnab never sends to a reported address
+/// until a row lists it.
+#[must_use]
+pub fn suggested_ng_row(homer_id: u32, reported: Option<SocketAddr>) -> Option<NgEngineRow> {
+    let reported = reported?;
+    let ip = canonical(reported.ip());
+    if ip.is_loopback() || ip.is_unspecified() {
+        return None;
+    }
+    Some(NgEngineRow {
+        homer_id: Some(homer_id),
+        control: SocketAddr::new(ip, reported.port()),
+    })
+}
+
+/// The ng engine row that would list `engine`, an engine the traffic named
+/// and no row lists.
+///
+/// - A HEP copy's `homer-id`: by [`suggested_ng_row`], from the `listen-ng`
+///   it reported.
+/// - A captured request's destination: that address, loopback included,
+///   because the proxy on this host reached it.
+#[must_use]
+pub fn suggested_row(engine: EngineIdentity, reported: Option<SocketAddr>) -> Option<NgEngineRow> {
+    match engine {
+        EngineIdentity::HomerId(id) => suggested_ng_row(id, reported),
+        EngineIdentity::ListenNg(sent_to) => Some(NgEngineRow {
+            homer_id: None,
+            control: SocketAddr::new(canonical(sent_to.ip()), sent_to.port()),
+        }),
+    }
+}
+
+/// [`suggested_row`] as the sentence every surface prints after `engine
+/// not listed`: `To list it, add --rtpengine-ng-engine '2001 192.0.2.5:2223',
+/// or ng_engines = ["2001 192.0.2.5:2223"] in the config file's [relay]
+/// section`. `None` when no row is suggested.
+#[must_use]
+pub fn suggested_row_words(engine: EngineIdentity, reported: Option<SocketAddr>) -> Option<String> {
+    suggested_row(engine, reported).map(|row| {
+        format!(
+            "To list it, add {}, or {} in the config file's [relay] section",
+            row.flag_text(),
+            row.config_line()
+        )
+    })
+}
+
 impl fmt::Debug for NgEngineRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("NgEngineRow")
@@ -307,8 +386,8 @@ impl fmt::Debug for NgEngineRow {
 pub enum NgEngineError {
     /// The row does not have the `[HOMER-ID] LISTEN-NG` shape.
     #[error(
-        "ng engine row {row:?} is not `[HOMER-ID] LISTEN-NG-ADDRESS:PORT`, for \
-         example `2001 192.0.2.5:2223` or `192.0.2.5:2223`"
+        "ng engine row {row:?} is not `[HOMER-ID] LISTEN-NG-ADDRESS[:PORT]`, for \
+         example `2001 192.0.2.5:2223`, `192.0.2.5:2223` or `192.0.2.5`"
     )]
     Shape {
         /// The row as given.
@@ -324,8 +403,9 @@ pub enum NgEngineError {
     },
     /// The control address is not an address and port.
     #[error(
-        "ng engine row {row:?}: {value:?} is not a listen-ng address and port \
-         (an IPv6 address is written [2001:db8::5]:2223)"
+        "ng engine row {row:?}: {value:?} is not a listen-ng address, or an \
+         address and a port other than 0 (an IPv6 address with a port is \
+         written [2001:db8::5]:2223)"
     )]
     Control {
         /// The row as given.
@@ -371,12 +451,18 @@ impl FromStr for NgEngineRow {
                 })
             })
             .transpose()?;
-        let control = control
-            .parse::<SocketAddr>()
-            .map_err(|_| NgEngineError::Control {
-                row: row.to_string(),
-                value: control.to_string(),
-            })?;
+        // A bare address waits for the port of `--rtpengine-control`, which
+        // `with_default_port` fills in; port 0 stands for it until then, so
+        // an explicit port 0 is refused.
+        let refused = || NgEngineError::Control {
+            row: row.to_string(),
+            value: control.to_string(),
+        };
+        let control = match control.parse::<SocketAddr>() {
+            Ok(addr) if addr.port() == 0 => return Err(refused()),
+            Ok(addr) => addr,
+            Err(_) => SocketAddr::new(control.parse::<IpAddr>().map_err(|_| refused())?, 0),
+        };
         Ok(Self { homer_id, control })
     }
 }
@@ -730,18 +816,28 @@ impl fmt::Display for Unknown {
                 if let Some(addr) = reported {
                     write!(f, " (the engine reports listen-ng {addr})")?;
                 }
-                write!(f, "; nothing was asked")
+                write!(f, "; nothing was asked")?;
+                if let Some(words) = suggested_row_words(EngineIdentity::HomerId(*id), *reported) {
+                    write!(f, ". {words}")?;
+                }
+                Ok(())
             }
             Self::NgEngineNotListed {
                 engine: EngineIdentity::ListenNg(addr),
-                ..
-            } => write!(
-                f,
-                "engine not listed ({addr}): the newest ng offer for this call was sent \
-                 to {addr}, an address sipnab saw only in captured traffic; list it with \
-                 {} to ask it; nothing was asked",
-                crate::cli::RELAY_NG_ENGINE_FLAG
-            ),
+                reported,
+            } => {
+                write!(
+                    f,
+                    "engine not listed ({addr}): the newest ng offer for this call was sent \
+                     to {addr}, an address sipnab saw only in captured traffic; nothing was \
+                     asked"
+                )?;
+                if let Some(words) = suggested_row_words(EngineIdentity::ListenNg(*addr), *reported)
+                {
+                    write!(f, ". {words}")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -753,6 +849,9 @@ pub struct Leftover {
     pub engine: EngineIdentity,
     /// Its control address, when sipnab may ask it.
     pub control: Option<SocketAddr>,
+    /// The `listen-ng` address the engine's newest HEP copy of an `offer`
+    /// reported, when it reported one. Shown, never sent to.
+    pub reported: Option<SocketAddr>,
 }
 
 impl Leftover {
@@ -898,6 +997,11 @@ fn select_ng(
             leftovers.push(Leftover {
                 engine: offer.engine,
                 control: resolve(rules, default, offer.engine).map(|e| e.control),
+                reported: offers
+                    .iter()
+                    .rev()
+                    .find(|s| s.engine == offer.engine)
+                    .and_then(|s| s.reported_listen_ng),
             });
         }
     }
@@ -1206,8 +1310,18 @@ pub fn call_target(
             reason: None,
         };
     };
-    let chosen = routing.select(evidence);
-    let notes = chosen.notes();
+    target(default, routing, routing.select(evidence), Vec::new())
+}
+
+/// The [`CallTarget`] for `chosen`, its reason followed by each note the
+/// choice makes and then `more`.
+fn target(
+    default: &Arc<dyn ReadOnlyRelay + Send + Sync>,
+    routing: &EngineRouting,
+    chosen: CallEngines,
+    more: Vec<String>,
+) -> CallTarget {
+    let notes: Vec<String> = chosen.notes().into_iter().chain(more).collect();
     match chosen.current {
         Ok(engine) => CallTarget::Ask {
             relay: if engine.control == routing.default_engine() {
@@ -1225,6 +1339,173 @@ pub fn call_target(
         },
         Err(unknown) => CallTarget::Unknown(unknown),
     }
+}
+
+/// Every engine the run lists, as a relay to ask, `--rtpengine-control`
+/// first.
+///
+/// Without `routing` it is the one relay, `default`, at `default_addr`. With
+/// it, each of [`EngineRouting::listing_engines`]: the default engine is
+/// `default` itself, and every other engine is reached through the
+/// routing's constructor. The questions not about one call that make sense
+/// on every engine (startup reconciliation, the relay's own counters, the
+/// lists) ask these.
+#[must_use]
+pub fn listed_relays(
+    default: &Arc<dyn ReadOnlyRelay + Send + Sync>,
+    default_addr: SocketAddr,
+    routing: Option<&EngineRouting>,
+) -> Vec<(SocketAddr, Arc<dyn ReadOnlyRelay + Send + Sync>)> {
+    let Some(routing) = routing else {
+        return vec![(default_addr, Arc::clone(default))];
+    };
+    routing
+        .listing_engines()
+        .into_iter()
+        .map(|control| {
+            if control == routing.default_engine() {
+                (default_addr, Arc::clone(default))
+            } else {
+                (control, routing.relay(control))
+            }
+        })
+        .collect()
+}
+
+/// One engine's answer to `list`, asked for a question about a call sipnab
+/// has seen nothing for.
+struct EngineList {
+    /// The engine's control address.
+    control: SocketAddr,
+    /// The engine as the subject of a sentence: `rtpengine at ADDR`.
+    describe: String,
+    /// The Call-IDs it listed and whether it held more, or why it did not
+    /// answer.
+    answer: Result<crate::relay::types::Enumeration, String>,
+}
+
+/// Every listed engine's `list`, asked at most once per question.
+///
+/// A question about a call whose ng offer and SDP sipnab has not seen asks
+/// each listed engine which calls it holds, and asks the engine whose list
+/// names the call. One value lives for one question, so a question that
+/// chooses an engine for several calls asks each engine once.
+pub struct EngineLists<'a> {
+    /// The run's permission to transmit.
+    permit: &'a crate::security::transmit_guard::TransmitPermit,
+    /// How many Call-IDs each `list` asks for.
+    limit: u32,
+    /// The answers, once asked.
+    answers: std::cell::OnceCell<Vec<EngineList>>,
+}
+
+impl<'a> EngineLists<'a> {
+    /// Lists not yet asked, to be asked with `permit` for up to `limit`
+    /// Call-IDs each.
+    #[must_use]
+    pub const fn new(
+        permit: &'a crate::security::transmit_guard::TransmitPermit,
+        limit: u32,
+    ) -> Self {
+        Self {
+            permit,
+            limit,
+            answers: std::cell::OnceCell::new(),
+        }
+    }
+}
+
+/// [`call_target`], and for a call sipnab has seen nothing for, the engine
+/// whose `list` names it.
+///
+/// When no ng offer and no SDP chooses the call's engine and the routing
+/// lists more than one engine, every listed engine is asked its `list`
+/// through `lists` (once per question) and [`select_listed`] chooses. The
+/// reason then says what the lists said: two engines that hold the call, an
+/// engine that did not answer, or a capped list that may hold it.
+#[must_use]
+pub fn call_target_listed(
+    default: &Arc<dyn ReadOnlyRelay + Send + Sync>,
+    routing: Option<&EngineRouting>,
+    evidence: &CallEvidence,
+    call_id: &str,
+    lists: &EngineLists<'_>,
+) -> CallTarget {
+    let Some(routing) = routing else {
+        return call_target(default, None, evidence);
+    };
+    let chosen = routing.select(evidence);
+    let unseen = matches!(
+        chosen.current,
+        Ok(Engine {
+            chosen_by: ChosenBy::NoSdpSeen(_),
+            ..
+        })
+    );
+    let engines = routing.listing_engines();
+    if !unseen || engines.len() < 2 {
+        return target(default, routing, chosen, Vec::new());
+    }
+    let answers = lists.answers.get_or_init(|| {
+        listed_relays(default, routing.default_engine(), Some(routing))
+            .into_iter()
+            .map(|(control, relay)| {
+                let answer = match relay.list(lists.permit, lists.limit) {
+                    Ok(crate::relay::types::ControlReply::Calls(e)) => Ok(e),
+                    Ok(crate::relay::types::ControlReply::Refused { reason }) => {
+                        Err(format!("refused: {reason}"))
+                    }
+                    Ok(_) => Err("answered with something other than a call list".to_string()),
+                    Err(e) => Err(format!("{e:#}")),
+                };
+                EngineList {
+                    control,
+                    describe: relay.describe(),
+                    answer,
+                }
+            })
+            .collect()
+    });
+    let holders: Vec<&EngineList> = answers
+        .iter()
+        .filter(|l| {
+            l.answer
+                .as_ref()
+                .is_ok_and(|e| e.call_ids.iter().any(|c| c == call_id))
+        })
+        .collect();
+    let mut notes: Vec<String> = Vec::new();
+    match holders.as_slice() {
+        [] => notes.push("no engine's list names it".to_string()),
+        [_] => {}
+        several => notes.push(format!(
+            "held by several engines: {}",
+            several
+                .iter()
+                .map(|l| l.describe.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+    }
+    for l in answers {
+        match &l.answer {
+            Err(why) => notes.push(format!("{} did not answer its list ({why})", l.describe)),
+            Ok(e) if e.truncated && !e.call_ids.iter().any(|c| c == call_id) => {
+                notes.push(format!(
+                    "the list of {} stopped at {} calls, so it may hold this call",
+                    l.describe, lists.limit
+                ))
+            }
+            Ok(_) => {}
+        }
+    }
+    let listed: Vec<SocketAddr> = holders.iter().map(|l| l.control).collect();
+    target(
+        default,
+        routing,
+        routing.select_listed(evidence, &listed),
+        notes,
+    )
 }
 
 /// The canonical form of an address, so `::ffff:203.0.113.5` and
@@ -2098,10 +2379,10 @@ mod tests {
         );
         assert!(
             matches!(
-                refused("2001 192.0.2.5"),
+                refused("2001 192.0.2.5:0"),
                 Some(NgEngineError::Control { .. })
             ),
-            "an address with no port"
+            "an address with port 0"
         );
         let same_id = NgEngineMap::new(vec![
             "2001 192.0.2.5:2223".parse()?,
@@ -2222,6 +2503,172 @@ mod tests {
         Ok(())
     }
 
+    /// A row may give a bare address, whose port is filled in from
+    /// `--rtpengine-control`. An explicit port 0, or a homer-id with no
+    /// address, is refused.
+    #[test]
+    fn an_ng_engine_row_with_a_bare_address_waits_for_the_control_port() -> Result<(), TestError> {
+        for (row, want) in [
+            ("192.0.2.6", "192.0.2.6:2223"),
+            ("2001 192.0.2.6", "2001 192.0.2.6:2223"),
+            ("2001 -> 2001:db8::6", "2001 [2001:db8::6]:2223"),
+            ("192.0.2.6:4444", "192.0.2.6:4444"),
+        ] {
+            let parsed: NgEngineRow = row.parse()?;
+            assert_eq!(
+                parsed.with_default_port(2223).to_string(),
+                want,
+                "{row} takes the control port unless it names its own"
+            );
+        }
+        for bad in [
+            "192.0.2.6:0",
+            "2001",
+            "2001 192.0.2.6:0",
+            "2001 [2001:db8::6]:0",
+        ] {
+            assert!(
+                bad.parse::<NgEngineRow>().is_err(),
+                "{bad} is refused: port 0, or no address"
+            );
+        }
+        Ok(())
+    }
+
+    /// The refusal for an offer at `homer-id 2009` whose HEP copy reported
+    /// `reported` as its listen-ng.
+    fn unlisted_refusal(reported: &str) -> Result<String, TestError> {
+        let rules = ng_rules(false)?;
+        let mut offer = ng(0, homer(2009), EngineVerb::Offer)?;
+        offer.reported_listen_ng = Some(addr(reported)?);
+        let got = super::select(Some(&rules), addr(DEFAULT)?, &evidence(vec![], vec![offer]));
+        Ok(got
+            .current
+            .err()
+            .ok_or("an unlisted engine is not asked")?
+            .to_string())
+    }
+
+    /// A HEP copy that reports a listen-ng another host can reach is given
+    /// the exact row that would list it, as a flag and as a config line.
+    /// Nothing is asked: the suggestion is words only.
+    #[test]
+    fn an_unlisted_engine_with_a_reachable_listen_ng_is_given_its_row() -> Result<(), TestError> {
+        assert_eq!(
+            unlisted_refusal("192.0.2.9:2223")?,
+            format!(
+                "engine not listed (homer-id 2009): the newest ng offer for this call \
+                 reached homer-id 2009, and no {flag} row names it (the engine reports \
+                 listen-ng 192.0.2.9:2223); nothing was asked. To list it, add {flag} \
+                 '2009 192.0.2.9:2223', or ng_engines = [\"2009 192.0.2.9:2223\"] in the \
+                 config file's [relay] section",
+                flag = crate::cli::RELAY_NG_ENGINE_FLAG
+            ),
+            "the refusal carries the row"
+        );
+        let v6 = unlisted_refusal("[2001:db8::9]:2223")?;
+        assert!(
+            v6.ends_with(&format!(
+                "To list it, add {} '2009 [2001:db8::9]:2223', or ng_engines = \
+                 [\"2009 [2001:db8::9]:2223\"] in the config file's [relay] section",
+                crate::cli::RELAY_NG_ENGINE_FLAG
+            )),
+            "an IPv6 listen-ng is written in brackets: {v6}"
+        );
+        let mapped = unlisted_refusal("[::ffff:192.0.2.9]:2223")?;
+        assert!(
+            mapped.contains("'2009 192.0.2.9:2223'"),
+            "an IPv4-mapped listen-ng is written as IPv4: {mapped}"
+        );
+        Ok(())
+    }
+
+    /// A loopback or unspecified listen-ng names no address another host can
+    /// reach, so no row is suggested for it.
+    #[test]
+    fn a_loopback_or_unspecified_listen_ng_is_given_no_row() -> Result<(), TestError> {
+        for reported in [
+            "127.0.0.1:2223",
+            "127.0.0.9:2223",
+            "[::1]:2223",
+            "[::ffff:127.0.0.1]:2223",
+            "0.0.0.0:2223",
+            "[::]:2223",
+        ] {
+            assert_eq!(
+                suggested_ng_row(2009, Some(addr(reported)?)),
+                None,
+                "no row for {reported}"
+            );
+            let refusal = unlisted_refusal(reported)?;
+            assert!(
+                refusal.ends_with("; nothing was asked") && !refusal.contains("To list it"),
+                "no row for {reported}: {refusal}"
+            );
+        }
+        assert_eq!(suggested_ng_row(2009, None), None, "nothing reported");
+        Ok(())
+    }
+
+    /// The suggested row is the row the ng engine parser reads back: the
+    /// same homer-id and listen-ng, so pasting it lists that engine.
+    #[test]
+    fn a_suggested_row_parses_back_to_the_engine_it_names() -> Result<(), TestError> {
+        for reported in ["192.0.2.9:2223", "[2001:db8::9]:2223"] {
+            let row = suggested_ng_row(2009, Some(addr(reported)?)).ok_or("a row")?;
+            let flag = row.flag_text();
+            let value = flag
+                .strip_prefix(&format!("{} '", crate::cli::RELAY_NG_ENGINE_FLAG))
+                .and_then(|v| v.strip_suffix('\''))
+                .ok_or(format!("the flag is the flag and a quoted row: {flag}"))?;
+            let back: NgEngineRow = value.parse()?;
+            assert_eq!(back, row, "the flag value parses back");
+            assert_eq!(back.homer_id, Some(2009), "the flag value parses back");
+            assert_eq!(back.control, addr(reported)?, "the flag value parses back");
+            let line = row.config_line();
+            let table: toml::Table = toml::from_str(&line)?;
+            let rows = table
+                .get("ng_engines")
+                .and_then(toml::Value::as_array)
+                .ok_or(format!("the config line sets ng_engines: {line}"))?;
+            let only = rows.first().and_then(toml::Value::as_str).ok_or("a row")?;
+            assert_eq!(rows.len(), 1, "one row: {line}");
+            assert_eq!(
+                only.parse::<NgEngineRow>()?,
+                row,
+                "the config row parses back"
+            );
+        }
+        Ok(())
+    }
+
+    /// A leftover session on an engine no row names carries what its HEP
+    /// copy reported, so the sessions view can suggest its row too.
+    #[test]
+    fn a_leftover_carries_the_listen_ng_its_engine_reported() -> Result<(), TestError> {
+        let rules = ng_rules(false)?;
+        let mut first = ng(0, homer(2009), EngineVerb::Offer)?;
+        first.reported_listen_ng = Some(addr("192.0.2.70:2223")?);
+        let mut newer = ng(5, homer(2009), EngineVerb::Offer)?;
+        newer.reported_listen_ng = Some(addr("192.0.2.9:2223")?);
+        let moved = ng(10, homer(2001), EngineVerb::Offer)?;
+        let got = super::select(
+            Some(&rules),
+            addr(DEFAULT)?,
+            &evidence(vec![], vec![first, newer, moved]),
+        );
+        assert_eq!(
+            got.leftovers,
+            vec![Leftover {
+                engine: homer(2009),
+                control: None,
+                reported: Some(addr("192.0.2.9:2223")?),
+            }],
+            "the newest offer's report is carried"
+        );
+        Ok(())
+    }
+
     /// A captured offer's destination is asked when the operator named it:
     /// an ng engine row with no homer-id, or the default engine itself.
     #[test]
@@ -2294,28 +2741,35 @@ mod tests {
     }
 
     /// A captured offer to an address nobody listed is reported and not
-    /// asked: the address came from captured traffic.
+    /// asked: the address came from captured traffic. The refusal gives the
+    /// row that would list it, a loopback address included, because the
+    /// proxy that sent the offer reached it from this host.
     #[test]
     fn a_captured_offer_to_an_unlisted_address_asks_nothing() -> Result<(), TestError> {
         let rules = ng_rules(true)?;
-        let call = evidence(
-            Vec::new(),
-            vec![ng(0, sent_to("192.0.2.99:2223")?, EngineVerb::Offer)?],
-        );
-        let got = super::select(Some(&rules), addr(DEFAULT)?, &call).current;
-        assert_eq!(
-            got.err().map(|u| u.to_string()).as_deref(),
-            Some(
-                format!(
-                    "engine not listed (192.0.2.99:2223): the newest ng offer for this \
-                     call was sent to 192.0.2.99:2223, an address sipnab saw only in \
-                     captured traffic; list it with {} to ask it; nothing was asked",
-                    crate::cli::RELAY_NG_ENGINE_FLAG
-                )
-                .as_str()
-            ),
-            "an unlisted address is not asked"
-        );
+        for (sent, row) in [
+            ("192.0.2.99:2223", "192.0.2.99:2223"),
+            ("127.0.0.4:2223", "127.0.0.4:2223"),
+            ("[::ffff:192.0.2.99]:2223", "192.0.2.99:2223"),
+        ] {
+            let call = evidence(Vec::new(), vec![ng(0, sent_to(sent)?, EngineVerb::Offer)?]);
+            let got = super::select(Some(&rules), addr(DEFAULT)?, &call).current;
+            let shown = addr(sent)?;
+            assert_eq!(
+                got.err().map(|u| u.to_string()).as_deref(),
+                Some(
+                    format!(
+                        "engine not listed ({shown}): the newest ng offer for this call was \
+                         sent to {shown}, an address sipnab saw only in captured traffic; \
+                         nothing was asked. To list it, add {flag} '{row}', or ng_engines = \
+                         [\"{row}\"] in the config file's [relay] section",
+                        flag = crate::cli::RELAY_NG_ENGINE_FLAG
+                    )
+                    .as_str()
+                ),
+                "an unlisted address is not asked, and its row is given: {sent}"
+            );
+        }
         Ok(())
     }
 
@@ -2349,6 +2803,7 @@ mod tests {
             vec![Leftover {
                 engine: homer(2001),
                 control: Some(addr("192.0.2.5:2223")?),
+                reported: None,
             }],
             "2001 never received a delete"
         );
@@ -2435,6 +2890,7 @@ mod tests {
             vec![Leftover {
                 engine: homer(2009),
                 control: None,
+                reported: None,
             }],
             "it is still flagged"
         );
@@ -2696,6 +3152,365 @@ mod tests {
         assert!(
             call_sightings(&store, "absent@example.invalid") == CallEvidence::default(),
             "call sightings read the dialog store"
+        );
+        Ok(())
+    }
+
+    // ── an unseen call, asked of the engine whose list names it ───────
+
+    /// A scripted engine that answers `list` with `calls`, or not at all when
+    /// `down`, and records every question.
+    struct ListingRelay {
+        name: String,
+        calls: Vec<&'static str>,
+        truncated: bool,
+        down: bool,
+        asked: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl ListingRelay {
+        fn scripted(
+            control: &str,
+            calls: &[&'static str],
+            truncated: bool,
+            down: bool,
+        ) -> Arc<Self> {
+            Arc::new(Self {
+                name: format!("engine at {control}"),
+                calls: calls.to_vec(),
+                truncated,
+                down,
+                asked: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn new(control: &str, calls: &[&'static str]) -> Arc<Self> {
+            Self::scripted(control, calls, false, false)
+        }
+
+        fn down(control: &str) -> Arc<Self> {
+            Self::scripted(control, &[], false, true)
+        }
+
+        fn capped(control: &str, calls: &[&'static str]) -> Arc<Self> {
+            Self::scripted(control, calls, true, false)
+        }
+
+        fn asked(&self) -> Vec<String> {
+            self.asked.lock().map(|a| a.clone()).unwrap_or_default()
+        }
+    }
+
+    impl ReadOnlyRelay for ListingRelay {
+        fn list(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            limit: u32,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            if let Ok(mut a) = self.asked.lock() {
+                a.push(format!("list {limit}"));
+            }
+            if self.down {
+                anyhow::bail!("no reply within 2s");
+            }
+            Ok(crate::relay::types::ControlReply::Calls(
+                crate::relay::types::Enumeration {
+                    call_ids: self.calls.iter().map(|c| (*c).to_string()).collect(),
+                    truncated: self.truncated,
+                },
+            ))
+        }
+        fn query(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            call_id: &str,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            if let Ok(mut a) = self.asked.lock() {
+                a.push(format!("query {call_id}"));
+            }
+            anyhow::bail!("not scripted")
+        }
+        fn statistics(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            anyhow::bail!("not scripted")
+        }
+        fn describe(&self) -> String {
+            self.name.clone()
+        }
+    }
+
+    /// The default engine and the three ng engine rows of [`ng_rules`], each a
+    /// scripted engine, and the routing that reaches them.
+    struct FourEngines {
+        default: Arc<ListingRelay>,
+        rows: Vec<Arc<ListingRelay>>,
+        routing: EngineRouting,
+    }
+
+    impl FourEngines {
+        fn new(
+            default: Arc<ListingRelay>,
+            rows: [Arc<ListingRelay>; 3],
+            sdp: bool,
+        ) -> Result<Self, TestError> {
+            let by_control: Vec<(SocketAddr, Arc<ListingRelay>)> = vec![
+                (addr("192.0.2.5:2223")?, Arc::clone(&rows[0])),
+                (addr("192.0.2.6:2223")?, Arc::clone(&rows[1])),
+                (addr("192.0.2.7:2223")?, Arc::clone(&rows[2])),
+            ];
+            let connect: Connect = Arc::new(move |control| {
+                by_control
+                    .iter()
+                    .find(|(c, _)| *c == control)
+                    .map_or_else(unreachable_relay, |(_, r)| {
+                        Arc::clone(r) as Arc<dyn ReadOnlyRelay + Send + Sync>
+                    })
+            });
+            Ok(Self {
+                default,
+                rows: rows.to_vec(),
+                routing: EngineRouting::new(ng_rules(sdp)?, addr(DEFAULT)?, false, connect),
+            })
+        }
+
+        fn target(
+            &self,
+            evidence: &CallEvidence,
+            call_id: &str,
+            lists: &EngineLists<'_>,
+        ) -> CallTarget {
+            let default: Arc<dyn ReadOnlyRelay + Send + Sync> = Arc::clone(&self.default) as _;
+            call_target_listed(&default, Some(&self.routing), evidence, call_id, lists)
+        }
+
+        /// What each engine was asked, the default first.
+        fn asked(&self) -> Vec<Vec<String>> {
+            std::iter::once(self.default.asked())
+                .chain(self.rows.iter().map(|r| r.asked()))
+                .collect()
+        }
+    }
+
+    fn live_permit() -> Result<crate::security::transmit_guard::TransmitPermit, TestError> {
+        Ok(crate::security::transmit_guard::TransmitPermit::for_source(
+            &crate::capture::CaptureSource::Live {
+                device: "eth0".to_owned(),
+            },
+        )
+        .ok_or("a live source grants a permit")?)
+    }
+
+    fn asked_of(target: &CallTarget) -> Result<(Option<SocketAddr>, Option<String>), TestError> {
+        match target {
+            CallTarget::Ask {
+                control, reason, ..
+            } => Ok((*control, reason.clone())),
+            CallTarget::Unknown(u) => Err(format!("expected an engine, got {u}").into()),
+        }
+    }
+
+    /// A call with no ng offer and no SDP seen is asked of the engine whose
+    /// list names it, not the default. Each listed engine is asked one `list`
+    /// and nothing else.
+    #[test]
+    fn an_unseen_call_is_asked_of_the_engine_whose_list_names_it() -> Result<(), TestError> {
+        let engines = FourEngines::new(
+            ListingRelay::new(DEFAULT, &["other@example.invalid"]),
+            [
+                ListingRelay::new("192.0.2.5:2223", &[]),
+                ListingRelay::new("192.0.2.6:2223", &["up-1@example.invalid"]),
+                ListingRelay::new("192.0.2.7:2223", &[]),
+            ],
+            false,
+        )?;
+        let permit = live_permit()?;
+        let lists = EngineLists::new(&permit, crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+        let target = engines.target(&CallEvidence::default(), "up-1@example.invalid", &lists);
+        assert_eq!(
+            asked_of(&target)?,
+            (
+                Some(addr("192.0.2.6:2223")?),
+                Some(
+                    "sipnab has seen no ng offer for this call; this engine's list names it"
+                        .to_string()
+                )
+            ),
+            "the engine whose list names the call is asked"
+        );
+        let one_list = vec![format!(
+            "list {}",
+            crate::relay::reconcile::DEFAULT_LIST_LIMIT
+        )];
+        assert_eq!(
+            engines.asked(),
+            vec![
+                one_list.clone(),
+                one_list.clone(),
+                one_list.clone(),
+                one_list
+            ],
+            "each listed engine is asked one list"
+        );
+        Ok(())
+    }
+
+    /// When no list names the call it falls back to the default engine, and
+    /// the reason says what the lists said: none names it, an engine did not
+    /// answer, a capped list may hold it, or two engines hold it.
+    #[test]
+    fn an_unseen_call_the_lists_do_not_settle_says_why() -> Result<(), TestError> {
+        let permit = live_permit()?;
+        let limit = crate::relay::reconcile::DEFAULT_LIST_LIMIT;
+        let none = FourEngines::new(
+            ListingRelay::new(DEFAULT, &[]),
+            [
+                ListingRelay::new("192.0.2.5:2223", &[]),
+                ListingRelay::down("192.0.2.6:2223"),
+                ListingRelay::capped("192.0.2.7:2223", &["a@example.invalid"]),
+            ],
+            false,
+        )?;
+        let target = none.target(
+            &CallEvidence::default(),
+            "up-1@example.invalid",
+            &EngineLists::new(&permit, limit),
+        );
+        assert_eq!(
+            asked_of(&target)?,
+            (
+                Some(addr(DEFAULT)?),
+                Some(format!(
+                    "the default engine ({flag}): sipnab has seen no ng offer \
+                     for this call; no engine's list names it; engine at 192.0.2.6:2223 \
+                     did not answer its list (no reply within 2s); the list of engine at \
+                     192.0.2.7:2223 stopped at {limit} calls, so it may hold this call",
+                    flag = crate::cli::RELAY_CONTROL_FLAG
+                ))
+            ),
+            "the default is asked, and the reason says what the lists said"
+        );
+        let two = FourEngines::new(
+            ListingRelay::new(DEFAULT, &[]),
+            [
+                ListingRelay::new("192.0.2.5:2223", &["up-1@example.invalid"]),
+                ListingRelay::new("192.0.2.6:2223", &[]),
+                ListingRelay::new("192.0.2.7:2223", &["up-1@example.invalid"]),
+            ],
+            false,
+        )?;
+        let target = two.target(
+            &CallEvidence::default(),
+            "up-1@example.invalid",
+            &EngineLists::new(&permit, limit),
+        );
+        assert_eq!(
+            asked_of(&target)?,
+            (
+                Some(addr("192.0.2.5:2223")?),
+                Some(
+                    "sipnab has seen no ng offer for this call; this engine's list names it; \
+                     held by several engines: engine at 192.0.2.5:2223, engine at \
+                     192.0.2.7:2223"
+                        .to_string()
+                )
+            ),
+            "the first engine whose list names it is asked, and both are named"
+        );
+        Ok(())
+    }
+
+    /// Lists are asked only when nothing else chooses the engine: a call with
+    /// a seen offer or SDP, a run with no engine rule, and a run whose only
+    /// listed engine is the default ask no list.
+    #[test]
+    fn a_call_with_evidence_or_one_engine_asks_no_list() -> Result<(), TestError> {
+        let permit = live_permit()?;
+        let limit = crate::relay::reconcile::DEFAULT_LIST_LIMIT;
+        let engines = FourEngines::new(
+            ListingRelay::new(DEFAULT, &[]),
+            [
+                ListingRelay::new("192.0.2.5:2223", &["up-1@example.invalid"]),
+                ListingRelay::new("192.0.2.6:2223", &[]),
+                ListingRelay::new("192.0.2.7:2223", &[]),
+            ],
+            true,
+        )?;
+        let lists = EngineLists::new(&permit, limit);
+        let offered = evidence(Vec::new(), vec![ng(0, homer(2002), EngineVerb::Offer)?]);
+        let by_offer = engines.target(&offered, "up-1@example.invalid", &lists);
+        assert_eq!(
+            asked_of(&by_offer)?.0,
+            Some(addr("192.0.2.6:2223")?),
+            "the offer"
+        );
+        let by_sdp = engines.target(
+            &CallEvidence::from(vec![sight(0, true, "203.0.113.5", 30010)?]),
+            "up-1@example.invalid",
+            &lists,
+        );
+        assert!(
+            matches!(by_sdp, CallTarget::Ask { .. }),
+            "the SDP map answers: {by_sdp:?}"
+        );
+        assert_eq!(
+            engines.asked(),
+            vec![Vec::<String>::new(); 4],
+            "evidence asks no list"
+        );
+
+        let default = ListingRelay::new(DEFAULT, &["up-1@example.invalid"]);
+        let as_dyn: Arc<dyn ReadOnlyRelay + Send + Sync> = Arc::clone(&default) as _;
+        let trusting = EngineRouting::new(
+            EngineRule::TrustSdp { control_port: 2223 },
+            addr(DEFAULT)?,
+            false,
+            Arc::new(|_| unreachable_relay()),
+        );
+        let alone = call_target_listed(
+            &as_dyn,
+            Some(&trusting),
+            &CallEvidence::default(),
+            "up-1@example.invalid",
+            &lists,
+        );
+        assert_eq!(asked_of(&alone)?.0, Some(addr(DEFAULT)?), "the default");
+        let no_rule = call_target_listed(
+            &as_dyn,
+            None,
+            &CallEvidence::default(),
+            "up-1@example.invalid",
+            &lists,
+        );
+        assert_eq!(asked_of(&no_rule)?, (None, None), "no rule, as before");
+        assert!(default.asked().is_empty(), "one engine asks no list");
+        Ok(())
+    }
+
+    /// Within one question each engine is asked its list once, however many
+    /// calls the question chooses an engine for.
+    #[test]
+    fn one_question_asks_each_engine_its_list_once() -> Result<(), TestError> {
+        let engines = FourEngines::new(
+            ListingRelay::new(DEFAULT, &["b@example.invalid"]),
+            [
+                ListingRelay::new("192.0.2.5:2223", &["a@example.invalid"]),
+                ListingRelay::new("192.0.2.6:2223", &[]),
+                ListingRelay::new("192.0.2.7:2223", &[]),
+            ],
+            false,
+        )?;
+        let permit = live_permit()?;
+        let lists = EngineLists::new(&permit, crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+        let a = engines.target(&CallEvidence::default(), "a@example.invalid", &lists);
+        let b = engines.target(&CallEvidence::default(), "b@example.invalid", &lists);
+        assert_eq!(asked_of(&a)?.0, Some(addr("192.0.2.5:2223")?), "a's engine");
+        assert_eq!(asked_of(&b)?.0, Some(addr(DEFAULT)?), "b's engine");
+        assert!(
+            engines.asked().iter().all(|a| a.len() == 1),
+            "one list each: {:?}",
+            engines.asked()
         );
         Ok(())
     }

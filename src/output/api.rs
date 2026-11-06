@@ -5854,6 +5854,39 @@ fn relay_rest_answer(
     relay_rest_answer_with(rq, ask, stream_store, None)
 }
 
+/// One relay's answer to a question about its own counters: the statistics
+/// wrapped `outcome: "ok"`, or the classification envelope.
+fn relay_wide_answer(
+    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    label: &str,
+    permit: &crate::security::transmit_guard::TransmitPermit,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Value {
+    use crate::output::relay_statistics as fmt;
+    use crate::relay::types::ControlReply;
+    use crate::stats_vocab::{StatisticsOutcome as O, relay_reported, resolve_for_wire};
+    let text = match relay.statistics(permit) {
+        Ok(ControlReply::Statistics(pairs)) => {
+            let wire = resolve_for_wire(&relay_reported(&pairs));
+            fmt::relay_rest_ok(&fmt::format_relay_statistics_json(
+                &wire,
+                label,
+                now,
+                fmt::FetchOrigin::Asked,
+            ))
+        }
+        Ok(_) => fmt::relay_rest_outcome(
+            O::Suspect,
+            "the relay answered with something other than statistics",
+        ),
+        Err(e) => {
+            let (outcome, detail) = crate::output::query::relay_holdings::fetch_failure(label, &e);
+            fmt::relay_rest_outcome(outcome, &detail)
+        }
+    };
+    serde_json::from_str(&text).unwrap_or_else(|_| json!({ "outcome": "suspect" }))
+}
+
 /// [`relay_rest_answer`], with the dialog store a question about one call
 /// reads that call's SDP from to choose its engine.
 fn relay_rest_answer_with(
@@ -5904,7 +5937,19 @@ fn relay_rest_answer_with(
             let sightings = dialogs
                 .map(|d| crate::relay::engines::call_sightings(&d.read(), call_id))
                 .unwrap_or_default();
-            match crate::relay::engines::call_target(relay, rq.routing.as_deref(), &sightings) {
+            // One list per listed engine, for a call this server has seen
+            // nothing for, so the engine whose list names it is asked.
+            let lists = crate::relay::engines::EngineLists::new(
+                &permit,
+                crate::relay::reconcile::DEFAULT_LIST_LIMIT,
+            );
+            match crate::relay::engines::call_target_listed(
+                relay,
+                rq.routing.as_deref(),
+                &sightings,
+                call_id,
+                &lists,
+            ) {
                 crate::relay::engines::CallTarget::Ask { relay, reason, .. } => {
                     let label = crate::output::query::relay_holdings::relay_label(relay.as_ref());
                     let label = match reason {
@@ -5937,22 +5982,35 @@ fn relay_rest_answer_with(
     };
 
     match ask {
-        RelayAsk::Wide => match relay.statistics(&permit) {
-            Ok(ControlReply::Statistics(pairs)) => {
-                let wire = resolve_for_wire(&relay_reported(&pairs));
-                to_value(fmt::relay_rest_ok(&fmt::format_relay_statistics_json(
-                    &wire,
-                    &label,
-                    now,
-                    fmt::FetchOrigin::Asked,
-                )))
+        // The relay's own counters, from every listed engine: the top level
+        // is `--rtpengine-control`'s answer, as with one relay, and `engines`
+        // holds each engine's own.
+        RelayAsk::Wide => {
+            let Some(routing) = rq.routing.as_deref() else {
+                return relay_wide_answer(relay.as_ref(), &label, &permit, now);
+            };
+            let each: Vec<Value> = crate::relay::engines::listed_relays(
+                &relay,
+                routing.default_engine(),
+                Some(routing),
+            )
+            .iter()
+            .map(|(_, engine)| {
+                let label = crate::output::query::relay_holdings::relay_label(engine.as_ref());
+                let mut v = relay_wide_answer(engine.as_ref(), &label, &permit, now);
+                v["relay"] = json!(label);
+                v
+            })
+            .collect();
+            let mut top = each
+                .first()
+                .cloned()
+                .unwrap_or_else(|| json!({ "outcome": "suspect" }));
+            if each.len() > 1 {
+                top["engines"] = Value::Array(each);
             }
-            Ok(_) => to_value(fmt::relay_rest_outcome(
-                O::Suspect,
-                "the relay answered with something other than statistics",
-            )),
-            Err(e) => fetch_failure(&e),
-        },
+            top
+        }
         RelayAsk::Names => match relay.statistics(&permit) {
             Ok(ControlReply::Statistics(pairs)) => {
                 let names = known_names(&relay_reported(&pairs));
@@ -8012,6 +8070,7 @@ impl utoipa::Modify for BearerAuth {
         schema::RelayStatsResponse,
         schema::RelaySessionsResponse,
         crate::output::relay_polled::PolledAnswer,
+        crate::output::relay_polled::PolledEngine,
         crate::output::relay_polled::PolledOutcome,
         crate::output::relay_polled::PolledValue,
         crate::output::relay_polled::PolledRefusal,
@@ -10913,7 +10972,7 @@ mod tests {
             &self,
             _p: &crate::security::transmit_guard::TransmitPermit,
         ) -> anyhow::Result<ControlReply> {
-            anyhow::bail!("not asked")
+            self.1.produce()
         }
         fn call_statistics(
             &self,
@@ -10990,6 +11049,136 @@ mod tests {
             relay.contains("chosen by engine row 203.0.113.5 40000-49999"),
             "{v}"
         );
+        Ok(())
+    }
+
+    /// A call whose SDP and ng offer this server has not seen is asked of
+    /// the engine whose list names it, for each per-call route.
+    #[test]
+    fn relay_rest_unseen_call_asks_the_engine_whose_list_names_it() -> Result<(), TestError> {
+        use crate::relay::engines::{Connect, EngineMap, EngineRouting, EngineRow, EngineRule};
+        let rows = vec![
+            "203.0.113.5 30000-39999 192.0.2.5:2223".parse::<EngineRow>()?,
+            "203.0.113.5 40000-49999 192.0.2.6:2223".parse::<EngineRow>()?,
+        ];
+        let connect: Connect = Arc::new(|_| {
+            Arc::new(NamedEngine(
+                "engine-b",
+                Scripted::Stats(vec![("totals.RTP.packets", "77")]),
+                vec!["u-1@example.invalid"],
+            ))
+        });
+        let rq = RelayRestConfig {
+            relay: Some(Arc::new(NamedEngine(
+                "engine-a",
+                Scripted::Timeout,
+                Vec::new(),
+            ))),
+            permit: Some(live_permit()?),
+            polled: None,
+            routing: Some(Arc::new(EngineRouting::new(
+                EngineRule::Map(EngineMap::new(rows)?),
+                "192.0.2.5:2223".parse()?,
+                false,
+                connect,
+            ))),
+        };
+        let none = Arc::new(RwLock::new(DialogStore::new(16, false)));
+        // Engine-a times out on every question, so engine-b's 77 is the
+        // proof it was asked; the comparison has no capture side to name it.
+        let v = relay_rest_answer_with(
+            &rq,
+            &RelayAsk::Compare("u-1@example.invalid".into()),
+            &empty_streams(),
+            Some(&none),
+        );
+        assert!(
+            v["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("the relay reports 77 RTP packet(s)")),
+            "{v}"
+        );
+        for ask in [
+            RelayAsk::Call("u-1@example.invalid".into()),
+            RelayAsk::Holding("u-1@example.invalid".into()),
+        ] {
+            let v = relay_rest_answer_with(&rq, &ask, &empty_streams(), Some(&none));
+            let relay = v["relay"].as_str().unwrap_or_default();
+            assert!(
+                relay.contains("relay (engine-b)")
+                    && relay.contains(
+                        "sipnab has seen no SDP for this call; this engine's list names it"
+                    ),
+                "every per-call route: {v}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The relay's own counters are asked of every listed engine. The top
+    /// level is `--rtpengine-control`'s answer, as before, and `engines`
+    /// holds each engine's own answer, an engine that did not answer
+    /// included. A run with no engine rule has no `engines`.
+    #[test]
+    fn relay_rest_wide_asks_every_listed_engine() -> Result<(), TestError> {
+        use crate::relay::engines::{Connect, EngineMap, EngineRouting, EngineRow, EngineRule};
+        let rows = vec![
+            "203.0.113.5 30000-39999 192.0.2.5:2223".parse::<EngineRow>()?,
+            "203.0.113.5 40000-49999 192.0.2.6:2223".parse::<EngineRow>()?,
+            "203.0.113.5 50000-59999 192.0.2.7:2223".parse::<EngineRow>()?,
+        ];
+        let connect: Connect = Arc::new(|control| {
+            if control.port() == 2223 && control.ip().to_string() == "192.0.2.6" {
+                Arc::new(NamedEngine(
+                    "engine-b",
+                    Scripted::Stats(vec![("sessions", "2")]),
+                    Vec::new(),
+                ))
+            } else {
+                Arc::new(NamedEngine("engine-c", Scripted::Timeout, Vec::new()))
+            }
+        });
+        let mut rq = RelayRestConfig {
+            relay: Some(Arc::new(NamedEngine(
+                "engine-a",
+                Scripted::Stats(vec![("sessions", "1")]),
+                Vec::new(),
+            ))),
+            permit: Some(live_permit()?),
+            polled: None,
+            routing: Some(Arc::new(EngineRouting::new(
+                EngineRule::Map(EngineMap::new(rows)?),
+                "192.0.2.5:2223".parse()?,
+                false,
+                connect,
+            ))),
+        };
+        let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
+        assert_eq!(v["outcome"], "ok", "{v}");
+        assert_eq!(
+            v["relay"], "relay (engine-a)",
+            "the top level is the default's: {v}"
+        );
+        let engines = v["engines"].as_array().ok_or(format!("engines: {v}"))?;
+        assert_eq!(
+            engines
+                .iter()
+                .map(|e| (e["relay"].clone(), e["outcome"].clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (json!("relay (engine-a)"), json!("ok")),
+                (json!("relay (engine-b)"), json!("ok")),
+                (json!("relay (engine-c)"), json!("unreachable")),
+            ],
+            "each engine's own answer: {v}"
+        );
+        assert!(
+            engines[1].to_string().contains("\"sessions\""),
+            "engine-b's counters: {v}"
+        );
+        rq.routing = None;
+        let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
+        assert!(v.get("engines").is_none(), "one relay, no engines: {v}");
         Ok(())
     }
 

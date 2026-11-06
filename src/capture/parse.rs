@@ -1434,15 +1434,18 @@ const SLL2_PROTO_OFF: usize = 0;
 ///
 /// libpcap's LINKTYPE_LINUX_SLL / SLL2 pages make the protocol field's meaning
 /// depend on the ARPHRD_ type: a Netlink protocol type for ARPHRD_NETLINK
-/// (824), a GRE protocol type for ARPHRD_IPGRE (778) and ARPHRD_IP6GRE (823),
-/// and ignored entirely for ARPHRD_IEEE80211_RADIOTAP (803) and ARPHRD_FRAD
-/// (770). Only "otherwise" is it "the Ethernet protocol type for the payload".
+/// (824), and ignored entirely for ARPHRD_IEEE80211_RADIOTAP (803) and
+/// ARPHRD_FRAD (770). For ARPHRD_IPGRE (778) and ARPHRD_IP6GRE (823) it is a
+/// GRE protocol type, and [RFC 2784 section 2.4](https://www.rfc-editor.org/rfc/rfc2784.html#section-2.4) defines GRE protocol types as
+/// the EtherTypes: Linux sets the field from the GRE header, 0x0800 for IPv4.
+/// Those two are read as EtherTypes, so a GRE tunnel interface's packets are
+/// not dropped from an `-i any` capture.
 ///
 /// Checked because the alternative fabricates: a Netlink message whose
 /// protocol number happens to be 0x8864 is not a PPPoE frame, and
 /// decapsulating six bytes of it as a PPPoE header would report a host pair
 /// and a call out of bytes that never described one.
-const SLL_ARPHRD_WITHOUT_ETHERTYPE: [u16; 5] = [770, 778, 803, 823, 824];
+const SLL_ARPHRD_WITHOUT_ETHERTYPE: [u16; 3] = [770, 803, 824];
 
 /// Offset of the IP header inside a Linux cooked-capture frame, or `None`
 /// when the frame carries none this walk can point at.
@@ -7579,14 +7582,54 @@ mod tests {
         Ok(())
     }
 
+    /// A frame `-i any` captured on a GRE tunnel interface (ARPHRD_IPGRE 778,
+    /// ARPHRD_IP6GRE 823) parses. Its protocol field is a GRE protocol type,
+    /// and [RFC 2784 section 2.4](https://www.rfc-editor.org/rfc/rfc2784.html#section-2.4) defines those as the EtherTypes, so IPv4 is
+    /// 0x0800 there as on Ethernet. Dropping these frames hid every packet
+    /// on a tunnel interface, the ng requests a proxy sends a remote rtpengine
+    /// engine through a GRE tunnel among them.
+    #[test]
+    fn sll_frames_from_a_gre_tunnel_interface_parse() -> Result<(), TestError> {
+        use std::net::Ipv4Addr;
+        let eth = build_eth_ipv4_udp(
+            Ipv4Addr::new(198, 51, 100, 1).octets(),
+            Ipv4Addr::new(198, 51, 100, 2).octets(),
+            40000,
+            2223,
+            b"c1 d7:command4:pinge",
+        );
+        // The IP packet alone: a tunnel interface has no Ethernet header.
+        let ip = eth.get(14..).ok_or("an Ethernet header")?;
+        for arphrd in [778u16, 823] {
+            for (frame, link) in [
+                (linux_sll(ip, arphrd, 0x0800), DLT_LINUX_SLL),
+                (linux_sll2(ip, arphrd, 0x0800), DLT_LINUX_SLL2),
+            ] {
+                let pkt = make_packet(frame, link)?;
+                let pp = parse_packet(&pkt)?;
+                assert_eq!(
+                    (pp.dst_addr.to_string(), pp.dst_port),
+                    ("198.51.100.2".to_string(), 2223),
+                    "ARPHRD {arphrd} (link type {link}) carries an IPv4 packet"
+                );
+                assert!(
+                    peek_host_pair(&pkt).is_some(),
+                    "ARPHRD {arphrd} (link type {link}): the shard peek agrees"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// The protocol field is only an EtherType for the ARPHRD_ types where
     /// libpcap says it is.
     ///
-    /// For ARPHRD_NETLINK (824) it is a Netlink protocol type, for
-    /// ARPHRD_IPGRE (778) / ARPHRD_IP6GRE (823) a GRE protocol type, and for
+    /// For ARPHRD_NETLINK (824) it is a Netlink protocol type, and for
     /// ARPHRD_IEEE80211_RADIOTAP (803) and ARPHRD_FRAD (770) it is ignored
     /// entirely. Reading 0x8864 there and decapsulating six bytes as a PPPoE
-    /// header would manufacture a flow out of a Netlink message.
+    /// header would manufacture a flow out of a Netlink message. (A GRE
+    /// protocol type, for ARPHRD_IPGRE and ARPHRD_IP6GRE, IS an EtherType:
+    /// see `sll_frames_from_a_gre_tunnel_interface_parse`.)
     #[test]
     fn sll_protocol_field_is_not_an_ethertype_for_every_arphrd_type() -> Result<(), TestError> {
         use std::net::Ipv4Addr;
@@ -7599,7 +7642,7 @@ mod tests {
         );
         let body = pppoe_body(&base, &[0x00, 0x21]);
 
-        for arphrd in [770u16, 778, 803, 823, 824] {
+        for arphrd in [770u16, 803, 824] {
             let pkt = make_packet(linux_sll(&body, arphrd, 0x8864), DLT_LINUX_SLL)?;
             assert!(
                 parse_packet(&pkt).is_err(),
