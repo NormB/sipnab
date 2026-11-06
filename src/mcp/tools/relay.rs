@@ -883,32 +883,49 @@ impl SipnabMcp {
         // names_only is a global concept -- "what can I even ask for" -- so it is
         // honored only without a call_id, matching the REST names route.
         let names_only = params.names_only.unwrap_or(false) && call_id.is_none();
-        let reply = match call_id {
-            Some(cid) => client.call_statistics(&access.permit, cid),
-            None => client.statistics(&access.permit),
-        };
-        let payload = match reply {
-            Ok(reply) => RelayStatsAnswer {
-                engine: engine.clone(),
-                ..RelayStatsAnswer::from_reply(relay_addr, &reply, call_id, names_only)
-            },
-            Err(e) => {
-                let label = relay_label(client.as_ref());
-                let label = match call_id {
-                    Some(cid) => format!("{label}, call {cid}"),
-                    None => label,
-                };
-                let detail = suspect_or_unreachable(
-                    &label,
-                    &e,
-                    "about its statistics; this is not an answer that it has none",
-                )?;
-                RelayStatsAnswer {
-                    detail: Some(detail),
-                    engine,
-                    ..RelayStatsAnswer::base(relay_addr, "suspect")
+        // The relay's own counters come from every listed engine: the top
+        // level is `--rtpengine-control`'s answer and `engines` holds each
+        // engine's own. A call's counters and the name list ask one engine.
+        let payload = match access.routing.as_deref() {
+            Some(routing) if call_id.is_none() && !names_only => {
+                let mut each: Vec<RelayStatsAnswer> = Vec::new();
+                for (addr, engine) in
+                    crate::relay::engines::listed_relays(&access.relay, access.addr, Some(routing))
+                {
+                    // An engine that did not answer is an answer of its own
+                    // here, not the tool's failure: the other engines answered.
+                    each.push(
+                        relay_stats_answer(
+                            engine.as_ref(),
+                            addr,
+                            &access.permit,
+                            None,
+                            false,
+                            None,
+                        )
+                        .unwrap_or_else(|e| RelayStatsAnswer {
+                            detail: Some(e.message.to_string()),
+                            ..RelayStatsAnswer::base(addr, "unreachable")
+                        }),
+                    );
                 }
+                let mut top = each
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| RelayStatsAnswer::base(access.addr, "suspect"));
+                if each.len() > 1 {
+                    top.engines = Some(each);
+                }
+                top
             }
+            _ => relay_stats_answer(
+                client.as_ref(),
+                relay_addr,
+                &access.permit,
+                call_id,
+                names_only,
+                engine,
+            )?,
         };
         Ok(CallToolResult::success(vec![
             ContentBlock::json(serde_json::to_value(&payload).map_err(|e| {
@@ -1090,6 +1107,50 @@ impl SipnabMcp {
             ContentBlock::text(crate::mcp::shape::untrusted_note()),
         ]))
     }
+}
+
+/// One relay's `relay_stats` answer: its counters, a call's counters, or its
+/// name list, or why there is none.
+///
+/// # Errors
+///
+/// `internal_error` when the relay did not answer, as every relay tool does
+/// when nothing is known.
+fn relay_stats_answer(
+    client: &(dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync),
+    relay_addr: std::net::SocketAddr,
+    permit: &crate::security::transmit_guard::TransmitPermit,
+    call_id: Option<&str>,
+    names_only: bool,
+    engine: Option<String>,
+) -> Result<RelayStatsAnswer, rmcp::ErrorData> {
+    let reply = match call_id {
+        Some(cid) => client.call_statistics(permit, cid),
+        None => client.statistics(permit),
+    };
+    Ok(match reply {
+        Ok(reply) => RelayStatsAnswer {
+            engine,
+            ..RelayStatsAnswer::from_reply(relay_addr, &reply, call_id, names_only)
+        },
+        Err(e) => {
+            let label = relay_label(client);
+            let label = match call_id {
+                Some(cid) => format!("{label}, call {cid}"),
+                None => label,
+            };
+            let detail = suspect_or_unreachable(
+                &label,
+                &e,
+                "about its statistics; this is not an answer that it has none",
+            )?;
+            RelayStatsAnswer {
+                detail: Some(detail),
+                engine,
+                ..RelayStatsAnswer::base(relay_addr, "suspect")
+            }
+        }
+    })
 }
 
 /// Decide what one endpoint's delivery path is worth.
@@ -1642,10 +1703,18 @@ impl SipnabMcp {
         call_id: &str,
     ) -> Result<EngineFor, crate::relay::engines::Unknown> {
         let sightings = crate::relay::engines::call_sightings(&self.dialog_store.read(), call_id);
-        match crate::relay::engines::call_target(
+        // One list per listed engine, for a call this server has seen nothing
+        // for, so the engine whose list names it is asked.
+        let lists = crate::relay::engines::EngineLists::new(
+            &access.permit,
+            crate::relay::reconcile::DEFAULT_LIST_LIMIT,
+        );
+        match crate::relay::engines::call_target_listed(
             &access.relay,
             access.routing.as_deref(),
             &sightings,
+            call_id,
+            &lists,
         ) {
             crate::relay::engines::CallTarget::Ask {
                 relay,
@@ -1931,7 +2000,8 @@ pub struct RelayStatsAnswer {
     /// `ok`, or `refused` when the relay declined (e.g. a Call-ID it does not
     /// hold), `suspect` when the reply was not statistics or could not be
     /// trusted, or `not_configured` when an engine rule could choose no
-    /// engine for the call (nothing was asked).
+    /// engine for the call (nothing was asked). In `engines`, also
+    /// `unreachable` for an engine that did not answer.
     pub outcome: String,
     /// Why this engine was asked, when an engine rule chose it from the
     /// call's SDP.
@@ -1963,6 +2033,11 @@ pub struct RelayStatsAnswer {
     pub delivery_trust: DeliveryTrust,
     /// The one-line reading of `delivery_trust`.
     pub delivery_note: &'static str,
+    /// Each listed engine's own answer, `--rtpengine-control` first, when a
+    /// question about the relay's own counters went to several engines. The
+    /// fields above are the first engine's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engines: Option<Vec<RelayStatsAnswer>>,
     /// Version of this response shape.
     pub schema_version: u32,
 }
@@ -1983,6 +2058,7 @@ impl RelayStatsAnswer {
             names_source: None,
             names_note: None,
             refusal: None,
+            engines: None,
             engine: None,
             delivery_trust: DeliveryTrust::Asked,
             delivery_note: DeliveryTrust::Asked.explain(),
@@ -4062,6 +4138,93 @@ mod relay_handler_tests {
             ],
             "a call question goes to the engine its sdp names"
         );
+        Ok(())
+    }
+
+    /// A call this server has seen nothing for is asked of the engine whose
+    /// list names it: one `list` per engine, then the question.
+    #[tokio::test]
+    async fn an_unseen_call_goes_to_the_engine_whose_list_names_it() -> Result<(), TestError> {
+        let calls = |ids: &[&str]| {
+            Some(ControlReply::Calls(Enumeration {
+                call_ids: ids.iter().map(|c| (*c).to_string()).collect(),
+                truncated: false,
+            }))
+        };
+        let a = Arc::new(RelayDouble {
+            list: calls(&[]),
+            ..Default::default()
+        });
+        let b = Arc::new(RelayDouble {
+            list: calls(&["u-1@example.invalid"]),
+            call_statistics: Some(stats(&[("totals.RTP.packets", "5")])),
+            ..Default::default()
+        });
+        let s = routed(&a, &b)?;
+        let v = payload(
+            &s.relay_stats(Parameters(RelayStatsParams {
+                call_id: Some("u-1@example.invalid".to_string()),
+                ..Default::default()
+            }))
+            .await
+            .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        assert_eq!(v["relay_address"], "192.0.2.6:2223", "{v}");
+        assert_eq!(
+            v["engine"], "sipnab has seen no SDP for this call; this engine's list names it",
+            "{v}"
+        );
+        let limit = crate::relay::reconcile::DEFAULT_LIST_LIMIT;
+        assert_eq!(
+            a.asked(),
+            [format!("list {limit}")],
+            "the default: one list"
+        );
+        assert_eq!(
+            b.asked(),
+            [
+                format!("list {limit}"),
+                "call_statistics u-1@example.invalid".to_string()
+            ],
+            "the engine whose list names it: one list, then the question"
+        );
+        Ok(())
+    }
+
+    /// `relay_stats` without a `call_id` asks every listed engine: the top
+    /// level is the default engine's answer and `engines` holds each one's.
+    #[tokio::test]
+    async fn relay_stats_without_a_call_asks_every_engine() -> Result<(), TestError> {
+        let a = Arc::new(RelayDouble {
+            statistics: Some(stats(&[("sessions", "1")])),
+            ..Default::default()
+        });
+        let b = Arc::new(RelayDouble::default());
+        let s = routed(&a, &b)?;
+        let v = payload(
+            &s.relay_stats(Parameters(RelayStatsParams::default()))
+                .await
+                .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        assert_eq!(v["relay_address"], "192.0.2.5:2223", "{v}");
+        assert_eq!(v["outcome"], "ok", "{v}");
+        let engines = v["engines"].as_array().ok_or(format!("engines: {v}"))?;
+        assert_eq!(
+            engines
+                .iter()
+                .map(|e| (e["relay_address"].clone(), e["outcome"].clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (serde_json::json!("192.0.2.5:2223"), serde_json::json!("ok")),
+                (
+                    serde_json::json!("192.0.2.6:2223"),
+                    serde_json::json!("unreachable")
+                ),
+            ],
+            "each engine's own answer: {v}"
+        );
+        assert_eq!(a.asked(), ["statistics"], "the default, once");
+        assert_eq!(b.asked(), ["statistics"], "the other engine, once");
         Ok(())
     }
 

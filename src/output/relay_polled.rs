@@ -117,6 +117,38 @@ pub struct PolledAnswer {
     /// What starts a poll (`not_polling`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Each listed engine's own newest reading, `--rtpengine-control` first,
+    /// when the poll asks more than one engine. The fields above are the
+    /// first engine's.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engines: Option<Vec<PolledEngine>>,
+}
+
+/// One engine's newest reading, in a poll that asks several.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct PolledEngine {
+    /// The engine, named as the run's log names it.
+    pub relay: String,
+    /// `ok` when it has a reading, else `no_reading_yet`.
+    pub outcome: PolledOutcome,
+    /// When it answered, RFC 3339 (`ok`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub obtained_at: Option<String>,
+    /// Seconds since it answered, on this server's clock (`ok`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub age_secs: Option<i64>,
+    /// Its counters, each with its tier (`ok`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub statistics: Option<Vec<PolledValue>>,
+    /// Statistics it refused (`ok`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusals: Option<Vec<PolledRefusal>>,
+    /// Its newest attempt, when it failed after the reading.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_poll: Option<LastPoll>,
 }
 
 impl PolledAnswer {
@@ -133,6 +165,7 @@ impl PolledAnswer {
             refusals: None,
             last_poll: None,
             detail: None,
+            engines: None,
         }
     }
 }
@@ -152,6 +185,9 @@ pub struct PolledReading {
 /// One poll that obtained no reading.
 #[derive(Debug, Clone)]
 pub struct PollFailure {
+    /// The relay that obtained no reading, named as [`PolledReading::relay`]
+    /// names it.
+    pub relay: String,
     /// When the poll gave up.
     pub at: DateTime<Utc>,
     /// The classification every relay surface uses: `unreachable` (asked,
@@ -161,15 +197,42 @@ pub struct PollFailure {
     pub detail: String,
 }
 
+/// What the poll has obtained from one engine so far.
+#[derive(Debug)]
+struct EngineState {
+    /// The engine, as its readings name it.
+    relay: String,
+    /// The newest reading.
+    latest: Option<PolledReading>,
+    /// The newest failure, kept only while it is newer than `latest`.
+    failure: Option<PollFailure>,
+}
+
 /// What the poll has obtained so far.
 #[derive(Debug, Default)]
 struct State {
     /// The interval the poll runs at, once it has started.
     every_secs: Option<u64>,
-    /// The newest reading.
-    latest: Option<PolledReading>,
-    /// The newest failure, kept only while it is newer than `latest`.
-    failure: Option<PollFailure>,
+    /// Each engine polled, `--rtpengine-control` first.
+    engines: Vec<EngineState>,
+}
+
+impl State {
+    /// The state of `relay`, added after the others when it is new.
+    fn engine(&mut self, relay: &str) -> &mut EngineState {
+        let at = match self.engines.iter().position(|e| e.relay == relay) {
+            Some(at) => at,
+            None => {
+                self.engines.push(EngineState {
+                    relay: relay.to_string(),
+                    latest: None,
+                    failure: None,
+                });
+                self.engines.len() - 1
+            }
+        };
+        &mut self.engines[at]
+    }
 }
 
 /// The latest polled reading, shared by the poll that writes it and the
@@ -194,16 +257,30 @@ impl PolledStore {
         self.state.lock().every_secs = Some(every_secs);
     }
 
+    /// Record that a poll runs, every `every_secs` seconds, over `relays`,
+    /// `--rtpengine-control` first, each named as its readings name it.
+    pub fn start_engines(&self, every_secs: u64, relays: Vec<String>) {
+        let mut state = self.state.lock();
+        state.every_secs = Some(every_secs);
+        for relay in relays {
+            let _ = state.engine(&relay);
+        }
+    }
+
     /// Record a reading, which replaces the previous one and any failure.
     pub fn record(&self, reading: PolledReading) {
         let mut state = self.state.lock();
-        state.latest = Some(reading);
-        state.failure = None;
+        let relay = reading.relay.clone();
+        let engine = state.engine(&relay);
+        engine.latest = Some(reading);
+        engine.failure = None;
     }
 
     /// Record a poll that obtained nothing. The reading already held stays.
     pub fn record_failure(&self, failure: PollFailure) {
-        self.state.lock().failure = Some(failure);
+        let mut state = self.state.lock();
+        let relay = failure.relay.clone();
+        state.engine(&relay).failure = Some(failure);
     }
 
     /// The answer REST and MCP return, as of `now`.
@@ -230,15 +307,25 @@ impl PolledStore {
             };
         };
         let stamp = |t: DateTime<Utc>| t.format("%Y-%m-%dT%H:%M:%SZ").to_string();
-        let last_poll = state.failure.as_ref().map(|f| LastPoll {
-            outcome: f.outcome,
-            at: stamp(f.at),
-            detail: f.detail.clone(),
-        });
-        let Some(r) = &state.latest else {
+        let each: Vec<PolledEngine> = state
+            .engines
+            .iter()
+            .map(|e| engine_answer(e, now, &stamp))
+            .collect();
+        let engines = (each.len() > 1).then_some(each);
+        let Some(first) = state.engines.first() else {
+            return PolledAnswer {
+                interval_secs: Some(every_secs),
+                engines,
+                ..PolledAnswer::bare(PolledOutcome::NoReadingYet)
+            };
+        };
+        let last_poll = first.failure.as_ref().map(|f| last_poll(f, &stamp));
+        let Some(r) = &first.latest else {
             return PolledAnswer {
                 interval_secs: Some(every_secs),
                 last_poll,
+                engines,
                 ..PolledAnswer::bare(PolledOutcome::NoReadingYet)
             };
         };
@@ -250,30 +337,75 @@ impl PolledStore {
             origin: Some("polled"),
             interval_secs: Some(every_secs),
             age_secs: Some((now - r.obtained_at).num_seconds().max(0)),
-            statistics: Some(
-                r.wire
-                    .present
-                    .iter()
-                    .map(|v| PolledValue {
-                        name: v.name.clone(),
-                        value: v.value.clone(),
-                        tier: v.tier.as_wire_str(),
-                    })
-                    .collect(),
-            ),
-            refusals: Some(
-                r.wire
-                    .refusals
-                    .iter()
-                    .map(|x| PolledRefusal {
-                        name: x.name.clone(),
-                        code: x.code.clone(),
-                    })
-                    .collect(),
-            ),
+            statistics: Some(values(r)),
+            refusals: Some(refusals(r)),
             last_poll,
+            engines,
             ..PolledAnswer::bare(PolledOutcome::Ok)
         }
+    }
+}
+
+/// A failed attempt, as an answer reports it.
+fn last_poll(f: &PollFailure, stamp: &dyn Fn(DateTime<Utc>) -> String) -> LastPoll {
+    LastPoll {
+        outcome: f.outcome,
+        at: stamp(f.at),
+        detail: f.detail.clone(),
+    }
+}
+
+/// A reading's counters, each with its tier.
+fn values(r: &PolledReading) -> Vec<PolledValue> {
+    r.wire
+        .present
+        .iter()
+        .map(|v| PolledValue {
+            name: v.name.clone(),
+            value: v.value.clone(),
+            tier: v.tier.as_wire_str(),
+        })
+        .collect()
+}
+
+/// A reading's refusals.
+fn refusals(r: &PolledReading) -> Vec<PolledRefusal> {
+    r.wire
+        .refusals
+        .iter()
+        .map(|x| PolledRefusal {
+            name: x.name.clone(),
+            code: x.code.clone(),
+        })
+        .collect()
+}
+
+/// One engine's newest reading, as `engines` carries it.
+fn engine_answer(
+    e: &EngineState,
+    now: DateTime<Utc>,
+    stamp: &dyn Fn(DateTime<Utc>) -> String,
+) -> PolledEngine {
+    let last_poll = e.failure.as_ref().map(|f| last_poll(f, stamp));
+    match &e.latest {
+        Some(r) => PolledEngine {
+            relay: e.relay.clone(),
+            outcome: PolledOutcome::Ok,
+            obtained_at: Some(stamp(r.obtained_at)),
+            age_secs: Some((now - r.obtained_at).num_seconds().max(0)),
+            statistics: Some(values(r)),
+            refusals: Some(refusals(r)),
+            last_poll,
+        },
+        None => PolledEngine {
+            relay: e.relay.clone(),
+            outcome: PolledOutcome::NoReadingYet,
+            obtained_at: None,
+            age_secs: None,
+            statistics: None,
+            refusals: None,
+            last_poll,
+        },
     }
 }
 
@@ -327,6 +459,7 @@ mod tests {
         assert_eq!(v["interval_secs"], 5, "{v}");
         assert!(v.get("last_poll").is_none(), "no attempt failed: {v}");
         store.record_failure(PollFailure {
+            relay: "relay at 192.0.2.10:22222".to_string(),
             at: t0()?,
             outcome: "unreachable",
             detail: "no reply within 2s".to_string(),
@@ -385,6 +518,7 @@ mod tests {
         );
         assert_eq!(sessions["tier"], "relay_reported", "{v}");
         store.record_failure(PollFailure {
+            relay: "relay at 192.0.2.10:22222".to_string(),
             at: later,
             outcome: "unreachable",
             detail: "no reply within 2s".to_string(),
@@ -399,6 +533,48 @@ mod tests {
             "a newer reading clears it: {v}"
         );
         assert_eq!(v["age_secs"], 0, "{v}");
+        Ok(())
+    }
+
+    /// A poll over several engines keeps each engine's reading and failure
+    /// apart. The top level is the first engine's; `engines` holds each. A
+    /// poll over one engine has no `engines`.
+    #[test]
+    fn each_engines_reading_is_kept_on_its_own() -> Result<(), TestError> {
+        let store = PolledStore::default();
+        store.start_engines(
+            5,
+            vec![
+                "relay at 192.0.2.10:22222".to_string(),
+                "relay at 192.0.2.11:22222".to_string(),
+            ],
+        );
+        store.record(reading(t0()?));
+        store.record_failure(PollFailure {
+            relay: "relay at 192.0.2.11:22222".to_string(),
+            at: t0()?,
+            outcome: "unreachable",
+            detail: "no reply within 2s".to_string(),
+        });
+        let v = serde_json::to_value(store.answer(t0()?))?;
+        assert_eq!(v["outcome"], "ok", "the first engine answered: {v}");
+        assert_eq!(v["relay"], "relay at 192.0.2.10:22222", "{v}");
+        assert!(
+            v.get("last_poll").is_none(),
+            "the other engine's failure is its own: {v}"
+        );
+        let engines = v["engines"].as_array().ok_or(format!("engines: {v}"))?;
+        assert_eq!(engines.len(), 2, "{v}");
+        assert_eq!(engines[0]["outcome"], "ok", "{v}");
+        assert_eq!(engines[1]["relay"], "relay at 192.0.2.11:22222", "{v}");
+        assert_eq!(engines[1]["outcome"], "no_reading_yet", "{v}");
+        assert_eq!(engines[1]["last_poll"]["outcome"], "unreachable", "{v}");
+
+        let one = PolledStore::default();
+        one.start(5);
+        one.record(reading(t0()?));
+        let v = serde_json::to_value(one.answer(t0()?))?;
+        assert!(v.get("engines").is_none(), "one engine, no engines: {v}");
         Ok(())
     }
 }

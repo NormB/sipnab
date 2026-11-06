@@ -53,7 +53,9 @@ read:
 - `statistics` returns the relay's own totals.
 
 To name calls, sipnab asks once at startup. It asks again only when a stream
-turns up that nothing explains. It does not ask on a timer. Only
+turns up that nothing explains. It does not ask on a timer. With several
+engines listed, it asks every one of them: see
+[Ask each call's rtpengine engine](@/docs/relay-engines.md#name-the-calls-that-were-up-before-sipnab-started). Only
 `--relay-stats-interval` polls, and it asks for `statistics`, not for calls.
 
 No sipnab command, flag, REST route or MCP tool can make rtpengine create,

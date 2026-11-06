@@ -1037,8 +1037,9 @@ static SPECS: &[Spec] = &[
             "2223",
         ],
     ),
-    // `--rtpengine-ng-engine`: one ng engine row, `[HOMER-ID] LISTEN-NG`. It
-    // needs `--rtpengine-control`. The accepted rows name different
+    // `--rtpengine-ng-engine`: one ng engine row, `[HOMER-ID] LISTEN-NG`, the
+    // address with or without a port; a bare address takes the port of
+    // `--rtpengine-control`, which it needs. The accepted rows name different
     // homer-ids and addresses, so the flag and the key combine without
     // naming one engine twice.
     (
@@ -1049,6 +1050,8 @@ static SPECS: &[Spec] = &[
                 "2002 -> 192.0.2.6:2223",
                 "[2001:db8::7]:2223",
                 "192.0.2.8:2223",
+                "2003 192.0.2.9",
+                "192.0.2.10",
             ],
             reject: &[
                 ("x", 2),
@@ -1056,7 +1059,7 @@ static SPECS: &[Spec] = &[
                 ("2001", 2),
                 ("two 192.0.2.5:2223", 2),
                 ("4294967296 192.0.2.5:2223", 2),
-                ("2001 192.0.2.5", 2),
+                ("2001 192.0.2.5:0", 2),
                 ("2001 192.0.2.5:2223 extra", 2),
                 ("2001 engine.example.com:2223", 2),
             ],

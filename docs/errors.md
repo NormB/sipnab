@@ -3059,9 +3059,9 @@ sipnab could not read the signing-key file. `{flag}` is `--api-signing-key-file`
 
 ## Media relays (rtpengine and rtpproxy)
 
-### `{} answered {other:?}, not statistics`
+### `{label} answered {other:?}, not statistics`
 
-A `--relay-stats-interval` poll got a reply that was not a statistics answer. The first `{}` is `rtpengine at <addr>`, and `{other:?}` is the decoded reply. The poll keeps running on its interval.
+A `--relay-stats-interval` poll got a reply that was not a statistics answer. `{label}` is `rtpengine at <addr>`, the engine that answered: with `--rtpengine-engine` or `--rtpengine-ng-engine` rows the poll asks every listed engine. `{other:?}` is the decoded reply. The poll keeps running on its interval.
 
 **What to do:** Check that `--rtpengine-control` points at the relay's control port.
 
@@ -3087,11 +3087,11 @@ With `--rtpengine-control` on a live source, sipnab starts a background thread. 
 
 **Exit code:** None. This is a warning, and the run continues.
 
-### `{} did not answer the polled statistics request ({e})`
+### `{label} did not answer the polled statistics request ({e})`
 
-A `--relay-stats-interval` poll failed. The first `{}` is `rtpengine at <addr>`, and `{e}` is the error. The request times out after 2 seconds. The poll keeps running on its interval.
+A `--relay-stats-interval` poll failed. `{label}` is `rtpengine at <addr>`, the engine that did not answer: with `--rtpengine-engine` or `--rtpengine-ng-engine` rows the poll asks every listed engine, and the others' readings still print. `{e}` is the error. The request times out after 2 seconds. The poll keeps running on its interval.
 
-**What to do:** Check that the relay is running. Check that `--rtpengine-control` names its control port, and that this host can reach that port.
+**What to do:** Check that the relay is running. Check that `--rtpengine-control`, or the engine's row, names its control port, and that this host can reach that port.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
@@ -3249,11 +3249,11 @@ When no row came from the command line, sipnab prints it after `invalid config v
 
 ### `[relay] ng_engines: {e}`
 
-A row in the config file's `[relay] ng_engines` list does not parse. `{e}` names the row and the field: the row is not `[HOMER-ID] LISTEN-NG-ADDRESS:PORT` (one or two fields, with an optional `->` before the address), the `homer-id` is not a whole number from 0 to 4294967295, or the `listen-ng` address has no port. sipnab refused the run before anything opened.
+A row in the config file's `[relay] ng_engines` list does not parse. `{e}` names the row and the field: the row is not `[HOMER-ID] LISTEN-NG-ADDRESS[:PORT]` (one or two fields, with an optional `->` before the address), the `homer-id` is not a whole number from 0 to 4294967295, or the `listen-ng` field is not an address, or names port 0. A bare address, with no port, takes the port of `--rtpengine-control`. sipnab refused the run before anything opened.
 
 sipnab prints it after `invalid config value: `, as it prints every refused config value.
 
-**What to do:** Fix the row, for example `"2001 192.0.2.5:2223"`, or `"192.0.2.5:2223"` for an engine seen only in captured requests. Write an IPv6 address in brackets: `[2001:db8::5]:2223`.
+**What to do:** Fix the row, for example `"2001 192.0.2.5:2223"`, or `"192.0.2.5"` or `"192.0.2.5:2223"` for an engine seen only in captured requests. Write an IPv6 address with a port in brackets: `[2001:db8::5]:2223`.
 
 **Exit code:** 1.
 
@@ -3267,9 +3267,9 @@ When no row came from the command line, sipnab prints it after `invalid config v
 
 **Exit code:** 2 when an `--rtpengine-ng-engine` row is on the command line, otherwise 1.
 
-### `{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose engine sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223`
+### `{rule} needs --rtpengine-control as well: that engine is asked first, it alone answers the relay's statistic names, and it answers about a call whose engine no ng offer, SDP or engine list names. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223`
 
-`{rule}` is `--rtpengine-engine (or [relay] engines)`, `--rtpengine-trust-sdp-address` or `--rtpengine-ng-engine (or [relay] ng_engines)`. An engine rule chooses the engine for a question about one call. The run still needs one engine for the questions that are not about one call, and for a call whose engine sipnab has not seen (no ng `offer` and no SDP a rule applies to), and `--rtpengine-control` names it. sipnab refused the run before anything opened. When the rows came from `[relay] engines` or `[relay] ng_engines` alone, sipnab prints it after `invalid config value: `.
+`{rule}` is `--rtpengine-engine (or [relay] engines)`, `--rtpengine-trust-sdp-address` or `--rtpengine-ng-engine (or [relay] ng_engines)`. An engine rule chooses the engine for a question about one call. The run still needs one engine that it asks first on every question put to all of its engines, that alone answers the relay's statistic names (`--relay-stats-list`, `GET /v1/relay/stats/names`), and that answers about a call whose engine sipnab has not seen (no ng `offer`, no SDP a rule applies to, and no engine's `list` names it). `--rtpengine-control` names it. sipnab refused the run before anything opened. When the rows came from `[relay] engines` or `[relay] ng_engines` alone, sipnab prints it after `invalid config value: `.
 
 **What to do:** Add `--rtpengine-control` with one engine's `listen-ng` address and port.
 
@@ -3293,7 +3293,7 @@ The command line trusts SDP addresses as engine control hosts, and the command l
 
 ### `--relay-stats-call {call_id}: {unknown}`
 
-`--relay-stats-call` names a call, and the run's engine rule chose no engine for it, so sipnab asked nothing. `{unknown}` says why. This run asks before it reads any traffic, so it sees no ng `offer` and no SDP, and asks the `--rtpengine-control` engine. The message exists for the rule's other answers. The run continues.
+`--relay-stats-call` names a call, and the run's engine rule chose no engine for it, so sipnab asked nothing. `{unknown}` says why. This run asks before it reads any traffic, so it sees no ng `offer` and no SDP: it asks the engine whose `list` names the call, else the `--rtpengine-control` engine. The message exists for the rule's other answers. The run continues.
 
 **What to do:** Ask about the call from a run that has seen its SIP: the TUI, `GET /v1/relay/stats/call/{call_id}`, or the MCP `relay_stats` tool.
 
@@ -3303,9 +3303,9 @@ The command line trusts SDP addresses as engine control hosts, and the command l
 
 `--relay-compare` asks after the capture, when sipnab holds the call's SDP, and the run's engine rule chose no engine for it. `{unknown}` says why: the call's newest ng `offer` reached an engine no row names (`engine not listed`), no engine row claims the call's SDP media (`engine unknown (no map row)`), or, trusting SDP addresses, sipnab saw no address in both a request and a response. sipnab asked nothing. The run continues.
 
-An `engine not listed` reason names the engine by `homer-id`, for a HEP copy, or by the address the proxy sent a captured request to. That address came from captured traffic, so sipnab never asks it unless you list it. A HEP copy also reports the `listen-ng` address the engine bound, shown to help write the row.
+An `engine not listed` reason names the engine by `homer-id`, for a HEP copy, or by the address the proxy sent a captured request to. That address came from captured traffic, so sipnab never asks it unless you list it. A HEP copy also reports the `listen-ng` address the engine bound. The reason ends with the row that would list the engine: for a captured request, `To list it, add --rtpengine-ng-engine '192.0.2.7:2223', or ng_engines = ["192.0.2.7:2223"] in the config file's [relay] section`. For a HEP copy, it gives the same with its `homer-id` and the reported `listen-ng`, unless that address is loopback, `0.0.0.0` or `::`. sipnab sends nothing to that address until a row lists it.
 
-**What to do:** For `engine not listed`, add an `--rtpengine-ng-engine` row with the engine's `homer-id` and a `listen-ng` address the sipnab host can reach, if it is one of your engines. For `engine unknown (no map row)`, add a `--rtpengine-engine` row for the media address and port range the message names, if that address is an engine's.
+**What to do:** For `engine not listed`, add the suggested row, or an `--rtpengine-ng-engine` row with the engine's `homer-id` and a `listen-ng` address the sipnab host can reach, if it is one of your engines. For `engine unknown (no map row)`, add a `--rtpengine-engine` row for the media address and port range the message names, if that address is an engine's.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
@@ -3429,9 +3429,9 @@ When the TUI closed, sipnab found that the rtpengine reconciler thread had ended
 
 **Exit code:** None. sipnab logs this warning during shutdown.
 
-### `{}: this poll's round trip took {elapsed:.1?}, longer than the {}s interval; the polling cadence has slipped and is slower than requested.`
+### `{who}: this poll's round trip took {elapsed:.1?}, longer than the {}s interval; the polling cadence has slipped and is slower than requested.`
 
-One relay statistics poll took longer than the `--relay-stats-interval`. The first `{}` is `rtpengine at <addr>`, `{elapsed:.1?}` is the round-trip time, and the second `{}` is the interval in seconds. Polls never overlap, so the next poll starts later, and readings arrive less often than you requested.
+One relay statistics poll took longer than the `--relay-stats-interval`. `{who}` is `rtpengine at <addr>`, or with several listed engines each engine the poll asked, separated by commas: the poll asks them one after another, and the round trip is the whole poll's. `{elapsed:.1?}` is the round-trip time, and `{}` is the interval in seconds. Polls never overlap, so the next poll starts later, and readings arrive less often than you requested.
 
 **What to do:** Increase `--relay-stats-interval` above the round-trip time shown, or check why the relay is slow to answer.
 

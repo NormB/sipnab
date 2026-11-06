@@ -575,7 +575,7 @@ pub struct RelayConfig {
     /// Engine rows, each `MEDIA-ADDRESS LOW-HIGH CONTROL-ADDRESS:PORT`.
     /// `--rtpengine-engine` adds to them.
     pub engines: Vec<String>,
-    /// ng engine rows, each `[HOMER-ID] LISTEN-NG-ADDRESS:PORT`: the engines
+    /// ng engine rows, each `[HOMER-ID] LISTEN-NG-ADDRESS[:PORT]`: the engines
     /// sipnab may ask about a call whose engine it learned from ng control
     /// traffic. `--rtpengine-ng-engine` adds to them.
     pub ng_engines: Vec<String>,

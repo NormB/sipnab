@@ -922,6 +922,146 @@ pub struct RelaySnapshot {
     pub implementation: crate::relay::RelayImplementation,
 }
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+impl<R: ReadOnlyRelay> From<Reconciler<R>> for Reconcilers<R> {
+    /// The one engine a run without engine rules asks.
+    fn from(one: Reconciler<R>) -> Self {
+        Self::new(vec![one])
+    }
+}
+
+/// What [`Reconcilers::on_unexplained_stream`] learned about one socket.
+#[derive(Debug, Clone)]
+pub struct EnginesAnswer {
+    /// The engine that attributed it, by index, and what it said.
+    pub found: Option<(usize, Attribution)>,
+    /// Each engine asked that could not attribute it, by index, and why.
+    pub why_not: Vec<(usize, Unattributed)>,
+}
+
+/// One [`Reconciler`] per listed engine, asked together.
+///
+/// Startup asks every engine the run lists: `--rtpengine-control`, then each
+/// other engine an engine map row or an ng engine row names. Each engine
+/// keeps its own index, its own record of what was asked, and its own
+/// transaction ceiling, so one busy engine cannot spend another's.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub struct Reconcilers<R: ReadOnlyRelay> {
+    /// The engines, `--rtpengine-control` first.
+    engines: Vec<Reconciler<R>>,
+}
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+impl<R: ReadOnlyRelay> Reconcilers<R> {
+    /// The engines to ask, `--rtpengine-control` first.
+    #[must_use]
+    pub fn new(engines: Vec<Reconciler<R>>) -> Self {
+        Self { engines }
+    }
+
+    /// The engines' reconcilers, in the order given.
+    #[must_use]
+    pub fn into_engines(self) -> Vec<Reconciler<R>> {
+        self.engines
+    }
+
+    /// Each engine's reconciler, in the order given.
+    #[must_use]
+    pub fn engines(&self) -> &[Reconciler<R>] {
+        &self.engines
+    }
+
+    /// FIRST TRIGGER, on every engine.
+    ///
+    /// Returns each engine's line, in order, then `Held by several engines:`
+    /// naming each call two or more engines read at startup. Empty when
+    /// startup has already run.
+    pub fn at_startup(&mut self, permit: &TransmitPermit) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .engines
+            .iter_mut()
+            .filter_map(|e| e.at_startup(permit))
+            .collect();
+        if lines.is_empty() {
+            return lines;
+        }
+        let mut held: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for e in &self.engines {
+            for call in &e.known_calls {
+                *held.entry(call.as_str()).or_default() += 1;
+            }
+        }
+        let several: Vec<&str> = held
+            .into_iter()
+            .filter(|(_, n)| *n > 1)
+            .map(|(c, _)| c)
+            .collect();
+        if !several.is_empty() {
+            lines.push(format!("Held by several engines: {}", several.join(", ")));
+        }
+        lines
+    }
+
+    /// SECOND TRIGGER, on every engine.
+    ///
+    /// A socket an engine already accounted for is answered from memory,
+    /// asking nothing. Otherwise each engine is asked in turn until one
+    /// attributes it. The answer carries the attributing engine's index and
+    /// what it said, beside each engine asked before it and why that engine
+    /// could not, so an engine that is down is still reported.
+    pub fn on_unexplained_stream(
+        &mut self,
+        permit: &TransmitPermit,
+        local_address: IpAddr,
+        local_port: u16,
+    ) -> EnginesAnswer {
+        // What an engine already accounted for costs nothing to answer, so
+        // every index is read before any engine is asked.
+        if let Some((i, found)) = self
+            .engines
+            .iter()
+            .enumerate()
+            .find_map(|(i, e)| e.index.get(&(local_address, local_port)).map(|a| (i, a)))
+        {
+            return EnginesAnswer {
+                found: Some((i, found.clone())),
+                why_not: Vec::new(),
+            };
+        }
+        let mut why_not: Vec<(usize, Unattributed)> = Vec::new();
+        for (i, engine) in self.engines.iter_mut().enumerate() {
+            match engine.on_unexplained_stream(permit, local_address, local_port) {
+                Ok(found) => {
+                    return EnginesAnswer {
+                        found: Some((i, found)),
+                        why_not,
+                    };
+                }
+                Err(reason) => why_not.push((i, reason)),
+            }
+        }
+        EnginesAnswer {
+            found: None,
+            why_not,
+        }
+    }
+
+    /// What every engine has said since the last call.
+    #[must_use]
+    pub fn take_new_links(&mut self, taken_at: chrono::DateTime<chrono::Utc>) -> RelaySnapshot {
+        let links: Vec<RelayLink> = self
+            .engines
+            .iter_mut()
+            .flat_map(|e| e.take_new_links(taken_at).links)
+            .collect();
+        RelaySnapshot {
+            implementation: crate::relay::RelayImplementation::Rtpengine,
+            taken_at: (!links.is_empty()).then_some(taken_at),
+            links,
+        }
+    }
+}
+
 #[cfg(test)]
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 mod tests {
@@ -967,6 +1107,8 @@ mod tests {
         addresses: HashMap<String, String>,
         /// Fail every query until this many have been attempted.
         fail_first: u32,
+        /// How it describes itself, when not the default.
+        name: Option<&'static str>,
         lists: RefCell<u32>,
         queries: RefCell<Vec<String>>,
     }
@@ -978,6 +1120,7 @@ mod tests {
                 calls: HashMap::new(),
                 addresses: HashMap::new(),
                 fail_first: 0,
+                name: None,
                 lists: RefCell::new(0),
                 queries: RefCell::new(Vec::new()),
             }
@@ -996,6 +1139,11 @@ mod tests {
 
         fn failing_first(mut self, n: u32) -> Self {
             self.fail_first = n;
+            self
+        }
+
+        fn named(mut self, name: &'static str) -> Self {
+            self.name = Some(name);
             self
         }
     }
@@ -1055,7 +1203,7 @@ mod tests {
         }
 
         fn describe(&self) -> String {
-            "203.0.113.7:22222".to_owned()
+            self.name.unwrap_or("203.0.113.7:22222").to_owned()
         }
         fn statistics(
             &self,
@@ -2549,6 +2697,162 @@ mod tests {
             why,
             Unattributed::BudgetSpent,
             "call-B was never read, so this port may be its: {why:?}"
+        );
+        Ok(())
+    }
+
+    // ── every listed engine ──────────────────────────────────────────
+
+    /// Engine A holds call-a on 203.0.113.7 ports 30000-30001; engine B
+    /// holds call-b on 203.0.113.8 ports 40000-40001, and also lists call-a,
+    /// which it holds on port 40002.
+    fn two_engines() -> Reconcilers<ScriptedRelay> {
+        Reconcilers::new(vec![
+            Reconciler::new(
+                ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
+                    .holding("call-a", Some(vec![30000, 30001]))
+                    .named("engine at 192.0.2.5:2223"),
+            ),
+            Reconciler::new(
+                ScriptedRelay::new(Answer::Calls(vec!["call-b", "call-a"], false))
+                    .holding_on("call-b", "203.0.113.8", vec![40000, 40001])
+                    .holding_on("call-a", "203.0.113.8", vec![40002])
+                    .named("engine at 192.0.2.6:2223"),
+            ),
+        ])
+    }
+
+    /// Startup asks every engine: each engine's answer is a line of its own,
+    /// a call two engines hold is named, and the snapshot carries every
+    /// engine's sockets.
+    #[test]
+    fn startup_asks_every_engine_and_names_a_call_two_hold() -> Result<(), TestError> {
+        let mut engines = two_engines();
+        let lines = engines.at_startup(&permit()?);
+        assert_eq!(
+            lines.len(),
+            3,
+            "a line per engine, then the shared call: {lines:?}"
+        );
+        assert!(
+            lines[0].starts_with("engine at 192.0.2.5:2223: "),
+            "{lines:?}"
+        );
+        assert!(
+            lines[1].starts_with("engine at 192.0.2.6:2223: "),
+            "{lines:?}"
+        );
+        assert_eq!(
+            lines[2], "Held by several engines: call-a",
+            "the call two engines hold is named"
+        );
+        let mut links: Vec<(String, u16, String)> = engines
+            .take_new_links(chrono::Utc::now())
+            .links
+            .into_iter()
+            .map(|l| (l.address.to_string(), l.port, l.call_id))
+            .collect();
+        links.sort();
+        assert_eq!(
+            links,
+            vec![
+                ("203.0.113.7".to_string(), 30000, "call-a".to_string()),
+                ("203.0.113.7".to_string(), 30001, "call-a".to_string()),
+                ("203.0.113.8".to_string(), 40000, "call-b".to_string()),
+                ("203.0.113.8".to_string(), 40001, "call-b".to_string()),
+                ("203.0.113.8".to_string(), 40002, "call-a".to_string()),
+            ],
+            "every engine's sockets reach the snapshot"
+        );
+        assert!(
+            engines.at_startup(&permit()?).is_empty(),
+            "startup fires once"
+        );
+        Ok(())
+    }
+
+    /// An unexplained stream on a socket one engine already accounted for
+    /// is attributed from memory, asking nothing. A socket no engine knows
+    /// asks each engine in turn, until one attributes it.
+    #[test]
+    fn an_unexplained_stream_is_asked_of_each_engine_until_one_holds_it() -> Result<(), TestError> {
+        let permit = permit()?;
+        let mut engines = two_engines();
+        let _ = engines.at_startup(&permit);
+        let spent = |e: &Reconcilers<ScriptedRelay>| -> Vec<u32> {
+            e.engines().iter().map(Reconciler::transactions).collect()
+        };
+        let before = spent(&engines);
+        let known = engines
+            .on_unexplained_stream(&permit, "203.0.113.8".parse()?, 40001)
+            .found
+            .ok_or("engine B accounted for it")?;
+        assert_eq!(known.0, 1, "engine B accounted for it");
+        assert_eq!(known.1.call_id, "call-b", "engine B accounted for it");
+        assert_eq!(spent(&engines), before, "from memory, nothing asked");
+
+        let unknown = engines.on_unexplained_stream(&permit, "203.0.113.9".parse()?, 50000);
+        assert!(unknown.found.is_none(), "no engine holds it");
+        let errs = unknown.why_not;
+        assert_eq!(
+            errs.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+            vec![0, 1],
+            "each engine was asked and said why not"
+        );
+        assert!(
+            spent(&engines)
+                .iter()
+                .zip(&before)
+                .all(|(now, was)| now > was),
+            "each engine spent a refresh: {:?} after {before:?}",
+            spent(&engines)
+        );
+        Ok(())
+    }
+
+    /// An engine that does not answer at startup says so in its own line,
+    /// and the other engines' sockets are still learned.
+    #[test]
+    fn an_engine_that_is_down_does_not_hide_the_others() -> Result<(), TestError> {
+        let mut engines = Reconcilers::new(vec![
+            Reconciler::new(ScriptedRelay::new(Answer::Fail).named("engine at 192.0.2.5:2223")),
+            Reconciler::new(
+                ScriptedRelay::new(Answer::Calls(vec!["call-b"], false))
+                    .holding_on("call-b", "203.0.113.8", vec![40000])
+                    .named("engine at 192.0.2.6:2223"),
+            ),
+        ]);
+        let lines = engines.at_startup(&permit()?);
+        assert_eq!(lines.len(), 2, "no call two engines hold: {lines:?}");
+        assert!(
+            lines[0].contains("192.0.2.5:2223 could not be asked which calls are up"),
+            "{lines:?}"
+        );
+        let links = engines.take_new_links(chrono::Utc::now()).links;
+        assert_eq!(
+            links.iter().map(|l| l.port).collect::<Vec<_>>(),
+            vec![40000],
+            "the answering engine's sockets are learned"
+        );
+        Ok(())
+    }
+
+    /// One engine reads exactly as the single reconciler did: one line, the
+    /// same socket count, and errors from that engine alone.
+    #[test]
+    fn one_engine_reads_as_the_single_reconciler_did() -> Result<(), TestError> {
+        let script = || {
+            ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
+                .holding("call-a", Some(vec![30000, 30001]))
+        };
+        let mut single = Reconciler::new(script());
+        let mut engines = Reconcilers::new(vec![Reconciler::new(script())]);
+        let want = single.at_startup(&permit()?).ok_or("a line")?;
+        assert_eq!(engines.at_startup(&permit()?), vec![want], "the same line");
+        assert_eq!(
+            engines.take_new_links(chrono::Utc::now()).links.len(),
+            single.take_new_links(chrono::Utc::now()).links.len(),
+            "the same sockets"
         );
         Ok(())
     }

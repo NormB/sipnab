@@ -740,6 +740,7 @@ fn parallel_config(
 /// exercised end to end against the harness.
 fn spawn_relay_stats_poller(
     cli: &Cli,
+    config: &Config,
     permit: Option<crate::security::transmit_guard::TransmitPermit>,
 ) -> (
     Option<std::sync::mpsc::Sender<()>>,
@@ -751,13 +752,19 @@ fn spawn_relay_stats_poller(
     let interval = std::time::Duration::from_secs(target.secs);
     let secs = target.secs;
     let (tx, rx) = std::sync::mpsc::channel::<()>();
-    let mut poll = RelayStatsPoll::new(target, cli);
+    // Every engine the run lists, `--rtpengine-control` first. Planning
+    // refused an unusable engine rule, so an error cannot reach here.
+    let selection = cli.engine_selection(config).ok().flatten();
+    let engines = crate::app::relay_engines::routing(cli, selection.as_ref())
+        .map_or_else(|| vec![target.socket], |r| r.listing_engines());
+    let mut poll = RelayStatsPoll::new(target, &engines, cli);
+    let relays: Vec<String> = poll.engines.iter().map(|e| e.label.clone()).collect();
 
     match crate::app::relay_poller::spawn(interval, rx, move || poll.poll_once()) {
         Ok(join) => {
             // REST `/v1/relay/stats/polled` and MCP `relay_stats_polled`
             // read the readings from here, so a reader learns a poll runs.
-            crate::output::relay_polled::PolledStore::global().start(secs);
+            crate::output::relay_polled::PolledStore::global().start_engines(secs, relays);
             (Some(tx), Some(join))
         }
         Err(e) => {
@@ -853,14 +860,25 @@ where
     show(&value);
 }
 
+/// One engine a poll asks, with what its previous reading said.
+struct EnginePoll {
+    /// Control client for the engine.
+    client: crate::rtpengine::control::ControlClient,
+    /// `rtpengine at <addr>`, the name every line about this engine uses.
+    label: String,
+    /// Holds the previous poll's raw pairs so a counter that steps backwards --
+    /// which a cumulative counter cannot do without a reset -- is caught between
+    /// polls (ST-S4 condition 6). rtpproxy publishes no uptime, so a decrease is
+    /// the only in-band signal it restarted.
+    previous: Option<Vec<(String, String)>>,
+}
+
 /// One relay-statistics poller's state, moved onto the poll thread.
 struct RelayStatsPoll {
-    /// Control client for the relay being polled.
-    client: crate::rtpengine::control::ControlClient,
+    /// Each engine polled, `--rtpengine-control` first.
+    engines: Vec<EnginePoll>,
     /// Proof this run may transmit.
     permit: crate::security::transmit_guard::TransmitPermit,
-    /// `rtpengine at <addr>`, the name every line about this relay uses.
-    label: String,
     /// The poll interval, in seconds as configured.
     secs: u64,
     /// The poll interval.
@@ -870,78 +888,104 @@ struct RelayStatsPoll {
     json: bool,
     /// `--json-pretty`, captured the same way.
     json_pretty: bool,
-    /// Holds the previous poll's raw pairs so a counter that steps backwards --
-    /// which a cumulative counter cannot do without a reset -- is caught between
-    /// polls (ST-S4 condition 6). rtpproxy publishes no uptime, so a decrease is
-    /// the only in-band signal it restarted.
-    previous: Option<Vec<(String, String)>>,
 }
 
 impl RelayStatsPoll {
-    /// A poller for `target`, printing in the output form `cli` asked for.
-    fn new(target: RelayPollTarget, cli: &Cli) -> Self {
+    /// A poller for `target` over `engines`, `target`'s own address first,
+    /// printing in the output form `cli` asked for.
+    fn new(target: RelayPollTarget, engines: &[std::net::SocketAddr], cli: &Cli) -> Self {
         use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
+        let engines = engines
+            .iter()
+            .map(|&socket| EnginePoll {
+                client: ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT),
+                // The address as the operator typed it names the default
+                // engine, as it always has.
+                label: if socket == target.socket {
+                    format!("rtpengine at {}", target.addr)
+                } else {
+                    format!("rtpengine at {socket}")
+                },
+                previous: None,
+            })
+            .collect();
         Self {
-            client: ControlClient::new(target.socket, DEFAULT_CONTROL_TIMEOUT),
+            engines,
             permit: target.permit,
-            label: format!("rtpengine at {}", target.addr),
             secs: target.secs,
             interval: std::time::Duration::from_secs(target.secs),
             json: cli.output_args.json,
             json_pretty: cli.output_args.json_pretty,
-            previous: None,
         }
     }
 
-    /// Ask the relay once and print what it answered.
+    /// Ask each engine once and print what each answered, in order.
     fn poll_once(&mut self) {
-        // Time the round trip. The serial loop never overlaps polls, so a relay
-        // slower than the interval slows the cadence rather than stacking
-        // requests; a poll whose own round trip overran the interval is where
-        // that slip happens, and it is said plainly rather than left silent
-        // (ST-S4 condition 13, the visibility half).
+        // The cadence is the whole poll's: every engine is asked in turn, and
+        // the next poll starts one interval after the last engine answered.
         let started = std::time::Instant::now();
-        let result = self.client.statistics(&self.permit);
+        for i in 0..self.engines.len() {
+            self.poll_engine(i);
+        }
         let elapsed = started.elapsed();
         if crate::app::relay_poller::cadence_slipped(elapsed, self.interval) {
+            let who = self
+                .engines
+                .iter()
+                .map(|e| e.label.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
             tracing::warn!(
-                "{}: this poll's round trip took {elapsed:.1?}, longer than the {}s \
+                "{who}: this poll's round trip took {elapsed:.1?}, longer than the {}s \
                  interval; the polling cadence has slipped and is slower than requested.",
-                self.label,
                 self.secs
             );
         }
+    }
+
+    /// Ask engine `i` once and print what it answered.
+    fn poll_engine(&mut self, i: usize) {
+        let Some(engine) = self.engines.get(i) else {
+            return;
+        };
+        let label = engine.label.clone();
+        // The serial loop never overlaps polls, so a relay slower than the
+        // interval slows the cadence rather than stacking requests; `poll_once`
+        // says so when it happens (ST-S4 condition 13, the visibility half).
+        let result = engine.client.statistics(&self.permit);
         match result {
-            Ok(crate::relay::types::ControlReply::Statistics(pairs)) => self.on_statistics(pairs),
+            Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
+                self.on_statistics(i, pairs);
+            }
             // Recorded before it is logged, as a reading is recorded before
             // it is printed: see `publish_then_show`.
             Ok(other) => {
                 self.publish_failure(
+                    &label,
                     crate::stats_vocab::StatisticsOutcome::Suspect,
-                    format!("{} answered something other than statistics", self.label),
+                    format!("{label} answered something other than statistics"),
                 );
-                tracing::error!("{} answered {other:?}, not statistics", self.label);
+                tracing::error!("{label} answered {other:?}, not statistics");
             }
             Err(e) => {
                 self.publish_failure(
+                    &label,
                     crate::relay::types::fetch_error_outcome(&e),
-                    format!(
-                        "{} did not answer the polled statistics request ({e})",
-                        self.label
-                    ),
+                    format!("{label} did not answer the polled statistics request ({e})"),
                 );
-                tracing::error!(
-                    "{} did not answer the polled statistics request ({e})",
-                    self.label
-                );
+                tracing::error!("{label} did not answer the polled statistics request ({e})");
             }
         }
     }
 
-    /// Check one reading against the previous one, then publish and print it.
-    fn on_statistics(&mut self, pairs: Vec<(String, String)>) {
+    /// Check engine `i`'s reading against its previous one, then publish and
+    /// print it.
+    fn on_statistics(&mut self, i: usize, pairs: Vec<(String, String)>) {
         use crate::stats_vocab::{counter_stepped_backwards, relay_reported, resolve_for_wire};
-        if let Some(prev) = &self.previous
+        let Some(engine) = self.engines.get_mut(i) else {
+            return;
+        };
+        if let Some(prev) = &engine.previous
             && let Some(step) = counter_stepped_backwards(prev, &pairs)
         {
             // Suspect, not a drop in traffic: never smoothed, and the
@@ -950,15 +994,16 @@ impl RelayStatsPoll {
                 "{}: {} stepped backwards {} -> {} between polls; a cumulative \
              counter cannot decrease, so the relay probably restarted (suspect). The \
              counters below are since an unknown start.",
-                self.label,
+                engine.label,
                 step.name,
                 step.previous,
                 step.current
             );
         }
         let wire = resolve_for_wire(&relay_reported(&pairs));
-        self.previous = Some(pairs);
-        let relay = self.label.clone();
+        engine.previous = Some(pairs);
+        let relay = engine.label.clone();
+        let label = relay.clone();
         publish_then_show(
             wire,
             |wire| {
@@ -970,15 +1015,21 @@ impl RelayStatsPoll {
                     },
                 );
             },
-            |wire| self.print_reading(wire),
+            |wire| self.print_reading(&label, wire),
         );
     }
 
     /// Keep a poll that obtained no reading where REST and MCP read it, beside
     /// the reading it did not replace.
-    fn publish_failure(&self, outcome: crate::stats_vocab::StatisticsOutcome, detail: String) {
+    fn publish_failure(
+        &self,
+        relay: &str,
+        outcome: crate::stats_vocab::StatisticsOutcome,
+        detail: String,
+    ) {
         crate::output::relay_polled::PolledStore::global().record_failure(
             crate::output::relay_polled::PollFailure {
+                relay: relay.to_string(),
                 at: chrono::Utc::now(),
                 outcome: outcome.as_wire_str(),
                 detail,
@@ -987,7 +1038,7 @@ impl RelayStatsPoll {
     }
 
     /// Print one reading in the form `--json` / `--json-pretty` chose.
-    fn print_reading(&self, wire: &crate::stats_vocab::WireStatistics) {
+    fn print_reading(&self, label: &str, wire: &crate::stats_vocab::WireStatistics) {
         use crate::output::relay_statistics::{
             FetchOrigin, format_relay_statistics, format_relay_statistics_json, maybe_pretty,
         };
@@ -998,14 +1049,14 @@ impl RelayStatsPoll {
             outln!(
                 "{}",
                 maybe_pretty(
-                    format_relay_statistics_json(wire, &self.label, chrono::Utc::now(), origin),
+                    format_relay_statistics_json(wire, label, chrono::Utc::now(), origin),
                     self.json_pretty
                 )
             );
         } else {
             out!(
                 "{}",
-                format_relay_statistics(wire, &self.label, chrono::Utc::now(), origin)
+                format_relay_statistics(wire, label, chrono::Utc::now(), origin)
             );
         }
     }
@@ -3748,7 +3799,7 @@ impl BatchRunner {
         // relay-stats form (a relay named and a permit in hand); nothing polls
         // otherwise.
         let (relay_poll_shutdown, relay_poll_thread) =
-            spawn_relay_stats_poller(&cli, relay_poll_permit);
+            spawn_relay_stats_poller(&cli, config, relay_poll_permit);
 
         let rtp_heuristic = rtp::heuristic::RtpHeuristic::new();
 
@@ -17434,7 +17485,8 @@ mod tests {
                         .map_err(|e| format!("address: {e:?}"))?,
                     std::time::Duration::from_millis(50),
                 ),
-            ),
+            )
+            .into(),
             permit: crate::security::transmit_guard::TransmitPermit::for_source(
                 &crate::capture::CaptureSource::Live {
                     device: "lo".to_owned(),

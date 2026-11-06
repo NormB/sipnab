@@ -2137,11 +2137,12 @@ pub struct RtpArgs {
     /// claims is reported as `engine unknown (no map row)` and no engine is
     /// asked about it. Rows that claim the same address and port are refused.
     ///
-    /// **Needs `--rtpengine-control`.** That engine is still the one asked
-    /// for the relay's own statistics, and about a call whose SDP sipnab has
-    /// not seen; the sessions view asks such a call of the engine whose list
-    /// names it. Questions about which calls are held (`--relay-holdings`,
-    /// the sessions view) are asked of it and of every engine a row names.
+    /// **Needs `--rtpengine-control`.** That engine is asked first, alone
+    /// answers the statistic names, and answers about a call no SDP or
+    /// engine list places on another engine. Startup reconciliation, the
+    /// relay's own counters, the questions about which calls are held
+    /// (`--relay-holdings`, the sessions view) and the lists asked for a call
+    /// sipnab has seen nothing for go to it and to every engine a row names.
     /// Config: `[relay] engines`, which this adds to.
     #[arg(
         help_heading = "RTP",
@@ -2195,11 +2196,14 @@ pub struct RtpArgs {
     /// named by the address it was sent to. This takes precedence over
     /// `--rtpengine-engine`. Write a row as `2001 192.0.2.5:2223` for an
     /// engine that sends HEP with `homer-id = 2001`, or `192.0.2.6:2223` for
-    /// one seen only in captured requests.
+    /// one seen only in captured requests. A bare address, `192.0.2.6` or
+    /// `2001 192.0.2.5`, takes the port of `--rtpengine-control`, which every
+    /// engine shares when sipnab reads the proxy's requests off the wire.
     ///
     /// **The rows are the allowlist.** An engine the traffic names that no
     /// row (and neither `--rtpengine-control` nor `--rtpengine-engine`)
-    /// names is reported as `engine not listed` and is not asked. A later
+    /// names is reported as `engine not listed` and is not asked; the
+    /// message gives the row that would list it. A later
     /// `offer` at another engine marks a moved call; an engine it moved off
     /// with no `delete` is flagged as a leftover session, and with
     /// `--relay-previous-engine` it is asked to confirm. Needs
@@ -7619,6 +7623,19 @@ impl Cli {
                     .map_err(|e| engine_refusal(false, format!("[relay] ng_engines: {e}")))?,
             );
         }
+        // A bare address takes the port of `--rtpengine-control`: captured
+        // requests are read only on that port, so every engine listens on it.
+        if let Some(port) = rtp
+            .rtpengine_control
+            .as_deref()
+            .and_then(|c| c.parse::<std::net::SocketAddr>().ok())
+            .map(|c| c.port())
+        {
+            ng_rows = ng_rows
+                .into_iter()
+                .map(|r| r.with_default_port(port))
+                .collect();
+        }
         let ng_from_flag = !rtp.rtpengine_ng_engine.is_empty();
         let ng = NgEngineMap::new(ng_rows).map_err(|e| {
             engine_refusal(
@@ -7672,11 +7689,11 @@ impl Cli {
             return Err(engine_refusal(
                 from_flag,
                 format!(
-                    "{rule} needs --rtpengine-control as well: that engine answers \
-                     the questions that are not about one call (the relay's \
-                     statistics, the poll, startup reconciliation) and about a call \
-                     whose engine sipnab has not seen. Name one engine's listen-ng \
-                     address, for example --rtpengine-control 192.0.2.5:2223"
+                    "{rule} needs --rtpengine-control as well: that engine is asked \
+                     first, it alone answers the relay's statistic names, and it \
+                     answers about a call whose engine no ng offer, SDP or engine \
+                     list names. Name one engine's listen-ng address, for example \
+                     --rtpengine-control 192.0.2.5:2223"
                 ),
             ));
         }
@@ -10298,6 +10315,55 @@ mod tests {
         Ok(())
     }
 
+    /// A row that gives a bare address, on the command line or in the config
+    /// file, takes the port of `--rtpengine-control`, which every engine
+    /// shares because captured requests are read only on that port. A bare
+    /// address and the same address with that port are one engine.
+    #[test]
+    fn a_bare_ng_engine_address_takes_the_control_port() -> Result<(), TestError> {
+        let cli = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-ng-engine",
+            "192.0.2.6",
+            "--rtpengine-ng-engine",
+            "2001 2001:db8::5",
+        ])?;
+        let config = relay_config("[relay]\nng_engines = [\"2002 -> 192.0.2.7\"]\n")?;
+        let sel = cli.engine_selection(&config)?.ok_or("a rule")?;
+        let rows: Vec<String> = sel
+            .rules
+            .ng
+            .rows()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "192.0.2.6:2223",
+                "2001 [2001:db8::5]:2223",
+                "2002 192.0.2.7:2223"
+            ],
+            "each bare address takes the control port"
+        );
+        let twice = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-ng-engine",
+            "192.0.2.6",
+            "--rtpengine-ng-engine",
+            "192.0.2.6:2223",
+        ])?;
+        match twice.engine_selection(&crate::config::Config::default()) {
+            Err(crate::Error::CliValidation(why)) => {
+                assert!(why.contains("both name listen-ng 192.0.2.6:2223"), "{why}");
+            }
+            other => return Err(format!("a command-line refusal, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
     #[test]
     fn a_bad_duplicate_or_unanchored_ng_engine_row_is_refused() -> Result<(), TestError> {
         let alone = engine_cli(&["--rtpengine-ng-engine", "2001 192.0.2.5:2223"])?;
@@ -10334,8 +10400,8 @@ mod tests {
             other => return Err(format!("a command-line refusal, got {other:?}").into()),
         }
         assert!(
-            engine_cli(&["--rtpengine-ng-engine", "2001 192.0.2.5"]).is_err(),
-            "a row with no port is refused as the flag is parsed"
+            engine_cli(&["--rtpengine-ng-engine", "2001 192.0.2.5:0"]).is_err(),
+            "an explicit port 0 is refused as the flag is parsed"
         );
         Ok(())
     }

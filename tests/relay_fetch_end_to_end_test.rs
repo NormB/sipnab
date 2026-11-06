@@ -2265,3 +2265,236 @@ fn an_mcp_call_question_goes_to_the_engine_the_newest_ng_offer_reached() -> Resu
     );
     Ok(())
 }
+
+// ── every listed engine at startup and on the stats interval ──────────
+
+/// Startup reconciliation asks every listed engine, `--rtpengine-control`
+/// and each `--rtpengine-ng-engine` row, and names a Call-ID two of them
+/// hold, so calls up before sipnab started are named on any engine.
+#[test]
+fn startup_asks_every_listed_engine_and_names_a_call_two_hold() -> Result<(), TestError> {
+    let query = fixture_body("rtpengine-query-12.5.1.bencode")?;
+    let q_a = query.clone();
+    let a = FakeRelay::start(move |verb, _| match verb {
+        "list" => calls(&["moved-1@192.0.2.10"]),
+        "query" => Answer::Body(q_a.clone()),
+        _ => Answer::Silent,
+    })?;
+    let b = FakeRelay::start(move |verb, _| match verb {
+        "list" => calls(&["moved-1@192.0.2.10", "only-b@192.0.2.10"]),
+        "query" => Answer::Body(query.clone()),
+        _ => Answer::Silent,
+    })?;
+    let row = b.addr.to_string();
+    let mut run = Run::start(&a, &["--rtpengine-ng-engine", &row])?;
+    assert!(
+        run.wait_stderr("Held by several engines: moved-1@192.0.2.10"),
+        "the call two engines hold is named:\n{}",
+        run.err.join("\n")
+    );
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    for engine in [&a, &b] {
+        assert!(
+            done.stderr
+                .contains(&format!("rtpengine at {}: ", engine.addr)),
+            "each engine's startup line: {}",
+            done.dump()
+        );
+        assert_eq!(
+            engine.asked()?.first().map(String::as_str),
+            Some("list"),
+            "each engine is listed at startup"
+        );
+    }
+    assert_eq!(
+        b.asked()?.iter().filter(|v| *v == "query").count(),
+        2,
+        "the ng row's engine reads both of its calls: {:?}",
+        b.asked()?
+    );
+    Ok(())
+}
+
+/// `--relay-stats` and `--relay-stats-interval` ask every listed engine,
+/// each answer printed as its own table under its engine's name.
+#[test]
+fn relay_stats_and_the_poll_ask_every_listed_engine() -> Result<(), TestError> {
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let s_a = statistics.clone();
+    let a = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        "statistics" => Answer::Body(s_a.clone()),
+        _ => Answer::Silent,
+    })?;
+    let b = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        "statistics" => Answer::Body(statistics.clone()),
+        _ => Answer::Silent,
+    })?;
+    let row = b.addr.to_string();
+    let mut run = Run::start(
+        &a,
+        &[
+            "--rtpengine-ng-engine",
+            &row,
+            "--relay-stats",
+            "--relay-stats-interval",
+            "1",
+        ],
+    )?;
+    for engine in [&a, &b] {
+        assert!(
+            run.wait_stdout(
+                &format!("Relay statistics (rtpengine at {}, asked ", engine.addr),
+                1
+            ),
+            "the one-shot table of {}:\n{}",
+            engine.addr,
+            run.out.join("\n")
+        );
+        assert!(
+            run.wait_stdout(
+                &format!("Relay statistics (rtpengine at {}, polled ", engine.addr),
+                2
+            ),
+            "two polled tables of {}:\n{}",
+            engine.addr,
+            run.out.join("\n")
+        );
+    }
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    for engine in [&a, &b] {
+        assert!(
+            engine
+                .asked()?
+                .iter()
+                .filter(|v| *v == "statistics")
+                .count()
+                >= 3,
+            "one ask plus at least two polls of {}: {:?}",
+            engine.addr,
+            engine.asked()?
+        );
+    }
+    Ok(())
+}
+
+/// `--relay-stats-call` asks before any SIP is read, so it has seen nothing
+/// for the call: with ng engine rows it asks each engine's list, and asks
+/// the engine whose list names the call.
+#[test]
+fn relay_stats_call_asks_the_engine_whose_list_names_the_call() -> Result<(), TestError> {
+    let query = fixture_body("rtpengine-query-12.5.1.bencode")?;
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => unknown_call(),
+    })?;
+    let b = FakeRelay::start(move |verb, _| match verb {
+        "list" => calls(&[CALL_ID]),
+        "query" => Answer::Body(query.clone()),
+        _ => Answer::Silent,
+    })?;
+    let row = b.addr.to_string();
+    let mut run = Run::start(
+        &a,
+        &["--rtpengine-ng-engine", &row, "--relay-stats-call", CALL_ID],
+    )?;
+    assert!(
+        run.wait_stdout(
+            &format!(
+                "Relay statistics (rtpengine at {}, call {CALL_ID}, sipnab has seen no ng \
+                 offer for this call; this engine's list names it, asked ",
+                b.addr
+            ),
+            1
+        ),
+        "{}",
+        run.out.join("\n")
+    );
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    assert!(
+        !a.asked()?.iter().any(|v| v == "query"),
+        "the default engine is listed, never queried for it: {:?}",
+        a.asked()?
+    );
+    Ok(())
+}
+
+/// A standby proxy's sipnab, after a VIP failover: a call came up on engine
+/// B after sipnab started, and sipnab saw no `offer` for it. When a stream
+/// nothing explains arrives, every listed engine is asked again, so B, whose
+/// list now names the call, is asked about it.
+#[test]
+fn a_call_that_came_up_on_another_engine_after_start_is_asked_of_it() -> Result<(), TestError> {
+    let query = fixture_body("rtpengine-query-12.5.1.bencode")?;
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => unknown_call(),
+    })?;
+    // Empty at startup; holding the call from the second `list` on.
+    let b = FakeRelay::start(move |verb, nth| match verb {
+        "list" if nth == 0 => no_calls(),
+        "list" => calls(&["after-1@192.0.2.10"]),
+        "query" => Answer::Body(query.clone()),
+        _ => Answer::Silent,
+    })?;
+    let row = b.addr.to_string();
+    let run = Run::start(&a, &["--rtpengine-ng-engine", &row])?;
+    let port: u16 = run
+        .err
+        .iter()
+        .find_map(|l| l.split("HEP listener started on ").nth(1))
+        .and_then(|rest| rest.trim().rsplit(':').next())
+        .and_then(|p| p.parse().ok())
+        .ok_or("the listener names its port")?;
+
+    let mut rtp = vec![0x80, 0x00, 0x00, 0x01, 0, 0, 0, 160, 0x0a, 0x0b, 0x0c, 0x0d];
+    rtp.extend_from_slice(&[0xff; 160]);
+    let endpoint = sipnab::capture::hep::HepEndpoint {
+        src_addr: "192.0.2.50".parse()?,
+        dst_addr: "192.0.2.60".parse()?,
+        src_port: 40000,
+        dst_port: 40002,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    let datagram = sipnab::capture::hep::build_hep_v3(
+        &endpoint,
+        chrono::Utc::now(),
+        sipnab::capture::hep::HepProtocol::Rtp,
+        0,
+        None,
+        &rtp,
+    );
+    UdpSocket::bind("127.0.0.1:0")?.send_to(&datagram, ("127.0.0.1", port))?;
+
+    let deadline = Instant::now() + WAIT;
+    while !b.asked()?.iter().any(|v| v == "query") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let done = run.finish();
+    assert_eq!(done.code, Some(0), "{}", done.dump());
+    // The stream offers both of its sockets, so B is listed once per socket;
+    // the call is read once.
+    let asked = b.asked()?;
+    assert_eq!(
+        asked.get(..3),
+        Some(&["list".to_string(), "list".to_string(), "query".to_string()][..]),
+        "engine B is listed at startup, listed again for the stream, and asked about \
+         the call its list now names:\n{}",
+        done.dump()
+    );
+    assert_eq!(
+        asked.iter().filter(|v| *v == "query").count(),
+        1,
+        "the call is read once: {asked:?}"
+    );
+    assert!(
+        a.asked()?.iter().filter(|v| *v == "list").count() >= 2,
+        "the default engine is asked again too: {:?}",
+        a.asked()?
+    );
+    Ok(())
+}

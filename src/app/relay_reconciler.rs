@@ -34,7 +34,7 @@ use std::sync::mpsc::Receiver;
 
 use parking_lot::RwLock;
 
-use crate::relay::reconcile::{ReadOnlyRelay, Reconciler, Unattributed};
+use crate::relay::reconcile::{ReadOnlyRelay, Reconciler, Reconcilers, Unattributed};
 use crate::rtp::stream_store::StreamStore;
 use crate::security::transmit_guard::TransmitPermit;
 
@@ -45,38 +45,51 @@ use crate::security::transmit_guard::TransmitPermit;
 ///
 /// # Arguments
 ///
-/// * `reconciler` — already past its startup snapshot.
+/// * `engines` — one reconciler per listed engine, each already past its
+///   startup snapshot.
 /// * `permit` — the run's permission to transmit, which is what makes the
 ///   two read-only questions reachable at all.
 /// * `rx` — the hand-off queue; the loop ends when every sink is dropped.
 /// * `store` — the stream store to apply attributions to.
 fn run<R: ReadOnlyRelay>(
-    mut reconciler: Reconciler<R>,
+    engines: impl Into<Reconcilers<R>>,
     permit: &TransmitPermit,
     rx: &Receiver<(IpAddr, u16)>,
     store: &Arc<RwLock<StreamStore>>,
 ) {
-    let relay = reconciler.describe_relay();
+    let mut engines = engines.into();
+    let relays: Vec<String> = engines
+        .engines()
+        .iter()
+        .map(Reconciler::describe_relay)
+        .collect();
     let mut asked = 0_u64;
-    let mut attributed = 0_u64;
-    // Said ONCE. A relay that is down answers the same way for every socket,
-    // and a line per orphan stream would bury the capture's own output.
-    let mut reported: Option<String> = None;
+    let mut attributed = vec![0_u64; relays.len()];
+    // Said ONCE per engine. A relay that is down answers the same way for
+    // every socket, and a line per orphan stream would bury the capture's own
+    // output.
+    let mut reported: Vec<Option<String>> = vec![None; relays.len()];
 
     for (address, port) in rx {
-        match reconciler.on_unexplained_stream(permit, address, port) {
-            Ok(_) => attributed += 1,
-            Err(why) => {
-                let line = why.describe();
-                if reported.as_deref() != Some(line.as_str()) {
-                    match why {
-                        // A relay saying "not mine" about traffic that is not
-                        // its own is the expected answer, not news.
-                        Unattributed::RelayDoesNotHoldIt => {}
-                        _ => tracing::info!("{relay}: {line}"),
-                    }
-                    reported = Some(line);
+        let answer = engines.on_unexplained_stream(permit, address, port);
+        if let Some((i, _)) = answer.found
+            && let Some(n) = attributed.get_mut(i)
+        {
+            *n += 1;
+        }
+        for (i, why) in answer.why_not {
+            let line = why.describe();
+            let (Some(said), Some(relay)) = (reported.get_mut(i), relays.get(i)) else {
+                continue;
+            };
+            if said.as_deref() != Some(line.as_str()) {
+                match why {
+                    // A relay saying "not mine" about traffic that is not its
+                    // own is the expected answer, not news.
+                    Unattributed::RelayDoesNotHoldIt => {}
+                    _ => tracing::info!("{relay}: {line}"),
                 }
+                *said = Some(line);
             }
         }
         asked += 1;
@@ -84,22 +97,24 @@ fn run<R: ReadOnlyRelay>(
         // Only what THIS answer taught, stamped with now: re-applying the
         // whole index would re-date every endpoint the startup snapshot
         // registered and disable the store's staleness bound on all of them.
-        let learned = reconciler.take_new_links(chrono::Utc::now());
+        let learned = engines.take_new_links(chrono::Utc::now());
         if learned.taken_at.is_some() {
             crate::pipeline::apply_relay_snapshot(&mut store.write(), &learned);
         }
     }
 
-    tracing::info!(
-        "{relay}: {asked} unexplained stream(s) offered, \
-         {attributed} attributed, {} control transaction(s) spent of a \
-         ceiling of {}",
-        reconciler.transactions(),
-        reconciler.budget(),
-    );
+    for ((engine, relay), attributed) in engines.engines().iter().zip(&relays).zip(attributed) {
+        tracing::info!(
+            "{relay}: {asked} unexplained stream(s) offered, \
+             {attributed} attributed, {} control transaction(s) spent of a \
+             ceiling of {}",
+            engine.transactions(),
+            engine.budget(),
+        );
+    }
 }
 
-/// Spawn the reconciler thread.
+/// Spawn the reconciler thread, over one engine or every listed engine.
 ///
 /// # Errors
 ///
@@ -107,7 +122,7 @@ fn run<R: ReadOnlyRelay>(
 /// is still worth capturing, so the caller reports and continues rather than
 /// exiting.
 pub fn spawn<R: ReadOnlyRelay + Send + 'static>(
-    reconciler: Reconciler<R>,
+    reconciler: impl Into<Reconcilers<R>> + Send + 'static,
     permit: TransmitPermit,
     rx: Receiver<(IpAddr, u16)>,
     store: Arc<RwLock<StreamStore>>,
@@ -250,6 +265,29 @@ mod tests {
             "an unofferable socket must be counted, not silently discarded"
         );
         Ok(())
+    }
+
+    /// [`run_logged`], over several engines.
+    fn run_logged_engines<R: ReadOnlyRelay>(
+        engines: Reconcilers<R>,
+        sockets: &[u16],
+    ) -> Result<String, TestError> {
+        let store = Arc::new(RwLock::new(StreamStore::new(100)));
+        let (sink, rx) = orphan_channel();
+        let relay: IpAddr = "10.0.0.2"
+            .parse()
+            .map_err(|e| format!("a literal v4 address parses: {e:?}"))?;
+        for port in sockets {
+            sink.offer(relay, *port);
+        }
+        drop(sink);
+        let permit = permit()?;
+        Ok(crate::test_utils::capture_logs(
+            tracing::Level::INFO,
+            || {
+                run(engines, &permit, &rx, &store);
+            },
+        ))
     }
 
     /// Run the loop on this thread over `sockets` and return what it logged.
@@ -440,6 +478,66 @@ mod tests {
                 "2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s)"
             ),
             "each refresh retries the unread call rather than writing it off: {logs}"
+        );
+        Ok(())
+    }
+
+    /// A relay under another name, so two engines read apart in the log.
+    struct Renamed(&'static str, Box<dyn ReadOnlyRelay>);
+
+    impl ReadOnlyRelay for Renamed {
+        fn list(&self, permit: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
+            self.1.list(permit, limit)
+        }
+        fn query(&self, permit: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            self.1.query(permit, call_id)
+        }
+        fn statistics(&self, permit: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            self.1.statistics(permit)
+        }
+        fn describe(&self) -> String {
+            self.0.to_owned()
+        }
+    }
+
+    /// With several engines, a socket the first cannot attribute is asked of
+    /// the next. Each engine's failure is said once in its own name, and each
+    /// engine's closing line counts only what it did.
+    #[test]
+    fn each_engine_is_asked_in_turn_and_reports_its_own_line() -> Result<(), TestError> {
+        let engines = Reconcilers::new(vec![
+            Reconciler::new(Renamed(
+                "rtpengine at 192.0.2.5:2223",
+                Box::new(UnhelpfulRelay {
+                    down: true,
+                    unreadable: Vec::new(),
+                }),
+            )),
+            Reconciler::new(Renamed(
+                "rtpengine at 192.0.2.6:2223",
+                Box::new(OneCallRelay),
+            )),
+        ]);
+        let logs = run_logged_engines(engines, &[30000, 30000])?;
+        assert_eq!(
+            logs.matches("rtpengine at 192.0.2.5:2223: the relay could not be asked")
+                .count(),
+            1,
+            "the first engine's failure, said once in its name: {logs}"
+        );
+        assert!(
+            logs.contains(
+                "rtpengine at 192.0.2.5:2223: 2 unexplained stream(s) offered, 0 attributed, \
+                 1 control transaction(s) spent of a ceiling of 66"
+            ),
+            "{logs}"
+        );
+        assert!(
+            logs.contains(
+                "rtpengine at 192.0.2.6:2223: 2 unexplained stream(s) offered, 2 attributed, \
+                 2 control transaction(s) spent of a ceiling of 66"
+            ),
+            "the second engine attributed both, the second from memory: {logs}"
         );
         Ok(())
     }

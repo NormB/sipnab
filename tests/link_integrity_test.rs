@@ -1688,7 +1688,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // HEP setup's link to rtpengine-sipnab.md), cli-reference.md +1 (the
     // how-to link of the --rtpengine-ng-engine row). Counted per file
     // against origin/main 88679170e.
-    const EXPECTED_WIKI_LINKS: usize = 2409;
+    // 2409 -> 2414 (#664 follow-ups, every listed engine): relay-engines.md
+    // +4 (#ask-about-a-call once, #ask-about-a-call-sipnab-has-seen-nothing-for
+    // twice, #opensips-and-kamailio once) and rtpengine-sipnab.md +1 (its
+    // link to the new startup section). Counted per file against origin/main
+    // 86a902663.
+    const EXPECTED_WIKI_LINKS: usize = 2414;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
