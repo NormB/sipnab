@@ -500,6 +500,10 @@ pub struct DialogStore {
     th_mappings: crate::sip::th_mapping::ThMappingTable,
     /// When the mapping table was last swept for expiry, in capture time.
     th_mappings_swept: Option<chrono::DateTime<chrono::Utc>>,
+    /// Which relay engine each call's `offer` and `delete` reached, from
+    /// rtpengine's control traffic. Kept apart from the dialogs: a capture
+    /// on a relay host sees the control traffic and no SIP.
+    engine_sightings: crate::relay_vocab::EngineSightings,
 }
 
 /// The process-wide topology-hiding decoder; see [`set_th_callid`].
@@ -1000,7 +1004,25 @@ impl DialogStore {
                 |&(max, ttl)| crate::sip::th_mapping::ThMappingTable::new(max, ttl),
             ),
             th_mappings_swept: None,
+            engine_sightings: crate::relay_vocab::EngineSightings::new(
+                max_dialogs.clamp(1, crate::relay_vocab::EngineSightings::MAX_SIGHTING_CALLS),
+            ),
         }
+    }
+
+    /// Remember that an `offer` or `delete` for `call_id` reached an engine.
+    pub fn record_engine_sighting(
+        &mut self,
+        call_id: &str,
+        sighting: crate::relay_vocab::EngineSighting,
+    ) {
+        self.engine_sightings.record(call_id, sighting);
+    }
+
+    /// The engine sightings of `call_id`, oldest first.
+    #[must_use]
+    pub fn engine_sightings(&self, call_id: &str) -> &[crate::relay_vocab::EngineSighting] {
+        self.engine_sightings.of(call_id)
     }
 
     /// Apply one `E_SIPNAB_TH_MAP` event datagram, parsed or refused,
@@ -1743,6 +1765,7 @@ impl DialogStore {
         self.idle_messages_evicted += other.idle_messages_evicted;
         self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
         self.capacity_dialogs_evicted += other.capacity_dialogs_evicted;
+        self.engine_sightings.merge(other.engine_sightings);
     }
 
     /// Reorder the dialogs by `key`, keeping equal keys in their current order.
@@ -1780,11 +1803,16 @@ impl DialogStore {
     ///
     /// # Side effects
     ///
-    /// Drops every tracked dialog and bumps the generation counter. The
+    /// Drops every tracked dialog and engine sighting and bumps the
+    /// generation counter. The
     /// lifetime idle-eviction counter is NOT reset.
     pub fn clear(&mut self) {
         self.generation += 1;
         self.dialogs.clear();
+        self.engine_sightings = crate::relay_vocab::EngineSightings::new(
+            self.max_dialogs
+                .clamp(1, crate::relay_vocab::EngineSightings::MAX_SIGHTING_CALLS),
+        );
     }
 
     /// Retain only dialogs for which `predicate` returns `true`.
@@ -2851,6 +2879,48 @@ mod tests {
     // same-Call-ID collision, because a proxied call is sharded across workers.
     /// Merging two stores unions distinct Call-IDs; a same-Call-ID collision
     /// concatenates both fragments' messages in timestamp order.
+    /// One `offer` sighting of `call_id` at homer-id `id`, `secs` in.
+    fn engine_offer(id: u32, secs: i64) -> Result<crate::relay_vocab::EngineSighting, TestError> {
+        Ok(crate::relay_vocab::EngineSighting {
+            at: chrono::TimeZone::timestamp_opt(&Utc, 1_793_800_000 + secs, 0)
+                .single()
+                .ok_or("a fixed instant")?,
+            engine: crate::relay_vocab::EngineIdentity::HomerId(id),
+            verb: crate::relay_vocab::EngineVerb::Offer,
+            reported_listen_ng: None,
+        })
+    }
+
+    /// A `--cores` merge carries each worker's engine sightings, so a call
+    /// whose offers two workers saw keeps both; clearing the store forgets
+    /// them with the dialogs.
+    #[test]
+    fn merge_carries_engine_sightings_and_clear_forgets_them() -> Result<(), TestError> {
+        let mut a = DialogStore::new(16, false);
+        a.record_engine_sighting("e1@example.invalid", engine_offer(2001, 0)?);
+        let mut b = DialogStore::new(16, false);
+        b.record_engine_sighting("e1@example.invalid", engine_offer(2002, 60)?);
+        b.record_engine_sighting("e2@example.invalid", engine_offer(2002, 61)?);
+        a.merge(b);
+        assert_eq!(
+            a.engine_sightings("e1@example.invalid"),
+            [engine_offer(2001, 0)?, engine_offer(2002, 60)?],
+            "both workers' offers of one call, in time order"
+        );
+        assert_eq!(
+            a.engine_sightings("e2@example.invalid").len(),
+            1,
+            "a call only the other worker saw"
+        );
+        a.clear();
+        assert!(
+            a.engine_sightings("e1@example.invalid").is_empty()
+                && a.engine_sightings("e2@example.invalid").is_empty(),
+            "clear forgets the engine sightings"
+        );
+        Ok(())
+    }
+
     #[test]
     fn merge_unions_dialogs_and_concatenates_colliding_message_lists() -> Result<(), TestError> {
         let t0 = base_ts()?;

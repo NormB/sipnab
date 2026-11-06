@@ -3255,13 +3255,33 @@ When no row came from the command line, sipnab prints it after `invalid config v
 
 **Exit code:** 2 when a `--rtpengine-engine` row is on the command line, otherwise 1.
 
-### `{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose SDP sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223`
+### `[relay] ng_engines: {e}`
 
-`{rule}` is `--rtpengine-engine (or [relay] engines)` or `--rtpengine-trust-sdp-address`. An engine rule chooses the engine for a question about one call. The run still needs one engine for the questions that are not about one call, and for a call whose SDP sipnab has not seen, and `--rtpengine-control` names it. sipnab refused the run before anything opened. When the rows came from `[relay] engines` alone, sipnab prints it after `invalid config value: `.
+A row in the config file's `[relay] ng_engines` list does not parse. `{e}` names the row and the field: the row is not `[HOMER-ID] LISTEN-NG-ADDRESS:PORT` (one or two fields, with an optional `->` before the address), the `homer-id` is not a whole number from 0 to 4294967295, or the `listen-ng` address has no port. sipnab refused the run before anything opened.
+
+sipnab prints it after `invalid config value: `, as it prints every refused config value.
+
+**What to do:** Fix the row, for example `"2001 192.0.2.5:2223"`, or `"192.0.2.5:2223"` for an engine seen only in captured requests. Write an IPv6 address in brackets: `[2001:db8::5]:2223`.
+
+**Exit code:** 1.
+
+### `--rtpengine-ng-engine / [relay] ng_engines: {e}`
+
+Two ng engine rows name the same `homer-id` or the same `listen-ng` address, so a call there would have no single engine. `{e}` names both rows and what they share. An IPv4-mapped IPv6 address and its IPv4 form are one address. The rows from `--rtpengine-ng-engine` and `[relay] ng_engines` form one map, so a flag row can repeat a config row.
+
+When no row came from the command line, sipnab prints it after `invalid config value: `.
+
+**What to do:** Give each engine its own `homer-id` in its `rtpengine.conf`, and one row each.
+
+**Exit code:** 2 when an `--rtpengine-ng-engine` row is on the command line, otherwise 1.
+
+### `{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose engine sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223`
+
+`{rule}` is `--rtpengine-engine (or [relay] engines)`, `--rtpengine-trust-sdp-address` or `--rtpengine-ng-engine (or [relay] ng_engines)`. An engine rule chooses the engine for a question about one call. The run still needs one engine for the questions that are not about one call, and for a call whose engine sipnab has not seen (no ng `offer` and no SDP a rule applies to), and `--rtpengine-control` names it. sipnab refused the run before anything opened. When the rows came from `[relay] engines` or `[relay] ng_engines` alone, sipnab prints it after `invalid config value: `.
 
 **What to do:** Add `--rtpengine-control` with one engine's `listen-ng` address and port.
 
-**Exit code:** 2 when the rule came from the command line, 1 when it came from `[relay] engines`.
+**Exit code:** 2 when the rule came from the command line, 1 when it came from `[relay] engines` or `[relay] ng_engines`.
 
 ### `--rtpengine-trust-sdp-address and an engine map (--rtpengine-engine or [relay] engines) are two rules for one question; the map is an allowlist and trusting SDP is none. Give one of them`
 
@@ -3271,7 +3291,7 @@ The command line trusts SDP addresses as engine control hosts, and the command l
 
 **Exit code:** 2.
 
-### `--relay-previous-engine needs an engine rule to name a previous engine: add --rtpengine-engine rows, [relay] engines, or --rtpengine-trust-sdp-address`
+### `--relay-previous-engine needs an engine rule to name a previous engine: add --rtpengine-engine rows, [relay] engines, --rtpengine-trust-sdp-address, or --rtpengine-ng-engine rows`
 
 `--relay-previous-engine` asks a moved call's previous engine too. Without an engine rule every question goes to `--rtpengine-control`, so there is no previous engine to ask. sipnab refused the run before anything opened.
 
@@ -3281,7 +3301,7 @@ The command line trusts SDP addresses as engine control hosts, and the command l
 
 ### `--relay-stats-call {call_id}: {unknown}`
 
-`--relay-stats-call` names a call, and the run's engine rule chose no engine for it, so sipnab asked nothing. `{unknown}` says why. This run asks before it reads any SIP, so it sees no SDP and asks the `--rtpengine-control` engine. The message exists for the rule's other answers. The run continues.
+`--relay-stats-call` names a call, and the run's engine rule chose no engine for it, so sipnab asked nothing. `{unknown}` says why. This run asks before it reads any traffic, so it sees no ng `offer` and no SDP, and asks the `--rtpengine-control` engine. The message exists for the rule's other answers. The run continues.
 
 **What to do:** Ask about the call from a run that has seen its SIP: the TUI, `GET /v1/relay/stats/call/{call_id}`, or the MCP `relay_stats` tool.
 
@@ -3289,9 +3309,11 @@ The command line trusts SDP addresses as engine control hosts, and the command l
 
 ### `--relay-compare: call {call_id}: {unknown}`
 
-`--relay-compare` asks after the capture, when sipnab holds the call's SDP, and the run's engine rule chose no engine for it. `{unknown}` says why: no engine row claims the call's SDP media (`engine unknown (no map row)`), or, trusting SDP addresses, sipnab saw no address in both a request and a response. sipnab asked nothing. The run continues.
+`--relay-compare` asks after the capture, when sipnab holds the call's SDP, and the run's engine rule chose no engine for it. `{unknown}` says why: the call's newest ng `offer` reached an engine no row names (`engine not listed`), no engine row claims the call's SDP media (`engine unknown (no map row)`), or, trusting SDP addresses, sipnab saw no address in both a request and a response. sipnab asked nothing. The run continues.
 
-**What to do:** Add a `--rtpengine-engine` row for the media address and port range the message names, if that address is an engine's.
+An `engine not listed` reason names the engine by `homer-id`, for a HEP copy, or by the address the proxy sent a captured request to. That address came from captured traffic, so sipnab never asks it unless you list it. A HEP copy also reports the `listen-ng` address the engine bound, shown to help write the row.
+
+**What to do:** For `engine not listed`, add an `--rtpengine-ng-engine` row with the engine's `homer-id` and a `listen-ng` address the sipnab host can reach, if it is one of your engines. For `engine unknown (no map row)`, add a `--rtpengine-engine` row for the media address and port range the message names, if that address is an engine's.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 

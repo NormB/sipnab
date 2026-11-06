@@ -37,7 +37,7 @@ pub fn routing(cli: &Cli, selection: Option<&EngineSelection>) -> Option<Arc<Eng
         Arc::new(ControlClient::new(addr, DEFAULT_CONTROL_TIMEOUT))
     });
     Some(Arc::new(EngineRouting::new(
-        selection.rule.clone(),
+        selection.rules.clone(),
         default,
         selection.previous,
         connect,
@@ -56,7 +56,7 @@ mod tests {
     fn a_rule_becomes_a_routing_around_the_control_address() -> Result<(), TestError> {
         let cli = Cli::try_parse_from(["sipnab", "--rtpengine-control", "192.0.2.1:2223"])?;
         let selection = EngineSelection {
-            rule: EngineRule::TrustSdp { control_port: 2223 },
+            rules: EngineRule::TrustSdp { control_port: 2223 }.into(),
             previous: true,
         };
         let routing = routing(&cli, Some(&selection)).ok_or("a routing")?;
@@ -86,7 +86,7 @@ mod tests {
         );
         let bad = Cli::try_parse_from(["sipnab", "--rtpengine-control", "relay-without-a-port"])?;
         let selection = EngineSelection {
-            rule: EngineRule::TrustSdp { control_port: 2223 },
+            rules: EngineRule::TrustSdp { control_port: 2223 }.into(),
             previous: false,
         };
         assert!(

@@ -44,6 +44,7 @@ fn delivered(body: &[u8], json_event: bool) -> Packet {
                 correlation_id: None,
                 sniffed_on_port: None,
                 json_event,
+                capture_id: None,
             }),
             vcon: None,
         },

@@ -390,6 +390,7 @@ impl Mixed {
                 quiet_bad_parse: true,
                 hep_parse: false,
                 rtpproxy_control: None,
+                ng_control_port: None,
             },
         }
     }

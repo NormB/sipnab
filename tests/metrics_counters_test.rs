@@ -298,6 +298,7 @@ fn a_cores_read_counts_each_packet_it_read_once() -> Result<(), Box<dyn std::err
         quiet_bad_parse: false,
         hep_parse: false,
         rtpproxy_control: None,
+        ng_control_port: None,
         xcid_headers: Vec::new(),
         leg_correlation_window_ms: sipnab::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,
         retain_audio: false,

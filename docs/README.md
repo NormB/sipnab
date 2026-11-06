@@ -178,8 +178,9 @@ Each answers one "how do I" question and assumes you already know what you want.
   for each call rtpengine holds, whether each party's media arrives, has
   stalled, or never arrived, from the relay's own counters.
 - **[Ask each call's rtpengine engine](relay-engines.md)**: with several
-  rtpengine engines behind one proxy, ask the engine each call's SDP names,
-  and find a session left on the old engine after a call moved.
+  rtpengine engines behind one proxy, ask the engine each call's `offer`
+  reached or its SDP names, and find a session left on the old engine after
+  a call moved.
 - **[Add rtpproxy to your voice stack](rtpproxy-relay.md)**: anchor every
   call's media on an rtpproxy relay instead, from OpenSIPS or Kamailio. No
   sipnab involved.

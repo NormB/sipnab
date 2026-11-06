@@ -8,6 +8,13 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **Take each call's rtpengine engine from the ng control traffic sipnab sees ([#664](https://github.com/NormB/sipnab/issues/664)).** The proxy sends each call's `offer` to one engine, and the `offer` names the Call-ID. sipnab now records which engine each `offer` and `delete` reached: from each engine's HEP copy (`homer-enable-ng = true`), named by the engine's `homer-id`, or from a request captured on the `--rtpengine-control` port, named by the address it was sent to. The engine the newest `offer` reached answers every question about that call, ahead of the `--rtpengine-engine` SDP map, which still answers for calls whose `offer` sipnab did not see. A later `offer` at another engine marks a moved call, and an engine the call moved off with no `delete` is flagged as a leftover session; with `--relay-previous-engine` sipnab asks that engine to confirm. `--rtpengine-ng-engine '[HOMER-ID] LISTEN-NG'` (repeatable) and `[relay] ng_engines` list the engines sipnab may ask. **The rows are the allowlist**: an engine the traffic names that no row, `--rtpengine-control` or `--rtpengine-engine` row names reads `engine not listed`, and sipnab asks nothing about that call, because the address came from captured traffic. Every question about one call reads the same choice: `--relay-compare`, `GET /v1/relay/stats/call/{call_id}`, `compare/{call_id}`, `holdings/{call_id}`, the MCP `query_relay`, `relay_stats` and `relay_compare` tools with a `call_id`, the TUI relay view of a call, and the sessions view (REST, MCP and the TUI's `H`), whose JSON gains `chosen_by: "ng_offer"` and a `leftovers` list. `--relay-holdings`, `--relay-sessions` and the other listings also ask every engine an ng engine row names for its `list`. The how-to covers sipnab on the proxy's host, on an rtpengine host and on a separate host: [Ask each call's rtpengine engine](docs/relay-engines.md#take-each-calls-engine-from-the-control-traffic).
+  - Requested by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in [#664](https://github.com/NormB/sipnab/issues/664).
+
 ## [0.5.235] - 2026-11-05
 
 ### Added

@@ -118,6 +118,7 @@ fn a_hep_tcp_message_is_not_held_by_the_tcp_reassembler() -> Result<(), TestErro
         correlation_id: None,
         sniffed_on_port: None,
         json_event: false,
+        capture_id: None,
     });
     let out = processor.process(&packet);
     assert_eq!(

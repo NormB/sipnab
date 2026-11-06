@@ -5891,8 +5891,8 @@ fn relay_rest_answer_with(
         (Some(r), Some(p)) => (r, p),
     };
 
-    // A question about one call goes to the engine that call's SDP names when
-    // an engine rule is configured, and to the one relay otherwise: the rule
+    // A question about one call goes to the engine that call's newest ng
+    // offer or SDP names when an engine rule is configured, and to the one relay otherwise: the rule
     // every relay surface uses. No engine may be asked is not_configured,
     // naming why, and nothing is sent.
     let call_of = match ask {

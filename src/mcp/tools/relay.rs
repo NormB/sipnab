@@ -1630,8 +1630,8 @@ impl SipnabMcp {
     /// The relay to ask about `call_id`, its control address, and why it was
     /// chosen, by the rule every relay surface uses
     /// ([`crate::relay::engines::call_target`]): the configured relay, or with
-    /// an engine rule the engine the call's SDP in this server's dialog store
-    /// names.
+    /// an engine rule the engine the call's evidence (its newest ng offer, or
+    /// its SDP) in this server's dialog store names.
     ///
     /// # Errors
     ///

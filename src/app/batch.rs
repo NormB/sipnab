@@ -712,6 +712,7 @@ fn parallel_config(
         quiet_bad_parse: cli.capture_args.quiet_bad_parse,
         hep_parse: cli.hep_parse(config),
         rtpproxy_control: cli.rtp_args.rtpproxy_control,
+        ng_control_port: cli.rtpengine_control_port(),
         xcid_headers: config.sip.xcid_headers.clone().unwrap_or_default(),
         leg_correlation_window_ms: cli.leg_correlation_window_ms(config),
         retain_audio: audio_retention_wanted(cli, config),
@@ -5699,6 +5700,9 @@ fn process_parsed_packet(
             // the ONLY thing that names a call. Without it every stream in the
             // capture reports orphaned.
             if message.carries_anything() {
+                if !packet.ctx.cli.dialog_args.no_dialog {
+                    crate::pipeline::apply_engine_sighting(packet.state.dialog_store, &message);
+                }
                 crate::pipeline::apply_relay_control(
                     packet.state.stream_store,
                     &message,
@@ -10353,6 +10357,25 @@ mod tests {
         assert_eq!(
             parallel_config(&cli, &set, (1, 65535), false).xcid_headers,
             vec!["X-Call-ID".to_string()]
+        );
+    }
+
+    /// The `--cores` paths read a captured `ng` request on the port of
+    /// `--rtpengine-control`, and on no port without it. Each worker builds
+    /// its options from `ParallelConfig`, so the conversion is what is tested.
+    #[test]
+    fn parallel_config_reads_captured_ng_on_the_control_port() {
+        let set = Cli::parse_from_args(["sipnab", "--rtpengine-control", "192.0.2.5:2223"]);
+        assert_eq!(
+            parallel_config(&set, &Config::default(), (1, 65535), false).ng_control_port,
+            Some(2223),
+            "the control address's port"
+        );
+        let unset = Cli::parse_from_args(["sipnab"]);
+        assert_eq!(
+            parallel_config(&unset, &Config::default(), (1, 65535), false).ng_control_port,
+            None,
+            "no control address, no port"
         );
     }
 
@@ -17177,6 +17200,7 @@ mod tests {
     struct DrivenPackets {
         counters: PacketCounters,
         streams: StreamStore,
+        dialogs: DialogStore,
         event_exec: EventExecEngine,
     }
 
@@ -17251,6 +17275,7 @@ mod tests {
         Ok(DrivenPackets {
             counters,
             streams: stream_store,
+            dialogs: dialog_store,
             event_exec,
         })
     }
@@ -17290,6 +17315,45 @@ mod tests {
         let stored: u64 = driven.streams.iter().map(|s| s.packet_count).sum();
         assert!(stored > 0, "the heuristic must have admitted the flow");
         assert_eq!(driven.counters.rtp_count, stored);
+        Ok(())
+    }
+
+    /// A `-N` run records the engine a captured `offer` on the
+    /// `--rtpengine-control` port reached, on the dialog store its relay
+    /// questions read; `--no-dialog` records none, as it records no other
+    /// call association.
+    #[test]
+    fn a_batch_run_records_the_engine_a_captured_offer_reached() -> Result<(), TestError> {
+        let offer = crate::test_utils::udp_parsed(
+            "192.0.2.30:40000".parse()?,
+            "192.0.2.6:2223".parse()?,
+            b"c2 d7:call-id18:e1@example.invalid7:command5:offer8:from-tag2:fte",
+        );
+        let run = |extra: &[&str]| -> Result<usize, TestError> {
+            let mut args = vec!["sipnab", "--rtpengine-control", "192.0.2.5:2223"];
+            args.extend_from_slice(extra);
+            let mut cli = Cli::parse_from_args(args);
+            cli.mode_args.no_tui = true;
+            cli.output_args.no_cli_print = true;
+            let driven = drive_packets_kept(
+                &cli,
+                std::slice::from_ref(&offer),
+                EventExecEngine::new(
+                    None,
+                    None,
+                    0,
+                    0.0,
+                    crate::output::event_exec::DEFAULT_QUEUE_DEPTH,
+                ),
+            )?;
+            Ok(driven.dialogs.engine_sightings("e1@example.invalid").len())
+        };
+        assert_eq!(
+            run(&[])?,
+            1,
+            "a -N run records the engine the offer reached"
+        );
+        assert_eq!(run(&["--no-dialog"])?, 0, "--no-dialog records none");
         Ok(())
     }
 

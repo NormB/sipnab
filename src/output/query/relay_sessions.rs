@@ -286,9 +286,11 @@ pub struct CallEngine {
     /// The engine asked, or absent when no engine could be chosen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asked: Option<String>,
-    /// `map_row`, `sdp_address`, `listed` (no SDP seen for the call, and
-    /// this engine's list names it), `default` (no SDP seen, and no engine's
-    /// list names it), or `unknown` (nothing was asked).
+    /// `ng_offer` (the newest ng `offer` sipnab saw reached this engine),
+    /// `map_row`, `sdp_address`, `listed` (nothing a rule applies to was seen
+    /// for the call, and this engine's list names it), `default` (nothing
+    /// seen, and no engine's list names it), or `unknown` (nothing was
+    /// asked).
     pub chosen_by: String,
     /// Why, in words.
     pub reason: String,
@@ -301,6 +303,30 @@ pub struct CallEngine {
     /// Whether two or more engines hold this Call-ID, by their lists or their
     /// answers: a call that moved and left a session on the old engine.
     pub held_by_several_engines: bool,
+    /// The engines the call moved off that no `delete` reached, from ng
+    /// control traffic, and whether each was asked to confirm.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub leftovers: Vec<LeftoverSession>,
+}
+
+/// An engine a call moved off that never received a `delete` for it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+pub struct LeftoverSession {
+    /// The engine as the ng traffic named it: `homer-id 2001`, or
+    /// `listen-ng 192.0.2.5:2223` for a captured request.
+    pub engine: String,
+    /// The engine asked to confirm, when it was asked.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay: Option<String>,
+    /// `confirmed` (it still holds the call), `released` (it does not),
+    /// `not_asked`, `unreachable` or `suspect`.
+    pub status: String,
+    /// Why it was not asked, or what it said when it did not answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// What the previous engine of a moved call said about it.
@@ -311,7 +337,7 @@ pub struct CallEngine {
 pub struct PreviousEngine {
     /// The engine asked.
     pub relay: String,
-    /// `map_row` or `sdp_address`.
+    /// `ng_offer`, `map_row` or `sdp_address`.
     pub chosen_by: String,
     /// Why this engine, in words.
     pub reason: String,
@@ -725,8 +751,8 @@ pub fn relay_sessions(
 pub struct Routed<'a> {
     /// The run's engine rule.
     pub routing: &'a crate::relay::engines::EngineRouting,
-    /// A call's SDP sightings, from the dialog store.
-    pub sdp_of: &'a dyn Fn(&str) -> Vec<crate::relay::engines::SdpSighting>,
+    /// A call's evidence, from the dialog store.
+    pub sdp_of: &'a dyn Fn(&str) -> crate::relay::engines::CallEvidence,
 }
 
 /// [`relay_sessions`], with engine selection when `routed` is given.
@@ -902,6 +928,40 @@ pub fn relay_sessions_routed(
         if let Some(p) = previous.as_ref().filter(|p| p.holds) {
             holders.insert(p.relay.clone());
         }
+        let leftovers: Vec<LeftoverSession> = chosen
+            .leftovers
+            .iter()
+            .map(|left| {
+                // The previous engine's answer, when it is this engine: it is
+                // the same question, asked once.
+                let asked_before = match (&chosen.previous, &previous) {
+                    (Some(engine), Some(answer)) if Some(engine.control) == left.control => {
+                        Some(answer.clone())
+                    }
+                    _ => None,
+                };
+                let answer = |control| {
+                    let mut answer = None;
+                    let engine = crate::relay::engines::Engine {
+                        control,
+                        chosen_by: crate::relay::engines::ChosenBy::NgOffer {
+                            engine: left.engine,
+                            row: None,
+                        },
+                    };
+                    with_engine(control, &mut |r, label| {
+                        answer = Some(ask_previous(r, label, permit, call_id, &engine));
+                    });
+                    answer
+                };
+                leftover_session(left, routing.asks_previous(), asked_before, answer)
+            })
+            .collect();
+        for l in leftovers.iter().filter(|l| l.status == "confirmed") {
+            if let Some(relay) = &l.relay {
+                holders.insert(relay.clone());
+            }
+        }
         entry.engine = Some(CallEngine {
             asked,
             chosen_by,
@@ -909,6 +969,7 @@ pub fn relay_sessions_routed(
             previous,
             listed_by: by,
             held_by_several_engines: holders.len() > 1,
+            leftovers,
         });
         out.calls.push(entry);
     }
@@ -929,6 +990,49 @@ pub fn relay_sessions_routed(
         .collect();
     out.engines = Some(listings);
     out.obtained_at = clock().to_rfc3339();
+    out
+}
+
+/// What sipnab knows of one leftover session: asked to confirm when the
+/// operator permits asking (`asks`) and listed the engine, else why not.
+///
+/// `asked_before` is the previous engine's answer when the leftover is that
+/// engine, so it is not asked twice; `ask` asks any other.
+fn leftover_session(
+    left: &crate::relay::engines::Leftover,
+    asks: bool,
+    asked_before: Option<PreviousEngine>,
+    ask: impl FnOnce(std::net::SocketAddr) -> Option<PreviousEngine>,
+) -> LeftoverSession {
+    let mut out = LeftoverSession {
+        engine: left.engine.to_string(),
+        relay: None,
+        status: "not_asked".to_string(),
+        detail: None,
+    };
+    let Some(control) = left.control else {
+        out.detail = Some(format!(
+            "no {} row names it",
+            crate::cli::RELAY_NG_ENGINE_FLAG
+        ));
+        return out;
+    };
+    if !asks {
+        out.detail = Some("add --relay-previous-engine to ask it".to_string());
+        return out;
+    }
+    let Some(answer) = asked_before.or_else(|| ask(control)) else {
+        return out;
+    };
+    out.relay = Some(answer.relay);
+    if answer.holds {
+        out.status = "confirmed".to_string();
+    } else if answer.outcome == StatisticsOutcome::Refused.as_wire_str() {
+        out.status = "released".to_string();
+    } else {
+        out.status = answer.outcome;
+        out.detail = answer.detail;
+    }
     out
 }
 
@@ -1278,8 +1382,8 @@ impl SessionCall {
 }
 
 impl CallEngine {
-    /// Which engine was asked and why, what the previous engine said, and
-    /// whether several engines hold the call.
+    /// Which engine was asked and why, what the previous engine said,
+    /// whether several engines hold the call, and each leftover session.
     #[must_use]
     pub fn render(&self) -> String {
         let mut out = String::new();
@@ -1310,6 +1414,24 @@ impl CallEngine {
         }
         if self.held_by_several_engines {
             out.push_str("Held by several engines.\n");
+        }
+        for l in &self.leftovers {
+            let relay = l
+                .relay
+                .as_deref()
+                .map_or_else(String::new, |r| format!(" ({})", super::clean(r)));
+            let said = match l.status.as_str() {
+                "confirmed" => "confirmed, it still holds this call".to_string(),
+                "released" => "released, it no longer holds this call".to_string(),
+                other => format!(
+                    "not confirmed ({other}: {})",
+                    super::clean(l.detail.as_deref().unwrap_or(""))
+                ),
+            };
+            out.push_str(&format!(
+                "Leftover session on {}{relay}: {said}.\n",
+                super::clean(&l.engine)
+            ));
         }
         out
     }
@@ -2356,7 +2478,12 @@ mod tests {
 
     /// `m-1` moved from the engine at 30000-39999 to the one at 40000-49999;
     /// `u-1`'s SDP names media no row claims; every other call has no SDP.
-    fn sdp_of(call_id: &str) -> Vec<SdpSighting> {
+    fn sdp_of(call_id: &str) -> crate::relay::engines::CallEvidence {
+        sdp_sightings_of(call_id).into()
+    }
+
+    /// The SDP sightings [`sdp_of`] holds for `call_id`.
+    fn sdp_sightings_of(call_id: &str) -> Vec<SdpSighting> {
         match call_id {
             "m-1@example.invalid" => vec![
                 sighting(0, true, "203.0.113.5", 30010),
@@ -2370,6 +2497,208 @@ mod tests {
             ],
             _ => Vec::new(),
         }
+    }
+
+    /// The ng engine rows `2001 A`, `2002 B`, with `d` the default engine.
+    fn ng_routing(
+        engine_a: &Arc<EngineRelay>,
+        engine_b: &Arc<EngineRelay>,
+        previous: bool,
+    ) -> Result<EngineRouting, TestError> {
+        let (engine_a, engine_b) = (Arc::clone(engine_a), Arc::clone(engine_b));
+        let (a_addr, b_addr): (SocketAddr, SocketAddr) = (A.parse()?, B.parse()?);
+        let connect: Connect = Arc::new(move |addr| -> Arc<dyn ReadOnlyRelay + Send + Sync> {
+            if addr == a_addr {
+                Arc::clone(&engine_a) as Arc<dyn ReadOnlyRelay + Send + Sync>
+            } else if addr == b_addr {
+                Arc::clone(&engine_b) as Arc<dyn ReadOnlyRelay + Send + Sync>
+            } else {
+                EngineRelay::down("an engine no test named")
+            }
+        });
+        let ng = crate::relay::engines::NgEngineMap::new(vec![
+            format!("2001 {A}").parse()?,
+            format!("2002 {B}").parse()?,
+        ])?;
+        Ok(EngineRouting::new(
+            crate::relay::engines::EngineRules { sdp: None, ng },
+            D.parse()?,
+            previous,
+            connect,
+        ))
+    }
+
+    /// `l-1` was offered to homer-id `first`, then to 2002, with no delete.
+    fn moved_by_ng(first: u32) -> impl Fn(&str) -> crate::relay::engines::CallEvidence {
+        use crate::relay_vocab::{EngineIdentity, EngineSighting, EngineVerb};
+        move |call_id: &str| {
+            let offer = |secs: i64, id: u32| EngineSighting {
+                at: at() + chrono::TimeDelta::seconds(secs),
+                engine: EngineIdentity::HomerId(id),
+                verb: EngineVerb::Offer,
+                reported_listen_ng: None,
+            };
+            crate::relay::engines::CallEvidence {
+                sdp: Vec::new(),
+                ng: if call_id == "l-1@example.invalid" {
+                    vec![offer(0, first), offer(60, 2002)]
+                } else {
+                    Vec::new()
+                },
+            }
+        }
+    }
+
+    /// The leftover snapshot of `l-1`: B lists it, A `holds` it or not.
+    fn leftover_snapshot(
+        a_holds: bool,
+        previous: bool,
+        first: u32,
+    ) -> Result<(RelaySessions, Arc<EngineRelay>, Arc<EngineRelay>), TestError> {
+        let default_engine = ScriptedRelay::new(|_, _| Ok(listed(&[], false)));
+        let held: &[&'static str] = if a_holds {
+            &["l-1@example.invalid"]
+        } else {
+            &[]
+        };
+        let engine_a = EngineRelay::new("engine-a", &[], held);
+        let engine_b = EngineRelay::new(
+            "engine-b",
+            &["l-1@example.invalid"],
+            &["l-1@example.invalid"],
+        );
+        let rules = ng_routing(&engine_a, &engine_b, previous)?;
+        let evidence = moved_by_ng(first);
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &evidence,
+        };
+        let snap = relay_sessions_routed(
+            &default_engine,
+            Some(&routed),
+            &permit()?,
+            &ask(None, true, 8),
+            &never,
+            &at,
+        );
+        Ok((snap, engine_a, engine_b))
+    }
+
+    /// A call the ng traffic moved from 2001 to 2002 with no delete is asked
+    /// of 2002; with `--relay-previous-engine`, 2001 is asked once and its
+    /// answer confirms the leftover session.
+    #[test]
+    fn a_leftover_session_is_confirmed_by_asking_the_old_engine() -> Result<(), TestError> {
+        let (snap, engine_a, engine_b) = leftover_snapshot(true, true, 2001)?;
+        assert_eq!(
+            engine_b.asked()?,
+            ["list 32", "query l-1@example.invalid"],
+            "the call is asked of the engine the newest offer reached"
+        );
+        assert_eq!(
+            engine_a.asked()?,
+            ["list 32", "query l-1@example.invalid"],
+            "the old engine is asked once, for the previous engine and the leftover alike"
+        );
+        let engine = snap
+            .calls
+            .first()
+            .and_then(|c| c.engine.as_ref())
+            .ok_or("an engine")?;
+        assert_eq!(engine.chosen_by, "ng_offer", "the offer chose it");
+        assert_eq!(
+            engine.leftovers,
+            vec![LeftoverSession {
+                engine: "homer-id 2001".to_string(),
+                relay: Some("relay (engine-a)".to_string()),
+                status: "confirmed".to_string(),
+                detail: None,
+            }],
+            "the leftover is confirmed"
+        );
+        assert!(engine.held_by_several_engines, "both engines hold it");
+        let text = snap.render(ReportFormat::Text);
+        assert!(
+            text.contains(
+                "Leftover session on homer-id 2001 (relay (engine-a)): confirmed, it still \
+                 holds this call."
+            ),
+            "{text}"
+        );
+        Ok(())
+    }
+
+    /// The old engine that no longer holds the call releases the flag; with
+    /// no `--relay-previous-engine` it is flagged and not asked.
+    #[test]
+    fn a_leftover_is_released_by_its_answer_and_not_asked_without_the_option()
+    -> Result<(), TestError> {
+        let (snap, _, _) = leftover_snapshot(false, true, 2001)?;
+        let engine = snap
+            .calls
+            .first()
+            .and_then(|c| c.engine.as_ref())
+            .ok_or("an engine")?;
+        assert_eq!(
+            engine.leftovers.first().map(|l| l.status.as_str()),
+            Some("released"),
+            "the old engine does not hold it"
+        );
+        let (snap, engine_a, _) = leftover_snapshot(true, false, 2001)?;
+        assert_eq!(
+            engine_a.asked()?,
+            ["list 32"],
+            "not asked without the option"
+        );
+        let engine = snap
+            .calls
+            .first()
+            .and_then(|c| c.engine.as_ref())
+            .ok_or("an engine")?;
+        assert_eq!(
+            engine
+                .leftovers
+                .first()
+                .map(|l| (l.status.as_str(), l.detail.as_deref())),
+            Some(("not_asked", Some("add --relay-previous-engine to ask it"))),
+            "flagged, not asked"
+        );
+        let text = snap.render(ReportFormat::Text);
+        assert!(
+            text.contains(
+                "Leftover session on homer-id 2001: not confirmed (not_asked: add \
+                 --relay-previous-engine to ask it)."
+            ),
+            "{text}"
+        );
+        Ok(())
+    }
+
+    /// A leftover on an engine no row names is flagged and never asked, even
+    /// with `--relay-previous-engine`.
+    #[test]
+    fn a_leftover_on_an_unlisted_engine_is_never_asked() -> Result<(), TestError> {
+        let (snap, engine_a, _) = leftover_snapshot(true, true, 2009)?;
+        assert_eq!(engine_a.asked()?, ["list 32"], "nothing else asked");
+        let engine = snap
+            .calls
+            .first()
+            .and_then(|c| c.engine.as_ref())
+            .ok_or("an engine")?;
+        assert_eq!(
+            engine.leftovers,
+            vec![LeftoverSession {
+                engine: "homer-id 2009".to_string(),
+                relay: None,
+                status: "not_asked".to_string(),
+                detail: Some(format!(
+                    "no {} row names it",
+                    crate::cli::RELAY_NG_ENGINE_FLAG
+                )),
+            }],
+            "flagged and not asked"
+        );
+        Ok(())
     }
 
     /// The moved call: listed by both engines, queried on the engine its

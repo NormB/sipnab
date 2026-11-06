@@ -131,17 +131,60 @@ pub fn sniffed_ng_sdp_links(
     dst_port: u16,
     datagram: &[u8],
 ) -> Option<Vec<(std::net::IpAddr, u16, String, crate::sip::sdp::SdpMedia)>> {
+    sniffed_ng(
+        dst_port,
+        datagram,
+        chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+    )
+    .map(|ng| ng.sdp_links)
+}
+
+/// What one SNIFFED `ng` HEP copy asserts: its media endpoints, and the
+/// engine an `offer` or `delete` reached.
+#[cfg(feature = "hep")]
+#[derive(Debug, Clone)]
+pub struct SniffedNg {
+    /// The media endpoints, as [`sniffed_ng_sdp_links`] returns them.
+    pub sdp_links: Vec<(std::net::IpAddr, u16, String, crate::sip::sdp::SdpMedia)>,
+    /// The engine the request reached, named by the copy's capture id.
+    pub engine_sighting: Option<(String, crate::relay_vocab::EngineSighting)>,
+}
+
+/// [`sniffed_ng_sdp_links`], with the engine sighting the copy makes.
+///
+/// `received` is when the datagram was captured; the time the copy carries is
+/// used when it carries one. Both halves pass the same port gate: a copy off
+/// the HEP port asserts nothing.
+#[cfg(feature = "hep")]
+#[must_use]
+pub fn sniffed_ng(
+    dst_port: u16,
+    datagram: &[u8],
+    received: chrono::DateTime<chrono::Utc>,
+) -> Option<SniffedNg> {
     let hep = crate::capture::hep::parse_hep(datagram).ok()?;
     if !is_ng_over_hep(hep.protocol.to_byte(), &hep.payload) {
         return None;
     }
     if !sniffed_mirror_port_believed(dst_port) {
-        return Some(Vec::new());
+        return Some(SniffedNg {
+            sdp_links: Vec::new(),
+            engine_sighting: None,
+        });
     }
-    Some(sdp_links_from_ng(
-        &hep.payload,
-        hep.correlation_id.as_deref(),
-    ))
+    let engine_sighting = hep.capture_id.and_then(|id| {
+        engine_sighting_from_ng(
+            &hep.payload,
+            hep.correlation_id.as_deref(),
+            crate::relay_vocab::EngineIdentity::HomerId(id),
+            Some(std::net::SocketAddr::new(hep.dst_addr, hep.dst_port)),
+            hep.timestamp.unwrap_or(received),
+        )
+    });
+    Some(SniffedNg {
+        sdp_links: sdp_links_from_ng(&hep.payload, hep.correlation_id.as_deref()),
+        engine_sighting,
+    })
 }
 
 /// Whether sniffed `ng` addressed to `dst_port` is believed, counting and
@@ -395,4 +438,177 @@ fn describe_ng_message(payload: &[u8]) -> Option<crate::relay::ControlMessage> {
         call_id: msg.call_id.map(|b| String::from_utf8_lossy(b).into_owned()),
         sdp_bytes: msg.sdp.map(<[u8]>::len),
     })
+}
+
+/// The engine sighting one `ng` message makes, tied to its call.
+///
+/// Only a REQUEST counts, and only `offer` and `delete`: an `offer` is the
+/// proxy choosing this engine for the call, and a `delete` is the proxy
+/// releasing it there. A reply says nothing new about which engine was asked,
+/// and `query`, `list` and `statistics` are questions (sipnab's own among
+/// them, since rtpengine copies those too) that choose nothing.
+///
+/// `correlation_id` names the call when the body does not. `engine` and
+/// `reported_listen_ng` are what the caller knows of the receiver: the HEP
+/// capture id and destination chunk for a HEP copy, or the destination of a
+/// captured request.
+///
+/// `None` for anything else, and for a request that names no call.
+#[must_use]
+pub fn engine_sighting_from_ng(
+    payload: &[u8],
+    correlation_id: Option<&str>,
+    engine: crate::relay_vocab::EngineIdentity,
+    reported_listen_ng: Option<std::net::SocketAddr>,
+    at: chrono::DateTime<chrono::Utc>,
+) -> Option<(String, crate::relay_vocab::EngineSighting)> {
+    let msg = ng::parse(payload).ok()?;
+    let verb = match msg.command? {
+        ng::NgCommand::Offer => crate::relay_vocab::EngineVerb::Offer,
+        ng::NgCommand::Delete => crate::relay_vocab::EngineVerb::Delete,
+        _ => return None,
+    };
+    let call_id = msg
+        .call_id
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .or_else(|| correlation_id.map(str::to_owned))
+        .filter(|id| !id.is_empty())?;
+    Some((
+        call_id,
+        crate::relay_vocab::EngineSighting {
+            at,
+            engine,
+            verb,
+            reported_listen_ng,
+        },
+    ))
+}
+
+#[cfg(test)]
+mod engine_sighting_tests {
+    use super::*;
+    use crate::relay_vocab::{EngineIdentity, EngineSighting, EngineVerb};
+    use chrono::TimeZone;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn at() -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+        Ok(chrono::Utc
+            .timestamp_opt(1_793_800_000, 0)
+            .single()
+            .ok_or("a fixed instant")?)
+    }
+
+    fn sighting(
+        payload: &[u8],
+        correlation_id: Option<&str>,
+    ) -> Result<Option<(String, EngineSighting)>, TestError> {
+        Ok(engine_sighting_from_ng(
+            payload,
+            correlation_id,
+            EngineIdentity::HomerId(2002),
+            Some("127.0.0.1:2223".parse()?),
+            at()?,
+        ))
+    }
+
+    /// An `offer` and a `delete` name their call and the engine that
+    /// received them, with the destination the copy reported.
+    #[test]
+    fn an_offer_and_a_delete_are_sightings_of_the_receiving_engine() -> Result<(), TestError> {
+        let offer = sighting(
+            b"c2 d7:call-id18:c1@example.invalid7:command5:offer8:from-tag2:fte",
+            None,
+        )?;
+        assert_eq!(
+            offer,
+            Some((
+                "c1@example.invalid".to_string(),
+                EngineSighting {
+                    at: at()?,
+                    engine: EngineIdentity::HomerId(2002),
+                    verb: EngineVerb::Offer,
+                    reported_listen_ng: Some("127.0.0.1:2223".parse()?),
+                }
+            )),
+            "an offer is a sighting of the engine that received it"
+        );
+        let delete = sighting(
+            b"c7 d7:call-id18:c1@example.invalid7:command6:delete8:from-tag2:fte",
+            None,
+        )?;
+        assert_eq!(
+            delete.map(|(c, s)| (c, s.verb)),
+            Some(("c1@example.invalid".to_string(), EngineVerb::Delete)),
+            "a delete is a sighting too"
+        );
+        Ok(())
+    }
+
+    /// A request whose body names no call is named by the correlation id; one
+    /// named by neither is no sighting.
+    #[test]
+    fn the_correlation_id_names_a_call_the_body_does_not() -> Result<(), TestError> {
+        let body = b"c2 d7:command5:offere";
+        assert_eq!(
+            sighting(body, Some("c9@example.invalid"))?.map(|(c, _)| c),
+            Some("c9@example.invalid".to_string()),
+            "the correlation id names the call"
+        );
+        assert_eq!(sighting(body, None)?, None, "no call named, no sighting");
+        assert_eq!(sighting(body, Some(""))?, None, "an empty id names no call");
+        Ok(())
+    }
+
+    /// A sniffed HEP copy is dated by the time it carries, not by when sipnab
+    /// captured it, so copies from several engines order by when each engine
+    /// saw its request.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn a_sniffed_copy_is_dated_by_the_time_it_carries() -> Result<(), TestError> {
+        let ep = crate::capture::hep::HepEndpoint {
+            src_addr: std::net::IpAddr::from([192, 0, 2, 30]),
+            dst_addr: std::net::IpAddr::from([127, 0, 0, 1]),
+            src_port: 40000,
+            dst_port: 2223,
+            transport: crate::net::TransportProto::Udp,
+        };
+        let carried = at()?;
+        let datagram = crate::capture::hep::build_hep_v3_correlated(
+            &ep,
+            carried,
+            crate::capture::hep::HepProtocol::Unknown(NG_HEP_CAPTURE_PROTO),
+            2001,
+            None,
+            Some(b"c1@example.invalid"),
+            b"c2 d7:call-id18:c1@example.invalid7:command5:offer8:from-tag2:fte",
+        );
+        let received = carried + chrono::TimeDelta::seconds(30);
+        let got = sniffed_ng(HEP_MIRROR_PORTS[0], &datagram, received)
+            .and_then(|ng| ng.engine_sighting)
+            .map(|(_, s)| s.at);
+        assert_eq!(got, Some(carried), "the time the copy carries");
+        Ok(())
+    }
+
+    /// A reply, a question and a request that chooses nothing are no
+    /// sighting: they would otherwise make sipnab's own `query` move a call.
+    #[test]
+    fn replies_and_questions_are_not_sightings() -> Result<(), TestError> {
+        for payload in [
+            &b"c2 d3:sdp3:v=06:result2:oke"[..],
+            &b"c4 d7:call-id18:c1@example.invalid7:command5:querye"[..],
+            &b"c3 d7:command6:answer7:call-id18:c1@example.invalid8:from-tag2:fte"[..],
+            &b"c5 d7:command4:liste"[..],
+            &b"not ng at all"[..],
+        ] {
+            assert_eq!(
+                sighting(payload, Some("c1@example.invalid"))?,
+                None,
+                "not a sighting: {}",
+                String::from_utf8_lossy(payload)
+            );
+        }
+        Ok(())
+    }
 }

@@ -116,7 +116,7 @@ pub fn spawn_snapshot(
         scan,
         cap,
         sip_ended,
-        Arc::new(|_: &str| Vec::new()),
+        Arc::new(|_: &str| crate::relay::engines::CallEvidence::default()),
     )
 }
 
@@ -596,6 +596,7 @@ mod tests {
                 address: "203.0.113.5".to_string(),
                 port: 40010,
             }]
+            .into()
         });
         let rx = spawn_snapshot_for(
             access,

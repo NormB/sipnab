@@ -263,12 +263,19 @@
             ]
           },
           "chosen_by": {
-            "description": "`map_row`, `sdp_address`, `listed` (no SDP seen for the call, and\nthis engine's list names it), `default` (no SDP seen, and no engine's\nlist names it), or `unknown` (nothing was asked).",
+            "description": "`ng_offer` (the newest ng `offer` sipnab saw reached this engine),\n`map_row`, `sdp_address`, `listed` (nothing a rule applies to was seen\nfor the call, and this engine's list names it), `default` (nothing\nseen, and no engine's list names it), or `unknown` (nothing was\nasked).",
             "type": "string"
           },
           "held_by_several_engines": {
             "description": "Whether two or more engines hold this Call-ID, by their lists or their\nanswers: a call that moved and left a session on the old engine.",
             "type": "boolean"
+          },
+          "leftovers": {
+            "description": "The engines the call moved off that no `delete` reached, from ng\ncontrol traffic, and whether each was asked to confirm.",
+            "items": {
+              "$ref": "#/components/schemas/LeftoverSession"
+            },
+            "type": "array"
           },
           "listed_by": {
             "description": "The engines whose `list` named this Call-ID.",
@@ -3877,6 +3884,38 @@
         ],
         "type": "object"
       },
+      "LeftoverSession": {
+        "description": "An engine a call moved off that never received a `delete` for it.",
+        "properties": {
+          "detail": {
+            "description": "Why it was not asked, or what it said when it did not answer.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "engine": {
+            "description": "The engine as the ng traffic named it: `homer-id 2001`, or\n`listen-ng 192.0.2.5:2223` for a captured request.",
+            "type": "string"
+          },
+          "relay": {
+            "description": "The engine asked to confirm, when it was asked.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "description": "`confirmed` (it still holds the call), `released` (it does not),\n`not_asked`, `unreachable` or `suspect`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "engine",
+          "status"
+        ],
+        "type": "object"
+      },
       "Libpcap": {
         "description": "The libpcap this server runs, as `pcap_lib_version()` reports it. The\nsame fields the MCP `server_capabilities` tool returns, from the one\n`capture::libpcap::running` report.",
         "properties": {
@@ -4315,7 +4354,7 @@
         "description": "What the previous engine of a moved call said about it.",
         "properties": {
           "chosen_by": {
-            "description": "`map_row` or `sdp_address`.",
+            "description": "`ng_offer`, `map_row` or `sdp_address`.",
             "type": "string"
           },
           "detail": {

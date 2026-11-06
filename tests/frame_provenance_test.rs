@@ -303,6 +303,7 @@ fn the_parallel_reader_gives_each_file_of_a_set_its_own_source() -> Result<(), T
         quiet_bad_parse: false,
         hep_parse: false,
         rtpproxy_control: None,
+        ng_control_port: None,
         xcid_headers: Vec::new(),
         leg_correlation_window_ms: sipnab::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,
         retain_audio: false,

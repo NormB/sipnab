@@ -762,6 +762,7 @@ fn load_one_capture(
             }
             crate::pipeline::PacketAction::RelayControl(message) => {
                 if message.carries_anything() {
+                    crate::pipeline::apply_engine_sighting(&mut dialog_store.write(), &message);
                     // Read off the wire: unauthenticated, and the relay this run watches.
                     crate::pipeline::apply_relay_control(
                         &mut stream_store.write(),

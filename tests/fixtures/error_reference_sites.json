@@ -416,10 +416,11 @@
       "call": "Error::CliValidation(message)",
       "count": 1,
       "carries": [
-        "--relay-previous-engine needs an engine rule to name a previous engine: add --rtpengine-engine rows, [relay] engines, or --rtpengine-trust-sdp-address",
+        "--relay-previous-engine needs an engine rule to name a previous engine: add --rtpengine-engine rows, [relay] engines, --rtpengine-trust-sdp-address, or --rtpengine-ng-engine rows",
         "--rtpengine-trust-sdp-address and an engine map (--rtpengine-engine or [relay] engines) are two rules for one question; the map is an allowlist and trusting SDP is none. Give one of them",
         "--rtpengine-engine / [relay] engines: {e}",
-        "{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose SDP sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223"
+        "--rtpengine-ng-engine / [relay] ng_engines: {e}",
+        "{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose engine sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223"
       ],
       "why": "engine_refusal in cli.rs, for a refused engine setting from the command line: the literals Cli::engine_selection passes it."
     },
@@ -430,9 +431,11 @@
       "carries": [
         "[relay] engines: {e}",
         "--rtpengine-engine / [relay] engines: {e}",
-        "{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose SDP sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223"
+        "[relay] ng_engines: {e}",
+        "--rtpengine-ng-engine / [relay] ng_engines: {e}",
+        "{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose engine sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223"
       ],
-      "why": "engine_refusal in cli.rs, for a refused [relay] engines setting: the literals Cli::engine_selection passes it."
+      "why": "engine_refusal in cli.rs, for a refused [relay] engines or [relay] ng_engines setting: the literals Cli::engine_selection passes it."
     }
   ],
   "unresolved": [

@@ -5722,6 +5722,7 @@ mod tests {
                     correlation_id: None,
                     sniffed_on_port: None,
                     json_event: false,
+                    capture_id: None,
                 }),
                 vcon: None,
             },

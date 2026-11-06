@@ -2503,9 +2503,9 @@ fn report_relay_statistics(cli: &Cli, config: &Config, source: Option<&CaptureSo
         cli.rtp_args.relay_stats_call.as_deref()
     };
     let (fetched, label) = match per_call {
-        // A question about one call goes to the engine its SDP names. This
-        // run asks before it reads any SIP, so with an engine rule that is the
-        // default engine, and the label says why.
+        // A question about one call goes to the engine its newest ng offer
+        // or SDP names. This run asks before it reads any traffic, so with an
+        // engine rule that is the default engine, and the label says why.
         Some(call_id) => match fetch_call_statistics(cli, config, &ask, call_id) {
             Some(fetched) => fetched,
             None => return,
@@ -2641,12 +2641,12 @@ fn print_relay_stat_values(
 /// The relay to ask about one call on a CLI run, by the rule every relay
 /// surface uses ([`crate::relay::engines::call_target`]): the
 /// `--rtpengine-control` relay at `socket`, or with an engine rule the engine
-/// `sightings` name.
+/// `evidence` names.
 fn cli_call_target(
     cli: &Cli,
     config: &Config,
     socket: std::net::SocketAddr,
-    sightings: &[crate::relay::engines::SdpSighting],
+    evidence: &crate::relay::engines::CallEvidence,
 ) -> crate::relay::engines::CallTarget {
     use crate::rtpengine::control::{ControlClient, DEFAULT_CONTROL_TIMEOUT};
     let default: std::sync::Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync> =
@@ -2654,7 +2654,7 @@ fn cli_call_target(
     // Planning refused an unusable engine rule, so an error cannot reach here.
     let selection = cli.engine_selection(config).ok().flatten();
     let routing = crate::app::relay_engines::routing(cli, selection.as_ref());
-    crate::relay::engines::call_target(&default, routing.as_deref(), sightings)
+    crate::relay::engines::call_target(&default, routing.as_deref(), evidence)
 }
 
 /// `label`, followed by why the engine was chosen when an engine rule chose
@@ -2667,8 +2667,8 @@ fn labeled(label: String, reason: Option<String>) -> String {
 }
 
 /// `--relay-stats-call`'s fetch and its label. The run asks before it reads
-/// any SIP, so the call's SDP is not known and an engine rule names the
-/// default engine; `None`, after logging why, when the rule names none.
+/// any traffic, so neither the call's ng offer nor its SDP is known and an
+/// engine rule names the default engine; `None`, after logging why, when the rule names none.
 fn fetch_call_statistics(
     cli: &Cli,
     config: &Config,
@@ -2676,7 +2676,12 @@ fn fetch_call_statistics(
     call_id: &str,
 ) -> Option<(anyhow::Result<crate::relay::types::ControlReply>, String)> {
     let addr = ask.addr.as_str();
-    match cli_call_target(cli, config, ask.socket, &[]) {
+    match cli_call_target(
+        cli,
+        config,
+        ask.socket,
+        &crate::relay::engines::CallEvidence::default(),
+    ) {
         crate::relay::engines::CallTarget::Ask { relay, reason, .. } => Some((
             relay.call_statistics(&ask.permit, call_id),
             labeled(format!("rtpengine at {addr}, call {call_id}"), reason),
@@ -2724,8 +2729,9 @@ pub fn report_relay_comparison(
             return;
         }
     };
-    // The engine this call's SDP names, when an engine rule is configured:
-    // the capture has drained, so the call's SDP is in the dialog store.
+    // The engine this call's newest ng offer or SDP names, when an engine
+    // rule is configured: the capture has drained, so both are in the dialog
+    // store.
     let sightings = crate::relay::engines::call_sightings(dialog_store, call_id);
     let (client, control, reason) = match cli_call_target(cli, config, ask.socket, &sightings) {
         crate::relay::engines::CallTarget::Ask {

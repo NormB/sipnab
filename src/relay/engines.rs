@@ -64,6 +64,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 
 use crate::relay::reconcile::ReadOnlyRelay;
+use crate::relay_vocab::{EngineIdentity, EngineSighting, EngineVerb};
 use crate::sip::sdp_timeline::SdpExchange;
 
 /// One row of the engine map: SDP media address and port range, to the
@@ -270,6 +271,171 @@ impl EngineMap {
     }
 }
 
+/// One row of the ng engine map: an engine sipnab may ask, with the
+/// `homer-id` its HEP copies carry when it sends them.
+///
+/// Written `[HOMER-ID] LISTEN-NG`, for example `2001 192.0.2.5:2223`, or
+/// `192.0.2.5:2223` for an engine seen only in captured requests. An optional
+/// `->` may stand before the address.
+#[derive(Clone, PartialEq, Eq)]
+pub struct NgEngineRow {
+    /// The engine's `homer-id`, the capture id its HEP copies carry.
+    pub homer_id: Option<u32>,
+    /// The engine's `listen-ng` address, where it answers control queries.
+    pub control: SocketAddr,
+}
+
+impl fmt::Display for NgEngineRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.homer_id {
+            Some(id) => write!(f, "{id} {}", self.control),
+            None => write!(f, "{}", self.control),
+        }
+    }
+}
+
+impl fmt::Debug for NgEngineRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("NgEngineRow")
+            .field(&self.to_string())
+            .finish()
+    }
+}
+
+/// Why an ng engine row or map was refused.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NgEngineError {
+    /// The row does not have the `[HOMER-ID] LISTEN-NG` shape.
+    #[error(
+        "ng engine row {row:?} is not `[HOMER-ID] LISTEN-NG-ADDRESS:PORT`, for \
+         example `2001 192.0.2.5:2223` or `192.0.2.5:2223`"
+    )]
+    Shape {
+        /// The row as given.
+        row: String,
+    },
+    /// The `homer-id` is not a whole number from 0 to 4294967295.
+    #[error("ng engine row {row:?}: {value:?} is not a homer-id (a whole number, 0 to 4294967295)")]
+    HomerId {
+        /// The row as given.
+        row: String,
+        /// The field that did not parse.
+        value: String,
+    },
+    /// The control address is not an address and port.
+    #[error(
+        "ng engine row {row:?}: {value:?} is not a listen-ng address and port \
+         (an IPv6 address is written [2001:db8::5]:2223)"
+    )]
+    Control {
+        /// The row as given.
+        row: String,
+        /// The field that did not parse.
+        value: String,
+    },
+    /// Two rows name the same `homer-id` or the same `listen-ng` address.
+    #[error(
+        "ng engine rows {first:?} and {second:?} both name {what}, so a call \
+         there has no single engine"
+    )]
+    Duplicate {
+        /// The earlier row.
+        first: String,
+        /// The later row.
+        second: String,
+        /// What both name.
+        what: String,
+    },
+}
+
+impl FromStr for NgEngineRow {
+    type Err = NgEngineError;
+
+    /// Parse `[HOMER-ID] [->] LISTEN-NG`, fields separated by white space.
+    fn from_str(row: &str) -> Result<Self, Self::Err> {
+        let fields: Vec<&str> = row.split_whitespace().collect();
+        let (homer_id, control) = match fields.as_slice() {
+            [control] | ["->", control] => (None, *control),
+            [id, control] | [id, "->", control] => (Some(*id), *control),
+            _ => {
+                return Err(NgEngineError::Shape {
+                    row: row.to_string(),
+                });
+            }
+        };
+        let homer_id = homer_id
+            .map(|id| {
+                id.parse::<u32>().map_err(|_| NgEngineError::HomerId {
+                    row: row.to_string(),
+                    value: id.to_string(),
+                })
+            })
+            .transpose()?;
+        let control = control
+            .parse::<SocketAddr>()
+            .map_err(|_| NgEngineError::Control {
+                row: row.to_string(),
+                value: control.to_string(),
+            })?;
+        Ok(Self { homer_id, control })
+    }
+}
+
+/// The operator's ng engine map: the engines sipnab may ask about a call
+/// whose engine it learned from ng control traffic.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NgEngineMap {
+    /// The rows, in the order given.
+    rows: Vec<NgEngineRow>,
+}
+
+impl NgEngineMap {
+    /// Build a map, refusing two rows with one `homer-id` or one address.
+    ///
+    /// # Errors
+    ///
+    /// [`NgEngineError::Duplicate`], naming both rows.
+    pub fn new(rows: Vec<NgEngineRow>) -> Result<Self, NgEngineError> {
+        for (i, first) in rows.iter().enumerate() {
+            for second in &rows[i + 1..] {
+                let what = if first.homer_id.is_some() && first.homer_id == second.homer_id {
+                    first.homer_id.map(|id| format!("homer-id {id}"))
+                } else if same_control(first.control, second.control) {
+                    Some(format!("listen-ng {}", first.control))
+                } else {
+                    None
+                };
+                if let Some(what) = what {
+                    return Err(NgEngineError::Duplicate {
+                        first: first.to_string(),
+                        second: second.to_string(),
+                        what,
+                    });
+                }
+            }
+        }
+        Ok(Self { rows })
+    }
+
+    /// The rows, in the order given.
+    #[must_use]
+    pub fn rows(&self) -> &[NgEngineRow] {
+        &self.rows
+    }
+
+    /// Whether the map has no row.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The row naming `homer_id`, if one does.
+    #[must_use]
+    pub fn row_for_homer_id(&self, homer_id: u32) -> Option<&NgEngineRow> {
+        self.rows.iter().find(|r| r.homer_id == Some(homer_id))
+    }
+}
+
 /// How a call's engine is chosen from its SDP.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EngineRule {
@@ -282,11 +448,56 @@ pub enum EngineRule {
     },
 }
 
-/// The run's engine rule and whether a moved call's previous engine is asked.
+/// Every engine rule the run has: the SDP rule, and the ng engine map.
+///
+/// At least one is configured wherever a value of this type exists.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EngineRules {
+    /// How a call's engine is chosen from its SDP, when that is configured.
+    pub sdp: Option<EngineRule>,
+    /// The engines sipnab may ask about a call whose engine it learned from
+    /// ng control traffic.
+    pub ng: NgEngineMap,
+}
+
+impl From<EngineRule> for EngineRules {
+    fn from(rule: EngineRule) -> Self {
+        Self {
+            sdp: Some(rule),
+            ng: NgEngineMap::default(),
+        }
+    }
+}
+
+impl EngineRules {
+    /// Whether sipnab may ask `control`: the run's default engine, a control
+    /// address an SDP map row names, or an address an ng engine row names.
+    ///
+    /// An address seen only in captured traffic is none of these. Trusting
+    /// SDP addresses does not extend to it: that opt-in is about SDP.
+    #[must_use]
+    pub fn may_ask(&self, default: SocketAddr, control: SocketAddr) -> bool {
+        let listed_by_sdp = match &self.sdp {
+            Some(EngineRule::Map(map)) => {
+                map.controls().into_iter().any(|c| same_control(c, control))
+            }
+            _ => false,
+        };
+        same_control(default, control)
+            || listed_by_sdp
+            || self
+                .ng
+                .rows
+                .iter()
+                .any(|r| same_control(r.control, control))
+    }
+}
+
+/// The run's engine rules and whether a moved call's previous engine is asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineSelection {
     /// How a call's engine is chosen.
-    pub rule: EngineRule,
+    pub rules: EngineRules,
     /// Whether a moved call's previous engine is asked too.
     pub previous: bool,
 }
@@ -336,16 +547,66 @@ pub fn sightings(timeline: &[SdpExchange]) -> Vec<SdpSighting> {
         .collect()
 }
 
+/// Everything sipnab holds that says which engine a call is on.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallEvidence {
+    /// The call's SDP media endpoints, oldest first.
+    pub sdp: Vec<SdpSighting>,
+    /// The `offer` and `delete` requests sipnab saw reach an engine.
+    pub ng: Vec<EngineSighting>,
+}
+
+impl From<Vec<SdpSighting>> for CallEvidence {
+    fn from(sdp: Vec<SdpSighting>) -> Self {
+        Self {
+            sdp,
+            ng: Vec::new(),
+        }
+    }
+}
+
+/// What sipnab has not seen for a call that is asked of a fallback engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unseen {
+    /// Only an SDP rule is configured, and the call's SDP was not seen.
+    Sdp,
+    /// Only an ng engine map is configured, and no `offer` was seen.
+    Offer,
+    /// Both are configured, and neither was seen.
+    OfferOrSdp,
+}
+
+impl Unseen {
+    /// The words for what was not seen.
+    #[must_use]
+    pub const fn words(self) -> &'static str {
+        match self {
+            Self::Sdp => "sipnab has seen no SDP for this call",
+            Self::Offer => "sipnab has seen no ng offer for this call",
+            Self::OfferOrSdp => "sipnab has seen neither an ng offer nor SDP for this call",
+        }
+    }
+}
+
 /// Why an engine was chosen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChosenBy {
     /// No engine rule is configured: the one engine the run names.
     NoRule,
-    /// A rule is configured, but sipnab has seen no SDP for the call, so the
-    /// run's default engine is asked.
-    NoSdpSeen,
-    /// No SDP is seen for the call, and this engine's `list` names it.
-    Listed,
+    /// A rule is configured, but sipnab has seen nothing it applies to, so
+    /// the run's default engine is asked.
+    NoSdpSeen(Unseen),
+    /// Nothing a rule applies to is seen for the call, and this engine's
+    /// `list` names it.
+    Listed(Unseen),
+    /// The newest `offer` sipnab saw for the call reached this engine.
+    NgOffer {
+        /// The engine as the traffic named it.
+        engine: EngineIdentity,
+        /// The ng engine row that names its control address, when one does;
+        /// `None` for an address the run already names.
+        row: Option<NgEngineRow>,
+    },
     /// A map row matched an SDP sighting.
     MapRow {
         /// The SDP media address and port that matched.
@@ -377,13 +638,23 @@ impl Engine {
     pub fn reason(&self) -> Option<String> {
         match &self.chosen_by {
             ChosenBy::NoRule => None,
-            ChosenBy::NoSdpSeen => Some(format!(
-                "the default engine ({}): sipnab has seen no SDP for this call",
-                crate::cli::RELAY_CONTROL_FLAG
+            ChosenBy::NoSdpSeen(unseen) => Some(format!(
+                "the default engine ({}): {}",
+                crate::cli::RELAY_CONTROL_FLAG,
+                unseen.words()
             )),
-            ChosenBy::Listed => Some(
-                "sipnab has seen no SDP for this call; this engine's list names it".to_string(),
-            ),
+            ChosenBy::Listed(unseen) => {
+                Some(format!("{}; this engine's list names it", unseen.words()))
+            }
+            ChosenBy::NgOffer { engine, row } => Some(match (engine, row) {
+                (EngineIdentity::HomerId(_), Some(row)) => format!(
+                    "chosen by the newest ng offer for this call, which reached {engine} \
+                     (ng engine row {row})"
+                ),
+                (_, _) => {
+                    format!("chosen by the newest ng offer for this call, which reached {engine}")
+                }
+            }),
             ChosenBy::MapRow { media, row } => {
                 Some(format!("chosen by engine row {row} for SDP media {media}"))
             }
@@ -394,13 +665,14 @@ impl Engine {
     }
 
     /// The JSON spelling of [`Self::chosen_by`]: `no_rule`, `default`,
-    /// `listed`, `map_row` or `sdp_address`.
+    /// `listed`, `ng_offer`, `map_row` or `sdp_address`.
     #[must_use]
     pub const fn chosen_by_word(&self) -> &'static str {
         match self.chosen_by {
             ChosenBy::NoRule => "no_rule",
-            ChosenBy::NoSdpSeen => "default",
-            ChosenBy::Listed => "listed",
+            ChosenBy::NoSdpSeen(_) => "default",
+            ChosenBy::Listed(_) => "listed",
+            ChosenBy::NgOffer { .. } => "ng_offer",
             ChosenBy::MapRow { .. } => "map_row",
             ChosenBy::SdpAddress { .. } => "sdp_address",
         }
@@ -420,6 +692,13 @@ pub enum Unknown {
         /// Every SDP media address and port seen for the call, oldest first.
         seen: Vec<String>,
     },
+    /// The newest `offer` reached an engine the operator has not listed.
+    NgEngineNotListed {
+        /// The engine as the traffic named it.
+        engine: EngineIdentity,
+        /// The `listen-ng` address a HEP copy reported, when it reported one.
+        reported: Option<SocketAddr>,
+    },
 }
 
 impl fmt::Display for Unknown {
@@ -438,83 +717,244 @@ impl fmt::Display for Unknown {
                  relay's; nothing was asked",
                 seen.join(", ")
             ),
+            Self::NgEngineNotListed {
+                engine: EngineIdentity::HomerId(id),
+                reported,
+            } => {
+                write!(
+                    f,
+                    "engine not listed (homer-id {id}): the newest ng offer for this call \
+                     reached homer-id {id}, and no {} row names it",
+                    crate::cli::RELAY_NG_ENGINE_FLAG
+                )?;
+                if let Some(addr) = reported {
+                    write!(f, " (the engine reports listen-ng {addr})")?;
+                }
+                write!(f, "; nothing was asked")
+            }
+            Self::NgEngineNotListed {
+                engine: EngineIdentity::ListenNg(addr),
+                ..
+            } => write!(
+                f,
+                "engine not listed ({addr}): the newest ng offer for this call was sent \
+                 to {addr}, an address sipnab saw only in captured traffic; list it with \
+                 {} to ask it; nothing was asked",
+                crate::cli::RELAY_NG_ENGINE_FLAG
+            ),
         }
+    }
+}
+
+/// An engine a call moved off without a `delete` reaching it there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Leftover {
+    /// The engine as the traffic named it.
+    pub engine: EngineIdentity,
+    /// Its control address, when sipnab may ask it.
+    pub control: Option<SocketAddr>,
+}
+
+impl Leftover {
+    /// The words every surface prints for it.
+    #[must_use]
+    pub fn words(&self) -> String {
+        format!(
+            "{} never received a delete for this call after its offer (a leftover session)",
+            self.engine
+        )
     }
 }
 
 /// The engines to ask about one call.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallEngines {
-    /// The engine the newest SDP names, or why there is none.
+    /// The engine the newest evidence names, or why there is none.
     pub current: Result<Engine, Unknown>,
-    /// The engine the SDP named before the call moved, when it moved.
+    /// The engine the evidence named before the call moved, when it moved.
     pub previous: Option<Engine>,
+    /// The engines the call moved off whose session no `delete` released, in
+    /// the order the call left them. Only ng control traffic can say this.
+    pub leftovers: Vec<Leftover>,
+}
+
+impl CallEngines {
+    /// What the evidence says beyond the engine asked: each leftover
+    /// session, in [`Leftover::words`]. Empty when there is none.
+    #[must_use]
+    pub fn notes(&self) -> Vec<String> {
+        self.leftovers.iter().map(Leftover::words).collect()
+    }
 }
 
 /// Choose the engines to ask about one call.
 ///
-/// `rule` is the operator's engine rule, `None` when none is configured.
+/// `rules` are the operator's engine rules, `None` when none is configured.
 /// `default` is the engine the run names for questions not about one call.
-/// `sightings` are the call's SDP media endpoints, in any order.
+/// `evidence` is what sipnab holds for the call, in any order.
 ///
-/// - No rule: `default`, as before engine selection existed.
-/// - No sighting: `default`, saying the call's SDP was not seen.
-/// - A map: the engine of the newest sighting a row claims; none claimed is
-///   [`Unknown::NoMapRow`], and `default` is not asked.
-/// - Trusting SDP: the newest sighting of an address seen both in a request and
-///   a response, at the trusted control port; none is
-///   [`Unknown::NotSeenBothWays`].
+/// In order of precedence:
 ///
-/// `previous` is the engine of the newest engine sighting older than the
-/// current one whose control address differs.
+/// 1. No rule: `default`, as before engine selection existed.
+/// 2. An `offer` was seen reach an engine: the engine of the newest one, when
+///    the operator listed it ([`EngineRules::may_ask`] for an address, an ng
+///    engine row for a `homer-id`). An engine not listed is
+///    [`Unknown::NgEngineNotListed`]: it is the call's engine, so no other is
+///    asked in its place.
+/// 3. An SDP rule and SDP sightings: by the rule, as `select_sdp` says.
+/// 4. Otherwise `default`, saying what was not seen.
+///
+/// `previous` is the engine the call was on before it moved, when sipnab may
+/// ask it. `leftovers` are the engines the call moved off that no `delete`
+/// reached after their last `offer`.
 #[must_use]
 pub fn select(
-    rule: Option<&EngineRule>,
+    rules: Option<&EngineRules>,
     default: SocketAddr,
-    sightings: &[SdpSighting],
+    evidence: &CallEvidence,
 ) -> CallEngines {
-    select_listed(rule, default, sightings, &[])
+    select_listed(rules, default, evidence, &[])
 }
 
 /// [`select`], knowing which engines' `list` named the call, in listing
 /// order.
 ///
-/// Only a call with no SDP sighting reads `listed`: the first engine whose
-/// list names it is asked, rather than the default, because sipnab may ask it
-/// (it was listed, so the operator named it) and it holds the call. SDP, when
-/// there is some, outranks a list.
+/// Only a call with no evidence a rule applies to reads `listed`: the first
+/// engine whose list names it is asked, rather than the default, because
+/// sipnab may ask it (it was listed, so the operator named it) and it holds
+/// the call. Evidence, when there is some, outranks a list.
 #[must_use]
 pub fn select_listed(
-    rule: Option<&EngineRule>,
+    rules: Option<&EngineRules>,
     default: SocketAddr,
-    sightings: &[SdpSighting],
+    evidence: &CallEvidence,
     listed: &[SocketAddr],
 ) -> CallEngines {
-    let Some(rule) = rule else {
+    let Some(rules) = rules else {
         return CallEngines {
             current: Ok(Engine {
                 control: default,
                 chosen_by: ChosenBy::NoRule,
             }),
             previous: None,
+            leftovers: Vec::new(),
         };
     };
-    if sightings.is_empty() {
-        let current = match listed.first() {
-            Some(&control) => Engine {
-                control,
-                chosen_by: ChosenBy::Listed,
-            },
-            None => Engine {
-                control: default,
-                chosen_by: ChosenBy::NoSdpSeen,
-            },
-        };
-        return CallEngines {
-            current: Ok(current),
-            previous: None,
-        };
+    if let Some(chosen) = select_ng(rules, default, &evidence.ng) {
+        return chosen;
     }
+    let unseen = match (&rules.sdp, rules.ng.is_empty()) {
+        (Some(rule), _) if !evidence.sdp.is_empty() => return select_sdp(rule, &evidence.sdp),
+        (Some(_), true) => Unseen::Sdp,
+        (Some(_), false) => Unseen::OfferOrSdp,
+        (None, _) => Unseen::Offer,
+    };
+    fallback(unseen, default, listed)
+}
+
+/// The engines ng control traffic names for a call, or `None` when it saw
+/// no `offer` for it.
+///
+/// The current engine is the one the newest `offer` reached. The previous
+/// engine is the one the newest `offer` before it at another engine reached,
+/// when sipnab may ask it. A leftover is each other engine that received an
+/// `offer` and no `delete` at or after its last one.
+fn select_ng(
+    rules: &EngineRules,
+    default: SocketAddr,
+    sightings: &[EngineSighting],
+) -> Option<CallEngines> {
+    let mut offers: Vec<&EngineSighting> = sightings
+        .iter()
+        .filter(|s| s.verb == EngineVerb::Offer)
+        .collect();
+    // Stable, so two offers of one instant keep the order they were seen in.
+    offers.sort_by_key(|s| s.at);
+    let newest = *offers.last()?;
+    let current = resolve(rules, default, newest.engine).ok_or(Unknown::NgEngineNotListed {
+        engine: newest.engine,
+        reported: newest.reported_listen_ng,
+    });
+    let previous = offers
+        .iter()
+        .rev()
+        .find(|s| s.engine != newest.engine)
+        .and_then(|s| resolve(rules, default, s.engine));
+    let mut leftovers: Vec<Leftover> = Vec::new();
+    for offer in &offers {
+        if offer.engine == newest.engine || leftovers.iter().any(|l| l.engine == offer.engine) {
+            continue;
+        }
+        let last_offer = offers
+            .iter()
+            .filter(|s| s.engine == offer.engine)
+            .map(|s| s.at)
+            .max()
+            .unwrap_or(offer.at);
+        let released = sightings.iter().any(|s| {
+            s.engine == offer.engine && s.verb == EngineVerb::Delete && s.at >= last_offer
+        });
+        if !released {
+            leftovers.push(Leftover {
+                engine: offer.engine,
+                control: resolve(rules, default, offer.engine).map(|e| e.control),
+            });
+        }
+    }
+    Some(CallEngines {
+        current,
+        previous,
+        leftovers,
+    })
+}
+
+/// The engine sipnab may ask for `engine`, chosen by an ng offer, or `None`
+/// when the operator has not listed it.
+fn resolve(rules: &EngineRules, default: SocketAddr, engine: EngineIdentity) -> Option<Engine> {
+    let (control, row) = match engine {
+        EngineIdentity::HomerId(id) => {
+            let row = rules.ng.row_for_homer_id(id)?;
+            (row.control, Some(row.clone()))
+        }
+        EngineIdentity::ListenNg(addr) => (rules.may_ask(default, addr).then_some(addr)?, None),
+    };
+    Some(Engine {
+        control,
+        chosen_by: ChosenBy::NgOffer { engine, row },
+    })
+}
+
+/// The engine asked when no evidence a rule applies to was seen: the first
+/// engine whose list names the call, else the default.
+fn fallback(unseen: Unseen, default: SocketAddr, listed: &[SocketAddr]) -> CallEngines {
+    let current = match listed.first() {
+        Some(&control) => Engine {
+            control,
+            chosen_by: ChosenBy::Listed(unseen),
+        },
+        None => Engine {
+            control: default,
+            chosen_by: ChosenBy::NoSdpSeen(unseen),
+        },
+    };
+    CallEngines {
+        current: Ok(current),
+        previous: None,
+        leftovers: Vec::new(),
+    }
+}
+
+/// The engines an SDP rule names for a call with at least one SDP sighting.
+///
+/// - A map: the engine of the newest sighting a row claims; none claimed is
+///   [`Unknown::NoMapRow`], and the default is not asked.
+/// - Trusting SDP: the newest sighting of an address seen both in a request
+///   and a response, at the trusted control port; none is
+///   [`Unknown::NotSeenBothWays`].
+///
+/// `previous` is the engine of the newest engine sighting older than the
+/// current one whose control address differs.
+fn select_sdp(rule: &EngineRule, sightings: &[SdpSighting]) -> CallEngines {
     let mut sorted: Vec<&SdpSighting> = sightings.iter().collect();
     // Stable, so two sightings captured in the same instant keep the order the
     // dialog store recorded them in.
@@ -569,6 +1009,7 @@ pub fn select_listed(
                 EngineRule::TrustSdp { .. } => Unknown::NotSeenBothWays { seen },
             }),
             previous: None,
+            leftovers: Vec::new(),
         };
     };
     let previous = engines
@@ -579,12 +1020,13 @@ pub fn select_listed(
     CallEngines {
         current: Ok(current),
         previous,
+        leftovers: Vec::new(),
     }
 }
 
-/// A call's SDP sightings by Call-ID, read where the dialog store is: a
-/// surface that asks on a worker thread hands one in.
-pub type SdpLookup = Arc<dyn Fn(&str) -> Vec<SdpSighting> + Send + Sync>;
+/// A call's evidence by Call-ID, read where the dialog store is: a surface
+/// that asks on a worker thread hands one in.
+pub type SdpLookup = Arc<dyn Fn(&str) -> CallEvidence + Send + Sync>;
 
 /// Builds the relay client for a control address.
 ///
@@ -595,8 +1037,8 @@ pub type Connect = Arc<dyn Fn(SocketAddr) -> Arc<dyn ReadOnlyRelay + Send + Sync
 /// The run's engine rule, and how to reach an engine it chooses.
 #[derive(Clone)]
 pub struct EngineRouting {
-    /// The operator's rule.
-    rule: EngineRule,
+    /// The operator's rules.
+    rules: EngineRules,
     /// The engine named by the run's single relay control address.
     default: SocketAddr,
     /// Whether to ask the previous engine of a moved call too.
@@ -608,7 +1050,7 @@ pub struct EngineRouting {
 impl fmt::Debug for EngineRouting {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EngineRouting")
-            .field("rule", &self.rule)
+            .field("rules", &self.rules)
             .field("default", &self.default)
             .field("previous", &self.previous)
             .finish_non_exhaustive()
@@ -616,21 +1058,26 @@ impl fmt::Debug for EngineRouting {
 }
 
 impl EngineRouting {
-    /// Routing for `rule`, with `default` as the run's default engine.
+    /// Routing for `rules`, with `default` as the run's default engine.
     #[must_use]
-    pub fn new(rule: EngineRule, default: SocketAddr, previous: bool, connect: Connect) -> Self {
+    pub fn new(
+        rules: impl Into<EngineRules>,
+        default: SocketAddr,
+        previous: bool,
+        connect: Connect,
+    ) -> Self {
         Self {
-            rule,
+            rules: rules.into(),
             default,
             previous,
             connect,
         }
     }
 
-    /// The operator's rule.
+    /// The operator's rules.
     #[must_use]
-    pub const fn rule(&self) -> &EngineRule {
-        &self.rule
+    pub const fn rules(&self) -> &EngineRules {
+        &self.rules
     }
 
     /// The run's default engine.
@@ -647,14 +1094,14 @@ impl EngineRouting {
 
     /// The engines for one call, by [`select`].
     #[must_use]
-    pub fn select(&self, sightings: &[SdpSighting]) -> CallEngines {
-        select(Some(&self.rule), self.default, sightings)
+    pub fn select(&self, evidence: &CallEvidence) -> CallEngines {
+        select(Some(&self.rules), self.default, evidence)
     }
 
     /// The engines for one call, by [`select_listed`].
     #[must_use]
-    pub fn select_listed(&self, sightings: &[SdpSighting], listed: &[SocketAddr]) -> CallEngines {
-        select_listed(Some(&self.rule), self.default, sightings, listed)
+    pub fn select_listed(&self, evidence: &CallEvidence, listed: &[SocketAddr]) -> CallEngines {
+        select_listed(Some(&self.rules), self.default, evidence, listed)
     }
 
     /// A relay client for `control`.
@@ -664,35 +1111,46 @@ impl EngineRouting {
     }
 
     /// The engines a question about which calls are held is put to: the
-    /// default engine, then every other control address the map names.
+    /// default engine, then every other control address the SDP map names,
+    /// then every other address an ng engine row names.
     ///
-    /// Trusting SDP names no engine in advance, so only the default is listed:
-    /// a `list` is never sent to an address learned from SDP.
+    /// Trusting SDP names no engine in advance, and an address seen only in
+    /// ng traffic is not listed: a `list` is never sent to an address learned
+    /// from traffic.
     #[must_use]
     pub fn listing_engines(&self) -> Vec<SocketAddr> {
         let mut out = vec![self.default];
-        if let EngineRule::Map(map) = &self.rule {
+        if let Some(EngineRule::Map(map)) = &self.rules.sdp {
             for control in map.controls() {
                 if !out.contains(&control) {
                     out.push(control);
                 }
             }
         }
+        for row in self.rules.ng.rows() {
+            if !out.iter().any(|&c| same_control(c, row.control)) {
+                out.push(row.control);
+            }
+        }
         out
     }
 }
 
-/// The SDP sightings sipnab holds for `call_id`: none when the dialog store
-/// does not hold the call.
+/// The evidence sipnab holds for `call_id`: its SDP sightings, none when the
+/// dialog store holds no dialog for it, and the engine sightings ng control
+/// traffic made, which a relay host holds with no dialog at all.
 #[must_use]
 pub fn call_sightings(
     store: &crate::sip::dialog_store::DialogStore,
     call_id: &str,
-) -> Vec<SdpSighting> {
-    store
-        .get(call_id)
-        .map(|d| sightings(&d.sdp_timeline))
-        .unwrap_or_default()
+) -> CallEvidence {
+    CallEvidence {
+        sdp: store
+            .get(call_id)
+            .map(|d| sightings(&d.sdp_timeline))
+            .unwrap_or_default(),
+        ng: store.engine_sightings(call_id).to_vec(),
+    }
 }
 
 /// The relay to put one call's question to.
@@ -731,14 +1189,15 @@ impl fmt::Debug for CallTarget {
 /// uses.
 ///
 /// `default` is the relay the run names. Without `routing` it is the answer,
-/// as before engine selection existed. With `routing`, [`select`] chooses from `sightings`; the default
-/// engine is `default` itself, and any other engine is reached through the
-/// routing's constructor.
+/// as before engine selection existed. With `routing`, [`select`] chooses from
+/// `evidence`; the default engine is `default` itself, and any other engine is
+/// reached through the routing's constructor. The reason carries each note
+/// [`CallEngines::notes`] makes, such as a leftover session.
 #[must_use]
 pub fn call_target(
     default: &Arc<dyn ReadOnlyRelay + Send + Sync>,
     routing: Option<&EngineRouting>,
-    sightings: &[SdpSighting],
+    evidence: &CallEvidence,
 ) -> CallTarget {
     let Some(routing) = routing else {
         return CallTarget::Ask {
@@ -747,7 +1206,9 @@ pub fn call_target(
             reason: None,
         };
     };
-    match routing.select(sightings).current {
+    let chosen = routing.select(evidence);
+    let notes = chosen.notes();
+    match chosen.current {
         Ok(engine) => CallTarget::Ask {
             relay: if engine.control == routing.default_engine() {
                 Arc::clone(default)
@@ -755,7 +1216,12 @@ pub fn call_target(
                 routing.relay(engine.control)
             },
             control: Some(engine.control),
-            reason: engine.reason(),
+            reason: engine.reason().map(|why| {
+                std::iter::once(why)
+                    .chain(notes)
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            }),
         },
         Err(unknown) => CallTarget::Unknown(unknown),
     }
@@ -765,6 +1231,12 @@ pub fn call_target(
 /// `203.0.113.5` compare equal.
 fn canonical(ip: IpAddr) -> IpAddr {
     ip.to_canonical()
+}
+
+/// Whether two control addresses name one socket, an IPv4-mapped address
+/// and its IPv4 form alike.
+fn same_control(a: SocketAddr, b: SocketAddr) -> bool {
+    canonical(a.ip()) == canonical(b.ip()) && a.port() == b.port()
 }
 
 /// The distinct sightings' endpoints, oldest first, for an unknown-engine
@@ -844,6 +1316,40 @@ mod tests {
     use chrono::TimeZone;
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// [`super::select`] with an SDP rule and SDP sightings only, the form
+    /// the SDP tests below are written in.
+    fn sdp_select(
+        rule: Option<&EngineRule>,
+        default: SocketAddr,
+        sightings: &[SdpSighting],
+    ) -> CallEngines {
+        sdp_select_listed(rule, default, sightings, &[])
+    }
+
+    /// [`super::select_listed`] with an SDP rule and SDP sightings only.
+    fn sdp_select_listed(
+        rule: Option<&EngineRule>,
+        default: SocketAddr,
+        sightings: &[SdpSighting],
+        listed: &[SocketAddr],
+    ) -> CallEngines {
+        super::select_listed(
+            rule.cloned().map(EngineRules::from).as_ref(),
+            default,
+            &CallEvidence::from(sightings.to_vec()),
+            listed,
+        )
+    }
+
+    /// [`super::call_target`] with SDP sightings only.
+    fn sdp_call_target(
+        default: &Arc<dyn ReadOnlyRelay + Send + Sync>,
+        routing: Option<&EngineRouting>,
+        sightings: &[SdpSighting],
+    ) -> CallTarget {
+        super::call_target(default, routing, &CallEvidence::from(sightings.to_vec()))
+    }
 
     fn at(secs: i64) -> Result<DateTime<Utc>, TestError> {
         Ok(Utc
@@ -1229,7 +1735,7 @@ mod tests {
 
     #[test]
     fn no_rule_asks_the_default_engine_as_before() -> Result<(), TestError> {
-        let got = select(None, addr(DEFAULT)?, &fixture_call()?);
+        let got = sdp_select(None, addr(DEFAULT)?, &fixture_call()?);
         assert_eq!(
             got.current,
             Ok(Engine {
@@ -1248,21 +1754,21 @@ mod tests {
     #[test]
     fn no_sdp_seen_asks_the_default_engine_and_says_why() -> Result<(), TestError> {
         let rule = EngineRule::Map(map(&NAT_ROWS)?);
-        let got = select(Some(&rule), addr(DEFAULT)?, &[]);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &[]);
         assert_eq!(
             got.current,
             Ok(Engine {
                 control: addr(DEFAULT)?,
-                chosen_by: ChosenBy::NoSdpSeen
+                chosen_by: ChosenBy::NoSdpSeen(Unseen::Sdp)
             }),
             "no sdp seen asks the default engine and says why"
         );
         let trusting = EngineRule::TrustSdp { control_port: 2223 };
         assert_eq!(
-            select(Some(&trusting), addr(DEFAULT)?, &[])
+            sdp_select(Some(&trusting), addr(DEFAULT)?, &[])
                 .current
                 .map(|e| e.chosen_by),
-            Ok(ChosenBy::NoSdpSeen),
+            Ok(ChosenBy::NoSdpSeen(Unseen::Sdp)),
             "no sdp seen asks the default engine and says why"
         );
         Ok(())
@@ -1274,23 +1780,23 @@ mod tests {
     fn with_no_sdp_the_engine_that_lists_the_call_is_asked() -> Result<(), TestError> {
         let rule = EngineRule::Map(map(&NAT_ROWS)?);
         let b = addr("192.0.2.6:2223")?;
-        let got = select_listed(Some(&rule), addr(DEFAULT)?, &[], &[b]);
+        let got = sdp_select_listed(Some(&rule), addr(DEFAULT)?, &[], &[b]);
         assert_eq!(
             got.current,
             Ok(Engine {
                 control: b,
-                chosen_by: ChosenBy::Listed
+                chosen_by: ChosenBy::Listed(Unseen::Sdp)
             }),
             "with no sdp the engine that lists the call is asked"
         );
         assert_eq!(
-            select_listed(Some(&rule), addr(DEFAULT)?, &[], &[])
+            sdp_select_listed(Some(&rule), addr(DEFAULT)?, &[], &[])
                 .current
                 .map(|e| e.chosen_by),
-            Ok(ChosenBy::NoSdpSeen),
+            Ok(ChosenBy::NoSdpSeen(Unseen::Sdp)),
             "with no sdp the engine that lists the call is asked"
         );
-        let moved = select_listed(Some(&rule), addr(DEFAULT)?, &moved_call()?, &[b]);
+        let moved = sdp_select_listed(Some(&rule), addr(DEFAULT)?, &moved_call()?, &[b]);
         assert!(
             matches!(
                 moved.current,
@@ -1303,7 +1809,7 @@ mod tests {
             moved.current
         );
         assert_eq!(
-            select_listed(None, addr(DEFAULT)?, &[], &[b])
+            sdp_select_listed(None, addr(DEFAULT)?, &[], &[b])
                 .current
                 .map(|e| e.control),
             Ok(addr(DEFAULT)?),
@@ -1315,7 +1821,7 @@ mod tests {
     #[test]
     fn a_map_row_picks_the_engine_and_not_a_party() -> Result<(), TestError> {
         let rule = EngineRule::Map(map(&["198.51.100.10 30000-39999 192.0.2.50:2223"])?);
-        let got = select(Some(&rule), addr(DEFAULT)?, &fixture_call()?);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &fixture_call()?);
         let engine = got.current.map_err(|u| u.to_string())?;
         assert_eq!(
             engine.control,
@@ -1336,7 +1842,7 @@ mod tests {
     #[test]
     fn no_map_row_is_unknown_and_never_the_default() -> Result<(), TestError> {
         let rule = EngineRule::Map(map(&NAT_ROWS)?);
-        let got = select(Some(&rule), addr(DEFAULT)?, &fixture_call()?);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &fixture_call()?);
         assert_eq!(
             got.current,
             Err(Unknown::NoMapRow {
@@ -1372,7 +1878,7 @@ mod tests {
     #[test]
     fn a_moved_call_names_its_current_and_previous_engine() -> Result<(), TestError> {
         let rule = EngineRule::Map(map(&NAT_ROWS)?);
-        let got = select(Some(&rule), addr(DEFAULT)?, &moved_call()?);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &moved_call()?);
         assert_eq!(
             got.current.map(|e| e.control),
             Ok(addr("192.0.2.6:2223")?),
@@ -1391,7 +1897,7 @@ mod tests {
         let rule = EngineRule::Map(map(&NAT_ROWS)?);
         let mut shuffled = moved_call()?;
         shuffled.reverse();
-        let got = select(Some(&rule), addr(DEFAULT)?, &shuffled);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &shuffled);
         assert_eq!(
             got.current.map(|e| e.control),
             Ok(addr("192.0.2.6:2223")?),
@@ -1408,7 +1914,7 @@ mod tests {
     #[test]
     fn trusting_sdp_picks_the_address_seen_both_ways() -> Result<(), TestError> {
         let rule = EngineRule::TrustSdp { control_port: 2223 };
-        let got = select(Some(&rule), addr(DEFAULT)?, &fixture_call()?);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &fixture_call()?);
         let engine = got.current.map_err(|u| u.to_string())?;
         assert_eq!(
             engine.control,
@@ -1435,7 +1941,7 @@ mod tests {
             sight(2, true, "2001:db8::21", 6000)?,
             sight(3, true, "2001:db8::10", 30020)?,
         ];
-        let got = select(Some(&rule), addr(DEFAULT)?, &calls);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &calls);
         assert_eq!(
             got.current.map(|e| e.control),
             Ok(addr("[2001:db8::10]:2223")?),
@@ -1452,7 +1958,7 @@ mod tests {
             sight(0, true, "198.51.100.21", 6000)?,
             sight(1, false, "198.51.100.20", 6000)?,
         ];
-        let got = select(Some(&rule), addr(DEFAULT)?, &calls);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &calls);
         assert!(
             matches!(got.current, Err(Unknown::NotSeenBothWays { .. })),
             "{:?}",
@@ -1470,7 +1976,7 @@ mod tests {
             sight(60, true, "203.0.113.6", 30010)?,
             sight(61, false, "203.0.113.6", 30012)?,
         ];
-        let got = select(Some(&rule), addr(DEFAULT)?, &calls);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &calls);
         assert_eq!(
             got.current.map(|e| e.control),
             Ok(addr("203.0.113.6:2223")?),
@@ -1491,7 +1997,7 @@ mod tests {
             sight(0, true, "media.example.com", 30010)?,
             sight(1, false, "media.example.com", 30012)?,
         ];
-        let got = select(Some(&rule), addr(DEFAULT)?, &calls);
+        let got = sdp_select(Some(&rule), addr(DEFAULT)?, &calls);
         assert_eq!(
             got.current,
             Err(Unknown::NotSeenBothWays {
@@ -1501,6 +2007,562 @@ mod tests {
                 ]
             }),
             "a hostname in sdp matches nothing and is named"
+        );
+        Ok(())
+    }
+
+    // ── engines from ng control traffic ───────────────────────────────
+
+    /// An `offer` or `delete` for one call that reached `engine`, `secs`
+    /// seconds in.
+    fn ng(
+        secs: i64,
+        engine: EngineIdentity,
+        verb: EngineVerb,
+    ) -> Result<EngineSighting, TestError> {
+        Ok(EngineSighting {
+            at: at(secs)?,
+            engine,
+            verb,
+            reported_listen_ng: None,
+        })
+    }
+
+    fn homer(id: u32) -> EngineIdentity {
+        EngineIdentity::HomerId(id)
+    }
+
+    fn sent_to(control: &str) -> Result<EngineIdentity, TestError> {
+        Ok(EngineIdentity::ListenNg(addr(control)?))
+    }
+
+    /// The ng engine rows for homer-ids 2001 and 2002, and the SDP map of
+    /// the NAT example beside them.
+    fn ng_rules(sdp: bool) -> Result<EngineRules, TestError> {
+        Ok(EngineRules {
+            sdp: if sdp {
+                Some(EngineRule::Map(map(&NAT_ROWS)?))
+            } else {
+                None
+            },
+            ng: NgEngineMap::new(vec![
+                "2001 192.0.2.5:2223".parse()?,
+                "2002 -> 192.0.2.6:2223".parse()?,
+                "192.0.2.7:2223".parse()?,
+            ])?,
+        })
+    }
+
+    fn evidence(sdp: Vec<SdpSighting>, ng: Vec<EngineSighting>) -> CallEvidence {
+        CallEvidence { sdp, ng }
+    }
+
+    #[test]
+    fn an_ng_engine_row_parses_with_or_without_a_homer_id() -> Result<(), TestError> {
+        let with: NgEngineRow = "2001 192.0.2.5:2223".parse()?;
+        let arrow: NgEngineRow = "2001  ->  192.0.2.5:2223".parse()?;
+        let bare: NgEngineRow = "[2001:db8::5]:2223".parse()?;
+        assert_eq!(with, arrow, "a row parses with or without the arrow");
+        assert_eq!(with.homer_id, Some(2001), "the homer-id");
+        assert_eq!(
+            with.control,
+            addr("192.0.2.5:2223")?,
+            "the listen-ng address"
+        );
+        assert_eq!(bare.homer_id, None, "a row with no homer-id");
+        assert_eq!(with.to_string(), "2001 192.0.2.5:2223", "written as given");
+        assert_eq!(bare.to_string(), "[2001:db8::5]:2223", "written as given");
+        Ok(())
+    }
+
+    #[test]
+    fn a_malformed_or_duplicate_ng_engine_row_is_refused() -> Result<(), TestError> {
+        let refused = |row: &str| row.parse::<NgEngineRow>().err();
+        assert!(
+            matches!(refused(""), Some(NgEngineError::Shape { .. })),
+            "an empty row"
+        );
+        assert!(
+            matches!(
+                refused("2001 192.0.2.5:2223 extra"),
+                Some(NgEngineError::Shape { .. })
+            ),
+            "a row with a third field"
+        );
+        assert!(
+            matches!(
+                refused("engine-a 192.0.2.5:2223"),
+                Some(NgEngineError::HomerId { .. })
+            ),
+            "a homer-id that is not a number"
+        );
+        assert!(
+            matches!(
+                refused("2001 192.0.2.5"),
+                Some(NgEngineError::Control { .. })
+            ),
+            "an address with no port"
+        );
+        let same_id = NgEngineMap::new(vec![
+            "2001 192.0.2.5:2223".parse()?,
+            "2001 192.0.2.6:2223".parse()?,
+        ]);
+        assert!(
+            matches!(&same_id, Err(NgEngineError::Duplicate { what, .. }) if what == "homer-id 2001"),
+            "{same_id:?}"
+        );
+        let same_addr = NgEngineMap::new(vec![
+            "2001 192.0.2.5:2223".parse()?,
+            "[::ffff:192.0.2.5]:2223".parse()?,
+        ]);
+        assert!(
+            matches!(&same_addr, Err(NgEngineError::Duplicate { what, .. }) if what == "listen-ng 192.0.2.5:2223"),
+            "{same_addr:?}"
+        );
+        Ok(())
+    }
+
+    /// The newest offer's engine is asked, ahead of an SDP map that names
+    /// another engine, and the answer says the offer chose it.
+    #[test]
+    fn the_newest_offer_names_the_engine_ahead_of_the_sdp_map() -> Result<(), TestError> {
+        let rules = ng_rules(true)?;
+        // The SDP names the engine at 30000-39999 (192.0.2.5); the offer
+        // reached homer-id 2002 (192.0.2.6).
+        let call = evidence(
+            vec![sight(0, true, "203.0.113.5", 30010)?],
+            vec![ng(0, homer(2002), EngineVerb::Offer)?],
+        );
+        let got = super::select(Some(&rules), addr(DEFAULT)?, &call);
+        let engine = got.current.map_err(|u| u.to_string())?;
+        assert_eq!(
+            engine.control,
+            addr("192.0.2.6:2223")?,
+            "the offer's engine"
+        );
+        assert_eq!(engine.chosen_by_word(), "ng_offer", "the offer chose it");
+        assert_eq!(
+            engine.reason().as_deref(),
+            Some(
+                "chosen by the newest ng offer for this call, which reached homer-id \
+                 2002 (ng engine row 2002 192.0.2.6:2223)"
+            ),
+            "the reason names the offer and the row"
+        );
+        Ok(())
+    }
+
+    /// Newest by capture time, not by arrival; and sightings that are only
+    /// deletes choose nothing, so the SDP map answers.
+    #[test]
+    fn the_newest_offer_is_by_time_and_a_delete_alone_chooses_nothing() -> Result<(), TestError> {
+        let rules = ng_rules(true)?;
+        let out_of_order = evidence(
+            Vec::new(),
+            vec![
+                ng(5, homer(2002), EngineVerb::Offer)?,
+                ng(1, homer(2001), EngineVerb::Offer)?,
+            ],
+        );
+        assert_eq!(
+            super::select(Some(&rules), addr(DEFAULT)?, &out_of_order)
+                .current
+                .map(|e| e.control),
+            Ok(addr("192.0.2.6:2223")?),
+            "the newest offer by time"
+        );
+        let deletes = evidence(
+            vec![sight(0, true, "203.0.113.5", 30010)?],
+            vec![ng(9, homer(2002), EngineVerb::Delete)?],
+        );
+        let got = super::select(Some(&rules), addr(DEFAULT)?, &deletes).current;
+        assert!(
+            matches!(
+                &got,
+                Ok(Engine {
+                    chosen_by: ChosenBy::MapRow { .. },
+                    ..
+                })
+            ),
+            "a delete alone chooses nothing: {got:?}"
+        );
+        Ok(())
+    }
+
+    /// An offer at a homer-id no row names is the call's engine and is not
+    /// asked; neither the SDP map's engine nor the default is asked instead.
+    #[test]
+    fn an_offer_at_an_unlisted_homer_id_asks_nothing() -> Result<(), TestError> {
+        let rules = ng_rules(true)?;
+        let mut offer = ng(0, homer(2009), EngineVerb::Offer)?;
+        offer.reported_listen_ng = Some(addr("127.0.0.1:2223")?);
+        let call = evidence(vec![sight(0, true, "203.0.113.5", 30010)?], vec![offer]);
+        let got = super::select(Some(&rules), addr(DEFAULT)?, &call);
+        assert_eq!(
+            got.current,
+            Err(Unknown::NgEngineNotListed {
+                engine: homer(2009),
+                reported: Some(addr("127.0.0.1:2223")?),
+            }),
+            "an unlisted homer-id is not asked"
+        );
+        assert_eq!(
+            got.current.err().map(|u| u.to_string()).as_deref(),
+            Some(
+                format!(
+                    "engine not listed (homer-id 2009): the newest ng offer for this call \
+                     reached homer-id 2009, and no {} row names it (the engine reports \
+                     listen-ng 127.0.0.1:2223); nothing was asked",
+                    crate::cli::RELAY_NG_ENGINE_FLAG
+                )
+                .as_str()
+            ),
+            "the refusal names the engine and what it reported"
+        );
+        Ok(())
+    }
+
+    /// A captured offer's destination is asked when the operator named it:
+    /// an ng engine row with no homer-id, or the default engine itself.
+    #[test]
+    fn a_captured_offer_is_asked_at_an_address_the_operator_named() -> Result<(), TestError> {
+        let rules = ng_rules(false)?;
+        let listed = evidence(
+            Vec::new(),
+            vec![ng(0, sent_to("192.0.2.7:2223")?, EngineVerb::Offer)?],
+        );
+        let got = super::select(Some(&rules), addr(DEFAULT)?, &listed).current;
+        assert_eq!(
+            got.as_ref().map(|e| (e.control, e.reason())),
+            Ok((
+                addr("192.0.2.7:2223")?,
+                Some(
+                    "chosen by the newest ng offer for this call, which reached \
+                     listen-ng 192.0.2.7:2223"
+                        .to_string()
+                )
+            )),
+            "a listed address is asked"
+        );
+        let mapped = evidence(
+            Vec::new(),
+            vec![ng(
+                0,
+                EngineIdentity::ListenNg(addr("[::ffff:192.0.2.1]:2223")?),
+                EngineVerb::Offer,
+            )?],
+        );
+        assert_eq!(
+            super::select(Some(&rules), addr(DEFAULT)?, &mapped)
+                .current
+                .map(|e| e.control),
+            Ok(addr("[::ffff:192.0.2.1]:2223")?),
+            "the default engine, written IPv4-mapped, is named by the operator"
+        );
+        Ok(())
+    }
+
+    /// A captured offer to a control address only an SDP map row names is
+    /// asked: the operator listed that address. With no SDP map, the same
+    /// offer names an engine nobody listed.
+    #[test]
+    fn a_captured_offer_to_an_sdp_map_rows_address_is_asked() -> Result<(), TestError> {
+        let call = evidence(
+            Vec::new(),
+            vec![ng(0, sent_to("192.0.2.6:2223")?, EngineVerb::Offer)?],
+        );
+        let sdp_map_only = EngineRules::from(EngineRule::Map(map(&NAT_ROWS)?));
+        assert_eq!(
+            super::select(Some(&sdp_map_only), addr(DEFAULT)?, &call)
+                .current
+                .map(|e| (e.control, e.chosen_by_word())),
+            Ok((addr("192.0.2.6:2223")?, "ng_offer")),
+            "an address an SDP map row names is listed"
+        );
+        let no_map = EngineRules {
+            sdp: Some(EngineRule::TrustSdp { control_port: 2223 }),
+            ng: NgEngineMap::default(),
+        };
+        assert!(
+            matches!(
+                super::select(Some(&no_map), addr(DEFAULT)?, &call).current,
+                Err(Unknown::NgEngineNotListed { .. })
+            ),
+            "trusting SDP addresses does not list an address seen in ng traffic"
+        );
+        Ok(())
+    }
+
+    /// A captured offer to an address nobody listed is reported and not
+    /// asked: the address came from captured traffic.
+    #[test]
+    fn a_captured_offer_to_an_unlisted_address_asks_nothing() -> Result<(), TestError> {
+        let rules = ng_rules(true)?;
+        let call = evidence(
+            Vec::new(),
+            vec![ng(0, sent_to("192.0.2.99:2223")?, EngineVerb::Offer)?],
+        );
+        let got = super::select(Some(&rules), addr(DEFAULT)?, &call).current;
+        assert_eq!(
+            got.err().map(|u| u.to_string()).as_deref(),
+            Some(
+                format!(
+                    "engine not listed (192.0.2.99:2223): the newest ng offer for this \
+                     call was sent to 192.0.2.99:2223, an address sipnab saw only in \
+                     captured traffic; list it with {} to ask it; nothing was asked",
+                    crate::cli::RELAY_NG_ENGINE_FLAG
+                )
+                .as_str()
+            ),
+            "an unlisted address is not asked"
+        );
+        Ok(())
+    }
+
+    /// A later offer at another engine moves the call: the earlier engine is
+    /// the previous one and, with no delete, a leftover session.
+    #[test]
+    fn a_later_offer_elsewhere_moves_the_call_and_leaves_a_session() -> Result<(), TestError> {
+        let rules = ng_rules(false)?;
+        let call = evidence(
+            Vec::new(),
+            vec![
+                ng(0, homer(2001), EngineVerb::Offer)?,
+                ng(60, homer(2002), EngineVerb::Offer)?,
+            ],
+        );
+        let got = super::select(Some(&rules), addr(DEFAULT)?, &call);
+        assert_eq!(
+            got.current.as_ref().map(|e| e.control),
+            Ok(addr("192.0.2.6:2223")?),
+            "now on 2002"
+        );
+        assert_eq!(
+            got.previous
+                .as_ref()
+                .map(|e| (e.control, e.chosen_by_word())),
+            Some((addr("192.0.2.5:2223")?, "ng_offer")),
+            "previously on 2001"
+        );
+        assert_eq!(
+            got.leftovers,
+            vec![Leftover {
+                engine: homer(2001),
+                control: Some(addr("192.0.2.5:2223")?),
+            }],
+            "2001 never received a delete"
+        );
+        assert_eq!(
+            got.notes(),
+            vec![
+                "homer-id 2001 never received a delete for this call after its offer \
+                 (a leftover session)"
+                    .to_string()
+            ],
+            "the note every surface prints"
+        );
+        Ok(())
+    }
+
+    /// A delete at the old engine after its offer releases it; one before its
+    /// offer does not; a re-offer at the same engine is no move.
+    #[test]
+    fn a_delete_after_the_old_offer_releases_it_and_one_before_does_not() -> Result<(), TestError> {
+        let rules = ng_rules(false)?;
+        let released = evidence(
+            Vec::new(),
+            vec![
+                ng(0, homer(2001), EngineVerb::Offer)?,
+                ng(60, homer(2002), EngineVerb::Offer)?,
+                ng(61, homer(2001), EngineVerb::Delete)?,
+            ],
+        );
+        assert!(
+            super::select(Some(&rules), addr(DEFAULT)?, &released)
+                .leftovers
+                .is_empty(),
+            "a delete after the old offer releases it"
+        );
+        let early = evidence(
+            Vec::new(),
+            vec![
+                ng(0, homer(2001), EngineVerb::Delete)?,
+                ng(1, homer(2001), EngineVerb::Offer)?,
+                ng(60, homer(2002), EngineVerb::Offer)?,
+            ],
+        );
+        assert_eq!(
+            super::select(Some(&rules), addr(DEFAULT)?, &early)
+                .leftovers
+                .len(),
+            1,
+            "a delete before the old offer does not release it"
+        );
+        let reoffer = evidence(
+            Vec::new(),
+            vec![
+                ng(0, homer(2002), EngineVerb::Offer)?,
+                ng(60, homer(2002), EngineVerb::Offer)?,
+            ],
+        );
+        let got = super::select(Some(&rules), addr(DEFAULT)?, &reoffer);
+        assert!(
+            got.previous.is_none() && got.leftovers.is_empty(),
+            "a re-offer at the same engine is no move: {got:?}"
+        );
+        Ok(())
+    }
+
+    /// A leftover on an engine sipnab may not ask is still flagged, with no
+    /// control address, and is not a previous engine to ask.
+    #[test]
+    fn a_leftover_on_an_unlisted_engine_is_flagged_and_not_asked() -> Result<(), TestError> {
+        let rules = ng_rules(false)?;
+        let call = evidence(
+            Vec::new(),
+            vec![
+                ng(0, homer(2009), EngineVerb::Offer)?,
+                ng(60, homer(2002), EngineVerb::Offer)?,
+            ],
+        );
+        let got = super::select(Some(&rules), addr(DEFAULT)?, &call);
+        assert_eq!(
+            got.previous, None,
+            "an unlisted previous engine is not asked"
+        );
+        assert_eq!(
+            got.leftovers,
+            vec![Leftover {
+                engine: homer(2009),
+                control: None,
+            }],
+            "it is still flagged"
+        );
+        Ok(())
+    }
+
+    /// With only an ng engine map, a call with no offer is asked of the
+    /// default engine or the one that lists it, saying no offer was seen;
+    /// with both rules, saying neither was seen.
+    #[test]
+    fn with_no_offer_the_fallback_says_what_was_not_seen() -> Result<(), TestError> {
+        let only_ng = ng_rules(false)?;
+        let b = addr("192.0.2.6:2223")?;
+        let with_sdp = evidence(vec![sight(0, true, "203.0.113.5", 30010)?], Vec::new());
+        assert_eq!(
+            super::select(Some(&only_ng), addr(DEFAULT)?, &with_sdp)
+                .current
+                .map(|e| e.reason()),
+            Ok(Some(format!(
+                "the default engine ({}): sipnab has seen no ng offer for this call",
+                crate::cli::RELAY_CONTROL_FLAG
+            ))),
+            "only an ng map: SDP does not count"
+        );
+        assert_eq!(
+            super::select_listed(
+                Some(&only_ng),
+                addr(DEFAULT)?,
+                &CallEvidence::default(),
+                &[b]
+            )
+            .current
+            .map(|e| (e.control, e.chosen_by)),
+            Ok((b, ChosenBy::Listed(Unseen::Offer))),
+            "the engine that lists it"
+        );
+        let both = ng_rules(true)?;
+        assert_eq!(
+            super::select(Some(&both), addr(DEFAULT)?, &CallEvidence::default())
+                .current
+                .map(|e| e.chosen_by),
+            Ok(ChosenBy::NoSdpSeen(Unseen::OfferOrSdp)),
+            "both rules, neither seen"
+        );
+        assert_eq!(
+            super::select(Some(&both), addr(DEFAULT)?, &with_sdp)
+                .current
+                .map(|e| e.chosen_by_word()),
+            Ok("map_row"),
+            "both rules, SDP seen: the SDP map answers"
+        );
+        Ok(())
+    }
+
+    /// The listing engines include each ng engine row's address once, after
+    /// the default and the SDP map's.
+    #[test]
+    fn listing_asks_every_ng_engine_row_once() -> Result<(), TestError> {
+        let routing = EngineRouting::new(
+            ng_rules(true)?,
+            addr("192.0.2.5:2223")?,
+            false,
+            Arc::new(|_| unreachable_relay()),
+        );
+        assert_eq!(
+            routing.listing_engines(),
+            vec![
+                addr("192.0.2.5:2223")?,
+                addr("192.0.2.6:2223")?,
+                addr("192.0.2.7:2223")?
+            ],
+            "listing asks every ng engine row once"
+        );
+        Ok(())
+    }
+
+    /// A call target's reason carries the leftover note, so every per-call
+    /// surface prints it.
+    #[test]
+    fn a_call_targets_reason_names_a_leftover_session() -> Result<(), TestError> {
+        let default = unreachable_relay();
+        let routing = EngineRouting::new(
+            ng_rules(false)?,
+            addr(DEFAULT)?,
+            false,
+            Arc::new(|_| unreachable_relay()),
+        );
+        let call = evidence(
+            Vec::new(),
+            vec![
+                ng(0, homer(2001), EngineVerb::Offer)?,
+                ng(60, homer(2002), EngineVerb::Offer)?,
+            ],
+        );
+        match super::call_target(&default, Some(&routing), &call) {
+            CallTarget::Ask {
+                reason, control, ..
+            } => {
+                assert_eq!(control, Some(addr("192.0.2.6:2223")?), "the offer's engine");
+                assert_eq!(
+                    reason.as_deref(),
+                    Some(
+                        "chosen by the newest ng offer for this call, which reached \
+                         homer-id 2002 (ng engine row 2002 192.0.2.6:2223); homer-id 2001 \
+                         never received a delete for this call after its offer (a leftover \
+                         session)"
+                    ),
+                    "the reason names the leftover"
+                );
+            }
+            other => return Err(format!("expected an engine, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    /// The dialog store's engine sightings reach the evidence a surface
+    /// reads, for a call with no dialog at all.
+    #[test]
+    fn call_evidence_reads_engine_sightings_without_a_dialog() -> Result<(), TestError> {
+        let mut store = crate::sip::dialog_store::DialogStore::new(16, false);
+        store.record_engine_sighting(
+            "relay-only@example.invalid",
+            ng(0, homer(2001), EngineVerb::Offer)?,
+        );
+        assert_eq!(
+            call_sightings(&store, "relay-only@example.invalid"),
+            evidence(Vec::new(), vec![ng(0, homer(2001), EngineVerb::Offer)?]),
+            "the evidence carries the engine sighting"
         );
         Ok(())
     }
@@ -1542,7 +2604,7 @@ mod tests {
     #[test]
     fn a_call_target_without_routing_is_the_default_relay() -> Result<(), TestError> {
         let default = unreachable_relay();
-        match call_target(&default, None, &fixture_call()?) {
+        match sdp_call_target(&default, None, &fixture_call()?) {
             CallTarget::Ask {
                 relay,
                 control,
@@ -1574,7 +2636,7 @@ mod tests {
             false,
             Arc::new(move |_| Arc::clone(&handed)),
         );
-        match call_target(&default, Some(&routing), &moved_call()?) {
+        match sdp_call_target(&default, Some(&routing), &moved_call()?) {
             CallTarget::Ask {
                 relay,
                 control,
@@ -1595,7 +2657,7 @@ mod tests {
         }
         // The default engine is the relay the surface already holds.
         let first_leg: Vec<SdpSighting> = moved_call()?.into_iter().take(4).collect();
-        match call_target(&default, Some(&routing), &first_leg) {
+        match sdp_call_target(&default, Some(&routing), &first_leg) {
             CallTarget::Ask { relay, .. } => assert!(
                 Arc::ptr_eq(&relay, &default),
                 "a call target with routing is the mapped engine or none"
@@ -1604,7 +2666,7 @@ mod tests {
         }
         assert!(
             matches!(
-                call_target(&default, Some(&routing), &fixture_call()?),
+                sdp_call_target(&default, Some(&routing), &fixture_call()?),
                 CallTarget::Unknown(Unknown::NoMapRow { .. })
             ),
             "a call target with routing is the mapped engine or none"
@@ -1619,6 +2681,7 @@ mod tests {
             &[(true, "203.0.113.5", 30010), (false, "203.0.113.5", 30012)],
         )?;
         let got: Vec<(bool, String, u16)> = call_sightings(&store, "s-1@example.invalid")
+            .sdp
             .into_iter()
             .map(|s| (s.from_request, s.address, s.port))
             .collect();
@@ -1631,7 +2694,7 @@ mod tests {
             "call sightings read the dialog store"
         );
         assert!(
-            call_sightings(&store, "absent@example.invalid").is_empty(),
+            call_sightings(&store, "absent@example.invalid") == CallEvidence::default(),
             "call sightings read the dialog store"
         );
         Ok(())
