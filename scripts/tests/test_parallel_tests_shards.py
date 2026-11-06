@@ -305,7 +305,8 @@ def fake_cargo(tmp_path, build_status=0, fail_tests=""):
     target = tmp_path / "target"
     report = target / "nextest" / pt.PROFILE / pt.JUNIT
     meta = {
-        "target_directory": str(target),
+        "target_directory": str(tmp_path / "elsewhere"),
+        "workspace_root": str(tmp_path),
         "packages": [
             {
                 "name": "sipnab",

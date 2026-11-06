@@ -14,6 +14,13 @@
 #   cargo install cargo-nextest --locked --version 0.9.148
 nextest-version = { required = "0.9.148" }
 
+# Where nextest keeps its reports, relative to the workspace root. It does not
+# follow CARGO_TARGET_DIR, so scripts/parallel-tests.py reads the suite's
+# JUnit report from here, not from the build directory: on CI's self-hosted
+# runners the two differ.
+[store]
+dir = "target/nextest"
+
 [profile.default]
 # Deterministic by default: no retries, so flaky tests surface immediately.
 retries = 0

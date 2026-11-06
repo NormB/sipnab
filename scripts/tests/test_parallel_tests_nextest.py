@@ -157,6 +157,14 @@ def test_the_suite_profile_stops_a_test_at_three_sixty_second_periods():
     assert profile["junit"]["path"] == pt.JUNIT
 
 
+def test_the_report_is_read_from_the_store_the_config_names():
+    config = suite_profile()
+    assert config["store"]["dir"] == pt.STORE_DEFAULT
+    assert pt.report_path({"workspace_root": "/w", "target_directory": "/t"}, REPO) == pathlib.Path(
+        "/w", pt.STORE_DEFAULT, pt.PROFILE, pt.JUNIT
+    )
+
+
 def test_the_nextest_version_is_pinned_exactly_in_one_place():
     config = suite_profile()
     assert config["nextest-version"] == {"required": pt.nextest_version(REPO)}
@@ -193,14 +201,22 @@ def test_jobs_become_nextest_test_threads():
 
 
 def fake_cargo(tmp_path, junit=PASSING, nextest_status=0, doc_status=0):
-    """A cargo that logs each call and, for `nextest run`, writes `junit`."""
+    """A cargo that logs each call and, for `nextest run`, writes `junit`.
+
+    The report goes where nextest writes it: under its store directory, which
+    is relative to the workspace root and does not follow CARGO_TARGET_DIR.
+    The build directory the fake's `cargo metadata` reports is elsewhere, as
+    it is on CI's self-hosted runners, so a reader that looked there finds no
+    report.
+    """
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "cargo.log"
-    target = tmp_path / "target"
-    report = target / "nextest" / pt.PROFILE / pt.JUNIT
+    report = tmp_path / "target" / "nextest" / pt.PROFILE / pt.JUNIT
     (tmp_path / "report.xml").write_text(junit or "")
-    (tmp_path / "meta.json").write_text(f'{{"target_directory": "{target}", "packages": []}}')
+    (tmp_path / "meta.json").write_text(
+        f'{{"target_directory": "{tmp_path / "elsewhere"}", "workspace_root": "{tmp_path}", "packages": []}}'
+    )
     cargo = bindir / "cargo"
     cargo.write_text(
         "#!/bin/sh\n"

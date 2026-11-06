@@ -66,6 +66,12 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 # JUnit file it writes, under <target>/nextest/<profile>/.
 PROFILE = "suite"
 JUNIT = "junit.xml"
+# nextest's store directory, relative to the WORKSPACE ROOT: it does not
+# follow CARGO_TARGET_DIR, so on CI's self-hosted runners, whose build
+# directory is outside the checkout, the report is not under the directory
+# `cargo metadata` names as the target. .config/nextest.toml sets it to this
+# explicitly.
+STORE_DEFAULT = "target/nextest"
 
 
 def nextest_version(repo: pathlib.Path = REPO) -> str:
@@ -77,6 +83,17 @@ def nextest_version(repo: pathlib.Path = REPO) -> str:
     if not isinstance(pinned, str):
         raise ValueError(".config/nextest.toml pins no nextest-version")
     return pinned
+
+
+def report_path(metadata: dict, repo: pathlib.Path = REPO) -> pathlib.Path:
+    """Where `cargo nextest run --profile suite` writes its JUnit report.
+
+    `<workspace root>/<store dir>/<profile>/<junit path>`, the store directory
+    read from .config/nextest.toml's `[store] dir`.
+    """
+    config = tomllib.loads((repo / ".config/nextest.toml").read_text(encoding="utf-8"))
+    store = config.get("store", {}).get("dir", STORE_DEFAULT)
+    return pathlib.Path(metadata["workspace_root"], store, PROFILE, JUNIT)
 
 
 def nextest_problem(pinned: str, reported: str | None) -> str | None:
@@ -218,10 +235,6 @@ def cargo_metadata() -> dict:
         check=True,
     )
     return json.loads(out.stdout)
-
-
-def target_dir() -> str:
-    return cargo_metadata()["target_directory"]
 
 
 # The library and binary unit tests and the doctests: one item of the
@@ -382,7 +395,7 @@ def shard_commands(shard: list[str], cargo_args: list[str], jobs: int | None = N
 
 def run_nextest(cmd: list[str]) -> int:
     """Run one `cargo nextest run`, then print its report as libtest text."""
-    report = pathlib.Path(target_dir()) / "nextest" / PROFILE / JUNIT
+    report = report_path(cargo_metadata())
     # A report left by an earlier run must never stand in for this one:
     # nextest writes none when the build fails.
     report.unlink(missing_ok=True)

@@ -256,7 +256,7 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		esac
 		for _a in "\$@"; do
 		  case "\$_a" in
-		    metadata) echo '{"target_directory": "$_d/target"}'; exit 0 ;;
+		    metadata) echo '{"target_directory": "$_d/target", "workspace_root": "$_d"}'; exit 0 ;;
 		  esac
 		done
 		exit 0
