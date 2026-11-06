@@ -339,6 +339,7 @@ What the script does that a reader of the user page does not need to:
 - [`.config/nextest.toml`](../../.config/nextest.toml) defines three profiles:
   - `default` (no retries, 60 s slow timeout, stopped after 180 s), for local runs.
   - `suite`, what `parallel-tests.py` runs: the same deadline, no retries, no fail-fast, and a JUnit report.
+    One test has a deadline of its own, six periods: `every_documented_command_runs_or_says_why_not`, whose binary took 191.85 s on CI's `macos-latest` runner.
   - `e2e` (2 retries, 60 s timeout) for the timing-sensitive tmux tests.
 - nextest does not run doctests, so `parallel-tests.py` runs them after it with `cargo test --doc`.
 - The script renders nextest's JUnit report as `cargo test`'s text, one block per test binary.

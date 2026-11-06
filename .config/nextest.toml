@@ -47,6 +47,18 @@ success-output = "never"
 [profile.suite.junit]
 path = "junit.xml"
 
+# One test runs past three periods on a slower machine, measured, not guessed:
+# every_documented_command_runs_or_says_why_not runs every command the docs
+# show, and on CI's macos-latest runner its binary finished in 191.85 s under
+# cargo test (CI run 42188622852, on 86a902663); nextest stopped it at 180 s
+# on that runner (CI run 42258292162). It took 77 s here on 14 cores. Six
+# periods, 360 s, is about twice the macOS figure. Every other test keeps
+# three; `test_only_the_test_measured_past_the_deadline_gets_a_longer_one`
+# in scripts/tests/test_parallel_tests_nextest.py holds the list to this one.
+[[profile.suite.overrides]]
+filter = "test(=every_documented_command_runs_or_says_why_not)"
+slow-timeout = { period = "60s", terminate-after = 6 }
+
 # PTY / terminal E2E tests (tests/tui_e2e_test.rs) can be timing-flaky; allow a
 # couple of retries here ONLY. Per spec §13.4 they must also pass a no-retry
 # stability check before the `continue-on-error` CI shim is removed.

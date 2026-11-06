@@ -157,6 +157,21 @@ def test_the_suite_profile_stops_a_test_at_three_sixty_second_periods():
     assert profile["junit"]["path"] == pt.JUNIT
 
 
+def test_only_the_test_measured_past_the_deadline_gets_a_longer_one():
+    # every_documented_command_runs_or_says_why_not runs every command the
+    # docs show. On CI's macos-latest runner its binary finished in 191.85 s
+    # under cargo test (run 42188622852, on 86a902663), and nextest stopped it
+    # at 180 s on this branch's first macOS run. One override, for that test
+    # alone, doubles its deadline; every other test keeps three periods.
+    overrides = suite_profile()["profile"][pt.PROFILE].get("overrides", [])
+    assert overrides == [
+        {
+            "filter": "test(=every_documented_command_runs_or_says_why_not)",
+            "slow-timeout": {"period": "60s", "terminate-after": 6},
+        }
+    ]
+
+
 def test_the_report_is_read_from_the_store_the_config_names():
     config = suite_profile()
     assert config["store"]["dir"] == pt.STORE_DEFAULT
