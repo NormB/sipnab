@@ -863,6 +863,21 @@ fn nextest_is_installed_through_one_pinned_rule() -> Result<(), TestError> {
         2,
         "{ACTION} names a cache key other than the restore's and the save's"
     );
+    // A job-private directory: the self-hosted runners share one home, and
+    // on run 42267347105 one Features job verified the tarball while the
+    // other was still writing it to the shared ~/.cache path (FAILED).
+    assert!(
+        !action.contains("~/.cache") && !action.contains("$HOME/.cache"),
+        "{ACTION} keeps the tarball under the home directory, which the \
+         self-hosted runners share; use the job's own ${{{{ runner.temp }}}}"
+    );
+    assert_eq!(
+        action
+            .matches("path: ${{ runner.temp }}/sipnab-nextest")
+            .count(),
+        2,
+        "{ACTION}: the restore and the save must use the job's own directory"
+    );
     let step = |name: &str| -> Result<String, TestError> {
         let at = action
             .find(&format!("- name: {name}"))

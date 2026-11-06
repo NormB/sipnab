@@ -44,7 +44,7 @@ runs:
       id: cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
-        path: ~/.cache/sipnab-pagefind
+        path: ${{ runner.temp }}/sipnab-pagefind
         key: pagefind-${{ inputs.version }}-${{ inputs.sha256 }}
 
     - name: Fetch the Pagefind tarball (cache miss)
@@ -54,9 +54,9 @@ runs:
         PAGEFIND_VERSION: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        mkdir -p "$HOME/.cache/sipnab-pagefind"
+        mkdir -p "$RUNNER_TEMP/sipnab-pagefind"
         curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 \
-          -o "$HOME/.cache/sipnab-pagefind/pagefind.tar.gz" \
+          -o "$RUNNER_TEMP/sipnab-pagefind/pagefind.tar.gz" \
           "https://github.com/CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/pagefind-v${PAGEFIND_VERSION}-x86_64-unknown-linux-musl.tar.gz"
 
     - name: Verify the Pagefind tarball
@@ -65,13 +65,13 @@ runs:
         PAGEFIND_SHA256: ${{ inputs.sha256 }}
       run: |
         set -euo pipefail
-        echo "${PAGEFIND_SHA256}  $HOME/.cache/sipnab-pagefind/pagefind.tar.gz" | sha256sum -c -
+        echo "${PAGEFIND_SHA256}  $RUNNER_TEMP/sipnab-pagefind/pagefind.tar.gz" | sha256sum -c -
 
     - name: Save the Pagefind tarball
       if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
-        path: ~/.cache/sipnab-pagefind
+        path: ${{ runner.temp }}/sipnab-pagefind
         key: pagefind-${{ inputs.version }}-${{ inputs.sha256 }}
 
     - name: Install Pagefind
@@ -79,7 +79,7 @@ runs:
       run: |
         set -euo pipefail
         unpack=$(mktemp -d)
-        tar xzf "$HOME/.cache/sipnab-pagefind/pagefind.tar.gz" -C "$unpack"
+        tar xzf "$RUNNER_TEMP/sipnab-pagefind/pagefind.tar.gz" -C "$unpack"
         sudo install -m 0755 "$unpack/pagefind" /usr/local/bin/pagefind
         rm -rf "$unpack"
         pagefind --version

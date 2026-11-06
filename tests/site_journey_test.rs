@@ -9918,6 +9918,20 @@ fn pagefind_is_installed_through_one_cached_rule() -> Result<(), TestError> {
             .map(|(i, s)| (i, *s))
             .ok_or_else(|| format!("{ACTION} has no step named {name:?}"))?)
     };
+    // The same job-private directory as .github/actions/nextest: a path
+    // under the home directory is shared by every self-hosted runner on a
+    // host, and two jobs fetching into it at once corrupt each other's file.
+    assert!(
+        !action.contains("~/.cache") && !action.contains("$HOME/.cache"),
+        "{ACTION} keeps the tarball under the home directory; use ${{{{ runner.temp }}}}"
+    );
+    assert_eq!(
+        action
+            .matches("path: ${{ runner.temp }}/sipnab-pagefind")
+            .count(),
+        2,
+        "{ACTION}: the restore and the save must use the job's own directory"
+    );
     let (restore_at, restore) = find("Restore the Pagefind tarball")?;
     let (fetch_at, fetch) = find("Fetch the Pagefind tarball")?;
     let (verify_at, verify) = find("Verify the Pagefind tarball")?;
