@@ -1,18 +1,44 @@
-# cargo-nextest configuration (verification plan M1/T1.2).
-# Install: `curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C ~/.cargo/bin`
-# or `cargo install cargo-nextest --locked`. CI uses taiki-e/install-action.
+# cargo-nextest configuration.
+#
+# The suite runs under cargo-nextest, in the pre-commit hook and in CI, through
+# scripts/parallel-tests.py with the `suite` profile below
+# (TEST-DEADLINE-NEXTEST-SIPNAB). `cargo test` bounds no single test, so one
+# hung test held the hook until its 30-minute wall-clock watchdog fired, with
+# no name attached; nextest's slow-timeout stops that test and fails it by
+# name.
+#
+# The version is pinned exactly. nextest itself refuses an older one through
+# `nextest-version`; scripts/parallel-tests.py and
+# scripts/check-hook-prerequisites.py refuse any other one, and
+# .github/actions/nextest installs this one in CI. Install it locally with
+#   cargo install cargo-nextest --locked --version 0.9.148
+nextest-version = { required = "0.9.148" }
 
 [profile.default]
 # Deterministic by default: no retries, so flaky tests surface immediately.
 retries = 0
-# Surface slow tests rather than hanging CI.
-slow-timeout = { period = "30s", terminate-after = 3 }
+# A test is reported slow after 60 s and stopped after three periods, 180 s.
+# The slowest tests measured under nextest on 2026-11-06 (14 cores, the full
+# suite at once) took 77 s (every_documented_command_runs_or_says_why_not),
+# 70 s and 68 s, so 180 s leaves them more than twice their time.
+slow-timeout = { period = "60s", terminate-after = 3 }
 
-[profile.ci]
-# CI runs every test even after a failure, for a complete report.
+# What scripts/parallel-tests.py runs, in the hook and in CI: every test even
+# after a failure, no retries, the same deadline, and a JUnit report, which
+# the script renders as libtest text for the readers of the suite's output.
+# Only slow, failing and timed-out tests are printed while it runs; the
+# rendered report carries each failure's output.
+[profile.suite]
 retries = 0
 fail-fast = false
-failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 3 }
+status-level = "slow"
+final-status-level = "slow"
+failure-output = "never"
+success-output = "never"
+
+[profile.suite.junit]
+path = "junit.xml"
 
 # PTY / terminal E2E tests (tests/tui_e2e_test.rs) can be timing-flaky; allow a
 # couple of retries here ONLY. Per spec §13.4 they must also pass a no-retry

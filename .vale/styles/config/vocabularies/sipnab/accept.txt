@@ -305,6 +305,7 @@ jq
 JSON
 json
 jsonwebtoken
+JUnit
 Kamailio
 keepalive
 keepalives

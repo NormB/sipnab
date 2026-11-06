@@ -148,3 +148,43 @@ def test_the_command_refuses_an_unknown_hook(tmp_path):
     out = _run(_tree(tmp_path), "post-merge")
     assert out.returncode == 2
     assert "pre-commit" in out.stderr and "pre-push" in out.stderr
+
+
+# --- cargo-nextest, which runs the pre-commit suite -------------------------
+
+NEXTEST_TOML = 'nextest-version = { required = "0.9.148" }\n'
+
+
+def _nextest_tree(tmp_path):
+    root = _tree(tmp_path)
+    (root / ".config").mkdir()
+    (root / ".config/nextest.toml").write_text(NEXTEST_TOML)
+    return root
+
+
+def _missing_nextest(root, hook, reported):
+    found = prereqs.missing(root, hook, env={}, vale_binary=None, nextest_reported=reported)
+    return [m.fix for m in found]
+
+
+def test_pre_commit_needs_the_pinned_nextest_when_the_tree_pins_one(tmp_path):
+    root = _nextest_tree(tmp_path)
+    fix = "cargo install cargo-nextest --locked --version 0.9.148"
+    assert _missing_nextest(root, "pre-commit", None) == [fix]
+    assert _missing_nextest(root, "pre-commit", "cargo-nextest 0.9.100 (x)\n") == [fix]
+    assert _missing_nextest(root, "pre-commit", "cargo-nextest 0.9.148 (x)\n") == []
+
+
+def test_pre_push_runs_no_suite_so_it_needs_no_nextest(tmp_path):
+    assert _missing_nextest(_nextest_tree(tmp_path), "pre-push", None) == []
+
+
+def test_a_tree_that_pins_no_nextest_is_not_asked_for_one(tmp_path):
+    assert _missing_nextest(_tree(tmp_path), "pre-commit", None) == []
+
+
+def test_the_command_refuses_when_nextest_cannot_run(tmp_path):
+    # PATH holds no cargo, so `cargo nextest --version` cannot run.
+    out = _run(_nextest_tree(tmp_path), "pre-commit")
+    assert out.returncode == 1, out.stdout + out.stderr
+    assert "run: cargo install cargo-nextest --locked --version 0.9.148" in out.stdout

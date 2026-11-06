@@ -1,0 +1,116 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Pinned cargo-nextest
+description: >-
+  Put the cargo-nextest release .config/nextest.toml pins on PATH, for
+  scripts/parallel-tests.py. The release tarball comes from the actions cache
+  when an earlier run fetched it and from GitHub releases only on a miss, and
+  its sha256 is checked on every run.
+
+# WHY THIS EXISTS (TEST-DEADLINE-NEXTEST-SIPNAB)
+#
+# The suite runs under cargo-nextest, so a test past its slow-timeout fails by
+# name instead of holding the job until `timeout-minutes`. Every job that runs
+# scripts/parallel-tests.py needs that one version: the script refuses any
+# other, because a newer nextest can change what the `suite` profile means.
+#
+# The same shape as .github/actions/pagefind, for the same reason: a pinned,
+# checksummed tarball fetched from github.com on every run fails the job
+# whenever github.com does (PAGEFIND-DOWNLOAD-504). The key is the version,
+# the target and the sha256, so a cached tarball is never used for a pin it
+# was not fetched for, and the check runs on a restored tarball too.
+#
+# The binary goes into a directory of this job's own, put first on PATH, not
+# into ~/.cargo/bin: the self-hosted runners share one home directory, and a
+# job must not replace a tool another job or a developer is running.
+#
+# VERSION is the pin in .config/nextest.toml; the step below refuses to run
+# when the two differ, and
+# `nextest_is_installed_through_one_pinned_rule` in
+# tests/workflow_supply_chain_test.rs holds them, the hashes and every job
+# that runs the suite. Each hash is the one the release publishes beside the
+# tarball (cargo-nextest-<version>-<target>.sha256), checked against the
+# downloaded bytes on 2026-11-06.
+runs:
+  using: composite
+  steps:
+    - name: Choose the cargo-nextest tarball
+      id: pick
+      shell: bash
+      env:
+        NEXTEST_VERSION: '0.9.148'
+        NEXTEST_SHA256_AARCH64_LINUX: '81469eb963ef883fd590e60189e77d6aba3d91b418591d3391f50fe3e9480d2b'
+        NEXTEST_SHA256_X86_64_LINUX: '223ba936714cc861a9cdedad5a8eb664dfdd69d6fbdf6cea6aa8184f523290dc'
+        NEXTEST_SHA256_MACOS: '6c23b7fb4ca82c571fc8dfedbab45bfa773d45918f933170c85d21cd7f4b852b'
+        RUNNER_OS_NAME: ${{ runner.os }}
+        RUNNER_ARCH_NAME: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        pinned=$(sed -n 's/^nextest-version = { required = "\(.*\)" }$/\1/p' .config/nextest.toml)
+        if [ "$pinned" != "$NEXTEST_VERSION" ]; then
+          echo "::error::.config/nextest.toml pins cargo-nextest '$pinned' and this action installs $NEXTEST_VERSION; change both"
+          exit 1
+        fi
+        case "$RUNNER_OS_NAME/$RUNNER_ARCH_NAME" in
+          Linux/ARM64) target=aarch64-unknown-linux-gnu; sha=$NEXTEST_SHA256_AARCH64_LINUX ;;
+          Linux/X64) target=x86_64-unknown-linux-gnu; sha=$NEXTEST_SHA256_X86_64_LINUX ;;
+          macOS/*) target=universal-apple-darwin; sha=$NEXTEST_SHA256_MACOS ;;
+          *) echo "::error::no cargo-nextest tarball is pinned for $RUNNER_OS_NAME/$RUNNER_ARCH_NAME"; exit 1 ;;
+        esac
+        {
+          echo "version=$NEXTEST_VERSION"
+          echo "target=$target"
+          echo "sha256=$sha"
+          echo "tarball=cargo-nextest-$NEXTEST_VERSION-$target.tar.gz"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore the cargo-nextest tarball
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ~/.cache/sipnab-nextest
+        key: nextest-${{ steps.pick.outputs.version }}-${{ steps.pick.outputs.target }}-${{ steps.pick.outputs.sha256 }}
+
+    - name: Fetch the cargo-nextest tarball (cache miss)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        NEXTEST_VERSION: ${{ steps.pick.outputs.version }}
+        TARBALL: ${{ steps.pick.outputs.tarball }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.cache/sipnab-nextest"
+        curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 \
+          -o "$HOME/.cache/sipnab-nextest/$TARBALL" \
+          "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/${TARBALL}"
+
+    - name: Verify the cargo-nextest tarball
+      shell: bash
+      env:
+        NEXTEST_SHA256: ${{ steps.pick.outputs.sha256 }}
+        TARBALL: ${{ steps.pick.outputs.tarball }}
+      run: |
+        set -euo pipefail
+        echo "${NEXTEST_SHA256}  $HOME/.cache/sipnab-nextest/$TARBALL" | shasum -a 256 -c -
+
+    - name: Save the cargo-nextest tarball
+      if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ~/.cache/sipnab-nextest
+        key: nextest-${{ steps.pick.outputs.version }}-${{ steps.pick.outputs.target }}-${{ steps.pick.outputs.sha256 }}
+
+    - name: Install cargo-nextest
+      shell: bash
+      env:
+        NEXTEST_VERSION: ${{ steps.pick.outputs.version }}
+        TARBALL: ${{ steps.pick.outputs.tarball }}
+      run: |
+        set -euo pipefail
+        bin="$RUNNER_TEMP/sipnab-nextest/bin"
+        mkdir -p "$bin"
+        tar xzf "$HOME/.cache/sipnab-nextest/$TARBALL" -C "$bin"
+        chmod 0755 "$bin/cargo-nextest"
+        echo "$bin" >> "$GITHUB_PATH"
+        PATH="$bin:$PATH" cargo nextest --version
+        PATH="$bin:$PATH" cargo nextest --version | grep -qF "cargo-nextest ${NEXTEST_VERSION} " \
+          || { echo "::error::cargo resolves another cargo-nextest than the one just installed"; exit 1; }

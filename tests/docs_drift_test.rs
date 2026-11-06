@@ -176,8 +176,28 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // testing.md's nextest section names the same `--doc` run.
     (
         "doc",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    // The suite runs as `cargo nextest run --profile suite`, and
+    // `SIPNAB_TEST_JOBS` becomes nextest's `--test-threads`
+    // (TEST-DEADLINE-NEXTEST-SIPNAB). nextest's flags, not sipnab's.
+    (
+        "profile",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "test-threads",
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
@@ -344,11 +364,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // release page's "Reproducible builds" section: how the release build
     // holds its lockfile and keeps builder paths out of the binary. Cargo's
     // and rustc's flags, not sipnab's.
+    // testing.md also names `cargo install cargo-nextest --locked --version
+    // <pin>`, the command the hook's prerequisite check prints.
     (
         "locked",
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
         ],
     ),
     (

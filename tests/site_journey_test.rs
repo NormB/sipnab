@@ -6634,7 +6634,14 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `tests/release_pipeline_gate_test.rs`, the test that runs the rule for
     // every release build (OPS-9). Measurement: with origin/main's
     // release.yml swapped back in, the scan reads 222.
-    const EXPECTED_REFERENCES: usize = 223;
+    // 223 -> 229: the suite runs under cargo-nextest
+    // (TEST-DEADLINE-NEXTEST-SIPNAB). `.github/workflows/ci.yml`'s three new
+    // "Install cargo-nextest" steps name `.config/nextest.toml` (+3), their
+    // comments and the Test step's rewritten comment name
+    // `scripts/parallel-tests.py` four times where the old comment named it
+    // once (+3). Measurement: with HEAD's ci.yml swapped back in, the scan
+    // reads 223.
+    const EXPECTED_REFERENCES: usize = 229;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

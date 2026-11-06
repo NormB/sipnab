@@ -942,7 +942,15 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // Counted against origin/main 03d904afa.
     // 754 -> 755 (TEMP-PATH-GATE-ACCEPTS-PID): docs/internals/testing.md links
     // src/test_scratch.rs from the helper table.
-    const EXPECTED_CODE_LINKS: usize = 755;
+    // 755 -> 761 (TEST-DEADLINE-NEXTEST-SIPNAB): docs/internals/testing.md's
+    // nextest section links scripts/parallel-tests.py,
+    // scripts/published-test-count.py, scripts/check-hook-prerequisites.py
+    // and .github/actions/nextest/action.yml (+4), and
+    // docs/internals/build-ci-release.md's section on the suite in shards
+    // links .config/nextest.toml and the action (+2). Measured: with HEAD's
+    // testing.md swapped back in the scan reads 757, with HEAD's
+    // build-ci-release.md 759.
+    const EXPECTED_CODE_LINKS: usize = 761;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

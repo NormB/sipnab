@@ -119,7 +119,7 @@ def test_the_first_shard_runs_the_unit_tests_and_doctests_as_cargo_test_would():
     cmds = pt.shard_commands([pt.UNIT_TESTS, "a_test"], ["--all-features"])
     assert cmds == [
         ["build", "--all-features", "--examples"],
-        ["test", "--all-features", "--lib", "--bins", "--test", "a_test"],
+        ["nextest", "run", "--profile", "suite", "--all-features", "--lib", "--bins", "--test", "a_test"],
         ["test", "--all-features", "--doc"],
     ]
 
@@ -128,7 +128,7 @@ def test_another_shard_runs_only_its_integration_tests():
     cmds = pt.shard_commands(["b_test", "c_test"], ["--all-features"])
     assert cmds == [
         ["build", "--all-features", "--examples"],
-        ["test", "--all-features", "--test", "b_test", "--test", "c_test"],
+        ["nextest", "run", "--profile", "suite", "--all-features", "--test", "b_test", "--test", "c_test"],
     ]
 
 
@@ -294,14 +294,18 @@ def test_the_real_targets_split_completely_and_disjointly_for_every_ci_job():
 def fake_cargo(tmp_path, build_status=0, fail_tests=""):
     """A `cargo` on PATH that logs each call and answers `metadata`.
 
-    `test` prints one passing result line and exits 0 without calling the
-    runner, the shape of a run where cargo ran every test itself.
+    `nextest --version` answers the pinned version. `nextest run` writes a
+    one-test JUnit report where nextest would, passing or, when its arguments
+    carry `fail_tests`, failing with nextest's exit status 100. `test` (the
+    doctests) prints one libtest result line, passing or failing the same way.
     """
     bindir = tmp_path / "bin"
     bindir.mkdir()
     log = tmp_path / "cargo.log"
+    target = tmp_path / "target"
+    report = target / "nextest" / pt.PROFILE / pt.JUNIT
     meta = {
-        "target_directory": str(tmp_path / "target"),
+        "target_directory": str(target),
         "packages": [
             {
                 "name": "sipnab",
@@ -311,15 +315,24 @@ def fake_cargo(tmp_path, build_status=0, fail_tests=""):
         ],
     }
     (tmp_path / "meta.json").write_text(json.dumps(meta))
+    for name, case in (("pass", "<testcase name=\"t\" classname=\"sipnab::a_test\"/>"),
+                       ("fail", "<testcase name=\"t\" classname=\"sipnab::a_test\"><failure type=\"test failure\">boom</failure></testcase>")):
+        (tmp_path / f"{name}.xml").write_text(
+            f'<testsuites tests="1"><testsuite name="sipnab::a_test" tests="1">{case}</testsuite></testsuites>'
+        )
+    version = pt.nextest_version(REPO)
     cargo = bindir / "cargo"
     cargo.write_text(
         "#!/bin/sh\n"
         f'case "$1" in metadata) cat "{tmp_path}/meta.json"; exit 0 ;; esac\n'
+        f'if [ "$1" = nextest ] && [ "$2" = --version ]; then echo "cargo-nextest {version} (x)"; exit 0; fi\n'
         f'echo "$*" >> "{log}"\n'
         f'[ "$1" = build ] && exit {build_status}\n'
         f'case "$*" in *"{fail_tests or '@@never@@'}"*)\n'
+        f'  if [ "$1" = nextest ]; then mkdir -p "{report.parent}"; cp "{tmp_path}/fail.xml" "{report}"; exit 100; fi\n'
         '  echo "test result: FAILED. 0 passed; 1 failed; 0 ignored"; exit 101 ;;\n'
         "esac\n"
+        f'if [ "$1" = nextest ]; then mkdir -p "{report.parent}"; cp "{tmp_path}/pass.xml" "{report}"; exit 0; fi\n'
         'echo "test result: ok. 1 passed; 0 failed; 0 ignored"\n'
     )
     cargo.chmod(0o755)
@@ -327,8 +340,8 @@ def fake_cargo(tmp_path, build_status=0, fail_tests=""):
 
 
 def cargo_calls(log):
-    """The logged calls, without the `--config` that installs the recorder."""
-    return [re.sub(r"^--config .*?\] ", "", c) for c in log.read_text().splitlines()]
+    """The logged calls, in order."""
+    return log.read_text().splitlines()
 
 
 def run_shard(tmp_path, bindir, index, count):

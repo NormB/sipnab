@@ -20,6 +20,10 @@ The prerequisites, and which hook needs each:
   prose gates read: needed when there is a .vale.ini and a vale binary
   ($VALE_BIN, else vale on PATH). Without a vale binary the prose gate itself
   reports NOT CHECKED, so the package is not asked for. Fix: `vale sync`.
+* cargo-nextest at the version .config/nextest.toml pins, which runs the
+  pre-commit suite through scripts/parallel-tests.py: needed when the tree
+  pins one. The rule is parallel-tests.py's own `nextest_problem`. Fix:
+  `cargo install cargo-nextest --locked --version <pin>`.
 
 Usage:
     check-hook-prerequisites.py pre-commit|pre-push [--root DIR]
@@ -59,6 +63,13 @@ def _fetch_module():
     return module
 
 
+def _parallel_tests_module():
+    spec = importlib.util.spec_from_file_location("parallel_tests", SCRIPTS / "parallel-tests.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def vale_packages(ini_text):
     """(StylesPath, [package names]) of a .vale.ini, packages in file order.
 
@@ -89,10 +100,27 @@ def find_vale(env):
     return shutil.which("vale", path=env.get("PATH"))
 
 
-def missing(root, hook, env, vale_binary):
-    """The prerequisites `hook` needs in the tree at `root` that are missing."""
+def missing(root, hook, env, vale_binary, nextest_reported=None):
+    """The prerequisites `hook` needs in the tree at `root` that are missing.
+
+    `nextest_reported` is what `cargo nextest --version` printed, None when it
+    could not run; it is read only for a pre-commit hook in a tree that pins a
+    nextest version.
+    """
     root = pathlib.Path(root)
     found = []
+    pin = root / ".config/nextest.toml"
+    if hook == "pre-commit" and pin.is_file():
+        suite = _parallel_tests_module()
+        pinned = suite.nextest_version(root)
+        if suite.nextest_problem(pinned, nextest_reported):
+            found.append(
+                Missing(
+                    f"cargo-nextest {pinned}, which runs the suite",
+                    pin,
+                    f"cargo install cargo-nextest --locked --version {pinned}",
+                )
+            )
     if hook == "pre-commit" and (root / "crates/g729/Cargo.toml").is_file():
         fetch = _fetch_module()
         dest = pathlib.Path(env.get(fetch.ENV_VAR) or root / "crates/g729/test-vectors")
@@ -119,7 +147,10 @@ def main(argv=None):
         print(f"check-hook-prerequisites: the hook must be one of {', '.join(HOOKS)}", file=sys.stderr)
         return 2
     env = dict(os.environ)
-    found = missing(args.root, args.hook, env, find_vale(env))
+    reported = None
+    if args.hook == "pre-commit" and (args.root / ".config/nextest.toml").is_file():
+        reported = _parallel_tests_module().installed_nextest()
+    found = missing(args.root, args.hook, env, find_vale(env), reported)
     if not found:
         print("  Prerequisites... OK")
         return 0
