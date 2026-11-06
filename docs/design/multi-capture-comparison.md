@@ -143,7 +143,7 @@ Nothing in section 2 is reachable today, for the reason
 [`deferred-and-declined.md` section 1, *TUI multi-session / multi-capture comparison*](deferred-and-declined.md#1-tui-multi-session--multi-capture-comparison)
 established: there is no
 capture provenance anywhere in the data model. `Packet.interface`
-([`packet.rs:678`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L678)) is the only source-identifying
+([`packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)) is the only source-identifying
 field and the file reader hard-codes it to `None`; `ParsedPacket` does not carry
 it forward; `SipMessage` and `SipDialog` have no source field at all. `-I`
 resolves a whole set into **one** store, and `warn_on_overlap`

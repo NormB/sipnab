@@ -376,11 +376,20 @@ impl SourceInterner {
     /// The interned copy of `name`: the one already held, or a new one while
     /// there is room. `None`, counted, once the table is full.
     pub(crate) fn intern(&mut self, name: &str) -> Option<&'static str> {
+        let got = self.lookup_or_insert(name);
+        if got.is_none() {
+            self.refused += 1;
+        }
+        got
+    }
+
+    /// As [`Self::intern`], without counting a refusal: `None` when the table
+    /// is full and `name` is new.
+    pub(crate) fn lookup_or_insert(&mut self, name: &str) -> Option<&'static str> {
         if let Some(held) = self.names.get(name) {
             return Some(*held);
         }
         if self.names.len() >= self.cap {
-            self.refused += 1;
             return None;
         }
         let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
@@ -508,6 +517,183 @@ fn source_arc(source: &'static str) -> Arc<str> {
         *m = Some((source, Arc::clone(&arc)));
         arc
     })
+}
+
+/// The name of the source a packet came from, carried on every packet.
+///
+/// A reader stamps the SAME name on every packet of a file or a socket, and
+/// the packet is dropped on another thread. Carried as an `Arc<str>`, that is
+/// one atomic increment on the reader and one decrement on the consumer per
+/// packet, all on ONE counter that the reader and every worker share, so the
+/// cache line moves between cores on every packet. Profiled on main at
+/// 86a902663 over the carrier corpus, it was 9.4% of all samples at
+/// `--cores 1` and 6.5% at `--cores 4`, half of it on the reader, which is the
+/// serial stage of a parallel run.
+///
+/// So a reader names its source once with [`SourceName::interned`], and the
+/// per-packet clone is a copy of a `&'static str`: no refcount, no
+/// allocation. The table is the one [`FrameLocator`] already uses, so the names
+/// it holds and its cap do not change.
+///
+/// A source that is not interned is carried as a shared `Arc<str>`, which is
+/// what every packet carried before. That form is for the sources that build
+/// their name per packet (a HEP sender, a uprobe's process) and for a name
+/// the full table refused; interning those per packet would take the table's
+/// lock per packet.
+#[derive(Clone)]
+pub struct SourceName(SourceRepr);
+
+/// The two ways a [`SourceName`] holds its text.
+#[derive(Clone)]
+enum SourceRepr {
+    /// Held in the process's source table; cloning copies a pointer.
+    Interned(&'static str),
+    /// Not interned; cloning is a refcount increment.
+    Shared(Arc<str>),
+}
+
+impl SourceName {
+    /// The name for a source that stamps it on a whole stream of packets: a
+    /// capture file, a device, a socket. Interned once, so every per-packet
+    /// clone is free; carried shared instead when the table is full.
+    ///
+    /// A full table is not counted as a refusal here. The frame pointer
+    /// asks the table again for each packet, as it always did, and that is
+    /// where a refusal is counted and logged, so the counts stay what they
+    /// were.
+    #[must_use]
+    pub fn interned(name: &str) -> Self {
+        Self::interned_in(&mut source_table().lock(), name)
+    }
+
+    /// [`Self::interned`] against a given table.
+    pub(crate) fn interned_in(table: &mut SourceInterner, name: &str) -> Self {
+        match table.lookup_or_insert(name) {
+            Some(held) => Self(SourceRepr::Interned(held)),
+            None => Self(SourceRepr::Shared(Arc::from(name))),
+        }
+    }
+
+    /// The name's text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match &self.0 {
+            SourceRepr::Interned(s) => s,
+            SourceRepr::Shared(s) => s,
+        }
+    }
+
+    /// Whether this name is held in the process's source table, so that
+    /// cloning it touches no refcount.
+    #[must_use]
+    pub fn is_interned(&self) -> bool {
+        matches!(self.0, SourceRepr::Interned(_))
+    }
+
+    /// The interned form a [`FrameLocator`] carries: this name itself when it
+    /// is interned, otherwise the table's answer for its text, which counts a
+    /// refusal when the table is full (see [`intern_source`]).
+    #[must_use]
+    pub fn locator_source(&self) -> Option<&'static str> {
+        match &self.0 {
+            SourceRepr::Interned(s) => Some(s),
+            SourceRepr::Shared(s) => intern_source(s),
+        }
+    }
+
+    /// The name as an owned `Arc<str>`, for a pointer that is kept.
+    #[must_use]
+    pub fn to_arc(&self) -> Arc<str> {
+        match &self.0 {
+            SourceRepr::Interned(s) => source_arc(s),
+            SourceRepr::Shared(s) => Arc::clone(s),
+        }
+    }
+}
+
+impl std::ops::Deref for SourceName {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl AsRef<str> for SourceName {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl std::borrow::Borrow<str> for SourceName {
+    fn borrow(&self) -> &str {
+        self.as_str()
+    }
+}
+
+/// Equal when the text is equal, whichever way each side holds it.
+impl PartialEq for SourceName {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+
+impl Eq for SourceName {}
+
+impl PartialEq<str> for SourceName {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for SourceName {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl std::hash::Hash for SourceName {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.as_str().hash(state);
+    }
+}
+
+/// The text alone, as `Arc<str>` printed it, so a `{:?}` of a packet reads as
+/// it did.
+impl std::fmt::Debug for SourceName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.as_str(), f)
+    }
+}
+
+impl std::fmt::Display for SourceName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl From<Arc<str>> for SourceName {
+    fn from(name: Arc<str>) -> Self {
+        Self(SourceRepr::Shared(name))
+    }
+}
+
+impl From<&Arc<str>> for SourceName {
+    fn from(name: &Arc<str>) -> Self {
+        Self(SourceRepr::Shared(Arc::clone(name)))
+    }
+}
+
+impl From<String> for SourceName {
+    fn from(name: String) -> Self {
+        Self(SourceRepr::Shared(Arc::from(name)))
+    }
+}
+
+impl From<&str> for SourceName {
+    fn from(name: &str) -> Self {
+        Self(SourceRepr::Shared(Arc::from(name)))
+    }
 }
 
 /// What kind of thing a pointer's source names.
@@ -694,13 +880,14 @@ pub struct Packet {
     /// Block, so it is the export's claim about the packet's origin — see
     /// [`crate::capture::writer::PcapWriter::write`].
     ///
-    /// `Arc<str>` rather than `String` because the value is CONSTANT for the
-    /// whole of a source and is stamped on every packet: a 14M-packet replay
-    /// interns the path once per file and pays a refcount increment per
-    /// packet, where an owned `String` would be 14M allocations of the same
-    /// bytes. Cloning is cheap enough that no hot path has an excuse to skip
-    /// the stamp; construct with [`Packet::with_source`] to reuse the handle.
-    pub interface: Option<Arc<str>>,
+    /// A [`SourceName`] rather than a `String` because the value is CONSTANT
+    /// for the whole of a source and is stamped on every packet: an owned
+    /// `String` would be one allocation per packet of the same bytes, and an
+    /// `Arc<str>` one refcount per packet on a counter every thread shares. A
+    /// reader names its source once with [`SourceName::interned`] and the
+    /// per-packet stamp is a pointer copy; construct with
+    /// [`Packet::with_source`] to reuse the handle.
+    pub interface: Option<SourceName>,
     /// Pcap link-layer header type (e.g., `1` for `DLT_EN10MB`). Ignored
     /// when `pre_parsed` is `Some`.
     pub link_type: i32,
@@ -737,7 +924,7 @@ impl Packet {
     /// cost 29% of two-core throughput; this method is called when something
     /// wants an OWNED pointer, which is already the decision to retain one.
     pub fn frame_ref(&self) -> Option<FrameRef> {
-        let source = Arc::clone(self.interface.as_ref()?);
+        let source = self.interface.as_ref()?.to_arc();
         let mut origin = (self.origin)?;
         if origin.verifiable && origin.digest.is_none() {
             origin.digest = Some(frame_digest(&self.data));
@@ -767,7 +954,7 @@ impl Packet {
     #[must_use]
     pub fn frame_locator(&self) -> Option<FrameLocator> {
         Some(FrameLocator {
-            source: intern_source(self.interface.as_ref()?)?,
+            source: self.interface.as_ref()?.locator_source()?,
             origin: self.origin?,
         })
     }
@@ -798,7 +985,7 @@ impl Packet {
         data: bytes::Bytes,
         caplen: usize,
         origlen: usize,
-        source: Option<Arc<str>>,
+        source: Option<SourceName>,
         link_type: i32,
     ) -> Self {
         debug_assert_eq!(
@@ -856,7 +1043,7 @@ impl Packet {
             data,
             caplen,
             origlen,
-            interface.map(Arc::from),
+            interface.map(SourceName::from),
             link_type,
         )
     }
@@ -887,7 +1074,7 @@ impl Packet {
         data: Vec<u8>,
         caplen: usize,
         origlen: usize,
-        source: Option<Arc<str>>,
+        source: Option<SourceName>,
         link_type: i32,
     ) -> Self {
         // `data` holds exactly the captured bytes, so `caplen` must equal
@@ -942,7 +1129,7 @@ impl Packet {
             data: data.into(),
             caplen: len,
             origlen: len,
-            interface: interface.map(Arc::from),
+            interface: interface.map(SourceName::from),
             link_type: 0,
             pre_parsed: Some(pre_parsed),
             origin: None,
@@ -957,6 +1144,80 @@ mod tests {
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
 
+    /// A name compares, hashes and prints by its text, whichever way it is
+    /// held, and prints as the `Arc<str>` it replaced did.
+    #[test]
+    fn a_source_name_is_its_text_however_it_is_held() {
+        use std::hash::BuildHasher;
+        let mut table = SourceInterner::new(8);
+        let interned = SourceName::interned_in(&mut table, "eth0");
+        let shared = SourceName::from("eth0");
+        assert!(interned.is_interned(), "a table with room interns");
+        assert!(!shared.is_interned(), "From<&str> carries the name shared");
+        assert_eq!(interned, shared, "equal text is an equal name");
+        assert_eq!(interned, "eth0", "a name equals its text");
+        assert_ne!(interned, SourceName::from("eth1"), "different text differs");
+        let hasher = std::collections::hash_map::RandomState::new();
+        assert_eq!(
+            hasher.hash_one(&interned),
+            hasher.hash_one(&shared),
+            "both forms hash as their text"
+        );
+        assert_eq!(
+            hasher.hash_one(&interned),
+            hasher.hash_one("eth0"),
+            "a name hashes as its str, as Borrow<str> requires"
+        );
+        let arc: Arc<str> = Arc::from("eth0");
+        assert_eq!(
+            format!("{interned:?}"),
+            format!("{arc:?}"),
+            "Debug prints as the Arc<str> it replaced"
+        );
+        assert_eq!(format!("{shared}"), "eth0", "Display is the bare text");
+        assert_eq!(&*interned.to_arc(), "eth0", "to_arc keeps the text");
+        assert_eq!(&*shared.to_arc(), "eth0", "to_arc keeps the text");
+    }
+
+    /// Interning the same text twice hands back the same table entry, so
+    /// every packet of a source points at one copy of its name.
+    #[test]
+    fn interning_a_name_twice_reuses_its_entry() {
+        let mut table = SourceInterner::new(8);
+        let a = SourceName::interned_in(&mut table, "trace.pcap");
+        let b = SourceName::interned_in(&mut table, "trace.pcap");
+        assert!(
+            std::ptr::eq(a.as_str(), b.as_str()),
+            "the second intern returns the first entry"
+        );
+        assert_eq!(table.len(), 1, "one name, one entry");
+    }
+
+    /// A full table still names the source, carried shared, and counts no
+    /// refusal: the frame pointer's own lookup is where a refusal is counted,
+    /// so a reader naming its source must not count a second one.
+    #[test]
+    fn a_full_table_carries_the_name_shared_and_counts_nothing() {
+        let mut table = SourceInterner::new(1);
+        let first = SourceName::interned_in(&mut table, "a.pcap");
+        let second = SourceName::interned_in(&mut table, "b.pcap");
+        assert!(first.is_interned(), "the first name fits the table");
+        assert!(!second.is_interned(), "the full table carries it shared");
+        assert_eq!(second, "b.pcap", "the shared form keeps the text");
+        assert_eq!(table.refused(), 0, "naming a source counts no refusal");
+        assert_eq!(table.len(), 1, "nothing was added past the cap");
+    }
+
+    /// Cloning an interned name allocates nothing; that is the point of it.
+    #[test]
+    fn cloning_an_interned_name_allocates_nothing() {
+        let mut table = SourceInterner::new(8);
+        let name = Some(SourceName::interned_in(&mut table, "eth0"));
+        let (allocations, copy) = crate::test_alloc::allocations_during(|| name.clone());
+        assert_eq!(allocations, 0, "an interned clone copies a pointer");
+        assert_eq!(copy, name, "the clone is the same name");
+    }
+
     /// Build a packet with the given source name.
     fn packet_from(source: &str) -> Packet {
         Packet {
@@ -964,7 +1225,7 @@ mod tests {
             data: bytes::Bytes::from_static(b"INVITE sip:x SIP/2.0\r\n\r\n"),
             caplen: 24,
             origlen: 24,
-            interface: Some(std::sync::Arc::from(source)),
+            interface: Some(SourceName::from(source)),
             link_type: 1,
             pre_parsed: None,
             origin: Some(FrameOrigin {

@@ -98,7 +98,7 @@ decisions downstream read the source as a scalar:
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
 ([`src/capture/file.rs:513`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L513)), `capture_hep` ([`src/capture/hep.rs:3292`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3292)), the
-uprobe reader — builds a `Packet` ([`src/capture/packet.rs:678`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L678)) and calls
+uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
 ([`src/capture/channel.rs:204`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L204)). The consumer is the batch receive loop at
@@ -109,7 +109,7 @@ is, when the last sender clone drops.
 many-producer, the receive loop already ends on the last producer, and the
 parser already tells the two kinds of packet apart:
 
-- `Packet::interface` ([`src/capture/packet.rs:678`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L678)) is an `Arc<str>` naming the
+- `Packet::interface` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)) is a `SourceName` (an `Arc<str>` when this was written) naming the
   source. Live capture sets the device name ([`src/capture/live.rs:533`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L533)); the
   HEP listener sets `hep:<capture-id>@<peer>` via `hep_source_label`
   ([`src/capture/hep_roster.rs:183`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L183)) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)).
@@ -319,12 +319,12 @@ operator discount a suspicious attribution instead of trusting it.
 
 **Provenance: build on it, and it needs one small extension.**
 [`docs/design/packet-provenance.md`](https://github.com/NormB/sipnab/blob/main/docs/design/packet-provenance.md) shipped in five stages. `FrameRef`
-([`src/capture/packet.rs:541`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L541)) resolves a fact to the bytes behind it, and
+([`src/capture/packet.rs:765`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L765)) resolves a fact to the bytes behind it, and
 `SipMessage::frame` ([`src/sip/message.rs:84`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L84)), `SipDialog`
 ([`src/sip/dialog.rs:153`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L153)), whose `first_frame` field sits at line 148, and `RtpStream` ([`src/rtp/stream.rs:452`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream.rs#L452)) carries the same field at line 323
 carry it downstream.
 
-The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:739`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L739))
+The gap that matters here: `Packet::frame_ref` ([`src/capture/packet.rs:926`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L926))
 requires **both** a source name and a frame ordinal, and the live and HEP readers
 stamp only the name. Ordinals come from [`src/capture/file.rs:778`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L778),
 [`src/parallel.rs:675`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L675) and the uprobe readers; neither `capture_live_fanout` nor
@@ -440,7 +440,7 @@ nothing.
 **Metrics and the writer read the source as a scalar.** The `-O` writer is the
 concrete casualty. It initializes on the first packet's `link_type`
 ([`src/app/batch.rs:2884`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2884)), and the two members disagree: live capture yields
-`DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:933`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L933)) sets
+`DLT_EN10MB`, while `Packet::with_pre_parsed` ([`src/capture/packet.rs:1120`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L1120)) sets
 `link_type = 0` and a `data` buffer holding the bare transport payload — no
 Ethernet, no IP, no UDP. That absence is deliberate and documented at
 [`src/capture/hep.rs:84`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L84) onward: fabricating a `DLT_RAW` header made `etherparse`
