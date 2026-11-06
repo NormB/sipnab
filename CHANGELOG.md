@@ -35,6 +35,15 @@ entry that carries them.
 - **`-d any` reads packets on a GRE tunnel interface.** A Linux cooked capture (SLL and SLL2) of an interface of ARPHRD type IPGRE (778) or IP6GRE (823) was dropped whole, because its protocol field, a GRE protocol type, was read as not an EtherType. [RFC 2784 section 2.4](https://www.rfc-editor.org/rfc/rfc2784.html#section-2.4) defines GRE protocol types as the EtherTypes, so 0x0800 there is IPv4, as on Ethernet. Every SIP message and ng request a proxy sent through a GRE tunnel was missing from an `-d any` capture. Netlink, FRAD and radiotap frames, whose protocol field is not an EtherType, are still not read as IP.
 - **The how-to's HEP listener examples for sipnab on an rtpengine host start.** `-L 192.0.2.40:9060` without `--hep-allow` or `--hep-auth` is refused at startup, since a listener on an address other than loopback needs one. The examples in [Ask each call's rtpengine engine](docs/relay-engines.md#sipnab-on-an-rtpengine-host) now give `--hep-allow` with each engine's address.
 
+### Changed
+
+- **The published binary size ceiling is 24 MB, up from 23 MB.** The x86_64-musl binary measured 23,811,456 bytes at 0.5.235, and the Release build of the current `main` measured 23,881,088, 236,160 bytes under 23 MB: less than the 262,144-byte margin the release gates keep, so the next release would have been refused at its phase two. The homepage, [Install](docs/install.md) and the build page now state 24 MB, and the record behind it is in `website/config.toml`.
+
+### Internal
+
+- **A scheduled workflow run no longer holds a release tag.** The pre-push hook's tag gate judged the newest run of every workflow on the tagged commit, whatever started it, so a scheduled ClusterFuzzLite batch run on the release commit held the v0.5.234 tag for about an hour. It now sets aside runs whose event is `schedule` before it picks the newest run of each workflow; every run a push, a pull request or a dispatch started still gates, and a newer scheduled pass cannot hide an older failed push run. `scripts/test-pre-push.sh` covers five new cases.
+- **Pagefind is fetched from GitHub only on a cache miss.** `pages.yml` and the Quality docs job downloaded the pinned Pagefind tarball on every run, and github.com answered 504 six times in a row twice on 2026-11-05. Both now install it through `.github/actions/pagefind`, which restores the tarball from the actions cache under a key made of `PAGEFIND_VERSION` and `PAGEFIND_SHA256`, fetches only on a miss, saves only from `main`, and checks the sha256 on every run. `pagefind_is_installed_through_one_cached_rule` holds both workflows to the one action, the same pins and the one key.
+
 ## [0.5.235] - 2026-11-05
 
 ### Added

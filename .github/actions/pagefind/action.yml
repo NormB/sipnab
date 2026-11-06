@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Pinned Pagefind
+description: >-
+  Install the pinned Pagefind release on PATH, from the actions cache when an
+  earlier run fetched it, and from GitHub releases only on a miss. The
+  tarball's sha256 is checked on every run, hit or miss.
+
+# WHY THIS EXISTS (PAGEFIND-DOWNLOAD-504)
+#
+# pages.yml and quality.yml each downloaded the same pinned, checksummed
+# tarball from github.com/CloudCannon/pagefind/releases on every run. On
+# 2026-11-05 github.com answered 504 six times in a row, twice: the Pages run
+# on 8a5566f and Quality run 42041972781 on 0695a5fbb, each re-run by hand.
+# `curl --retry 5` spans about 30 s, so an outage longer than that failed the
+# job. The bytes never change for a given pin, so a network fetch per run is
+# the cause, not the retry count.
+#
+# ONE RULE for both workflows: both call this action with their job's
+# PAGEFIND_VERSION and PAGEFIND_SHA256, and the cache key is made of exactly
+# those two values. A new version or a new hash is a new key, so a cached
+# tarball is never used for a pin it was not fetched for. The sha256 check
+# runs on the restored tarball too: a cache entry is data another run wrote,
+# and it is trusted no more than the download.
+#
+# The cache is saved only from `main`, after a miss and after the check
+# passed, as tests/ci_cache_policy_test.rs requires of the cargo caches: an
+# entry saved by a pull request run is readable only by that pull request but
+# counts against the repository's 10 GB. pages.yml runs on every push to main,
+# so main holds the entry, and pull request runs read it.
+#
+# The pins and the key are held to one another by
+# `pagefind_is_installed_through_one_cached_rule` in tests/site_journey_test.rs.
+inputs:
+  version:
+    description: The Pagefind release to install, e.g. 1.5.2 (PAGEFIND_VERSION).
+    required: true
+  sha256:
+    description: The sha256 of that release's x86_64-unknown-linux-musl tarball (PAGEFIND_SHA256).
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Restore the Pagefind tarball
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ~/.cache/sipnab-pagefind
+        key: pagefind-${{ inputs.version }}-${{ inputs.sha256 }}
+
+    - name: Fetch the Pagefind tarball (cache miss)
+      if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        PAGEFIND_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        mkdir -p "$HOME/.cache/sipnab-pagefind"
+        curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 \
+          -o "$HOME/.cache/sipnab-pagefind/pagefind.tar.gz" \
+          "https://github.com/CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/pagefind-v${PAGEFIND_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+
+    - name: Verify the Pagefind tarball
+      shell: bash
+      env:
+        PAGEFIND_SHA256: ${{ inputs.sha256 }}
+      run: |
+        set -euo pipefail
+        echo "${PAGEFIND_SHA256}  $HOME/.cache/sipnab-pagefind/pagefind.tar.gz" | sha256sum -c -
+
+    - name: Save the Pagefind tarball
+      if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ~/.cache/sipnab-pagefind
+        key: pagefind-${{ inputs.version }}-${{ inputs.sha256 }}
+
+    - name: Install Pagefind
+      shell: bash
+      run: |
+        set -euo pipefail
+        unpack=$(mktemp -d)
+        tar xzf "$HOME/.cache/sipnab-pagefind/pagefind.tar.gz" -C "$unpack"
+        sudo install -m 0755 "$unpack/pagefind" /usr/local/bin/pagefind
+        rm -rf "$unpack"
+        pagefind --version

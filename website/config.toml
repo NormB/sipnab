@@ -300,7 +300,19 @@ macos_floor_intel = "10.12"
 # so that run published no release. 23 MB leaves 1,431,680 bytes over that
 # measurement.
 #
-binary_size_ceiling_mb = "23"
+# 23 -> 24 after 0.5.235, before 0.5.236. The #664 follow-ups grew the binary
+# again: 0.5.235 (the per-call engine chosen from SDP, #666) measured
+# 23,811,456 bytes, and #669 (the engine taken from the ng control traffic)
+# adds 69,632, measured on the Release build of the tree main carries now
+# (the pending line below). That leaves 236,160 bytes under 23 MB, under the
+# 262,144-byte THIN_MARGIN, so the next release would have been refused by
+# the margin gate at its phase two. No single feature drives it: from 0.5.228
+# to 0.5.235 the binary grew 1,125,888 bytes over seven releases. 24 MB leaves
+# 1,284,736 bytes over the pending figure.
+#
+#   pending  +69,632 bytes  against 0.5.235: #669 (each call's rtpengine engine from the ng traffic), measured by Release run 42186271099 (workflow_dispatch on 06b312ffa, the tree merged as 86a902663): x86_64-musl stripped 23,881,088 bytes
+#
+binary_size_ceiling_mb = "24"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were

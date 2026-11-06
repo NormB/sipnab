@@ -505,6 +505,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # Identical pin to .github/workflows/pages.yml, and held there by
+      # `a_tool_installed_by_more_than_one_workflow_is_pinned_identically`
+      # and `pagefind_is_installed_through_one_cached_rule` -- checking the
+      # site with one build of a tool while publishing it with another is the
+      # drift those tests exist to catch. Job-level, because the Pagefind
+      # action's inputs read them through the `env` context.
+      PAGEFIND_VERSION: '1.5.2'
+      PAGEFIND_SHA256: 'afb824a9e7f64905a934900481cea5be679c03975e527329e0e5e6cc70f5feda'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -673,23 +682,20 @@ jobs:
       #
       # AFTER `zola build`, which recreates its output directory from scratch
       # and would delete an index written before it.
+      #
+      # Installed through the same action as pages.yml: from the actions
+      # cache, keyed on PAGEFIND_VERSION and PAGEFIND_SHA256 (this job's env,
+      # above), and from GitHub releases only on a miss, the sha256 checked
+      # either way.
+      - name: Install Pagefind (pinned, cached)
+        uses: ./.github/actions/pagefind
+        with:
+          version: ${{ env.PAGEFIND_VERSION }}
+          sha256: ${{ env.PAGEFIND_SHA256 }}
+
       - name: Index the site for search (Pagefind)
-        env:
-          # Identical pin to .github/workflows/pages.yml, and held there by
-          # `a_tool_installed_by_more_than_one_workflow_is_pinned_identically`
-          # -- checking the site with one build of a tool while publishing it
-          # with another is the drift that test exists to catch.
-          PAGEFIND_VERSION: '1.5.2'
-          PAGEFIND_SHA256: 'afb824a9e7f64905a934900481cea5be679c03975e527329e0e5e6cc70f5feda'
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o pagefind.tar.gz \
-            "https://github.com/CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/pagefind-v${PAGEFIND_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          echo "${PAGEFIND_SHA256}  pagefind.tar.gz" | sha256sum -c -
-          tar xzf pagefind.tar.gz
-          sudo install -m 0755 pagefind /usr/local/bin/pagefind
-          rm -f pagefind pagefind.tar.gz
-          pagefind --version
           pagefind --site website/public
           # An index that did not land is invisible from the outside: the page
           # returns 200 and the search box simply never appears.

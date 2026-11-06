@@ -151,10 +151,11 @@ fn every_ci_curl_download_retries_and_is_bounded() -> Result<(), TestError> {
         }
     }
     // Pinned so a scanner that stops finding commands cannot pass vacuously:
-    // the bpf-linker download in release.yml, two in pages.yml (Zola,
-    // Pagefind) and six in quality.yml (Vale, its Google style, Pagefind and
-    // three Zola).
-    assert!(seen >= 9, "found only {seen} curl commands in CI");
+    // the bpf-linker download in release.yml, one in pages.yml (Zola), five
+    // in quality.yml (Vale, its Google style and three Zola) and one in
+    // .github/actions/pagefind, which pages.yml and quality.yml both call
+    // since PAGEFIND-DOWNLOAD-504 (it was one fetch in each before: 9 -> 8).
+    assert!(seen >= 8, "found only {seen} curl commands in CI");
     assert!(
         bad.is_empty(),
         "{} CI download(s) fail a job on one transient error:\n  {}",
