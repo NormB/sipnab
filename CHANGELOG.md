@@ -8,7 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
+## [0.5.236] - 2026-11-06
 
 ### Added
 
@@ -24,20 +24,20 @@ entry that carries them.
   - Requested by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in [#664](https://github.com/NormB/sipnab/issues/664).
 - **The how-to covers sipnab on the proxy hosts of a pair behind a VIP, engines behind a tunnel, and both proxies ([#664](https://github.com/NormB/sipnab/issues/664)).** [sipnab on the SIP proxy's host](docs/relay-engines.md#sipnab-on-the-sip-proxys-host) now gives one capture filter for SIP over UDP, TCP and TLS and ng together, `-d any` for engines on the LAN and behind a tunnel (measured with an IP-in-IP tunnel), which interface carries the requests for IP-in-IP, GRE, WireGuard and IPsec, what a VIP failover leaves to the questions above, and the ng transports of OpenSIPS 4.0 and Kamailio 6.0, measured with four calls through each proxy across two rtpengine 12.5.1 engines.
   - Requested by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in [#664](https://github.com/NormB/sipnab/issues/664).
-  - Requested by Giovanni Maruzzelli ([@gmaruzz](https://github.com/gmaruzz)) in [#664](https://github.com/NormB/sipnab/issues/664).
 
 ### Changed
 
 - **The refusal of an engine rule without `--rtpengine-control` says what that engine still answers.** It said the engine answers the relay's statistics, the poll and startup reconciliation, which every listed engine now answers. It now reads `{rule} needs --rtpengine-control as well: that engine is asked first, it alone answers the relay's statistic names, and it answers about a call whose engine no ng offer, SDP or engine list names. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223`, with the same exit codes.
+- **The published binary size ceiling is 24 MB, up from 23 MB.** The x86_64-musl binary measured 23,811,456 bytes at 0.5.235, and the Release build of the current `main` measured 23,881,088, 236,160 bytes under 23 MB: less than the 262,144-byte margin the release gates keep, so the next release would have been refused at its phase two. The homepage, [Install](docs/install.md) and the build page now state 24 MB, and the record behind it is in `website/config.toml`.
 
 ### Fixed
 
 - **`-d any` reads packets on a GRE tunnel interface.** A Linux cooked capture (SLL and SLL2) of an interface of ARPHRD type IPGRE (778) or IP6GRE (823) was dropped whole, because its protocol field, a GRE protocol type, was read as not an EtherType. [RFC 2784 section 2.4](https://www.rfc-editor.org/rfc/rfc2784.html#section-2.4) defines GRE protocol types as the EtherTypes, so 0x0800 there is IPv4, as on Ethernet. Every SIP message and ng request a proxy sent through a GRE tunnel was missing from an `-d any` capture. Netlink, FRAD and radiotap frames, whose protocol field is not an EtherType, are still not read as IP.
 - **The how-to's HEP listener examples for sipnab on an rtpengine host start.** `-L 192.0.2.40:9060` without `--hep-allow` or `--hep-auth` is refused at startup, since a listener on an address other than loopback needs one. The examples in [Ask each call's rtpengine engine](docs/relay-engines.md#sipnab-on-an-rtpengine-host) now give `--hep-allow` with each engine's address.
 
-### Changed
+### Performance
 
-- **The published binary size ceiling is 24 MB, up from 23 MB.** The x86_64-musl binary measured 23,811,456 bytes at 0.5.235, and the Release build of the current `main` measured 23,881,088, 236,160 bytes under 23 MB: less than the 262,144-byte margin the release gates keep, so the next release would have been refused at its phase two. The homepage, [Install](docs/install.md) and the build page now state 24 MB, and the record behind it is in `website/config.toml`.
+- **Each packet carries its source name without a shared reference count ([#672](https://github.com/NormB/sipnab/pull/672)).** Every reader stamped the same source name on every packet as an `Arc<str>` clone, and the packet was dropped on another thread: one atomic increment and one decrement per packet, on one counter the reader and every worker share. On a live capture the reader also built a new name per frame, two allocations each. A reader now names its source once, from the table `FrameLocator` already uses, and each packet copies a `&'static str`. HEP and uprobe sources, which build a name per packet, keep the shared `Arc<str>`. On the regression gate's 535,000-packet corpus, measured on the aarch64 build host as recorded in #672, the change ran at 104.4% of the throughput of the code before it, faster in 7 of 7 rounds.
 
 ### Internal
 
