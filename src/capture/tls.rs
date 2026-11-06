@@ -1164,6 +1164,24 @@ mod tests {
     /// client random it held (CAP-1).
     #[test]
     fn a_bad_keylog_line_names_its_place_and_field_but_not_its_values() -> Result<(), TestError> {
+        let parent = tempfile::tempdir()?;
+        bad_keylog_lines_name_their_place_not_their_values(parent.path())
+    }
+
+    /// The same checks under a directory whose name holds `0x`, which a
+    /// random temporary name sometimes does (`/tmp/.tmpPl0xeP` on CI run
+    /// 42286262528's shard 1). The error names the file, so a check for a
+    /// value's absence that read the path failed on the name, not on the
+    /// error.
+    #[test]
+    fn a_bad_keylog_line_is_judged_without_its_file_name() -> Result<(), TestError> {
+        let parent = tempfile::Builder::new().prefix("keylog-0x").tempdir()?;
+        bad_keylog_lines_name_their_place_not_their_values(parent.path())
+    }
+
+    fn bad_keylog_lines_name_their_place_not_their_values(
+        parent: &std::path::Path,
+    ) -> Result<(), TestError> {
         let random = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
         let cases = [
             // Not hex: the secret.
@@ -1188,7 +1206,7 @@ mod tests {
             (format!("CLIENT_RANDOM {random}"), random, "fields"),
         ];
         for (line, value, field) in cases {
-            let dir = tempfile::tempdir()?;
+            let dir = tempfile::tempdir_in(parent)?;
             let path = dir.path().join("keys.log");
             std::fs::write(&path, format!("# SSL key log\n{line}\n"))?;
             let err = parse_keylog_file(&path)
@@ -1196,20 +1214,24 @@ mod tests {
                 .ok_or("a malformed line must be refused")?;
             let text = format!("{err:#}");
             assert!(
-                !text.contains(value),
-                "the error repeats a key log value: {text}"
-            );
-            assert!(
-                !text.contains(random),
-                "the error repeats the line's client random: {text}"
-            );
-            assert!(
                 text.contains(&format!("{}:2", path.display())),
                 "the error names the file and line 2: {text}"
             );
-            assert!(text.contains(field), "the error names `{field}`: {text}");
+            // What the error says beyond the place: the checks for a value's
+            // absence read this, because the file's name is the caller's,
+            // and a random temporary name can hold `0x` or hex digits.
+            let said = text.replace(&path.display().to_string(), "<file>");
             assert!(
-                !text.contains("0x"),
+                !said.contains(value),
+                "the error repeats a key log value: {text}"
+            );
+            assert!(
+                !said.contains(random),
+                "the error repeats the line's client random: {text}"
+            );
+            assert!(said.contains(field), "the error names `{field}`: {text}");
+            assert!(
+                !said.contains("0x"),
                 "the error names a byte of the line: {text}"
             );
         }
