@@ -19,6 +19,25 @@ CONTRIBUTING.md "Running Benchmarks").
 > Do not edit an old one: the value of a baseline is that it records what was
 > actually measured, and rewriting it destroys exactly that.
 
+## 2026-11-06 — aarch64 (Jetson AGX Thor, Linux 6.8.12-rt-tegra, 14 cores), rustc 1.99.0, source stamp
+
+One group, `source_stamp` in `pipeline_bench`, added with the change that
+carries a packet's source name as an interned `SourceName` instead of an
+`Arc<str>`. Each iteration stamps 4096 packets on one thread and hands them,
+128 to a batch, to a second thread that drops them, which is the file reader's
+pattern. `shared_arc` is the old stamp; `interned` is what every reader
+stamps now. Taken on the perf/hot-paths branch over main `86a902663`, with
+`cargo bench --profile profiling --features full --bench pipeline_bench --
+source_stamp`. The host was NOT idle (load average 4 to 9), so read these as a
+ratio between two cases measured side by side, not as absolute figures.
+Criterion medians; a run earlier the same day under the default bench profile
+measured 748.87 µs and 400.05 µs.
+
+| case | median (4096 packets) |
+|---|---|
+| source_stamp/shared_arc | 768.59 µs |
+| source_stamp/interned | 403.44 µs |
+
 ## 2026-08-15 — aarch64 (Jetson AGX Thor, Linux 6.8.12-rt-tegra, 14 cores), rustc 1.97.1, at 0.5.101
 
 **Not comparable to the entries below.** Every earlier baseline in this file was

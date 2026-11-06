@@ -1418,7 +1418,7 @@ fn decode_ng_one(server: &SipnabMcp, pointer: &str) -> NgDecode {
         frame.to_vec(),
         frame.len(),
         frame.len(),
-        Some(std::sync::Arc::from(leaf.as_str())),
+        Some(leaf.as_str().into()),
         link_type,
     );
     let decoded = match crate::capture::parse::parse_packet(&packet) {

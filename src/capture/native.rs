@@ -1569,7 +1569,7 @@ mod tests {
                 b"INVITE sip:x SIP/2.0\r\n\r\n".to_vec(),
                 24,
                 24,
-                Some(std::sync::Arc::from(label)),
+                Some(label.into()),
                 1,
             )
         }

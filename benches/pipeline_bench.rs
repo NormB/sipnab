@@ -5,9 +5,12 @@
 //! link → IP → transport decap every captured frame walks, including the
 //! per-packet `Vec` return) and parse → `DialogStore::process_message`
 //! (with explicit clone-then-insert vs move-insert variants quantifying
-//! the batch-path clone).
+//! the batch-path clone), and the per-packet source stamp handed from a
+//! reader thread to the thread that drops the packet (shared `Arc<str>`
+//! against an interned `SourceName`).
 
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use sipnab::capture::packet::SourceName;
 use sipnab::capture::{Packet, PacketProcessor};
 use sipnab::sip::dialog_store::DialogStore;
 
@@ -205,5 +208,78 @@ fn bench_msg_pipeline(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_packet_process, bench_msg_pipeline);
+// ── Source stamp across the reader → consumer hop ──────────────────
+
+/// Packets per iteration of the source-stamp bench.
+const STAMPED: usize = 4096;
+
+/// One reader stamping `source` on `STAMPED` packets and sending them, in
+/// batches as the file reader does, to a consumer thread that drops them.
+///
+/// The cost under test is the stamp's refcount: the reader increments it and
+/// the consumer decrements it, on one counter both threads write. The bench
+/// keeps the consumer running while the reader sends, so the two contend as
+/// they do in a real read. Returns how many packets the consumer received.
+fn stamp_and_hand_off(source: &SourceName, frame: &bytes::Bytes) -> usize {
+    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<Packet>>(8);
+    let consumer = std::thread::spawn(move || {
+        let mut n = 0usize;
+        for batch in rx {
+            n += batch.len();
+        }
+        n
+    });
+    let mut batch = Vec::with_capacity(128);
+    for _ in 0..STAMPED {
+        batch.push(Packet::from_bytes(
+            fixed_ts(),
+            frame.clone(),
+            frame.len(),
+            frame.len(),
+            Some(source.clone()),
+            1,
+        ));
+        if batch.len() == 128
+            && tx
+                .send(std::mem::replace(&mut batch, Vec::with_capacity(128)))
+                .is_err()
+        {
+            break;
+        }
+    }
+    drop(tx);
+    consumer.join().unwrap_or(0)
+}
+
+fn bench_source_stamp(c: &mut Criterion) {
+    let frame = bytes::Bytes::from(build_udp_frame(20000, 30000, &build_rtp_payload()));
+    let mut group = c.benchmark_group("source_stamp");
+    group.throughput(Throughput::Elements(STAMPED as u64));
+    let shared = SourceName::from("corpus.pcap");
+    assert_eq!(
+        stamp_and_hand_off(&shared, &frame),
+        STAMPED,
+        "every stamped packet reaches the consumer"
+    );
+    group.bench_function("shared_arc", |b| {
+        b.iter(|| stamp_and_hand_off(&shared, &frame));
+    });
+    let interned = SourceName::interned("corpus.pcap");
+    assert_eq!(
+        stamp_and_hand_off(&interned, &frame),
+        STAMPED,
+        "every stamped packet reaches the consumer"
+    );
+    group.bench_function("interned", |b| {
+        b.iter(|| stamp_and_hand_off(&interned, &frame));
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_packet_process,
+    bench_msg_pipeline,
+    bench_source_stamp
+);
 criterion_main!(benches);

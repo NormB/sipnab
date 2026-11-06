@@ -360,7 +360,7 @@ fn wire_rtp(src: [u8; 4], sport: u16, dst: [u8; 4], dport: u16, seq: u16) -> Pac
         frame,
         len,
         len,
-        Some(Arc::from("eth9")),
+        Some("eth9".into()),
         1, // DLT_EN10MB
     )
 }
@@ -613,7 +613,7 @@ fn hep_packet_at(payload: Vec<u8>, capture_id: u32, ts: chrono::DateTime<chrono:
 fn wire_sip(payload: &[u8], ts: chrono::DateTime<chrono::Utc>) -> Packet {
     let frame = udp_frame([203, 0, 113, 1], [203, 0, 113, 2], 5060, 5060, payload);
     let len = frame.len();
-    let mut p = Packet::with_source(ts, frame, len, len, Some(Arc::from("eth9")), 1);
+    let mut p = Packet::with_source(ts, frame, len, len, Some("eth9".into()), 1);
     p.timestamp = ts;
     p
 }

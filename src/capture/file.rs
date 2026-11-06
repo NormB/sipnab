@@ -319,7 +319,8 @@ fn read_merged(
     tx: &PacketTx,
     count: &mut u64,
 ) -> Result<u64> {
-    let source: std::sync::Arc<str> = crate::capture::archive::source_arc(path);
+    let source =
+        crate::capture::packet::SourceName::interned(&crate::capture::archive::source_arc(path));
     let types: Vec<String> = merged.link_types().iter().map(i32::to_string).collect();
     tracing::info!(
         "Reading '{}' with the merged-pcapng decoder: libpcap refuses a file \
@@ -357,7 +358,7 @@ fn send_merged_frames(
     merged: &mut crate::capture::merged::MergedPcapNg,
     config: &CaptureConfig,
     tx: &PacketTx,
-    source: &std::sync::Arc<str>,
+    source: &crate::capture::packet::SourceName,
     count: &mut u64,
 ) {
     let mut ordinal: u64 = 0;
@@ -385,14 +386,14 @@ fn send_merged_frames(
 fn merged_packet(
     frame: crate::capture::merged::MergedFrame,
     ordinal: u64,
-    source: &std::sync::Arc<str>,
+    source: &crate::capture::packet::SourceName,
 ) -> Packet {
     let mut packet = Packet::with_source(
         frame.ts,
         frame.data,
         frame.caplen as usize,
         frame.origlen as usize,
-        Some(std::sync::Arc::clone(source)),
+        Some(source.clone()),
         // The whole reason this path exists.
         frame.link_type,
     );
@@ -1196,12 +1197,15 @@ fn read_opened_inner(
         link_type: frames.link_type(),
         // The source stamped on every packet this file yields. Interned ONCE per
         // file: the value is the same string for all of them, so each packet
-        // clones an `Arc` (a refcount increment) instead of allocating the path
-        // again — a 14M-packet corpus would otherwise pay 14M allocations for one
-        // constant. Cheap enough that no packet is left unstamped, which matters:
+        // copies a pointer into the source table instead of allocating the path
+        // again (14M allocations for one constant on a 14M-packet corpus) or
+        // bumping a refcount the consumer thread also writes (see `SourceName`).
+        // Cheap enough that no packet is left unstamped, which matters:
         // an unstamped packet is one the pcapng writer cannot tell apart from the
         // previous file's, and it then names the wrong file as its origin.
-        source: crate::capture::archive::source_arc(path),
+        source: crate::capture::packet::SourceName::interned(&crate::capture::archive::source_arc(
+            path,
+        )),
         // Position within THIS file, which is not the same question as `count`.
         // `count` is run-global: it drives `--count` and the "N packets total"
         // summary, and it keeps rising across a set. This one restarts at zero for
@@ -1258,7 +1262,7 @@ struct FileReader<'a> {
     /// The file's link type, stamped on every packet.
     link_type: i32,
     /// The source name stamped on every packet.
-    source: std::sync::Arc<str>,
+    source: crate::capture::packet::SourceName,
     /// Position of the next packet within this file.
     ordinal: u64,
     /// First and last packet of this file.
@@ -1387,7 +1391,7 @@ impl FileReader<'_> {
             // multi-file set is indistinguishable downstream and the
             // pcapng export attributes every frame to the first
             // input — including the ones read out of the others.
-            Some(std::sync::Arc::clone(&self.source)),
+            Some(self.source.clone()),
             self.link_type,
         );
         // Stamped here, beside the source, because these two together
@@ -1807,6 +1811,53 @@ mod tests {
         let (read, packets) = read_through(&sample_pcap(), &CaptureConfig::default())?;
         assert_eq!(read.arm, ReadArm::Mapped);
         assert!(!packets.is_empty());
+        Ok(())
+    }
+
+    /// Every packet a file reader sends names its file through the process's
+    /// source table, on each of the three read arms, so stamping the name
+    /// touches no refcount the reader shares with the thread that drops the
+    /// packet (see `SourceName`).
+    #[test]
+    fn every_read_arm_stamps_an_interned_source() -> Result<(), TestError> {
+        let interned = |packets: &[Packet]| {
+            !packets.is_empty()
+                && packets.iter().all(|p| {
+                    p.interface
+                        .as_ref()
+                        .is_some_and(crate::capture::packet::SourceName::is_interned)
+                })
+        };
+        let path = sample_pcap();
+        let (read, packets) = read_through(&path, &CaptureConfig::default())?;
+        assert_eq!(read.arm, ReadArm::Mapped, "a plain pcap maps");
+        assert!(interned(&packets), "mapped read");
+        assert_eq!(
+            packets[0].interface.as_deref(),
+            Some(&*crate::capture::archive::source_arc(&path)),
+            "the stamp is still the file's name"
+        );
+
+        let filtered = CaptureConfig {
+            bpf_filter: Some("udp".into()),
+            ..CaptureConfig::default()
+        };
+        let (read, packets) = read_through(&path, &filtered)?;
+        assert_eq!(
+            read.arm,
+            ReadArm::Libpcap,
+            "a filtered read goes through libpcap"
+        );
+        assert!(interned(&packets), "libpcap read");
+
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let merged = dir.path().join("merged.pcapng");
+        crate::capture::merged::testutil::merged_fixture(&merged)?;
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_file(&merged, &CaptureConfig::default(), tx, None)
+            .map_err(|e| format!("read: {e:?}"))?;
+        let packets: Vec<Packet> = rx.try_iter().collect();
+        assert!(interned(&packets), "merged pcapng read");
         Ok(())
     }
 

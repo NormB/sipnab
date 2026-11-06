@@ -6013,7 +6013,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // (+2) and their site mirror website/content/docs/relay-engines.md (+2).
     // Counted per file against origin/main 86a902663: no other changed page
     // gained or lost a table.
-    const EXPECTED_TABLES: usize = 1413;
+    // 1413 -> 1414 (perf/hot-paths, source stamp): the `source_stamp` table in
+    // the 2026-11-06 entry of benches/BASELINES.md (+1). Not mirrored to the
+    // site. Counted per file against origin/main 62c121a2b: no other changed
+    // page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1414;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

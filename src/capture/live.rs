@@ -579,7 +579,9 @@ fn capture_live_group(
         link_type: cap.get_datalink().0,
         // Qualified by socket index under a fanout group, so this socket's
         // ordinals cannot name a sibling's frames. See `fanout_source_name`.
-        interface_name: Some(fanout_source_name(device, socket_index)),
+        interface_name: Some(crate::capture::packet::SourceName::interned(
+            &fanout_source_name(device, socket_index),
+        )),
         start: std::time::Instant::now(),
         count: 0,
         // This device's frame numbering, kept separately from `count` because the
@@ -865,8 +867,9 @@ struct LiveSession<'a> {
     reconfigure: Option<ReconfigureHandle>,
     /// The handle's link type, stamped on every packet.
     link_type: i32,
-    /// The source name stamped on every packet.
-    interface_name: Option<String>,
+    /// The source name stamped on every packet, interned once for the
+    /// socket so the per-packet stamp neither allocates nor shares a refcount.
+    interface_name: Option<crate::capture::packet::SourceName>,
     /// When the capture started, for `--duration`.
     start: std::time::Instant,
     /// Packets sent so far.
@@ -1001,7 +1004,9 @@ impl LiveSession<'_> {
     #[inline]
     fn deliver(&mut self, pkt: &pcap::Packet<'_>) -> ReadStep {
         let ts = pcap_ts_to_chrono(pkt.header.ts);
-        let mut packet = Packet::new(
+        // The copy is the one allocation per frame: the ring slot is reused
+        // as soon as this read returns, so the bytes cannot be borrowed.
+        let mut packet = Packet::with_source(
             ts,
             pkt.data.to_vec(),
             pkt.header.caplen as usize,
@@ -2403,7 +2408,7 @@ mod tests {
             tx,
             reconfigure: None,
             link_type: 1,
-            interface_name: Some("eth0".to_string()),
+            interface_name: Some(crate::capture::packet::SourceName::interned("eth0")),
             start: std::time::Instant::now(),
             count: 0,
             frames: frame_counter_for(None),
@@ -2449,6 +2454,50 @@ mod tests {
             assert_eq!((p.caplen, p.origlen), (3, 9));
             assert_eq!(&p.data[..], &data);
             assert_eq!(p.origin.map(|o| o.ordinal), Some(ordinal));
+        }
+        Ok(())
+    }
+
+    /// Delivering a frame allocates exactly once: the copy of the frame out of
+    /// the capture ring, which the ring reuses as soon as the read returns.
+    ///
+    /// The source name is the same for every frame of a socket, so stamping
+    /// it must not allocate. It used to cost two allocations per frame (a
+    /// `String` clone, then an `Arc<str>` built from it), at the rate the
+    /// capture runs at (PERF-1).
+    #[test]
+    fn delivering_a_frame_allocates_only_its_copy() -> Result<(), TestError> {
+        let config = CaptureConfig::default();
+        let (tx, rx) = crate::capture::channel::packet_channel(16);
+        let mut live = session(&config, tx);
+        let header = pcap::PacketHeader {
+            ts: tv(1_700_000_000, 5),
+            caplen: 3,
+            len: 9,
+        };
+        let data = [1u8, 2, 3];
+        // The first send may set up the channel's own state; measure a later
+        // one.
+        assert_eq!(
+            live.deliver(&pcap::Packet::new(&header, &data)),
+            ReadStep::Continue,
+            "the receiver is alive"
+        );
+        let (allocations, step) = crate::test_alloc::allocations_during(|| {
+            live.deliver(&pcap::Packet::new(&header, &data))
+        });
+        assert_eq!(step, ReadStep::Continue, "the receiver is alive");
+        assert_eq!(allocations, 1, "one allocation per frame: its copy");
+        let timeout = std::time::Duration::from_secs(1);
+        for _ in 0..2 {
+            let p = rx
+                .recv_timeout(timeout)
+                .map_err(|e| format!("delivered: {e:?}"))?;
+            assert_eq!(
+                p.interface.as_deref(),
+                Some("eth0"),
+                "stamped with its device"
+            );
         }
         Ok(())
     }

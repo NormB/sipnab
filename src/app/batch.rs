@@ -4487,7 +4487,7 @@ impl BatchRunner {
             && let Some(origin) = packet.origin
             && !origin.verifiable
             && let Some(source) = packet.interface.as_ref()
-            && let Some(source) = crate::capture::packet::intern_source(source)
+            && let Some(source) = source.locator_source()
         {
             ring.write()
                 .insert(source, origin.ordinal, packet.data.clone());

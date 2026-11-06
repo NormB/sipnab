@@ -1044,6 +1044,8 @@ fn shard_opened<S: ShardSink>(
     // stamp, every fact a parallel run produced carried no `frame_ref` at all,
     // so `--cores` silently dropped packet provenance from every surface.
     let source: std::sync::Arc<str> = crate::capture::archive::source_arc(path);
+    // What every packet of this file is stamped with; see `SourceName`.
+    let stamp = crate::capture::packet::SourceName::interned(&source);
     let mut ordinal: u64 = 0;
 
     // One partial batch per shard, this FILE's own; see the doc comment.
@@ -1082,7 +1084,7 @@ fn shard_opened<S: ShardSink>(
                     frame.data,
                     frame.caplen,
                     frame.origlen,
-                    Some(std::sync::Arc::clone(&source)),
+                    Some(stamp.clone()),
                     link_type,
                 );
                 // The ORDINAL is stamped here, before the send, for the reasons
@@ -3481,6 +3483,58 @@ mod tests {
             fanout,
         );
         (read, tally, progress.count)
+    }
+
+    /// Every packet the `--cores` reader hands a worker names its file
+    /// through the process's source table, so stamping the name touches no
+    /// refcount the reader shares with the workers (see `SourceName`).
+    #[cfg(feature = "native")]
+    #[test]
+    fn the_parallel_reader_stamps_an_interned_source() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let frames: Vec<Vec<u8>> = (0..6).map(|s| rtp_frame(0x3100_0003, s + 1)).collect();
+        let paths = vec![write_eth_pcap_at(
+            dir.path(),
+            "one.pcap",
+            &frames,
+            1_700_000_000,
+        )?];
+        let (txs, rxs): (Vec<_>, Vec<_>) = (0..2).map(|_| crossbeam_channel::unbounded()).unzip();
+        let mut progress = ReadProgress {
+            count: 0,
+            dropped: 0,
+            unshardable: 0,
+            clock: SweepClock::new(true),
+            read_order: ReadOrder::default(),
+        };
+        let mut tally = crate::capture::file::ReadTally {
+            given: paths.len(),
+            ..crate::capture::file::ReadTally::default()
+        };
+        shard_set(
+            &paths,
+            &Inputs::ByPath,
+            &crate::capture::CaptureConfig::default(),
+            &txs,
+            &mut progress,
+            &mut tally,
+            Fanout::of(&pcfg(2)),
+        )
+        .map_err(|e| format!("read: {e:?}"))?;
+        drop(txs);
+        let packets: Vec<crate::capture::packet::Packet> = rxs
+            .iter()
+            .flat_map(|rx| rx.try_iter().flatten())
+            .map(|d| d.packet().clone())
+            .collect();
+        assert_eq!(packets.len(), 6, "every frame reaches a worker");
+        let want = crate::capture::archive::source_name(&paths[0]);
+        for p in &packets {
+            let source = p.interface.as_ref().ok_or("a source")?;
+            assert_eq!(source.as_str(), want, "the stamp is the file's name");
+            assert!(source.is_interned(), "{source} is not interned");
+        }
+        Ok(())
     }
 
     /// The serial reader skips a later member that will not open, counts it
