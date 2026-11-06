@@ -136,9 +136,10 @@ pub(super) fn relay_sessions(
         cap,
         list_limit: cap,
     };
-    // No SIP has been read yet, so no call's SDP is known: with an engine
-    // rule each call is asked of the default engine, and the answer says so.
-    let no_sdp = |_: &str| Vec::new();
+    // No traffic has been read yet, so no call's SDP or ng offer is known:
+    // with an engine rule each call is asked of the default engine, and the
+    // answer says so.
+    let no_sdp = |_: &str| crate::relay::engines::CallEvidence::default();
     let routed = routing.map(|routing| Routed {
         routing,
         sdp_of: &no_sdp,

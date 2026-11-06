@@ -6003,7 +6003,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // mirrors website/content/docs/relay-engines.md +3 and config.md +1.
     // Counted per file against HEAD: no other changed page gained or lost a
     // table.
-    const EXPECTED_TABLES: usize = 1407;
+    // 1407 -> 1409 (#664 follow-up, engines from ng control traffic): the
+    // "sipnab runs on" table in docs/relay-engines.md (+1) and its site
+    // mirror website/content/docs/relay-engines.md (+1). Counted per file
+    // against origin/main 88679170e: no other changed page gained or lost a
+    // table.
+    const EXPECTED_TABLES: usize = 1409;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

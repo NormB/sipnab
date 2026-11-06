@@ -1842,6 +1842,7 @@ pub fn apply_relay_control(
     if let Some(control) = &message.control {
         ss.record_relay_control(control);
     }
+
     let provenance = rtp::stream_store::SdpProvenance::relay_asserted(
         message.implementation,
         message.delivery,
@@ -1861,6 +1862,23 @@ pub fn apply_relay_control(
             None,
             provenance,
         );
+    }
+}
+
+/// Record the engine one relay control message says a call's `offer` or
+/// `delete` reached, on the dialog store every relay surface reads a call's
+/// evidence from.
+///
+/// Every applier of [`PacketAction::RelayControl`] calls this beside
+/// [`apply_relay_control`], which writes the stream store; they are two
+/// functions because the live path takes the two stores' locks one at a time.
+pub fn apply_engine_sighting(
+    ds: &mut sip::dialog_store::DialogStore,
+    message: &RelayControlMessage,
+) {
+    if let Some(seen) = &message.engine_sighting {
+        let (call_id, sighting) = &**seen;
+        ds.record_engine_sighting(call_id, sighting.clone());
     }
 }
 
@@ -2036,6 +2054,15 @@ pub struct PipelineOptions {
     /// is opt-in and its datagrams carry no credential, so no socket is
     /// assumed, not even the 22222 it uses when given no port.
     pub rtpproxy_control: Option<std::net::SocketAddr>,
+    /// The port of `--rtpengine-control`, on which a captured `ng` request
+    /// (not a HEP copy) is read for the engine it reached.
+    ///
+    /// `None` reads none. A bare `ng` datagram carries no credential, so it is
+    /// believed only on the port the operator named for rtpengine's control
+    /// socket. The address it went to may be another engine's: that address
+    /// is reported as the call's engine and is asked only when the operator
+    /// listed it.
+    pub ng_control_port: Option<u16>,
     /// Suppress the per-packet "SIP parse error" diagnostic for SIP-looking
     /// packets that fail to parse (`--quiet-bad-parse`). The
     /// packet is dropped either way; only the notice is silenced.
@@ -2152,6 +2179,7 @@ pub fn unwrap_hep(pp: &ParsedPacket) -> Option<Result<ParsedPacket, crate::error
         // sniffed-`ng` gate is about where the wrapper was going.
         sniffed_on_port: Some(pp.dst_port),
         json_event: false,
+        capture_id: hep.capture_id,
     });
     // The inner addressing was asserted by the HEP sender, not observed on the
     // wire, so it is Hep however the wrapper arrived. Under --hep-parse the
@@ -2212,6 +2240,10 @@ pub struct RelayControlMessage {
     /// command is counted per capture (RP4). `None` for a message that
     /// carries no cookie this decoder reads.
     pub control: Option<crate::relay_vocab::ControlCookie>,
+    /// The engine an `offer` or `delete` reached, and the call it names.
+    /// `None` for every other message. Boxed so it does not set the size of
+    /// [`PacketAction`], which every classified packet pays.
+    pub engine_sighting: Option<Box<(String, crate::relay_vocab::EngineSighting)>>,
 }
 
 impl RelayControlMessage {
@@ -2219,7 +2251,10 @@ impl RelayControlMessage {
     /// count.
     #[must_use]
     pub fn carries_anything(&self) -> bool {
-        !self.sdp_links.is_empty() || !self.relay_links.is_empty() || self.control.is_some()
+        !self.sdp_links.is_empty()
+            || !self.relay_links.is_empty()
+            || self.control.is_some()
+            || self.engine_sighting.is_some()
     }
 }
 
@@ -2634,7 +2669,53 @@ fn claim_control(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketActi
     if let Some(action) = claim_rtpengine_ng(pp) {
         return Some(action);
     }
+    if let Some(action) = claim_captured_ng(pp, opts) {
+        return Some(action);
+    }
     claim_rtpproxy(pp, opts)
+}
+
+/// rtpengine's `ng` control traffic captured on its way to or from an engine,
+/// not a HEP copy: believed only on the `--rtpengine-control` port. `None`
+/// when the packet is not `ng` on that port.
+///
+/// A request sent TO the port names the address it went to as the engine
+/// the call is on ([`crate::rtpengine::engine_sighting_from_ng`]). That
+/// address came from captured traffic and may be any host listening on the
+/// port: it is reported, and asked only when the operator listed it
+/// (`crate::relay::engines`). A reply FROM the port names no call (an `ng`
+/// reply carries no `call-id`) and is claimed only so it is not read as
+/// media.
+#[inline]
+fn claim_captured_ng(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketAction> {
+    let port = opts.ng_control_port?;
+    let to_engine = pp.dst_port == port;
+    if pp.transport != TransportProto::Udp || !(to_engine || pp.src_port == port) {
+        return None;
+    }
+    crate::rtpengine::ng::parse(&pp.payload).ok()?;
+    let engine_sighting = if to_engine {
+        crate::rtpengine::engine_sighting_from_ng(
+            &pp.payload,
+            None,
+            crate::relay_vocab::EngineIdentity::ListenNg(std::net::SocketAddr::new(
+                pp.dst_addr,
+                pp.dst_port,
+            )),
+            None,
+            pp.timestamp,
+        )
+    } else {
+        None
+    };
+    Some(PacketAction::RelayControl(RelayControlMessage {
+        sdp_links: Vec::new(),
+        relay_links: Vec::new(),
+        implementation: crate::relay::RelayImplementation::Rtpengine,
+        delivery: crate::relay::ControlDelivery::BareDatagram,
+        control: None,
+        engine_sighting: engine_sighting.map(Box::new),
+    }))
 }
 
 /// LLMNR, claimed on sight and BEFORE any media check.
@@ -2747,11 +2828,23 @@ fn claim_rtpengine_ng(pp: &ParsedPacket) -> Option<PacketAction> {
         if let Some(port) = hep.sniffed_on_port
             && !crate::rtpengine::sniffed_mirror_port_believed(port)
         {
-            return Some(rtpengine_ng_action(Vec::new(), delivery));
+            return Some(rtpengine_ng_action(Vec::new(), delivery, None));
         }
         let sdp_links =
             crate::rtpengine::sdp_links_from_ng(&pp.payload, hep.correlation_id.as_deref());
-        return Some(rtpengine_ng_action(sdp_links, delivery));
+        // The capture id is the engine's `homer-id`, and the destination chunk
+        // is its `listen-ng` as it bound it: what this copy says of where the
+        // request went. A copy with no capture id names no engine.
+        let engine_sighting = hep.capture_id.and_then(|id| {
+            crate::rtpengine::engine_sighting_from_ng(
+                &pp.payload,
+                hep.correlation_id.as_deref(),
+                crate::relay_vocab::EngineIdentity::HomerId(id),
+                Some(std::net::SocketAddr::new(pp.dst_addr, pp.dst_port)),
+                pp.timestamp,
+            )
+        });
+        return Some(rtpengine_ng_action(sdp_links, delivery, engine_sighting));
     }
 
     // The second arm is the SNIFFED one: a HEP datagram read off the wire,
@@ -2771,8 +2864,13 @@ fn claim_rtpengine_ng(pp: &ParsedPacket) -> Option<PacketAction> {
     // `ng` is control traffic; that it named no endpoint this time (a
     // `delete`, a `ping`, a reply to one, or a refusal by the port gate)
     // is not a reason to reconsider it as media.
-    crate::rtpengine::sniffed_ng_sdp_links(pp.dst_port, &pp.payload)
-        .map(|links| rtpengine_ng_action(links, crate::relay::ControlDelivery::BareDatagram))
+    crate::rtpengine::sniffed_ng(pp.dst_port, &pp.payload, pp.timestamp).map(|ng| {
+        rtpengine_ng_action(
+            ng.sdp_links,
+            crate::relay::ControlDelivery::BareDatagram,
+            ng.engine_sighting,
+        )
+    })
 }
 
 /// The relay-control action for one `ng` message over HEP, delivered or
@@ -2785,6 +2883,7 @@ fn claim_rtpengine_ng(pp: &ParsedPacket) -> Option<PacketAction> {
 fn rtpengine_ng_action(
     sdp_links: Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>,
     delivery: crate::relay::ControlDelivery,
+    engine_sighting: Option<(String, crate::relay_vocab::EngineSighting)>,
 ) -> PacketAction {
     PacketAction::RelayControl(RelayControlMessage {
         sdp_links,
@@ -2793,6 +2892,7 @@ fn rtpengine_ng_action(
         implementation: crate::relay::RelayImplementation::Rtpengine,
         delivery,
         control: None,
+        engine_sighting: engine_sighting.map(Box::new),
     })
 }
 
@@ -2818,6 +2918,7 @@ fn claim_rtpproxy(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketAct
         implementation: crate::relay::RelayImplementation::Rtpproxy,
         delivery: crate::relay::ControlDelivery::BareDatagram,
         control: Some(cookie),
+        engine_sighting: None,
     }))
 }
 
@@ -3032,6 +3133,9 @@ pub fn process_packet(
                 return;
             }
             if message.carries_anything() {
+                // One lock at a time: the dialog store's, then the stream
+                // store's.
+                apply_engine_sighting(&mut dialog_store.write(), &message);
                 apply_relay_control(
                     &mut stream_store.write(),
                     &message,
@@ -4424,6 +4528,7 @@ mod relay_control_tests {
                 implementation: crate::relay::RelayImplementation::Rtpengine,
                 delivery: crate::relay::ControlDelivery::BareDatagram,
                 control: None,
+                engine_sighting: None,
             },
             InputOrigin::Hep,
             ts,
@@ -4489,6 +4594,7 @@ mod relay_control_tests {
                 implementation: crate::relay::RelayImplementation::Rtpengine,
                 delivery: crate::relay::ControlDelivery::BareDatagram,
                 control: None,
+                engine_sighting: None,
             },
             InputOrigin::Hep,
             ts,
@@ -5572,6 +5678,7 @@ mod hep_parse_trust_tests {
                     correlation_id: Some(CALL.to_string()),
                     sniffed_on_port: None,
                     json_event: false,
+                    capture_id: None,
                 }),
                 vcon: None,
             },
@@ -5586,6 +5693,209 @@ mod hep_parse_trust_tests {
                 "a message the {configured:?} listener admitted is worth what it checked"
             );
         }
+        Ok(())
+    }
+}
+
+/// Which engine an `offer` or `delete` reached, read from each way sipnab
+/// sees one: a captured request, a HEP copy the listener delivered, and a HEP
+/// copy sniffed on its way to another collector.
+#[cfg(all(test, feature = "hep"))]
+mod engine_sighting_claim_tests {
+    use super::*;
+    use crate::capture::parse::InputOrigin;
+    use crate::relay_vocab::{EngineIdentity, EngineSighting, EngineVerb};
+    use std::net::SocketAddr;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    const OFFER: &[u8] = b"c2 d7:call-id18:e1@example.invalid7:command5:offer8:from-tag2:fte";
+    const DELETE: &[u8] = b"c7 d7:call-id18:e1@example.invalid7:command6:delete8:from-tag2:fte";
+    const REPLY: &[u8] = b"c2 d3:sdp3:v=06:result2:oke";
+
+    use crate::test_utils::udp_parsed as udp;
+
+    /// What classifying `pp` says: `None` when it is not relay control, else
+    /// the sighting it carries, if any.
+    fn claim(pp: &ParsedPacket, port: Option<u16>) -> Option<Option<(String, EngineSighting)>> {
+        let opts = PipelineOptions {
+            ng_control_port: port,
+            ..PipelineOptions::default()
+        };
+        match classify_packet(
+            pp,
+            &mut rtp::heuristic::RtpHeuristic::new(),
+            &opts,
+            &mut MediaDecrypt::default(),
+        ) {
+            PacketAction::RelayControl(m) => Some(m.engine_sighting.map(|seen| *seen)),
+            _ => None,
+        }
+    }
+
+    fn proxy() -> Result<SocketAddr, TestError> {
+        Ok("192.0.2.30:40000".parse()?)
+    }
+
+    fn engine() -> Result<SocketAddr, TestError> {
+        Ok("192.0.2.6:2223".parse()?)
+    }
+
+    /// A captured `offer` and `delete` on the `--rtpengine-control` port
+    /// name the address they were sent to as the call's engine, whichever
+    /// host that is.
+    #[test]
+    fn a_captured_request_on_the_control_port_names_the_engine_it_was_sent_to()
+    -> Result<(), TestError> {
+        let got = claim(&udp(proxy()?, engine()?, OFFER), Some(2223));
+        assert_eq!(
+            got,
+            Some(Some((
+                "e1@example.invalid".to_string(),
+                EngineSighting {
+                    at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+                    engine: EngineIdentity::ListenNg(engine()?),
+                    verb: EngineVerb::Offer,
+                    reported_listen_ng: None,
+                }
+            ))),
+            "a captured offer names the engine it was sent to"
+        );
+        let got = claim(&udp(proxy()?, engine()?, DELETE), Some(2223));
+        assert_eq!(
+            got.flatten().map(|(_, s)| s.verb),
+            Some(EngineVerb::Delete),
+            "a captured delete is a sighting too"
+        );
+        Ok(())
+    }
+
+    /// The engine's reply on the control port is control traffic and names
+    /// no engine; an `ng` request on another port, or with no control port
+    /// named, is not believed at all.
+    #[test]
+    fn only_the_control_port_is_believed_and_a_reply_names_no_engine() -> Result<(), TestError> {
+        assert_eq!(
+            claim(&udp(engine()?, proxy()?, REPLY), Some(2223)),
+            Some(None),
+            "the reply is claimed as control and names no engine"
+        );
+        let elsewhere: SocketAddr = "192.0.2.6:2224".parse()?;
+        assert_eq!(
+            claim(&udp(proxy()?, elsewhere, OFFER), Some(2223)),
+            None,
+            "an offer on another port is not believed"
+        );
+        assert_eq!(
+            claim(&udp(proxy()?, engine()?, OFFER), None),
+            None,
+            "with no control port named, a captured offer is not believed"
+        );
+        Ok(())
+    }
+
+    /// A HEP copy the listener delivered names its engine by the capture id,
+    /// and carries the destination chunk as the reported `listen-ng`; a copy
+    /// with no capture id names no engine.
+    #[test]
+    fn a_delivered_hep_copy_names_its_engine_by_capture_id() -> Result<(), TestError> {
+        let reported: SocketAddr = "127.0.0.1:2223".parse()?;
+        let mut pp = udp(proxy()?, reported, OFFER);
+        pp.input_origin = InputOrigin::Hep;
+        pp.hep = Some(crate::capture::packet::HepOrigin {
+            protocol: crate::rtpengine::NG_HEP_CAPTURE_PROTO,
+            correlation_id: Some("e1@example.invalid".to_string()),
+            sniffed_on_port: None,
+            json_event: false,
+            capture_id: Some(2002),
+        });
+        let got = claim(&pp, None).flatten();
+        assert_eq!(
+            got.map(|(c, s)| (c, s.engine, s.reported_listen_ng)),
+            Some((
+                "e1@example.invalid".to_string(),
+                EngineIdentity::HomerId(2002),
+                Some(reported)
+            )),
+            "a delivered copy names its engine by capture id"
+        );
+        if let Some(hep) = pp.hep.as_mut() {
+            hep.capture_id = None;
+        }
+        assert_eq!(
+            claim(&pp, None),
+            Some(None),
+            "a copy with no capture id is control traffic naming no engine"
+        );
+        Ok(())
+    }
+
+    /// The live path records a captured offer's engine on the dialog store,
+    /// where every relay surface reads a call's evidence; `--no-dialog` opts
+    /// out, as it does for every other call association.
+    #[test]
+    fn the_live_path_records_the_engine_on_the_dialog_store() -> Result<(), TestError> {
+        let run = |no_dialog: bool| -> Result<usize, TestError> {
+            let ds = Arc::new(RwLock::new(DialogStore::new(16, false)));
+            let ss = Arc::new(RwLock::new(StreamStore::new(16)));
+            let opts = PipelineOptions {
+                ng_control_port: Some(2223),
+                no_dialog,
+                ..PipelineOptions::default()
+            };
+            process_packet(
+                &udp(proxy()?, engine()?, OFFER),
+                &ds,
+                &ss,
+                &mut rtp::heuristic::RtpHeuristic::new(),
+                &opts,
+                &mut MediaDecrypt::default(),
+                None,
+            );
+            let n = ds.read().engine_sightings("e1@example.invalid").len();
+            Ok(n)
+        };
+        assert_eq!(run(false)?, 1, "the live path records the engine");
+        assert_eq!(run(true)?, 0, "--no-dialog records none");
+        Ok(())
+    }
+
+    /// A HEP copy sniffed on the HEP port names its engine; one sniffed off
+    /// it is refused by the port gate and names none.
+    #[test]
+    fn a_sniffed_hep_copy_names_its_engine_only_on_the_hep_port() -> Result<(), TestError> {
+        let ep = crate::capture::hep::HepEndpoint {
+            src_addr: proxy()?.ip(),
+            dst_addr: std::net::IpAddr::from([127, 0, 0, 1]),
+            src_port: proxy()?.port(),
+            dst_port: 2223,
+            transport: TransportProto::Udp,
+        };
+        let datagram = crate::capture::hep::build_hep_v3_correlated(
+            &ep,
+            chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+            crate::capture::hep::HepProtocol::Unknown(crate::rtpengine::NG_HEP_CAPTURE_PROTO),
+            2003,
+            None,
+            Some(b"e1@example.invalid"),
+            OFFER,
+        );
+        let collector: SocketAddr = "192.0.2.60:9060".parse()?;
+        let got = claim(&udp(engine()?, collector, &datagram), None).flatten();
+        assert_eq!(
+            got.map(|(c, s)| (c, s.engine)),
+            Some((
+                "e1@example.invalid".to_string(),
+                EngineIdentity::HomerId(2003)
+            )),
+            "a copy sniffed on the HEP port names its engine"
+        );
+        let off: SocketAddr = "192.0.2.60:9061".parse()?;
+        assert_eq!(
+            claim(&udp(engine()?, off, &datagram), None),
+            Some(None),
+            "a copy off the HEP port names no engine"
+        );
         Ok(())
     }
 }

@@ -21738,7 +21738,8 @@ clients' as `192.0.2.21`.
 | `--rtpengine-control` | `<ADDR>` | -- | 0.5.124 | Ask an rtpengine relay which calls it currently has up, so a capture that started mid-call can still name the dialog behind a stream. **Off unless you give an address**, and the address is never inferred from captured traffic. sipnab sends only rtpengine's read-only `list`, `query` and `statistics` commands, so it cannot change a relay's behavior. `statistics` goes only with `--relay-stats` and its relatives. **Not a poller**: to name calls it asks at startup, before the capture opens, and again only when a stream turns up that nothing explains. Nothing polls unless `--relay-stats-interval` names an interval. sipnab asks about each relay-side socket at most once for the run, under a per-run ceiling on control transactions. **On `-I <file>` it sends nothing**: sipnab warns that a live relay would describe the calls up today rather than the calls in the capture, still decodes any relay control traffic the capture holds, and analyzes the file. Feature: `native`. How-to: [Let sipnab name rtpengine's media](rtpengine-sipnab.md) |
 | `--rtpengine-engine` | `<MEDIA LOW-HIGH CONTROL>` | -- | 0.5.235 | Map an SDP media address and port range to an rtpengine `listen-ng` control address, so a question about one call goes to that call's own engine. Repeatable; quote each row, for example `--rtpengine-engine '203.0.113.5 30000-39999 192.0.2.5:2223'`. Behind NAT, engines that share one public address differ by port range. **The map is the allowlist**: a call whose SDP names media no row claims reads `engine unknown (no map row)` and sipnab asks no engine about it. sipnab refuses rows that claim the same address and port. Needs `--rtpengine-control`, which still answers the relay's own statistics and calls whose SDP sipnab has not seen; `--relay-holdings` and the sessions view list every engine a row names too. Feature: `native`. How-to: [Ask each call's rtpengine engine](relay-engines.md). Config: `[relay] engines` |
 | `--rtpengine-trust-sdp-address` | `<CONTROL-PORT>` | -- | 0.5.235 | Send control queries to the media address the call's SDP names, on this control port, instead of keeping a map. **Risk: sipnab transmits to an address it read from captured traffic**; anyone who can put SDP on the captured network can choose where `list` and `query` go. An address counts as an engine's only when sipnab saw it in both a request's SDP and a response's. Needs `--rtpengine-control`; refused beside `--rtpengine-engine` or `[relay] engines`. No config key. Feature: `native`. How-to: [Ask each call's rtpengine engine](relay-engines.md#use-the-sdp-address-without-a-map) |
-| `--relay-previous-engine` | -- | -- | 0.5.235 | After a re-INVITE moves a call to another engine, also ask the engine the call's SDP named before, and mark a call two engines hold `held by several engines`: a session left on the old engine. Applies to the sessions view (`--relay-sessions`, `GET /v1/relay/sessions`, MCP `query_relay` with `sessions: true`, the TUI's `H`). Needs `--rtpengine-engine`, `[relay] engines` or `--rtpengine-trust-sdp-address`. Feature: `native`. How-to: [Ask each call's rtpengine engine](relay-engines.md#find-a-session-left-on-the-old-engine) |
+| `--relay-previous-engine` | -- | -- | 0.5.235 | After a re-INVITE moves a call to another engine, also ask the engine the call's SDP named before, and mark a call two engines hold `held by several engines`: a session left on the old engine. Applies to the sessions view (`--relay-sessions`, `GET /v1/relay/sessions`, MCP `query_relay` with `sessions: true`, the TUI's `H`). Needs `--rtpengine-engine`, `[relay] engines`, `--rtpengine-trust-sdp-address` or `--rtpengine-ng-engine`. With ng engine rows it also asks each listed engine a call moved off with no `delete`, to confirm the leftover session. Feature: `native`. How-to: [Ask each call's rtpengine engine](relay-engines.md#find-a-session-left-on-the-old-engine) |
+| `--rtpengine-ng-engine` | `<[HOMER-ID] LISTEN-NG>` | -- | Unreleased | Name an rtpengine engine sipnab may ask about a call whose engine it learned from rtpengine's ng control traffic. Repeatable; quote a row with a `homer-id`, for example `--rtpengine-ng-engine '2001 192.0.2.5:2223'`. sipnab takes each call's engine from the newest `offer` it saw reach one: a HEP copy the engine sent (`homer-enable-ng = true`), named by its `homer-id`, or a request captured on the `--rtpengine-control` port, named by the address the proxy sent it to. This comes before `--rtpengine-engine`. A later `offer` at another engine marks a moved call, and sipnab flags an engine the call moved off with no `delete` as a leftover session. **The rows are the allowlist**: an engine the traffic names that no row, `--rtpengine-control` or `--rtpengine-engine` row names reads `engine not listed` and sipnab asks nothing about that call. sipnab refuses two rows with one `homer-id` or one address. Needs `--rtpengine-control`. Feature: `native`. How-to: [Ask each call's rtpengine engine](relay-engines.md#take-each-calls-engine-from-the-control-traffic). Config: `[relay] ng_engines` |
 | `--rtpproxy-control` | `<ADDR:PORT>` | -- | 0.5.196 | Read rtpproxy's control traffic on this UDP socket and name the call each relayed stream belongs to, even on the relay's own machine where no SIP passes. The SIP proxy's command names the call and rtpproxy's reply names the port it opened; sipnab pairs the two by the cookie they share. Recording streams (`R`, `C`) are never named as the call's media. **Name the socket; sipnab assumes none**: rtpproxy's default control socket is a UNIX socket, which a capture cannot see, so give it a UDP one with `-s udp:ADDR:PORT` (22222 when you leave out the port) and pass the same address and port here. sipnab reads only datagrams to and from exactly that socket, because they carry no credential. **Passive**: sipnab never sends rtpproxy anything, and rtpproxy has no command that lists its sessions, so sipnab names a call already up when the capture starts from its next command. Works on live captures and on files, and applies to a capture opened inside the TUI. Feature: `native`. How-to: [Let sipnab name rtpproxy's media](rtpproxy-sipnab.md) |
 | `--relay-stats` | -- | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its OWN statistics -- packets relayed, sessions, its own loss and jitter -- and print them. They are `relay_reported`: a claim from the box, not a measurement sipnab made, and the header says so. **Same live source `--rtpengine-control` needs**, because asking transmits; on `-I <file>` it prints why it declines to ask rather than asking, and with no `--rtpengine-control` it says to name one. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-the-relay-for-its-counters) |
 | `--relay-stats-call` | `<CALL-ID>` | -- | 0.5.169 | Ask the relay named by `--rtpengine-control` for its own counters about ONE call, by Call-ID: per-stream and per-SSRC packet and byte counts, RTP and RTCP totals, as the relay counts them (`relay_reported`). A relay not holding the call answers in its own words, which sipnab reports rather than inventing a not-found. Same live-source gate as `--relay-stats`. Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#ask-about-one-call) |
@@ -21775,6 +21776,8 @@ clients' as `192.0.2.21`.
 - `sipnab -N -I capture.pcap --rtpengine-control 192.0.2.5:2223 --rtpengine-engine '203.0.113.5 30000-39999 192.0.2.5:2223' --relay-previous-engine` — accepted on a file run, which asks no engine at all
 - `sudo sipnab -N -d eth0 --rtpengine-control 192.0.2.5:2223 --rtpengine-trust-sdp-address 2223 --api 127.0.0.1:18764 --api-allow-relay-query` — no map: a question about one call goes to the address its SDP names, seen in both a request and a response, on port 2223. Only for a network where every SDP writer is yours
 - `sipnab -N -I capture.pcap --rtpengine-control 192.0.2.5:2223 --rtpengine-trust-sdp-address 2223` — sends nothing on a file run, to the SDP addresses or to `--rtpengine-control`
+- `sudo sipnab -N -d any -L 192.0.2.40:9060 --rtpengine-control 192.0.2.5:2223 --rtpengine-ng-engine '2001 192.0.2.5:2223' --rtpengine-ng-engine '2002 192.0.2.6:2223' --relay-previous-engine --api 127.0.0.1:18764 --api-allow-relay-query` — each engine sends its HEP copies of the ng requests to sipnab with its own `homer-id`. A question about one call goes to the engine its newest `offer` reached, and sipnab names an engine it moved off with no `delete` as a leftover session and asks it to confirm
+- `sipnab -N -I capture.pcap --rtpengine-control 192.0.2.5:2223 --rtpengine-ng-engine '2001 192.0.2.5:2223'` — sends nothing on a file run: sipnab warns that a file run never transmits, then analyzes the capture
 - `sipnab -N -I relay.pcap --rtpproxy-control 192.0.2.40:7722 --report` — read a capture taken on an rtpproxy relay whose control socket is `udp:192.0.2.40:7722`. Each stream on a port rtpproxy opened gets the Call-ID from the SIP proxy's command, and the report lists those calls as named by a media relay instead of reporting their media as orphaned
 - `sudo sipnab -N -d eth0 --rtpproxy-control 127.0.0.1:22222` — capture live beside an rtpproxy started with `-s udp:127.0.0.1`, which listens on 22222. sipnab only reads the control traffic and never sends rtpproxy anything
 
@@ -26175,13 +26178,33 @@ When no row came from the command line, sipnab prints it after `invalid config v
 
 **Exit code:** 2 when a `--rtpengine-engine` row is on the command line, otherwise 1.
 
-### `{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose SDP sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223`
+### `[relay] ng_engines: {e}`
 
-`{rule}` is `--rtpengine-engine (or [relay] engines)` or `--rtpengine-trust-sdp-address`. An engine rule chooses the engine for a question about one call. The run still needs one engine for the questions that are not about one call, and for a call whose SDP sipnab has not seen, and `--rtpengine-control` names it. sipnab refused the run before anything opened. When the rows came from `[relay] engines` alone, sipnab prints it after `invalid config value: `.
+A row in the config file's `[relay] ng_engines` list does not parse. `{e}` names the row and the field: the row is not `[HOMER-ID] LISTEN-NG-ADDRESS:PORT` (one or two fields, with an optional `->` before the address), the `homer-id` is not a whole number from 0 to 4294967295, or the `listen-ng` address has no port. sipnab refused the run before anything opened.
+
+sipnab prints it after `invalid config value: `, as it prints every refused config value.
+
+**What to do:** Fix the row, for example `"2001 192.0.2.5:2223"`, or `"192.0.2.5:2223"` for an engine seen only in captured requests. Write an IPv6 address in brackets: `[2001:db8::5]:2223`.
+
+**Exit code:** 1.
+
+### `--rtpengine-ng-engine / [relay] ng_engines: {e}`
+
+Two ng engine rows name the same `homer-id` or the same `listen-ng` address, so a call there would have no single engine. `{e}` names both rows and what they share. An IPv4-mapped IPv6 address and its IPv4 form are one address. The rows from `--rtpengine-ng-engine` and `[relay] ng_engines` form one map, so a flag row can repeat a config row.
+
+When no row came from the command line, sipnab prints it after `invalid config value: `.
+
+**What to do:** Give each engine its own `homer-id` in its `rtpengine.conf`, and one row each.
+
+**Exit code:** 2 when an `--rtpengine-ng-engine` row is on the command line, otherwise 1.
+
+### `{rule} needs --rtpengine-control as well: that engine answers the questions that are not about one call (the relay's statistics, the poll, startup reconciliation) and about a call whose engine sipnab has not seen. Name one engine's listen-ng address, for example --rtpengine-control 192.0.2.5:2223`
+
+`{rule}` is `--rtpengine-engine (or [relay] engines)`, `--rtpengine-trust-sdp-address` or `--rtpengine-ng-engine (or [relay] ng_engines)`. An engine rule chooses the engine for a question about one call. The run still needs one engine for the questions that are not about one call, and for a call whose engine sipnab has not seen (no ng `offer` and no SDP a rule applies to), and `--rtpengine-control` names it. sipnab refused the run before anything opened. When the rows came from `[relay] engines` or `[relay] ng_engines` alone, sipnab prints it after `invalid config value: `.
 
 **What to do:** Add `--rtpengine-control` with one engine's `listen-ng` address and port.
 
-**Exit code:** 2 when the rule came from the command line, 1 when it came from `[relay] engines`.
+**Exit code:** 2 when the rule came from the command line, 1 when it came from `[relay] engines` or `[relay] ng_engines`.
 
 ### `--rtpengine-trust-sdp-address and an engine map (--rtpengine-engine or [relay] engines) are two rules for one question; the map is an allowlist and trusting SDP is none. Give one of them`
 
@@ -26191,7 +26214,7 @@ The command line trusts SDP addresses as engine control hosts, and the command l
 
 **Exit code:** 2.
 
-### `--relay-previous-engine needs an engine rule to name a previous engine: add --rtpengine-engine rows, [relay] engines, or --rtpengine-trust-sdp-address`
+### `--relay-previous-engine needs an engine rule to name a previous engine: add --rtpengine-engine rows, [relay] engines, --rtpengine-trust-sdp-address, or --rtpengine-ng-engine rows`
 
 `--relay-previous-engine` asks a moved call's previous engine too. Without an engine rule every question goes to `--rtpengine-control`, so there is no previous engine to ask. sipnab refused the run before anything opened.
 
@@ -26201,7 +26224,7 @@ The command line trusts SDP addresses as engine control hosts, and the command l
 
 ### `--relay-stats-call {call_id}: {unknown}`
 
-`--relay-stats-call` names a call, and the run's engine rule chose no engine for it, so sipnab asked nothing. `{unknown}` says why. This run asks before it reads any SIP, so it sees no SDP and asks the `--rtpengine-control` engine. The message exists for the rule's other answers. The run continues.
+`--relay-stats-call` names a call, and the run's engine rule chose no engine for it, so sipnab asked nothing. `{unknown}` says why. This run asks before it reads any traffic, so it sees no ng `offer` and no SDP, and asks the `--rtpengine-control` engine. The message exists for the rule's other answers. The run continues.
 
 **What to do:** Ask about the call from a run that has seen its SIP: the TUI, `GET /v1/relay/stats/call/{call_id}`, or the MCP `relay_stats` tool.
 
@@ -26209,9 +26232,11 @@ The command line trusts SDP addresses as engine control hosts, and the command l
 
 ### `--relay-compare: call {call_id}: {unknown}`
 
-`--relay-compare` asks after the capture, when sipnab holds the call's SDP, and the run's engine rule chose no engine for it. `{unknown}` says why: no engine row claims the call's SDP media (`engine unknown (no map row)`), or, trusting SDP addresses, sipnab saw no address in both a request and a response. sipnab asked nothing. The run continues.
+`--relay-compare` asks after the capture, when sipnab holds the call's SDP, and the run's engine rule chose no engine for it. `{unknown}` says why: the call's newest ng `offer` reached an engine no row names (`engine not listed`), no engine row claims the call's SDP media (`engine unknown (no map row)`), or, trusting SDP addresses, sipnab saw no address in both a request and a response. sipnab asked nothing. The run continues.
 
-**What to do:** Add a `--rtpengine-engine` row for the media address and port range the message names, if that address is an engine's.
+An `engine not listed` reason names the engine by `homer-id`, for a HEP copy, or by the address the proxy sent a captured request to. That address came from captured traffic, so sipnab never asks it unless you list it. A HEP copy also reports the `listen-ng` address the engine bound, shown to help write the row.
+
+**What to do:** For `engine not listed`, add an `--rtpengine-ng-engine` row with the engine's `homer-id` and a `listen-ng` address the sipnab host can reach, if it is one of your engines. For `engine unknown (no map row)`, add a `--rtpengine-engine` row for the media address and port range the message names, if that address is an engine's.
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
@@ -34232,18 +34257,24 @@ persist_to_config = true
 
 ### `[relay]`
 
-Which rtpengine engine sipnab asks about a call, chosen from the call's SDP.
+Which rtpengine engine sipnab asks about a call, chosen from the ng control
+traffic sipnab saw or from the call's SDP.
 [Ask each call's rtpengine engine](relay-engines.md) covers the rules.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `engines` | array of strings | `[]` | Engine rows, each `MEDIA-ADDRESS LOW-HIGH CONTROL-ADDRESS:PORT`: the SDP media address and port range an engine allocates from, and its `listen-ng` address. The rows are the allowlist: sipnab asks no engine about a call whose SDP no row claims. sipnab refuses rows that claim the same address and port (exit 1). Needs `--rtpengine-control` on the command line. `--rtpengine-engine` adds to them |
+| `ng_engines` | array of strings | `[]` | ng engine rows, each `[HOMER-ID] LISTEN-NG-ADDRESS:PORT`: an engine sipnab may ask about a call whose engine it learned from rtpengine's ng control traffic, by the `homer-id` its HEP copies carry, or by its `listen-ng` address for requests captured on their way to it. This comes before `engines`. The rows are the allowlist: sipnab asks nothing about a call whose newest `offer` reached an engine no row names. sipnab refuses two rows with one `homer-id` or one address (exit 1). Needs `--rtpengine-control` on the command line. `--rtpengine-ng-engine` adds to them |
 
 ```toml
 [relay]
 engines = [
   "203.0.113.5 30000-39999 192.0.2.5:2223",
   "203.0.113.5 40000-49999 192.0.2.6:2223",
+]
+ng_engines = [
+  "2001 192.0.2.5:2223",
+  "2002 192.0.2.6:2223",
 ]
 ```
 
@@ -66449,7 +66480,8 @@ the relay reports 542 RTP packet(s) for call 1-61@192.0.2.21, but this capture m
 - [Add rtpengine to your voice stack](rtpengine-relay.md): install the relay
   these requests ask.
 - [Ask each call's rtpengine engine](relay-engines.md): with several engines
-  behind one proxy, ask the engine each call's SDP names.
+  behind one proxy, ask the engine each call's `offer` reached or its SDP
+  names.
 
 ---
 
@@ -66462,9 +66494,19 @@ engine for each call, and it can move a call to another engine in the middle
 of the call. `--rtpengine-control` names one engine, so a question about a
 call that another engine carries goes to the wrong engine.
 
-Each engine writes its own media address into the SDP it rewrites. sipnab can
-read that address from the call's SDP and ask the engine that carries the
-call. Use this page when:
+sipnab can learn each call's engine in two ways:
+
+- **From rtpengine's control traffic.** Every `offer` the proxy sends goes to
+  one engine and names the call. sipnab reads that request from a capture on
+  the proxy's host, or from the HEP copy each engine sends. This needs no map
+  of media addresses. See
+  [Take each call's engine from the control traffic](#take-each-calls-engine-from-the-control-traffic).
+- **From the call's SDP.** Each engine writes its own media address into the
+  SDP it rewrites. sipnab reads that address and asks the engine that carries
+  the call, by a map of media addresses and port ranges.
+
+When sipnab saw an `offer` for the call, that engine is the answer. Otherwise
+the SDP map answers, and otherwise `--rtpengine-control`. Use this page when:
 
 - the relay sessions view shows `Unknown call-id` for calls that do have
   media;
@@ -66480,8 +66522,8 @@ the engine choice to the questions described there.
 
 | Question | Asked of |
 |---|---|
-| One call: `GET /v1/relay/stats/call/{call_id}`, `compare/{call_id}`, `holdings/{call_id}`, the MCP `query_relay`, `relay_stats` and `relay_compare` tools with a `call_id`, the TUI relay view of a call, `--relay-compare`, and each `query` the sessions view sends | The engine the call's newest SDP names |
-| Which calls each engine holds: `--relay-holdings`, `GET /v1/relay/holdings`, `query_relay` without a `call_id`, and the `list` of the sessions view (`--relay-sessions`, `GET /v1/relay/sessions`, `query_relay` with `sessions: true`, the TUI's `H`) | `--rtpengine-control` and every engine an engine row names, each answer shown on its own |
+| One call: `GET /v1/relay/stats/call/{call_id}`, `compare/{call_id}`, `holdings/{call_id}`, the MCP `query_relay`, `relay_stats` and `relay_compare` tools with a `call_id`, the TUI relay view of a call, `--relay-compare`, and each `query` the sessions view sends | The engine the call's newest `offer` reached, when sipnab saw one and an ng engine row allows it; else the engine the call's newest SDP names |
+| Which calls each engine holds: `--relay-holdings`, `GET /v1/relay/holdings`, `query_relay` without a `call_id`, and the `list` of the sessions view (`--relay-sessions`, `GET /v1/relay/sessions`, `query_relay` with `sessions: true`, the TUI's `H`) | `--rtpengine-control` and every engine an engine row or an ng engine row names, each answer shown on its own |
 | The relay's own counters: `--relay-stats`, `--relay-stats-list`, `--relay-stats-interval`, `GET /v1/relay/stats` and `stats/names`, `relay_stats` without a `call_id` | `--rtpengine-control` only |
 | Startup reconciliation, which names the calls behind media already flowing ([Let sipnab name rtpengine's media](rtpengine-sipnab.md)) | `--rtpengine-control` only |
 | A call whose SDP sipnab has not seen, in the sessions view | The engine whose `list` names the call, or `--rtpengine-control` when none does |
@@ -66813,6 +66855,223 @@ With SDP that named `127.0.0.3` both ways, and `--rtpengine-trust-sdp-address
 }
 ```
 
+## Take each call's engine from the control traffic
+
+The proxy sends each call's `offer` to one engine, and the `offer` names the
+call's Call-ID. When sipnab sees that request, it knows the engine the proxy
+picked, with no map of media addresses. It also sees:
+
+- **a moved call:** a later `offer` for the same Call-ID at another engine;
+- **a leftover session:** an engine the call moved off that never received a
+  `delete` for it after its `offer`.
+
+sipnab sees the requests in one of two ways, and you choose by where sipnab
+runs:
+
+| sipnab runs on | It reads | What names the engine |
+|---|---|---|
+| The SIP proxy's host | The proxy's requests, captured on their way to each engine | The address the proxy sent the request to, the engine's `listen-ng` |
+| An rtpengine host, or a separate host | Each engine's HEP copy of the requests (`homer-enable-ng = true`) | The engine's `homer-id`, which each HEP copy carries |
+
+### What sipnab trusts, and what it asks
+
+Both kinds of evidence come from captured traffic, so neither is permission to
+send. sipnab asks an engine only when you listed it:
+
+- **`--rtpengine-ng-engine '[HOMER-ID] LISTEN-NG'`**, repeatable, or
+  `[relay] ng_engines` in the config file. `2001 192.0.2.5:2223` names the
+  engine that sends HEP with `homer-id = 2001`. `192.0.2.6:2223` names an
+  engine seen only in captured requests.
+- For a captured request, an address that `--rtpengine-control` or an
+  `--rtpengine-engine` row names counts as listed too.
+
+An `offer` that reached an engine you did not list reads `engine not listed`,
+as `not_configured`, and sipnab asks nothing about that call. It does not ask
+another engine in its place, because the traffic says the call is not there.
+This is the safe default: anyone who can put a datagram on the captured
+network could otherwise choose where sipnab sends `query`.
+
+- The newest `offer` by capture time chooses the engine. A `delete` alone
+  chooses nothing.
+- sipnab remembers the newest 16 `offer` and `delete` requests of each call,
+  for as many calls as the dialog limit allows (`--limit`), at most
+  `MAX_SIGHTING_CALLS` (16,384). Past that it forgets the call it saw first,
+  and a forgotten `offer` can no longer mark a call as moved.
+- sipnab copies only `offer` and `delete` into its evidence. `answer`,
+  replies, and the `query` and `list` that sipnab itself sends (rtpengine
+  copies those too) change nothing.
+- With no `offer` seen for a call, the SDP map answers as before, and with no
+  map, `--rtpengine-control`.
+- `--rtpengine-ng-engine` needs `--rtpengine-control`, as the other engine
+  rules do. It can stand alone or beside an `--rtpengine-engine` map.
+- `--relay-holdings` and the sessions view also ask every engine an ng engine
+  row names for its `list`.
+
+### sipnab on the SIP proxy's host
+
+sipnab captures the proxy's ng requests on the way out. Nothing changes on the
+engines or the proxy.
+
+1. Give every engine the same `listen-ng` port. sipnab reads a captured
+   request only on the port of `--rtpengine-control`, because a bare ng
+   datagram carries no credential. A request to another port is not read.
+2. Start sipnab with a capture filter that admits that port, and list each
+   engine:
+
+   ```bash
+   sudo sipnab -N -d eth0 \
+     --rtpengine-control 192.0.2.5:2223 \
+     --rtpengine-ng-engine 192.0.2.6:2223 \
+     --relay-previous-engine \
+     --api 127.0.0.1:18764 --api-allow-relay-query \
+     'udp port 5060 or udp port 2223'
+   ```
+
+   `--rtpengine-control` counts as listed already, so it needs no row of its own.
+3. Place a call. Ask about it:
+
+   ```bash
+   curl -s "http://127.0.0.1:18764/v1/relay/stats/call/cap-1@192.0.2.21" | jq -r '.outcome, .relay'
+   ```
+
+Measured with two rtpengine 12.5.1 engines on `127.0.0.2:42223` and
+`127.0.0.3:42223`, sipnab capturing on `lo`, and a call offered to the first
+engine and then to the second:
+
+```text
+ok
+relay (rtpengine at 127.0.0.3:42223), chosen by the newest ng offer for this call, which reached listen-ng 127.0.0.3:42223; listen-ng 127.0.0.2:42223 never received a delete for this call after its offer (a leftover session), call cap-1@192.0.2.21
+```
+
+### sipnab on an rtpengine host
+
+Each engine sends a HEP copy of every control request to sipnab, so sipnab
+does not need to see the proxy. On each engine, add these lines to the
+`[rtpengine]` section of `/etc/rtpengine/rtpengine.conf`, with a `homer-id`
+unique to the engine, and restart it:
+
+```ini
+homer = 192.0.2.40:9060
+homer-protocol = udp
+homer-id = 2001
+homer-enable-ng = true
+```
+
+- `192.0.2.40` is the host where sipnab runs. On that host's own engine you
+  can write `homer = 127.0.0.1:9060`.
+- sipnab needs `homer-enable-ng = true`. Without it rtpengine sends RTCP
+  statistics only, and they name no call.
+- Start sipnab before the engines send, because rtpengine stops sending to a
+  destination that refused it. See
+  [Let sipnab name rtpengine's media](rtpengine-sipnab.md#when-something-does-not-work).
+
+Start sipnab with its HEP listener, and one row per engine that names its
+`homer-id` and `listen-ng`:
+
+```bash
+sudo sipnab -N -d any -L 192.0.2.40:9060 \
+  --rtpengine-control 192.0.2.5:2223 \
+  --rtpengine-ng-engine '2001 192.0.2.5:2223' \
+  --rtpengine-ng-engine '2002 192.0.2.6:2223' \
+  --relay-previous-engine \
+  --api 127.0.0.1:18764 --api-allow-relay-query
+```
+
+Measured with two rtpengine 12.5.1 engines, `homer-id` 2001 on
+`127.0.0.1:42223` and 2002 on `127.0.0.1:42224`, both sending HEP to sipnab on
+`127.0.0.1:49060`, and a call offered to 2001 and then to 2002:
+
+```bash
+curl -s "http://127.0.0.1:18764/v1/relay/stats/call/moved-1@192.0.2.21" | jq -r .relay
+```
+
+```text
+relay (rtpengine at 127.0.0.1:42224), chosen by the newest ng offer for this call, which reached homer-id 2002 (ng engine row 2002 127.0.0.1:42224); homer-id 2001 never received a delete for this call after its offer (a leftover session), call moved-1@192.0.2.21
+```
+
+**If the engines already send HEP to Homer**, rtpengine takes one `homer`
+destination, so pointing it at sipnab takes it away from Homer. Keep Homer
+instead, and run sipnab where the copies pass: on an engine's host, or on the
+Homer host. sipnab reads a HEP copy on its way to another collector only on
+UDP port 9060. Capture that port:
+
+```bash
+sudo sipnab -N -d eth0 --rtpengine-control 192.0.2.5:2223 \
+  --rtpengine-ng-engine '2001 192.0.2.5:2223' \
+  'udp port 9060'
+```
+
+A copy read this way is not authenticated. Prefer the listener, with
+`--hep-auth`, where you can.
+
+### sipnab on a separate host
+
+This is the same as on an rtpengine host: each engine sends HEP to the sipnab
+host, and sipnab names the engine by `homer-id`. Two things differ:
+
+- `homer` in each engine's `rtpengine.conf` is the sipnab host's address, and
+  the network must let UDP from each engine reach it.
+- Each `listen-ng` address in an `--rtpengine-ng-engine` row must be one the
+  sipnab host can reach. An engine that binds its `listen-ng` to its loopback
+  address cannot answer a question from another host. sipnab still reports its calls,
+  moves and leftover sessions by `homer-id`.
+
+The HEP copy also reports the `listen-ng` address the engine bound, which is
+often `127.0.0.1`. sipnab shows it in the `engine not listed` message to help
+you write the row. It never sends to it.
+
+### Find a leftover session from the control traffic
+
+With `--relay-previous-engine`, the sessions view asks each leftover engine
+you listed whether it still holds the call:
+
+```bash
+curl -s "http://127.0.0.1:18764/v1/relay/sessions?call_id=moved-1@192.0.2.21" | jq '.calls[0].engine'
+```
+
+Measured on the two engines above, before any `delete`:
+
+```json
+{
+  "asked": "relay (rtpengine at 127.0.0.1:42224)",
+  "chosen_by": "ng_offer",
+  "held_by_several_engines": true,
+  "leftovers": [
+    {
+      "engine": "homer-id 2001",
+      "relay": "relay (rtpengine at 127.0.0.1:42223)",
+      "status": "confirmed"
+    }
+  ],
+  "listed_by": [
+    "relay (rtpengine at 127.0.0.1:42223)",
+    "relay (rtpengine at 127.0.0.1:42224)"
+  ],
+  "previous": {
+    "chosen_by": "ng_offer",
+    "holds": true,
+    "outcome": "ok",
+    "reason": "chosen by the newest ng offer for this call, which reached homer-id 2001 (ng engine row 2001 127.0.0.1:42223)",
+    "relay": "relay (rtpengine at 127.0.0.1:42223)"
+  },
+  "reason": "chosen by the newest ng offer for this call, which reached homer-id 2002 (ng engine row 2002 127.0.0.1:42224)"
+}
+```
+
+- `leftovers` lists each engine the call moved off with no `delete` after
+  its `offer`. `status` is `confirmed` (it still holds the call), `released`
+  (it does not), `not_asked`, `unreachable` or `suspect`.
+- Without `--relay-previous-engine`, a leftover reads `not_asked` with
+  `add --relay-previous-engine to ask it`. An engine no row names reads
+  `not_asked` with `no --rtpengine-ng-engine row names it`, and sipnab never
+  asks it.
+- In the TUI, the call's view prints a line such as `Leftover session on
+  homer-id 2001 (relay (rtpengine at 127.0.0.1:42223)): confirmed, it still
+  holds this call.`
+- When a `delete` for the call reaches the old engine, the answer drops
+  the leftover. The old engine still answers `query` for its delete delay,
+  30 s by default, so `previous.holds` can stay true for that long.
+
 ## Check that it worked
 
 - A question about a captured call names the engine and the row that chose
@@ -66822,6 +67081,8 @@ With SDP that named `127.0.0.3` both ways, and `--rtpengine-trust-sdp-address
   engine in your map is there.
 - A call you know is on engine B reads `Asked relay (rtpengine at
   192.0.2.6:2223)` in the sessions view, not engine A.
+- With ng engine rows, a question about a call placed after sipnab started
+  names `chosen by the newest ng offer for this call`, and the engine.
 
 ## When it does not work
 
@@ -66880,6 +67141,33 @@ With SDP that named `127.0.0.3` both ways, and `--rtpengine-trust-sdp-address
 - **`--rtpengine-trust-sdp-address and an engine map (--rtpengine-engine or
   [relay] engines) are two rules for one question; the map is an allowlist and
   trusting SDP is none. Give one of them`** and exit 2. Keep one rule.
+- **`call only-a-1@192.0.2.21: engine not listed (homer-id 2001): the newest
+  ng offer for this call reached homer-id 2001, and no --rtpengine-ng-engine
+  row names it (the engine reports listen-ng 127.0.0.1:42223); nothing was
+  asked`.** Add `--rtpengine-ng-engine '2001 <listen-ng>'` with an address
+  the sipnab host can reach.
+- **`call cap-3@192.0.2.21: engine not listed (127.0.0.4:42223): the newest
+  ng offer for this call was sent to 127.0.0.4:42223, an address sipnab saw
+  only in captured traffic; list it with --rtpengine-ng-engine to ask it;
+  nothing was asked`.** If that address is one of your engines, add
+  `--rtpengine-ng-engine 127.0.0.4:42223`.
+- **`the default engine (--rtpengine-control): sipnab has seen no ng offer
+  for this call`.** The proxy sent the call's `offer` before sipnab started, or it
+  did not reach sipnab:
+  - On the proxy's host, check that the capture filter admits the
+    `listen-ng` port and that each engine listens on the port of
+    `--rtpengine-control`.
+  - With HEP, check `homer-enable-ng = true` and that sipnab listened before
+    the engine sent.
+  - A call already up when sipnab started has no `offer` to see. The SDP map
+    and `--rtpengine-control` still answer for it.
+- **A question goes to the SDP map's engine although the engine sends HEP.**
+  The HEP copy carried no capture id, so it names no engine. Set `homer-id` in
+  the engine's `rtpengine.conf`.
+- **`--rtpengine-ng-engine / [relay] ng_engines: ng engine rows "2001
+  192.0.2.5:2223" and "2001 192.0.2.6:2223" both name homer-id 2001, so a
+  call there has no single engine`** and exit 2 (1 when both rows are in
+  `[relay] ng_engines`). Give each engine its own `homer-id` and address.
 
 [Error messages](errors.md#media-relays-rtpengine-and-rtpproxy) lists every
 refusal with its exit code.
@@ -66891,8 +67179,10 @@ refusal with its exit code.
 - [Let sipnab name rtpengine's media](rtpengine-sipnab.md): startup
   reconciliation, which asks `--rtpengine-control` only.
 - [CLI reference](cli-reference.md#rtp): `--rtpengine-engine`,
-  `--rtpengine-trust-sdp-address` and `--relay-previous-engine`.
-- [Config reference](config-reference.md#relay): `[relay] engines`.
+  `--rtpengine-ng-engine`, `--rtpengine-trust-sdp-address` and
+  `--relay-previous-engine`.
+- [Config reference](config-reference.md#relay): `[relay] engines` and
+  `[relay] ng_engines`.
 
 ---
 

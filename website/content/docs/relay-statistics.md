@@ -849,4 +849,5 @@ the relay reports 542 RTP packet(s) for call 1-61@192.0.2.21, but this capture m
 - [Add rtpengine to your voice stack](@/docs/rtpengine-relay.md): install the relay
   these requests ask.
 - [Ask each call's rtpengine engine](@/docs/relay-engines.md): with several engines
-  behind one proxy, ask the engine each call's SDP names.
+  behind one proxy, ask the engine each call's `offer` reached or its SDP
+  names.

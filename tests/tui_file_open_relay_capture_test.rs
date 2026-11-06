@@ -191,3 +191,97 @@ fn without_the_control_socket_the_tui_names_nothing() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+/// A capture opened inside the TUI records the engine a captured `ng`
+/// offer on the `--rtpengine-control` port reached, on the dialog store the
+/// TUI's relay views read a call's evidence from.
+#[test]
+fn a_capture_opened_in_the_tui_records_the_engine_an_ng_offer_reached() -> Result<(), TestError> {
+    let open = |port: Option<u16>| -> Result<usize, TestError> {
+        use pcap_build::{udp_frame, write_pcap};
+        let dir = tempfile::tempdir()?;
+        let (proxy, engine) = ([192, 0, 2, 30], [192, 0, 2, 6]);
+        let offer = b"c2 d7:call-id18:e1@example.invalid7:command5:offer8:from-tag2:fte";
+        let name = "ng-offer.pcap";
+        write_pcap(
+            &dir.path().join(name),
+            &[udp_frame(proxy, engine, 40000, 2223, offer)],
+        )?;
+        let options = sipnab::tui::TuiOptions {
+            capture_options: sipnab::pipeline::PipelineOptions {
+                ng_control_port: port,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let dialogs = std::sync::Arc::new(parking_lot::RwLock::new(
+            sipnab::sip::dialog_store::DialogStore::new(100, false),
+        ));
+        let mut app = options.into_app(
+            std::sync::Arc::clone(&dialogs),
+            std::sync::Arc::new(parking_lot::RwLock::new(
+                sipnab::rtp::stream_store::StreamStore::new(100),
+            )),
+        );
+        app.set_open_dir_for_test(dir.path().to_path_buf());
+        app.handle_key(KeyCode::Char('O'));
+        app.handle_key(KeyCode::Down);
+        app.handle_key(KeyCode::Enter);
+        let n = dialogs.read().engine_sightings("e1@example.invalid").len();
+        Ok(n)
+    };
+    assert_eq!(open(Some(2223))?, 1, "the offer's engine is recorded");
+    assert_eq!(
+        open(None)?,
+        0,
+        "with no control port named, nothing is believed"
+    );
+    Ok(())
+}
+
+/// rtpengine 12.5.1's own HEP copies (`tests/fixtures/rtpengine-ng-hep.pcap`,
+/// sniffed on the HEP port) name the engine by its `homer-id`, 2001, and
+/// report its `listen-ng` as it bound it, `127.0.0.1:2223`. The capture holds
+/// the copies of an `offer`, an `answer` and a `delete`, each with its reply;
+/// the `answer` and the replies choose nothing, so two sightings are recorded.
+#[test]
+fn the_real_rtpengine_hep_copies_name_the_engine_by_homer_id() -> Result<(), TestError> {
+    use sipnab::relay_vocab::{EngineIdentity, EngineVerb};
+    let dir = tempfile::tempdir()?;
+    let name = "rtpengine-ng-hep.pcap";
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name),
+        dir.path().join(name),
+    )?;
+    let dialogs = std::sync::Arc::new(parking_lot::RwLock::new(
+        sipnab::sip::dialog_store::DialogStore::new(100, false),
+    ));
+    let mut app = sipnab::tui::TuiOptions::default().into_app(
+        std::sync::Arc::clone(&dialogs),
+        std::sync::Arc::new(parking_lot::RwLock::new(
+            sipnab::rtp::stream_store::StreamStore::new(100),
+        )),
+    );
+    app.set_open_dir_for_test(dir.path().to_path_buf());
+    app.handle_key(KeyCode::Char('O'));
+    app.handle_key(KeyCode::Down);
+    app.handle_key(KeyCode::Enter);
+    let seen: Vec<_> = dialogs
+        .read()
+        .engine_sightings("km-670bd208@sipnab")
+        .iter()
+        .map(|s| (s.engine, s.verb, s.reported_listen_ng))
+        .collect();
+    let listen_ng = Some("127.0.0.1:2223".parse()?);
+    assert_eq!(
+        seen,
+        [
+            (EngineIdentity::HomerId(2001), EngineVerb::Offer, listen_ng),
+            (EngineIdentity::HomerId(2001), EngineVerb::Delete, listen_ng),
+        ],
+        "the offer's and the delete's copies name homer-id 2001"
+    );
+    Ok(())
+}

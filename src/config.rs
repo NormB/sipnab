@@ -68,7 +68,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
     );
     // [relay] says which media-relay engines sipnab may ask about a call,
     // chosen from the call's SDP. docs/relay-engines.md.
-    m.insert("relay", ["engines"].as_slice());
+    m.insert("relay", ["engines", "ng_engines"].as_slice());
     // [g729] says where the G.729 codebook tables are and whether a run may
     // download them on first need. docs/g729.md.
     m.insert("g729", ["tables", "auto_install"].as_slice());
@@ -575,6 +575,10 @@ pub struct RelayConfig {
     /// Engine rows, each `MEDIA-ADDRESS LOW-HIGH CONTROL-ADDRESS:PORT`.
     /// `--rtpengine-engine` adds to them.
     pub engines: Vec<String>,
+    /// ng engine rows, each `[HOMER-ID] LISTEN-NG-ADDRESS:PORT`: the engines
+    /// sipnab may ask about a call whose engine it learned from ng control
+    /// traffic. `--rtpengine-ng-engine` adds to them.
+    pub ng_engines: Vec<String>,
 }
 
 /// `[g729]`: the G.729 decoder's codebook tables, which sipnab does not ship

@@ -1990,3 +1990,278 @@ fn an_mcp_call_question_goes_to_the_engine_the_captured_sdp_names() -> Result<()
     );
     Ok(())
 }
+
+// ── engines from ng control traffic ─────────────────────────────────────
+
+/// rtpengine's HEP copy of an `offer` for `call_id`, as an engine with
+/// `homer-id = homer_id` sends it: capture protocol 0x3d, the Call-ID in the
+/// correlation chunk, and its `listen-ng` as the destination.
+fn hep_ng_offer(call_id: &str, homer_id: u32) -> Vec<u8> {
+    let ep = sipnab::capture::hep::HepEndpoint {
+        src_addr: std::net::IpAddr::from([127, 0, 0, 1]),
+        dst_addr: std::net::IpAddr::from([127, 0, 0, 1]),
+        src_port: 43734,
+        dst_port: 2223,
+        transport: sipnab::net::TransportProto::Udp,
+    };
+    let body = format!(
+        "c-{homer_id} d7:call-id{}:{call_id}7:command5:offer8:from-tag2:f1e",
+        call_id.len()
+    );
+    sipnab::capture::hep::build_hep_v3_correlated(
+        &ep,
+        chrono::Utc::now(),
+        sipnab::capture::hep::HepProtocol::Unknown(0x3d),
+        homer_id,
+        None,
+        Some(call_id.as_bytes()),
+        body.as_bytes(),
+    )
+}
+
+/// The HEP listener's address, from the run's startup lines.
+fn hep_address(run: &Run) -> Result<String, TestError> {
+    Ok(run
+        .err
+        .iter()
+        .find_map(|l| l.split("HEP listener started on ").nth(1))
+        .and_then(|rest| rest.split_whitespace().next())
+        .map(str::to_string)
+        .ok_or("the HEP listener's address")?)
+}
+
+/// Send the call's ng offers (homer-id 2001, then 2002) and then its SIP,
+/// whose SDP names media the SDP map gives the default engine. The listener
+/// handles them in order, so once the dialog exists the offers are in.
+fn send_moved_call(hep: &str, call_id: &str) -> Result<(), TestError> {
+    let sender = UdpSocket::bind("127.0.0.1:0")?;
+    sender.send_to(&hep_ng_offer(call_id, 2001), hep)?;
+    sender.send_to(&hep_ng_offer(call_id, 2002), hep)?;
+    sender.send_to(&hep_sip(&sip_with_sdp(call_id, true, 1, 40010)), hep)?;
+    sender.send_to(&hep_sip(&sip_with_sdp(call_id, false, 1, 40012)), hep)?;
+    Ok(())
+}
+
+/// The engine flags of these tests: `b` is homer-id 2002, and the SDP map
+/// gives the call's media to the default engine `a`.
+fn ng_engine_flags(a: &FakeRelay, b: &FakeRelay) -> (String, String) {
+    (format!("2002 {}", b.addr), engine_row(a.addr))
+}
+
+/// REST: a question about the call goes to the engine its newest ng offer
+/// reached, ahead of the SDP map, and the answer names the leftover session
+/// on the engine it moved off.
+#[test]
+fn a_rest_call_question_goes_to_the_engine_the_newest_ng_offer_reached() -> Result<(), TestError> {
+    const CALL: &str = "ng-moved-1@192.0.2.10";
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Silent,
+    })?;
+    let b = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Body(statistics.clone()),
+    })?;
+    let (ng_row, sdp_row) = ng_engine_flags(&a, &b);
+    let mut run = Run::start(
+        &a,
+        &[
+            "--rtpengine-ng-engine",
+            &ng_row,
+            "--rtpengine-engine",
+            &sdp_row,
+            "--api",
+            "127.0.0.1:0",
+            "--api-allow-relay-query",
+        ],
+    )?;
+    assert!(
+        run.wait_stderr("REST API listening on"),
+        "{}",
+        run.err.join("\n")
+    );
+    let api = run
+        .err
+        .iter()
+        .find_map(|l| l.split("REST API listening on ").nth(1))
+        .map(|s| s.trim().to_string())
+        .ok_or("the REST address")?;
+    send_moved_call(&hep_address(&run)?, CALL)?;
+    let dialog = format!("/v1/dialogs/{CALL}");
+    let deadline = Instant::now() + WAIT;
+    while http_status(&api, &dialog)? != 200 {
+        assert!(
+            Instant::now() < deadline,
+            "the call never reached the dialog store"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let answer = http_get_json(&api, &format!("/v1/relay/stats/call/{CALL}"))?;
+    assert_eq!(answer["outcome"], "ok", "{answer}");
+    let relay = answer["relay"].as_str().unwrap_or_default();
+    assert!(
+        relay.contains("chosen by the newest ng offer for this call, which reached homer-id 2002"),
+        "{answer}"
+    );
+    assert!(
+        relay.contains(
+            "homer-id 2001 never received a delete for this call after its offer (a leftover session)"
+        ),
+        "{answer}"
+    );
+    let done = run.finish();
+    assert!(
+        b.asked()?.iter().any(|v| v == "query"),
+        "the engine the offer reached was asked: {:?}\n{}",
+        b.asked()?,
+        done.dump()
+    );
+    assert!(
+        !a.asked()?.iter().any(|v| v == "query"),
+        "the SDP map's engine was not asked: {:?}",
+        a.asked()?
+    );
+    Ok(())
+}
+
+/// The CLI: `--relay-compare` after the capture asks the engine the newest
+/// ng offer reached.
+#[test]
+fn relay_compare_asks_the_engine_the_newest_ng_offer_reached() -> Result<(), TestError> {
+    const CALL: &str = "ng-moved-2@192.0.2.10";
+    let query = fixture_body("rtpengine-query-12.5.1.bencode")?;
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Silent,
+    })?;
+    let b = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Body(query.clone()),
+    })?;
+    let (ng_row, sdp_row) = ng_engine_flags(&a, &b);
+    let mut run = Run::start(
+        &a,
+        &[
+            "--rtpengine-ng-engine",
+            &ng_row,
+            "--rtpengine-engine",
+            &sdp_row,
+            "--relay-compare",
+            CALL,
+        ],
+    )?;
+    send_moved_call(&hep_address(&run)?, CALL)?;
+    assert!(
+        run.wait_stdout("200 OK", 1),
+        "the answer was captured:\n{}",
+        run.out.join("\n")
+    );
+    let done = run.finish();
+    assert!(
+        b.asked()?.iter().any(|v| v == "query"),
+        "the engine the offer reached was asked: {:?}\n{}",
+        b.asked()?,
+        done.dump()
+    );
+    assert!(
+        !a.asked()?.iter().any(|v| v == "query"),
+        "the SDP map's engine was not asked: {:?}\n{}",
+        a.asked()?,
+        done.dump()
+    );
+    Ok(())
+}
+
+/// MCP: `relay_stats` about the call is asked of the engine the newest ng
+/// offer reached, and the engine field says so.
+#[test]
+fn an_mcp_call_question_goes_to_the_engine_the_newest_ng_offer_reached() -> Result<(), TestError> {
+    const CALL: &str = "ng-moved-3@192.0.2.10";
+    let statistics = fixture_body("rtpengine-statistics-12.5.1.bencode")?;
+    let a = FakeRelay::start(|verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Silent,
+    })?;
+    let b = FakeRelay::start(move |verb, _| match verb {
+        "list" => no_calls(),
+        _ => Answer::Body(statistics.clone()),
+    })?;
+    let (ng_row, sdp_row) = ng_engine_flags(&a, &b);
+    let mut run = Run::start(
+        &a,
+        &[
+            "--rtpengine-ng-engine",
+            &ng_row,
+            "--rtpengine-engine",
+            &sdp_row,
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-bind",
+            "127.0.0.1:0",
+            "--mcp-allow-relay-query",
+        ],
+    )?;
+    assert!(
+        run.wait_stderr("MCP HTTP server listening on"),
+        "{}",
+        run.err.join("\n")
+    );
+    let addr = run
+        .err
+        .iter()
+        .find_map(|l| l.split("MCP HTTP server listening on ").nth(1))
+        .map(|a| a.trim().to_string())
+        .ok_or("the MCP listening address")?;
+    send_moved_call(&hep_address(&run)?, CALL)?;
+    let session = mcp::establish_session(&addr).map_err(|e| e.to_string())?;
+    let deadline = Instant::now() + WAIT;
+    let mut id = 2;
+    loop {
+        let reply = mcp::session_request(
+            &addr,
+            &session,
+            id,
+            "tools/call",
+            serde_json::json!({"name": "get_dialog", "arguments": {"call_id": CALL}}),
+        )
+        .map_err(|e| e.to_string())?;
+        id += 1;
+        if reply.get("error").is_none() && reply["result"]["isError"] != true {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the call never reached the dialog store: {reply}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let reply = mcp::session_request(
+        &addr,
+        &session,
+        id,
+        "tools/call",
+        serde_json::json!({"name": "relay_stats", "arguments": {"call_id": CALL}}),
+    )
+    .map_err(|e| e.to_string())?;
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("a text block: {reply}"))?
+        .to_string();
+    let v: serde_json::Value = serde_json::from_str(&text)?;
+    assert_eq!(v["relay_address"], b.addr.to_string(), "{v}");
+    assert!(
+        v["engine"].as_str().is_some_and(
+            |e| e.contains("the newest ng offer for this call, which reached homer-id 2002")
+        ),
+        "{v}"
+    );
+    let _ = run.finish();
+    assert!(
+        !a.asked()?.iter().any(|v| v == "query"),
+        "the SDP map's engine was not asked: {:?}",
+        a.asked()?
+    );
+    Ok(())
+}

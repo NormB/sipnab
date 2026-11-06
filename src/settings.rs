@@ -683,6 +683,10 @@ pub const FLAGS: &[(&str, Link)] = &[
         "rtpengine-engine",
         Link::Key("relay", "engines", Merge::Union),
     ),
+    (
+        "rtpengine-ng-engine",
+        Link::Key("relay", "ng_engines", Merge::Union),
+    ),
     ("rtpengine-trust-sdp-address", Link::PerRun),
     ("rtpproxy-control", Link::Pending),
     (

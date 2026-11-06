@@ -1165,6 +1165,24 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    // `[relay] ng_engines`: like `[relay] engines`, a row needs
+    // `--rtpengine-control` on the command line, so a key-only run accepts
+    // only the empty list. A well-formed row, a malformed one and two rows
+    // naming one homer-id are each refused naming the key.
+    (
+        "relay",
+        "ng_engines",
+        KeyKind::Literal {
+            accept: &["[]"],
+            reject: &[
+                "[\"2001 192.0.2.5:2223\"]",
+                "[\"x\"]",
+                "[\"2001 192.0.2.5\"]",
+                "[\"2001 192.0.2.5:2223\", \"2001 192.0.2.6:2223\"]",
+            ],
+            ctx: "",
+        },
+    ),
     (
         "names",
         "hosts_file",

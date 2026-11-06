@@ -10,6 +10,36 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+/// One UDP datagram from `src` to `dst` as the parser hands it on, captured
+/// off the wire at the Unix epoch.
+#[must_use]
+pub fn udp_parsed(
+    src: std::net::SocketAddr,
+    dst: std::net::SocketAddr,
+    payload: &[u8],
+) -> crate::capture::parse::ParsedPacket {
+    crate::capture::parse::ParsedPacket {
+        frame_bytes: None,
+        frame: None,
+        timestamp: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        src_addr: src.ip(),
+        dst_addr: dst.ip(),
+        src_port: src.port(),
+        dst_port: dst.port(),
+        transport: crate::net::TransportProto::Udp,
+        payload: payload.to_vec().into(),
+        ip_id: None,
+        tcp_seq: None,
+        tcp_flags: None,
+        fragment_offset: None,
+        more_fragments: false,
+        ip_protocol: 17,
+        dscp: None,
+        input_origin: crate::capture::parse::InputOrigin::Wire,
+        hep: None,
+    }
+}
+
 /// Build raw SIP bytes from a request/status line, header lines, and an optional body.
 ///
 /// Each header line gets `\r\n` appended; the blank line separator between

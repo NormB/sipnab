@@ -162,6 +162,9 @@ pub struct ParallelConfig {
     /// `--rtpproxy-control`: the rtpproxy control socket whose traffic names
     /// the relay's media.
     pub rtpproxy_control: Option<std::net::SocketAddr>,
+    /// The port of `--rtpengine-control`, on which captured `ng` requests are
+    /// read for the engine they reached.
+    pub ng_control_port: Option<u16>,
     /// Correlation header names for B2BUA leg matching (`sip.xcid`).
     /// Empty, the `DialogStore` default, turns the header strategy off.
     pub xcid_headers: Vec<String>,
@@ -633,6 +636,7 @@ fn reconstruct(
         }
         PacketAction::RelayControl(message) => {
             if !cfg.no_dialog && (message.carries_anything()) {
+                crate::pipeline::apply_engine_sighting(ds, &message);
                 crate::pipeline::apply_relay_control(ss, &message, pp.input_origin, pp.timestamp);
             }
         }
@@ -656,6 +660,7 @@ fn pipeline_options(cfg: &ParallelConfig) -> crate::pipeline::PipelineOptions {
         no_rtp: cfg.no_rtp,
         sip_portrange: Some(cfg.portrange),
         rtpproxy_control: cfg.rtpproxy_control,
+        ng_control_port: cfg.ng_control_port,
         quiet_bad_parse: cfg.quiet_bad_parse,
         hep_parse: cfg.hep_parse,
     }
@@ -3099,6 +3104,38 @@ mod tests {
         Ok(())
     }
 
+    /// A `--cores` worker records a captured offer's engine on its dialog
+    /// store, which the merge carries to the run's store.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_worker_records_the_engine_a_captured_offer_reached()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut cfg = pcfg(2);
+        cfg.ng_control_port = Some(2223);
+        let pp = crate::test_utils::udp_parsed(
+            "192.0.2.30:40000".parse()?,
+            "192.0.2.6:2223".parse()?,
+            b"c2 d7:call-id18:e1@example.invalid7:command5:offer8:from-tag2:fte",
+        );
+        let (mut ds, mut ss) = (DialogStore::new(16, false), StreamStore::new(16));
+        let (mut sip, mut rtp) = (0, 0);
+        reconstruct(
+            &pp,
+            &mut ds,
+            &mut ss,
+            &mut crate::rtp::heuristic::RtpHeuristic::new(),
+            &cfg,
+            &mut sip,
+            &mut rtp,
+        );
+        assert_eq!(
+            ds.engine_sightings("e1@example.invalid").len(),
+            1,
+            "a worker records the engine a captured offer reached"
+        );
+        Ok(())
+    }
+
     /// A permissive `ParallelConfig` for tests: large capacities, reassembly
     /// on, full port range, all protocols enabled.
     #[cfg(feature = "native")]
@@ -3116,6 +3153,7 @@ mod tests {
             quiet_bad_parse: false,
             hep_parse: false,
             rtpproxy_control: None,
+            ng_control_port: None,
             xcid_headers: Vec::new(),
             leg_correlation_window_ms: crate::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,
             reassembly: true,

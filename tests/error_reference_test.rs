@@ -915,7 +915,13 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // +5); src/app/bootstrap.rs, the two logged per-call refusals
 // `--relay-stats-call {call_id}: {unknown}` and `--relay-compare: call
 // {call_id}: {unknown}` (+2).
-const EXPECTED_TEMPLATES: usize = 562;
+// 562 -> 564 (#664 follow-up, engines from ng control traffic): src/cli.rs,
+// the two refusals Cli::engine_selection raises for ng engine rows through
+// engine_refusal (`[relay] ng_engines: {e}` and `--rtpengine-ng-engine /
+// [relay] ng_engines: {e}`, +2). The `{rule} needs --rtpengine-control` and
+// `--relay-previous-engine needs an engine rule` messages were reworded in
+// place, one template each. Nothing removed.
+const EXPECTED_TEMPLATES: usize = 564;
 
 // ---------------------------------------------------------------------------
 // The page gates

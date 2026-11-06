@@ -163,6 +163,7 @@ pub fn pipeline_options(cli: &Cli, decided: PipelineDecisions) -> crate::pipelin
         no_rtp: decided.no_rtp,
         sip_portrange: decided.sip_portrange,
         rtpproxy_control: cli.rtp_args.rtpproxy_control,
+        ng_control_port: cli.rtpengine_control_port(),
         quiet_bad_parse: cli.capture_args.quiet_bad_parse,
         hep_parse: decided.hep_parse,
     }

@@ -309,3 +309,276 @@ mod control_channel_tests {
         Ok(())
     }
 }
+
+/// Which relay engine received a control request, as sipnab saw it.
+///
+/// The two ways sipnab sees a request name the engine differently. A HEP copy
+/// is sent by the engine itself and carries its `homer-id` as the HEP capture
+/// id. A request captured on its way to the engine carries the address it was
+/// sent to, which is the engine's `listen-ng` address. Neither is permission
+/// to send anything: both come from captured traffic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum EngineIdentity {
+    /// A HEP copy the engine sent: its `homer-id`, the HEP capture id.
+    HomerId(u32),
+    /// A request captured on its way to the engine: where it was sent.
+    ListenNg(std::net::SocketAddr),
+}
+
+impl std::fmt::Display for EngineIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HomerId(id) => write!(f, "homer-id {id}"),
+            Self::ListenNg(addr) => write!(f, "listen-ng {addr}"),
+        }
+    }
+}
+
+/// The two control requests that say which engine holds a call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineVerb {
+    /// The proxy asked this engine to anchor the call's media.
+    Offer,
+    /// The proxy asked this engine to release the call.
+    Delete,
+}
+
+/// One control request about a call that sipnab saw reach an engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineSighting {
+    /// When the request was captured, or when the HEP copy says it was sent.
+    pub at: chrono::DateTime<chrono::Utc>,
+    /// The engine that received it.
+    pub engine: EngineIdentity,
+    /// What the request asked.
+    pub verb: EngineVerb,
+    /// For a HEP copy, the destination its address chunks name: the
+    /// `listen-ng` address as the engine itself bound it, which is often a
+    /// loopback address. Shown to help write a map row; never asked.
+    pub reported_listen_ng: Option<std::net::SocketAddr>,
+}
+
+/// The engine sightings of each call, bounded.
+///
+/// Keeps at most `max_calls` Call-IDs, forgetting the one first seen longest
+/// ago, and at most [`Self::PER_CALL`] sightings per call, forgetting the
+/// oldest. A forgotten offer can no longer mark a call as moved, which is the
+/// price of a bound a long capture cannot grow past.
+#[derive(Debug, Clone, Default)]
+pub struct EngineSightings {
+    /// Call-IDs remembered before the first-seen one is forgotten.
+    max_calls: usize,
+    /// Each call's sightings, oldest first.
+    calls: std::collections::HashMap<String, Vec<EngineSighting>>,
+    /// First-seen order of the Call-IDs, for forgetting the oldest.
+    order: std::collections::VecDeque<String>,
+}
+
+impl EngineSightings {
+    /// Sightings kept per call.
+    pub const PER_CALL: usize = 16;
+
+    /// The most Call-IDs a dialog store's table keeps, whatever its dialog
+    /// capacity: the table's memory stays bounded on a relay host, which sees
+    /// ng traffic for calls whose SIP it never sees.
+    pub const MAX_SIGHTING_CALLS: usize = 16_384;
+
+    /// An empty table remembering at most `max_calls` calls.
+    #[must_use]
+    pub fn new(max_calls: usize) -> Self {
+        Self {
+            max_calls: max_calls.max(1),
+            calls: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Remember one sighting for `call_id`.
+    pub fn record(&mut self, call_id: &str, sighting: EngineSighting) {
+        if let Some(seen) = self.calls.get_mut(call_id) {
+            seen.push(sighting);
+            if seen.len() > Self::PER_CALL {
+                seen.remove(0);
+            }
+            return;
+        }
+        while self.calls.len() >= self.max_calls.max(1) {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            self.calls.remove(&oldest);
+        }
+        self.order.push_back(call_id.to_string());
+        self.calls.insert(call_id.to_string(), vec![sighting]);
+    }
+
+    /// The sightings of `call_id`, oldest first; empty for a call never seen.
+    #[must_use]
+    pub fn of(&self, call_id: &str) -> &[EngineSighting] {
+        self.calls.get(call_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// How many calls the table holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.calls.len()
+    }
+
+    /// Whether the table holds no call.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+
+    /// Add another table's sightings, call by call, in time order. Each
+    /// worker of a `--cores` run sees some of a call's requests.
+    pub fn merge(&mut self, other: EngineSightings) {
+        let mut theirs = other.calls;
+        for call_id in other.order {
+            let Some(sightings) = theirs.remove(&call_id) else {
+                continue;
+            };
+            let Some(mine) = self.calls.get_mut(&call_id) else {
+                // A call only the other worker saw: admitted as a new call,
+                // under this table's bound on calls.
+                for s in sightings {
+                    self.record(&call_id, s);
+                }
+                continue;
+            };
+            mine.extend(sightings);
+            // Stable, so two sightings of one instant keep their order.
+            mine.sort_by_key(|s| s.at);
+            let excess = mine.len().saturating_sub(Self::PER_CALL);
+            mine.drain(..excess);
+        }
+    }
+}
+
+#[cfg(test)]
+mod engine_sighting_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn seen(secs: i64, id: u32, verb: EngineVerb) -> Result<EngineSighting, TestError> {
+        Ok(EngineSighting {
+            at: chrono::Utc
+                .timestamp_opt(1_793_800_000 + secs, 0)
+                .single()
+                .ok_or("a fixed instant")?,
+            engine: EngineIdentity::HomerId(id),
+            verb,
+            reported_listen_ng: None,
+        })
+    }
+
+    /// A call's sightings come back oldest first, and another call's are
+    /// kept apart.
+    #[test]
+    fn sightings_are_kept_per_call_in_order() -> Result<(), TestError> {
+        let mut t = EngineSightings::new(8);
+        t.record("a", seen(0, 2001, EngineVerb::Offer)?);
+        t.record("b", seen(1, 2002, EngineVerb::Offer)?);
+        t.record("a", seen(2, 2002, EngineVerb::Offer)?);
+        assert_eq!(
+            t.of("a"),
+            [
+                seen(0, 2001, EngineVerb::Offer)?,
+                seen(2, 2002, EngineVerb::Offer)?
+            ],
+            "a call's sightings, oldest first"
+        );
+        assert_eq!(t.of("b").len(), 1, "another call's are kept apart");
+        assert!(t.of("c").is_empty(), "a call never seen has none");
+        Ok(())
+    }
+
+    /// At `max_calls`, the call seen first is forgotten; past `PER_CALL`, a
+    /// call's oldest sighting is.
+    #[test]
+    fn the_table_is_bounded_by_calls_and_by_sightings_per_call() -> Result<(), TestError> {
+        let mut t = EngineSightings::new(2);
+        t.record("a", seen(0, 2001, EngineVerb::Offer)?);
+        t.record("b", seen(1, 2001, EngineVerb::Offer)?);
+        t.record("c", seen(2, 2001, EngineVerb::Offer)?);
+        assert_eq!(t.len(), 2, "two calls at most");
+        assert!(t.of("a").is_empty(), "the first-seen call is forgotten");
+        assert_eq!(t.of("c").len(), 1, "the newest call is kept");
+        let mut t = EngineSightings::new(2);
+        let per_call = i64::try_from(EngineSightings::PER_CALL)?;
+        for i in 0..=per_call {
+            t.record("a", seen(i, 2001, EngineVerb::Offer)?);
+        }
+        assert_eq!(
+            t.of("a").len(),
+            EngineSightings::PER_CALL,
+            "PER_CALL at most"
+        );
+        assert_eq!(
+            t.of("a").first().map(|s| s.at),
+            Some(seen(1, 2001, EngineVerb::Offer)?.at),
+            "the oldest sighting is forgotten"
+        );
+        Ok(())
+    }
+
+    /// `--cores` merges each call's sightings in time order.
+    #[test]
+    fn merging_interleaves_a_calls_sightings_by_time() -> Result<(), TestError> {
+        let mut a = EngineSightings::new(8);
+        a.record("x", seen(0, 2001, EngineVerb::Offer)?);
+        a.record("x", seen(4, 2001, EngineVerb::Delete)?);
+        let mut b = EngineSightings::new(8);
+        b.record("x", seen(2, 2002, EngineVerb::Offer)?);
+        b.record("y", seen(3, 2002, EngineVerb::Offer)?);
+        a.merge(b);
+        let at: Vec<i64> = a
+            .of("x")
+            .iter()
+            .map(|s| s.at.timestamp() - 1_793_800_000)
+            .collect();
+        assert_eq!(at, [0, 2, 4], "merging interleaves by time");
+        assert_eq!(a.of("y").len(), 1, "a call only the other worker saw");
+        Ok(())
+    }
+
+    /// A merge over `PER_CALL` keeps the newest sightings, whichever worker
+    /// saw them.
+    #[test]
+    fn merging_past_the_per_call_bound_keeps_the_newest() -> Result<(), TestError> {
+        let per_call = i64::try_from(EngineSightings::PER_CALL)?;
+        let mut a = EngineSightings::new(8);
+        for i in 0..per_call {
+            a.record("x", seen(100 + i, 2001, EngineVerb::Offer)?);
+        }
+        let mut b = EngineSightings::new(8);
+        b.record("x", seen(0, 2002, EngineVerb::Offer)?);
+        a.merge(b);
+        assert_eq!(a.of("x").len(), EngineSightings::PER_CALL, "still bounded");
+        assert!(
+            a.of("x")
+                .iter()
+                .all(|s| s.engine == EngineIdentity::HomerId(2001)),
+            "the older sighting from the other worker is the one dropped"
+        );
+        Ok(())
+    }
+
+    /// The words every surface prints for an engine.
+    #[test]
+    fn an_engine_is_named_by_its_homer_id_or_its_listen_ng_address() -> Result<(), TestError> {
+        assert_eq!(
+            EngineIdentity::HomerId(2001).to_string(),
+            "homer-id 2001",
+            "a HEP copy's engine is named by its homer-id"
+        );
+        assert_eq!(
+            EngineIdentity::ListenNg("192.0.2.5:2223".parse()?).to_string(),
+            "listen-ng 192.0.2.5:2223",
+            "a captured request's engine is named by where it was sent"
+        );
+        Ok(())
+    }
+}

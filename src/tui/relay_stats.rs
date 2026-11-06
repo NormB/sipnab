@@ -330,7 +330,7 @@ pub fn spawn_ask(
     key: AskKey,
     sipnab_side: Option<u64>,
     origin: fmt::FetchOrigin,
-    sightings: Vec<crate::relay::engines::SdpSighting>,
+    sightings: crate::relay::engines::CallEvidence,
 ) -> Receiver<RelayStatsReply> {
     let (tx, rx) = std::sync::mpsc::channel();
     let spawned = std::thread::Builder::new()
@@ -357,22 +357,28 @@ fn do_ask(
     sipnab_side: Option<u64>,
     origin: fmt::FetchOrigin,
 ) -> String {
-    do_ask_for(access, key, sipnab_side, origin, &[])
+    do_ask_for(
+        access,
+        key,
+        sipnab_side,
+        origin,
+        &crate::relay::engines::CallEvidence::default(),
+    )
 }
 
-/// [`do_ask`], with the call's SDP sightings that choose its engine when an
-/// engine rule is configured.
+/// [`do_ask`], with the call's evidence (ng offers and SDP sightings) that
+/// chooses its engine when an engine rule is configured.
 fn do_ask_for(
     access: &TuiRelayAccess,
     key: &AskKey,
     sipnab_side: Option<u64>,
     origin: fmt::FetchOrigin,
-    sightings: &[crate::relay::engines::SdpSighting],
+    sightings: &crate::relay::engines::CallEvidence,
 ) -> String {
     let (call_id, mode) = key;
     let obtained_at = chrono::Utc::now();
-    // A question about one call goes to the engine its SDP names when an
-    // engine rule is configured: the rule every relay surface uses. The
+    // A question about one call goes to the engine its newest ng offer or
+    // SDP names when an engine rule is configured: the rule every relay surface uses. The
     // relay's own counters and names go to the one relay the run names.
     let per_call = matches!(mode, RelayStatsMode::Counters | RelayStatsMode::Compare);
     let (relay, addr, reason) = match call_id.as_deref() {
@@ -900,7 +906,7 @@ mod tests {
             key.clone(),
             None,
             fmt::FetchOrigin::Asked,
-            Vec::new(),
+            crate::relay::engines::CallEvidence::default(),
         );
         let reply = rx
             .recv_timeout(std::time::Duration::from_secs(10))
@@ -960,7 +966,7 @@ mod tests {
                 &(Some("m-1@example.invalid".to_string()), mode),
                 Some(1),
                 fmt::FetchOrigin::Asked,
-                &moved,
+                &moved.to_vec().into(),
             );
             assert!(text.contains("192.0.2.6:2223"), "{text}");
             assert!(text.contains("40000-49999"), "the reason is named: {text}");
@@ -995,7 +1001,7 @@ mod tests {
             ),
             None,
             fmt::FetchOrigin::Asked,
-            &elsewhere,
+            &elsewhere.to_vec().into(),
         );
         assert!(text.contains("not_configured"), "{text}");
         assert!(text.contains("engine unknown (no map row)"), "{text}");

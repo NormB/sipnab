@@ -45,6 +45,11 @@ pub struct HepOrigin {
     /// with `{` where a HEP v3 packet starts with `HEP3`. Only the listener
     /// sets it, and only for a sender listed in `--hep-allow`.
     pub json_event: bool,
+    /// The HEP capture id the sender stamped, when it stamped one.
+    ///
+    /// rtpengine stamps its `homer-id`, so on its `ng` copies this names the
+    /// engine that sent the copy, which is the engine the request reached.
+    pub capture_id: Option<u32>,
 }
 
 /// What a stored vCon container said about one message rebuilt from it.

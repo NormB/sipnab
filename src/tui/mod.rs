@@ -1244,9 +1244,9 @@ impl App {
         self.relay_stats.text = "asking the relay…".to_string();
         self.relay_stats.pending = Some(want.clone());
         self.relay_stats_asked_at = Some(std::time::Instant::now());
-        // The call's SDP, read here on the UI thread, chooses its engine when
-        // an engine rule is configured.
-        let sightings = call_id.as_deref().map_or_else(Vec::new, |cid| {
+        // The call's evidence (its ng offers and SDP), read here on the UI
+        // thread, chooses its engine when an engine rule is configured.
+        let sightings = call_id.as_deref().map_or_else(Default::default, |cid| {
             crate::relay::engines::call_sightings(&self.dialog_store.read(), cid)
         });
         self.relay_stats.rx = Some(relay_stats::spawn_ask(

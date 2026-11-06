@@ -32,6 +32,11 @@ pub use one_shot::OneShot;
 /// spelling belongs.
 pub const RELAY_CONTROL_FLAG: &str = "--rtpengine-control";
 
+/// The flag that lists the engines sipnab may ask about a call whose engine
+/// it learned from ng control traffic, exported for the same reason as
+/// [`RELAY_CONTROL_FLAG`].
+pub const RELAY_NG_ENGINE_FLAG: &str = "--rtpengine-ng-engine";
+
 /// Every flag that takes a secret as its value, by long name. The run
 /// provenance record (`--run-provenance-file`) redacts the values of these,
 /// and `tests/secret_flags_test.rs` holds the list to what the parser
@@ -2180,6 +2185,33 @@ pub struct RtpArgs {
     /// each previous engine asked is one more `query` per call.
     #[arg(help_heading = "RTP", long = "relay-previous-engine")]
     pub relay_previous_engine: bool,
+
+    /// Name an rtpengine engine sipnab may ask about a call whose engine it
+    /// learned from ng control traffic: `[HOMER-ID] LISTEN-NG`. Repeatable.
+    ///
+    /// sipnab takes each call's engine from the `offer` it saw reach one: a
+    /// HEP copy the engine sent (`homer-enable-ng = true`), named by its
+    /// `homer-id`, or a request captured on the `--rtpengine-control` port,
+    /// named by the address it was sent to. This takes precedence over
+    /// `--rtpengine-engine`. Write a row as `2001 192.0.2.5:2223` for an
+    /// engine that sends HEP with `homer-id = 2001`, or `192.0.2.6:2223` for
+    /// one seen only in captured requests.
+    ///
+    /// **The rows are the allowlist.** An engine the traffic names that no
+    /// row (and neither `--rtpengine-control` nor `--rtpengine-engine`)
+    /// names is reported as `engine not listed` and is not asked. A later
+    /// `offer` at another engine marks a moved call; an engine it moved off
+    /// with no `delete` is flagged as a leftover session, and with
+    /// `--relay-previous-engine` it is asked to confirm. Needs
+    /// `--rtpengine-control`. Config: `[relay] ng_engines`, which this adds
+    /// to.
+    #[arg(
+        help_heading = "RTP",
+        long = "rtpengine-ng-engine",
+        value_name = "[HOMER-ID] LISTEN-NG",
+        value_parser = clap::value_parser!(crate::relay::engines::NgEngineRow)
+    )]
+    pub rtpengine_ng_engine: Vec<crate::relay::engines::NgEngineRow>,
 
     /// Read rtpproxy's control traffic on this UDP socket and name the calls
     /// its media belongs to.
@@ -7534,9 +7566,23 @@ impl Cli {
         )
     }
 
-    /// The engine rule this run chooses a call's relay engine by, from
-    /// `--rtpengine-engine`, `[relay] engines`, `--rtpengine-trust-sdp-address`
-    /// and `--relay-previous-engine`.
+    /// The port of `--rtpengine-control`, on which a captured `ng` request is
+    /// read for the engine it reached. `None` when the flag is not given or
+    /// does not parse as an address and port.
+    #[must_use]
+    pub fn rtpengine_control_port(&self) -> Option<u16> {
+        self.rtp_args
+            .rtpengine_control
+            .as_deref()?
+            .parse::<std::net::SocketAddr>()
+            .ok()
+            .map(|a| a.port())
+    }
+
+    /// The engine rules this run chooses a call's relay engine by, from
+    /// `--rtpengine-ng-engine`, `[relay] ng_engines`, `--rtpengine-engine`,
+    /// `[relay] engines`, `--rtpengine-trust-sdp-address` and
+    /// `--relay-previous-engine`.
     ///
     /// `None` when no rule is configured: every question goes to
     /// `--rtpengine-control`, as before engine selection existed.
@@ -7545,15 +7591,19 @@ impl Cli {
     ///
     /// [`crate::Error::CliValidation`] when the refused setting came from the
     /// command line, [`crate::Error::ConfigInvalid`] when it came from
-    /// `[relay] engines`: a row that does not parse, rows that overlap, a map
-    /// beside trusted SDP addresses, a rule without `--rtpengine-control`, or
-    /// the previous-engine option without a rule.
+    /// `[relay] engines` or `[relay] ng_engines`: a row that does not parse,
+    /// rows that overlap or name one engine twice, a map beside trusted SDP
+    /// addresses, a rule without `--rtpengine-control`, or the previous-engine
+    /// option without a rule.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn engine_selection(
         &self,
         config: &crate::config::Config,
     ) -> Result<Option<crate::relay::engines::EngineSelection>, crate::Error> {
-        use crate::relay::engines::{EngineMap, EngineRow, EngineRule, EngineSelection};
+        use crate::relay::engines::{
+            EngineMap, EngineRow, EngineRule, EngineRules, EngineSelection, NgEngineMap,
+            NgEngineRow,
+        };
         let rtp = &self.rtp_args;
         let mut rows: Vec<EngineRow> = rtp.rtpengine_engine.clone();
         for row in &config.relay.engines {
@@ -7562,21 +7612,24 @@ impl Cli {
                     .map_err(|e| engine_refusal(false, format!("[relay] engines: {e}")))?,
             );
         }
+        let mut ng_rows: Vec<NgEngineRow> = rtp.rtpengine_ng_engine.clone();
+        for row in &config.relay.ng_engines {
+            ng_rows.push(
+                row.parse::<NgEngineRow>()
+                    .map_err(|e| engine_refusal(false, format!("[relay] ng_engines: {e}")))?,
+            );
+        }
+        let ng_from_flag = !rtp.rtpengine_ng_engine.is_empty();
+        let ng = NgEngineMap::new(ng_rows).map_err(|e| {
+            engine_refusal(
+                ng_from_flag,
+                format!("--rtpengine-ng-engine / [relay] ng_engines: {e}"),
+            )
+        })?;
         let rows_from_flag = !rtp.rtpengine_engine.is_empty();
         let previous = rtp.relay_previous_engine;
-        let (rule, from_flag) = match (rows.is_empty(), rtp.rtpengine_trust_sdp_address) {
-            (true, None) => {
-                if previous {
-                    return Err(engine_refusal(
-                        true,
-                        "--relay-previous-engine needs an engine rule to name a previous \
-                         engine: add --rtpengine-engine rows, [relay] engines, or \
-                         --rtpengine-trust-sdp-address"
-                            .to_string(),
-                    ));
-                }
-                return Ok(None);
-            }
+        let (sdp, from_flag) = match (rows.is_empty(), rtp.rtpengine_trust_sdp_address) {
+            (true, None) => (None, ng_from_flag),
             (false, Some(_)) => {
                 return Err(engine_refusal(
                     true,
@@ -7587,21 +7640,34 @@ impl Cli {
                         .to_string(),
                 ));
             }
-            (true, Some(control_port)) => (EngineRule::TrustSdp { control_port }, true),
+            (true, Some(control_port)) => (Some(EngineRule::TrustSdp { control_port }), true),
             (false, None) => (
-                EngineRule::Map(EngineMap::new(rows).map_err(|e| {
+                Some(EngineRule::Map(EngineMap::new(rows).map_err(|e| {
                     engine_refusal(
                         rows_from_flag,
                         format!("--rtpengine-engine / [relay] engines: {e}"),
                     )
-                })?),
+                })?)),
                 rows_from_flag,
             ),
         };
+        if sdp.is_none() && ng.is_empty() {
+            if previous {
+                return Err(engine_refusal(
+                    true,
+                    "--relay-previous-engine needs an engine rule to name a previous \
+                     engine: add --rtpengine-engine rows, [relay] engines, \
+                     --rtpengine-trust-sdp-address, or --rtpengine-ng-engine rows"
+                        .to_string(),
+                ));
+            }
+            return Ok(None);
+        }
         if rtp.rtpengine_control.is_none() {
-            let rule = match rule {
-                EngineRule::Map(_) => "--rtpengine-engine (or [relay] engines)",
-                EngineRule::TrustSdp { .. } => "--rtpengine-trust-sdp-address",
+            let rule = match &sdp {
+                Some(EngineRule::Map(_)) => "--rtpengine-engine (or [relay] engines)",
+                Some(EngineRule::TrustSdp { .. }) => "--rtpengine-trust-sdp-address",
+                None => "--rtpengine-ng-engine (or [relay] ng_engines)",
             };
             return Err(engine_refusal(
                 from_flag,
@@ -7609,12 +7675,15 @@ impl Cli {
                     "{rule} needs --rtpengine-control as well: that engine answers \
                      the questions that are not about one call (the relay's \
                      statistics, the poll, startup reconciliation) and about a call \
-                     whose SDP sipnab has not seen. Name one engine's listen-ng \
+                     whose engine sipnab has not seen. Name one engine's listen-ng \
                      address, for example --rtpengine-control 192.0.2.5:2223"
                 ),
             ));
         }
-        Ok(Some(EngineSelection { rule, previous }))
+        Ok(Some(EngineSelection {
+            rules: EngineRules { sdp, ng },
+            previous,
+        }))
     }
 
     /// Where the actions journal lives: `--journal-dir`, else `[journal]
@@ -10001,8 +10070,8 @@ mod tests {
         let config =
             relay_config("[relay]\nengines = [\"203.0.113.5 40000-49999 192.0.2.6:2223\"]\n")?;
         let sel = cli.engine_selection(&config)?.ok_or("a rule")?;
-        match &sel.rule {
-            EngineRule::Map(map) => {
+        match &sel.rules.sdp {
+            Some(EngineRule::Map(map)) => {
                 let controls: Vec<String> =
                     map.rows().iter().map(|r| r.control.to_string()).collect();
                 assert_eq!(
@@ -10031,8 +10100,8 @@ mod tests {
             .engine_selection(&crate::config::Config::default())?
             .ok_or("a rule")?;
         assert_eq!(
-            sel.rule,
-            EngineRule::TrustSdp { control_port: 2223 },
+            sel.rules.sdp,
+            Some(EngineRule::TrustSdp { control_port: 2223 }),
             "trusting sdp takes its control port"
         );
         assert!(sel.previous, "trusting sdp takes its control port");
@@ -10128,6 +10197,146 @@ mod tests {
             }
             other => return Err(format!("a command-line refusal, got {other:?}").into()),
         }
+        Ok(())
+    }
+
+    /// The exported flag names are flags this program parses, so a message
+    /// that names one names a flag the operator can set.
+    #[test]
+    fn the_exported_relay_flag_names_are_real_flags() {
+        use clap::CommandFactory as _;
+        let longs: Vec<String> = Cli::command()
+            .get_arguments()
+            .filter_map(|a| a.get_long().map(|l| format!("--{l}")))
+            .collect();
+        for flag in [RELAY_CONTROL_FLAG, RELAY_NG_ENGINE_FLAG] {
+            assert!(longs.iter().any(|l| l == flag), "{flag} is not a flag");
+        }
+    }
+
+    /// The port captured `ng` requests are read on is the port of
+    /// `--rtpengine-control`, written as every surface parses it: an address
+    /// and port. Anything else gives no port, so nothing captured is read.
+    #[test]
+    fn the_ng_control_port_is_the_port_of_the_control_address() -> Result<(), TestError> {
+        let port = |args: &[&str]| -> Result<Option<u16>, TestError> {
+            Ok(engine_cli(args)?.rtpengine_control_port())
+        };
+        assert_eq!(
+            port(&["--rtpengine-control", "192.0.2.5:2223"])?,
+            Some(2223),
+            "an IPv4 address and port"
+        );
+        assert_eq!(
+            port(&["--rtpengine-control", "[2001:db8::5]:2224"])?,
+            Some(2224),
+            "an IPv6 address and port"
+        );
+        assert_eq!(
+            port(&["--rtpengine-control", "relay-without-a-port"])?,
+            None,
+            "not an address and port"
+        );
+        assert_eq!(port(&[])?, None, "no control address");
+        Ok(())
+    }
+
+    #[test]
+    fn ng_engine_rows_from_flags_and_config_make_one_map() -> Result<(), TestError> {
+        let cli = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-ng-engine",
+            "2001 192.0.2.5:2223",
+        ])?;
+        let config = relay_config("[relay]\nng_engines = [\"2002 -> 192.0.2.6:2223\"]\n")?;
+        let sel = cli.engine_selection(&config)?.ok_or("a rule")?;
+        let rows: Vec<String> = sel
+            .rules
+            .ng
+            .rows()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            rows,
+            ["2001 192.0.2.5:2223", "2002 192.0.2.6:2223"],
+            "ng engine rows from flags and config make one map"
+        );
+        assert_eq!(sel.rules.sdp, None, "no SDP rule was given");
+        Ok(())
+    }
+
+    #[test]
+    fn ng_engine_rows_sit_beside_an_sdp_map_and_name_a_previous_engine() -> Result<(), TestError> {
+        let cli = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-ng-engine",
+            "192.0.2.7:2223",
+            "--rtpengine-engine",
+            "203.0.113.5 30000-39999 192.0.2.5:2223",
+        ])?;
+        let sel = cli
+            .engine_selection(&crate::config::Config::default())?
+            .ok_or("a rule")?;
+        assert!(sel.rules.sdp.is_some(), "the SDP map is kept");
+        assert_eq!(sel.rules.ng.rows().len(), 1, "beside the ng engine row");
+        let previous = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-ng-engine",
+            "2001 192.0.2.5:2223",
+            "--relay-previous-engine",
+        ])?;
+        assert!(
+            previous
+                .engine_selection(&crate::config::Config::default())?
+                .is_some_and(|s| s.previous),
+            "ng engine rows alone can name a previous engine"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_bad_duplicate_or_unanchored_ng_engine_row_is_refused() -> Result<(), TestError> {
+        let alone = engine_cli(&["--rtpengine-ng-engine", "2001 192.0.2.5:2223"])?;
+        match alone.engine_selection(&crate::config::Config::default()) {
+            Err(crate::Error::CliValidation(why)) => {
+                assert!(
+                    why.starts_with(
+                        "--rtpengine-ng-engine (or [relay] ng_engines) needs --rtpengine-control"
+                    ),
+                    "{why}"
+                );
+            }
+            other => return Err(format!("a command-line refusal, got {other:?}").into()),
+        }
+        let cli = engine_cli(&["--rtpengine-control", "192.0.2.1:2223"])?;
+        let bad = relay_config("[relay]\nng_engines = [\"two 192.0.2.5:2223\"]\n")?;
+        match cli.engine_selection(&bad) {
+            Err(crate::Error::ConfigInvalid(why)) => {
+                assert!(why.starts_with("[relay] ng_engines"), "{why}");
+            }
+            other => return Err(format!("a config refusal, got {other:?}").into()),
+        }
+        let flagged = engine_cli(&[
+            "--rtpengine-control",
+            "192.0.2.1:2223",
+            "--rtpengine-ng-engine",
+            "2001 192.0.2.5:2223",
+        ])?;
+        let again = relay_config("[relay]\nng_engines = [\"2001 192.0.2.6:2223\"]\n")?;
+        match flagged.engine_selection(&again) {
+            Err(crate::Error::CliValidation(why)) => {
+                assert!(why.contains("both name homer-id 2001"), "{why}");
+            }
+            other => return Err(format!("a command-line refusal, got {other:?}").into()),
+        }
+        assert!(
+            engine_cli(&["--rtpengine-ng-engine", "2001 192.0.2.5"]).is_err(),
+            "a row with no port is refused as the flag is parsed"
+        );
         Ok(())
     }
 

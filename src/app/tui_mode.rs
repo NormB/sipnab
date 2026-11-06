@@ -1967,9 +1967,20 @@ mod tests {
     /// with the same options, and `--rtpproxy-control` is among them.
     #[test]
     fn the_tui_classifies_with_the_command_lines_options() -> Result<(), TestError> {
-        let cli = cli_from(&["--rtpproxy-control", "192.0.2.40:7722", "--no-dialog"]);
+        let cli = cli_from(&[
+            "--rtpproxy-control",
+            "192.0.2.40:7722",
+            "--no-dialog",
+            "--rtpengine-control",
+            "192.0.2.5:2223",
+        ]);
         let opts = super::tui_pipeline_options(&cli, &crate::config::Config::default(), true);
         assert_eq!(opts.rtpproxy_control, Some("192.0.2.40:7722".parse()?));
+        assert_eq!(
+            opts.ng_control_port,
+            Some(2223),
+            "captured ng is read on the --rtpengine-control port"
+        );
         assert!(opts.no_dialog);
         assert!(opts.no_rtp);
         assert_eq!(
@@ -1980,6 +1991,7 @@ mod tests {
         let plain =
             super::tui_pipeline_options(&cli_from(&[]), &crate::config::Config::default(), false);
         assert_eq!(plain.rtpproxy_control, None);
+        assert_eq!(plain.ng_control_port, None, "no control address, no port");
         assert!(!plain.no_dialog && !plain.no_rtp);
         assert!(!plain.hep_parse, "HEP is unwrapped only when asked");
         Ok(())
@@ -2520,7 +2532,7 @@ mod tests {
         use crate::tui::relay_stats::RelayQueryState;
         let cli = cli_from(&["--rtpengine-control", "127.0.0.1:22222"]);
         let selection = EngineSelection {
-            rule: EngineRule::TrustSdp { control_port: 2223 },
+            rules: EngineRule::TrustSdp { control_port: 2223 }.into(),
             previous: false,
         };
         let RelayQueryState::Ready(access) =

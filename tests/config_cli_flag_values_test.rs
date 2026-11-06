@@ -1037,6 +1037,32 @@ static SPECS: &[Spec] = &[
             "2223",
         ],
     ),
+    // `--rtpengine-ng-engine`: one ng engine row, `[HOMER-ID] LISTEN-NG`. It
+    // needs `--rtpengine-control`. The accepted rows name different
+    // homer-ids and addresses, so the flag and the key combine without
+    // naming one engine twice.
+    (
+        "rtpengine-ng-engine",
+        Kind::Text {
+            accept: &[
+                "2001 192.0.2.5:2223",
+                "2002 -> 192.0.2.6:2223",
+                "[2001:db8::7]:2223",
+                "192.0.2.8:2223",
+            ],
+            reject: &[
+                ("x", 2),
+                ("", 2),
+                ("2001", 2),
+                ("two 192.0.2.5:2223", 2),
+                ("4294967296 192.0.2.5:2223", 2),
+                ("2001 192.0.2.5", 2),
+                ("2001 192.0.2.5:2223 extra", 2),
+                ("2001 engine.example.com:2223", 2),
+            ],
+        },
+        &["--rtpengine-control", "127.0.0.1:22222"],
+    ),
     (
         "rtpproxy-control",
         Kind::Text {
