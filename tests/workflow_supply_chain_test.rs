@@ -798,3 +798,173 @@ fn no_workflow_level_permissions_block_grants_a_write_scope() -> Result<(), Test
     );
     Ok(())
 }
+
+/// cargo-nextest, which runs the suite, is installed through one pinned rule
+/// (TEST-DEADLINE-NEXTEST-SIPNAB).
+///
+/// `scripts/parallel-tests.py` runs the suite under the nextest version
+/// `.config/nextest.toml` pins and refuses any other, so every job that runs
+/// it must install that version first, and nothing else may install nextest.
+/// `.github/actions/nextest` is the one install: it names the same version as
+/// the config, a full SHA-256 for each runner it serves, a cache key made of
+/// the version, the target and the hash, a fetch only on a miss, a check on
+/// every run, and a save only from `main`.
+#[test]
+fn nextest_is_installed_through_one_pinned_rule() -> Result<(), TestError> {
+    const ACTION: &str = ".github/actions/nextest/action.yml";
+    const USES: &str = "uses: ./.github/actions/nextest";
+    let read = |rel: &str| -> Result<String, TestError> {
+        Ok(std::fs::read_to_string(repo().join(rel)).map_err(|e| format!("read {rel}: {e}"))?)
+    };
+    let pin = |text: &str, re: &str| -> Result<Vec<String>, TestError> {
+        let re = regex::Regex::new(re).map_err(|e| format!("regex: {e}"))?;
+        Ok(re.captures_iter(text).map(|c| c[1].to_string()).collect())
+    };
+
+    let config = read(".config/nextest.toml")?;
+    let action = read(ACTION)?;
+    let pinned = pin(
+        &config,
+        r#"(?m)^nextest-version = \{ required = "([0-9.]+)" \}$"#,
+    )?;
+    let installs = pin(&action, r"(?m)^\s+NEXTEST_VERSION: '([^']+)'$")?;
+    assert_eq!(
+        pinned.len(),
+        1,
+        ".config/nextest.toml pins no single nextest-version: {pinned:?}"
+    );
+    assert_eq!(
+        installs, pinned,
+        "{ACTION} installs cargo-nextest {installs:?} while .config/nextest.toml \
+         pins {pinned:?}: scripts/parallel-tests.py would refuse every CI run"
+    );
+    let hashes = pin(&action, r"(?m)^\s+NEXTEST_SHA256_[A-Z0-9_]+: '([^']*)'$")?;
+    assert!(
+        hashes.len() >= 3,
+        "{ACTION} pins {} tarball hash(es); the suite runs on aarch64 Linux, \
+         x86_64 Linux and macOS",
+        hashes.len()
+    );
+    for h in &hashes {
+        assert!(
+            h.len() == 64 && h.chars().all(|c| c.is_ascii_hexdigit()),
+            "{ACTION}: `{h}` is not a full SHA-256"
+        );
+    }
+    let key = "key: nextest-${{ steps.pick.outputs.version }}-${{ steps.pick.outputs.target }}-${{ steps.pick.outputs.sha256 }}";
+    assert_eq!(
+        action.matches(key).count(),
+        2,
+        "{ACTION}: the restore and the save must use the one key of version, \
+         target and hash"
+    );
+    assert_eq!(
+        action.matches("key: ").count(),
+        2,
+        "{ACTION} names a cache key other than the restore's and the save's"
+    );
+    // A job-private directory: the self-hosted runners share one home, and
+    // on run 42267347105 one Features job verified the tarball while the
+    // other was still writing it to the shared ~/.cache path (FAILED).
+    assert!(
+        !action.contains("~/.cache") && !action.contains("$HOME/.cache"),
+        "{ACTION} keeps the tarball under the home directory, which the \
+         self-hosted runners share; use the job's own ${{{{ runner.temp }}}}"
+    );
+    assert_eq!(
+        action
+            .matches("path: ${{ runner.temp }}/sipnab-nextest")
+            .count(),
+        2,
+        "{ACTION}: the restore and the save must use the job's own directory"
+    );
+    let step = |name: &str| -> Result<String, TestError> {
+        let at = action
+            .find(&format!("- name: {name}"))
+            .ok_or_else(|| format!("{ACTION} has no step {name:?}"))?;
+        let rest = &action[at..];
+        let end = rest[1..]
+            .find("\n    - name: ")
+            .map_or(rest.len(), |e| e + 1);
+        Ok(rest[..end].to_string())
+    };
+    let fetch = step("Fetch the cargo-nextest tarball")?;
+    let verify = step("Verify the cargo-nextest tarball")?;
+    let save = step("Save the cargo-nextest tarball")?;
+    assert!(
+        fetch.contains("if: steps.cache.outputs.cache-hit != 'true'"),
+        "{ACTION} fetches on a cache hit too:\n{fetch}"
+    );
+    assert!(
+        verify.contains("shasum -a 256 -c") && !verify.contains("if:"),
+        "{ACTION} does not check the tarball on every run:\n{verify}"
+    );
+    assert!(
+        save.contains("cache-hit != 'true'") && save.contains("github.ref == 'refs/heads/main'"),
+        "{ACTION} saves on a hit or off main:\n{save}"
+    );
+    let order: Vec<usize> = [
+        "Restore the cargo-nextest tarball",
+        "Fetch the cargo-nextest tarball",
+        "Verify the cargo-nextest tarball",
+        "Save the cargo-nextest tarball",
+        "Install cargo-nextest",
+    ]
+    .iter()
+    .map(|n| action.find(&format!("- name: {n}")).unwrap_or(usize::MAX))
+    .collect();
+    assert!(
+        order.windows(2).all(|w| w[0] < w[1]),
+        "{ACTION} runs restore, fetch, verify, save and install out of order: {order:?}"
+    );
+
+    // Every job that runs the suite installs nextest first; nothing else
+    // installs it.
+    let job_re =
+        regex::Regex::new(r"(?m)^  [A-Za-z0-9_-]+:\s*$").map_err(|e| format!("regex: {e}"))?;
+    let mut suite_jobs = 0usize;
+    for (name, body) in workflows()? {
+        for st in steps(&body) {
+            let another = st.contains("cargo install cargo-nextest")
+                || st.contains("get.nexte.st")
+                || (st.contains("install-action") && st.contains("nextest"));
+            assert!(
+                !another,
+                "{name} installs nextest another way; {ACTION} is the one install:\n{st}"
+            );
+        }
+        let starts: Vec<usize> = job_re.find_iter(&body).map(|m| m.start()).collect();
+        for (i, &start) in starts.iter().enumerate() {
+            let job = &body[start..starts.get(i + 1).copied().unwrap_or(body.len())];
+            let first_run = job
+                .match_indices("scripts/parallel-tests.py")
+                .filter(|(at, _)| !job[*at..].starts_with("scripts/parallel-tests.py merge"))
+                .map(|(at, _)| at)
+                .chain(
+                    job.match_indices("scripts/check-feature-matrix.py --group")
+                        .map(|(at, _)| at),
+                )
+                .filter(|&at| {
+                    // A mention in a comment is not a run.
+                    let line_start = job[..at].rfind('\n').map_or(0, |n| n + 1);
+                    !job[line_start..at].trim_start().starts_with('#')
+                })
+                .min();
+            let Some(run_at) = first_run else { continue };
+            suite_jobs += 1;
+            let label = job.lines().next().unwrap_or("?").trim();
+            let installed = job.find(USES);
+            assert!(
+                installed.is_some_and(|at| at < run_at),
+                "{name}: job `{label}` runs the suite without installing the pinned \
+                 cargo-nextest first ({USES})"
+            );
+        }
+    }
+    assert!(
+        suite_jobs >= 3,
+        "only {suite_jobs} job(s) found running the suite; ci.yml's check (macOS), \
+         test and features jobs all do, so the scan stopped matching"
+    );
+    Ok(())
+}

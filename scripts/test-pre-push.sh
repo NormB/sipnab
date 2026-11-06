@@ -785,9 +785,9 @@ fi
 # and passed, and the gate still refused v0.5.187 over the canceled one. Only
 # the LATEST run of each workflow speaks for the commit; `databaseId` and
 # `createdAt` say which that is.
-run_json() { # $1 = id, $2 = name, $3 = status, $4 = conclusion (json literal)
-	printf '{"databaseId":%s,"createdAt":"2026-09-23T10:%02d:00Z","headSha":"%s","status":"%s","conclusion":%s,"name":"%s"}' \
-		"$1" "$1" "$TAGGED" "$3" "$4" "$2"
+run_json() { # $1 = id, $2 = name, $3 = status, $4 = conclusion (json literal), $5 = event (default push)
+	printf '{"databaseId":%s,"createdAt":"2026-09-23T10:%02d:00Z","headSha":"%s","status":"%s","conclusion":%s,"name":"%s","event":"%s"}' \
+		"$1" "$1" "$TAGGED" "$3" "$4" "$2" "${5:-push}"
 }
 
 # SUPERSEDED: the older Quality run canceled, the newer one passed -> allowed.
@@ -833,6 +833,70 @@ elif ! blocked_for "Push blocked: CI on"; then
 	sed 's/^/    /' "$TMP/out.log"
 else
 	ok "tag gate blocks a commit whose latest run of a workflow is still running"
+fi
+
+# TAG-GATE-COUNTS-SCHEDULED-RUNS: a scheduled run is not a verdict on the
+# commit. A cron workflow (the ClusterFuzzLite batch run, the throughput
+# bench) runs against whatever main points at when the clock fires, so its
+# result says nothing about the change and its timing is the clock's. On
+# 2026-11-05 a scheduled ClusterFuzzLite batch run on the release commit held
+# the v0.5.234 tag for about an hour. Only runs a push or a pull request
+# started speak for the commit; `event` is what gh says started a run.
+
+# SCHEDULED IN FLIGHT: every push run green, a scheduled run still going -> allowed.
+make_gh "[$(run_json 1 CI completed '"success"'),$(run_json 2 ClusterFuzzLite in_progress null schedule)]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	ok "tag gate does not wait on a scheduled run still in flight"
+else
+	bad "tag gate BLOCKED a green commit on a scheduled run still in flight"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# SCHEDULED FAILED: a scheduled run's failure is not the commit's -> allowed.
+make_gh "[$(run_json 1 CI completed '"success"'),$(run_json 2 Throughput completed '"failure"' schedule)]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	ok "tag gate does not judge the commit by a scheduled run's failure"
+else
+	bad "tag gate BLOCKED a green commit on a scheduled run's failure"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# A NEWER SCHEDULED PASS does not excuse an older PUSH failure of the same
+# workflow: the scheduled run is set aside BEFORE the newest-per-workflow rule
+# picks, so the push run is still the one that speaks -> blocked.
+make_gh "[$(run_json 1 ClusterFuzzLite completed '"failure"'),$(run_json 2 ClusterFuzzLite completed '"success"' schedule),$(run_json 3 CI completed '"success"')]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a commit whose push run failed because a newer scheduled run of that workflow passed"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on"; then
+	bad "tag gate blocks a failed push run that a newer scheduled run passed over: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "tag gate blocks a failed push run whatever a newer scheduled run of that workflow says"
+fi
+
+# A PULL REQUEST run is still a gate: a pull_request run in flight blocks.
+make_gh "[$(run_json 1 CI completed '"success"'),$(run_json 2 Quality in_progress null pull_request)]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a commit whose pull_request run is still running"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on"; then
+	bad "tag gate blocks a pull_request run in flight: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "tag gate still blocks on a pull_request run in flight"
+fi
+
+# ONLY SCHEDULED RUNS: nothing a push started has verified the commit -> blocked.
+make_gh "[$(run_json 1 ClusterFuzzLite completed '"success"' schedule)]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a commit whose only runs were scheduled"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: no CI runs found"; then
+	bad "tag gate blocks a commit with only scheduled runs: blocked, but not by that gate"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "tag gate blocks a commit whose only runs were scheduled"
 fi
 
 # NO RUNS: the commit was never pushed, so nothing has verified it.

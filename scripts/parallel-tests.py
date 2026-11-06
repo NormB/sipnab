@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT OR Apache-2.0
 # SPDX-FileCopyrightText: The sipnab contributors
-"""Run `cargo test`'s test binaries side by side instead of one at a time.
+"""Run the test suite under cargo-nextest, with a deadline on every test.
 
-    parallel-tests.py [--jobs N] [--durations FILE] -- CARGO_TEST_ARGS...
-    parallel-tests.py run-spool [--jobs N] [--durations FILE] SPOOL
+    parallel-tests.py [--jobs N] -- CARGO_ARGS...
 
-`cargo test` runs every test binary in turn. Measured on 2026-09-29 (14
-cores): the suite's ~355 binaries took 355 s of running with one core busy,
-and 294 of them took under a second each. Tests INSIDE a binary already run
-on threads; only the binaries queue.
+The suite runs as `cargo nextest run --profile suite CARGO_ARGS`, then the
+doctests, which nextest does not run, as `cargo test CARGO_ARGS --doc`. The
+`suite` profile in .config/nextest.toml stops a test that runs past three
+60-second periods (`slow-timeout`), so one hung test fails as that test, by
+name, instead of holding the pre-commit hook until its wall-clock watchdog
+fires (TEST-DEADLINE-NEXTEST-SIPNAB). nextest runs every test in a process of
+its own, side by side, so no test binary waits on another; this replaced a
+pool that ran `cargo test`'s binaries side by side but bounded none of them.
 
-The first form builds with `cargo test`, but with a runner configured
-(scripts/record-test-binary.sh) that records each binary -- argv, working
-directory, environment, exactly as cargo would run it -- and exits 0 without
-running it. Doctests reach the runner too, but outside the target directory,
-and the recorder runs those on the spot (see its header for why).
-Then the recordings run in a pool of --jobs, the binary that took longest
-last time first, so the slowest one is not the last to start.
-
-Each binary's output is printed as ONE block after it exits, headed by the
-`Running` line cargo would have printed, so everything that reads `cargo
-test` output -- `test NAME ... FAILED`, the `---- NAME stdout ----` blocks,
-`test result:` lines -- reads this unchanged. Every binary runs even after
+Everything that reads the suite's output reads libtest's text: the hook's
+failure report (`test NAME ... FAILED`, `---- NAME stdout ----`, `test
+result:`) and scripts/published-test-count.py, which counts the `passed`
+field of every `test result` line. So this renders nextest's JUnit report in
+that shape, one block per test binary, headed by a `Running` line, after the
+run; the doctests print libtest's own text. nextest's progress (its `SLOW`,
+`FAIL` and `TIMEOUT` lines) goes to standard error. Every test runs after
 one fails, and the exit status is non-zero if any failed.
 
-The second form runs an already-recorded spool; the tests drive it directly.
+--jobs N becomes nextest's `--test-threads N` (1 runs one test at a time).
+
+The installed cargo-nextest must be the version `nextest-version` pins in
+.config/nextest.toml; a run with another stops before building, naming the
+install command. check-hook-prerequisites.py asks the same question before
+the pre-commit hook runs anything.
 
     parallel-tests.py --shard-index I --shard-count N --manifest FILE -- ARGS...
     parallel-tests.py merge --output FILE SHARD_DIR...
@@ -36,7 +39,7 @@ targets, and `partition` decides which of them shard I (0-based) of N
 compiles and runs; shard 0 also takes the library and binary unit tests and
 the doctests. Each shard builds the examples, as plain `cargo test` does,
 because tests/examples_run_test.rs runs them. Compiling is the larger half of
-the suite's time, so a shard names its targets to cargo (`--test NAME ...`)
+the suite's time, so a shard names its targets to nextest (`--test NAME ...`)
 and compiles nothing else. FILE records what the shard ran.
 
 `merge` reads each SHARD_DIR's manifest and output, refuses a set that is not
@@ -50,119 +53,179 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
-import threading
-import time
-from concurrent.futures import ThreadPoolExecutor
+import tomllib
+import xml.etree.ElementTree as ET
 
-RECORDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "record-test-binary.sh")
-# Measured 2026-09-29 on 14 cores: 8 jobs and 14 both ran the suite in 58 s
-# (serial: 314 s), so more than 8 buys nothing and costs headroom.
-DEFAULT_JOBS = max(1, min(8, os.cpu_count() or 1))
-RUNNING = re.compile(r"^\s+Running (.+) \((.+)\)\s*$")
-
-
-def read_nul(path: str) -> list[str]:
-    with open(path, "rb") as f:
-        data = f.read().decode("utf-8", "surrogateescape")
-    return [item for item in data.split("\0") if item]
+REPO = pathlib.Path(__file__).resolve().parent.parent
+# The nextest profile every suite run uses, in the hook and in CI, and the
+# JUnit file it writes, under <target>/nextest/<profile>/.
+PROFILE = "suite"
+JUNIT = "junit.xml"
+# nextest's store directory, relative to the WORKSPACE ROOT: it does not
+# follow CARGO_TARGET_DIR, so on CI's self-hosted runners, whose build
+# directory is outside the checkout, the report is not under the directory
+# `cargo metadata` names as the target. .config/nextest.toml sets it to this
+# explicitly.
+STORE_DEFAULT = "target/nextest"
 
 
-def load_spool(spool: str) -> list[dict]:
-    """The recorded binaries, in a stable order."""
-    records = []
-    for name in sorted(os.listdir(spool)):
-        path = os.path.join(spool, name)
-        if not os.path.isdir(path):
-            continue
-        if not os.path.exists(os.path.join(path, "ready")):
-            sys.exit(f"parallel-tests: {path} was never finished recording")
-        with open(os.path.join(path, "cwd"), encoding="utf-8", errors="surrogateescape") as f:
-            cwd = f.read().rstrip("\n")
-        env = dict(item.split("=", 1) for item in read_nul(os.path.join(path, "env")) if "=" in item)
-        argv = read_nul(os.path.join(path, "argv"))
-        records.append({"argv": argv, "cwd": cwd, "env": env, "label": argv[0]})
-    # By path: the spool's directory names are random, and an order that
-    # changes from run to run would hide a lost duration sort.
-    return sorted(records, key=lambda r: r["argv"])
+def nextest_version(repo: pathlib.Path = REPO) -> str:
+    """The cargo-nextest version .config/nextest.toml pins."""
+    config = tomllib.loads((repo / ".config/nextest.toml").read_text(encoding="utf-8"))
+    pinned = config.get("nextest-version")
+    if isinstance(pinned, dict):
+        pinned = pinned.get("required")
+    if not isinstance(pinned, str):
+        raise ValueError(".config/nextest.toml pins no nextest-version")
+    return pinned
 
 
-def load_durations(path: str) -> dict[str, float]:
+def report_path(metadata: dict, repo: pathlib.Path = REPO) -> pathlib.Path:
+    """Where `cargo nextest run --profile suite` writes its JUnit report.
+
+    `<workspace root>/<store dir>/<profile>/<junit path>`, the store directory
+    read from .config/nextest.toml's `[store] dir`.
+    """
+    config = tomllib.loads((repo / ".config/nextest.toml").read_text(encoding="utf-8"))
+    store = config.get("store", {}).get("dir", STORE_DEFAULT)
+    return pathlib.Path(metadata["workspace_root"], store, PROFILE, JUNIT)
+
+
+def nextest_problem(pinned: str, reported: str | None) -> str | None:
+    """Why the installed cargo-nextest cannot run the suite, or None.
+
+    `reported` is what `cargo nextest --version` printed, None when it could
+    not run. Only the pinned version is accepted: a newer one can change what
+    the suite profile means, and an older one may not read it.
+    """
+    fix = f"cargo install cargo-nextest --locked --version {pinned}"
+    if reported is None:
+        return f"cargo-nextest is not installed; the suite runs under {pinned}. Install it: {fix}"
+    m = re.search(r"cargo-nextest (\d+\.\d+\.\d+)", reported)
+    found = m.group(1) if m else reported.strip()
+    if found != pinned:
+        return f"cargo-nextest {found} is installed; the suite runs under {pinned}. Install it: {fix}"
+    return None
+
+
+def installed_nextest() -> str | None:
+    """What `cargo nextest --version` prints, or None when it cannot run."""
     try:
-        with open(path, encoding="utf-8") as f:
-            data = json.load(f)
-        return {str(k): float(v) for k, v in data.items()}
-    except (OSError, ValueError, AttributeError):
-        return {}
-
-
-def save_durations(path: str, durations: dict[str, float]) -> None:
-    tmp = f"{path}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(durations, f, indent=0, sort_keys=True)
-        os.replace(tmp, path)
-    except OSError as e:
-        # Only the scheduling order is lost; the run's verdict stands.
-        print(f"parallel-tests: could not save {path}: {e}", file=sys.stderr)
-
-
-def run_records(records: list[dict], jobs: int, durations_path: str) -> int:
-    """Run every record in a pool; 0 only if every binary passed."""
-    if not records:
-        print(
-            "parallel-tests: no test binaries were recorded, so nothing ran. "
-            "A run that tests nothing must not pass.",
-            file=sys.stderr,
+        proc = subprocess.run(
+            ["cargo", "nextest", "--version"], capture_output=True, text=True, check=False
         )
-        return 2
-    previous = load_durations(durations_path)
-    # Unknown binaries sort as slowest: a new one may well be long.
-    records = sorted(records, key=lambda r: -previous.get(r["label"], float("inf")))
-    lock = threading.Lock()
-    measured: dict[str, float] = {}
-    failed: list[str] = []
+    except OSError:
+        return None
+    return proc.stdout if proc.returncode == 0 else None
 
-    def run(record: dict) -> None:
-        started = time.monotonic()
-        try:
-            proc = subprocess.run(
-                record["argv"],
-                cwd=record["cwd"],
-                env=record["env"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                check=False,
-            )
-        except OSError as e:
-            # That binary's failure, not the pool's: the rest still run.
-            proc = subprocess.CompletedProcess(record["argv"], 127, f"could not start: {e}\n".encode())
-        elapsed = time.monotonic() - started
-        with lock:
-            measured[record["label"]] = round(elapsed, 3)
-            if proc.returncode != 0:
-                failed.append(record["label"])
-            out = sys.stdout.buffer
-            out.write(f"     Running {record['label']}\n".encode())
-            out.write(proc.stdout)
-            if proc.stdout and not proc.stdout.endswith(b"\n"):
-                out.write(b"\n")
-            if proc.returncode != 0:
-                out.write(f"error: {record['label']} exited with status {proc.returncode}\n".encode())
-            out.flush()
 
-    with ThreadPoolExecutor(max_workers=max(1, jobs)) as pool:
-        for future in [pool.submit(run, r) for r in records]:
-            future.result()
-    save_durations(durations_path, {**previous, **measured})
-    if failed:
-        print(f"error: {len(failed)} test binaries failed: {' '.join(sorted(failed))}")
-        return 1
-    return 0
+def _text(element: ET.Element | None) -> str:
+    return (element.text or "") if element is not None else ""
+
+
+def _own_output(text: str, name: str) -> list[str]:
+    """`text` without the harness lines of test `name`'s own libtest.
+
+    nextest runs each test as `<binary> --exact NAME --nocapture`, so the
+    text libtest prints around the test's output lands in what nextest
+    captured. Carried into a failure block, its `test result:` line would be
+    counted as a binary's result.
+    """
+    harness = {
+        "running 1 test",
+        "failures:",
+        f"    {name}",
+        f"---- {name} stdout ----",
+        *(f"test {name} ... {v}" for v in ("ok", "FAILED", "ignored")),
+    }
+    lines = [
+        line
+        for line in text.splitlines()
+        if line not in harness and not line.startswith("test result: ")
+    ]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
+def render_junit(xml_text: str) -> tuple[str, int, int]:
+    """nextest's JUnit report as libtest text: (text, passed, failed).
+
+    One block per test binary, binaries and tests in name order: a `Running`
+    line, a `test NAME ... ok|FAILED` line per test, a `---- NAME stdout ----`
+    block per failure (the panic, then the test's own output), and a `test
+    result:` line whose third and fourth fields are libtest's. nextest does
+    not report skipped (ignored) tests, so the line says so rather than
+    printing a count. A report that cannot be read, or that holds no test, is
+    refused: a run that tested nothing must not pass.
+    """
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as e:
+        raise ValueError(f"the nextest report cannot be read: {e}") from e
+    out: list[str] = []
+    passed = failed = 0
+    suites = sorted(root.iter("testsuite"), key=lambda s: s.get("name", ""))
+    for suite in suites:
+        cases = sorted(suite.iter("testcase"), key=lambda c: c.get("name", ""))
+        if not cases:
+            continue
+        lines = [f"     Running {suite.get('name', '?')}", ""]
+        blocks: list[str] = []
+        names: list[str] = []
+        ok = bad = 0
+        seconds = 0.0
+        for case in cases:
+            name = case.get("name", "?")
+            try:
+                seconds += float(case.get("time", "0"))
+            except ValueError:
+                pass
+            problem = case.find("failure")
+            if problem is None:
+                problem = case.find("error")
+            if problem is None:
+                ok += 1
+                lines.append(f"test {name} ... ok")
+                continue
+            bad += 1
+            names.append(name)
+            lines.append(f"test {name} ... FAILED")
+            body: list[str] = []
+            if problem.get("type") == "test timeout":
+                body.append(
+                    "cargo-nextest stopped this test: it ran past the slow-timeout "
+                    f"of the {PROFILE} profile in .config/nextest.toml."
+                )
+            body += _own_output(_text(problem), name) or _own_output(problem.get("message", ""), name)
+            body += _own_output(_text(case.find("system-out")), name)
+            body += [line for line in _own_output(_text(case.find("system-err")), name) if line not in body]
+            blocks.append("\n".join([f"---- {name} stdout ----", *body]))
+        if blocks:
+            lines += ["", "failures:", ""]
+            for block in blocks:
+                lines += [block, ""]
+            lines += ["failures:", *(f"    {n}" for n in names)]
+        verdict = "ok" if bad == 0 else "FAILED"
+        lines += [
+            "",
+            f"test result: {verdict}. {ok} passed; {bad} failed; ignored tests are not "
+            f"reported by cargo-nextest; finished in {seconds:.2f}s",
+            "",
+        ]
+        out += lines
+        passed += ok
+        failed += bad
+    if passed + failed == 0:
+        raise ValueError("the nextest report holds no test, so nothing was tested")
+    return "\n".join(out) + "\n", passed, failed
 
 
 def cargo_metadata() -> dict:
@@ -172,10 +235,6 @@ def cargo_metadata() -> dict:
         check=True,
     )
     return json.loads(out.stdout)
-
-
-def target_dir() -> str:
-    return cargo_metadata()["target_directory"]
 
 
 # The library and binary unit tests and the doctests: one item of the
@@ -224,26 +283,6 @@ def partition(targets: list[str], count: int, unit_weight: int = UNIT_WEIGHT) ->
     return shards
 
 
-def shard_commands(shard: list[str], cargo_args: list[str]) -> list[list[str]]:
-    """The cargo commands one shard runs, in order, without the `cargo`.
-
-    Arguments after `--` go to the test binaries, so they reach only the
-    `cargo test` runs. `--doc` cannot be combined with another target flag,
-    so the doctests are a run of their own.
-    """
-    split = cargo_args.index("--") if "--" in cargo_args else len(cargo_args)
-    cargo, harness = cargo_args[:split], cargo_args[split:]
-    commands = [["build", *cargo, "--examples"]]
-    selection: list[str] = []
-    if UNIT_TESTS in shard:
-        selection += ["--lib", "--bins"]
-    for target in shard:
-        if target != UNIT_TESTS:
-            selection += ["--test", target]
-    commands.append(["test", *cargo, *selection, *harness])
-    if UNIT_TESTS in shard:
-        commands.append(["test", *cargo, "--doc", *harness])
-    return commands
 
 
 def merge_problems(manifests: list[dict]) -> list[str]:
@@ -311,72 +350,113 @@ def merge(output: str, dirs: list[str]) -> int:
     return 0
 
 
-def run_shard(index: int, count: int, manifest: str, cargo_args: list[str], jobs: int, durations: str | None) -> int:
-    shards = partition(test_targets(cargo_metadata()), count)
-    if not 0 <= index < count:
-        sys.exit(f"parallel-tests: shard index {index} is outside 0..{count - 1}")
-    mine = shards[index]
-    with open(manifest, "w", encoding="utf-8") as f:
-        json.dump({"index": index, "count": count, "targets": mine, "all": [t for s in shards for t in s]}, f, indent=0)
-    print(f"parallel-tests: shard {index} of {count}: {len(mine)} of {sum(map(len, shards))} items", flush=True)
+
+def split_args(cargo_args: list[str]) -> tuple[list[str], list[str]]:
+    """(cargo's arguments, the arguments after `--` including it)."""
+    split = cargo_args.index("--") if "--" in cargo_args else len(cargo_args)
+    return cargo_args[:split], cargo_args[split:]
+
+
+def nextest_command(cargo: list[str], selection: list[str], harness: list[str], jobs: int | None) -> list[str]:
+    threads = ["--test-threads", str(jobs)] if jobs else []
+    return ["nextest", "run", "--profile", PROFILE, *threads, *cargo, *selection, *harness]
+
+
+def suite_commands(cargo_args: list[str], jobs: int | None = None) -> list[list[str]]:
+    """The cargo commands an unsharded run makes, in order, without the `cargo`.
+
+    `cargo nextest run` builds what `cargo test` builds, examples included,
+    and runs every test target; the doctests are a run of their own.
+    """
+    cargo, harness = split_args(cargo_args)
+    return [nextest_command(cargo, [], harness, jobs), ["test", *cargo, "--doc", *harness]]
+
+
+def shard_commands(shard: list[str], cargo_args: list[str], jobs: int | None = None) -> list[list[str]]:
+    """The cargo commands one shard runs, in order, without the `cargo`.
+
+    Arguments after `--` go to the test binaries, so they reach only the test
+    runs. `--doc` cannot be combined with another target flag, so the
+    doctests are a run of their own.
+    """
+    cargo, harness = split_args(cargo_args)
+    commands = [["build", *cargo, "--examples"]]
+    selection: list[str] = []
+    if UNIT_TESTS in shard:
+        selection += ["--lib", "--bins"]
+    for target in shard:
+        if target != UNIT_TESTS:
+            selection += ["--test", target]
+    commands.append(nextest_command(cargo, selection, harness, jobs))
+    if UNIT_TESTS in shard:
+        commands.append(["test", *cargo, "--doc", *harness])
+    return commands
+
+
+def run_nextest(cmd: list[str]) -> int:
+    """Run one `cargo nextest run`, then print its report as libtest text."""
+    report = report_path(cargo_metadata())
+    # A report left by an earlier run must never stand in for this one:
+    # nextest writes none when the build fails.
+    report.unlink(missing_ok=True)
+    sys.stdout.flush()
+    # nextest's own progress goes to standard error; standard output carries
+    # only the rendered report and the doctests, the text the readers parse.
+    rc = subprocess.run(["cargo", *cmd], stdout=sys.stderr, check=False).returncode
+    try:
+        text, _passed, failed = render_junit(report.read_text(encoding="utf-8"))
+    except OSError:
+        print(f"parallel-tests: cargo nextest exited {rc} and wrote no report at {report}", file=sys.stderr)
+        return rc or 1
+    except ValueError as e:
+        print(f"parallel-tests: {e} ({report})", file=sys.stderr)
+        return rc or 1
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    if failed and rc == 0:
+        return 1
+    return rc
+
+
+def run_commands(commands: list[list[str]]) -> int:
+    """Run each command in turn, every one even after a failure; 0 if all passed."""
     rc = 0
-    for cmd in shard_commands(mine, cargo_args):
+    for cmd in commands:
         if cmd[0] == "build":
             built = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False).returncode
             if built != 0:
                 return built
+        elif cmd[0] == "nextest":
+            rc = run_nextest(cmd) or rc
         else:
-            rc = capture_and_run(cmd[1:], jobs, durations) or rc
+            sys.stdout.flush()
+            rc = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False).returncode or rc
     return rc
 
 
-def capture_and_run(cargo_args: list[str], jobs: int, durations: str | None) -> int:
-    target = target_dir()
-    os.makedirs(target, exist_ok=True)
-    durations = durations or os.path.join(target, "sipnab-test-durations.json")
-    spool = tempfile.mkdtemp(prefix="parallel-tests-", dir=target)
-    try:
-        runner = "[" + ", ".join(json.dumps(x) for x in ["sh", RECORDER, spool, target]) + "]"
-        cmd = ["cargo", "--config", f"target.'cfg(all())'.runner = {runner}", "test", *cargo_args]
-        labels: dict[str, str] = {}
-        cargo_reported = False
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        assert proc.stdout is not None
-        for raw in proc.stdout:
-            line = raw.decode("utf-8", "replace")
-            m = RUNNING.match(line)
-            if m:
-                # Reprinted with the binary's output once it has run.
-                labels[os.path.basename(m.group(2))] = m.group(1)
-                continue
-            cargo_reported = cargo_reported or line.startswith("test result:")
-            sys.stdout.write(line)
-            sys.stdout.flush()
-        cargo_rc = proc.wait()
-        records = load_spool(spool)
-        # Nothing recorded is a real run when cargo ran the tests itself --
-        # `-- --doc`, whose doctests all run on the spot -- or failed first.
-        # Only when nothing reported a result at all is it a capture that
-        # did not happen, and run_records refuses that.
-        if not records and (cargo_rc != 0 or cargo_reported):
-            return cargo_rc
-        for r in records:
-            r["label"] = labels.get(os.path.basename(r["argv"][0]), r["argv"][0])
-        rc = run_records(records, jobs, durations)
-        return cargo_rc or rc
-    finally:
-        shutil.rmtree(spool, ignore_errors=True)
+def check_nextest() -> int:
+    problem = nextest_problem(nextest_version(), installed_nextest())
+    if problem:
+        print(f"parallel-tests: {problem}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def run_shard(index: int, count: int, manifest: str, cargo_args: list[str], jobs: int | None) -> int:
+    shards = partition(test_targets(cargo_metadata()), count)
+    if not 0 <= index < count:
+        sys.exit(f"parallel-tests: shard index {index} is outside 0..{count - 1}")
+    if check_nextest():
+        return 2
+    mine = shards[index]
+    with open(manifest, "w", encoding="utf-8") as f:
+        json.dump({"index": index, "count": count, "targets": mine, "all": [t for s in shards for t in s]}, f, indent=0)
+    print(f"parallel-tests: shard {index} of {count}: {len(mine)} of {sum(map(len, shards))} items", flush=True)
+    return run_commands(shard_commands(mine, cargo_args, jobs))
 
 
 def main() -> int:
     argv = sys.argv[1:]
-    if argv[:1] == ["run-spool"]:
-        p = argparse.ArgumentParser(prog="parallel-tests.py run-spool")
-        p.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
-        p.add_argument("--durations", required=True)
-        p.add_argument("spool")
-        a = p.parse_args(argv[1:])
-        return run_records(load_spool(a.spool), a.jobs, a.durations)
     if argv[:1] == ["merge"]:
         p = argparse.ArgumentParser(prog="parallel-tests.py merge")
         p.add_argument("--output", required=True)
@@ -384,20 +464,23 @@ def main() -> int:
         a = p.parse_args(argv[1:])
         return merge(a.output, a.dirs)
     p = argparse.ArgumentParser(prog="parallel-tests.py")
-    p.add_argument("--jobs", type=int, default=DEFAULT_JOBS)
-    p.add_argument("--durations")
+    p.add_argument("--jobs", type=int)
     p.add_argument("--shard-index", type=int)
     p.add_argument("--shard-count", type=int)
     p.add_argument("--manifest")
     p.add_argument("cargo_args", nargs=argparse.REMAINDER)
     a = p.parse_args(argv)
+    if a.jobs is not None and a.jobs < 1:
+        p.error("--jobs must be at least 1")
     cargo_args = a.cargo_args[1:] if a.cargo_args[:1] == ["--"] else a.cargo_args
     sharded = (a.shard_index, a.shard_count, a.manifest)
     if any(x is not None for x in sharded):
         if any(x is None for x in sharded):
             p.error("--shard-index, --shard-count and --manifest go together")
-        return run_shard(a.shard_index, a.shard_count, a.manifest, cargo_args, a.jobs, a.durations)
-    return capture_and_run(cargo_args, a.jobs, a.durations)
+        return run_shard(a.shard_index, a.shard_count, a.manifest, cargo_args, a.jobs)
+    if check_nextest():
+        return 2
+    return run_commands(suite_commands(cargo_args, a.jobs))
 
 
 if __name__ == "__main__":

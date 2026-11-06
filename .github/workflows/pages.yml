@@ -304,16 +304,19 @@ jobs:
       # is `script-src 'self'` with no 'unsafe-inline', so the search runtime,
       # its wasm and its index chunks have to be same-origin. This step is what
       # makes them so -- it writes them into the deployed tree.
+      #
+      # The binary comes from the actions cache, keyed on PAGEFIND_VERSION and
+      # PAGEFIND_SHA256, and from GitHub releases only on a miss; the sha256 is
+      # checked either way. quality.yml installs it through the same action.
+      - name: Install Pagefind (pinned, cached)
+        uses: ./.github/actions/pagefind
+        with:
+          version: ${{ env.PAGEFIND_VERSION }}
+          sha256: ${{ env.PAGEFIND_SHA256 }}
+
       - name: Index the site for search (Pagefind)
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o pagefind.tar.gz \
-            "https://github.com/CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/pagefind-v${PAGEFIND_VERSION}-x86_64-unknown-linux-musl.tar.gz"
-          echo "${PAGEFIND_SHA256}  pagefind.tar.gz" | sha256sum -c -
-          tar xzf pagefind.tar.gz
-          sudo install -m 0755 pagefind /usr/local/bin/pagefind
-          rm -f pagefind pagefind.tar.gz
-          pagefind --version
           pagefind --site website/public
           # A missing index is invisible from the outside: the page still
           # returns 200, the search box simply never appears. Fail the build

@@ -225,31 +225,47 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	} > "$_d/website/static/wasm/sipnab.js"
 	printf '\0asm' > "$_d/website/static/wasm/sipnab_bg.wasm"
 
-	# The cargo stub. Every invocation is logged; `test` emits the canned
-	# per-binary results the caller asked for, wherever it sits on the line:
-	# the suite runs as `cargo --config <runner> test ...` (via
+	# The cargo stub. Every invocation is logged except `nextest --version`,
+	# which scripts/check-hook-prerequisites.py and scripts/parallel-tests.py
+	# ask before anything runs: it prints the version in $_d/nextest-version,
+	# or fails as an absent cargo-nextest does when that file is missing.
+	# The suite runs as `cargo nextest run --profile suite ...` (via
 	# scripts/parallel-tests.py, which also asks `cargo metadata` for the
-	# target directory). The stub runs no runner, so every result comes from
-	# cargo itself -- the shape parallel-tests.py passes straight through.
+	# target directory): the stub writes the canned JUnit report where nextest
+	# writes it, one test binary per number the caller asked for, and
+	# parallel-tests.py renders it as libtest text. The doctests run as
+	# `cargo test ... --doc` and report none.
 	#
-	# The suite's own invocation (the one carrying the recording runner) also
-	# writes the SIPNAB_* variables it can see to pool-env: the pool and every
-	# test binary inherit exactly that environment, so Scenario 1c reads
-	# from it what the suite was given.
+	# The suite's own invocation also writes the SIPNAB_* variables it can see
+	# to pool-env: nextest and every test process inherit exactly that
+	# environment, so Scenario 1c reads from it what the suite was given.
 	cat > "$_d/bin/cargo" <<-EOF
 		#!/bin/sh
+		if [ "\$1 \$2" = "nextest --version" ]; then
+		  [ -f "$_d/nextest-version" ] || exit 101
+		  echo "cargo-nextest \$(cat "$_d/nextest-version") (stub)"; exit 0
+		fi
 		echo "\$*" >> "$_d/cargo-invocations"
-		case "\$*" in
-		  *record-test-binary*) env | grep '^SIPNAB_' | sort > "$_d/pool-env" ;;
+		case "\$1" in
+		  nextest)
+		    env | grep '^SIPNAB_' | sort > "$_d/pool-env"
+		    mkdir -p "$_d/target/nextest/suite"
+		    cp "$_d/canned-junit.xml" "$_d/target/nextest/suite/junit.xml"
+		    exit 0 ;;
+		  test) echo 'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s'; exit 0 ;;
 		esac
 		for _a in "\$@"; do
 		  case "\$_a" in
-		    test) cat "$_d/canned-test-output"; exit 0 ;;
-		    metadata) echo '{"target_directory": "$_d/target"}'; exit 0 ;;
+		    metadata) echo '{"target_directory": "$_d/target", "workspace_root": "$_d"}'; exit 0 ;;
 		  esac
 		done
 		exit 0
 	EOF
+	# The pinned nextest, and the config that pins it, which
+	# parallel-tests.py reads from the tree it runs in.
+	mkdir -p "$_d/.config"
+	cp "$REPO_ROOT/.config/nextest.toml" "$_d/.config/nextest.toml"
+	sed -n 's/^nextest-version = { required = "\(.*\)" }$/\1/p' "$REPO_ROOT/.config/nextest.toml" > "$_d/nextest-version"
 	chmod +x "$_d/bin/cargo"
 	# The rustfmt stub, for the same reason: the format gate
 	# (scripts/check-rustfmt.sh) calls rustfmt directly, not through cargo,
@@ -259,12 +275,24 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	printf '#!/bin/sh\necho "rustfmt $*" >> "%s/cargo-invocations"\nexit 0\n' "$_d" > "$_d/bin/rustfmt"
 	chmod +x "$_d/bin/rustfmt"
 	: > "$_d/cargo-invocations"
-	: > "$_d/canned-test-output"
 	_total=0
-	for _n in "$@"; do
-		echo "test result: ok. $_n passed; 0 failed; 0 ignored" >> "$_d/canned-test-output"
-		_total=$((_total + _n))
-	done
+	_bin=0
+	{
+		echo '<?xml version="1.0" encoding="UTF-8"?>'
+		echo '<testsuites name="nextest-run">'
+		for _n in "$@"; do
+			_bin=$((_bin + 1))
+			echo "<testsuite name=\"sipnab::bin$_bin\" tests=\"$_n\">"
+			_i=0
+			while [ "$_i" -lt "$_n" ]; do
+				_i=$((_i + 1))
+				echo "<testcase name=\"t$_i\" classname=\"sipnab::bin$_bin\" time=\"0.001\"/>"
+			done
+			echo '</testsuite>'
+			_total=$((_total + _n))
+		done
+		echo '</testsuites>'
+	} > "$_d/canned-junit.xml"
 	# The homepage the hook will check. It carries no number: the count is
 	# generated at deploy time from the file this loads.
 	cat > "$_d/website/templates/index.html" <<-'EOF'
@@ -333,21 +361,28 @@ D=$(sandbox 264 1600 974)
 run_hook "$D"
 # The FULL suite: `cargo test -p sipnab-bpf-types` is a separate, deliberate
 # run of another package and is not the regression this counts.
-RUNS=$(grep -c 'test --features full' "$D/cargo-invocations" || true)
+RUNS=$(grep -c '^nextest run --profile suite --features full' "$D/cargo-invocations" || true)
 if [ "$RUNS" -eq 1 ]; then
-	ok "hook invoked 'cargo test' exactly once (counted $RUNS actual invocations)"
+	ok "hook ran the suite exactly once (counted $RUNS actual invocations)"
 else
-	bad "hook must invoke 'cargo test' exactly once, it invoked it $RUNS times (a second run is the flaky-count regression)"
+	bad "hook must run the suite exactly once, it ran it $RUNS times (a second run is the flaky-count regression)"
+fi
+DOCS=$(grep -c '^test --features full.* --doc$' "$D/cargo-invocations" || true)
+if [ "$DOCS" -eq 1 ]; then
+	ok "hook ran the doctests exactly once, beside the nextest run"
+else
+	bad "hook must run the doctests once (nextest does not run them), it ran them $DOCS times: $(cat "$D/cargo-invocations")"
 fi
 
-# ── Scenario 1b: the suite's binaries run side by side ─────────────────────
-# `cargo test` runs its ~355 binaries one at a time: 314 s serial against 58 s
-# through scripts/parallel-tests.py (measured 2026-09-29). The hook must hand
-# cargo the recording runner that makes that possible.
-if grep -q 'record-test-binary.sh' "$D/cargo-invocations"; then
-	ok "hook runs the suite through the parallel runner"
+# ── Scenario 1b: the suite runs under nextest, with a deadline per test ────
+# `cargo test` bounds no single test, so one hung test held the hook until
+# its 30-minute watchdog (TEST-DEADLINE-NEXTEST-SIPNAB). The hook must run the
+# suite through scripts/parallel-tests.py, whose `suite` nextest profile
+# stops a test past its slow-timeout.
+if grep -q '^nextest run --profile suite ' "$D/cargo-invocations"; then
+	ok "hook runs the suite under nextest's suite profile"
 else
-	bad "hook ran the suite without scripts/parallel-tests.py: $(cat "$D/cargo-invocations")"
+	bad "hook ran the suite without nextest's suite profile: $(cat "$D/cargo-invocations")"
 fi
 
 # ── Scenario 1c: the suite runs without the private capture corpus ────────
@@ -1112,6 +1147,20 @@ D=$(prereq_sandbox)
 rm -rf "$D/crates/g729/test-vectors" "$D/.vale/styles/Google"
 timed_hook
 refused_at_once "both missing, both named" "python3 scripts/fetch-g729-vectors.py" "vale sync"
+rm -rf "$D"
+
+# cargo-nextest runs the suite, at the version .config/nextest.toml pins.
+NEXTEST_PIN=$(sed -n 's/^nextest-version = { required = "\(.*\)" }$/\1/p' "$REPO_ROOT/.config/nextest.toml")
+D=$(prereq_sandbox)
+rm -f "$D/nextest-version"
+timed_hook
+refused_at_once "cargo-nextest not installed" "cargo install cargo-nextest --locked --version $NEXTEST_PIN"
+rm -rf "$D"
+
+D=$(prereq_sandbox)
+echo 0.0.1 > "$D/nextest-version"
+timed_hook
+refused_at_once "another cargo-nextest version installed" "cargo install cargo-nextest --locked --version $NEXTEST_PIN"
 rm -rf "$D"
 
 # A tree from before the check (no scripts/check-hook-prerequisites.py) is

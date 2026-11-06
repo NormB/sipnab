@@ -6634,7 +6634,14 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `tests/release_pipeline_gate_test.rs`, the test that runs the rule for
     // every release build (OPS-9). Measurement: with origin/main's
     // release.yml swapped back in, the scan reads 222.
-    const EXPECTED_REFERENCES: usize = 223;
+    // 223 -> 229: the suite runs under cargo-nextest
+    // (TEST-DEADLINE-NEXTEST-SIPNAB). `.github/workflows/ci.yml`'s three new
+    // "Install cargo-nextest" steps name `.config/nextest.toml` (+3), their
+    // comments and the Test step's rewritten comment name
+    // `scripts/parallel-tests.py` four times where the old comment named it
+    // once (+3). Measurement: with HEAD's ci.yml swapped back in, the scan
+    // reads 223.
+    const EXPECTED_REFERENCES: usize = 229;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -9721,14 +9728,14 @@ fn pages_workflow_indexes_the_built_site_with_a_pinned_pagefind() -> Result<(), 
         "the step does not index the directory Zola renders and \
          upload-pages-artifact publishes:\n{step}"
     );
+    // The binary the step runs is installed just before it, by the pinned and
+    // checksummed action that `pagefind_is_installed_through_one_cached_rule`
+    // holds: verifying the bytes and reading the job's pins are its job.
+    let install = at("- name: Install Pagefind (pinned, cached)")?;
     assert!(
-        step.contains("sha256sum -c"),
-        "the Pagefind download is installed without verifying its bytes:\n{step}"
-    );
-    assert!(
-        step.contains("${PAGEFIND_VERSION}") && step.contains("${PAGEFIND_SHA256}"),
-        "the download URL or the checksum is spelled out in the step instead of \
-         reading the job's pins, so the two can disagree:\n{step}"
+        build < install && install < index,
+        "Pagefind is not installed between `zola build` and the index step, so \
+         the step runs whatever pagefind the runner happens to have"
     );
 
     // The pin itself: a concrete version, not a moving tag. `latest`, `v1` and
@@ -9821,6 +9828,161 @@ fn every_workflow_that_builds_the_site_also_indexes_it() -> Result<(), TestError
         "the site-building workflows pin {} different Pagefind versions: {pins:?}. \
          One of them is checking an index built by a binary the other never runs",
         pins.len()
+    );
+    Ok(())
+}
+
+/// Pagefind is fetched from the network only on a cache miss, through one rule
+/// both site-building workflows share (PAGEFIND-DOWNLOAD-504).
+///
+/// pages.yml and quality.yml each downloaded the same pinned tarball from
+/// github.com on every run, and on 2026-11-05 github.com answered 504 six
+/// times in a row, twice, failing a Pages run and a Quality run. The bytes
+/// for a pin never change, so the fix is to stop fetching them per run:
+/// `.github/actions/pagefind` restores the tarball from the actions cache,
+/// keyed on exactly the version and the sha256, fetches only on a miss, and
+/// checks the sha256 on every run, hit or miss.
+///
+/// One rule, held here from both sides: each workflow installs Pagefind only
+/// through that action, passing its own job's pins; the two workflows' pins
+/// are the same values; and the action's restore and save keys are the same
+/// key, made of both pins and nothing else.
+#[test]
+fn pagefind_is_installed_through_one_cached_rule() -> Result<(), TestError> {
+    const ACTION: &str = ".github/actions/pagefind/action.yml";
+    const KEY: &str = "key: pagefind-${{ inputs.version }}-${{ inputs.sha256 }}";
+    let pin = |text: &str, name: &str| -> Result<Vec<String>, TestError> {
+        let re = regex::Regex::new(&format!(r"(?m)^\s*{name}: '([^']+)'\s*$"))
+            .map_err(|e| format!("regex: {e}"))?;
+        Ok(re.captures_iter(text).map(|c| c[1].to_string()).collect())
+    };
+
+    let mut versions = BTreeSet::new();
+    let mut hashes = BTreeSet::new();
+    for wf in [
+        ".github/workflows/pages.yml",
+        ".github/workflows/quality.yml",
+    ] {
+        let text = read(wf)?;
+        assert!(
+            !text.contains("CloudCannon/pagefind/releases"),
+            "{wf} downloads Pagefind itself, beside {ACTION}: a second fetch \
+             path is a second rule, and the per-run network fetch the action \
+             exists to remove"
+        );
+        let step = workflow_step_body(wf, "Install Pagefind (pinned, cached)")?;
+        assert!(
+            step.contains("uses: ./.github/actions/pagefind"),
+            "{wf}'s Pagefind install does not use {ACTION}:\n{step}"
+        );
+        assert!(
+            step.contains("version: ${{ env.PAGEFIND_VERSION }}")
+                && step.contains("sha256: ${{ env.PAGEFIND_SHA256 }}"),
+            "{wf} passes {ACTION} something other than its own job's \
+             PAGEFIND_VERSION and PAGEFIND_SHA256, so the key and the check \
+             could name another pin than the one the workflow declares:\n{step}"
+        );
+        let (v, h) = (
+            pin(&text, "PAGEFIND_VERSION")?,
+            pin(&text, "PAGEFIND_SHA256")?,
+        );
+        assert!(
+            v.len() == 1 && h.len() == 1,
+            "{wf} declares {} PAGEFIND_VERSION and {} PAGEFIND_SHA256 pin(s); \
+             it needs exactly one of each",
+            v.len(),
+            h.len()
+        );
+        assert!(
+            h[0].len() == 64 && h[0].chars().all(|c| c.is_ascii_hexdigit()),
+            "{wf}'s PAGEFIND_SHA256 {:?} is not a full SHA-256",
+            h[0]
+        );
+        versions.extend(v);
+        hashes.extend(h);
+    }
+    assert!(
+        versions.len() == 1 && hashes.len() == 1,
+        "pages.yml and quality.yml pin different Pagefind builds, so they read \
+         different cache keys and check different bytes: versions {versions:?}, \
+         hashes {hashes:?}"
+    );
+
+    let action = read(ACTION)?;
+    let steps: Vec<&str> = action.split("\n    - name: ").skip(1).collect();
+    let find = |name: &str| -> Result<(usize, &str), TestError> {
+        Ok(steps
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.starts_with(name))
+            .map(|(i, s)| (i, *s))
+            .ok_or_else(|| format!("{ACTION} has no step named {name:?}"))?)
+    };
+    // The same job-private directory as .github/actions/nextest: a path
+    // under the home directory is shared by every self-hosted runner on a
+    // host, and two jobs fetching into it at once corrupt each other's file.
+    assert!(
+        !action.contains("~/.cache") && !action.contains("$HOME/.cache"),
+        "{ACTION} keeps the tarball under the home directory; use ${{{{ runner.temp }}}}"
+    );
+    assert_eq!(
+        action
+            .matches("path: ${{ runner.temp }}/sipnab-pagefind")
+            .count(),
+        2,
+        "{ACTION}: the restore and the save must use the job's own directory"
+    );
+    let (restore_at, restore) = find("Restore the Pagefind tarball")?;
+    let (fetch_at, fetch) = find("Fetch the Pagefind tarball")?;
+    let (verify_at, verify) = find("Verify the Pagefind tarball")?;
+    let (save_at, save) = find("Save the Pagefind tarball")?;
+    let (install_at, install) = find("Install Pagefind")?;
+    assert!(
+        restore.contains("uses: actions/cache/restore@") && restore.contains(KEY),
+        "the restore step does not read the cache under the pin key {KEY:?}:\n{restore}"
+    );
+    assert!(
+        save.contains("uses: actions/cache/save@") && save.contains(KEY),
+        "the save step does not write the same key the restore reads, so every \
+         run misses:\n{save}"
+    );
+    assert_eq!(
+        action.matches("key: ").count(),
+        2,
+        "{ACTION} names a cache key other than the restore's and the save's"
+    );
+    assert!(
+        fetch.contains("if: steps.cache.outputs.cache-hit != 'true'")
+            && fetch.contains("CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/"),
+        "the fetch is not the miss path: it must run only on a miss and fetch \
+         the pinned version:\n{fetch}"
+    );
+    assert!(
+        verify.contains("sha256sum -c") && verify.contains("${PAGEFIND_SHA256}"),
+        "the tarball is not checked against PAGEFIND_SHA256:\n{verify}"
+    );
+    assert!(
+        !verify.contains("if:"),
+        "the sha256 check is conditional, so a restored tarball can be \
+         installed unchecked:\n{verify}"
+    );
+    assert!(
+        save.contains("cache-hit != 'true'") && save.contains("github.ref == 'refs/heads/main'"),
+        "the save runs on a hit or off main (tests/ci_cache_policy_test.rs \
+         explains why a pull request's entry is wasted space):\n{save}"
+    );
+    assert!(
+        restore_at < fetch_at
+            && fetch_at < verify_at
+            && verify_at < save_at
+            && save_at < install_at,
+        "{ACTION} runs its steps out of order: restore, fetch on a miss, \
+         verify, save, install. Saving or installing before the check \
+         stores or runs bytes nobody checked"
+    );
+    assert!(
+        install.contains("install -m 0755") && install.contains("pagefind --version"),
+        "the install step does not put Pagefind on PATH:\n{install}"
     );
     Ok(())
 }

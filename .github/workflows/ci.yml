@@ -275,6 +275,12 @@ jobs:
       # 28.6 minutes on run 41620629650 (2026-11-03) against this job's 22.2.
       # One job also keeps macOS to the one `cargo-check` cache entry it had,
       # 4.07 GB of the repository's 10 GB.
+      # scripts/parallel-tests.py runs the suite under the cargo-nextest
+      # version .config/nextest.toml pins, and refuses any other.
+      - name: Install cargo-nextest (macOS)
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/nextest
+
       - name: Test (macOS, every target)
         if: runner.os == 'macOS'
         run: python3 scripts/parallel-tests.py -- --all-features
@@ -516,19 +522,25 @@ jobs:
       # The tests that decode G.729 read the fetched ITU-T package.
       - uses: ./.github/actions/g729-vectors
 
+      # The suite runs under the cargo-nextest version .config/nextest.toml
+      # pins; scripts/parallel-tests.py refuses any other.
+      - name: Install cargo-nextest
+        uses: ./.github/actions/nextest
+
       - name: Test
         env:
           # tests/yang_export_test.rs writes every RFC 7951 document it checks
           # here, and `test-results` hands each one to yanglint. Empty, and
           # therefore off, on macOS, where nothing reads them.
           SIPNAB_YANG_EXPORT_DIR: ${{ runner.os == 'Linux' && format('{0}/test-shard/yang-exports', runner.temp) || '' }}
-        # The shard's binaries run side by side, as the pre-commit hook runs
-        # the whole suite: scripts/parallel-tests.py builds with `cargo test`,
-        # records each binary, and runs the recordings in a pool of one job
-        # per core (at most 8). The output is cargo's, one block per binary,
-        # so `test-results` counts the shards' outputs together by the rule
-        # it applied to one unsharded run, and the exit status is non-zero if
-        # any binary failed.
+        # The shard runs as the pre-commit hook runs the whole suite:
+        # scripts/parallel-tests.py runs its targets under cargo-nextest's
+        # `suite` profile, which stops any one test after three 60-second
+        # periods, then (shard 0) the doctests with `cargo test --doc`. It
+        # renders nextest's report as cargo test's text, one block per
+        # binary, so `test-results` counts the shards' outputs together by
+        # the rule it applied to one unsharded run, and the exit status is
+        # non-zero if any test failed.
         run: |
           set -o pipefail
           mkdir -p "$RUNNER_TEMP/test-shard"
@@ -1152,6 +1164,11 @@ jobs:
       # removed so no test reads captures outside the checkout. The pre-push
       # hook leaves this to CI; the same script with no arguments runs every
       # lint locally.
+      # A `suite` combination runs through scripts/parallel-tests.py, under
+      # the cargo-nextest version .config/nextest.toml pins.
+      - name: Install cargo-nextest
+        uses: ./.github/actions/nextest
+
       # The build directory is set per step: the `runner` context exists in
       # a step's env, not in the job's.
       - name: Lint and test the feature combinations

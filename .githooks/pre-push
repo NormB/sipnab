@@ -781,7 +781,7 @@ for commit in $tag_commits; do
 	# keeps finding. Note the FULL sha: `--commit` silently returns nothing for
 	# an abbreviated one.
 	runs=$(gh run list --commit "$commit" --limit 50 \
-		--json databaseId,headSha,status,conclusion,name 2>/dev/null || echo "")
+		--json databaseId,headSha,status,conclusion,name,event 2>/dev/null || echo "")
 	if [ -z "$runs" ]; then
 		printf '%bSKIPPED (gh unavailable or unauthenticated)%b\n' "$YELLOW" "$NC"
 		continue
@@ -798,8 +798,18 @@ for commit in $tag_commits; do
 	# creation, so the largest per name is the latest; a re-run attempt keeps
 	# its id and replaces its own result. A canceled run with nothing newer,
 	# a newer failure and a newer run still going all still block.
+	#
+	# A SCHEDULED run is set aside first (TAG-GATE-COUNTS-SCHEDULED-RUNS). A
+	# cron workflow runs against whatever main points at when its clock fires,
+	# so its result is no verdict on the change, and waiting on it waits on
+	# the clock: a scheduled ClusterFuzzLite batch run on the release commit
+	# held the v0.5.234 tag for about an hour on 2026-11-05. Every run a push,
+	# a pull request or a dispatch started still gates. The filter runs BEFORE
+	# the newest-per-workflow pick, so a newer scheduled pass cannot hide an
+	# older failed push run of the same workflow, and a commit whose only runs
+	# are scheduled has "no CI runs" below.
 	mine=$(printf '%s' "$runs" | jq -r --arg c "$commit" \
-		'[.[] | select(.headSha == $c)] | group_by(.name) | map(max_by(.databaseId // 0)) | .[] | "\(.status)/\(.conclusion // "-")/\(.name)"' 2>/dev/null || echo "")
+		'[.[] | select(.headSha == $c) | select(.event != "schedule")] | group_by(.name) | map(max_by(.databaseId // 0)) | .[] | "\(.status)/\(.conclusion // "-")/\(.name)"' 2>/dev/null || echo "")
 	if [ -z "$mine" ]; then
 		printf '%bFAIL%b\n' "$RED" "$NC"
 		printf '\n'

@@ -340,17 +340,23 @@ What the script does that a reader of the user page does not need to:
   - That is also what callgrind wants.
 - Baselines live in [`benches/BASELINES.md`](https://github.com/NormB/sipnab/blob/main/benches/BASELINES.md).
 
-**nextest.** [`.config/nextest.toml`](https://github.com/NormB/sipnab/blob/main/.config/nextest.toml) defines three profiles:
+**nextest.** The suite runs under cargo-nextest, in the pre-commit hook and in CI, through [`scripts/parallel-tests.py`](https://github.com/NormB/sipnab/blob/main/scripts/parallel-tests.py).
 
-- `default` (no retries, 30s slow timeout).
-- `ci` (no retries, no fail-fast, immediate-final output).
-- `e2e` (2 retries, 60s timeout) for the timing-sensitive tmux tests.
-
-Worth knowing: **no workflow currently invokes nextest**.
-
-- CI runs plain `cargo test`.
-- The config is there for local use.
-- It is also there for the day the e2e shim goes away.
+- `cargo test` bounds no single test, so one hung test held the hook until its 30-minute watchdog fired, with no name attached.
+  nextest's `slow-timeout` stops a test after three 60-second periods and fails it by name.
+- [`.config/nextest.toml`](https://github.com/NormB/sipnab/blob/main/.config/nextest.toml) defines three profiles:
+  - `default` (no retries, 60 s slow timeout, stopped after 180 s), for local runs.
+  - `suite`, what `parallel-tests.py` runs: the same deadline, no retries, no fail-fast, and a JUnit report.
+    One test has a deadline of its own, six periods: `every_documented_command_runs_or_says_why_not`, whose binary took 191.85 s on CI's `macos-latest` runner.
+  - `e2e` (2 retries, 60 s timeout) for the timing-sensitive tmux tests.
+- nextest does not run doctests, so `parallel-tests.py` runs them after it with `cargo test --doc`.
+- The script renders nextest's JUnit report as `cargo test`'s text, one block per test binary.
+  The hook's failure report and [`scripts/published-test-count.py`](https://github.com/NormB/sipnab/blob/main/scripts/published-test-count.py) read that text unchanged.
+- `nextest-version` in the config pins the version exactly.
+  `parallel-tests.py` and [`scripts/check-hook-prerequisites.py`](https://github.com/NormB/sipnab/blob/main/scripts/check-hook-prerequisites.py) refuse any other version, and name the install command:
+  `cargo install cargo-nextest --locked --version 0.9.148`.
+- CI installs it through [`.github/actions/nextest`](https://github.com/NormB/sipnab/blob/main/.github/actions/nextest/action.yml): the release tarball, checked against its SHA-256, from the actions cache or, on a miss, from GitHub.
+- Measured on 2026-11-06, on one tree, in the host's heavy-run slot, against the pool it replaced, which ran `cargo test`'s binaries side by side: the test step took 202 s and 158 s under nextest against 164 s and 129 s, plus 11 s of doctests.
 
 **The docker lab.** [`harness/`](https://github.com/NormB/sipnab/blob/main/harness) is a docker-compose stack
 for generating real traffic.
