@@ -921,7 +921,13 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // [relay] ng_engines: {e}`, +2). The `{rule} needs --rtpengine-control` and
 // `--relay-previous-engine needs an engine rule` messages were reworded in
 // place, one template each. Nothing removed.
-const EXPECTED_TEMPLATES: usize = 564;
+// 564 -> 580 (fleet center P1, `sipnab fleet serve`): src/app/fleet_center.rs,
+// +16: the startup refusals (`sipnab fleet serve: {e}`, the runtime, the
+// empty signing key, the store's mode, the store's open and a bad store
+// line), the torn-line, store-write and two rewrite warnings, the silence
+// warning, and the five batch refusals a member is answered with (too many
+// records, schema_version, kind, stream, heartbeat_secs). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 580;
 
 // ---------------------------------------------------------------------------
 // The page gates

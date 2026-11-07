@@ -7277,7 +7277,7 @@ only.
 | `--api-token-ttl <SECS>` | Lifetime of a minted token. Default `3600`. |
 | `--mint-token` | Sign a token with the first configured key, print it, and exit. Starts no capture and no server. |
 | `--token-id <ID>` | The token's `id` (`jti`), used later for revocation. Defaults to a generated id. |
-| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions`, `admin`, `audio` or `inventory` for the REST API. See **Scope** below. |
+| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions`, `admin`, `audio`, `inventory` or `fleet-report` for the REST API. See **Scope** below. |
 | `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
 
 **Scope.** Mint each client a token for the routes it needs:
@@ -7289,7 +7289,8 @@ only.
 | `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. It lifts only the bans it placed. | The system that decides to block a source. |
 | `admin` | Everything `actions` reaches, and it also lifts a ban another caller placed. | An operator who must be able to lift any ban. |
 | `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
-| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
+| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members`. | A fleet controller running [`sipnab fleet inventory`](fleet.md). |
+| `fleet-report` | Nothing on this API: every route returns `401`. A fleet center's `POST /v1/fleet/ingest`, which no other scope reaches. | A fleet member reporting to [a fleet center](fleet.md#run-a-fleet-center), minted with the center's key and the member's name as `--token-id`. |
 
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
 refuses.
@@ -22145,7 +22146,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--syslog` | -- | off | 0.3.0 | Send alerts to syslog. Config: `[security] alert` |
 | `--mint-token` | -- | off | 0.4.3 | Mint a signed bearer token from the first configured signing key (API or MCP), print it to stdout, and exit (no capture/servers). See [`auth.md`](./auth.md). |
 | `--token-id` | `<ID>` | -- | 0.4.3 | Token id (`jti`) for `--mint-token`, used for revocation. Defaults to a generated id. |
-| `--token-scope` | `<full\|metrics\|read\|actions\|admin\|audio\|inventory>` | `full` | 0.5.59 | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the tools annotated read-only and refuses every tool that writes or replaces state (`export_capture`, `open_capture`, `shutdown_server`, `tfps_ban` and the rest; `tools/list` marks each one with `readOnlyHint: false`). `actions` reaches everything `full` does plus the actions that change another system, such as TFPS ban and unban, where the server enabled them with [`--allow-action`](#security); a `full` token never reaches an action. A ban belongs to the caller that placed it, so an `actions` token lifts only its own bans; `admin` reaches everything `actions` does and also lifts a ban another caller placed. `audio` reaches the REST API's live call audio routes (`GET /v1/calls/live`, `GET /v1/calls/live/events` and `GET /v1/calls/{call_id}/audio`) and nothing else, and no other scope reaches them. `inventory` reaches the REST API's `GET /v1/inventory` and nothing else, for [`sipnab fleet inventory`](fleet.md). A cross-surface mint fails at mint time, so sipnab refuses `metrics`, `audio` and `inventory` with MCP and `read` with the REST API rather than issuing them and then rejecting them. |
+| `--token-scope` | `<full\|metrics\|read\|actions\|admin\|audio\|inventory\|fleet-report>` | `full` | 0.5.59 | Scope for `--mint-token`. `metrics` reaches `GET /metrics` and returns `401` everywhere else — mint one for a scrape job rather than a credential that also reads `/v1/dialogs` and the message bodies underneath. `read` is the MCP counterpart: it reaches the tools annotated read-only and refuses every tool that writes or replaces state (`export_capture`, `open_capture`, `shutdown_server`, `tfps_ban` and the rest; `tools/list` marks each one with `readOnlyHint: false`). `actions` reaches everything `full` does plus the actions that change another system, such as TFPS ban and unban, where the server enabled them with [`--allow-action`](#security); a `full` token never reaches an action. A ban belongs to the caller that placed it, so an `actions` token lifts only its own bans; `admin` reaches everything `actions` does and also lifts a ban another caller placed. `audio` reaches the REST API's live call audio routes (`GET /v1/calls/live`, `GET /v1/calls/live/events` and `GET /v1/calls/{call_id}/audio`) and nothing else, and no other scope reaches them. `inventory` reaches the REST API's `GET /v1/inventory`, and a fleet center's `GET /v1/fleet/members`, and nothing else, for [`sipnab fleet inventory`](fleet.md). `fleet-report` reaches a fleet center's `POST /v1/fleet/ingest` and nothing else, and no other scope reaches it: the token's `--token-id` is the member's name ([Run a fleet center](fleet.md#run-a-fleet-center)). A cross-surface mint fails at mint time, so sipnab refuses `metrics`, `audio`, `inventory` and `fleet-report` with MCP and `read` with the REST API rather than issuing them and then rejecting them. |
 
 **Examples**
 - `sipnab -N -I capture.pcap --no-hep-parse --report` — read HEP datagrams as plain UDP when your config file sets `[capture] hep_parse = true`
@@ -22816,6 +22817,20 @@ each recording the container names by `url`, and captures nothing.
 - `--timeout <SECS>`: seconds to wait for each instance to connect and answer, 1 to 300. Default `10`.
 
 It exits `0` when every instance answered and there is no finding, `1` when an instance did not answer or there is a finding, and `2` when it cannot use the hosts file.
+
+`sipnab fleet serve` runs a fleet center: fleet members push heartbeats to its `POST /v1/fleet/ingest`, and it serves every member, with the ones gone silent, on `GET /v1/fleet/members`. It opens no capture, and runs until SIGINT or SIGTERM. [Run a fleet center](fleet.md#run-a-fleet-center) is the how-to.
+
+- `--listen <ADDR>`: the address to serve on, `HOST:PORT`. An address other than loopback needs `--tls-cert` and `--tls-key`: the center refuses plain HTTP except on loopback.
+- `--store <FILE>`: the store file, the newest heartbeat of each member. The center creates it with mode 0600, and refuses a store other users can read.
+- `--signing-key-file <FILE>`: the key that signs member and reader tokens, readable by this user only. Mint tokens with it: `--token-scope fleet-report --token-id <member>` for a member, `--token-scope inventory` for a reader.
+- `--revoked-file <FILE>`: token ids no longer accepted, one per line. Revoke one member by its id; sipnab re-reads the file when it changes.
+- `--tls-cert <FILE>` and `--tls-key <FILE>`: serve HTTPS with this certificate chain and key. The key must be readable by this user only.
+- `--retention-hours <HOURS>`: hours a member stays after its last heartbeat, 1 to 87600. Default `72`.
+- `--silent-after-missed <N>`: a member is silent once more than this many of its heartbeat intervals pass without one, 1 to 1000. Default `3`.
+- `--allowed-host <HOST>`: a `Host` value to serve beyond the loopback names and the bound address, such as the name members use for the center (repeatable). `*` turns the check off.
+- `--rate-limit-per-peer <N>`: requests per second one address may make before it gets `503`. `0` turns the limit off. Default `100`.
+
+It exits `0` once stopped, and `2` when it refuses an argument, the signing key, the store or the listener.
 
 ## G.729 tables (`sipnab g729`)
 
@@ -28104,6 +28119,155 @@ so the URL most likely names something that is not a sipnab REST API.
 **What to do:** Check the instance's `url` in the hosts file.
 
 **Exit code:** 1. The other instances are still in the report.
+
+## Fleet center (`sipnab fleet serve`)
+
+`sipnab fleet serve` prints these messages, and answers a member with some of
+them. [Run a fleet center](fleet.md#run-a-fleet-center) describes the command.
+A message that starts with `sipnab fleet serve:` stops the center with exit
+code 2. A message the center answers a member with goes in the `detail` of a
+`400` answer, and the center keeps running.
+
+### `sipnab fleet serve: {e}`
+
+The center refused to start. The rest of the message says why: an argument, the
+signing key, the store or the listener, each with its own entry here or under
+the flag it names. A listener problem names the address or the TLS file, as
+the REST API's does.
+
+**What to do:** Fix what the rest of the message names, and start the center
+again.
+
+**Exit code:** 2.
+
+### `sipnab fleet serve: the runtime did not start: {e}`
+
+The center could not start the threads it serves with. The system is short of
+threads or memory.
+
+**What to do:** Check the user's process and memory limits (`ulimit -u`,
+`ulimit -v`, the unit's `TasksMax=`).
+
+**Exit code:** 2.
+
+### `--signing-key-file '{}' is empty`
+
+The center's signing key file holds nothing but whitespace. The center needs
+the key to verify member and reader tokens.
+
+**What to do:** Put the key in the file, for example
+`head -c 32 /dev/urandom | base64 > /etc/sipnab/center.signing`, and mint the
+tokens again with it.
+
+**Exit code:** 2.
+
+### `--store '{}' {why}`
+
+Other users can read or write the store file. The store holds every member's
+inventory. The message ends `can be read or written by other users (mode
+0644); chmod 600 it`, with the file's mode.
+
+**What to do:** Run `chmod 600` on the store file, as the center's user.
+
+**Exit code:** 2.
+
+### `--store '{shown}': {e}`
+
+The center could not read or create the store file. The rest of the message is
+the system's reason, such as `Permission denied (os error 13)` or `No such file
+or directory (os error 2)` for a directory that does not exist.
+
+**What to do:** Create the store's directory, owned by the center's user.
+
+**Exit code:** 2.
+
+### `--store '{shown}': line {} is not a member record: {e}`
+
+A line of the store file, before its last line, is not a record the center
+wrote. Someone edited the file, or `--store` names another file.
+
+**What to do:** Check that `--store` names the center's store. To start again
+with no members, move the file away. Members reappear with their next
+heartbeat.
+
+**Exit code:** 2.
+
+### `--store '{shown}': line {} is incomplete, from a write the center did not finish; it is dropped`
+
+A warning. The last line of the store is incomplete, because the center
+stopped while writing it. The center never acknowledged that heartbeat, so the
+member sends it again.
+
+**What to do:** Nothing.
+
+### `fleet center: the store could not be written: {e}`
+
+The center could not append a heartbeat to its store, for the system's reason
+in the message, such as a full disk. It answers the member `503` and counts
+nothing, so the member sends the batch again.
+
+**What to do:** Free space on the store's file system, or fix its
+permissions.
+
+### `fleet center: the store was not rewritten: {e}`
+
+A warning. Every minute in which heartbeats arrived or retention removed a
+member, the center rewrites its store, and the rewrite failed. The store still holds every heartbeat. It stays larger
+than it needs to be until a rewrite succeeds.
+
+**What to do:** Free space on the store's file system, or fix the permissions
+of its directory: the rewrite creates a file beside the store.
+
+### `fleet center: the store was not rewritten on the way out: {e}`
+
+A warning, as the one above, from the rewrite the center makes when it stops.
+
+**What to do:** As above. The next start rewrites the store.
+
+### `fleet member '{}' is silent: no heartbeat for {} s, more than {missed} of its {} s intervals`
+
+A warning. The center has had no heartbeat from the member for more than
+`--silent-after-missed` of the intervals the member said it sends at. A line
+`fleet member '<member>' is heard again` follows when one arrives.
+
+**What to do:** Check the member: whether it runs, whether it reaches the
+center, and whether the center refuses its token (`401`).
+
+### `line {n}: more than {MAX_BATCH_RECORDS} records in one batch`
+
+The center's answer to an ingest batch with more than 1000 records. It
+accepted none of them.
+
+**What to do:** Send at most 1000 records per request.
+
+### `schema_version {}; this center reads {RECORD_SCHEMA_VERSION}`
+
+The center's answer to a record of another format version, after the line
+number. It reads version 1, and accepted none of the batch.
+
+**What to do:** Run the same sipnab version on the center as on the members,
+or a newer one on the center.
+
+### `kind {:?}; this center accepts {KIND_HEARTBEAT:?}`
+
+The center's answer to a record whose `kind` is not `heartbeat`, after the
+line number. It accepted none of the batch.
+
+**What to do:** Send only heartbeats to this center's version.
+
+### `stream must be 1 to {MAX_ID_LEN} letters, digits, '.', '_' or '-'`
+
+The center's answer to a record whose `stream` is empty, longer than 64
+characters, or holds another character, after the line number.
+
+**What to do:** Choose a stream id of letters, digits, `.`, `_` and `-`.
+
+### `heartbeat_secs {} is outside {MIN_HEARTBEAT_SECS} to {MAX_HEARTBEAT_SECS}`
+
+The center's answer to a record whose interval is under 1 second or over
+3600, after the line number.
+
+**What to do:** Send `heartbeat_secs` from 1 to 3600.
 
 ## Startup, privileges and the process
 
@@ -38637,6 +38801,11 @@ collector refuses for authentication. Each instance also reports when each of
 its key, token and password files was last replaced, so you can check that a
 rotation took effect. It reports. It changes nothing on any instance.
 
+`sipnab fleet serve` is the other direction: a fleet center that members
+report to. Each member pushes a heartbeat, the center keeps the newest one per
+member, and it says which members went silent, including members the
+controller cannot reach. See [Run a fleet center](#run-a-fleet-center).
+
 Some upgrades need every sender and its collector on the same build, such as
 the HEP HMAC version 2 change in
 [Upgrade a fleet that uses HMAC authentication](config-reference.md#upgrade-a-fleet-that-uses-hmac-authentication).
@@ -39013,6 +39182,272 @@ rotated, and on no other. `CONFIG` did not change: the path is the same.
 - **`error` holds a reason.** The instance could not stat the file at start, for
   example `No such file or directory (os error 2)`. The reason never names the
   path.
+
+## Run a fleet center
+
+A fleet center is a sipnab, `sipnab fleet serve`, that fleet members push
+heartbeats to. Each heartbeat carries the member's inventory, the record
+`GET /v1/inventory` answers. The center keeps the newest heartbeat of each
+member, and answers "which members are there, what do they run, and which went
+silent" on `GET /v1/fleet/members`, without asking any member.
+
+Use it when the controller cannot reach every member, such as members behind
+NAT, or to learn that a member stopped without polling it. It is phase P1 of
+the fleet center: heartbeats only, no traffic. In this release a member does
+not push heartbeats by itself yet. This section sends one by hand, in the
+format a member sends.
+
+The output in this section comes from a run on 2026-11-07 on one host, with a
+development build of 0.5.236: the center on `127.0.0.1:8444` over HTTPS, and
+one instance, `edge-a`, on `127.0.0.1:18080`. The run kept its files in one
+working directory. The commands name them as a deployment would, under
+`/etc/sipnab` and `/var/lib/sipnab`, and the log lines show the names the run
+used.
+
+### Before you start a center
+
+- **sipnab on the center.** A build with the `api` feature. It opens no
+  capture and needs no capture privilege.
+- **A TLS certificate for the center**, whose subject alternative name is the
+  address or name members use, its key readable by the center's user only, and
+  the certificate of the issuing CA on each member. The center refuses plain HTTP on
+  any address but loopback, because members send their token and their
+  inventory.
+- **A signing key for the center**, in a file only the center's user can read.
+  The center mints and verifies member tokens with it. It is not any member's
+  REST API key.
+- **Network.** Each member reaches the center's port over TCP, 8444 in this
+  section. The center needs no route to the members.
+- **Disk.** The store file holds the newest heartbeat of each member: 1,884
+  and 1,883 bytes for the two members of this run.
+- **Bounds.** The center reads at most 4 MiB of one request
+  (`MAX_INGEST_BYTES`) and answers `413` past it. Its rate limit counts at most
+  4096 addresses in one second (`MAX_TRACKED_PEERS`); a further address in
+  that second gets `503`, with `--rate-limit-per-peer` above `0`.
+- **Other systems.** No change. OpenSIPS, Kamailio, Homer and any HEP collector
+  keep their configuration.
+
+### Step 1: start the center
+
+- **[center]** Create the signing key, readable by the center's user only:
+
+  ```bash
+  # Run all of these, in order.
+  install -m 600 /dev/null /etc/sipnab/center.signing
+  head -c 32 /dev/urandom | base64 > /etc/sipnab/center.signing
+  ```
+
+- **[center]** Start it:
+
+  ```bash
+  sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+    --signing-key-file /etc/sipnab/center.signing \
+    --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key
+  ```
+
+  ```text
+  INFO sipnab::app::fleet_center: fleet center store 'center.store': 0 member(s), 0 past --retention-hours 72 removed
+  INFO sipnab::app::fleet_center: fleet center serving HTTPS on 127.0.0.1:8444
+  INFO sipnab::output::api: REST API serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)
+  INFO sipnab::output::api: REST API listening on 127.0.0.1:8444
+  ```
+
+  It creates the store with mode `0600`. It removes a member it has not heard
+  from for `--retention-hours` (default 72), at start and every minute.
+  `--silent-after-missed` (default 3) sets how many of a member's heartbeat
+  intervals may pass before it is silent. Members reaching the center by a name
+  need that name in `--allowed-host`. [The CLI reference](cli-reference.md#fleet-inventory-sipnab-fleet)
+  lists every flag.
+
+### Step 2: mint a token for each member and for each reader
+
+- **[center]** A member's token has scope `fleet-report`, and its id is the
+  member's name. The center vouches for that name, and for nothing else the
+  member says:
+
+  ```bash
+  sipnab --mint-token --token-scope fleet-report --token-id edge-a \
+    --api-signing-key-file /etc/sipnab/center.signing --api-token-ttl 2592000
+  ```
+
+  It prints one token, starting `s2.`. A `fleet-report` token reaches the
+  center's ingest and nothing else, on the center and on every other sipnab.
+  Give each member its own token, so revoking one leaves the others working.
+
+- **[center]** A token that reads the members list has scope `inventory`, as
+  for `sipnab fleet inventory`:
+
+  ```bash
+  sipnab --mint-token --token-scope inventory --token-id fleet-reader \
+    --api-signing-key-file /etc/sipnab/center.signing --api-token-ttl 2592000
+  ```
+
+### Step 3: send a heartbeat
+
+A heartbeat is one JSON record per line, `POST`ed to `/v1/fleet/ingest` with
+the member's token:
+
+| Field | Meaning |
+|---|---|
+| `schema_version` | `1`. |
+| `kind` | `heartbeat`. |
+| `stream` | The member's delivery stream: 1 to 64 letters, digits, `.`, `_` or `-`, chosen once. |
+| `seq` | The record's place in the stream, from `1`. |
+| `sent_at` | When the member wrote it, [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html). |
+| `heartbeat_secs` | How often the member sends one, 1 to 3600. |
+| `inventory` | The member's `GET /v1/inventory` answer. |
+
+The center counts a record once. In the same stream a record is new when its
+`seq` is past the newest one the center accepted. A record of another stream
+is new when its `sent_at` is later: a member that recreates its spool starts
+a new stream. The center counts a batch sent twice once, also after it
+restarts.
+
+- **[member]** Send `edge-a`'s inventory as a heartbeat:
+
+  ```bash
+  # Run all of these, in order.
+  curl -s -H "Authorization: Bearer $EDGE_A_INVENTORY_TOKEN" http://127.0.0.1:18080/v1/inventory \
+    | jq -c '{schema_version: 1, kind: "heartbeat", stream: "edge-a-manual", seq: 1, sent_at: (now | todate), heartbeat_secs: 30, inventory: .}' \
+    > heartbeat.ndjson
+  curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $EDGE_A_REPORT_TOKEN" \
+    -H 'Content-Type: application/x-ndjson' --data-binary @heartbeat.ndjson \
+    https://127.0.0.1:8444/v1/fleet/ingest
+  ```
+
+  ```text
+  {"accepted":1,"duplicate":0,"member":"edge-a"}
+  ```
+
+  Sent again, the same file is a duplicate:
+
+  ```text
+  {"accepted":0,"duplicate":1,"member":"edge-a"}
+  ```
+
+### Verify the center
+
+- **[controller]** Read the members:
+
+  ```bash
+  curl -s --cacert /etc/sipnab/fleet/internal-ca.pem -H "Authorization: Bearer $FLEET_READER_TOKEN" \
+    https://127.0.0.1:8444/v1/fleet/members | jq 'del(.members[].self_reported.inventory)'
+  ```
+
+  ```json
+  {
+    "members": [
+      {
+        "member": "edge-a",
+        "seconds_since_heartbeat": 0,
+        "self_reported": {
+          "heartbeat_secs": 30,
+          "sent_at": "2026-11-07T15:41:36Z",
+          "seq": 1,
+          "stream": "edge-a-manual"
+        },
+        "silent": false,
+        "verified": {
+          "heartbeats": 1,
+          "peer": "127.0.0.1",
+          "received_at": "2026-11-07T15:41:36Z"
+        }
+      }
+    ],
+    "now": "2026-11-07T15:41:36Z",
+    "retention_hours": 72,
+    "schema_version": 1,
+    "silent_after_missed": 3
+  }
+  ```
+
+  - `member` is the id of the token the heartbeat came with. The center
+    verified it.
+  - `verified` is what the center saw: when the newest heartbeat arrived, on
+    the center's clock, from which address, and how many heartbeats it
+    accepted from this member.
+  - `self_reported` is what the member says about itself: its stream, place,
+    send time, interval and `inventory`, the record in
+    [GET /v1/inventory](rest-api.md#get-v1inventory). A member that is not
+    honest can put anything there.
+  - `silent` is `true` once more than `silent_after_missed` of the member's
+    intervals passed with no heartbeat, measured on the center's clock.
+
+- **[center]** The center logs a member going silent, and coming back. In this run
+  `edge-b` sent one heartbeat with a 1 s interval:
+
+  ```text
+  WARN sipnab::app::fleet_center: fleet member 'edge-b' is silent: no heartbeat for 3 s, more than 3 of its 1 s intervals
+  INFO sipnab::app::fleet_center: fleet member 'edge-b' is heard again
+  ```
+
+### Revoke a member
+
+- **[center]** Start the center with `--revoked-file`, and add the member's
+  token id to that file, one per line. sipnab re-reads the file when it
+  changes, so the center keeps running. This run revoked `edge-a`:
+
+  ```bash
+  echo edge-a >> /etc/sipnab/center.revoked
+  ```
+
+  `edge-a`'s next heartbeat gets `401`, and `edge-b`'s still gets `200`. The
+  members list keeps `edge-a`'s last heartbeat until retention removes it.
+
+### Troubleshoot the center
+
+Each output below comes from the same run.
+
+- **`401` on the ingest.** The token is not a `fleet-report` token this
+  center's key signed, it expired, or its id is in the revocation file. A `full`, `admin` or
+  `inventory` token gets `401` there too: only a member's token reports.
+  Mint one as in step 2.
+
+  ```text
+  401 {"status":401,"title":"Unauthorized","type":"https://sipnab.com/problems/unauthorized"}
+  ```
+
+- **`401` on the members list.** The token is a member's token, which reads
+  nothing. Use an `inventory` token.
+
+- **`403` and `the token's id names no member`.** The token's `--token-id` has
+  characters a member name cannot have. This run minted one with the id
+  `edge a`:
+
+  ```text
+  403 {"detail":"the token's id names no member: mint it with --token-id of 1 to 64 letters, digits, '.', '_' or '-'","status":403,"title":"Forbidden","type":"https://sipnab.com/problems/forbidden"}
+  ```
+
+- **`400` and a line number.** A record in the batch is not one the center
+  reads, and the center accepted none of the batch. The detail names the line
+  and the field:
+
+  ```text
+  400 {"detail":"line 2: not a record: expected ident at line 1 column 2","status":400,"title":"Bad Request","type":"https://sipnab.com/problems/bad-request"}
+  ```
+
+- **`plain HTTP is refused except on loopback`.** The command line names an
+  address other than loopback and no `--tls-cert` and `--tls-key`. It exits
+  `2` before it creates the store:
+
+  ```text
+  sipnab fleet serve: --listen 192.0.2.10:8444 without --tls-cert and --tls-key would take members' tokens and inventories in plain HTTP; plain HTTP is refused except on loopback
+  ```
+
+- **`can be read or written by other users`.** Other users can read the store
+  file. Run `chmod 600` on it. It exits `2`:
+
+  ```text
+  sipnab fleet serve: --store 'center.store' can be read or written by other users (mode 0644); chmod 600 it
+  ```
+
+- **A member stays `silent`.** The center has had no heartbeat from it for
+  more than `silent_after_missed` of its intervals: the member is down, cannot
+  reach the center, or the center refuses its token. `seconds_since_heartbeat` says
+  how long ago the last one arrived.
+
+[docs/errors.md](errors.md#fleet-center-sipnab-fleet-serve) lists every message
+the center prints.
 
 ## States and findings
 
@@ -59905,7 +60340,7 @@ Distribute the printed token to clients.
 ### Scope: what a token may reach
 
 `--token-scope` sets what a token may reach. It takes `full` (the default),
-`metrics`, `read`, `actions`, `admin`, `audio` or `inventory`:
+`metrics`, `read`, `actions`, `admin`, `audio`, `inventory` or `fleet-report`:
 
 | Scope | Surface | What it reaches |
 |---|---|---|
@@ -59915,7 +60350,8 @@ Distribute the printed token to clients.
 | `actions` | either | Everything `full` reaches, plus the actions that change another system, such as a TFPS ban, where the server enables them with `--allow-action`. It lifts only the bans it placed. |
 | `admin` | either | Everything `actions` reaches, and it also lifts a ban another caller placed, for example one placed by a token since lost. |
 | `audio` | REST API | The live-audio routes under `/v1/calls/`, and nothing else. No other scope reaches them. |
-| `inventory` | REST API | `GET /v1/inventory`, and nothing else. `full`, `actions` and `admin` reach it too. For [`sipnab fleet inventory`](fleet.md). |
+| `inventory` | REST API | `GET /v1/inventory`, and a fleet center's `GET /v1/fleet/members`, and nothing else. `full`, `actions` and `admin` reach it too. For [`sipnab fleet inventory`](fleet.md). |
+| `fleet-report` | REST API | A fleet center's `POST /v1/fleet/ingest`, and nothing else; no other scope reaches it. Its `--token-id` is the member's name. For [a fleet center](fleet.md#run-a-fleet-center). |
 
 Give each client the narrowest scope that does its job:
 

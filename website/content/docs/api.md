@@ -224,7 +224,7 @@ only.
 | `--api-token-ttl <SECS>` | Lifetime of a minted token. Default `3600`. |
 | `--mint-token` | Sign a token with the first configured key, print it, and exit. Starts no capture and no server. |
 | `--token-id <ID>` | The token's `id` (`jti`), used later for revocation. Defaults to a generated id. |
-| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions`, `admin`, `audio` or `inventory` for the REST API. See **Scope** below. |
+| `--token-scope <SCOPE>` | `full` (default), `metrics`, `actions`, `admin`, `audio`, `inventory` or `fleet-report` for the REST API. See **Scope** below. |
 | `--api-revoked-file <FILE>` | Denylist of revoked token ids, one per line (blanks and `#` comments ignored). |
 
 **Scope.** Mint each client a token for the routes it needs:
@@ -236,7 +236,8 @@ only.
 | `actions` | Everything `full` reaches, plus the action routes that ask TFPS to ban or unban a source. The run must also enable them with `--allow-action tfps:rest`. It lifts only the bans it placed. | The system that decides to block a source. |
 | `admin` | Everything `actions` reaches, and it also lifts a ban another caller placed. | An operator who must be able to lift any ban. |
 | `audio` | The live-audio routes a `live_audio` vCon rule serves, and nothing else. | A speech-to-text consumer. |
-| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. | A fleet controller running [`sipnab fleet inventory`](@/docs/fleet.md). |
+| `inventory` | `GET /v1/inventory` only. Every other route returns `401`. `full` reaches the inventory too. On a fleet center it also reads `GET /v1/fleet/members`. | A fleet controller running [`sipnab fleet inventory`](@/docs/fleet.md). |
+| `fleet-report` | Nothing on this API: every route returns `401`. A fleet center's `POST /v1/fleet/ingest`, which no other scope reaches. | A fleet member reporting to [a fleet center](@/docs/fleet.md#run-a-fleet-center), minted with the center's key and the member's name as `--token-id`. |
 
 The `read` scope is for MCP tokens. Minting it with `--api-signing-key`
 refuses.

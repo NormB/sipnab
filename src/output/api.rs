@@ -1468,7 +1468,10 @@ pub fn with_host_allowlist(router: Router, hosts: HostAllowlist) -> Router {
 /// # Side effects
 ///
 /// Logs the bound address, then serves until shutdown.
-async fn serve_router(listener: ApiListener, router: Router) -> Result<(), crate::Error> {
+pub(crate) async fn serve_router(
+    listener: ApiListener,
+    router: Router,
+) -> Result<(), crate::Error> {
     use axum::serve::ListenerExt as _;
     let ApiListener { tcp, tls } = listener;
     let listener = tokio::net::TcpListener::from_std(tcp)
@@ -1581,6 +1584,24 @@ fn authenticate(
         return Ok(None);
     }
 
+    verify_bearer(&state.verifier, headers, required_scope).map(Some)
+}
+
+/// The credential in `headers`' `Authorization: Bearer` header, verified
+/// by `verifier` for `required_scope`.
+///
+/// The one reading of the header for every HTTP surface that takes these
+/// tokens: the REST API and the fleet center (`sipnab fleet serve`).
+///
+/// # Errors
+///
+/// `401` when the header is missing, is not `Bearer`, or the credential is
+/// invalid, expired, revoked or scoped too narrowly.
+pub(crate) fn verify_bearer(
+    verifier: &crate::auth::TokenVerifier,
+    headers: &HeaderMap,
+    required_scope: &str,
+) -> Result<crate::auth::AcceptedToken, Problem> {
     let Some(auth_header) = headers.get("authorization") else {
         return Err(Problem::new(StatusCode::UNAUTHORIZED));
     };
@@ -1594,11 +1615,9 @@ fn authenticate(
     if let Some((scheme, token)) = auth_str.split_once(' ')
         && scheme.eq_ignore_ascii_case("Bearer")
         && let Some(accepted) =
-            state
-                .verifier
-                .verify_for(token, chrono::Utc::now().timestamp(), required_scope)
+            verifier.verify_for(token, chrono::Utc::now().timestamp(), required_scope)
     {
-        return Ok(Some(accepted));
+        return Ok(accepted);
     }
 
     Err(Problem::new(StatusCode::UNAUTHORIZED))

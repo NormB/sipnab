@@ -95,7 +95,7 @@ Distribute the printed token to clients.
 ### Scope: what a token may reach
 
 `--token-scope` sets what a token may reach. It takes `full` (the default),
-`metrics`, `read`, `actions`, `admin`, `audio` or `inventory`:
+`metrics`, `read`, `actions`, `admin`, `audio`, `inventory` or `fleet-report`:
 
 | Scope | Surface | What it reaches |
 |---|---|---|
@@ -105,7 +105,8 @@ Distribute the printed token to clients.
 | `actions` | either | Everything `full` reaches, plus the actions that change another system, such as a TFPS ban, where the server enables them with `--allow-action`. It lifts only the bans it placed. |
 | `admin` | either | Everything `actions` reaches, and it also lifts a ban another caller placed, for example one placed by a token since lost. |
 | `audio` | REST API | The live-audio routes under `/v1/calls/`, and nothing else. No other scope reaches them. |
-| `inventory` | REST API | `GET /v1/inventory`, and nothing else. `full`, `actions` and `admin` reach it too. For [`sipnab fleet inventory`](@/docs/fleet.md). |
+| `inventory` | REST API | `GET /v1/inventory`, and a fleet center's `GET /v1/fleet/members`, and nothing else. `full`, `actions` and `admin` reach it too. For [`sipnab fleet inventory`](@/docs/fleet.md). |
+| `fleet-report` | REST API | A fleet center's `POST /v1/fleet/ingest`, and nothing else; no other scope reaches it. Its `--token-id` is the member's name. For [a fleet center](@/docs/fleet.md#run-a-fleet-center). |
 
 Give each client the narrowest scope that does its job:
 

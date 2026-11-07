@@ -130,8 +130,9 @@ pub const SCOPE_ADMIN: &str = "admin";
 /// dashboard is not.
 pub const SCOPE_AUDIO: &str = "audio";
 
-/// The fleet inventory: `GET /v1/inventory` on the REST API and nothing
-/// else.
+/// The fleet inventory: `GET /v1/inventory` on the REST API, and
+/// `GET /v1/fleet/members` on a fleet center (`sipnab fleet serve`), and
+/// nothing else.
 ///
 /// A fleet controller polls every instance it manages. Before this scope it
 /// had to hold a `full` token for each, which reads `/v1/dialogs` and the
@@ -141,17 +142,28 @@ pub const SCOPE_AUDIO: &str = "audio";
 /// every narrow scope follows.
 pub const SCOPE_INVENTORY: &str = "inventory";
 
+/// A fleet member's heartbeats: `POST /v1/fleet/ingest` on a fleet center
+/// (`sipnab fleet serve`) and nothing else.
+///
+/// It reads nothing: not the center's members list, not any instance's
+/// inventory, dialogs or metrics. A member that is compromised can then only
+/// report about itself, under its own name. And nothing but this scope
+/// reaches the ingest, `full`, `actions` and `admin` included: the token's
+/// id is the member's identity, the one fact about a member the center
+/// verified, so only a credential minted to name a member may report as one.
+pub const SCOPE_FLEET_REPORT: &str = "fleet-report";
+
 /// Whether a token holding `held` may reach something that requires `required`.
 ///
 /// One rule for every surface. `admin` satisfies everything; `actions`
 /// satisfies everything except `admin`; `full` satisfies everything except
 /// `actions` and `admin`; a narrower scope satisfies only itself; and only
-/// `audio` reaches `audio`. `full` stopping short of `actions` is the point:
+/// `audio` reaches `audio`, and only `fleet-report` reaches `fleet-report`. `full` stopping short of `actions` is the point:
 /// reading must not imply changing another system.
 #[must_use]
 pub fn scope_satisfies(held: &str, required: &str) -> bool {
-    if required == SCOPE_AUDIO {
-        return held == SCOPE_AUDIO;
+    if required == SCOPE_AUDIO || required == SCOPE_FLEET_REPORT {
+        return held == required;
     }
     match held {
         SCOPE_ADMIN => true,
@@ -701,6 +713,41 @@ mod tests {
             assert!(
                 !scope_satisfies(held, SCOPE_INVENTORY),
                 "{held} reaches inventory"
+            );
+        }
+    }
+
+    /// A `fleet-report` token reaches the fleet center's ingest and nothing
+    /// else, and nothing but a `fleet-report` token reaches the ingest: not
+    /// `full`, `actions` or `admin`, because the token's id IS the member's
+    /// identity, and a credential minted for something else names no member.
+    #[test]
+    fn fleet_report_reaches_the_ingest_alone_and_only_it_does() {
+        assert_eq!(
+            SCOPE_FLEET_REPORT, "fleet-report",
+            "the scope's wire name is what --token-scope fleet-report mints"
+        );
+        assert!(
+            scope_satisfies(SCOPE_FLEET_REPORT, SCOPE_FLEET_REPORT),
+            "a fleet-report token must reach the ingest"
+        );
+        let others = [
+            SCOPE_FULL,
+            SCOPE_ACTIONS,
+            SCOPE_READ,
+            SCOPE_METRICS,
+            SCOPE_ADMIN,
+            SCOPE_AUDIO,
+            SCOPE_INVENTORY,
+        ];
+        for other in others {
+            assert!(
+                !scope_satisfies(SCOPE_FLEET_REPORT, other),
+                "fleet-report reaches {other}: it must read nothing"
+            );
+            assert!(
+                !scope_satisfies(other, SCOPE_FLEET_REPORT),
+                "{other} reaches the ingest: only a member credential may"
             );
         }
     }

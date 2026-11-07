@@ -2483,18 +2483,41 @@ fn token_scope_flag_mints_a_scope_the_verifier_honors() -> Result<(), TestError>
         verifier.verify(&full, now, sipnab::auth::SCOPE_INVENTORY),
         "a full token reads the inventory too"
     );
+
+    let report = mint("fleet-report")?;
+    assert!(
+        verifier.verify(&report, now, sipnab::auth::SCOPE_FLEET_REPORT),
+        "--token-scope fleet-report must mint a token a fleet center's ingest accepts"
+    );
+    for other in [
+        sipnab::auth::SCOPE_FULL,
+        sipnab::auth::SCOPE_INVENTORY,
+        sipnab::auth::SCOPE_METRICS,
+    ] {
+        assert!(
+            !verifier.verify(&report, now, other),
+            "a fleet-report token reads nothing, {other} included"
+        );
+    }
+    for other in [&full, &actions, &inventory] {
+        assert!(
+            !verifier.verify(other, now, sipnab::auth::SCOPE_FLEET_REPORT),
+            "no other scope reaches the ingest"
+        );
+    }
     Ok(())
 }
 
-/// `--token-scope audio` and `--token-scope inventory` are refused for the
-/// MCP surface at mint time.
+/// `--token-scope audio`, `--token-scope inventory` and `--token-scope
+/// fleet-report` are refused for the MCP surface at mint time.
 ///
-/// MCP has no call audio routes and no inventory route, so the token could
+/// MCP has no call audio routes, no inventory route and no fleet ingest, so
+/// the token could
 /// never authenticate anything there. Failing at mint beats handing the
 /// operator a token that silently works nowhere.
 #[test]
 fn rest_only_scopes_are_refused_for_the_mcp_surface() -> Result<(), TestError> {
-    for scope in ["audio", "inventory"] {
+    for scope in ["audio", "inventory", "fleet-report"] {
         rest_only_scope_is_refused_for_mcp(scope)?;
     }
     Ok(())

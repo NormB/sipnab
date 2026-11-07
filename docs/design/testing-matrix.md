@@ -380,7 +380,7 @@ behind them.
 | `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +3 |  |  |
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-rate-limit-per-peer` |  |  | HEP | e2e | `tests/config_wiring_test.rs` |  |  |
-| `--tls-key` | `-k` | `FILE` | TLS / Decryption | e2e | `tests/config_cli_defects_test.rs`, `tests/cores_refusal_test.rs` +1 | **behavior** | DECRYPTION MATERIAL. A real TLS 1.2 GCM record decrypts back to a REGISTER. The flag's file-load hop (RsaKey::from_pem_file) is untested |
+| `--tls-key` | `-k` | `FILE` | TLS / Decryption | e2e | `tests/config_cli_defects_test.rs`, `tests/cores_refusal_test.rs` +2 | **behavior** | DECRYPTION MATERIAL. A real TLS 1.2 GCM record decrypts back to a REGISTER. The flag's file-load hop (RsaKey::from_pem_file) is untested |
 | `--keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/config_cli_defects_test.rs` +6 |  |  |
 | `--keylog-fd` |  | `N` | TLS / Decryption | e2e | `tests/feature_gate_test.rs` |  |  |
 | `--keylog-watch` |  |  | TLS / Decryption | e2e | `tests/feature_gate_test.rs` | **mention-only** | DECRYPTION. The live keylog poll and the late-decrypt hold have no test tying them to the flag. CHANGELOG records a prior regression here |
@@ -492,7 +492,7 @@ behind them.
 | Route | Evidence | Where |
 |---|---|---|
 | `/health` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +3 |
-| `/metrics` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +5 |
+| `/metrics` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +6 |
 | `/v1/actions/revert` | exercised | `tests/actions_cli_test.rs`, `tests/actions_journal_rest_test.rs` |
 | `/v1/aggregate` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/calls/live` | exercised | `tests/api_capture_identity_test.rs`, `tests/live_audio_test.rs` +1 |
@@ -500,7 +500,7 @@ behind them.
 | `/v1/calls/{call_id}/audio` | exercised | `tests/api_capture_identity_test.rs`, `tests/live_audio_test.rs` |
 | `/v1/capabilities` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` |
 | `/v1/captures/compare` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +4 |
-| `/v1/dialogs` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_operator_flows_test.rs` +7 |
+| `/v1/dialogs` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_operator_flows_test.rs` +8 |
 | `/v1/dialogs/compare` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/dialogs/rates` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/dialogs/tail` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` |
@@ -526,7 +526,7 @@ behind them.
 | `/v1/report` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/runtime` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +2 |
 | `/v1/security/findings` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` |
-| `/v1/stats` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_harness_readiness_test.rs` +6 |
+| `/v1/stats` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_harness_readiness_test.rs` +7 |
 | `/v1/streams` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_operator_flows_test.rs` +4 |
 | `/v1/streams/{id}` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_operator_flows_test.rs` +1 |
 | `/v1/talkers` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
