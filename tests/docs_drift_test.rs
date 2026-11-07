@@ -6041,7 +6041,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // the 2026-11-06 entry of benches/BASELINES.md (+1). Not mirrored to the
     // site. Counted per file against origin/main 62c121a2b: no other changed
     // page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1414;
+    // 1414 -> 1415 (perf/tui-search-format): the `tui_derived` table in the
+    // 2026-11-07 entry of benches/BASELINES.md (+1). Not mirrored to the
+    // site. Counted per file against origin/main 520857987: no other changed
+    // page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1415;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

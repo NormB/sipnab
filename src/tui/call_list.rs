@@ -405,13 +405,90 @@ pub fn dialog_matches_search(dialog: &crate::sip::dialog::SipDialog, query_lower
         || contains_ignore_ascii_case(dialog.method.as_str().as_bytes(), q)
         || contains_ignore_ascii_case(dialog.from_user.as_deref().unwrap_or("").as_bytes(), q)
         || contains_ignore_ascii_case(dialog.to_user.as_deref().unwrap_or("").as_bytes(), q)
-        || dialog.src_addr.to_string().contains(q)
-        || dialog.dst_addr.to_string().contains(q)
+        || ip_text_contains(dialog.src_addr, q)
+        || ip_text_contains(dialog.dst_addr, q)
         || contains_ignore_ascii_case(state_display_str(dialog.state()).as_bytes(), q)
         || dialog
             .messages
             .iter()
             .any(|msg| contains_ignore_ascii_case(&msg.raw, q))
+}
+
+/// Whether `addr`'s text, as `Display` writes it, contains `needle`: the
+/// answer `addr.to_string().contains(needle)` gives, without the `String`.
+///
+/// The search runs this twice per dialog on every pass, so it must not
+/// allocate. A needle holding a byte that address's text never holds (a
+/// letter for IPv4, anything but lowercase hex, `:` and `.` for IPv6)
+/// cannot match, and is answered without formatting at all; that covers
+/// most text searches. Any other needle is matched against the address
+/// written into a stack buffer.
+fn ip_text_contains(addr: std::net::IpAddr, needle: &str) -> bool {
+    let n = needle.as_bytes();
+    if !addr_text_may_contain(addr, n) {
+        return false;
+    }
+    let mut text = AddrText::default();
+    if std::fmt::Write::write_fmt(&mut text, format_args!("{addr}")).is_err() {
+        // Longer than any address's text, which cannot happen; answered the
+        // slow way rather than wrongly.
+        return addr.to_string().contains(needle);
+    }
+    memchr::memmem::find(text.as_bytes(), n).is_some()
+}
+
+/// The room [`AddrText`] has: more than the longest text an
+/// [`std::net::IpAddr`] displays as (`INET6_ADDRSTRLEN` less its NUL is 45).
+const ADDR_TEXT_MAX: usize = 46;
+
+/// Whether every byte of `needle` is one `addr`'s text can hold: digits and
+/// `.` for IPv4; digits, lowercase hex, `:` and `.` for IPv6.
+///
+/// False means the needle cannot occur in the text, so the caller need not
+/// write the address out. True decides nothing; the text still has to be
+/// compared.
+fn addr_text_may_contain(addr: std::net::IpAddr, needle: &[u8]) -> bool {
+    match addr {
+        std::net::IpAddr::V4(_) => needle.iter().all(|b| b.is_ascii_digit() || *b == b'.'),
+        std::net::IpAddr::V6(_) => needle
+            .iter()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b) || *b == b':' || *b == b'.'),
+    }
+}
+
+/// An address's text, written on the stack. A write past the end is an
+/// error, not a truncation.
+struct AddrText {
+    buf: [u8; ADDR_TEXT_MAX],
+    len: usize,
+}
+
+impl Default for AddrText {
+    fn default() -> Self {
+        Self {
+            buf: [0; ADDR_TEXT_MAX],
+            len: 0,
+        }
+    }
+}
+
+impl AddrText {
+    /// The bytes written so far.
+    fn as_bytes(&self) -> &[u8] {
+        &self.buf[..self.len]
+    }
+}
+
+impl std::fmt::Write for AddrText {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let end = self.len.checked_add(s.len()).ok_or(std::fmt::Error)?;
+        self.buf
+            .get_mut(self.len..end)
+            .ok_or(std::fmt::Error)?
+            .copy_from_slice(s.as_bytes());
+        self.len = end;
+        Ok(())
+    }
 }
 
 /// Allocation-free ASCII-case-insensitive substring test — the search hot
@@ -1966,6 +2043,142 @@ mod tests {
         // State string ("Completed"/"Trying"/... per state_display_str).
         let state = state_display_str(d.state()).to_ascii_lowercase();
         assert!(dialog_matches_search(&d, &state));
+        Ok(())
+    }
+
+    /// A search pass allocates nothing, whether the query could match an
+    /// address or not.
+    ///
+    /// `dialog_matches_search` runs once per dialog per keystroke, and every
+    /// field but the two addresses was already compared in place. The
+    /// addresses were formatted with `to_string()` for each dialog on each
+    /// pass: two allocations per dialog, and about 40% of the
+    /// `tui_derived/displayed_10k_search_miss` bench in integer formatting.
+    #[test]
+    fn a_search_pass_allocates_nothing() -> Result<(), TestError> {
+        let d = searchable_dialog("OPTIONS", "cid-1@host", "alice", "bob")?;
+        for (query, expected) in [
+            ("zzz-no-such-string", false),
+            ("10.9.8", false),
+            ("192.0.2.1", true),
+            ("51.100.2", true),
+            ("2001:db8", false),
+        ] {
+            let (allocations, matched) =
+                crate::test_alloc::allocations_during(|| dialog_matches_search(&d, query));
+            assert_eq!(
+                matched, expected,
+                "{query:?} against 192.0.2.10 -> 198.51.100.20"
+            );
+            assert_eq!(
+                allocations, 0,
+                "searching {query:?} allocated {allocations} time(s); the addresses must be \
+                 compared without building a String"
+            );
+        }
+        Ok(())
+    }
+
+    /// The address test answers exactly what `addr.to_string().contains(q)`
+    /// answers: on every substring of each edge-case address's text, on
+    /// needles that cannot occur in it, and on a deterministic sweep of
+    /// addresses and short needles.
+    #[test]
+    fn the_address_test_agrees_with_the_formatted_text() -> Result<(), TestError> {
+        let mut addrs: Vec<IpAddr> = [
+            "0.0.0.0",
+            "255.255.255.255",
+            "192.0.2.10",
+            "::",
+            "::1",
+            "::ffff:192.0.2.1",
+            "2001:db8::",
+            "2001:db8:1:2:3:4:5:6",
+            "fe80::1",
+            "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+        ]
+        .iter()
+        .map(|s| s.parse())
+        .collect::<Result<_, _>>()?;
+        // A fixed linear congruential sequence: the same addresses every run.
+        let mut x: u128 = 0x2545_f491_4f6c_dd1d;
+        for _ in 0..2000 {
+            x = x
+                .wrapping_mul(0x5851_f42d_4c95_7f2d_1405_7b7e_f767_814f)
+                .wrapping_add(1);
+            addrs.push(IpAddr::V4(std::net::Ipv4Addr::from((x >> 96) as u32)));
+            addrs.push(IpAddr::V6(std::net::Ipv6Addr::from(x)));
+            // Runs of zero groups, so the `::` compression is exercised.
+            let zeroed = x & !(0xffff_ffff_u128 << (16 * (x % 7) as u32));
+            addrs.push(IpAddr::V6(std::net::Ipv6Addr::from(zeroed)));
+        }
+        let alphabet = b"0123456789abcdefABCDEF:.%[]x ";
+        for addr in &addrs {
+            let text = addr.to_string();
+            let mut needles: Vec<String> = Vec::new();
+            for i in 0..text.len() {
+                for j in i..=text.len() {
+                    needles.push(text[i..j].to_string());
+                }
+            }
+            needles.push(format!("{text}0"));
+            needles.push("a".repeat(64));
+            for k in 0..40usize {
+                let len = 1 + k % 6;
+                let needle: String = (0..len)
+                    .map(|p| char::from(alphabet[(k * 7 + p * 13 + text.len()) % alphabet.len()]))
+                    .collect();
+                needles.push(needle);
+            }
+            for needle in &needles {
+                assert_eq!(
+                    ip_text_contains(*addr, needle),
+                    text.contains(needle.as_str()),
+                    "{addr} ({text:?}) and needle {needle:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The short cut that skips writing an address out says "cannot occur"
+    /// exactly for needles with a byte the address's text never holds.
+    ///
+    /// Tested on its own because skipping it changes no answer and no
+    /// allocation count, only the time a pass takes, which only the
+    /// `tui_derived` bench can see (`displayed_10k_search_miss` and
+    /// `displayed_10k_search_addr_miss`).
+    #[test]
+    fn the_short_cut_rejects_only_bytes_the_text_never_holds() -> Result<(), TestError> {
+        let v4: IpAddr = "203.0.113.255".parse()?;
+        let v6: IpAddr = "2001:db8::abcd:ef01".parse()?;
+        for (addr, text) in [(v4, v4.to_string()), (v6, v6.to_string())] {
+            for i in 0..text.len() {
+                for j in i..=text.len() {
+                    assert!(
+                        addr_text_may_contain(addr, &text.as_bytes()[i..j]),
+                        "{:?} occurs in {text:?}, so it must not be ruled out",
+                        &text[i..j]
+                    );
+                }
+            }
+        }
+        assert!(
+            addr_text_may_contain(v6, b"::ffff:192.0.2.1"),
+            "an IPv4-mapped tail"
+        );
+        for needle in ["a", "f", ":", "1a", "x", "%", " ", "Z"] {
+            assert!(
+                !addr_text_may_contain(v4, needle.as_bytes()),
+                "IPv4 text holds only digits and dots, never {needle:?}"
+            );
+        }
+        for needle in ["g", "A", "F", "%", "[", "x", " ", "z9"] {
+            assert!(
+                !addr_text_may_contain(v6, needle.as_bytes()),
+                "IPv6 text holds only digits, lowercase hex, colons and dots, never {needle:?}"
+            );
+        }
         Ok(())
     }
 

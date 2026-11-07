@@ -125,6 +125,24 @@ fn bench_displayed_dialogs(c: &mut Criterion) {
         })
     });
 
+    // One pass with a query shaped like an address that matches nothing:
+    // the search writes each dialog's two addresses out to compare them,
+    // which a query with a letter in it never needs.
+    g.bench_function("displayed_10k_search_addr_miss", |b| {
+        b.iter(|| {
+            displayed_dialogs(
+                &store,
+                None,
+                None,
+                None,
+                "10.0.0.9",
+                sipnab::tui::call_list::SortColumn::Index,
+                true,
+            )
+            .len()
+        })
+    });
+
     g.finish();
 }
 
