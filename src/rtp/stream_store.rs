@@ -936,10 +936,14 @@ impl StreamStore {
         }
     }
 
-    /// Whether the live stream at `key` must give way to a new one because a
-    /// different call renegotiated one of its sockets after it began.
-    fn call_changed(&self, key: &StreamKey) -> bool {
-        let Some(stream) = self.streams.get(key) else {
+    /// Whether the live stream at `index`, keyed `key`, must give way to a new
+    /// one because a different call renegotiated one of its sockets after it
+    /// began.
+    ///
+    /// Takes the index the caller already looked up, so a packet pays one
+    /// hash of its key in `streams`, not one here and another to update it.
+    fn call_changed(&self, index: usize, key: &StreamKey) -> bool {
+        let Some((_, stream)) = self.streams.get_index(index) else {
             return false;
         };
         let endpoints = [key.src, key.dst].into_iter().filter_map(|sock| {
@@ -1185,13 +1189,17 @@ impl StreamStore {
             SocketAddr::new(parsed.src_addr, parsed.src_port),
             SocketAddr::new(parsed.dst_addr, parsed.dst_port),
         ));
+        // One lookup of the key in `streams` serves the renegotiation check,
+        // the update and the audio retention below.
+        let mut found = self.streams.get_index_of(&key);
         // A later call renegotiated this stream's sockets and reuses its
         // SSRC: this packet is that call's, and starts its own stream. The
         // finished one stays in the store under its own session, bound to
         // its own call, with only its own packets.
-        if self.call_changed(&key) {
+        if found.is_some_and(|index| self.call_changed(index, &key)) {
             key.session += 1;
             self.live_sessions.insert(key.flow(), key.session);
+            found = self.streams.get_index_of(&key);
         }
 
         // RFC 3550 §5.1 padding is not payload. Counting it inflated the
@@ -1199,7 +1207,9 @@ impl StreamStore {
         // octets into the audio buffer where they became exported samples.
         let payload_len = rtp.payload(&parsed.payload).len();
 
-        if let Some(stream) = self.streams.get_mut(&key) {
+        if let Some((index, stream)) =
+            found.and_then(|index| Some((index, self.streams.get_index_mut(index)?.1)))
+        {
             stream.update(rtp, timestamp, payload_len);
             // What mode the sender actually used, which no SDP can answer:
             // AMR switches per frame under congestion, and the nine AMR-WB
@@ -1224,10 +1234,7 @@ impl StreamStore {
                 && rtp.payload_type == stream.payload_type
                 && is_audio_capturable(stream.codec.as_deref());
             let audio_slice = rtp.payload(&parsed.payload);
-            if capturable
-                && !audio_slice.is_empty()
-                && let Some(index) = self.streams.get_index_of(&key)
-            {
+            if capturable && !audio_slice.is_empty() {
                 self.retain_payload(
                     index,
                     RetainedFrame::new(rtp.timestamp, rtp.sequence, audio_slice.to_vec()),
