@@ -49,7 +49,7 @@ version = "0.5.236"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.235"
+published_version = "0.5.236"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -58,7 +58,7 @@ published_version = "0.5.235"
 # untagged version is the conflation the published_version split exists to
 # prevent. `site_release_date_matches_changelog` reads `published_version` and
 # enforces this.
-release_date = "2026-11-05"
+release_date = "2026-11-06"
 # Minimum glibc of the released -gnu binaries and .debs. This is NOT a free
 # choice: it is whatever the "Enforce glibc floor" step in release.yml admits,
 # and it must equal SIPNAB_GLIBC_FLOOR in static/install.sh, which decides
@@ -187,6 +187,7 @@ macos_floor_intel = "10.12"
 #   0.5.233  23,479,616 bytes   (+405,888, leaving 637,632 bytes of headroom under 23 MB)
 #   0.5.234  23,639,360 bytes   (+159,744, leaving 477,888 bytes of headroom under 23 MB)
 #   0.5.235  23,811,456 bytes   (+172,096, leaving 305,792 bytes of headroom under 23 MB)
+#   0.5.236  23,950,720 bytes   (+139,264, leaving 1,215,104 bytes of headroom under 24 MB)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -303,14 +304,13 @@ macos_floor_intel = "10.12"
 # 23 -> 24 after 0.5.235, before 0.5.236. The #664 follow-ups grew the binary
 # again: 0.5.235 (the per-call engine chosen from SDP, #666) measured
 # 23,811,456 bytes, and #669 (the engine taken from the ng control traffic)
-# adds 69,632, measured on the Release build of the tree main carries now
-# (the pending line below). That leaves 236,160 bytes under 23 MB, under the
-# 262,144-byte THIN_MARGIN, so the next release would have been refused by
-# the margin gate at its phase two. No single feature drives it: from 0.5.228
-# to 0.5.235 the binary grew 1,125,888 bytes over seven releases. 24 MB leaves
-# 1,284,736 bytes over the pending figure.
-#
-#   pending  +69,632 bytes  against 0.5.235: #669 (each call's rtpengine engine from the ng traffic), measured by Release run 42186271099 (workflow_dispatch on 06b312ffa, the tree merged as 86a902663): x86_64-musl stripped 23,881,088 bytes
+# adds 69,632, measured on the Release build of the tree main carried then
+# (a pending line until 0.5.236 measured it). That leaves 236,160 bytes
+# under 23 MB, under the 262,144-byte THIN_MARGIN, so the next release would
+# have been refused by the margin gate at its phase two. No single feature
+# drives it: from 0.5.228 to 0.5.235 the binary grew 1,125,888 bytes over
+# seven releases. 24 MB leaves 1,284,736 bytes over that 23,881,088-byte
+# figure.
 #
 binary_size_ceiling_mb = "24"
 github_url = "https://github.com/NormB/sipnab"
