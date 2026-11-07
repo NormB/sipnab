@@ -1664,6 +1664,35 @@ static SPECS: &[Spec] = &[
         ],
     ),
     (
+        "api-tls-client-ca",
+        Kind::Text {
+            accept: &["/nonexistent/sipnab-ca", "x", " "],
+            reject: &[("", 2)],
+        },
+        &[
+            "--api",
+            "127.0.0.1:0",
+            "--api-tls-cert",
+            "/nonexistent/sipnab-cert",
+            "--api-tls-key",
+            "/nonexistent/sipnab-key",
+        ],
+    ),
+    (
+        "api-tls-client-auth",
+        Kind::Choice,
+        &[
+            "--api",
+            "127.0.0.1:0",
+            "--api-tls-cert",
+            "/nonexistent/sipnab-cert",
+            "--api-tls-key",
+            "/nonexistent/sipnab-key",
+            "--api-tls-client-ca",
+            "/nonexistent/sipnab-ca",
+        ],
+    ),
+    (
         "api-max-conn",
         Kind::Int {
             lo: 0,
@@ -1766,6 +1795,37 @@ static SPECS: &[Spec] = &[
             "http",
             "--mcp-tls-cert",
             "/nonexistent/sipnab-cert",
+        ],
+    ),
+    (
+        "mcp-tls-client-ca",
+        Kind::Text {
+            accept: &["/nonexistent/sipnab-ca", "x", " "],
+            reject: &[("", 2)],
+        },
+        &[
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-tls-cert",
+            "/nonexistent/sipnab-cert",
+            "--mcp-tls-key",
+            "/nonexistent/sipnab-key",
+        ],
+    ),
+    (
+        "mcp-tls-client-auth",
+        Kind::Choice,
+        &[
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-tls-cert",
+            "/nonexistent/sipnab-cert",
+            "--mcp-tls-key",
+            "/nonexistent/sipnab-key",
+            "--mcp-tls-client-ca",
+            "/nonexistent/sipnab-ca",
         ],
     ),
     (
@@ -4021,6 +4081,8 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.engine_selection(config)),
         format!("{:?}", cli.api_tls_files(config)),
         format!("{:?}", cli.mcp_tls_files(config)),
+        format!("{:?}", cli.api_client_auth(config)),
+        format!("{:?}", cli.mcp_client_auth(config)),
         format!("{:?}", cli.metrics_tls_files(config)),
         format!("{:?}", cli.hep_tls_trust(config)),
         format!("{:?}", cli.hep_tls_files(config)),

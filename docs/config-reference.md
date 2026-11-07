@@ -965,6 +965,8 @@ schemas.
 | `bundles` | table | -- | `[mcp.bundles]`: your own bundles, each a name for a list of tool names and built-in bundles. A custom bundle cannot reuse a built-in bundle or tool name, cannot be empty, and cannot hold `full` or another custom bundle; sipnab refuses to start, naming the bundle, when one breaks a rule, even when nothing uses it |
 | `tls_cert` | string | -- | PEM certificate chain MCP over HTTP serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only with `--mcp --mcp-transport http`. See [MCP TLS](mcp-deploy.md#mcp-tls). An empty string fails validation and names the key. `--mcp-tls-cert` overrides it |
 | `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--mcp-tls-key` overrides it |
+| `tls_client_ca` | string | -- | CA certificates (PEM) a client certificate must chain to: MCP over HTTP then asks each client for a certificate (mutual TLS). The bearer token is still checked. Needs `tls_cert` and `tls_key`. sipnab refuses a file any user can write. See [Require client certificates](mtls.md). An empty string fails validation and names the key. `--mcp-tls-client-ca` overrides it |
+| `tls_client_auth` | string | `"required"` with `tls_client_ca`, else `"off"` | `"off"`, `"optional"` (verify a certificate when the client sends one) or `"required"` (refuse a handshake without one). `"optional"` or `"required"` without `tls_client_ca` stops sipnab at startup. `"off"` wins over `tls_client_ca`, and sipnab then logs at warn that it does not read the CA. `--mcp-tls-client-auth` overrides it |
 
 ```toml
 [mcp]
@@ -989,6 +991,8 @@ bind).
 | `allowed_hosts` | list of strings | `[]` | Extra `Host` values to serve, such as a reverse proxy's public name. `name:port` accepts that port only. `"*"` turns the check off. `--api-allowed-host` replaces the list |
 | `tls_cert` | string | -- | PEM certificate chain the REST API serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only when `--api` starts the API. See [API TLS](rest-api.md#api-tls). An empty string fails validation and names the key. `--api-tls-cert` overrides it |
 | `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--api-tls-key` overrides it |
+| `tls_client_ca` | string | -- | CA certificates (PEM) a client certificate must chain to: the REST API then asks each client for a certificate (mutual TLS). The bearer token is still checked. Needs `tls_cert` and `tls_key`. sipnab refuses a file any user can write. See [Require client certificates](mtls.md). An empty string fails validation and names the key. `--api-tls-client-ca` overrides it |
+| `tls_client_auth` | string | `"required"` with `tls_client_ca`, else `"off"` | `"off"`, `"optional"` (verify a certificate when the client sends one) or `"required"` (refuse a handshake without one). `"optional"` or `"required"` without `tls_client_ca` stops sipnab at startup. `"off"` wins over `tls_client_ca`, and sipnab then logs at warn that it does not read the CA. `--api-tls-client-auth` overrides it |
 
 ```toml
 [api]

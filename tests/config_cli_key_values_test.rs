@@ -146,6 +146,24 @@ static KEY_SPECS: &[KeySpec] = &[
         },
     ),
     (
+        "api",
+        "tls_client_ca",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
+            ctx: "tls_cert = \"/nonexistent/sipnab-cert\"\ntls_key = \"/nonexistent/sipnab-key\"",
+        },
+    ),
+    (
+        "api",
+        "tls_client_auth",
+        KeyKind::Literal {
+            accept: &["\"off\"", "\"optional\"", "\"required\""],
+            reject: &["\"\"", "\"sometimes\"", "1"],
+            ctx: "tls_cert = \"/nonexistent/sipnab-cert\"\ntls_key = \"/nonexistent/sipnab-key\"\ntls_client_ca = \"/nonexistent/sipnab-ca\"",
+        },
+    ),
+    (
         "capture",
         "bpf_filter",
         KeyKind::Literal {
@@ -1067,6 +1085,24 @@ static KEY_SPECS: &[KeySpec] = &[
             accept: &["\"x\"", "\" \"", "\"0\""],
             reject: &["\"\""],
             ctx: "tls_cert = \"/nonexistent/sipnab-cert\"",
+        },
+    ),
+    (
+        "mcp",
+        "tls_client_ca",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
+            ctx: "tls_cert = \"/nonexistent/sipnab-cert\"\ntls_key = \"/nonexistent/sipnab-key\"",
+        },
+    ),
+    (
+        "mcp",
+        "tls_client_auth",
+        KeyKind::Literal {
+            accept: &["\"off\"", "\"optional\"", "\"required\""],
+            reject: &["\"\"", "\"sometimes\"", "1"],
+            ctx: "tls_cert = \"/nonexistent/sipnab-cert\"\ntls_key = \"/nonexistent/sipnab-key\"\ntls_client_ca = \"/nonexistent/sipnab-ca\"",
         },
     ),
     (

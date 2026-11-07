@@ -3291,6 +3291,23 @@ pub struct ListenerArgs {
     )]
     pub api_tls_key: Option<String>,
 
+    /// Ask REST API clients for a certificate issued by this CA (PEM). Needs
+    /// --api-tls-cert. Alone it means --api-tls-client-auth required. The
+    /// bearer token is still checked: a certificate never replaces it.
+    #[arg(
+        help_heading = "Network listeners",
+        long,
+        value_name = "FILE",
+        value_parser = non_empty_text()
+    )]
+    pub api_tls_client_ca: Option<String>,
+
+    /// When the REST API asks for a client certificate: off, optional
+    /// (verified when sent) or required (a handshake without one is
+    /// refused). Default: required with --api-tls-client-ca, else off.
+    #[arg(help_heading = "Network listeners", long, value_name = "MODE")]
+    pub api_tls_client_auth: Option<crate::config::ClientAuthMode>,
+
     /// Maximum API requests handled at once; sipnab answers 503 to a request
     /// past it. `0` means no limit.
     #[arg(
@@ -3498,6 +3515,27 @@ pub struct McpArgs {
         value_parser = non_empty_text()
     )]
     pub mcp_tls_key: Option<String>,
+
+    /// Ask MCP over HTTP clients for a certificate issued by this CA (PEM).
+    /// Needs --mcp-tls-cert. Alone it means --mcp-tls-client-auth required.
+    /// The bearer token is still checked: a certificate never replaces it.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-tls-client-ca",
+        value_name = "FILE",
+        value_parser = non_empty_text()
+    )]
+    pub mcp_tls_client_ca: Option<String>,
+
+    /// When MCP over HTTP asks for a client certificate: off, optional
+    /// (verified when sent) or required (a handshake without one is
+    /// refused). Default: required with --mcp-tls-client-ca, else off.
+    #[arg(
+        help_heading = "MCP (Model Context Protocol)",
+        long = "mcp-tls-client-auth",
+        value_name = "MODE"
+    )]
+    pub mcp_tls_client_auth: Option<crate::config::ClientAuthMode>,
 
     /// HMAC signing key for HTTP MCP self-describing bearer tokens
     /// (repeatable). The FIRST key mints; ALL keys are accepted on verify,
@@ -4618,6 +4656,20 @@ pub struct HepArgs {
 ///
 /// [`PcapExportMode::ALL`]: crate::capture::PcapExportMode::ALL
 impl clap::ValueEnum for crate::capture::PcapExportMode {
+    fn value_variants<'a>() -> &'a [Self] {
+        &Self::ALL
+    }
+
+    fn to_possible_value(&self) -> Option<clap::builder::PossibleValue> {
+        Some(clap::builder::PossibleValue::new(self.name()))
+    }
+}
+
+/// `--api-tls-client-auth` and `--mcp-tls-client-auth` take the names in
+/// [`ClientAuthMode::ALL`], the names the config keys take.
+///
+/// [`ClientAuthMode::ALL`]: crate::config::ClientAuthMode::ALL
+impl clap::ValueEnum for crate::config::ClientAuthMode {
     fn value_variants<'a>() -> &'a [Self] {
         &Self::ALL
     }
@@ -6087,6 +6139,95 @@ pub fn api_tls_pair_problem(first_file: Option<&str>, second_file: Option<&str>)
     tls_pair_problem(API_TLS_FLAGS, first_file, second_file)
 }
 
+/// What a client-certificate refusal calls a listener's four TLS settings:
+/// flag names (`--api-tls-client-ca`), or a flag and its key
+/// (`--api-tls-client-ca (or [api] tls_client_ca)`).
+#[derive(Debug, Clone, Copy)]
+pub struct ClientAuthLabels<'a> {
+    /// The client CA setting.
+    pub ca: &'a str,
+    /// The client-auth mode setting.
+    pub mode: &'a str,
+    /// The first setting of the listener's TLS pair: its certificate chain.
+    ///
+    /// Named `first` and `second`, as [`tls_pair_problem`]'s halves are,
+    /// because CodeQL's cleartext-logging query reads a value named for a
+    /// certificate or a key as that certificate or key. These hold flag
+    /// names, and the refusals print nothing else.
+    pub first: &'a str,
+    /// The second setting of the listener's TLS pair: its private key.
+    pub second: &'a str,
+}
+
+/// The REST API's client-certificate flags, for [`client_auth_problem`].
+pub const API_CLIENT_AUTH_LABELS: ClientAuthLabels<'static> = ClientAuthLabels {
+    ca: "--api-tls-client-ca",
+    mode: "--api-tls-client-auth",
+    first: API_TLS_FLAGS.0,
+    second: API_TLS_FLAGS.1,
+};
+
+/// MCP over HTTP's client-certificate flags, for [`client_auth_problem`].
+pub const MCP_CLIENT_AUTH_LABELS: ClientAuthLabels<'static> = ClientAuthLabels {
+    ca: "--mcp-tls-client-ca",
+    mode: "--mcp-tls-client-auth",
+    first: MCP_TLS_FLAGS.0,
+    second: MCP_TLS_FLAGS.1,
+};
+
+/// Why a listener's client-certificate settings cannot be served: `Err` with
+/// the refusal, `Ok` when they can.
+///
+/// One rule for startup validation and for the listener itself, as
+/// [`tls_pair_problem`] is. Each refusal stops the run rather than serving a
+/// listener that checks less than the operator asked for:
+///
+/// * `optional` or `required` with no client CA: there is nothing to verify
+///   a certificate against.
+/// * A client CA on a listener that serves plain HTTP, unless the mode is
+///   `off`: a client certificate is asked for only in a TLS handshake.
+///
+/// A client CA with the mode set to `off` is accepted, and `off` wins, so a
+/// command line can turn off client certificates a config file asks for.
+///
+/// # Arguments
+///
+/// * `labels` — what to call the settings in the message.
+/// * `setting` — the resolved CA file and mode.
+/// * `serves_tls` — whether both the certificate and the key are set.
+///
+/// # Errors
+///
+/// The refusal, naming the settings by `labels`.
+pub fn client_auth_problem(
+    labels: ClientAuthLabels<'_>,
+    setting: &crate::config::ClientCertAuth,
+    serves_tls: bool,
+) -> Result<(), String> {
+    use crate::config::ClientAuthMode;
+    let ClientAuthLabels {
+        ca: ca_label,
+        mode: mode_label,
+        first,
+        second,
+    } = labels;
+    match (setting.ca.as_deref(), setting.mode) {
+        (None, Some(mode @ (ClientAuthMode::Optional | ClientAuthMode::Required))) => Err(format!(
+            "{mode_label} {} needs {ca_label}: name the CA that issues the client \
+                 certificates",
+            mode.name()
+        )),
+        // `off` wins over a client CA: a command line can turn off what the
+        // config file asks for, and the listener says it does not read the CA.
+        (None, _) | (Some(_), Some(ClientAuthMode::Off)) => Ok(()),
+        (Some(file), _) if !serves_tls => Err(format!(
+            "{ca_label} {file} needs {first} and {second}: a client certificate is asked \
+             for only in a TLS handshake"
+        )),
+        (Some(_), _) => Ok(()),
+    }
+}
+
 /// `DO, gb,,do` → `["DO", "GB"]`: one rule for the flag and the config key.
 pub fn parse_destination_list(raw: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -7009,6 +7150,40 @@ impl Cli {
         )
     }
 
+    /// The REST API's client-certificate settings: each flag, else its
+    /// `[api]` key, resolved on its own as [`Self::api_tls_files`] does.
+    #[must_use]
+    pub fn api_client_auth(&self, config: &crate::config::Config) -> crate::config::ClientCertAuth {
+        crate::config::ClientCertAuth {
+            ca: self
+                .listener_args
+                .api_tls_client_ca
+                .clone()
+                .or_else(|| config.api.tls_client_ca.clone()),
+            mode: self
+                .listener_args
+                .api_tls_client_auth
+                .or(config.api.tls_client_auth),
+        }
+    }
+
+    /// MCP over HTTP's client-certificate settings: each flag, else its
+    /// `[mcp]` key. See [`Self::api_client_auth`].
+    #[must_use]
+    pub fn mcp_client_auth(&self, config: &crate::config::Config) -> crate::config::ClientCertAuth {
+        crate::config::ClientCertAuth {
+            ca: self
+                .mcp_args
+                .mcp_tls_client_ca
+                .clone()
+                .or_else(|| config.mcp.tls_client_ca.clone()),
+            mode: self
+                .mcp_args
+                .mcp_tls_client_auth
+                .or(config.mcp.tls_client_auth),
+        }
+    }
+
     /// The metrics endpoint's certificate and key: each flag, else its
     /// `[metrics]` key. See [`Self::api_tls_files`].
     #[must_use]
@@ -7126,6 +7301,42 @@ impl Cli {
                 first_file.as_deref(),
                 second_file.as_deref(),
             ) {
+                return Some((Origin::of(flag_given), problem));
+            }
+        }
+        let client_auth = [
+            (
+                "api",
+                API_CLIENT_AUTH_LABELS,
+                self.api_client_auth(config),
+                self.api_tls_files(config),
+                l.api_tls_client_ca.is_some() || l.api_tls_client_auth.is_some(),
+            ),
+            (
+                "mcp",
+                MCP_CLIENT_AUTH_LABELS,
+                self.mcp_client_auth(config),
+                self.mcp_tls_files(config),
+                m.mcp_tls_client_ca.is_some() || m.mcp_tls_client_auth.is_some(),
+            ),
+        ];
+        for (section, flags, setting, (first_file, second_file), flag_given) in client_auth {
+            let (ca, mode) = (
+                label(flags.ca, section, "tls_client_ca"),
+                label(flags.mode, section, "tls_client_auth"),
+            );
+            let (first, second) = (
+                label(flags.first, section, "tls_cert"),
+                label(flags.second, section, "tls_key"),
+            );
+            let labels = ClientAuthLabels {
+                ca: &ca,
+                mode: &mode,
+                first: &first,
+                second: &second,
+            };
+            let serves_tls = first_file.is_some() && second_file.is_some();
+            if let Err(problem) = client_auth_problem(labels, &setting, serves_tls) {
                 return Some((Origin::of(flag_given), problem));
             }
         }
@@ -8856,6 +9067,17 @@ impl Cli {
                     .to_string(),
             ));
         }
+        // The client-certificate flags configure the same listener.
+        if (self.mcp_args.mcp_tls_client_ca.is_some()
+            || self.mcp_args.mcp_tls_client_auth.is_some())
+            && !(self.mcp_args.mcp && self.mcp_args.mcp_transport == McpTransport::Http)
+        {
+            return Err(crate::Error::CliValidation(
+                "--mcp-tls-client-ca/--mcp-tls-client-auth ask MCP over HTTPS clients for a \
+                 certificate and do nothing without --mcp --mcp-transport http"
+                    .to_string(),
+            ));
+        }
         // A TLS flag on a plaintext side configures nothing, and the way it
         // fails matters: an operator who believes --hep-tls-ca encrypted the
         // feed gets a clean exit and packets in the clear. Refuse instead, and
@@ -10486,6 +10708,172 @@ mod tests {
             flagged.api_allowed_hosts(&config),
             vec!["proxy.example".to_string(), "*".to_string()],
             "the flag replaces the config list"
+        );
+        Ok(())
+    }
+
+    /// Each refusal of [`client_auth_problem`], with the exact text the
+    /// how-to quotes, and the settings it accepts.
+    #[test]
+    fn client_auth_problem_refuses_each_contradiction() {
+        use crate::config::{ClientAuthMode, ClientCertAuth};
+        let with = |ca: Option<&str>, mode: Option<ClientAuthMode>| ClientCertAuth {
+            ca: ca.map(String::from),
+            mode,
+        };
+        let labels = API_CLIENT_AUTH_LABELS;
+        for mode in [ClientAuthMode::Optional, ClientAuthMode::Required] {
+            assert_eq!(
+                client_auth_problem(labels, &with(None, Some(mode)), true)
+                    .err()
+                    .as_deref(),
+                Some(
+                    format!(
+                        "--api-tls-client-auth {} needs --api-tls-client-ca: name the CA \
+                         that issues the client certificates",
+                        mode.name()
+                    )
+                    .as_str()
+                ),
+                "a mode that asks for certificates needs a CA to check them against"
+            );
+        }
+        for mode in [
+            None,
+            Some(ClientAuthMode::Optional),
+            Some(ClientAuthMode::Required),
+        ] {
+            assert_eq!(
+                client_auth_problem(labels, &with(Some("ca.pem"), mode), false)
+                    .err()
+                    .as_deref(),
+                Some(
+                    "--api-tls-client-ca ca.pem needs --api-tls-cert and --api-tls-key: \
+                     a client certificate is asked for only in a TLS handshake"
+                ),
+                "{mode:?}"
+            );
+        }
+        for (ca, mode, tls) in [
+            (None, None, false),
+            (None, None, true),
+            (None, Some(ClientAuthMode::Off), false),
+            (Some("ca.pem"), None, true),
+            // `off` wins over a client CA, so a command line can turn off
+            // what the config file asks for.
+            (Some("ca.pem"), Some(ClientAuthMode::Off), true),
+            (Some("ca.pem"), Some(ClientAuthMode::Off), false),
+            (Some("ca.pem"), Some(ClientAuthMode::Optional), true),
+            (Some("ca.pem"), Some(ClientAuthMode::Required), true),
+        ] {
+            assert_eq!(
+                client_auth_problem(labels, &with(ca, mode), tls),
+                Ok(()),
+                "{ca:?} {mode:?} tls={tls}"
+            );
+        }
+    }
+
+    /// A CA alone means `required`; no CA and no mode means `off`; a mode
+    /// that was set is the mode.
+    #[test]
+    fn the_client_auth_mode_defaults_from_the_ca() {
+        use crate::config::ClientAuthMode::{self, Off, Optional, Required};
+        assert_eq!(
+            ClientAuthMode::effective(None, true),
+            Required,
+            "a CA alone means required"
+        );
+        assert_eq!(
+            ClientAuthMode::effective(None, false),
+            Off,
+            "no CA and no mode means off, the behavior before this setting existed"
+        );
+        for mode in [Off, Optional, Required] {
+            assert_eq!(
+                ClientAuthMode::effective(Some(mode), true),
+                mode,
+                "a mode that was set is the mode, CA or not"
+            );
+        }
+    }
+
+    /// The client-certificate settings resolve flag over key, each on its
+    /// own, for both listeners; and the startup check names the config key
+    /// when the problem came from the file.
+    #[test]
+    fn client_auth_settings_resolve_flag_then_config() -> Result<(), TestError> {
+        use crate::config::ClientAuthMode;
+        let mut config = crate::config::Config::default();
+        config.api.tls_client_ca = Some("file-ca.pem".into());
+        config.api.tls_client_auth = Some(ClientAuthMode::Optional);
+        config.mcp.tls_client_ca = Some("mcp-ca.pem".into());
+        let plain = Cli::try_parse_from(["sipnab"])?;
+        assert_eq!(
+            plain.api_client_auth(&config).ca.as_deref(),
+            Some("file-ca.pem"),
+            "with no flag, [api] tls_client_ca is the CA"
+        );
+        assert_eq!(
+            plain.api_client_auth(&config).mode,
+            Some(ClientAuthMode::Optional),
+            "with no flag, [api] tls_client_auth is the mode"
+        );
+        assert_eq!(
+            plain.mcp_client_auth(&config).ca.as_deref(),
+            Some("mcp-ca.pem"),
+            "with no flag, [mcp] tls_client_ca is the CA"
+        );
+        assert_eq!(
+            plain.mcp_client_auth(&config).mode,
+            None,
+            "an unset [mcp] tls_client_auth stays unset, so the CA decides it"
+        );
+        let flagged = Cli::try_parse_from([
+            "sipnab",
+            "--api-tls-client-auth",
+            "required",
+            "--mcp-tls-client-ca",
+            "flag-ca.pem",
+            "--mcp-tls-client-auth",
+            "optional",
+        ])?;
+        assert_eq!(
+            flagged.api_client_auth(&config).ca.as_deref(),
+            Some("file-ca.pem"),
+            "the key still supplies the CA when only the mode flag is given"
+        );
+        assert_eq!(
+            flagged.api_client_auth(&config).mode,
+            Some(ClientAuthMode::Required),
+            "the mode flag replaces the key"
+        );
+        assert_eq!(
+            flagged.mcp_client_auth(&config).ca.as_deref(),
+            Some("flag-ca.pem"),
+            "the CA flag replaces the key"
+        );
+        assert_eq!(
+            flagged.mcp_client_auth(&config).mode,
+            Some(ClientAuthMode::Optional),
+            "the mode flag sets the MCP mode"
+        );
+
+        // No server certificate: the file's client CA is refused by its key.
+        let (origin, problem) = plain
+            .tls_settings_refusal(&config)
+            .ok_or("a client CA without a server certificate is refused")?;
+        assert_eq!(
+            origin,
+            crate::settings::Origin::ConfigFile,
+            "the problem came from the config file, so its exit code is 1"
+        );
+        assert!(
+            problem.starts_with(
+                "--api-tls-client-ca (or [api] tls_client_ca) file-ca.pem needs \
+                 --api-tls-cert (or [api] tls_cert) and --api-tls-key (or [api] tls_key)"
+            ),
+            "{problem}"
         );
         Ok(())
     }

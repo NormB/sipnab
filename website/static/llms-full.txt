@@ -7510,8 +7510,10 @@ curl --cacert /etc/sipnab/ca.pem -H "Authorization: Bearer secret" https://captu
   handshake and is not served.
 - TLS 1.2 and TLS 1.3 only. The server offers `http/1.1` by ALPN
   (application-layer protocol negotiation) and does not offer HTTP/2.
-- No client certificates. Clients authenticate with the bearer credential,
-  as over plain HTTP.
+- No client certificates unless you ask for them. Clients authenticate with
+  the bearer credential, as over plain HTTP. `--api-tls-client-ca` makes the
+  handshake also require a certificate from your CA, and the token is still
+  checked: see [Require client certificates](mtls.md).
 - `[api] tls_cert` and `[api] tls_key` in
   [`sipnab.toml`](config-reference.md#api) set the same files. Each flag
   replaces its own key.
@@ -13977,7 +13979,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
-| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core` |
+| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core`, `webpki` |
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent, such as Claude Code or Claude Desktop, drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
 | `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
@@ -22104,8 +22106,10 @@ This applies to root runs and to unprivileged runs set up with
 | `--metrics-tls-key` | `<FILE>` | -- | 0.5.203 | PEM private key for `--metrics-tls-cert`. sipnab **refuses a key any other user on the host can read** (`chmod 600` it; group-readable stays allowed), a file with no private key, and a key that does not belong to the certificate, each at startup and naming the file. Refused without `--metrics`. sipnab refuses an empty path with exit `2`, and an empty `[metrics] tls_key` with exit `1`. Feature: `metrics`. Config: `[metrics] tls_key` |
 | `--api` | `<ADDR>` | -- | 0.3.0 | REST API endpoint (e.g., `0.0.0.0:8080`). Feature: `api` |
 | `--api-key` | `<KEY>` | -- | 0.3.0 | API key for REST API authentication. Also reads `$SIPNAB_API_KEY`. `--help` names the variable and never shows its value. Feature: `api` |
-| `--api-tls-cert` | `<FILE>` | -- | 0.3.0 | Serve the REST API over HTTPS with this PEM certificate chain, the server's certificate first. Needs `--api-tls-key`; either alone stops sipnab at startup rather than serving plain HTTP on a port meant for HTTPS. The port then speaks HTTPS only: TLS 1.2 and 1.3, ALPN `http/1.1` (no HTTP/2), no client certificates. A file sipnab cannot read, or that holds no certificate, stops it at startup naming the file. A reverse proxy in front of a loopback bind remains an alternative. See [API TLS](rest-api.md#api-tls). sipnab refuses an empty path with exit `2`, and an empty `[api] tls_cert` with exit `1`. Feature: `api`. Config: `[api] tls_cert` |
+| `--api-tls-cert` | `<FILE>` | -- | 0.3.0 | Serve the REST API over HTTPS with this PEM certificate chain, the server's certificate first. Needs `--api-tls-key`; either alone stops sipnab at startup rather than serving plain HTTP on a port meant for HTTPS. The port then speaks HTTPS only: TLS 1.2 and 1.3, ALPN `http/1.1` (no HTTP/2), no client certificates unless `--api-tls-client-ca` asks for them. A file sipnab cannot read, or that holds no certificate, stops it at startup naming the file. A reverse proxy in front of a loopback bind remains an alternative. See [API TLS](rest-api.md#api-tls). sipnab refuses an empty path with exit `2`, and an empty `[api] tls_cert` with exit `1`. Feature: `api`. Config: `[api] tls_cert` |
 | `--api-tls-key` | `<FILE>` | -- | 0.3.0 | PEM private key for `--api-tls-cert`. sipnab **refuses a key any other user on the host can read** (`chmod 600` it; group-readable stays allowed), a file with no private key, and a key that does not belong to the certificate, each at startup and naming the file. sipnab refuses an empty path with exit `2`, and an empty `[api] tls_key` with exit `1`. Feature: `api`. Config: `[api] tls_key` |
+| `--api-tls-client-ca` | `<FILE>` | -- | Unreleased | Ask REST API clients for a TLS client certificate and accept only one that chains to a CA in this PEM file (mutual TLS). The file is the whole trust store for client certificates; the host's CA bundle is not added. Alone it means `--api-tls-client-auth required`: sipnab refuses a handshake without such a certificate, or with an expired one, one not yet valid, one another CA issued or one made for a server only, and logs why at warn. **sipnab still checks the bearer token**: a certificate decides who may connect, the token's scope what it may do. sipnab logs a verified client by subject and names when it connects, and its handlers see it. Needs `--api-tls-cert` and `--api-tls-key`; sipnab refuses a file it cannot read, one with no certificate, and one any user can write, each at startup naming the file. Certificate revocation lists are not read. sipnab refuses an empty path with exit `2`, and an empty `[api] tls_client_ca` with exit `1`. Feature: `api`. How-to: [Require client certificates](mtls.md). Config: `[api] tls_client_ca` |
+| `--api-tls-client-auth` | `<off\|optional\|required>` | `required` with `--api-tls-client-ca`, else `off` | Unreleased | When the REST API asks for a client certificate. `optional` verifies one when the client sends it and still serves a client that sends none; `required` refuses that handshake. `optional` or `required` without `--api-tls-client-ca` stops sipnab at startup. `off` wins over a client CA, so this flag can turn off what `[api] tls_client_ca` asks for; sipnab then logs at warn that it does not read the CA. Feature: `api`. How-to: [Require client certificates](mtls.md). Config: `[api] tls_client_auth` |
 | `--api-max-conn` | `<N>` | `100` | 0.3.0 | Maximum API requests handled at once; sipnab answers 503 to a request past it. `0` means no limit. Feature: `api` |
 | `--api-allowed-host` | `<HOST>` | -- | 0.5.198 | Additional `Host` header values the REST API accepts (repeatable), against DNS rebinding: a web page that points its own name at `127.0.0.1` and reads a loopback API with no key from your browser. Accepted by default: `localhost`, `127.0.0.1`, `::1` and the address `--api` binds, on any port, and any IP address when `--api` binds `0.0.0.0` or `::`. Add the name clients use, such as a reverse proxy's public name; `name:port` accepts that port only. Any other `Host` gets `403`, and a request with no `Host` gets `400`. `*` disables the check (not recommended). See [Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers). Config: `[api] allowed_hosts`, which the flag replaces Feature: `api` |
 | `--api-signing-key` | `<KEY>` | -- | 0.4.3 | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY`; `--help` names the variable and never shows its value. See [`auth.md`](./auth.md). Feature: `api` |
@@ -22167,6 +22171,9 @@ This applies to root runs and to unprivileged runs set up with
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key` — a public-facing API over HTTPS with no reverse proxy: signed tokens, a certificate whose key is `chmod 600`, and no plain-HTTP warning at startup
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-allowed-host sipnab.example.com` — behind a reverse proxy that forwards `Host: sipnab.example.com` unchanged: sipnab serves that name, while a page that rebinds any other name to `127.0.0.1` gets `403`
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-allowed-host capture.example.com:8443` — a public-facing HTTPS API reached by name on port 8443 only: sipnab serves `Host: capture.example.com:8443` and refuses the same name on any other port. Clients reaching it by IP address need no entry on a wildcard bind
+- `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-tls-client-ca /etc/sipnab/clients-ca.pem` — an HTTPS API that refuses the handshake of any client without a certificate from `clients-ca.pem`; each request still needs its token ([Require client certificates](mtls.md))
+- `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-tls-client-ca /etc/sipnab/clients-ca.pem --api-tls-client-auth optional` — the same while client certificates roll out: sipnab verifies a client that sends one and names it in the log, and still serves one that sends none
+- `sudo sipnab -N -d eth0 --config /etc/sipnab/sipnab.toml --api 0.0.0.0:8443 --api-tls-client-auth off` — turn off for one run the client certificates the config file's `[api] tls_client_ca` asks for; sipnab logs at warn that it does not read the CA
 - `sipnab -N -I today.pcap --api 127.0.0.1:8443 --api-key s3cret --api-tls-cert api.pem --api-tls-key api.key` — HTTPS on loopback, for a client that insists on `https://` even on the same host; `api.pem` must name `127.0.0.1` for the client to accept it
 - `sipnab -N -I today.pcap --api 127.0.0.1:8080 --api-key s3cret --api-file-root /srv/pcaps` — the compare route works on a file-backed run too: it diffs the two NAMED files under `/srv/pcaps`, never the loaded `today.pcap`, so a monitoring box can poll one sipnab for a rolling day-over-day comparison
 - `sudo sipnab -N -d eth0 --metrics 127.0.0.1:9090 --metrics-max-conn 64` — an HA Prometheus pair, a federating parent, a `remote_write` shard and an alertmanager sidecar all scraping one sipnab: at sixteen slots a slow scrape turns the next one away with `503`, and the hole in the series reads as a capture that died
@@ -22183,6 +22190,9 @@ This applies to root runs and to unprivileged runs set up with
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token t0ken-bob --mcp-signing-key-file /etc/sipnab/mcp-signing.key --mcp-revoked-file /etc/sipnab/mcp-revoked.txt --mcp-allowed-host mcp.example.com` — non-loopback HTTP MCP server (token required) accepting an extra Host header for named clients
 - `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token-file /etc/sipnab/mcp.token --mcp-allowed-host mcp.example.com --mcp-tls-cert /etc/sipnab/mcp.pem --mcp-tls-key /etc/sipnab/mcp.key` — a non-loopback MCP server serving HTTPS itself, with no nginx in front: the bearer token and every tool result cross the network encrypted
 - `sipnab -N -I today.pcap --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-tls-cert mcp.pem --mcp-tls-key mcp.key` — HTTPS on loopback, for an agent that insists on `https://` even on the same host; `mcp.pem` must name `127.0.0.1` for the agent to accept it
+- `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token-file /etc/sipnab/mcp.token --mcp-allowed-host mcp.example.com --mcp-tls-cert /etc/sipnab/mcp.pem --mcp-tls-key /etc/sipnab/mcp.key --mcp-tls-client-ca /etc/sipnab/agents-ca.pem` — an MCP server that admits only agents holding a certificate from `agents-ca.pem` and the token; the audit record names each agent's certificate after its token
+- `sudo sipnab -N -d eth0 --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 --mcp-token-file /etc/sipnab/mcp.token --mcp-allowed-host mcp.example.com --mcp-tls-cert /etc/sipnab/mcp.pem --mcp-tls-key /etc/sipnab/mcp.key --mcp-tls-client-ca /etc/sipnab/agents-ca.pem --mcp-tls-client-auth optional` — verify and log an agent's certificate when it sends one, and still serve an agent that sends none
+- `sipnab -N -I today.pcap --config /etc/sipnab/sipnab.toml --mcp --mcp-transport http --mcp-bind 127.0.0.1:8731 --mcp-tls-client-auth off` — serve one run without the client certificates the config file's `[mcp] tls_client_ca` asks for, for an agent on the same host that has none
 - `sudo sipnab -N -d eth0 --hep-send 192.0.2.10:9060 --hep-id 42 --hep-auth s3cr3t-homer-key` — forward captured packets to a Homer collector, stamping capture-agent id 42 and an authenticate key
 - `sudo sipnab -N -d eth0 --hep-send 198.51.100.20:9060 --hep-id 7 --hep-auth homerkey2` — forward to a second collector under a different agent id and auth key
 - `sudo sipnab -N -d eth0 --hep-send 198.51.100.30:9060 --hep-auth-file /etc/sipnab/hep.key --hep-auth-mode hmac` — replay-resistant forwarding to another sipnab: HMAC-token auth over an untrusted path (both ends must set --hep-auth-mode hmac)
@@ -22440,8 +22450,10 @@ Run sipnab as a Model Context Protocol server so an AI agent can drive it.
 | `--mcp-bind` | `<ADDR>` | -- (defaults to `127.0.0.1:8731` at runtime when `--mcp-transport http` appears without an explicit bind) | 0.3.2 | HTTP MCP bind address. A non-loopback address needs a credential: a bearer token (`--mcp-token`, `--mcp-token-file` or `$SIPNAB_MCP_TOKEN`) or a signing key (`--mcp-signing-key`, `--mcp-signing-key-file` or `$SIPNAB_MCP_SIGNING_KEY`). Without one, sipnab refuses to start, with exit `2`. Feature: `mcp-http` |
 | `--mcp-token` | `<TOKEN>` | -- | 0.3.2 | Bearer token for HTTP MCP. A non-loopback bind needs this or a signing key (`--mcp-signing-key`). Precedence: explicit flag, token file, then `$SIPNAB_MCP_TOKEN`. Feature: `mcp-http` |
 | `--mcp-token-file` | `<FILE>` | -- | 0.3.2 | Read bearer token from file (preferred over env in systemd units). Feature: `mcp-http` |
-| `--mcp-tls-cert` | `<FILE>` | -- | 0.5.203 | Serve MCP over HTTP with HTTPS, using this PEM certificate chain, the server's certificate first. Needs `--mcp-tls-key`; either alone stops sipnab at startup rather than serving plain HTTP on a port meant for HTTPS. The port then speaks HTTPS only: TLS 1.2 and 1.3, ALPN `http/1.1`, no client certificates; clients still authenticate with the bearer token. A file sipnab cannot read, or that holds no certificate, stops it at startup naming the file. sipnab refuses it without `--mcp --mcp-transport http`. See [MCP TLS](mcp-deploy.md#mcp-tls). sipnab refuses an empty path with exit `2`, and an empty `[mcp] tls_cert` with exit `1`. Feature: `mcp-http`. Config: `[mcp] tls_cert` |
+| `--mcp-tls-cert` | `<FILE>` | -- | 0.5.203 | Serve MCP over HTTP with HTTPS, using this PEM certificate chain, the server's certificate first. Needs `--mcp-tls-key`; either alone stops sipnab at startup rather than serving plain HTTP on a port meant for HTTPS. The port then speaks HTTPS only: TLS 1.2 and 1.3, ALPN `http/1.1`, no client certificates unless `--mcp-tls-client-ca` asks for them; clients still authenticate with the bearer token. A file sipnab cannot read, or that holds no certificate, stops it at startup naming the file. sipnab refuses it without `--mcp --mcp-transport http`. See [MCP TLS](mcp-deploy.md#mcp-tls). sipnab refuses an empty path with exit `2`, and an empty `[mcp] tls_cert` with exit `1`. Feature: `mcp-http`. Config: `[mcp] tls_cert` |
 | `--mcp-tls-key` | `<FILE>` | -- | 0.5.203 | PEM private key for `--mcp-tls-cert`. sipnab **refuses a key any other user on the host can read** (`chmod 600` it; group-readable stays allowed), a file with no private key, and a key that does not belong to the certificate, each at startup and naming the file. sipnab refuses an empty path with exit `2`, and an empty `[mcp] tls_key` with exit `1`. Feature: `mcp-http`. Config: `[mcp] tls_key` |
+| `--mcp-tls-client-ca` | `<FILE>` | -- | Unreleased | Ask MCP over HTTP clients for a TLS client certificate and accept only one that chains to a CA in this PEM file (mutual TLS). Rules as `--api-tls-client-ca`: alone it means `--mcp-tls-client-auth required`, the bearer token is still checked, the host's CA bundle is not added, and sipnab refuses a file it cannot read, one with no certificate, and one any user can write. The MCP audit record names a verified client after the token, as `client-cert=` and its first URI name, else its first DNS name, else its subject, percent-encoded. Needs `--mcp-tls-cert` and `--mcp-tls-key`. sipnab refuses an empty path with exit `2`, and an empty `[mcp] tls_client_ca` with exit `1`. Feature: `mcp-http`. How-to: [Require client certificates](mtls.md). Config: `[mcp] tls_client_ca` |
+| `--mcp-tls-client-auth` | `<off\|optional\|required>` | `required` with `--mcp-tls-client-ca`, else `off` | Unreleased | When MCP over HTTP asks for a client certificate: as `--api-tls-client-auth`. Feature: `mcp-http`. How-to: [Require client certificates](mtls.md). Config: `[mcp] tls_client_auth` |
 | `--mcp-signing-key` | `<KEY>` | -- | 0.4.3 | HMAC signing key for MCP bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one. Also reads `$SIPNAB_MCP_SIGNING_KEY`; `--help` names the variable and never shows its value. See [`auth.md`](./auth.md). Feature: `mcp-http` |
 | `--mcp-signing-key-file` | `<FILE>` | -- | 0.4.3 | Read an MCP signing key from a file (contents trimmed); it becomes the minting key. Feature: `mcp-http` |
 | `--mcp-revoked-file` | `<FILE>` | -- | 0.4.3 | MCP revocation denylist (one token `id` per line; reloaded on mtime change). Feature: `mcp-http` |
@@ -22825,6 +22837,8 @@ It exits `0` when every instance answered and there is no finding, `1` when an i
 - `--signing-key-file <FILE>`: the key that signs member and reader tokens, readable by this user only. Mint tokens with it: `--token-scope fleet-report --token-id <member>` for a member, `--token-scope inventory` for a reader.
 - `--revoked-file <FILE>`: token ids no longer accepted, one per line. Revoke one member by its id; sipnab re-reads the file when it changes.
 - `--tls-cert <FILE>` and `--tls-key <FILE>`: serve HTTPS with this certificate chain and key. The key must be readable by this user only.
+- `--tls-client-ca <FILE>`: require each member to present a TLS client certificate from a CA in this PEM file, as well as its token (mutual TLS). Needs `--tls-cert` and `--tls-key`. Alone it means `--tls-client-auth required`. The rules are those of `--api-tls-client-ca`. How-to: [Require client certificates](mtls.md#require-member-certificates-on-a-fleet-center).
+- `--tls-client-auth <off|optional|required>`: when the center asks for a client certificate. Default `required` with `--tls-client-ca`, else `off`. sipnab refuses `optional` or `required` without `--tls-client-ca`. `off` wins over `--tls-client-ca`.
 - `--retention-hours <HOURS>`: hours a member stays after its last heartbeat, 1 to 87600. Default `72`.
 - `--silent-after-missed <N>`: a member is silent once more than this many of its heartbeat intervals pass without one, 1 to 1000. Default `3`.
 - `--allowed-host <HOST>`: a `Host` value to serve beyond the loopback names and the bound address, such as the name members use for the center (repeatable). `*` turns the check off.
@@ -25875,6 +25889,17 @@ sipnab could not open the file named by `--mcp-audit-file` for appending.
 
 **Exit code:** 2.
 
+### `--mcp-tls-client-ca/--mcp-tls-client-auth ask MCP over HTTPS clients for a certificate and do nothing without --mcp --mcp-transport http`
+
+`--mcp-tls-client-ca` and `--mcp-tls-client-auth` make the MCP server's HTTPS handshake ask each client for a certificate ([Require client certificates](mtls.md)).
+
+- You gave at least one of them.
+- But the run does not serve MCP over HTTP. Either `--mcp` is absent, or `--mcp-transport` is not `http` (the default is `stdio`).
+
+**What to do:** Add `--mcp --mcp-transport http` and the server certificate (`--mcp-tls-cert`, `--mcp-tls-key`), or remove the client-certificate flags.
+
+**Exit code:** 2.
+
 ### `--mcp-token-file '{path}': {e}`
 
 sipnab could not read the file named by `--mcp-token-file`. The file holds the static token that MCP over HTTP accepts. `{path}` is the path given, and `{e}` is the operating system error. sipnab reads the file only when you do not give `--mcp-token`.
@@ -25931,6 +25956,38 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 **Exit code:** 2.
 
+### `--api-tls-client-ca requires the 'api' feature (not compiled in)`
+
+`--api-tls-client-ca` names the CA whose client certificates the REST API accepts. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api-tls-client-ca`.
+
+**Exit code:** 2.
+
+### `--api-tls-client-auth requires the 'api' feature (not compiled in)`
+
+`--api-tls-client-auth` says when the REST API asks for a client certificate. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api-tls-client-auth`.
+
+**Exit code:** 2.
+
+### `{mode_label} {} needs {ca_label}: name the CA that issues the client certificates`
+
+A setting asks the REST API or MCP over HTTP for client certificates, `optional` or `required` in `{}`, but no setting names a client CA to check them against. `{mode_label}` is the mode setting and `{ca_label}` the CA setting, each written as the flag and its config key, for example `--api-tls-client-auth (or [api] tls_client_auth)`. sipnab refuses the run before anything listens.
+
+**What to do:** Name the CA with `--api-tls-client-ca` or `--mcp-tls-client-ca` (or `[api]` / `[mcp] tls_client_ca`), or drop the mode. See [Require client certificates](mtls.md).
+
+**Exit code:** 2 when the mode came from the command line, 1 when it came from the config file.
+
+### `{ca_label} {file} needs {first} and {second}: a client certificate is asked for only in a TLS handshake`
+
+A setting names a client CA, `{file}`, and a client-auth mode other than `off`, for a listener that serves plain HTTP: its certificate and key (`{first}` and `{second}`) are not set. A client certificate is part of the TLS handshake, so with no TLS there is nothing to ask for it in. sipnab refuses the run before anything listens. A program that starts the REST API through the library (`output::api::prepare_listener`) gets the same text as `server error:`.
+
+**What to do:** Serve the listener over HTTPS with `--api-tls-cert` and `--api-tls-key` (or `--mcp-tls-cert` and `--mcp-tls-key`), or remove the client CA.
+
+**Exit code:** 2 when the CA came from the command line, 1 when it came from the config file.
+
 ### `--mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags ({})`
 
 `--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp` on stdio. With `--mcp-transport http` the wire is a socket, and sipnab accepts the same flags. The list includes `--export-vcon` only when you did not give `--vcon-out`.
@@ -25981,7 +26038,7 @@ The REST API server (`--api`) could not start, or stopped with an error.
 - `{0}` says why:
   - sipnab could not bind the address;
   - the command gave only one of `--api-tls-cert` and `--api-tls-key`;
-  - a TLS file is unusable;
+  - a TLS file is unusable, the client CA file (`--api-tls-client-ca`) among them;
   - the bind is not loopback, and no `--api-key` or `--api-signing-key` exists;
   - sipnab could not set up the listener.
 - At startup this stops the run before the TUI or capture begins.
@@ -34197,6 +34254,8 @@ schemas.
 | `bundles` | table | -- | `[mcp.bundles]`: your own bundles, each a name for a list of tool names and built-in bundles. A custom bundle cannot reuse a built-in bundle or tool name, cannot be empty, and cannot hold `full` or another custom bundle; sipnab refuses to start, naming the bundle, when one breaks a rule, even when nothing uses it |
 | `tls_cert` | string | -- | PEM certificate chain MCP over HTTP serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only with `--mcp --mcp-transport http`. See [MCP TLS](mcp-deploy.md#mcp-tls). An empty string fails validation and names the key. `--mcp-tls-cert` overrides it |
 | `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--mcp-tls-key` overrides it |
+| `tls_client_ca` | string | -- | CA certificates (PEM) a client certificate must chain to: MCP over HTTP then asks each client for a certificate (mutual TLS). The bearer token is still checked. Needs `tls_cert` and `tls_key`. sipnab refuses a file any user can write. See [Require client certificates](mtls.md). An empty string fails validation and names the key. `--mcp-tls-client-ca` overrides it |
+| `tls_client_auth` | string | `"required"` with `tls_client_ca`, else `"off"` | `"off"`, `"optional"` (verify a certificate when the client sends one) or `"required"` (refuse a handshake without one). `"optional"` or `"required"` without `tls_client_ca` stops sipnab at startup. `"off"` wins over `tls_client_ca`, and sipnab then logs at warn that it does not read the CA. `--mcp-tls-client-auth` overrides it |
 
 ```toml
 [mcp]
@@ -34221,6 +34280,8 @@ bind).
 | `allowed_hosts` | list of strings | `[]` | Extra `Host` values to serve, such as a reverse proxy's public name. `name:port` accepts that port only. `"*"` turns the check off. `--api-allowed-host` replaces the list |
 | `tls_cert` | string | -- | PEM certificate chain the REST API serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only when `--api` starts the API. See [API TLS](rest-api.md#api-tls). An empty string fails validation and names the key. `--api-tls-cert` overrides it |
 | `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--api-tls-key` overrides it |
+| `tls_client_ca` | string | -- | CA certificates (PEM) a client certificate must chain to: the REST API then asks each client for a certificate (mutual TLS). The bearer token is still checked. Needs `tls_cert` and `tls_key`. sipnab refuses a file any user can write. See [Require client certificates](mtls.md). An empty string fails validation and names the key. `--api-tls-client-ca` overrides it |
+| `tls_client_auth` | string | `"required"` with `tls_client_ca`, else `"off"` | `"off"`, `"optional"` (verify a certificate when the client sends one) or `"required"` (refuse a handshake without one). `"optional"` or `"required"` without `tls_client_ca` stops sipnab at startup. `"off"` wins over `tls_client_ca`, and sipnab then logs at warn that it does not read the CA. `--api-tls-client-auth` overrides it |
 
 ```toml
 [api]
@@ -37161,8 +37222,11 @@ agent trust the CA that issued the certificate.
   handshake and is not served.
 - TLS 1.2 and TLS 1.3 only. The server offers `http/1.1` by ALPN and does
   not offer HTTP/2.
-- No client certificates.
+- No client certificates unless you ask for them.
   - Clients authenticate with the bearer token, as over plain HTTP.
+  - `--mcp-tls-client-ca` makes the handshake also require a certificate from
+    your CA, and the token is still checked: see
+    [Require client certificates](mtls.md).
   - The `Host` allowlist below applies unchanged.
 - `[mcp] tls_cert` and `[mcp] tls_key` in
   [`sipnab.toml`](config-reference.md#mcp) set the same files. Each flag
@@ -39258,6 +39322,12 @@ used.
   intervals may pass before it is silent. Members reaching the center by a name
   need that name in `--allowed-host`. [The CLI reference](cli-reference.md#fleet-inventory-sipnab-fleet)
   lists every flag.
+
+- **[center]** To refuse any member without a certificate from your own CA,
+  as well as its token, add `--tls-client-ca /etc/sipnab/members-ca.pem`.
+  [Require member certificates on a fleet center](mtls.md#require-member-certificates-on-a-fleet-center)
+  makes the CA and the member certificates, and says how a member presents
+  one.
 
 ### Step 2: mint a token for each member and for each reader
 
@@ -60531,8 +60601,12 @@ certificate, and each refuses a routable bind that has no credential:
 The exact refusal messages are in [A service that does not
 start](run-as-a-service.md#a-service-that-does-not-start).
 
-None of the four asks a client for a certificate. TLS encrypts the path, and
-the credential in the second column says who the client is.
+TLS encrypts the path, and the credential in the second column says who the
+client is. The REST API and MCP over HTTP can also ask each client for a
+certificate from your own CA (`--api-tls-client-ca`, `--mcp-tls-client-ca`),
+and then refuse a client without one. The token is still required: see
+[Require client certificates](mtls.md). The metrics and HEP listeners ask for
+none.
 
 ### Make a certificate
 
@@ -60776,6 +60850,429 @@ audience and gets `401` on both surfaces. Mint a replacement with
   - Passing only one of a pair stops sipnab at startup.
     It does not serve plain HTTP on a port meant for HTTPS.
   - See [API TLS](rest-api.md#api-tls) and [MCP TLS](mcp-deploy.md#mcp-tls).
+
+---
+
+<!-- source: docs/mtls.md -->
+
+# Require client certificates
+
+The REST API (`--api`) and MCP over HTTP (`--mcp-transport http`) can ask each
+client for a TLS certificate issued by your own certificate authority (CA),
+and refuse the handshake of a client that has none. This is mutual TLS: the
+client checks the server's certificate, and the server checks the client's.
+
+Use it when a bearer token alone is not enough to let a client in: a fleet
+member that pushes to a central server, a write path, or a port that hosts
+outside this one can reach. A stolen token is then useless without the
+client's private key, and a stolen client key is useless without a token.
+
+On this page:
+
+- [What a client certificate does and does not do](#what-a-client-certificate-does-and-does-not-do)
+- [Before you start](#before-you-start)
+- [Make a CA for client certificates](#make-a-ca-for-client-certificates)
+- [Issue a client certificate](#issue-a-client-certificate)
+- [Configure sipnab](#configure-sipnab)
+- [Configure a client](#configure-a-client)
+- [Require member certificates on a fleet center](#require-member-certificates-on-a-fleet-center)
+- [Check that it works](#check-that-it-works)
+- [Troubleshooting](#troubleshooting)
+
+## What a client certificate does and does not do
+
+- **It decides who may connect.** With `required`, a client that sends no
+  certificate, or one the CA did not issue, does not complete the TLS
+  handshake and never reaches a route.
+- **It does not replace the token.** Every request still needs the bearer
+  token, and the token's scope still decides what the request may do. A good
+  certificate without a token gets `401`, as before.
+- **It names the client in the log.** sipnab logs each verified client when it
+  connects, by subject and by its DNS and URI names. The MCP audit record
+  names it too, after the token (`client-cert=`).
+- **rustls checks it.** The certificate must chain to a CA in your
+  client CA file, be inside its validity period, and, when it lists extended
+  key usages, list client authentication.
+- **A client sends its intermediates.** A client whose certificate an
+  intermediate CA issued must send that intermediate with its certificate,
+  or sipnab refuses it: sipnab fetches nothing. Every certificate in the
+  client CA file is a trust anchor, so a file that holds only an intermediate
+  admits that intermediate's clients, and a file may hold several CA certificates.
+- **Revocation lists are not read.** To shut out one client before its
+  certificate expires, revoke its token (`--api-revoked-file`,
+  `--mcp-revoked-file`; see [Revocation](auth.md#revocation)). Issue client
+  certificates with a short lifetime, so a lost key stops working on its own.
+
+The three modes, set with `--api-tls-client-auth` and `--mcp-tls-client-auth`:
+
+| Mode | A client with no certificate | A client with a bad certificate |
+|---|---|---|
+| `off` (the default without a client CA) | served | served: sipnab asks for no certificate |
+| `optional` | served, with no client named | refused |
+| `required` (the default with a client CA) | refused | refused |
+
+## Before you start
+
+- The listener already serves HTTPS with its own certificate
+  (`--api-tls-cert` / `--api-tls-key`, or `--mcp-tls-cert` / `--mcp-tls-key`).
+  See [API TLS](rest-api.md#api-tls), [MCP TLS](mcp-deploy.md#mcp-tls) and
+  [Make a certificate](auth.md#make-a-certificate). The examples below use the
+  server name `capture01.example.net`, port `8443`, and the server's CA in
+  `ca.pem`.
+- The listener has a token configured (`--api-key`, `--api-signing-key-file`,
+  `--mcp-token-file` or `--mcp-signing-key-file`). Client certificates add to
+  the token; they do not stand in for it.
+- `openssl` on the machine where you make the CA, and `curl` on a client to
+  check the result.
+- Changes on other systems: each client needs its certificate and key, and a
+  way to present them. curl does (`--cert`, `--key`). For an MCP client that
+  cannot, see [An MCP client without a certificate setting](#an-mcp-client-without-a-certificate-setting).
+  No firewall change: the port is the one the listener already serves.
+
+## Make a CA for client certificates
+
+Keep this CA separate from the one that issued the server's certificate. The
+client CA file is the whole trust store for client certificates: sipnab does
+not add the host's CA bundle, so it refuses a certificate from a public CA.
+
+```bash
+openssl req -x509 -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+  -keyout clients-ca.key -out clients-ca.pem -days 3650 \
+  -subj "/O=Example Fleet/CN=Example Fleet client CA" \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign,cRLSign"
+```
+
+Then make its key readable by you only:
+
+```bash
+chmod 600 clients-ca.key
+```
+
+`clients-ca.key` signs client certificates: keep it off the sipnab host.
+`clients-ca.pem` is public and goes to the sipnab host.
+
+## Issue a client certificate
+
+One certificate per client. Put the name sipnab should log in the subject
+alternative names: a URI (a SPIFFE ID works) and a DNS name.
+
+1. Make the client's key and a certificate request:
+
+   ```bash
+   openssl req -new -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+     -keyout member-1.key -out member-1.csr -subj "/O=Example Fleet/CN=member-1"
+   ```
+
+2. Write the certificate's extensions to a file named `member-1.ext`:
+
+   ```text
+   basicConstraints=critical,CA:FALSE
+   keyUsage=critical,digitalSignature
+   extendedKeyUsage=clientAuth
+   subjectAltName=DNS:member-1.fleet.example.com,URI:spiffe://fleet.example.com/member/1
+   ```
+
+3. Sign it with the client CA:
+
+   ```bash
+   openssl x509 -req -in member-1.csr -CA clients-ca.pem -CAkey clients-ca.key \
+     -CAcreateserial -out member-1.pem -days 365 -extfile member-1.ext
+   ```
+
+4. Make the client's key readable by its owner only:
+
+   ```bash
+   chmod 600 member-1.key
+   ```
+
+Check it before you hand it out:
+
+```bash
+openssl verify -CAfile clients-ca.pem -purpose sslclient member-1.pem
+```
+
+It prints:
+
+```text
+member-1.pem: OK
+```
+
+Then print the subject. This is the subject exactly as sipnab writes it in its
+log:
+
+```bash
+openssl x509 -in member-1.pem -noout -subject -nameopt RFC2253
+```
+
+It prints:
+
+```text
+subject=CN=member-1,O=Example Fleet
+```
+
+## Configure sipnab
+
+Copy `clients-ca.pem` to the sipnab host, for example to
+`/etc/sipnab/clients-ca.pem`. It holds no secret. Any user may read it, but no
+other user may write it (`chmod 644`, owned by root): whoever can write the
+file chooses which clients get in, and sipnab refuses a file every user can
+write.
+
+Add the client CA to the REST API's HTTPS flags. A CA alone means `required`:
+
+```bash
+sudo sipnab -N -d eth0 --user sipnab --api 0.0.0.0:8443 \
+  --api-signing-key-file /etc/sipnab/signing.key \
+  --api-allowed-host capture01.example.net \
+  --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key \
+  --api-tls-client-ca /etc/sipnab/clients-ca.pem
+```
+
+For MCP over HTTP, the same with the MCP flags:
+
+```bash
+sudo sipnab -N -d eth0 --user sipnab --mcp --mcp-transport http --mcp-bind 0.0.0.0:8731 \
+  --mcp-token-file /etc/sipnab/mcp.token \
+  --mcp-allowed-host capture01.example.net \
+  --mcp-tls-cert /etc/sipnab/mcp.pem --mcp-tls-key /etc/sipnab/mcp.key \
+  --mcp-tls-client-ca /etc/sipnab/clients-ca.pem
+```
+
+The two listeners take their own CA. Point both at one file to share it.
+
+To roll client certificates out without cutting off clients that have none
+yet, start with `--api-tls-client-auth optional`. sipnab then verifies a
+certificate when a client sends one, logs who it is, and still serves a client
+that sends none. Switch to `required` (or drop the flag) once every client has
+its certificate.
+
+The same settings in [`sipnab.toml`](config-reference.md#api):
+
+```toml
+[api]
+tls_cert = "/etc/sipnab/api.pem"
+tls_key = "/etc/sipnab/api.key"
+tls_client_ca = "/etc/sipnab/clients-ca.pem"
+tls_client_auth = "required"
+
+[mcp]
+tls_cert = "/etc/sipnab/mcp.pem"
+tls_key = "/etc/sipnab/mcp.key"
+tls_client_ca = "/etc/sipnab/clients-ca.pem"
+```
+
+Each flag replaces its own key. A root run reads the client CA file before it
+drops to `--user`, as it reads the server's certificate and key.
+
+At startup sipnab logs that it asks for certificates:
+
+```text
+INFO sipnab::tls_listener: API TLS asks clients for a certificate (required)
+```
+
+## Configure a client
+
+### curl
+
+Give curl the server's CA, the client's certificate and key, and the token:
+
+```bash
+curl --cacert ca.pem --cert member-1.pem --key member-1.key \
+  -H "Authorization: Bearer $TOKEN" https://capture01.example.net:8443/v1/stats
+```
+
+### Another HTTP client
+
+Any client that can present a TLS client certificate works: give it
+`member-1.pem` and `member-1.key`, and keep sending the
+`Authorization: Bearer` header. Python's `requests`, for example, takes
+`cert=("member-1.pem", "member-1.key")` and `verify="ca.pem"`. That example is
+from the `requests` documentation and was not run for this page.
+
+### An MCP client without a certificate setting
+
+An MCP client that has no setting for a client certificate cannot connect to a
+listener with `required`. Run a local bridge beside it that adds the
+certificate: the client talks plain HTTP to a loopback port, and the bridge
+talks HTTPS with the certificate to sipnab. With socat:
+
+```bash
+socat TCP-LISTEN:18732,bind=127.0.0.1,reuseaddr,fork \
+  OPENSSL:capture01.example.net:8731,cafile=ca.pem,cert=member-1.pem,key=member-1.key
+```
+
+Configure the MCP client with `http://127.0.0.1:18732/mcp` and its token as
+before. sipnab answers the loopback `Host` name the client sends by default.
+Keep the bridge on `127.0.0.1`: anyone who can reach its port gets the
+certificate's identity, though they still need the token. socat prints
+`W OpenSSL: Warning: this implementation does not check CRLs` on each
+connection. It means socat reads no revocation lists, and sipnab reads none
+either.
+
+## Require member certificates on a fleet center
+
+`sipnab fleet serve` serves through the REST API's listener, and takes the
+same settings as `--tls-client-ca` and `--tls-client-auth`. Issue each member
+a certificate as in [Issue a client certificate](#issue-a-client-certificate),
+then:
+
+```bash
+sipnab fleet serve --listen 192.0.2.10:8444 --store /var/lib/sipnab/center.store \
+  --signing-key-file /etc/sipnab/center.signing \
+  --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key \
+  --tls-client-ca /etc/sipnab/members-ca.pem
+```
+
+A member then posts its heartbeat with its certificate and its
+`fleet-report` token:
+
+```bash
+curl --cacert ca.pem --cert edge-a.pem --key edge-a.key \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/x-ndjson" \
+  --data-binary @heartbeat.ndjson https://center.example.net:8444/v1/fleet/ingest
+```
+
+The token's id is still the member's name the center records. The center logs
+the verified certificate of each connection, so you can compare the two. A
+center refuses a heartbeat without a certificate at the handshake, as in
+[Troubleshooting](#troubleshooting). `sipnab fleet serve` names the settings it
+refuses with its own flags (`--tls-client-ca`, `--tls-client-auth`,
+`--tls-cert`, `--tls-key`). The center's refusal of a member without a
+certificate, and its acceptance of one with, are what
+[`tests/fleet_center_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/fleet_center_test.rs) checks. Nobody ran the commands above as written.
+
+## Check that it works
+
+Run each of these from the client. With the certificate and the token, sipnab
+serves the request:
+
+```bash
+curl --cacert ca.pem --cert member-1.pem --key member-1.key \
+  -H "Authorization: Bearer $TOKEN" https://capture01.example.net:8443/health
+```
+
+It prints:
+
+```text
+ok
+```
+
+The certificate without the token is still refused, with `401`:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' --cacert ca.pem --cert member-1.pem \
+  --key member-1.key https://capture01.example.net:8443/v1/stats
+```
+
+It prints:
+
+```text
+401
+```
+
+The token without a certificate does not complete the handshake:
+
+```bash
+curl --cacert ca.pem -H "Authorization: Bearer $TOKEN" https://capture01.example.net:8443/v1/stats
+```
+
+It prints:
+
+```text
+curl: (56) OpenSSL SSL_read: OpenSSL/3.0.13: error:0A00045C:SSL routines::tlsv13 alert certificate required, errno 0
+```
+
+sipnab's log names the client it served and the one it refused:
+
+```text
+INFO sipnab::tls_listener: API TLS: 192.0.2.10:54202 presented a verified client certificate: subject="CN=member-1,O=Example Fleet" dns=["member-1.fleet.example.com"] uri=["spiffe://fleet.example.com/member/1"]
+WARN sipnab::tls_listener: API TLS: refused the TLS handshake with 192.0.2.10:54238: client certificate: peer sent no certificates
+```
+
+For MCP, the audit line of a tool call, and its record in `--mcp-audit-file`,
+carry the client after the token: its first URI name, else its first DNS
+name, else its subject, percent-encoded. This call used a token minted with
+`--token-id member-1`:
+
+```text
+INFO serve_inner: mcp_audit: tool=server_capabilities id=2 caller="192.0.2.10:54436 bearer-verified scope=full token=member-1 client-cert=spiffe:%2F%2Ffleet.example.com%2Fmember%2F1" outcome=ok elapsed_ms=0 args={}
+```
+
+## Troubleshooting
+
+The commands and outputs on this page ran on 2026-11-07 against sipnab built
+from this change, OpenSSL 3.0.13 and curl 8.5.0. The test ran on loopback, and
+this page writes the client address as `192.0.2.10`.
+
+### sipnab refuses the client at the handshake
+
+The client sees the refusal as a TLS alert, and sipnab logs the reason at
+warn. Each pair below is one cause:
+
+| Cause | What curl prints | What sipnab logs after `client certificate:` |
+|---|---|---|
+| No certificate sent | `tlsv13 alert certificate required` | `peer sent no certificates` |
+| Issued by another CA | `tlsv1 alert unknown ca` | `invalid peer certificate: UnknownIssuer` |
+| Expired | `sslv3 alert certificate expired` | `invalid peer certificate: certificate expired: verification time 1794071703 (UNIX), but certificate is not valid after 1609459200 (184612503 seconds ago)` |
+| Not valid yet | `sslv3 alert certificate expired` | `invalid peer certificate: certificate not valid yet: verification time {now} (UNIX), but certificate is not valid before {not_before} ({seconds} seconds in future)` |
+| Made for a server: extended key usage `serverAuth` only | `sslv3 alert unsupported certificate` | `invalid peer certificate: certificate does not allow extended key usage for client authentication, allows server authentication` |
+
+Each log line starts `API TLS: refused the TLS handshake with <address>:`
+(or `MCP TLS:`). In the not-yet-valid row, `{now}` and `{not_before}` are
+UNIX times and `{seconds}` the difference between them. That row quotes the
+rustls 0.23.46 source and checked by sipnab's tests: OpenSSL 3.0
+cannot issue such a certificate for a live run.
+
+- **No certificate sent**: give the client `--cert` and `--key`, or use
+  `optional` while you roll certificates out.
+- **Another CA**: the certificate was not issued by a CA in the client CA
+  file. Check it with `openssl verify -CAfile clients-ca.pem -purpose sslclient member-1.pem`.
+- **Expired, or not valid yet**: check the dates with
+  `openssl x509 -in member-1.pem -noout -dates` and the clock of both hosts.
+  Issue a new certificate.
+- **Made for a server**: issue the certificate with
+  `extendedKeyUsage=clientAuth`.
+
+### sipnab serves the client, but it gets `401`
+
+The handshake succeeded, and the token is missing or wrong. A client certificate
+never replaces the token. See [Bearer-token authentication](auth.md#use-a-token).
+
+### sipnab does not start
+
+Each of these stops the run before anything listens, with exit status `2`
+for a flag (`1` when only the config file set it). Each flag name in the
+messages has its config key after it:
+
+```text
+--api-tls-client-ca (or [api] tls_client_ca) clients-ca.pem needs --api-tls-cert (or [api] tls_cert) and --api-tls-key (or [api] tls_key): a client certificate is asked for only in a TLS handshake
+--api-tls-client-auth (or [api] tls_client_auth) required needs --api-tls-client-ca (or [api] tls_client_ca): name the CA that issues the client certificates
+server error: clients-ca.pem: the API TLS client CA file is writable by every user (mode 0666); chmod o-w it
+```
+
+- The first: give the listener its own certificate and key, or remove the CA.
+- The second: name the client CA, or remove the mode.
+- The third: `chmod o-w` the CA file.
+- `off` with a client CA does not stop the run: `off` wins, so a command line
+  can turn off what the config file asks for, and sipnab logs
+  `API TLS asks clients for no certificate: the client-auth mode is off, so the client CA clients-ca.pem is not read`
+  at warn.
+- sipnab refuses a CA file that does not exist, or holds no certificate, the
+  same way, naming the file.
+
+The MCP listener's messages are the same with `MCP TLS` and the `--mcp-tls-client-ca`, `--mcp-tls-client-auth`, `--mcp-tls-cert` and `--mcp-tls-key` flags. With MCP on
+stdio, sipnab refuses the client flags with
+`--mcp-tls-client-ca/--mcp-tls-client-auth ask MCP over HTTPS clients for a
+certificate and do nothing without --mcp --mcp-transport http`. Every message
+has an entry in [Errors](errors.md).
+
+### Nothing names the client in the log
+
+sipnab names a client only when it verified the client's certificate. With
+`optional`, sipnab serves a client that sent no certificate without a name.
+Check for the startup line `asks clients for a certificate (optional)` or
+`(required)`. Without it, no client CA reached the listener.
 
 ---
 

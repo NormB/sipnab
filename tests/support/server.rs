@@ -78,6 +78,9 @@ pub struct ApiServer {
     /// listening on" line: what it said about its own configuration at
     /// startup (the non-loopback warning, for one).
     pub startup_log: String,
+    /// The lines the server logs after `startup_log`, read by
+    /// [`Self::wait_for_log`].
+    later_log: std::sync::Mutex<mpsc::Receiver<String>>,
 }
 
 /// Whether two consecutive `/v1/stats` reads show a capture that has settled:
@@ -233,7 +236,24 @@ impl ApiServer {
             child,
             addr,
             startup_log,
+            later_log: std::sync::Mutex::new(rx),
         })
+    }
+
+    /// The first line logged after startup that contains `needle`, waiting
+    /// up to `wait` for it; `None` when none came. Lines read past while
+    /// looking are consumed.
+    pub fn wait_for_log(&self, needle: &str, wait: Duration) -> Option<String> {
+        let rx = self.later_log.lock().ok()?;
+        let deadline = Instant::now() + wait;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(line) if line.contains(needle) => return Some(line),
+                Ok(_) => {}
+                Err(_) => return None,
+            }
+        }
+        None
     }
 
     /// Wait until the capture behind a freshly spawned server has settled.

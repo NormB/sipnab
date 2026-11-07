@@ -3459,7 +3459,9 @@ pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
     let (hep_ca, hep_extra_ca) = cli.hep_tls_trust(config);
     let fwd = &cli.vcon_forward_args;
     let fetch = &cli.vcon_fetch_args;
-    let advance: [(&str, Option<PathBuf>); 19] = [
+    let api_client_ca = cli.api_client_auth(config).ca;
+    let mcp_client_ca = cli.mcp_client_auth(config).ca;
+    let advance: [(&str, Option<PathBuf>); 21] = [
         (
             "--api-signing-key-file",
             cli.listener_args
@@ -3479,6 +3481,8 @@ pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
         ("--api-tls-key", api_key.map(PathBuf::from)),
         ("--mcp-tls-cert", mcp_cert.map(PathBuf::from)),
         ("--mcp-tls-key", mcp_key.map(PathBuf::from)),
+        ("--api-tls-client-ca", api_client_ca.map(PathBuf::from)),
+        ("--mcp-tls-client-ca", mcp_client_ca.map(PathBuf::from)),
         ("--metrics-tls-cert", metrics_cert.map(PathBuf::from)),
         ("--metrics-tls-key", metrics_key.map(PathBuf::from)),
         ("--tls-key", cli.tls_args.tls_key.clone().map(PathBuf::from)),
@@ -3721,7 +3725,7 @@ fn uncompiled_flag(cli: &Cli, config: &Config, compiled: Compiled) -> Option<&'s
         (!compiled.mcp, !compiled.hep, !compiled.tls, !compiled.api);
     let tls = &cli.tls_args;
     let listener = &cli.listener_args;
-    let gates: [(bool, &str); 15] = [
+    let gates: [(bool, &str); 17] = [
         uncompiled_when(
             no_mcp && cli.mcp_args.mcp,
             "--mcp requires the 'mcp' feature (not compiled in)",
@@ -3780,6 +3784,14 @@ fn uncompiled_flag(cli: &Cli, config: &Config, compiled: Compiled) -> Option<&'s
         uncompiled_when(
             no_api && listener.api_tls_key.is_some(),
             "--api-tls-key requires the 'api' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_api && listener.api_tls_client_ca.is_some(),
+            "--api-tls-client-ca requires the 'api' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_api && listener.api_tls_client_auth.is_some(),
+            "--api-tls-client-auth requires the 'api' feature (not compiled in)",
         ),
         uncompiled_when(
             no_tls && tls.dtls_keylog.is_some(),
@@ -8075,7 +8087,7 @@ mod tests {
             api: true,
         };
         let config = Config::default();
-        let cases: [(&[&str], &str); 15] = [
+        let cases: [(&[&str], &str); 17] = [
             (
                 &["--mcp"],
                 "--mcp requires the 'mcp' feature (not compiled in)",
@@ -8128,6 +8140,14 @@ mod tests {
             (
                 &["--api-tls-key", "k.pem"],
                 "--api-tls-key requires the 'api' feature (not compiled in)",
+            ),
+            (
+                &["--api-tls-client-ca", "ca.pem"],
+                "--api-tls-client-ca requires the 'api' feature (not compiled in)",
+            ),
+            (
+                &["--api-tls-client-auth", "optional"],
+                "--api-tls-client-auth requires the 'api' feature (not compiled in)",
             ),
             (&[], ""),
         ];

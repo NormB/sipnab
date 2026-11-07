@@ -717,6 +717,13 @@ Serve the REST API over HTTPS with this certificate chain (PEM, leaf first). Nee
 \fB\-\-api\-tls\-key\fR \fIFILE\fR
 Private key (PEM) for \-\-api\-tls\-cert. Refused when any other user can read it: chmod 600.
 .TP
+\fB\-\-api\-tls\-client\-ca\fR \fIFILE\fR
+Ask REST API clients for a certificate issued by this CA (PEM). Needs \-\-api\-tls\-cert. Alone it means \-\-api\-tls\-client\-auth required. The bearer token is still checked: a certificate never replaces it.
+.TP
+\fB\-\-api\-tls\-client\-auth\fR \fIMODE\fR
+When the REST API asks for a client certificate: off, optional (verified when sent) or required (a handshake without one is refused). Default: required with \-\-api\-tls\-client\-ca, else off.
+Values: \fBoff\fR, \fBoptional\fR, \fBrequired\fR.
+.TP
 \fB\-\-api\-max\-conn\fR \fIN\fR
 Maximum API requests handled at once; sipnab answers 503 to a request past it. \fB0\fR means no limit.
 Default: \fB100\fR.
@@ -768,6 +775,13 @@ Serve MCP over HTTP with HTTPS, using this certificate chain (PEM, leaf first). 
 .TP
 \fB\-\-mcp\-tls\-key\fR \fIFILE\fR
 Private key (PEM) for \-\-mcp\-tls\-cert. Refused when any other user can read it: chmod 600.
+.TP
+\fB\-\-mcp\-tls\-client\-ca\fR \fIFILE\fR
+Ask MCP over HTTP clients for a certificate issued by this CA (PEM). Needs \-\-mcp\-tls\-cert. Alone it means \-\-mcp\-tls\-client\-auth required. The bearer token is still checked: a certificate never replaces it.
+.TP
+\fB\-\-mcp\-tls\-client\-auth\fR \fIMODE\fR
+When MCP over HTTP asks for a client certificate: off, optional (verified when sent) or required (a handshake without one is refused). Default: required with \-\-mcp\-tls\-client\-ca, else off.
+Values: \fBoff\fR, \fBoptional\fR, \fBrequired\fR.
 .TP
 \fB\-\-mcp\-signing\-key\fR \fIKEY\fR
 HMAC signing key for HTTP MCP self\-describing bearer tokens (repeatable). The FIRST key mints; ALL keys are accepted on verify, enabling signing\-key rotation with overlap. Also read from SIPNAB_MCP_SIGNING_KEY.

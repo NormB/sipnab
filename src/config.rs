@@ -281,9 +281,28 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
     );
     m.insert(
         "mcp",
-        ["tools", "output_schemas", "bundles", "tls_cert", "tls_key"].as_slice(),
+        [
+            "tools",
+            "output_schemas",
+            "bundles",
+            "tls_cert",
+            "tls_key",
+            "tls_client_ca",
+            "tls_client_auth",
+        ]
+        .as_slice(),
     );
-    m.insert("api", ["allowed_hosts", "tls_cert", "tls_key"].as_slice());
+    m.insert(
+        "api",
+        [
+            "allowed_hosts",
+            "tls_cert",
+            "tls_key",
+            "tls_client_ca",
+            "tls_client_auth",
+        ]
+        .as_slice(),
+    );
     // [metrics] and [hep] hold the listeners' TLS files, the settings a
     // deployment fixes once rather than types on every run.
     m.insert("metrics", ["tls_cert", "tls_key"].as_slice());
@@ -609,6 +628,82 @@ pub struct ApiConfig {
     pub tls_cert: Option<String>,
     /// PEM private key for `tls_cert`. `--api-tls-key` replaces it.
     pub tls_key: Option<String>,
+    /// CA certificates (PEM) a client certificate must chain to. Needs
+    /// `tls_cert` and `tls_key`. `--api-tls-client-ca` replaces it.
+    pub tls_client_ca: Option<String>,
+    /// When the REST API asks for a client certificate: `off`, `optional`
+    /// or `required`. Absent: `required` with `tls_client_ca`, else `off`.
+    /// `--api-tls-client-auth` replaces it.
+    pub tls_client_auth: Option<ClientAuthMode>,
+}
+
+/// When a listener that serves HTTPS asks the client for a certificate
+/// (`--api-tls-client-auth`, `--mcp-tls-client-auth`).
+///
+/// A certificate is never what grants access: the bearer token and its scope
+/// still decide what a request may do. A client certificate decides which
+/// clients may complete a TLS handshake at all, and names the verified client
+/// in the logs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClientAuthMode {
+    /// No certificate is asked for. The default without a client CA.
+    #[default]
+    Off,
+    /// A certificate is asked for and verified when the client sends one; a
+    /// client that sends none still completes the handshake.
+    Optional,
+    /// A handshake without a certificate from the client CA is refused. The
+    /// default with a client CA.
+    Required,
+}
+
+impl ClientAuthMode {
+    /// Every mode, in the order `--help` lists them.
+    pub const ALL: [Self; 3] = [Self::Off, Self::Optional, Self::Required];
+
+    /// The name the flag and the config key take.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Optional => "optional",
+            Self::Required => "required",
+        }
+    }
+
+    /// The mode a listener runs with: `mode` when one was set, else
+    /// `required` when a client CA is named and `off` when none is.
+    ///
+    /// Naming a CA and nothing else asks for the strict mode, because an
+    /// operator who names a CA expects the listener to check it.
+    #[must_use]
+    pub const fn effective(mode: Option<Self>, has_ca: bool) -> Self {
+        match (mode, has_ca) {
+            (Some(mode), _) => mode,
+            (None, true) => Self::Required,
+            (None, false) => Self::Off,
+        }
+    }
+}
+
+/// A listener's client-certificate settings, each resolved from its flag or
+/// its config key: the CA file and the mode.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClientCertAuth {
+    /// The client CA file (`--api-tls-client-ca`, `[api] tls_client_ca`).
+    pub ca: Option<String>,
+    /// The mode as set, `None` when it was not
+    /// (`--api-tls-client-auth`, `[api] tls_client_auth`).
+    pub mode: Option<ClientAuthMode>,
+}
+
+impl ClientCertAuth {
+    /// The mode the listener runs with; see [`ClientAuthMode::effective`].
+    #[must_use]
+    pub const fn effective_mode(&self) -> ClientAuthMode {
+        ClientAuthMode::effective(self.mode, self.ca.is_some())
+    }
 }
 
 /// `[metrics]`: the metrics endpoint's TLS files. The endpoint itself is
@@ -1262,6 +1357,13 @@ pub struct McpConfig {
     pub tls_cert: Option<String>,
     /// PEM private key for `tls_cert`. `--mcp-tls-key` replaces it.
     pub tls_key: Option<String>,
+    /// CA certificates (PEM) a client certificate must chain to. Needs
+    /// `tls_cert` and `tls_key`. `--mcp-tls-client-ca` replaces it.
+    pub tls_client_ca: Option<String>,
+    /// When MCP over HTTP asks for a client certificate: `off`, `optional`
+    /// or `required`. Absent: `required` with `tls_client_ca`, else `off`.
+    /// `--mcp-tls-client-auth` replaces it.
+    pub tls_client_auth: Option<ClientAuthMode>,
 }
 
 /// `[actions]`: what may change another system, per target, as a list of the
@@ -3878,7 +3980,7 @@ impl Config {
     /// # Errors
     /// `crate::Error::ConfigInvalid`, naming the first such key.
     pub fn validate_paths(&self) -> Result<(), crate::Error> {
-        let keys: [(&str, Option<&Path>); 35] = [
+        let keys: [(&str, Option<&Path>); 37] = [
             ("[hep] tls_ca", self.hep.tls_ca.as_deref()),
             ("[hep] tls_extra_ca", self.hep.tls_extra_ca.as_deref()),
             ("[hep] tls_cert", self.hep.tls_cert.as_deref()),
@@ -3893,6 +3995,14 @@ impl Config {
                 self.mcp.tls_cert.as_deref().map(Path::new),
             ),
             ("[mcp] tls_key", self.mcp.tls_key.as_deref().map(Path::new)),
+            (
+                "[api] tls_client_ca",
+                self.api.tls_client_ca.as_deref().map(Path::new),
+            ),
+            (
+                "[mcp] tls_client_ca",
+                self.mcp.tls_client_ca.as_deref().map(Path::new),
+            ),
             (
                 "[metrics] tls_cert",
                 self.metrics.tls_cert.as_deref().map(Path::new),
@@ -5756,6 +5866,59 @@ column_selector = "F10"
             c.hep.tls_key.as_deref(),
             Some(std::path::Path::new("/etc/sipnab/hep.key"))
         );
+        Ok(())
+    }
+
+    /// The client-certificate keys of `[api]` and `[mcp]` are known, parse,
+    /// and an empty client CA path is refused by name.
+    #[test]
+    fn the_client_certificate_keys_parse_and_an_empty_ca_is_refused() -> Result<(), TestError> {
+        let text = "[api]\ntls_client_ca = \"/etc/sipnab/clients.pem\"\n\
+                    tls_client_auth = \"optional\"\n\
+                    [mcp]\ntls_client_ca = \"/etc/sipnab/agents.pem\"\n\
+                    tls_client_auth = \"required\"\n";
+        assert_eq!(
+            Config::unknown_keys(text).map_err(|e| format!("parses: {e:?}"))?,
+            Vec::<String>::new(),
+            "the four client-certificate keys are known, so none is warned about"
+        );
+        let c: Config = toml::from_str(text).map_err(|e| format!("deserializes: {e:?}"))?;
+        assert_eq!(
+            c.api.tls_client_ca.as_deref(),
+            Some("/etc/sipnab/clients.pem"),
+            "[api] tls_client_ca deserializes to its path"
+        );
+        assert_eq!(
+            c.api.tls_client_auth,
+            Some(ClientAuthMode::Optional),
+            "[api] tls_client_auth deserializes to its mode"
+        );
+        assert_eq!(
+            c.mcp.tls_client_ca.as_deref(),
+            Some("/etc/sipnab/agents.pem"),
+            "[mcp] tls_client_ca deserializes to its path"
+        );
+        assert_eq!(
+            c.mcp.tls_client_auth,
+            Some(ClientAuthMode::Required),
+            "[mcp] tls_client_auth deserializes to its mode"
+        );
+        assert!(
+            toml::from_str::<Config>("[api]\ntls_client_auth = \"sometimes\"\n").is_err(),
+            "an unknown mode is refused"
+        );
+        for (section, text) in [
+            ("api", "[api]\ntls_client_ca = \"\"\n"),
+            ("mcp", "[mcp]\ntls_client_ca = \"\"\n"),
+        ] {
+            let c: Config = toml::from_str(text).map_err(|e| format!("deserializes: {e:?}"))?;
+            let e = c
+                .validate_paths()
+                .err()
+                .ok_or("empty path accepted")?
+                .to_string();
+            assert!(e.contains(&format!("[{section}] tls_client_ca")), "{e}");
+        }
         Ok(())
     }
 

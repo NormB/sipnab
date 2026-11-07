@@ -58,6 +58,13 @@ pub struct Selection {
     /// The metrics endpoint's certificate and key,
     /// `cli.metrics_tls_files(config)`.
     pub metrics_tls: (Option<String>, Option<String>),
+    /// The REST API's client-certificate settings,
+    /// `cli.api_client_auth(config)` (`--api-tls-client-ca` /
+    /// `--api-tls-client-auth` and their `[api]` keys).
+    pub api_client_auth: crate::config::ClientCertAuth,
+    /// MCP over HTTP's client-certificate settings,
+    /// `cli.mcp_client_auth(config)`.
+    pub mcp_client_auth: crate::config::ClientCertAuth,
     /// Ceiling on body/snippet bytes in one MCP response.
     ///
     /// Resolved by the caller with `cli.mcp_body_cap(config)`, and carried here
@@ -784,6 +791,7 @@ pub fn start_servers(
             max_conn: cli.listener_args.api_max_conn,
             tls_cert: selection.api_tls.0.clone(),
             tls_key: selection.api_tls.1.clone(),
+            client_auth: selection.api_client_auth.clone(),
             allowed_hosts: selection.api_allowed_hosts.clone(),
         };
         // Vet the config and bind NOW, on the caller's thread: a bind failure
@@ -1009,6 +1017,7 @@ pub fn start_servers(
                 let tls = crate::mcp::transport::mcp_tls_config(
                     selection.mcp_tls.0.as_deref(),
                     selection.mcp_tls.1.as_deref(),
+                    &selection.mcp_client_auth,
                 )?;
                 let auth = resolve_mcp_verifier_config(cli);
                 let listener = crate::mcp::transport::bind_http(bind, &auth, tls.is_some())?;
@@ -1243,6 +1252,8 @@ mod tests {
             api_tls: (None, None),
             mcp_tls: (None, None),
             metrics_tls: (None, None),
+            api_client_auth: Default::default(),
+            mcp_client_auth: Default::default(),
             mcp_row_cap: 1,
             mcp_body_cap: 1,
             mcp_response_cap: 1,

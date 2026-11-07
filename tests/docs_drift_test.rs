@@ -44,6 +44,15 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // The mutual-TLS how-to shows curl presenting a client certificate:
+    // curl's `--cacert`, `--cert`, `--key` and `--data-binary`.
+    ("cacert", &["docs/mtls.md", "website/content/docs/mtls.md"]),
+    ("cert", &["docs/mtls.md", "website/content/docs/mtls.md"]),
+    ("key", &["docs/mtls.md", "website/content/docs/mtls.md"]),
+    (
+        "data-binary",
+        &["docs/mtls.md", "website/content/docs/mtls.md"],
+    ),
     // The error-message reference quotes sipnab's messages exactly, and some
     // of them name another program's flags: cargo's `--features` ("rebuild
     // with --features mcp-http"), and eCapture's `--libssl` and `--pid` in
@@ -5240,7 +5249,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // as the markdown files added.
     // 342 -> 344 (#664): docs/relay-engines.md and its generated mirror
     // website/content/docs/relay-engines.md.
-    const EXPECTED_MARKDOWN_FILES: usize = 344;
+    // 344 -> 346 (TOP3-MTLS): docs/mtls.md, the client-certificate how-to,
+    // and its generated mirror website/content/docs/mtls.md.
+    const EXPECTED_MARKDOWN_FILES: usize = 346;
     /// How many tables this gate expects to walk.
     ///
     /// Named rather than written twice. The count and the failure message
@@ -6058,7 +6069,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/fleet.md's "Run a fleet center" (+1) and its site mirror
     // website/content/docs/fleet.md (+1). Counted per file against
     // origin/main f8705d984.
-    const EXPECTED_TABLES: usize = 1417;
+    // 1417 -> 1421 (TOP3-MTLS): docs/mtls.md's table of the three modes and
+    // its table of handshake refusals, and the two in its generated mirror.
+    const EXPECTED_TABLES: usize = 1421;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

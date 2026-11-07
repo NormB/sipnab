@@ -1070,3 +1070,545 @@ mod hep_keys {
         Ok(())
     }
 }
+
+/// Client certificates (mutual TLS) on the REST API and MCP over HTTP,
+/// through the real binary: `--api-tls-client-ca` / `--api-tls-client-auth`
+/// and the MCP pair.
+///
+/// Each refusal is a fault the test injects on purpose: no certificate,
+/// another CA's, an expired one, one not yet valid, one made for a server.
+/// Each must stop the handshake, the server must log why, and the listener
+/// must go on serving a client whose certificate is good. The certificates
+/// come from a CA made for the test (`tls_pki::client_ca`).
+#[cfg(all(feature = "api", feature = "mcp-http", feature = "metrics"))]
+mod client_certs {
+    use super::TestError;
+    use super::tls_pki::{
+        ClientCert, HttpsResponse, TestPki, Validity, client_ca, https_exchange_as, test_pki,
+    };
+    use super::{assert_refused, mcp_support, test_timeout};
+
+    use super::api_server as server;
+
+    /// The REST API's bearer token in these tests.
+    const TOKEN: &str = "mtls-test-token";
+
+    /// `GET /v1/stats` over HTTPS presenting `client`, with the bearer token
+    /// when `bearer` is set.
+    fn stats(
+        srv: &server::ApiServer,
+        pki: &TestPki,
+        client: Option<&ClientCert>,
+        bearer: bool,
+    ) -> Result<HttpsResponse, String> {
+        let auth = format!("Bearer {TOKEN}");
+        let headers: Vec<(&str, &str)> = if bearer {
+            vec![("Authorization", auth.as_str())]
+        } else {
+            Vec::new()
+        };
+        https_exchange_as(
+            &srv.addr,
+            "GET /v1/stats HTTP/1.1",
+            &headers,
+            &[],
+            &pki.ca,
+            client,
+            test_timeout(10),
+        )
+    }
+
+    /// Start the REST API over HTTPS with a token, asking for client
+    /// certificates from `ca_file` with `extra` flags.
+    fn spawn_api(
+        pki: &TestPki,
+        ca_file: &str,
+        extra: &[&str],
+    ) -> Result<server::ApiServer, TestError> {
+        let mut args = vec!["--api-key", TOKEN, "--api-tls-client-ca", ca_file];
+        args.extend(pki.args("--api-tls-cert", "--api-tls-key"));
+        args.extend_from_slice(extra);
+        server::ApiServer::spawn_unsettled(&args)
+    }
+
+    /// The server's log line for a refused client certificate, or a failure
+    /// naming what was expected.
+    fn refusal_logged(srv: &server::ApiServer, why: &str) -> Result<String, TestError> {
+        srv.wait_for_log("refused the TLS handshake", test_timeout(10))
+            .filter(|line| line.contains(why))
+            .ok_or_else(|| format!("the server must log the refusal naming {why:?}").into())
+    }
+
+    /// A REST API with a client CA (and no mode, so `required`) refuses a
+    /// handshake without a certificate, logs why, and serves a client whose
+    /// certificate the CA issued, naming it in the log.
+    #[test]
+    fn the_api_refuses_a_client_without_a_certificate() -> Result<(), TestError> {
+        let pki = test_pki("mtls-api")?;
+        let ca = client_ca("mtls-api")?;
+        let srv = spawn_api(&pki, &ca.ca_file, &[])?;
+        assert!(
+            srv.startup_log
+                .contains("API TLS asks clients for a certificate (required)"),
+            "{}",
+            srv.startup_log
+        );
+        let refused = stats(&srv, &pki, None, true);
+        assert!(
+            refused.is_err(),
+            "no certificate must be refused: {refused:?}"
+        );
+        let line = refusal_logged(&srv, "client certificate: peer sent no certificates")?;
+        assert!(line.contains("WARN"), "a refusal is a warning: {line}");
+
+        let member = ca.issue("member-1", Validity::Current)?;
+        let served = stats(&srv, &pki, Some(&member), true)?;
+        assert_eq!(served.status, 200, "{}", served.body);
+        let named = srv
+            .wait_for_log("presented a verified client certificate", test_timeout(10))
+            .ok_or("the verified client is logged")?;
+        assert!(
+            named.contains(
+                "subject=\"O=sipnab test fleet,CN=member-1\" \
+                 dns=[\"member-1.fleet.example.com\"] \
+                 uri=[\"spiffe://fleet.example.com/member/member-1\"]"
+            ),
+            "{named}"
+        );
+        Ok(())
+    }
+
+    /// The certificate does not replace the token: a good certificate
+    /// without the bearer token is still 401.
+    #[test]
+    fn the_api_still_needs_the_token_with_a_certificate() -> Result<(), TestError> {
+        let pki = test_pki("mtls-and")?;
+        let ca = client_ca("mtls-and")?;
+        let srv = spawn_api(&pki, &ca.ca_file, &[])?;
+        let member = ca.issue("member-2", Validity::Current)?;
+        let refused = stats(&srv, &pki, Some(&member), false)?;
+        assert_eq!(refused.status, 401, "{}", refused.body);
+        Ok(())
+    }
+
+    /// Another CA's certificate, an expired one, one not yet valid and one
+    /// made for a server are each refused and logged; the listener still
+    /// serves a good one afterwards.
+    #[test]
+    fn the_api_refuses_each_bad_certificate() -> Result<(), TestError> {
+        let pki = test_pki("mtls-bad")?;
+        let ca = client_ca("mtls-bad")?;
+        let srv = spawn_api(&pki, &ca.ca_file, &[])?;
+        let cases = [
+            (
+                client_ca("mtls-stranger")?.issue("intruder", Validity::Current)?,
+                "invalid peer certificate: UnknownIssuer",
+            ),
+            (
+                ca.issue("member-3", Validity::Expired)?,
+                "invalid peer certificate: certificate expired",
+            ),
+            (
+                ca.issue("member-4", Validity::NotYetValid)?,
+                "invalid peer certificate: certificate not valid yet",
+            ),
+            (
+                ca.issue_server_only("member-5")?,
+                "invalid peer certificate: certificate does not allow extended key usage",
+            ),
+        ];
+        for (cert, why) in &cases {
+            let refused = stats(&srv, &pki, Some(cert), true);
+            assert!(refused.is_err(), "{why}: must be refused, got {refused:?}");
+            refusal_logged(&srv, why)?;
+        }
+        let good = ca.issue("member-6", Validity::Current)?;
+        assert_eq!(
+            stats(&srv, &pki, Some(&good), true)?.status,
+            200,
+            "a good certificate is served after the refusals"
+        );
+        Ok(())
+    }
+
+    /// `optional` serves a client without a certificate and still refuses
+    /// one with a bad certificate.
+    #[test]
+    fn the_api_optional_mode_admits_no_certificate_but_not_a_bad_one() -> Result<(), TestError> {
+        let pki = test_pki("mtls-opt")?;
+        let ca = client_ca("mtls-opt")?;
+        let srv = spawn_api(&pki, &ca.ca_file, &["--api-tls-client-auth", "optional"])?;
+        assert_eq!(
+            stats(&srv, &pki, None, true)?.status,
+            200,
+            "optional serves a client with no certificate"
+        );
+        let stranger = client_ca("mtls-opt-other")?.issue("intruder", Validity::Current)?;
+        assert!(
+            stats(&srv, &pki, Some(&stranger), true).is_err(),
+            "optional still refuses another CA's certificate"
+        );
+        Ok(())
+    }
+
+    /// `[api] tls_client_ca` and `tls_client_auth` configure the same.
+    #[test]
+    fn the_api_config_keys_ask_for_a_certificate() -> Result<(), TestError> {
+        let pki = test_pki("mtls-cfg")?;
+        let ca = client_ca("mtls-cfg")?;
+        let cfg = pki.dir.path().join("sipnab.toml");
+        std::fs::write(
+            &cfg,
+            format!(
+                "[api]\ntls_cert = \"{}\"\ntls_key = \"{}\"\ntls_client_ca = \"{}\"\n\
+                 tls_client_auth = \"required\"\n",
+                pki.cert, pki.key, ca.ca_file
+            ),
+        )?;
+        let cfg = cfg.to_string_lossy().into_owned();
+        let srv = server::ApiServer::spawn_unsettled(&["--api-key", TOKEN, "--config", &cfg])?;
+        assert!(
+            stats(&srv, &pki, None, true).is_err(),
+            "the config keys refuse a client with no certificate"
+        );
+        let member = ca.issue("member-7", Validity::Current)?;
+        assert_eq!(
+            stats(&srv, &pki, Some(&member), true)?.status,
+            200,
+            "the config keys serve the client CA's certificate"
+        );
+        Ok(())
+    }
+
+    /// Settings that cannot be served stop the run at startup, naming the
+    /// flags, before the port is served.
+    #[test]
+    fn contradictory_client_settings_stop_the_run() -> Result<(), TestError> {
+        let pki = test_pki("mtls-refuse")?;
+        let ca = client_ca("mtls-refuse")?;
+        let fixture = format!(
+            "{}/tests/fixtures/sip_call.pcap",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let base = [
+            "-N",
+            "-I",
+            fixture.as_str(),
+            "--api",
+            "127.0.0.1:0",
+            "--quiet",
+        ];
+        let tls = pki.args("--api-tls-cert", "--api-tls-key");
+        let listening = "REST API listening on";
+        let with = |extra: &[&str], tls_too: bool| -> Vec<String> {
+            let mut v: Vec<&str> = base.to_vec();
+            if tls_too {
+                v.extend(tls);
+            }
+            v.extend_from_slice(extra);
+            v.into_iter().map(String::from).collect()
+        };
+        let cases: [(Vec<String>, &[&str]); 2] = [
+            (
+                with(&["--api-tls-client-ca", &ca.ca_file], false),
+                &[
+                    "--api-tls-client-ca (or [api] tls_client_ca)",
+                    "needs --api-tls-cert (or [api] tls_cert)",
+                ],
+            ),
+            (
+                with(&["--api-tls-client-auth", "required"], true),
+                &[
+                    "--api-tls-client-auth (or [api] tls_client_auth) required needs --api-tls-client-ca (or [api] tls_client_ca)",
+                ],
+            ),
+        ];
+        for (args, needles) in &cases {
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            assert_refused(&refs, needles, listening)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&ca.ca_file, std::fs::Permissions::from_mode(0o666))?;
+            let args = with(&["--api-tls-client-ca", &ca.ca_file], true);
+            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            assert_refused(
+                &refs,
+                &["client CA file is writable by every user"],
+                listening,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// `--api-tls-client-auth off` wins over a client CA from the config
+    /// file: the API asks for no certificate, serves a client without one,
+    /// and says at startup that it does not read the CA.
+    #[test]
+    fn the_api_off_mode_overrides_a_client_ca_from_the_config() -> Result<(), TestError> {
+        let pki = test_pki("mtls-off")?;
+        let ca = client_ca("mtls-off")?;
+        let cfg = pki.dir.path().join("sipnab.toml");
+        std::fs::write(&cfg, format!("[api]\ntls_client_ca = \"{}\"\n", ca.ca_file))?;
+        let cfg = cfg.to_string_lossy().into_owned();
+        let srv = spawn_api(
+            &pki,
+            &ca.ca_file,
+            &["--config", &cfg, "--api-tls-client-auth", "off"],
+        )?;
+        let notice = format!(
+            "API TLS asks clients for no certificate: the client-auth mode is off, so the \
+             client CA {} is not read",
+            ca.ca_file
+        );
+        assert!(srv.startup_log.contains(&notice), "{}", srv.startup_log);
+        let served = stats(&srv, &pki, None, true)?;
+        assert_eq!(
+            served.status, 200,
+            "off serves a client with no certificate"
+        );
+        Ok(())
+    }
+
+    /// A running MCP server, stopped when dropped.
+    struct Mcp(Option<std::process::Child>);
+
+    impl Drop for Mcp {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.take() {
+                mcp_support::shutdown(child);
+            }
+        }
+    }
+
+    /// POST one JSON-RPC message to MCP over HTTPS, presenting `client`,
+    /// inside `session` when given.
+    fn mcp_post(
+        addr: &str,
+        pki: &TestPki,
+        client: Option<&ClientCert>,
+        session: Option<&str>,
+        body: &serde_json::Value,
+    ) -> Result<HttpsResponse, String> {
+        let mut headers = vec![
+            ("Accept", "application/json, text/event-stream"),
+            ("Content-Type", "application/json"),
+        ];
+        if let Some(id) = session {
+            headers.push(("Mcp-Session-Id", id));
+        }
+        https_exchange_as(
+            addr,
+            "POST /mcp HTTP/1.1",
+            &headers,
+            body.to_string().as_bytes(),
+            &pki.ca,
+            client,
+            test_timeout(10),
+        )
+    }
+
+    /// MCP over HTTP with a client CA refuses a handshake without a
+    /// certificate, serves one with, and its audit record names the client
+    /// by the certificate's URI.
+    #[test]
+    fn mcp_refuses_no_certificate_and_audits_the_verified_client() -> Result<(), TestError> {
+        let pki = test_pki("mtls-mcp")?;
+        let ca = client_ca("mtls-mcp")?;
+        let audit = pki.dir.path().join("audit.jsonl");
+        let audit_arg = audit.to_string_lossy().into_owned();
+        let mut args = vec![
+            "--mcp-bind",
+            "127.0.0.1:0",
+            "--mcp-tls-client-ca",
+            &ca.ca_file,
+        ];
+        args.extend(pki.args("--mcp-tls-cert", "--mcp-tls-key"));
+        args.extend(["--mcp-audit-file", &audit_arg]);
+        let (child, addr) = mcp_support::spawn_http(&args)?.ok_or("MCP starts")?;
+        let _running = Mcp(Some(child));
+
+        let init = mcp_support::initialize_payload();
+        let refused = mcp_post(&addr, &pki, None, None, &init);
+        assert!(
+            refused.is_err(),
+            "no certificate must be refused: {refused:?}"
+        );
+
+        let member = ca.issue("member-8", Validity::Current)?;
+        let reply = mcp_post(&addr, &pki, Some(&member), None, &init)?;
+        assert_eq!(reply.status, 200, "{}", reply.body);
+        let session = reply
+            .head
+            .lines()
+            .find_map(|l| {
+                l.split_once(':')
+                    .filter(|(k, _)| k.trim().eq_ignore_ascii_case("mcp-session-id"))
+                    .map(|(_, v)| v.trim().to_string())
+            })
+            .ok_or("initialize returns a session")?;
+        let note = serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"});
+        mcp_post(&addr, &pki, Some(&member), Some(&session), &note)?;
+        let call = serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "server_capabilities", "arguments": {}}
+        });
+        let answer = mcp_post(&addr, &pki, Some(&member), Some(&session), &call)?;
+        assert_eq!(answer.status, 200, "{}", answer.body);
+
+        let deadline = std::time::Instant::now() + test_timeout(10);
+        let record = loop {
+            let text = std::fs::read_to_string(&audit).unwrap_or_default();
+            if let Some(line) = text.lines().find(|l| l.contains("server_capabilities")) {
+                break line.to_string();
+            }
+            if std::time::Instant::now() > deadline {
+                return Err(format!("no audit record for the call: {text}").into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        };
+        let record: serde_json::Value = serde_json::from_str(&record)?;
+        let caller = record["caller"].as_str().unwrap_or_default();
+        assert!(
+            caller.ends_with(" client-cert=spiffe:%2F%2Ffleet.example.com%2Fmember%2Fmember-8"),
+            "{caller}"
+        );
+        Ok(())
+    }
+
+    /// The MCP client-certificate flags belong to the HTTP transport. With
+    /// stdio they would do nothing, so the run is refused naming the
+    /// transport they need.
+    #[test]
+    fn mcp_client_flags_without_the_http_transport_are_refused() -> Result<(), TestError> {
+        let fixture = format!(
+            "{}/tests/fixtures/sip_call.pcap",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let args = [
+            "-N",
+            "-I",
+            fixture.as_str(),
+            "--mcp",
+            "--quiet",
+            "--mcp-tls-client-auth",
+            "off",
+        ];
+        assert_refused(
+            &args,
+            &[
+                "--mcp-tls-client-ca/--mcp-tls-client-auth ask MCP over HTTPS clients for a \
+                 certificate and do nothing without --mcp --mcp-transport http",
+            ],
+            "listening on",
+        )
+    }
+
+    /// Start MCP over HTTPS asking for client certificates from `ca_file`,
+    /// with `extra` flags.
+    fn spawn_mcp(pki: &TestPki, ca_file: &str, extra: &[&str]) -> Result<(Mcp, String), TestError> {
+        let mut args = vec!["--mcp-bind", "127.0.0.1:0", "--mcp-tls-client-ca", ca_file];
+        args.extend(pki.args("--mcp-tls-cert", "--mcp-tls-key"));
+        args.extend_from_slice(extra);
+        let (child, addr) = mcp_support::spawn_http(&args)?.ok_or("MCP starts")?;
+        Ok((Mcp(Some(child)), addr))
+    }
+
+    /// MCP refuses another CA's certificate and an expired one.
+    #[test]
+    fn mcp_refuses_another_cas_and_an_expired_certificate() -> Result<(), TestError> {
+        let pki = test_pki("mtls-mcp-bad")?;
+        let ca = client_ca("mtls-mcp-bad")?;
+        let (_mcp, addr) = spawn_mcp(&pki, &ca.ca_file, &[])?;
+        let init = mcp_support::initialize_payload();
+        let stranger = client_ca("mtls-mcp-other")?.issue("intruder", Validity::Current)?;
+        let expired = ca.issue("member-old", Validity::Expired)?;
+        for (cert, what) in [(&stranger, "another CA's"), (&expired, "an expired")] {
+            let answer = mcp_post(&addr, &pki, Some(cert), None, &init);
+            assert!(
+                answer.is_err(),
+                "{what} certificate must be refused: {answer:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// MCP with `optional` serves an agent that sends no certificate.
+    #[test]
+    fn mcp_optional_mode_serves_an_agent_without_a_certificate() -> Result<(), TestError> {
+        let pki = test_pki("mtls-mcp-opt")?;
+        let ca = client_ca("mtls-mcp-opt")?;
+        let (_mcp, addr) = spawn_mcp(&pki, &ca.ca_file, &["--mcp-tls-client-auth", "optional"])?;
+        let reply = mcp_post(&addr, &pki, None, None, &mcp_support::initialize_payload())?;
+        assert_eq!(
+            reply.status, 200,
+            "optional serves no certificate: {}",
+            reply.body
+        );
+        Ok(())
+    }
+
+    /// `[mcp] tls_client_ca` asks MCP clients for a certificate as the flag
+    /// does.
+    #[test]
+    fn mcp_config_key_asks_for_a_certificate() -> Result<(), TestError> {
+        let pki = test_pki("mtls-mcp-cfg")?;
+        let ca = client_ca("mtls-mcp-cfg")?;
+        let cfg = pki.dir.path().join("sipnab.toml");
+        std::fs::write(
+            &cfg,
+            format!(
+                "[mcp]\ntls_cert = \"{}\"\ntls_key = \"{}\"\ntls_client_ca = \"{}\"\n",
+                pki.cert, pki.key, ca.ca_file
+            ),
+        )?;
+        let cfg = cfg.to_string_lossy().into_owned();
+        let (child, addr) =
+            mcp_support::spawn_http(&["--mcp-bind", "127.0.0.1:0", "--config", &cfg])?
+                .ok_or("MCP starts")?;
+        let _mcp = Mcp(Some(child));
+        let init = mcp_support::initialize_payload();
+        assert!(
+            mcp_post(&addr, &pki, None, None, &init).is_err(),
+            "the key asks for a certificate, so none is refused"
+        );
+        let member = ca.issue("member-cfg", Validity::Current)?;
+        let reply = mcp_post(&addr, &pki, Some(&member), None, &init)?;
+        assert_eq!(
+            reply.status, 200,
+            "a certificate from the key's CA: {}",
+            reply.body
+        );
+        Ok(())
+    }
+
+    /// MCP's settings stop the run as the REST API's do.
+    #[test]
+    fn mcp_contradictory_client_settings_stop_the_run() -> Result<(), TestError> {
+        let fixture = format!(
+            "{}/tests/fixtures/sip_call.pcap",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let args = [
+            "-N",
+            "-I",
+            fixture.as_str(),
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-bind",
+            "127.0.0.1:0",
+            "--quiet",
+            "--mcp-tls-client-auth",
+            "optional",
+        ];
+        assert_refused(
+            &args,
+            &[
+                "--mcp-tls-client-auth (or [mcp] tls_client_auth) optional needs --mcp-tls-client-ca (or [mcp] tls_client_ca)",
+            ],
+            "listening on",
+        )
+    }
+}

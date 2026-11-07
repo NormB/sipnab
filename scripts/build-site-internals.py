@@ -295,6 +295,7 @@ DOCS_TO_SITE = {
     "benchmarks.md": "benchmarks.md",
     "plugins.md": "plugins.md",
     "auth.md": "auth.md",
+    "mtls.md": "mtls.md",
     # Registered with the page, for the reason the tuning-capture entry below
     # records: install.md, examples.md and mcp-deploy.md link it, and an
     # unregistered target rewrites to a GitHub blob URL on the site.

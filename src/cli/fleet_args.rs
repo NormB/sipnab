@@ -79,6 +79,15 @@ pub enum FleetCommand {
         /// The PEM private key of `--tls-cert`, readable by this user only.
         #[arg(long, value_name = "FILE", requires = "tls_cert")]
         tls_key: Option<String>,
+        /// Require each member to present a TLS client certificate issued
+        /// by a CA in this PEM file, as well as its token. Needs
+        /// `--tls-cert`. Alone it means `--tls-client-auth required`.
+        #[arg(long, value_name = "FILE")]
+        tls_client_ca: Option<String>,
+        /// When the center asks for a client certificate: off, optional or
+        /// required. Default: required with `--tls-client-ca`, else off.
+        #[arg(long, value_name = "MODE")]
+        tls_client_auth: Option<crate::config::ClientAuthMode>,
         /// Hours a member is kept after its last heartbeat.
         #[arg(long, value_name = "HOURS", default_value_t = 72,
               value_parser = clap::value_parser!(u64).range(1..=87_600))]

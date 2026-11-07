@@ -2009,8 +2009,11 @@ agent trust the CA that issued the certificate.
   handshake and is not served.
 - TLS 1.2 and TLS 1.3 only. The server offers `http/1.1` by ALPN and does
   not offer HTTP/2.
-- No client certificates.
+- No client certificates unless you ask for them.
   - Clients authenticate with the bearer token, as over plain HTTP.
+  - `--mcp-tls-client-ca` makes the handshake also require a certificate from
+    your CA, and the token is still checked: see
+    [Require client certificates](mtls.md).
   - The `Host` allowlist below applies unchanged.
 - `[mcp] tls_cert` and `[mcp] tls_key` in
   [`sipnab.toml`](config-reference.md#mcp) set the same files. Each flag

@@ -604,6 +604,15 @@ pub fn plain_http_refusal(addr: std::net::SocketAddr, tls: bool) -> Option<Strin
     ))
 }
 
+/// What the center's client-certificate refusals call its flags.
+const FLEET_CLIENT_AUTH_LABELS: crate::cli::ClientAuthLabels<'static> =
+    crate::cli::ClientAuthLabels {
+        ca: "--tls-client-ca",
+        mode: "--tls-client-auth",
+        first: "--tls-cert",
+        second: "--tls-key",
+    };
+
 /// What `sipnab fleet serve` was asked for.
 #[derive(Debug, Clone)]
 pub struct ServeArgs {
@@ -619,6 +628,9 @@ pub struct ServeArgs {
     pub tls_cert: Option<String>,
     /// `--tls-key`.
     pub tls_key: Option<String>,
+    /// `--tls-client-ca` and `--tls-client-auth`: the member certificates
+    /// the HTTPS handshake asks for.
+    pub client_auth: crate::config::ClientCertAuth,
     /// `--retention-hours`: how long a member nobody heard from is kept.
     pub retention_hours: u64,
     /// `--silent-after-missed`: how many heartbeat intervals make a member
@@ -710,6 +722,7 @@ fn prepare(
     if let Some(refusal) = plain_http_refusal(addr, tls) {
         return Err(refusal);
     }
+    crate::cli::client_auth_problem(FLEET_CLIENT_AUTH_LABELS, &args.client_auth, tls)?;
     let mut key = String::new();
     crate::privilege::open_private_file(&args.signing_key_file, "--signing-key-file")?
         .read_to_string(&mut key)
@@ -758,6 +771,7 @@ fn prepare(
         max_conn: 0,
         tls_cert: args.tls_cert.clone(),
         tls_key: args.tls_key.clone(),
+        client_auth: args.client_auth.clone(),
         allowed_hosts: args.allowed_hosts.clone(),
     };
     Ok((addr, state, server_config))

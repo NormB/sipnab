@@ -163,7 +163,8 @@ pub(crate) fn trust_roots(
 /// key in `key`.
 ///
 /// Protocol versions are rustls's safe defaults, TLS 1.2 and TLS 1.3; no
-/// client certificate is asked for.
+/// client certificate is asked for ([`server_config_with_clients`] asks for
+/// one).
 ///
 /// # Arguments
 ///
@@ -183,29 +184,132 @@ pub(crate) fn trust_roots(
 /// # Side effects
 ///
 /// Reads and stats both files.
-#[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
+// The REST API and MCP build theirs with `server_config_with_clients`, so
+// only the HEP listener and the metrics endpoint call this.
+#[cfg(any(feature = "hep", feature = "metrics"))]
 pub(crate) fn server_config(
     cert: &std::path::Path,
     key: &std::path::Path,
     surface: &str,
     alpn: Vec<Vec<u8>>,
 ) -> Result<std::sync::Arc<rustls::ServerConfig>> {
+    server_config_with_clients(cert, key, surface, alpn, None)
+}
+
+/// A rustls verifier of client certificates, as one listener uses it.
+#[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
+pub(crate) type ClientVerifier = std::sync::Arc<dyn rustls::server::danger::ClientCertVerifier>;
+
+/// [`server_config`], asking each client for a certificate that `clients`
+/// verifies; `None` asks for none, as [`server_config`] does.
+///
+/// # Errors
+///
+/// As [`server_config`].
+#[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
+pub(crate) fn server_config_with_clients(
+    cert: &std::path::Path,
+    key: &std::path::Path,
+    surface: &str,
+    alpn: Vec<Vec<u8>>,
+    clients: Option<ClientVerifier>,
+) -> Result<std::sync::Arc<rustls::ServerConfig>> {
     let chain = pem_certificates(cert)?;
     let private = pem_private_key(key, surface)?;
-    let mut config = rustls::ServerConfig::builder_with_provider(provider())
+    let builder = rustls::ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
-        .with_context(|| format!("{surface} listener: no usable protocol versions"))?
-        .with_no_client_auth()
-        .with_single_cert(chain, private)
-        .with_context(|| {
-            format!(
-                "{surface} listener: {} does not go with {}",
-                cert.display(),
-                key.display()
-            )
-        })?;
+        .with_context(|| format!("{surface} listener: no usable protocol versions"))?;
+    let builder = match clients {
+        Some(verifier) => builder.with_client_cert_verifier(verifier),
+        None => builder.with_no_client_auth(),
+    };
+    let mut config = builder.with_single_cert(chain, private).with_context(|| {
+        format!(
+            "{surface} listener: {} does not go with {}",
+            cert.display(),
+            key.display()
+        )
+    })?;
     config.alpn_protocols = alpn;
     Ok(std::sync::Arc::new(config))
+}
+
+/// The verifier a listener checks client certificates with, or `None` when
+/// `mode` asks for none.
+///
+/// The CA file is the whole trust store for client certificates: the host's
+/// CA bundle is never added, because a public CA issues certificates to
+/// anyone and would admit any of them. rustls's `WebPkiClientVerifier` does
+/// the checking: the chain to one of the file's CAs, each certificate's
+/// validity period against the clock, and the `clientAuth` extended key usage
+/// when the certificate lists any. Certificate revocation lists are not
+/// consulted (see `docs/mtls.md`).
+///
+/// # Arguments
+///
+/// * `ca` — the client CA file: PEM, one or more CA certificates.
+/// * `mode` — [`ClientAuthMode::Optional`] admits a client that sends no
+///   certificate; [`ClientAuthMode::Required`] refuses its handshake.
+/// * `surface` — the listener (`"API TLS"`, `"MCP TLS"`), named in errors.
+///
+/// # Errors
+///
+/// The file cannot be read or stat'd, any user may write to it, it holds no
+/// certificate, rustls refuses a certificate in it, or the verifier cannot be
+/// built from them.
+///
+/// # Side effects
+///
+/// Reads and stats `ca`.
+///
+/// [`ClientAuthMode::Optional`]: crate::config::ClientAuthMode::Optional
+/// [`ClientAuthMode::Required`]: crate::config::ClientAuthMode::Required
+#[cfg(feature = "api")]
+pub(crate) fn client_verifier(
+    ca: &std::path::Path,
+    mode: crate::config::ClientAuthMode,
+    surface: &str,
+) -> Result<Option<ClientVerifier>> {
+    use crate::config::ClientAuthMode;
+    if mode == ClientAuthMode::Off {
+        return Ok(None);
+    }
+    // The mode as the read before the privilege drop found it, when this run
+    // drops; see `crate::secret_files`. Readable by all is fine, a CA
+    // certificate is public; writable by all is not, because whoever can
+    // write the file chooses which clients get in.
+    #[cfg(unix)]
+    {
+        let bits = crate::secret_files::mode(ca).with_context(|| format!("{}", ca.display()))?;
+        ensure!(
+            bits & 0o002 == 0,
+            "{}: the {surface} client CA file is writable by every user (mode {:04o}); \
+             chmod o-w it",
+            ca.display(),
+            bits & 0o7777
+        );
+    }
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in pem_certificates(ca)? {
+        roots
+            .add(cert)
+            .with_context(|| format!("{}: rustls rejected a certificate", ca.display()))?;
+    }
+    let builder = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        std::sync::Arc::new(roots),
+        provider(),
+    );
+    let builder = match mode {
+        ClientAuthMode::Optional => builder.allow_unauthenticated(),
+        ClientAuthMode::Off | ClientAuthMode::Required => builder,
+    };
+    let verifier = builder.build().with_context(|| {
+        format!(
+            "{surface} listener: cannot verify client certificates with {}",
+            ca.display()
+        )
+    })?;
+    Ok(Some(verifier))
 }
 
 /// Every `-----BEGIN <label>-----` block in a PEM file, as `(label, DER)`.

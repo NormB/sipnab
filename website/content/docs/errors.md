@@ -2901,6 +2901,17 @@ sipnab could not open the file named by `--mcp-audit-file` for appending.
 
 **Exit code:** 2.
 
+### `--mcp-tls-client-ca/--mcp-tls-client-auth ask MCP over HTTPS clients for a certificate and do nothing without --mcp --mcp-transport http`
+
+`--mcp-tls-client-ca` and `--mcp-tls-client-auth` make the MCP server's HTTPS handshake ask each client for a certificate ([Require client certificates](@/docs/mtls.md)).
+
+- You gave at least one of them.
+- But the run does not serve MCP over HTTP. Either `--mcp` is absent, or `--mcp-transport` is not `http` (the default is `stdio`).
+
+**What to do:** Add `--mcp --mcp-transport http` and the server certificate (`--mcp-tls-cert`, `--mcp-tls-key`), or remove the client-certificate flags.
+
+**Exit code:** 2.
+
 ### `--mcp-token-file '{path}': {e}`
 
 sipnab could not read the file named by `--mcp-token-file`. The file holds the static token that MCP over HTTP accepts. `{path}` is the path given, and `{e}` is the operating system error. sipnab reads the file only when you do not give `--mcp-token`.
@@ -2957,6 +2968,38 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 **Exit code:** 2.
 
+### `--api-tls-client-ca requires the 'api' feature (not compiled in)`
+
+`--api-tls-client-ca` names the CA whose client certificates the REST API accepts. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api-tls-client-ca`.
+
+**Exit code:** 2.
+
+### `--api-tls-client-auth requires the 'api' feature (not compiled in)`
+
+`--api-tls-client-auth` says when the REST API asks for a client certificate. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api-tls-client-auth`.
+
+**Exit code:** 2.
+
+### `{mode_label} {} needs {ca_label}: name the CA that issues the client certificates`
+
+A setting asks the REST API or MCP over HTTP for client certificates, `optional` or `required` in `{}`, but no setting names a client CA to check them against. `{mode_label}` is the mode setting and `{ca_label}` the CA setting, each written as the flag and its config key, for example `--api-tls-client-auth (or [api] tls_client_auth)`. sipnab refuses the run before anything listens.
+
+**What to do:** Name the CA with `--api-tls-client-ca` or `--mcp-tls-client-ca` (or `[api]` / `[mcp] tls_client_ca`), or drop the mode. See [Require client certificates](@/docs/mtls.md).
+
+**Exit code:** 2 when the mode came from the command line, 1 when it came from the config file.
+
+### `{ca_label} {file} needs {first} and {second}: a client certificate is asked for only in a TLS handshake`
+
+A setting names a client CA, `{file}`, and a client-auth mode other than `off`, for a listener that serves plain HTTP: its certificate and key (`{first}` and `{second}`) are not set. A client certificate is part of the TLS handshake, so with no TLS there is nothing to ask for it in. sipnab refuses the run before anything listens. A program that starts the REST API through the library (`output::api::prepare_listener`) gets the same text as `server error:`.
+
+**What to do:** Serve the listener over HTTPS with `--api-tls-cert` and `--api-tls-key` (or `--mcp-tls-cert` and `--mcp-tls-key`), or remove the client CA.
+
+**Exit code:** 2 when the CA came from the command line, 1 when it came from the config file.
+
 ### `--mcp uses stdout for the JSON-RPC wire and cannot be combined with stdout-writing flags ({})`
 
 `--mcp` starts the MCP (Model Context Protocol) server, and with the default stdio transport its JSON-RPC messages travel on standard output. The flags listed in parentheses also write to standard output, and sipnab refuses them alongside `--mcp` on stdio. With `--mcp-transport http` the wire is a socket, and sipnab accepts the same flags. The list includes `--export-vcon` only when you did not give `--vcon-out`.
@@ -3007,7 +3050,7 @@ The REST API server (`--api`) could not start, or stopped with an error.
 - `{0}` says why:
   - sipnab could not bind the address;
   - the command gave only one of `--api-tls-cert` and `--api-tls-key`;
-  - a TLS file is unusable;
+  - a TLS file is unusable, the client CA file (`--api-tls-client-ca`) among them;
   - the bind is not loopback, and no `--api-key` or `--api-signing-key` exists;
   - sipnab could not set up the listener.
 - At startup this stops the run before the TUI or capture begins.

@@ -158,6 +158,14 @@ pub const FLAGS: &[(&str, Link)] = &[
         "api-tls-cert",
         Link::Key("api", "tls_cert", Merge::Override),
     ),
+    (
+        "api-tls-client-auth",
+        Link::Key("api", "tls_client_auth", Merge::Override),
+    ),
+    (
+        "api-tls-client-ca",
+        Link::Key("api", "tls_client_ca", Merge::Override),
+    ),
     ("api-tls-key", Link::Key("api", "tls_key", Merge::Override)),
     ("api-token-ttl", Link::PerRun),
     ("archive-password", Link::Secret),
@@ -512,6 +520,14 @@ pub const FLAGS: &[(&str, Link)] = &[
     (
         "mcp-tls-cert",
         Link::Key("mcp", "tls_cert", Merge::Override),
+    ),
+    (
+        "mcp-tls-client-auth",
+        Link::Key("mcp", "tls_client_auth", Merge::Override),
+    ),
+    (
+        "mcp-tls-client-ca",
+        Link::Key("mcp", "tls_client_ca", Merge::Override),
     ),
     ("mcp-tls-key", Link::Key("mcp", "tls_key", Merge::Override)),
     ("mcp-token", Link::Secret),
