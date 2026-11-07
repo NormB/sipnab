@@ -25980,9 +25980,9 @@ A setting asks the REST API or MCP over HTTP for client certificates, `optional`
 
 **Exit code:** 2 when the mode came from the command line, 1 when it came from the config file.
 
-### `{ca_label} {file} needs {cert} and {key}: a client certificate is asked for only in a TLS handshake`
+### `{ca_label} {file} needs {first} and {second}: a client certificate is asked for only in a TLS handshake`
 
-A setting names a client CA, `{file}`, and a client-auth mode other than `off`, for a listener that serves plain HTTP: its certificate and key (`{cert}` and `{key}`) are not set. A client certificate is part of the TLS handshake, so with no TLS there is nothing to ask for it in. sipnab refuses the run before anything listens. A program that starts the REST API through the library (`output::api::prepare_listener`) gets the same text as `server error:`.
+A setting names a client CA, `{file}`, and a client-auth mode other than `off`, for a listener that serves plain HTTP: its certificate and key (`{first}` and `{second}`) are not set. A client certificate is part of the TLS handshake, so with no TLS there is nothing to ask for it in. sipnab refuses the run before anything listens. A program that starts the REST API through the library (`output::api::prepare_listener`) gets the same text as `server error:`.
 
 **What to do:** Serve the listener over HTTPS with `--api-tls-cert` and `--api-tls-key` (or `--mcp-tls-cert` and `--mcp-tls-key`), or remove the client CA.
 

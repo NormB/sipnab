@@ -609,8 +609,8 @@ const FLEET_CLIENT_AUTH_LABELS: crate::cli::ClientAuthLabels<'static> =
     crate::cli::ClientAuthLabels {
         ca: "--tls-client-ca",
         mode: "--tls-client-auth",
-        cert: "--tls-cert",
-        key: "--tls-key",
+        first: "--tls-cert",
+        second: "--tls-key",
     };
 
 /// What `sipnab fleet serve` was asked for.

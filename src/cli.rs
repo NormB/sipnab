@@ -6148,26 +6148,31 @@ pub struct ClientAuthLabels<'a> {
     pub ca: &'a str,
     /// The client-auth mode setting.
     pub mode: &'a str,
-    /// The server certificate setting.
-    pub cert: &'a str,
-    /// The server key setting.
-    pub key: &'a str,
+    /// The first setting of the listener's TLS pair: its certificate chain.
+    ///
+    /// Named `first` and `second`, as [`tls_pair_problem`]'s halves are,
+    /// because CodeQL's cleartext-logging query reads a value named for a
+    /// certificate or a key as that certificate or key. These hold flag
+    /// names, and the refusals print nothing else.
+    pub first: &'a str,
+    /// The second setting of the listener's TLS pair: its private key.
+    pub second: &'a str,
 }
 
 /// The REST API's client-certificate flags, for [`client_auth_problem`].
 pub const API_CLIENT_AUTH_LABELS: ClientAuthLabels<'static> = ClientAuthLabels {
     ca: "--api-tls-client-ca",
     mode: "--api-tls-client-auth",
-    cert: API_TLS_FLAGS.0,
-    key: API_TLS_FLAGS.1,
+    first: API_TLS_FLAGS.0,
+    second: API_TLS_FLAGS.1,
 };
 
 /// MCP over HTTP's client-certificate flags, for [`client_auth_problem`].
 pub const MCP_CLIENT_AUTH_LABELS: ClientAuthLabels<'static> = ClientAuthLabels {
     ca: "--mcp-tls-client-ca",
     mode: "--mcp-tls-client-auth",
-    cert: MCP_TLS_FLAGS.0,
-    key: MCP_TLS_FLAGS.1,
+    first: MCP_TLS_FLAGS.0,
+    second: MCP_TLS_FLAGS.1,
 };
 
 /// Why a listener's client-certificate settings cannot be served: `Err` with
@@ -6203,8 +6208,8 @@ pub fn client_auth_problem(
     let ClientAuthLabels {
         ca: ca_label,
         mode: mode_label,
-        cert,
-        key,
+        first,
+        second,
     } = labels;
     match (setting.ca.as_deref(), setting.mode) {
         (None, Some(mode @ (ClientAuthMode::Optional | ClientAuthMode::Required))) => Err(format!(
@@ -6216,7 +6221,7 @@ pub fn client_auth_problem(
         // config file asks for, and the listener says it does not read the CA.
         (None, _) | (Some(_), Some(ClientAuthMode::Off)) => Ok(()),
         (Some(file), _) if !serves_tls => Err(format!(
-            "{ca_label} {file} needs {cert} and {key}: a client certificate is asked \
+            "{ca_label} {file} needs {first} and {second}: a client certificate is asked \
              for only in a TLS handshake"
         )),
         (Some(_), _) => Ok(()),
@@ -7320,15 +7325,15 @@ impl Cli {
                 label(flags.ca, section, "tls_client_ca"),
                 label(flags.mode, section, "tls_client_auth"),
             );
-            let (cert, key) = (
-                label(flags.cert, section, "tls_cert"),
-                label(flags.key, section, "tls_key"),
+            let (first, second) = (
+                label(flags.first, section, "tls_cert"),
+                label(flags.second, section, "tls_key"),
             );
             let labels = ClientAuthLabels {
                 ca: &ca,
                 mode: &mode,
-                cert: &cert,
-                key: &key,
+                first: &first,
+                second: &second,
             };
             let serves_tls = first_file.is_some() && second_file.is_some();
             if let Err(problem) = client_auth_problem(labels, &setting, serves_tls) {

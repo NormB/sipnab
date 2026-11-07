@@ -930,7 +930,7 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 580 -> 585 (TOP3-MTLS, client certificates): src/cli.rs +3: the two
 // refusals client_auth_problem returns (`{mode_label} {} needs {ca_label}:
 // name the CA that issues the client certificates` and `{ca_label} {file}
-// needs {cert} and {key}: a client certificate is asked for only in a TLS
+// needs {first} and {second}: a client certificate is asked for only in a TLS
 // handshake`) and the stdio refusal of
 // --mcp-tls-client-ca/--mcp-tls-client-auth; src/app/bootstrap.rs +2: the
 // uncompiled refusals of --api-tls-client-ca and --api-tls-client-auth.

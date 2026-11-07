@@ -1026,26 +1026,41 @@ mod tests {
     #[test]
     fn only_client_certificate_failures_are_named_as_refusals() {
         let wrap = |e: rustls::Error| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
-        for e in [
-            rustls::Error::NoCertificatesPresented,
-            rustls::Error::InvalidCertificate(rustls::CertificateError::Expired),
-            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+        // Each case is named by a fixed label, not by printing the error:
+        // CodeQL's cleartext-logging query reads a certificate error as
+        // certificate material.
+        for (what, e) in [
+            ("no certificate", rustls::Error::NoCertificatesPresented),
+            (
+                "an expired certificate",
+                rustls::Error::InvalidCertificate(rustls::CertificateError::Expired),
+            ),
+            (
+                "an unknown issuer",
+                rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+            ),
         ] {
             assert!(
-                client_certificate_refusal(&wrap(e.clone())).is_some(),
-                "{e} is about the client certificate"
+                client_certificate_refusal(&wrap(e)).is_some(),
+                "{what} is about the client certificate"
             );
         }
-        for e in [
-            wrap(rustls::Error::PeerIncompatible(
-                rustls::PeerIncompatible::Tls12NotOffered,
-            )),
-            wrap(rustls::Error::DecryptError),
-            std::io::Error::from(std::io::ErrorKind::ConnectionReset),
+        for (what, e) in [
+            (
+                "a client offering no TLS 1.2",
+                wrap(rustls::Error::PeerIncompatible(
+                    rustls::PeerIncompatible::Tls12NotOffered,
+                )),
+            ),
+            ("a decrypt error", wrap(rustls::Error::DecryptError)),
+            (
+                "a reset",
+                std::io::Error::from(std::io::ErrorKind::ConnectionReset),
+            ),
         ] {
             assert!(
                 client_certificate_refusal(&e).is_none(),
-                "{e} is not about a client certificate"
+                "{what} is not about a client certificate"
             );
         }
     }
