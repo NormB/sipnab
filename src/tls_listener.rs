@@ -231,6 +231,10 @@ impl ClientIdentity {
     /// The one name that stands for this client: the first URI SAN, else the
     /// first DNS SAN, else the subject. A SAN first because it is the name a
     /// CA is asked to vouch for, and the subject is often a free-form label.
+    ///
+    /// The MCP audit record names a client by it; the REST API logs every
+    /// field instead.
+    #[cfg(any(test, feature = "mcp-http"))]
     pub(crate) fn label(&self) -> &str {
         self.uris
             .first()

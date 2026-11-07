@@ -184,7 +184,9 @@ pub(crate) fn trust_roots(
 /// # Side effects
 ///
 /// Reads and stats both files.
-#[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
+// The REST API and MCP build theirs with `server_config_with_clients`, so
+// only the HEP listener and the metrics endpoint call this.
+#[cfg(any(feature = "hep", feature = "metrics"))]
 pub(crate) fn server_config(
     cert: &std::path::Path,
     key: &std::path::Path,
