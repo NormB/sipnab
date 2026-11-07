@@ -71,6 +71,8 @@ fn metrics_only() -> Selection {
         scanner_response: Default::default(),
         pipeline_options: Default::default(),
         vcon_spools: Vec::new(),
+        #[cfg(feature = "api")]
+        fleet_member: None,
         vcon_fetch: Default::default(),
         live_audio: Vec::new(),
         alias_thresholds: Default::default(),

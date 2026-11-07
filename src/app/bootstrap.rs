@@ -533,6 +533,20 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
 /// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     refuse_unusable_requests(cli, config)?;
+    // A fleet member's settings are refused here, before any capture opens,
+    // and resolved again by the same function where the member starts.
+    #[cfg(feature = "api")]
+    {
+        let args = &cli.listener_args;
+        let origin = crate::settings::Origin::of(
+            args.fleet_report_url.is_some()
+                || args.fleet_report_token_file.is_some()
+                || args.fleet_report_ca_file.is_some()
+                || args.fleet_spool_dir.is_some(),
+        );
+        crate::app::fleet_member::MemberPlan::resolve(cli, config)
+            .map_err(|message| PlanError::refused(origin, message))?;
+    }
     // Resolved here, whether or not anything on the command line names one:
     // a [filters] table with a broken entry refuses the run at startup rather
     // than when a REST or MCP caller first references it. Installed for the
@@ -3461,7 +3475,7 @@ pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
     let fetch = &cli.vcon_fetch_args;
     let api_client_ca = cli.api_client_auth(config).ca;
     let mcp_client_ca = cli.mcp_client_auth(config).ca;
-    let advance: [(&str, Option<PathBuf>); 21] = [
+    let advance: [(&str, Option<PathBuf>); 22] = [
         (
             "--api-signing-key-file",
             cli.listener_args
@@ -3504,6 +3518,14 @@ pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
         ("--hep-tls-ca", hep_ca),
         ("--hep-tls-extra-ca", hep_extra_ca),
         ("--redact-key-file", cli.output_args.redact_key_file.clone()),
+        // The fleet member reads its token after the drop, on its own thread.
+        (
+            "--fleet-report-token-file",
+            cli.listener_args
+                .fleet_report_token_file
+                .clone()
+                .or(config.fleet.report_token_file.clone()),
+        ),
     ];
     let flag_or_key = |flag: &Option<PathBuf>, key: &Option<PathBuf>| flag.clone().or(key.clone());
     let planned: [(&str, Option<PathBuf>); 9] = [

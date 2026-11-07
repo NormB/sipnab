@@ -12,6 +12,8 @@ pub mod bootstrap;
 pub mod fleet;
 #[cfg(feature = "api")]
 pub mod fleet_center;
+#[cfg(feature = "api")]
+pub mod fleet_member;
 #[cfg(feature = "g729")]
 pub mod g729_install;
 #[cfg(any(feature = "vcon", feature = "g729", feature = "api"))]
@@ -24,6 +26,8 @@ pub mod relay_poller;
 pub mod relay_reconciler;
 pub mod run_provenance;
 pub mod servers;
+#[cfg(any(feature = "vcon", feature = "api"))]
+pub mod spool;
 #[cfg(feature = "tui")]
 pub mod tui_mode;
 #[cfg(feature = "vcon")]

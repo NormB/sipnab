@@ -535,6 +535,51 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    ("fleet", "heartbeat_secs", KeyKind::Int { lo: 1, hi: 3600 }),
+    (
+        "fleet",
+        "report_ca_file",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "fleet",
+        "report_token_file",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "fleet",
+        "report_url",
+        KeyKind::Literal {
+            accept: &["\"http://127.0.0.1:8444\"", "\"http://localhost:8444\""],
+            reject: &["\"\"", "\"x\"", "\"http://192.0.2.10:8444\""],
+            ctx: "report_token_file = \"x\"\nspool_dir = \"y\"",
+        },
+    ),
+    (
+        "fleet",
+        "spool_dir",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "fleet",
+        "spool_max_files",
+        KeyKind::Int {
+            lo: 1,
+            hi: i64::MAX as i128,
+        },
+    ),
     ("g729", "auto_install", KeyKind::Bool),
     (
         "g729",

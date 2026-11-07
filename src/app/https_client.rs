@@ -26,6 +26,15 @@ pub struct Endpoint {
     pub target: String,
 }
 
+/// The `User-Agent` every request carries. A Cloudflare front refuses some
+/// client libraries' default agents with `403 error code: 1010`; an explicit,
+/// honest one names the software that sent the request.
+///
+/// Not a setting: the header names the software that sent the request, and a
+/// setting would let the request name other software.
+#[cfg(any(feature = "vcon", feature = "api"))]
+pub(crate) const USER_AGENT: &str = concat!("sipnab/", env!("CARGO_PKG_VERSION"));
+
 /// Which part of sipnab reads a URL, so that a refusal of the URL names that
 /// part and the setting it takes credentials from. One parser serves every
 /// surface; each caller says which one it is.
@@ -64,6 +73,11 @@ impl UrlUse {
         client: "sipnab fleet",
         credentials: Some("the host's token_file"),
     };
+    /// A fleet member's center URL, `[fleet] report_url`.
+    pub const FLEET_REPORT: Self = Self {
+        client: "the fleet member",
+        credentials: Some("--fleet-report-token-file"),
+    };
     /// A URL sipnab reads without credentials: one named inside a vCon, a
     /// transparency service's `Location`, or the G.729 package download.
     pub const DOWNLOAD: Self = Self {
@@ -73,6 +87,19 @@ impl UrlUse {
 }
 
 impl Endpoint {
+    /// Whether the host is this machine: `localhost` or a loopback address.
+    ///
+    /// The one rule for where plain `http://` crosses no network: the vCon
+    /// forwarder warns off it, and a fleet member refuses off it.
+    #[must_use]
+    pub fn is_loopback(&self) -> bool {
+        self.host.eq_ignore_ascii_case("localhost")
+            || self
+                .host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    }
+
     /// Parse an `http://` or `https://` URL read by `user`.
     ///
     /// # Errors

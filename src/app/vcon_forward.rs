@@ -33,10 +33,15 @@
 //! again.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Read, Write};
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+// The spool's rules live in `spool`, shared with the fleet member's heartbeat
+// spool, so the two read and write a spool the same way.
+pub use crate::app::spool::{Verdict, backoff_delay, classify, pending};
+pub(crate) use crate::app::spool::{sleep_unless_stopped, write_atomically};
 
 // The HTTP client lives in `https_client`, shared with `sipnab g729 install`.
 pub use crate::app::https_client::{Endpoint, UrlUse};
@@ -60,12 +65,6 @@ const MAX_HALT_BODY: usize = 200;
 /// reads, so the credential is removed before the cut.
 pub const MAX_AUTH_FILE: usize = 8 * 1024;
 
-/// How often the wait between passes asks whether a stop was requested.
-///
-/// Not a setting: it changes nothing that is sent or when, only how soon
-/// after SIGTERM or SIGINT the forwarder returns, which is at most this long.
-const STOP_POLL_STEP: Duration = Duration::from_millis(100);
-
 /// The longest container `uuid` the forwarder puts into a replace URL's path.
 ///
 /// Not a setting: it describes the value, not the store. A vCon `uuid` is a
@@ -83,13 +82,9 @@ const MIN_SCRUBBED_WORD: usize = 8;
 /// What replaces the auth value in any text the forwarder keeps.
 const REMOVED: &str = "[auth value removed]";
 
-/// The `User-Agent` every request carries. A Cloudflare front refuses some
-/// client libraries' default agents with `403 error code: 1010`; an explicit,
-/// honest one names the software that sent the request.
-///
-/// Not a setting: the header names the software that sent the request, and a
-/// setting would let the request name other software.
-pub(crate) const USER_AGENT: &str = concat!("sipnab/", env!("CARGO_PKG_VERSION"));
+// The `User-Agent` every request carries lives in `https_client`, shared
+// with the fleet member.
+pub(crate) use crate::app::https_client::USER_AGENT;
 
 /// The flag that bounds an answer's status line and headers, quoted when an
 /// answer passes it.
@@ -544,35 +539,6 @@ pub fn is_path_uuid(uuid: &str) -> bool {
         && uuid.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// The containers waiting in `spool`, by name, sorted.
-///
-/// A container is a regular file whose name ends in `.json` and does not
-/// start with a dot. sipnab stages every write as `.<name>.partial` and
-/// renames it into place, so neither rule ever selects a half-written file.
-/// Directories (the delivered and failed ones among them), symbolic links and
-/// names that are not UTF-8 are passed over.
-///
-/// # Errors
-///
-/// The directory cannot be read.
-pub fn pending(spool: &Path) -> std::io::Result<Vec<String>> {
-    let mut names = Vec::new();
-    for entry in std::fs::read_dir(spool)? {
-        let entry = entry?;
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        if name.starts_with('.') || !name.ends_with(".json") {
-            continue;
-        }
-        if entry.file_type()?.is_file() {
-            names.push(name);
-        }
-    }
-    names.sort();
-    Ok(names)
-}
-
 /// The suffix of the record the forwarder writes beside a refused container:
 /// `<name>.error.json`.
 pub const ERROR_RECORD_SUFFIX: &str = ".error.json";
@@ -638,56 +604,12 @@ pub struct FailureRecord {
     pub url: Option<String>,
 }
 
-/// How long a container waits after its `attempts`-th failed try:
-/// `first_secs`, then doubling, never more than `cap_secs`.
-#[must_use]
-pub fn backoff_delay(attempts: u32, first_secs: u64, cap_secs: u64) -> Duration {
-    let doublings = attempts.saturating_sub(1).min(u64::BITS - 1);
-    let secs = first_secs.saturating_mul(1u64 << doublings);
-    Duration::from_secs(secs.min(cap_secs))
-}
-
-/// What an HTTP status means for the container that drew it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Verdict {
-    /// `2xx`: the store accepted it.
-    Delivered,
-    /// A `4xx` that a retry will not change.
-    Refused,
-    /// `5xx`, or a status this client does not act on: try later.
-    Retry,
-    /// `409` with a replace URL: PUT it there.
-    Replace,
-    /// `401` or `403`: the store refuses the credentials or the client, for
-    /// every container alike. Stop.
-    Halt,
-}
-
-/// Classify a status. `can_replace` is whether a replace URL is set;
-/// `delivered` is the inclusive range of statuses that count as delivered
-/// ([`KindFacts::delivered`]). Any other `2xx` is retried.
-#[must_use]
-pub fn classify(status: u16, can_replace: bool, delivered: (u16, u16)) -> Verdict {
-    match status {
-        s if (delivered.0..=delivered.1).contains(&s) => Verdict::Delivered,
-        401 | 403 => Verdict::Halt,
-        409 if can_replace => Verdict::Replace,
-        400..=499 => Verdict::Refused,
-        _ => Verdict::Retry,
-    }
-}
-
 /// A warning when the auth header would cross a network in clear text:
 /// `http://` to a host that is not this machine. `None` for HTTPS and for
 /// loopback.
 #[must_use]
 pub fn plaintext_warning(endpoint: &Endpoint) -> Option<String> {
-    let loopback = endpoint.host.eq_ignore_ascii_case("localhost")
-        || endpoint
-            .host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
-    if endpoint.tls || loopback {
+    if endpoint.tls || endpoint.is_loopback() {
         return None;
     }
     Some(format!(
@@ -2039,22 +1961,6 @@ fn cut_to(text: &str, max: usize) -> (&str, bool) {
     (&text[..end], true)
 }
 
-/// Write `bytes` to `path` by staging a dot-prefixed sibling and renaming it,
-/// so a reader never sees half a record.
-fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let name = path
-        .file_name()
-        .map_or_else(|| "record".into(), |n| n.to_string_lossy().into_owned());
-    let staged = path.with_file_name(format!(".{name}.partial"));
-    let result = std::fs::File::create(&staged)
-        .and_then(|mut f| f.write_all(bytes).and_then(|()| f.sync_all()))
-        .and_then(|()| std::fs::rename(&staged, path));
-    if result.is_err() {
-        let _ = std::fs::remove_file(&staged);
-    }
-    result
-}
-
 /// Run the forwarder: one pass with `once`, else a pass every `interval`
 /// until `stop` says so.
 ///
@@ -2123,19 +2029,6 @@ fn pass_outcome(report: &PassReport, once: bool) -> Option<i32> {
         return Some(3);
     }
     once.then(|| i32::from(!(report.refused.is_empty() && report.waiting.is_empty())))
-}
-
-/// Sleep for `interval` in short steps. Returns `false` as soon as `stop`
-/// says so.
-pub(crate) fn sleep_unless_stopped(interval: Duration, stop: &dyn Fn() -> bool) -> bool {
-    let until = Instant::now() + interval;
-    while Instant::now() < until {
-        if stop() {
-            return false;
-        }
-        std::thread::sleep(STOP_POLL_STEP.min(until.saturating_duration_since(Instant::now())));
-    }
-    !stop()
 }
 
 #[cfg(test)]

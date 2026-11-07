@@ -3125,6 +3125,21 @@ each recording the container names by `url`, and captures nothing.
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-ca media-ca.pem` — decrypt the audio of an encrypted vCon from storage whose certificate only that CA issued
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-extra-ca media-ca.pem --vcon-audio-fetch-max-size 1073741824` — the same, trusting the host's bundle too, for a recording up to 1 GiB
 
+## Fleet
+
+A capture run with `--fleet-report-url` is a fleet member: it reports a heartbeat, its inventory, to a fleet center (`sipnab fleet serve`). [Make an instance a fleet member](fleet.md#make-an-instance-a-fleet-member) is the how-to.
+
+| Flag | Value | Default | Since | Description |
+|------|-------|---------|-------|-------------|
+| `--fleet-report-url` | `<URL>` | -- | Unreleased | The fleet center to report to, `https://HOST:PORT`. `http://` only to loopback: sipnab refuses plain HTTP to another machine, exit 2. Every `[fleet] heartbeat_secs` (default 30) the run writes its inventory (`GET /v1/inventory`) as a heartbeat into `--fleet-spool-dir` and sends the spool to the center, oldest first. Feature: `api`. Config: `[fleet] report_url` |
+| `--fleet-report-token-file` | `<FILE>` | -- | Unreleased | The member's token, minted on the center with `--token-scope fleet-report` and the member's name as `--token-id`. Readable by this user only. Read once at start, before any privilege drop. Feature: `api`. Config: `[fleet] report_token_file` |
+| `--fleet-report-ca-file` | `<FILE>` | -- | Unreleased | A PEM CA file to trust for the center instead of the host's CA bundle. Feature: `api`. Config: `[fleet] report_ca_file` |
+| `--fleet-spool-dir` | `<DIR>` | -- | Unreleased | Where heartbeats wait until the center takes them, created when absent. It keeps at most `[fleet] spool_max_files` (default 2880), the oldest going first, and moves a heartbeat the center refuses for good to `failed/`. Feature: `api`. Config: `[fleet] spool_dir` |
+
+**Examples**
+- `sudo sipnab -N -d eth0 --fleet-report-url https://center.example.net:8444 --fleet-report-token-file /etc/sipnab/fleet/edge-a.report.token --fleet-report-ca-file /etc/sipnab/fleet/internal-ca.pem --fleet-spool-dir /var/lib/sipnab/fleet-spool` — capture on `eth0` and report a heartbeat to the fleet center every 30 seconds, trusting the center's certificate through your own CA
+- `sudo sipnab -N -d eth0 --api 127.0.0.1:8443 --fleet-report-url https://center.example.net:8444 --fleet-report-token-file /etc/sipnab/fleet/edge-a.report.token --fleet-report-ca-file /etc/sipnab/fleet/internal-ca.pem --fleet-spool-dir /var/lib/sipnab/fleet-spool` — the same, with the REST API up, so the controller can also read `GET /v1/inventory` from the instance
+
 ## Fleet inventory (`sipnab fleet`)
 
 `sipnab fleet inventory` asks every sipnab instance in a hosts file for its inventory (`GET /v1/inventory`) and prints one row per instance and the findings across them. It opens no capture. [Manage many sipnab instances](fleet.md) is the full how-to.

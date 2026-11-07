@@ -935,7 +935,13 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // --mcp-tls-client-ca/--mcp-tls-client-auth; src/app/bootstrap.rs +2: the
 // uncompiled refusals of --api-tls-client-ca and --api-tls-client-auth.
 // Nothing removed.
-const EXPECTED_TEMPLATES: usize = 585;
+// 585 -> 596 (fleet member, `--fleet-report-url`): src/app/fleet_member.rs
+// +8 (the plain-HTTP and heartbeat_secs refusals, the token file, not
+// reporting, and the waiting, refused, unwritten and capped warnings) and
+// src/app/servers.rs +1 (the member's thread did not start), then +2 in
+// src/app/fleet_member.rs (an empty [fleet] path key, and a token file other
+// users can read). Nothing removed.
+const EXPECTED_TEMPLATES: usize = 596;
 
 // ---------------------------------------------------------------------------
 // The page gates

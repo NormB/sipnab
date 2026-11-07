@@ -49,7 +49,7 @@ was driving all of them.
 
 | Surface | Rows | `e2e` | `parsed` | `referenced` | `none` |
 |---|---|---|---|---|---|
-| CLI flags | 407 | 332 | 32 | 43 | 0 |
+| CLI flags | 411 | 336 | 32 | 43 | 0 |
 | HTTP routes | 51 | 51 | -- | 0 | 0 |
 | MCP tools | 79 | 79 | -- | 0 | 0 |
 
@@ -86,7 +86,7 @@ behind them.
 | `--help` | `-h` |  | Options | e2e | `tests/cli_help_test.rs`, `tests/cli_options_test.rs` +6 |  |  |
 | `--version` | `-V` |  | Options | e2e | `tests/cli_options_test.rs`, `tests/cli_test.rs` +3 |  |  |
 | `--device` | `-d` | `IFACE` | Capture | e2e | `src/app/tui_mode.rs`, `tests/capture_probe_test.rs` +5 |  |  |
-| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +152 |  |  |
+| `--input` | `-I` |  | Capture | e2e | `src/app/tui_mode.rs`, `tests/accused_sources_test.rs` +153 |  |  |
 | `--recursive` |  |  | Capture | e2e | `tests/input_set_accounting_test.rs`, `tests/multi_input_test.rs` |  |  |
 | `--input-name` |  | `GLOB` | Capture | e2e | `tests/multi_input_test.rs` |  |  |
 | `--vcon-key` |  | `FILE` | Capture | e2e | `tests/vcon_audio_fetch_test.rs`, `tests/vcon_directory_report_test.rs` +2 |  |  |
@@ -122,11 +122,11 @@ behind them.
 | `--archive-password` |  | `PASSWORD` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--archive-password-encoding` |  | `ENC` | Archives | e2e | `tests/archive_password_test.rs` |  |  |
 | `--no-password-prompt` |  |  | Archives | referenced | `tests/archive_password_prompt_test.rs` |  |  |
-| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +143 |  |  |
+| `--no-tui` | `-N` |  | Mode | e2e | `tests/accused_sources_test.rs`, `tests/actions_journal_mcp_test.rs` +144 |  |  |
 | `--calls-only` | `-c` |  | Mode | e2e | `tests/calls_only_dialogs_test.rs`, `tests/cli_flag_behavior_test.rs` +4 |  |  |
 | `--telephone-event` | `-t` |  | Mode | e2e | `tests/cli_options_test.rs`, `tests/cores_refusal_test.rs` +5 |  |  |
 | `--dtmf-cleartext` |  |  | Mode | e2e | `tests/decryption_wrapper_matrix_test.rs`, `tests/dtmf_dynamic_payload_type_test.rs` +1 | **behavior** | dtmf_cleartext_emits_the_digit_value_at_debug_level (tests/dtmf_masking_test.rs), with an anti-vacuity guard |
-| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/capture_clock_test.rs` +69 |  |  |
+| `--quiet` | `-q` |  | Mode | e2e | `tests/app_servers_wiring_test.rs`, `tests/capture_clock_test.rs` +70 |  |  |
 | `--resolve` |  |  | Name resolution | e2e | `tests/integration_test.rs` |  |  |
 | `--no-resolve` |  |  | Name resolution | referenced | `src/cli.rs` |  |  |
 | `--reverse-dns` |  |  | Name resolution | parsed | `src/cli.rs` |  |  |
@@ -202,7 +202,7 @@ behind them.
 | `--group-by` |  | `FIELD` | Output | e2e | `tests/cli_options_test.rs`, `tests/config_cli_flag_values_test.rs` +2 |  |  |
 | `--max-groups` |  | `N` | Output | referenced | `src/cli.rs`, `src/output/group.rs` | **behavior** | via config key: probe_max_groups (tests/config_wiring_test.rs); flag and key share one resolver. The flag itself is never passed |
 | `--max-grouped-messages` |  | `N` | Output | referenced | `src/cli.rs`, `src/output/group.rs` | **behavior** | via config key: probe_max_grouped_messages; same shared resolver, same caveat |
-| `--node-name` |  | `NAME` | Output | e2e | `tests/api_capture_identity_test.rs`, `tests/fleet_inventory_test.rs` +4 | **behavior** | the_node_name_flag_lands_in_capture_identity (tests/node_identity_test.rs); read back through MCP |
+| `--node-name` |  | `NAME` | Output | e2e | `tests/api_capture_identity_test.rs`, `tests/fleet_inventory_test.rs` +5 | **behavior** | the_node_name_flag_lands_in_capture_identity (tests/node_identity_test.rs); read back through MCP |
 | `--limit` | `-l` | `N` | Dialog | e2e | `src/app/tui_mode.rs`, `tests/cli_flag_behavior_test.rs` +4 |  |  |
 | `--rotate` | `-R` |  | Dialog | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` |  |  |
 | `--no-rotate` |  |  | Dialog | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
@@ -286,9 +286,9 @@ behind them.
 | `--metrics-auth-file` |  | `FILE` | Network listeners | e2e | `tests/privilege_drop_test.rs` |  |  |
 | `--metrics-tls-cert` |  | `FILE` | Network listeners | e2e | `tests/config_cli_flag_values_test.rs`, `tests/listener_tls_test.rs` +1 | **behavior** | metrics_tls_flags_serve_https (tests/listener_tls_test.rs): /metrics 200 in the Prometheus text format over HTTPS; plain HTTP not served; an untrusting client fails the handshake; a silent client does not block another; Basic auth 401/200 over HTTPS; the plaintext-credential warning fires only without TLS; one flag alone, missing file, world-readable key, mismatched key refused at startup; refused without --metrics; a flag replaces [metrics] tls_cert (config_keys::a_flag_replaces_its_own_key) |
 | `--metrics-tls-key` |  | `FILE` | Network listeners | e2e | `tests/config_cli_flag_values_test.rs`, `tests/privilege_drop_test.rs` | **behavior** | same tests; metrics_a_world_readable_key_is_refused_naming_it and metrics_a_key_that_is_not_the_certificates_is_refused name the key file |
-| `--api` |  | `ADDR` | Network listeners | e2e | `tests/actions_journal_rest_test.rs`, `tests/app_servers_wiring_test.rs` +16 |  |  |
+| `--api` |  | `ADDR` | Network listeners | e2e | `tests/actions_journal_rest_test.rs`, `tests/app_servers_wiring_test.rs` +17 |  |  |
 | `--api-key` |  | `KEY` | Network listeners | e2e | `tests/actions_optin_rest_test.rs`, `tests/api_test.rs` +10 | **behavior** | auth_accepts_correct_bearer_and_rejects_everything_else (tests/api_test.rs): 200 vs 401 across five shapes |
-| `--api-signing-key` |  | `KEY` | Network listeners | e2e | `tests/actions_cli_test.rs`, `tests/actions_journal_rest_test.rs` +4 | **behavior** | seven tests in tests/api_token_test.rs: expiry, forgery, tampering, rotation, scope |
+| `--api-signing-key` |  | `KEY` | Network listeners | e2e | `tests/actions_cli_test.rs`, `tests/actions_journal_rest_test.rs` +5 | **behavior** | seven tests in tests/api_token_test.rs: expiry, forgery, tampering, rotation, scope |
 | `--api-signing-key-file` |  | `FILE` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs`, `tests/fleet_inventory_test.rs` +2 |  |  |
 | `--api-revoked-file` |  | `FILE` | Network listeners | e2e | `tests/actions_journal_rest_test.rs`, `tests/api_token_test.rs` | **behavior** | revoked_id_is_rejected_via_denylist_file: denylisted 401, fresh 200, both with valid tokens |
 | `--api-token-ttl` |  | `SECS` | Network listeners | e2e | `tests/cli_flag_behavior_test.rs` |  |  |
@@ -305,6 +305,10 @@ behind them.
 | `--api-file-root` |  | `DIR` | Network listeners | e2e | `tests/api_test.rs`, `tests/app_servers_wiring_test.rs` +2 |  |  |
 | `--api-accept-archive-passwords` |  |  | Network listeners | e2e | `tests/archive_password_test.rs` |  |  |
 | `--api-rate-limit-per-peer` |  | `N` | Network listeners | e2e | `tests/actions_journal_rest_test.rs` | **behavior** | via config key: probe_api_rate_limit_per_peer counts HTTP 503 refusals from one peer |
+| `--fleet-report-url` |  | `URL` | Fleet | e2e | `tests/fleet_member_test.rs` |  |  |
+| `--fleet-report-token-file` |  | `FILE` | Fleet | e2e | `tests/config_cli_flag_values_test.rs`, `tests/fleet_member_test.rs` |  |  |
+| `--fleet-report-ca-file` |  | `FILE` | Fleet | e2e | `tests/fleet_member_test.rs` |  |  |
+| `--fleet-spool-dir` |  | `DIR` | Fleet | e2e | `tests/config_cli_flag_values_test.rs`, `tests/fleet_member_test.rs` |  |  |
 | `--mcp` |  |  | MCP (Model Context Protocol) | e2e | `tests/actions_journal_mcp_test.rs`, `tests/analyze_test.rs` +23 |  |  |
 | `--mcp-transport` |  | `TRANSPORT` | MCP (Model Context Protocol) | e2e | `tests/config_cli_defects_test.rs`, `tests/config_cli_flag_values_test.rs` +11 |  |  |
 | `--mcp-bind` |  | `ADDR` | MCP (Model Context Protocol) | e2e | `tests/doc_commands_run_test.rs`, `tests/listener_tls_test.rs` +6 |  |  |
@@ -384,7 +388,7 @@ behind them.
 | `--hep-allow` |  | `ADDR` | HEP | e2e | `tests/config_wiring_test.rs`, `tests/doc_commands_run_test.rs` +3 |  |  |
 | `--hep-rate-limit` |  | `N` | HEP | e2e | `tests/hep_test.rs` |  |  |
 | `--hep-rate-limit-per-peer` |  |  | HEP | e2e | `tests/config_wiring_test.rs` |  |  |
-| `--tls-key` | `-k` | `FILE` | TLS / Decryption | e2e | `tests/config_cli_defects_test.rs`, `tests/cores_refusal_test.rs` +2 | **behavior** | DECRYPTION MATERIAL. A real TLS 1.2 GCM record decrypts back to a REGISTER. The flag's file-load hop (RsaKey::from_pem_file) is untested |
+| `--tls-key` | `-k` | `FILE` | TLS / Decryption | e2e | `tests/config_cli_defects_test.rs`, `tests/cores_refusal_test.rs` +3 | **behavior** | DECRYPTION MATERIAL. A real TLS 1.2 GCM record decrypts back to a REGISTER. The flag's file-load hop (RsaKey::from_pem_file) is untested |
 | `--keylog` |  | `FILE` | TLS / Decryption | e2e | `tests/batch_run_paths_test.rs`, `tests/config_cli_defects_test.rs` +6 |  |  |
 | `--keylog-fd` |  | `N` | TLS / Decryption | e2e | `tests/feature_gate_test.rs` |  |  |
 | `--keylog-watch` |  |  | TLS / Decryption | e2e | `tests/feature_gate_test.rs` | **mention-only** | DECRYPTION. The live keylog poll and the late-decrypt hold have no test tying them to the flag. CHANGELOG records a prior regression here |
@@ -463,7 +467,7 @@ behind them.
 | `--vcon-resign-key` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/feature_gate_test.rs` +1 |  |  |
 | `--vcon-resign-cert` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/feature_gate_test.rs` +1 |  |  |
 | `--vcon-resign-out` |  | `FILE` | vCon archive | e2e | `tests/config_cli_flag_values_test.rs`, `tests/feature_gate_test.rs` +1 |  |  |
-| `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +48 |  |  |
+| `--config` | `-f` | `FILE` | Config | e2e | `tests/actions_journal_mcp_test.rs`, `tests/actions_journal_rest_test.rs` +49 |  |  |
 | `--no-config` | `-F` |  | Config | e2e | `tests/annotate_cli_test.rs`, `tests/call_report_siprec_test.rs` +35 |  |  |
 | `--dump-config` | `-D` |  | Config | e2e | `tests/cli_flag_behavior_test.rs`, `tests/cli_options_test.rs` +8 |  |  |
 | `--completions` |  | `SHELL` | Config | e2e | `tests/cli_help_test.rs` | **behavior** | completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2 |
@@ -530,7 +534,7 @@ behind them.
 | `/v1/report` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |
 | `/v1/runtime` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +2 |
 | `/v1/security/findings` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` |
-| `/v1/stats` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_harness_readiness_test.rs` +7 |
+| `/v1/stats` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_harness_readiness_test.rs` +8 |
 | `/v1/streams` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_operator_flows_test.rs` +4 |
 | `/v1/streams/{id}` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_operator_flows_test.rs` +1 |
 | `/v1/talkers` | exercised | `tests/api_capture_identity_test.rs`, `tests/api_test.rs` +1 |

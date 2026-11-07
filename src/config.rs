@@ -63,6 +63,21 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "vcon_input",
             "g729",
             "relay",
+            "fleet",
+        ]
+        .as_slice(),
+    );
+    // [fleet] makes this run a fleet member that reports its heartbeat to a
+    // fleet center (`sipnab fleet serve`). docs/fleet.md.
+    m.insert(
+        "fleet",
+        [
+            "report_url",
+            "report_token_file",
+            "report_ca_file",
+            "spool_dir",
+            "heartbeat_secs",
+            "spool_max_files",
         ]
         .as_slice(),
     );
@@ -584,6 +599,34 @@ pub struct Config {
     /// Which relay engine to ask about a call -- see [`RelayConfig`].
     #[serde(default)]
     pub relay: RelayConfig,
+    /// Where this run reports its heartbeat as a fleet member -- see
+    /// [`FleetConfig`].
+    #[serde(default)]
+    pub fleet: FleetConfig,
+}
+
+/// `[fleet]`: report this run's heartbeat to a fleet center
+/// (`sipnab fleet serve`, docs/fleet.md).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct FleetConfig {
+    /// The center's URL, `https://HOST:PORT`; `http://` only to loopback.
+    /// `--fleet-report-url` overrides it. Unset, the run reports nothing.
+    pub report_url: Option<String>,
+    /// A file holding this member's `fleet-report` token, readable by this
+    /// user only. `--fleet-report-token-file` overrides it.
+    pub report_token_file: Option<PathBuf>,
+    /// A PEM CA file to trust for the center instead of the host's bundle.
+    /// `--fleet-report-ca-file` overrides it.
+    pub report_ca_file: Option<PathBuf>,
+    /// The directory heartbeats wait in until the center takes them.
+    /// `--fleet-spool-dir` overrides it.
+    pub spool_dir: Option<PathBuf>,
+    /// Seconds between heartbeats, 1 to 3600. Default 30.
+    pub heartbeat_secs: Option<u64>,
+    /// The most heartbeats the spool keeps while the center is away; the
+    /// oldest go first. Default 2880, a day at the default interval.
+    pub spool_max_files: Option<u64>,
 }
 
 /// `[relay]`: the engines sipnab may ask about a call, chosen from the call's

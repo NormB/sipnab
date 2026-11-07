@@ -6071,7 +6071,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // origin/main f8705d984.
     // 1417 -> 1421 (TOP3-MTLS): docs/mtls.md's table of the three modes and
     // its table of handshake refusals, and the two in its generated mirror.
-    const EXPECTED_TABLES: usize = 1421;
+    // 1421 -> 1425 (fleet member): the `## Fleet` flag table in
+    // docs/cli-reference.md and the `[fleet]` key table in
+    // docs/config-reference.md (+1 each), and their site mirrors
+    // website/content/docs/cli.md and config.md (+1 each). Counted per file
+    // against origin/main b5cb8b61c.
+    const EXPECTED_TABLES: usize = 1425;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

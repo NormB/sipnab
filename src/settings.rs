@@ -254,6 +254,22 @@ pub const FLAGS: &[(&str, Link)] = &[
     ("filter", Link::Key("filter", "expression", Merge::Override)),
     ("find-in-files", Link::Action),
     (
+        "fleet-report-ca-file",
+        Link::Key("fleet", "report_ca_file", Merge::Override),
+    ),
+    (
+        "fleet-report-token-file",
+        Link::Key("fleet", "report_token_file", Merge::Override),
+    ),
+    (
+        "fleet-report-url",
+        Link::Key("fleet", "report_url", Merge::Override),
+    ),
+    (
+        "fleet-spool-dir",
+        Link::Key("fleet", "spool_dir", Merge::Override),
+    ),
+    (
         "findings-history",
         Link::Key("security", "findings_history", Merge::Override),
     ),
@@ -976,6 +992,8 @@ pub const FILE_ONLY: &[(&str, &str, FileOnly)] = &[
     ("action_limits", "max_ban_secs", FileOnly::Tuning),
     ("tfps", "db", FileOnly::Tuning),
     ("g729", "auto_install", FileOnly::Tuning),
+    ("fleet", "heartbeat_secs", FileOnly::Tuning),
+    ("fleet", "spool_max_files", FileOnly::Tuning),
     ("media", "codec_ie", FileOnly::Table),
     ("media", "listening_context", FileOnly::Tuning),
     ("crash", "reports", FileOnly::Tuning),

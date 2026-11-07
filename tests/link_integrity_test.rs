@@ -1711,7 +1711,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // two rows rewritten in place), config-reference.md +2, errors.md +2,
     // auth.md, fleet.md, mcp-deploy.md, rest-api.md and README.md +1 each.
     // Counted per file against origin/main b5cb8b61c.
-    const EXPECTED_WIKI_LINKS: usize = 2461;
+    // 2461 -> 2465 (fleet member): fleet.md, errors.md, cli-reference.md and
+    // config-reference.md +1 each, every one to "Make an instance a fleet
+    // member". Counted per file against origin/main b5cb8b61c.
+    const EXPECTED_WIKI_LINKS: usize = 2465;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

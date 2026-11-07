@@ -751,6 +751,19 @@ Accept the \fBSipnab\-Archive\-Password\fR request header from a client that is 
 .TP
 \fB\-\-api\-rate\-limit\-per\-peer\fR \fIN\fR
 REST requests one client IP may make per second (\fB0\fR = unlimited, default 100). Config: \fB[limits] api_rate_limit_per_peer\fR.
+.SS Fleet
+.TP
+\fB\-\-fleet\-report\-url\fR \fIURL\fR
+Report this run's heartbeat to a fleet center (\fBsipnab fleet serve\fR) at this URL: \fBhttps://HOST:PORT\fR, or \fBhttp://\fR to loopback only. Each heartbeat carries this run's inventory (\fBGET /v1/inventory\fR) and waits in \-\-fleet\-spool\-dir until the center takes it. Overrides \fB[fleet] report_url\fR. See docs/fleet.md.
+.TP
+\fB\-\-fleet\-report\-token\-file\fR \fIFILE\fR
+The file holding this member's \fBfleet\-report\fR token, minted with the center's key and the member's name as \-\-token\-id. Readable by this user only; read again for every delivery, so a new token needs no restart. Overrides \fB[fleet] report_token_file\fR.
+.TP
+\fB\-\-fleet\-report\-ca\-file\fR \fIFILE\fR
+A PEM CA file to trust for the center instead of the host's CA bundle. Overrides \fB[fleet] report_ca_file\fR.
+.TP
+\fB\-\-fleet\-spool\-dir\fR \fIDIR\fR
+The directory heartbeats wait in until the center takes them, created when absent. It keeps at most \fB[fleet] spool_max_files\fR of them (default 2880), the oldest going first. Overrides \fB[fleet] spool_dir\fR.
 .SS MCP (Model Context Protocol)
 .TP
 \fB\-\-mcp\fR
