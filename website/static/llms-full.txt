@@ -10537,24 +10537,24 @@ inventory`](fleet.md) reads it from every instance in a hosts file.
 curl -s -H "Authorization: Bearer $SIPNAB_INVENTORY_TOKEN" http://127.0.0.1:8080/v1/inventory | jq .
 ```
 
-**Response** (from a run on 2026-11-03 of a development build, with the config path replaced by `/etc/sipnab/sipnab.toml`):
+**Response** (from a run on 2026-11-07 of a development build, with the config path replaced by `/etc/sipnab/sipnab.toml`):
 
 ```json
 {
   "schema_version": 1,
   "node_name": "edge-a",
   "build": {
-    "version": "0.5.232",
-    "commit": "29204db7",
+    "version": "0.5.236",
+    "commit": "fd7d466e",
     "tag": "",
     "dirty": true,
     "target": "aarch64-unknown-linux-gnu",
     "features": ["api", "archive", "audio", "g729", "hep", "mcp", "mcp-http", "metrics",
                  "native", "opus", "plugins", "tls", "tui", "vcon"],
-    "version_line": "0.5.232 (29204db7-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729"
+    "version_line": "0.5.236 (fd7d466e-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729"
   },
   "binary": {
-    "sha256": "3242a3324b1c3ac762ba15d4f2eec3789a995533540b8aee56ec087afdc51ea8",
+    "sha256": "d7cd2b7e57691b680a0c3900126e879f6b02794ff70c782d8cc23f77859e8e1c",
     "error": null
   },
   "signature": {
@@ -10565,23 +10565,31 @@ curl -s -H "Authorization: Bearer $SIPNAB_INVENTORY_TOKEN" http://127.0.0.1:8080
     "recorded": true,
     "source": "/etc/sipnab/sipnab.toml",
     "shadowed": [],
-    "file_sha256": "703493b6b6bdef18b62090d6452a2bd9fc72de264d4b97822cb0b7763697fca6",
-    "parsed_sha256": "1849a6ee687ec0b1394f2d305198c638bca159e7aa032911156074b8d11f4044",
-    "argv_sha256": "d5c72de2bcf085f7d8ca9884bed30027d7504215d507b04f6be16ecc063194e0",
-    "effective_sha256": "31e67effe25101b07a2c7942f05b83d568816bf81a1769d65ab8396c8e89705a"
+    "file_sha256": "12e5dc4e70eeb51bfa8f7e9440729f6b7f2b13dbbd08fb72036354fa51ec8d1f",
+    "parsed_sha256": "9ec63f74e071a2c56523346eee2825d304a5846f7b8a5f92ed3bf84d920b347d",
+    "argv_sha256": "510ed8abe0fa7b84f96ef05251907a8f21e3fc32fd58bdfbdc8732101ec2b4d0",
+    "effective_sha256": "3ce93dee1d32b2b158b095363280b4abbd4aca7071a488c640c60a1a59a76a04",
+    "secret_files": [
+      {
+        "setting": "--api-signing-key-file",
+        "inode": 6849705,
+        "mtime": "2026-11-07T12:41:19.476148542Z",
+        "error": null
+      }
+    ]
   },
   "privilege": { "uid": 1000, "root": false, "dropped_to": null },
-  "process": { "pid": 3983974, "started": "2026-11-03T13:26:05Z", "uptime_seconds": 17 },
+  "process": { "pid": 637182, "started": "2026-11-07T12:53:23Z", "uptime_seconds": 3 },
   "interfaces": [],
   "counters": {
-    "capture_packets_total": 852,
+    "capture_packets_total": 7,
     "capture_sources_refused_total": 0,
     "capture_backpressure_blocks_total": 0,
     "hep_export_failures_total": null,
     "hep_export_dropped_total": null,
     "hep_export_queue_depth": null
   },
-  "hep_listener": { "listening": false, "packets_refused": 0, "senders": [] }
+  "hep_listener": { "listening": false, "packets_refused": 0, "senders": [], "refused_sources": [] }
 }
 ```
 
@@ -10599,6 +10607,28 @@ curl -s -H "Authorization: Bearer $SIPNAB_INVENTORY_TOKEN" http://127.0.0.1:8080
   never appears. A secret held in a file the configuration names, such as
   `--api-signing-key-file`, reaches the digests by its path only.
 
+**`config.secret_files` shows a rotated key without exposing it.** One entry per
+secret or credential file this run named: signing keys, token and password
+files, TLS keys and certificates, HEP and vCon credentials. Each has:
+
+- `setting`: the flag that named the file, such as `--hep-auth-file`, also when
+  the value came from its config key; `[section] key` for a key with no flag,
+  such as `[sip] th_callid_secret_file`; and the rule's or service's name for a
+  `[[vcon.rule]]` `sign_key` or a `[[vcon.enrich]]` `auth_file`.
+- `inode` and `mtime`: the file's inode number and modification time (RFC 3339,
+  UTC, nanoseconds), read when the run started, before any privilege drop. A
+  new file renamed over the old one gives a new `inode`; a file rewritten in
+  place gives a new `mtime`.
+- `error`: why sipnab could not read the file, without its path; `inode` and
+  `mtime` are then `null`.
+
+The answer holds nothing derived from a file's contents: a hash of a
+low-entropy secret, such as a password, would let an `inventory` token holder
+test guesses offline. It holds no path either, as it holds no configuration
+value. sipnab takes the stamp once, at start: a file rotated without a restart
+shows the stamp of the file the run read. `--keylog` (it grows while the run reads it) and the
+revocation lists (token ids, not secrets) are not listed.
+
 **`signature.state` is always `unverified`.** A process cannot prove which
 binary it is. Compare `binary.sha256` with the release's `SHA256SUMS.txt`,
 after verifying that file's attestation with `gh attestation verify`.
@@ -10608,7 +10638,13 @@ replaces the file it still names the binary that is running.
 **Every field is the process's own claim.** An attacker who controls a host
 can report anything.
 
-`hep_listener.senders` lists at most `MAX_HEP_PEERS` (256) senders.
+`hep_listener.senders` lists at most `MAX_HEP_PEERS` (256) senders, each with
+the `last_seen` time of its latest admitted packet.
+`hep_listener.refused_sources` lists at most `MAX_HEP_PEERS` addresses the
+listener refused packets from, most refused first: `peer`, `packets`, the
+count per refusal reason in `by_reason` (the names `GET /v1/hep/senders`
+uses), and `last_seen`, when the latest refused packet arrived. A refused
+address is never in `senders`. The counts cover the listener's whole run.
 
 `config.recorded` is `false`, and every digest `null`, for a server that did not
 record its configuration at start. The MCP tool `fleet_inventory` returns the
@@ -38595,8 +38631,11 @@ The table shows, for each instance:
 - the user it runs as, and how long it has been up.
 
 Below the table it names the instances that did not answer, the instances on
-a different build from the rest, and the HEP senders a collector receives from
-that are not in your list. It reports. It changes nothing on any instance.
+a different build from the rest, the HEP senders a collector receives from
+that are not in your list, and the listed instances whose HEP a listed
+collector refuses for authentication. Each instance also reports when each of
+its key, token and password files was last replaced, so you can check that a
+rotation took effect. It reports. It changes nothing on any instance.
 
 Some upgrades need every sender and its collector on the same build, such as
 the HEP HMAC version 2 change in
@@ -38606,7 +38645,12 @@ The report shows which instances are still on the old build.
 The commands and output on this page come from a run on 2026-11-03: four
 instances in containers on the network `192.0.2.0/24`, and the controller on
 the host. The instances ran a development build of 0.5.232 with this feature,
-and one ran release 0.5.130.
+and one ran release 0.5.130. The output of
+[A listed sender the collector refuses](#a-listed-sender-the-collector-refuses)
+and [Check that a key rotation took effect](#check-that-a-key-rotation-took-effect)
+comes from a run on 2026-11-07 on one host, with a development build of
+0.5.236: the collector `hub` on `127.0.0.2` and the sender `edge-a` on
+`127.0.0.1`.
 
 ## How it works
 
@@ -38814,29 +38858,9 @@ Each output below comes from the same run, with one thing changed.
   edge-a           unreachable  token_file '/etc/sipnab/fleet/open.token' can be read or written by other users (mode 0644); chmod 600 it
   ```
 
-- **A mixed HEP HMAC version.** A sender on 0.5.130 or earlier signs HEP with
-  HMAC version 1, and a collector on 0.5.131 or later drops every packet it
-  sends. In the run, `edge-old` (0.5.130) sent to `hub`. Listed in the hosts
-  file, `edge-old`'s row is `refused` with HTTP `404`, as above. The collector
-  logs `HEP HMAC auth is REFUSING version-1 tokens` once, and counts the
-  dropped packets. Read the count from the JSON report:
-
-  ```bash
-  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml --json \
-    | jq -c '.hosts[] | {name, refused: .inventory.hep_listener.packets_refused, senders: [.inventory.hep_listener.senders[].peer]}'
-  ```
-
-  ```text
-  {"name":"hub","refused":10,"senders":["192.0.2.11","192.0.2.12"]}
-  {"name":"edge-a","refused":0,"senders":[]}
-  {"name":"edge-b","refused":0,"senders":[]}
-  ```
-
-  The hub refused 10 packets, and `192.0.2.13` is not among its senders. The
-  report itself is `ok` when the old sender is not in the hosts file: a
-  refused packet is not a finding. Upgrade the sender, as
-  [Upgrade a fleet that uses HMAC authentication](config-reference.md#upgrade-a-fleet-that-uses-hmac-authentication)
-  describes.
+- **`finding hep_sender_refused`.** A collector in the list refuses the HEP of
+  an instance in the list for authentication. See
+  [A listed sender the collector refuses](#a-listed-sender-the-collector-refuses).
 
 - **`finding unlisted_hep_sender`.** A collector in the list receives HEP
   from an address that no listed instance's URL resolves to. Add that sender
@@ -38859,6 +38883,137 @@ Each output below comes from the same run, with one thing changed.
   edge-next        incompatible the instance answered inventory schema_version 2; this sipnab reads up to 1
   ```
 
+## A listed sender the collector refuses
+
+A collector that refuses a sender's HEP drops every packet it refuses. The
+sender counts them as sent, because UDP reports no delivery, so neither end
+fails. The report names that sender, and exits `1`, while the collector
+refused the latest packet it received from it.
+
+- **[controller]** Run the report. In this run `edge-a` sent with a key the
+  collector `hub` does not hold:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml
+  ```
+
+  ```text
+  NAME             STATE        VERSION      COMMIT       BINARY       CONFIG          UID   UPTIME_S
+  hub              ok           0.5.236      fd7d466e     d7cd2b7e5769 a5dc546e4913   1000          5
+  edge-a           ok           0.5.236      fd7d466e     d7cd2b7e5769 79480fa13223   1000          3
+  finding hep_sender_refused: hub refused 7 HEP packets from edge-a (127.0.0.1): refused: authentication (wrong key or HMAC version); the collector's reasons: hmac_bad_mac 7
+  ```
+
+  It exited `1`.
+
+  - The finding names the collector, every listed instance whose URL resolves
+    to the refused address, the address, and the authentication refusals only.
+  - `refused: authentication (wrong key or HMAC version)` names both causes and
+    claims neither. A sender with the wrong key, and a sender on a different
+    HEP HMAC version, can both arrive as a MAC that does not verify, depending
+    on which build each end runs.
+  - `the collector's reasons` are the collector's own refusal reasons, with
+    the names `GET /v1/hep/senders` uses: `hmac_bad_mac` for a MAC that does
+    not verify, `hmac_unsupported_version` for a version-1 token on a collector
+    on 0.5.131 or later, `auth_mismatch` for a wrong `plain` key, and
+    `auth_missing`, `hmac_bad_format`, `hmac_timestamp_out_of_window` and
+    `hmac_replay`. Refusals for other reasons, such as the rate limit or the
+    allowlist, are not this finding.
+
+- **[controller]** See the collector's refusals, from the same report:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml --json \
+    | jq -c '.hosts[] | {name, refused: .inventory.hep_listener.refused_sources}'
+  ```
+
+  ```text
+  {"name":"hub","refused":[{"by_reason":{"hmac_bad_mac":7},"last_seen":"2026-11-07T12:52:30.675Z","packets":7,"peer":"127.0.0.1"}]}
+  {"name":"edge-a","refused":[]}
+  ```
+
+- **[sender]** Fix the sender. Give it the collector's key, or upgrade it to
+  the collector's build when the reason is `hmac_unsupported_version`, as
+  [Upgrade a fleet that uses HMAC authentication](config-reference.md#upgrade-a-fleet-that-uses-hmac-authentication)
+  describes. Restart it.
+
+- **[controller]** Verify. The collector keeps counting the old refusals for as
+  long as it runs, but it has admitted the sender since its last refusal, so
+  the report has no finding and exits `0`:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml --json \
+    | jq -c '.hosts[0].inventory.hep_listener | {senders: [.senders[] | {peer, last_seen}], refused: [.refused_sources[] | {peer, packets, last_seen}]}'
+  ```
+
+  ```text
+  {"senders":[{"peer":"127.0.0.1","last_seen":"2026-11-07T12:52:43.016Z"}],"refused":[{"peer":"127.0.0.1","packets":7,"last_seen":"2026-11-07T12:52:30.675Z"}]}
+  ```
+
+**Troubleshoot:**
+
+- **The collector refuses the sender, and there is no finding.** The refused address is no
+  listed instance's: the check compares addresses, as `unlisted_hep_sender`
+  does. A sender whose packets leave from another address than its API URL
+  names is not matched. Read the collector's `refused_sources` as above.
+- **No `refused_sources` at all.** A collector on a build before this check
+  does not report them. Its `packets_refused` still counts every refusal.
+- **The finding stays after the fix.** The collector has not admitted a packet
+  from that address since its last refusal: the sender is not sending yet, or
+  is still refused. Its `last_seen` in `senders` must be later than in
+  `refused_sources`.
+
+## Check that a key rotation took effect
+
+The configuration digests cover a key file's path only, so replacing the key
+in it changes no digest. Each instance therefore reports, for every secret or
+credential file it named, the file's inode and modification time when it
+started, under the setting that named it. The answer holds nothing derived
+from the key. See [GET /v1/inventory](rest-api.md#get-v1inventory) for the
+fields.
+
+- **[each instance]** Rotate the key the usual way: write the new key to a new
+  file, rename it over the old one, and restart sipnab. This run fixed
+  `edge-a`'s HEP key:
+
+  ```bash
+  install -m 600 hep.key edge-hep.key.new && mv edge-hep.key.new edge-hep.key
+  ```
+
+- **[controller]** Before and after the restart, read each instance's stamps:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml --json \
+    | jq -c '.hosts[] | {name, secrets: [.inventory.config.secret_files[] | {setting, inode, mtime}]}'
+  ```
+
+  Before:
+
+  ```text
+  {"name":"hub","secrets":[{"setting":"--api-signing-key-file","inode":6849703,"mtime":"2026-11-07T12:41:19.472148552Z"},{"setting":"--hep-auth-file","inode":6849697,"mtime":"2026-11-07T12:41:19.472148552Z"}]}
+  {"name":"edge-a","secrets":[{"setting":"--api-signing-key-file","inode":6849705,"mtime":"2026-11-07T12:41:19.476148542Z"},{"setting":"--hep-auth-file","inode":6852341,"mtime":"2026-11-07T12:52:28.642390890Z"}]}
+  ```
+
+  After:
+
+  ```text
+  {"name":"hub","secrets":[{"setting":"--api-signing-key-file","inode":6849703,"mtime":"2026-11-07T12:41:19.472148552Z"},{"setting":"--hep-auth-file","inode":6849697,"mtime":"2026-11-07T12:41:19.472148552Z"}]}
+  {"name":"edge-a","secrets":[{"setting":"--api-signing-key-file","inode":6849705,"mtime":"2026-11-07T12:41:19.476148542Z"},{"setting":"--hep-auth-file","inode":6817841,"mtime":"2026-11-07T12:52:41.958355975Z"}]}
+  ```
+
+**Verify:** the rotated file's `inode` or `mtime` changed on the instance you
+rotated, and on no other. `CONFIG` did not change: the path is the same.
+
+**Troubleshoot:**
+
+- **Nothing changed.** The instance has not restarted: sipnab takes the stamp
+  at start, and it describes the file the run read. Restart it.
+- **Only `mtime` changed.** The key was rewritten in place rather than
+  replaced. That is a rotation too.
+- **`error` holds a reason.** The instance could not stat the file at start, for
+  example `No such file or directory (os error 2)`. The reason never names the
+  path.
+
 ## States and findings
 
 **State of each instance:**
@@ -38876,6 +39031,7 @@ Each output below comes from the same run, with one thing changed.
 |---|---|
 | `version_mismatch` | The instances that answered do not all run the same build. The finding names each build and the instances on it. |
 | `unlisted_hep_sender` | A HEP collector in the list receives from an address that no listed instance's URL resolves to. |
+| `hep_sender_refused` | A HEP collector in the list refused packets from a listed instance's address for authentication, and has not admitted a packet from it since. |
 
 ## Check a binary against its release
 
@@ -38898,11 +39054,13 @@ prove which binary it is, and one that someone had tampered with would report
 
 - Every field is the instance's own claim. An attacker who controls a host can make
   it report anything.
-- For a secret held in a file, the digests cover its path only. The configuration and
-  the command line name key, token and password files by path, so replacing
-  the contents of such a file, for example rotating the key in
-  `--api-signing-key-file`, changes no digest. A secret given as a value, such
-  as `--api-signing-key` or a `${NAME}` the configuration expands, changes
+- For a secret held in a file, the digests cover its path only. Replacing the
+  contents of such a file, for example rotating the key in
+  `--api-signing-key-file`, changes no digest; it changes the file's `inode` or
+  `mtime` in `config.secret_files` once the instance restarts. Two instances
+  that hold different keys at the same path look the same: the answer holds
+  nothing derived from a key. A secret given as a value, such as
+  `--api-signing-key` or a `${NAME}` the configuration expands, changes
   `config.effective_sha256`.
 - It reads only the instances in your hosts file. An instance nobody listed is
   invisible to it, unless it sends HEP to a listed collector.

@@ -8034,6 +8034,8 @@ impl utoipa::Modify for BearerAuth {
         crate::output::inventory::Counters,
         crate::output::inventory::HepListenerInfo,
         crate::output::inventory::HepPeer,
+        crate::output::inventory::HepRefusedPeer,
+        crate::output::inventory::SecretFileStamp,
         schema::Capabilities,
         schema::CapabilitiesRuntime,
         schema::Libpcap,

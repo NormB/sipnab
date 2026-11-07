@@ -3484,24 +3484,24 @@ inventory`](@/docs/fleet.md) reads it from every instance in a hosts file.
 curl -s -H "Authorization: Bearer $SIPNAB_INVENTORY_TOKEN" http://127.0.0.1:8080/v1/inventory | jq .
 ```
 
-**Response** (from a run on 2026-11-03 of a development build, with the config path replaced by `/etc/sipnab/sipnab.toml`):
+**Response** (from a run on 2026-11-07 of a development build, with the config path replaced by `/etc/sipnab/sipnab.toml`):
 
 ```json
 {
   "schema_version": 1,
   "node_name": "edge-a",
   "build": {
-    "version": "0.5.232",
-    "commit": "29204db7",
+    "version": "0.5.236",
+    "commit": "fd7d466e",
     "tag": "",
     "dirty": true,
     "target": "aarch64-unknown-linux-gnu",
     "features": ["api", "archive", "audio", "g729", "hep", "mcp", "mcp-http", "metrics",
                  "native", "opus", "plugins", "tls", "tui", "vcon"],
-    "version_line": "0.5.232 (29204db7-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729"
+    "version_line": "0.5.236 (fd7d466e-dirty) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,vcon,opus,archive,g729"
   },
   "binary": {
-    "sha256": "3242a3324b1c3ac762ba15d4f2eec3789a995533540b8aee56ec087afdc51ea8",
+    "sha256": "d7cd2b7e57691b680a0c3900126e879f6b02794ff70c782d8cc23f77859e8e1c",
     "error": null
   },
   "signature": {
@@ -3512,23 +3512,31 @@ curl -s -H "Authorization: Bearer $SIPNAB_INVENTORY_TOKEN" http://127.0.0.1:8080
     "recorded": true,
     "source": "/etc/sipnab/sipnab.toml",
     "shadowed": [],
-    "file_sha256": "703493b6b6bdef18b62090d6452a2bd9fc72de264d4b97822cb0b7763697fca6",
-    "parsed_sha256": "1849a6ee687ec0b1394f2d305198c638bca159e7aa032911156074b8d11f4044",
-    "argv_sha256": "d5c72de2bcf085f7d8ca9884bed30027d7504215d507b04f6be16ecc063194e0",
-    "effective_sha256": "31e67effe25101b07a2c7942f05b83d568816bf81a1769d65ab8396c8e89705a"
+    "file_sha256": "12e5dc4e70eeb51bfa8f7e9440729f6b7f2b13dbbd08fb72036354fa51ec8d1f",
+    "parsed_sha256": "9ec63f74e071a2c56523346eee2825d304a5846f7b8a5f92ed3bf84d920b347d",
+    "argv_sha256": "510ed8abe0fa7b84f96ef05251907a8f21e3fc32fd58bdfbdc8732101ec2b4d0",
+    "effective_sha256": "3ce93dee1d32b2b158b095363280b4abbd4aca7071a488c640c60a1a59a76a04",
+    "secret_files": [
+      {
+        "setting": "--api-signing-key-file",
+        "inode": 6849705,
+        "mtime": "2026-11-07T12:41:19.476148542Z",
+        "error": null
+      }
+    ]
   },
   "privilege": { "uid": 1000, "root": false, "dropped_to": null },
-  "process": { "pid": 3983974, "started": "2026-11-03T13:26:05Z", "uptime_seconds": 17 },
+  "process": { "pid": 637182, "started": "2026-11-07T12:53:23Z", "uptime_seconds": 3 },
   "interfaces": [],
   "counters": {
-    "capture_packets_total": 852,
+    "capture_packets_total": 7,
     "capture_sources_refused_total": 0,
     "capture_backpressure_blocks_total": 0,
     "hep_export_failures_total": null,
     "hep_export_dropped_total": null,
     "hep_export_queue_depth": null
   },
-  "hep_listener": { "listening": false, "packets_refused": 0, "senders": [] }
+  "hep_listener": { "listening": false, "packets_refused": 0, "senders": [], "refused_sources": [] }
 }
 ```
 
@@ -3546,6 +3554,28 @@ curl -s -H "Authorization: Bearer $SIPNAB_INVENTORY_TOKEN" http://127.0.0.1:8080
   never appears. A secret held in a file the configuration names, such as
   `--api-signing-key-file`, reaches the digests by its path only.
 
+**`config.secret_files` shows a rotated key without exposing it.** One entry per
+secret or credential file this run named: signing keys, token and password
+files, TLS keys and certificates, HEP and vCon credentials. Each has:
+
+- `setting`: the flag that named the file, such as `--hep-auth-file`, also when
+  the value came from its config key; `[section] key` for a key with no flag,
+  such as `[sip] th_callid_secret_file`; and the rule's or service's name for a
+  `[[vcon.rule]]` `sign_key` or a `[[vcon.enrich]]` `auth_file`.
+- `inode` and `mtime`: the file's inode number and modification time (RFC 3339,
+  UTC, nanoseconds), read when the run started, before any privilege drop. A
+  new file renamed over the old one gives a new `inode`; a file rewritten in
+  place gives a new `mtime`.
+- `error`: why sipnab could not read the file, without its path; `inode` and
+  `mtime` are then `null`.
+
+The answer holds nothing derived from a file's contents: a hash of a
+low-entropy secret, such as a password, would let an `inventory` token holder
+test guesses offline. It holds no path either, as it holds no configuration
+value. sipnab takes the stamp once, at start: a file rotated without a restart
+shows the stamp of the file the run read. `--keylog` (it grows while the run reads it) and the
+revocation lists (token ids, not secrets) are not listed.
+
 **`signature.state` is always `unverified`.** A process cannot prove which
 binary it is. Compare `binary.sha256` with the release's `SHA256SUMS.txt`,
 after verifying that file's attestation with `gh attestation verify`.
@@ -3555,7 +3585,13 @@ replaces the file it still names the binary that is running.
 **Every field is the process's own claim.** An attacker who controls a host
 can report anything.
 
-`hep_listener.senders` lists at most `MAX_HEP_PEERS` (256) senders.
+`hep_listener.senders` lists at most `MAX_HEP_PEERS` (256) senders, each with
+the `last_seen` time of its latest admitted packet.
+`hep_listener.refused_sources` lists at most `MAX_HEP_PEERS` addresses the
+listener refused packets from, most refused first: `peer`, `packets`, the
+count per refusal reason in `by_reason` (the names `GET /v1/hep/senders`
+uses), and `last_seen`, when the latest refused packet arrived. A refused
+address is never in `senders`. The counts cover the listener's whole run.
 
 `config.recorded` is `false`, and every digest `null`, for a server that did not
 record its configuration at start. The MCP tool `fleet_inventory` returns the

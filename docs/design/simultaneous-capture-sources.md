@@ -112,7 +112,7 @@ parser already tells the two kinds of packet apart:
 - `Packet::interface` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)) is a `SourceName` (an `Arc<str>` when this was written) naming the
   source. Live capture sets the device name ([`src/capture/live.rs:533`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L533)); the
   HEP listener sets `hep:<capture-id>@<peer>` via `hep_source_label`
-  ([`src/capture/hep_roster.rs:183`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L183)) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)).
+  ([`src/capture/hep_roster.rs:229`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L229)) and `hep_to_packet` ([`src/capture/hep.rs:134`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L134)).
 - `ParsedPacket` ([`src/capture/parse.rs:172`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L172)) carries an `input_origin`
   field holding the `InputOrigin` enum ([`src/capture/parse.rs:90`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L90)) — `Wire`, `Hep` or
   `Uprobe`. Line [`src/capture/parse.rs:2307`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L2307) derives it per packet from the presence of
@@ -409,7 +409,7 @@ One consequence to accept rather than fix: **the channel carries no
 end-of-source marker.** `Item` is `One` or `Many` ([`src/capture/channel.rs:130`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L130))
 and nothing else, so a consumer cannot tell "the HEP sender stopped" from "the
 HEP sender is quiet". A `--hep-listen` run already has the same blind spot, which
-`IdleWatch` ([`src/capture/hep_roster.rs:750`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L750)) papers over with a log line after a
+`IdleWatch` ([`src/capture/hep_roster.rs:796`](https://github.com/NormB/sipnab/blob/main/src/capture/hep_roster.rs#L796)) papers over with a log line after a
 silence threshold. A composite run inherits both the blind spot and the paper.
 
 **Backpressure is shared and the accounting is asymmetric.** `PacketTx::send`
@@ -433,7 +433,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:685`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L685)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:7337`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7337)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:7451`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7451)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -497,7 +497,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:627-653`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L627-L653)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:7337`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7337)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:7451`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7451)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

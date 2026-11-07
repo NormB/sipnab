@@ -755,3 +755,355 @@ fn the_documented_hosts_files_parse() -> Result<(), TestError> {
     assert!(parsed >= 1, "docs/fleet.md shows a hosts file");
     Ok(())
 }
+
+/// A real `sipnab -N --hep-listen --api` collector, for the tests that need a
+/// HEP listener and a REST API in one process. Killed when dropped. Gated
+/// as its one user is.
+#[cfg(all(feature = "hep", target_os = "linux"))]
+struct Collector {
+    child: std::process::Child,
+    /// The REST API's `host:port`.
+    api: String,
+    /// The HEP listener's `host:port`.
+    hep: String,
+}
+
+#[cfg(all(feature = "hep", target_os = "linux"))]
+impl Collector {
+    /// Start one on `ip`, with `extra` on its command line, once both
+    /// listeners report the address they bound.
+    fn start(ip: &str, extra: &[&str]) -> Result<Self, TestError> {
+        use std::io::BufRead as _;
+        let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+            .args(["-N", "--hep-listen", &format!("{ip}:0")])
+            .args(["--api", &format!("{ip}:0"), "--config", "/dev/null"])
+            .args(extra)
+            .env("SIPNAB_LOG", "info")
+            .env("NO_COLOR", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn()?;
+        let stderr = child.stderr.take().ok_or("piped stderr")?;
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stderr)
+                .lines()
+                .map_while(Result::ok)
+            {
+                let _ = tx.send(line);
+            }
+        });
+        let (mut api, mut hep) = (None, None);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while (api.is_none() || hep.is_none()) && std::time::Instant::now() < deadline {
+            let Ok(line) = rx.recv_timeout(std::time::Duration::from_millis(200)) else {
+                if let Ok(Some(status)) = child.try_wait() {
+                    return Err(format!("the collector exited early: {status}").into());
+                }
+                continue;
+            };
+            if let Some(rest) = line.split("HEP listener started on ").nth(1) {
+                hep = rest.split_whitespace().next().map(str::to_string);
+            }
+            if let Some(rest) = line.split("REST API listening on ").nth(1) {
+                api = Some(rest.trim().to_string());
+            }
+        }
+        let collector = Self {
+            child,
+            api: api.unwrap_or_default(),
+            hep: hep.unwrap_or_default(),
+        };
+        if collector.api.is_empty() || collector.hep.is_empty() {
+            return Err("the collector did not report both listeners".into());
+        }
+        Ok(collector)
+    }
+}
+
+#[cfg(all(feature = "hep", target_os = "linux"))]
+impl Drop for Collector {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// `GET path` on `addr` with `token`, as JSON.
+#[cfg(all(feature = "hep", target_os = "linux"))]
+fn get_json(addr: &str, path: &str, token: &str) -> Result<serde_json::Value, TestError> {
+    use std::io::Read as _;
+    let mut s = std::net::TcpStream::connect(addr)?;
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+    write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n\
+         Connection: close\r\n\r\n"
+    )?;
+    let mut raw = String::new();
+    s.read_to_string(&mut raw)?;
+    let (head, body) = raw.split_once("\r\n\r\n").ok_or("an HTTP answer")?;
+    if !head.starts_with("HTTP/1.1 200") {
+        return Err(format!("{path}: {head}").into());
+    }
+    Ok(serde_json::from_str(body)?)
+}
+
+/// FLEET-P0.1, the case seen live: a listed instance sends HEP to a listed
+/// collector with a key the collector does not hold, and the collector
+/// refuses every packet. `sipnab fleet inventory` used to report that fleet
+/// `ok`. Now the report names the collector, the sender and its address,
+/// says the packets were refused for authentication without claiming which
+/// cause, and exits 1. Left out of the hosts file, the same refused address
+/// is no finding: the rule is about listed instances.
+///
+/// Linux only: the collector listens on 127.0.0.2, so the sender's packets
+/// come from 127.0.0.1 and the two instances have different addresses; other
+/// systems do not answer on all of 127.0.0.0/8.
+#[cfg(all(feature = "hep", target_os = "linux"))]
+#[test]
+fn a_listed_sender_the_collector_refuses_is_reported_and_exits_1() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let right = token_file(dir.path(), "right.key", "the-collector-hep-key")?;
+    let wrong = token_file(dir.path(), "wrong.key", "a-key-the-collector-lacks")?;
+    let hub = Collector::start(
+        "127.0.0.2",
+        &[
+            "--hep-allow",
+            "127.0.0.0/8",
+            "--hep-auth-mode",
+            "hmac",
+            "--hep-auth-file",
+            right.to_str().ok_or("utf-8 path")?,
+            "--api-signing-key",
+            KEY,
+            "--node-name",
+            "hub",
+        ],
+    )?;
+    let edge = ApiServer::spawn(&[
+        "--api-signing-key",
+        KEY,
+        "--node-name",
+        "edge-a",
+        "--hep-send",
+        &hub.hep,
+        "--hep-auth-mode",
+        "hmac",
+        "--hep-auth-file",
+        wrong.to_str().ok_or("utf-8 path")?,
+    ])?;
+    let token = inventory_token();
+    // The collector's own record, read until the refusals are there, so the
+    // command below reads a settled count.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let hub_inv = loop {
+        let v = get_json(&hub.api, "/v1/inventory", &token)?;
+        let refused = v["hep_listener"]["packets_refused"].as_u64().unwrap_or(0);
+        if refused > 0 || std::time::Instant::now() > deadline {
+            break v;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let refused = hub_inv["hep_listener"]["packets_refused"]
+        .as_u64()
+        .unwrap_or(0);
+    assert!(refused > 0, "the collector refused nothing: {hub_inv}");
+    assert!(
+        hub_inv["hep_listener"]["senders"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "a refused sender is no admitted sender: {hub_inv}"
+    );
+
+    let tok = token_file(dir.path(), "fleet.token", &token)?;
+    let tok = tok.display();
+    let hosts = dir.path().join("hosts.toml");
+    let hub_row = format!(
+        "[[host]]\nname = \"hub\"\nurl = \"http://{}\"\ntoken_file = \"{tok}\"\n",
+        hub.api
+    );
+    let edge_row = format!(
+        "[[host]]\nname = \"edge-a\"\nurl = \"http://{}\"\ntoken_file = \"{tok}\"\n",
+        edge.addr
+    );
+    std::fs::write(&hosts, format!("{hub_row}{edge_row}"))?;
+    let (code, out, err) = fleet(&hosts, true)?;
+    let report: serde_json::Value = serde_json::from_str(&out)?;
+    assert_eq!(
+        code, 1,
+        "a listed sender is refused: stdout {out}\nstderr {err}"
+    );
+    assert_eq!(report["ok"], false, "{report}");
+    let rows = report["hosts"].as_array().ok_or("hosts")?;
+    assert!(
+        rows.iter().all(|r| r["state"] == "ok"),
+        "both instances answer, so only the finding can make the report fail: {report}"
+    );
+    let findings = report["findings"].as_array().ok_or("findings")?;
+    let refused: Vec<&serde_json::Value> = findings
+        .iter()
+        .filter(|f| f["kind"] == "hep_sender_refused")
+        .collect();
+    assert_eq!(refused.len(), 1, "{report}");
+    let detail = refused[0]["detail"].as_str().ok_or("detail")?;
+    for want in [
+        "hub",
+        "edge-a",
+        "127.0.0.1",
+        "refused: authentication (wrong key or HMAC version)",
+        "hmac_bad_mac",
+    ] {
+        assert!(detail.contains(want), "{want} missing from {detail}");
+    }
+    let (code, table, _) = fleet(&hosts, false)?;
+    assert_eq!(code, 1, "{table}");
+    assert!(
+        table.contains("finding hep_sender_refused: "),
+        "the table names the finding:\n{table}"
+    );
+
+    // The collector alone: the refused address is listed by nobody.
+    std::fs::write(&hosts, &hub_row)?;
+    let (code, out, err) = fleet(&hosts, true)?;
+    assert_eq!(
+        code, 0,
+        "an unlisted refused address is no finding: {out}\n{err}"
+    );
+
+    // Fix the sender: the collector's key renamed over its key file, and a
+    // restart. The collector still counts the old refusals, but it admitted
+    // the sender after them, so the fleet is ok again.
+    drop(edge);
+    token_file(dir.path(), "fixed.key", "the-collector-hep-key")?;
+    std::fs::rename(dir.path().join("fixed.key"), &wrong)?;
+    let edge = ApiServer::spawn(&[
+        "--api-signing-key",
+        KEY,
+        "--node-name",
+        "edge-a",
+        "--hep-send",
+        &hub.hep,
+        "--hep-auth-mode",
+        "hmac",
+        "--hep-auth-file",
+        wrong.to_str().ok_or("utf-8 path")?,
+    ])?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while std::time::Instant::now() < deadline {
+        let v = get_json(&hub.api, "/v1/inventory", &token)?;
+        if v["hep_listener"]["senders"]
+            .as_array()
+            .is_some_and(|s| !s.is_empty())
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let edge_row = format!(
+        "[[host]]\nname = \"edge-a\"\nurl = \"http://{}\"\ntoken_file = \"{tok}\"\n",
+        edge.addr
+    );
+    std::fs::write(&hosts, format!("{hub_row}{edge_row}"))?;
+    let (code, out, err) = fleet(&hosts, true)?;
+    let report: serde_json::Value = serde_json::from_str(&out)?;
+    let hub_now = &report["hosts"][0]["inventory"]["hep_listener"];
+    assert!(
+        hub_now["refused_sources"]
+            .as_array()
+            .is_some_and(|r| !r.is_empty()),
+        "the collector still counts the old refusals: {report}"
+    );
+    assert_eq!(
+        code, 0,
+        "admitted after its last refusal, the sender is fixed: {out}\n{err}"
+    );
+
+    Ok(())
+}
+
+/// FLEET-P0.2: a secret held in a file is reported by its inode and
+/// modification time under the setting that names it, so rotating the file
+/// is visible across a restart, though the path, and with it every digest,
+/// stays the same. Neither the key nor any digest of it is in the answer.
+#[cfg(unix)]
+#[test]
+fn a_rotated_secret_file_shows_in_the_inventory() -> Result<(), TestError> {
+    use std::os::unix::fs::MetadataExt as _;
+    let dir = tempfile::tempdir()?;
+    let key_path = dir.path().join("api.signing");
+    let start = |key: &str| -> Result<(ApiServer, serde_json::Value), TestError> {
+        let srv = ApiServer::spawn_unsettled(&[
+            "--api-signing-key-file",
+            key_path.to_str().ok_or("utf-8 path")?,
+            "--node-name",
+            "edge-r",
+        ])?;
+        let token = sipnab::auth::mint(
+            key.as_bytes(),
+            "fleet-e2e",
+            chrono::Utc::now().timestamp() + 3600,
+            sipnab::auth::AUDIENCE_API,
+            sipnab::auth::SCOPE_INVENTORY,
+        );
+        let resp = srv.get_bearer("/v1/inventory", &token)?;
+        assert_eq!(resp.status, 200, "{}", resp.body);
+        let v = resp.json()?;
+        Ok((srv, v))
+    };
+    let stamp_of = |v: &serde_json::Value| -> Result<serde_json::Value, TestError> {
+        let rows = v["config"]["secret_files"]
+            .as_array()
+            .ok_or_else(|| format!("no secret_files: {v}"))?;
+        let mine: Vec<&serde_json::Value> = rows
+            .iter()
+            .filter(|r| r["setting"] == "--api-signing-key-file")
+            .collect();
+        assert_eq!(mine.len(), 1, "{v}");
+        Ok(mine[0].clone())
+    };
+
+    const FIRST: &str = "fleet-rotation-first-signing-key-0123";
+    const SECOND: &str = "fleet-rotation-second-signing-key-4567";
+    token_file(dir.path(), "api.signing", FIRST)?;
+    let meta = std::fs::metadata(&key_path)?;
+    let (srv, before) = start(FIRST)?;
+    let stamp = stamp_of(&before)?;
+    assert_eq!(stamp["inode"], meta.ino(), "{stamp}");
+    let mtime: chrono::DateTime<chrono::Utc> = meta.modified()?.into();
+    assert_eq!(
+        stamp["mtime"],
+        mtime.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        "{stamp}"
+    );
+    drop(srv);
+
+    // Rotate the usual way: a new file renamed over the old path.
+    token_file(dir.path(), "api.signing.new", SECOND)?;
+    std::fs::rename(dir.path().join("api.signing.new"), &key_path)?;
+    let (_srv, after) = start(SECOND)?;
+    let rotated = stamp_of(&after)?;
+    assert_ne!(rotated["inode"], stamp["inode"], "{rotated} vs {stamp}");
+    assert_eq!(
+        rotated["inode"],
+        std::fs::metadata(&key_path)?.ino(),
+        "{rotated}"
+    );
+    assert_eq!(
+        after["config"]["effective_sha256"], before["config"]["effective_sha256"],
+        "the path did not change, so no digest does: only the stamp shows the rotation"
+    );
+    for (v, key) in [(&before, FIRST), (&after, SECOND)] {
+        let body = v.to_string();
+        assert!(!body.contains(key), "the key reached the answer: {body}");
+        assert!(
+            !body.contains(&sha256_hex(key.as_bytes())),
+            "a digest of the key reached the answer: {body}"
+        );
+        assert!(
+            !body.contains(&key_path.display().to_string()),
+            "the path reached the answer: {body}"
+        );
+    }
+    Ok(())
+}

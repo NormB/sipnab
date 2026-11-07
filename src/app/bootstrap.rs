@@ -3399,8 +3399,29 @@ fn read_secrets_then_confine<T, E>(
     Ok((secrets, confined))
 }
 
-/// Every secret or credential file a run reads once, at startup, and so
-/// reads before its privilege drop.
+/// One secret or credential file a run names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecretFile {
+    /// The setting that named it: the flag, for a setting with a flag (also
+    /// when the value came from its config key), else `[section] key`.
+    pub setting: String,
+    /// The file, as the setting resolved.
+    pub path: std::path::PathBuf,
+    /// Whether the run reads it in the advance read before its privilege
+    /// drop ([`secret_file_paths`]). The others are read while the run is
+    /// planned, which is already before the drop, or by a command that does
+    /// not drop.
+    pub read_before_drop: bool,
+}
+
+/// Every secret or credential file a run names, under the setting that
+/// named it.
+///
+/// One table for two uses: [`secret_file_paths`] reads the
+/// `read_before_drop` rows before the privilege drop, and the fleet
+/// inventory reports every row's inode and modification time
+/// (`output::inventory::SecretFileStamp`), so a rotated key shows across a
+/// restart without any value derived from its contents.
 ///
 /// Each path is the setting's resolved value: the flag, else its config key
 /// where one exists. A path that this run will not use is harmless here: it is
@@ -3410,56 +3431,158 @@ fn read_secrets_then_confine<T, E>(
 ///
 /// - `--hep-auth-file` for `--hep-listen`, `[sip] th_callid_secret_file`,
 ///   `--archive-password-file` and the vCon signing keys are read while the
-///   run is planned, which is already before the drop. `--hep-auth-file` is
-///   listed anyway, because the HEP sender and the MCP server read it again
-///   after the drop.
+///   run is planned, which is already before the drop, so they are listed
+///   with `read_before_drop` false. `--hep-auth-file` is read in advance
+///   anyway, because the HEP sender and the MCP server read it again after
+///   the drop.
 /// - `--keylog` and `--keylog-fd` are opened before the drop by
 ///   `open_privileged_keylog_source`, and a watched keylog is reopened by
-///   path later, so it is not read once here.
+///   path later, so it is not read once here. It is not listed: a key log
+///   grows while the run reads it, so its inode and time say nothing about a
+///   rotation.
 /// - `--api-revoked-file` and `--mcp-revoked-file` are re-read whenever they
 ///   change, so they cannot be read once. `revocation_file_refusal` stops the
-///   run when the user it dropped to cannot read one.
+///   run when the user it dropped to cannot read one. They hold token ids,
+///   not secrets, and are not listed.
 /// - `[vcon_fetch]` files, read when `--api-allow-vcon-fetch` or
 ///   `--mcp-allow-vcon-fetch` is set, are checked by
 ///   `privilege::open_private_file`, whose rule depends on which user reads
 ///   the file, so moving the read before the drop would change which files it
-///   accepts. They are not moved here.
+///   accepts. They are listed with `read_before_drop` false.
 #[must_use]
-pub fn secret_file_paths(cli: &Cli, config: &Config) -> Vec<std::path::PathBuf> {
+pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
     use std::path::PathBuf;
     let (api_cert, api_key) = cli.api_tls_files(config);
     let (mcp_cert, mcp_key) = cli.mcp_tls_files(config);
     let (metrics_cert, metrics_key) = cli.metrics_tls_files(config);
-    let named: [Option<String>; 12] = [
-        cli.listener_args.api_signing_key_file.clone(),
-        cli.mcp_args.mcp_signing_key_file.clone(),
-        cli.mcp_args.mcp_token_file.clone(),
-        api_cert,
-        api_key,
-        mcp_cert,
-        mcp_key,
-        metrics_cert,
-        metrics_key,
-        cli.tls_args.tls_key.clone(),
-        cli.tls_args.srtp_keys.clone(),
-        cli.tls_args.dtls_keylog.clone(),
-    ];
     let (hep_cert, hep_key) = cli.hep_tls_files(config);
     let (hep_ca, hep_extra_ca) = cli.hep_tls_trust(config);
-    let paths: [Option<PathBuf>; 7] = [
-        cli.listener_args.metrics_auth_file.clone(),
-        cli.hep_args.hep_auth_file.clone(),
-        hep_cert,
-        hep_key,
-        hep_ca,
-        hep_extra_ca,
-        cli.output_args.redact_key_file.clone(),
+    let fwd = &cli.vcon_forward_args;
+    let fetch = &cli.vcon_fetch_args;
+    let advance: [(&str, Option<PathBuf>); 19] = [
+        (
+            "--api-signing-key-file",
+            cli.listener_args
+                .api_signing_key_file
+                .clone()
+                .map(PathBuf::from),
+        ),
+        (
+            "--mcp-signing-key-file",
+            cli.mcp_args.mcp_signing_key_file.clone().map(PathBuf::from),
+        ),
+        (
+            "--mcp-token-file",
+            cli.mcp_args.mcp_token_file.clone().map(PathBuf::from),
+        ),
+        ("--api-tls-cert", api_cert.map(PathBuf::from)),
+        ("--api-tls-key", api_key.map(PathBuf::from)),
+        ("--mcp-tls-cert", mcp_cert.map(PathBuf::from)),
+        ("--mcp-tls-key", mcp_key.map(PathBuf::from)),
+        ("--metrics-tls-cert", metrics_cert.map(PathBuf::from)),
+        ("--metrics-tls-key", metrics_key.map(PathBuf::from)),
+        ("--tls-key", cli.tls_args.tls_key.clone().map(PathBuf::from)),
+        (
+            "--srtp-keys",
+            cli.tls_args.srtp_keys.clone().map(PathBuf::from),
+        ),
+        (
+            "--dtls-keylog",
+            cli.tls_args.dtls_keylog.clone().map(PathBuf::from),
+        ),
+        (
+            "--metrics-auth-file",
+            cli.listener_args.metrics_auth_file.clone(),
+        ),
+        ("--hep-auth-file", cli.hep_args.hep_auth_file.clone()),
+        ("--hep-tls-cert", hep_cert),
+        ("--hep-tls-key", hep_key),
+        ("--hep-tls-ca", hep_ca),
+        ("--hep-tls-extra-ca", hep_extra_ca),
+        ("--redact-key-file", cli.output_args.redact_key_file.clone()),
     ];
-    named
+    let flag_or_key = |flag: &Option<PathBuf>, key: &Option<PathBuf>| flag.clone().or(key.clone());
+    let planned: [(&str, Option<PathBuf>); 9] = [
+        (
+            "--archive-password-file",
+            cli.archive_args.archive_password_file.clone(),
+        ),
+        (
+            "[sip] th_callid_secret_file",
+            config.sip.th_callid_secret_file.clone(),
+        ),
+        (
+            "--vcon-forward-auth-file",
+            flag_or_key(&fwd.vcon_forward_auth_file, &config.vcon_forward.auth_file),
+        ),
+        (
+            "--vcon-forward-scitt-auth-file",
+            flag_or_key(
+                &fwd.vcon_forward_scitt_auth_file,
+                &config.vcon_forward.scitt_auth_file,
+            ),
+        ),
+        (
+            "--vcon-forward-scitt-sign-key",
+            flag_or_key(
+                &fwd.vcon_forward_scitt_sign_key,
+                &config.vcon_forward.scitt_sign_key,
+            ),
+        ),
+        (
+            "--vcon-fetch-auth-file",
+            flag_or_key(&fetch.vcon_fetch_auth_file, &config.vcon_fetch.auth_file),
+        ),
+        (
+            "--vcon-fetch-decrypt-key",
+            flag_or_key(
+                &fetch.vcon_fetch_decrypt_key,
+                &config.vcon_fetch.decrypt_key,
+            ),
+        ),
+        ("[vcon_input] key", config.vcon_input.key.clone()),
+        ("[vcon] sign_key", config.vcon.sign_key.clone()),
+    ];
+    let rules = config.vcon.rule.iter().filter_map(|r| {
+        r.sign_key
+            .clone()
+            .map(|p| (format!("[[vcon.rule]] {} sign_key", r.name), p))
+    });
+    let enrich = config.vcon.enrich.iter().filter_map(|e| {
+        e.auth_file
+            .clone()
+            .map(|p| (format!("[[vcon.enrich]] {} auth_file", e.name), p))
+    });
+    let row = |read_before_drop: bool| {
+        move |(setting, path): (&str, Option<PathBuf>)| {
+            path.map(|path| SecretFile {
+                setting: setting.to_string(),
+                path,
+                read_before_drop,
+            })
+        }
+    };
+    advance
         .into_iter()
-        .flatten()
-        .map(PathBuf::from)
-        .chain(paths.into_iter().flatten())
+        .filter_map(row(true))
+        .chain(planned.into_iter().filter_map(row(false)))
+        .chain(rules.chain(enrich).map(|(setting, path)| SecretFile {
+            setting,
+            path,
+            read_before_drop: false,
+        }))
+        .collect()
+}
+
+/// Every secret or credential file a run reads once, at startup, and so
+/// reads before its privilege drop: the `read_before_drop` rows of
+/// [`secret_files`], whose notes say why each file is or is not one.
+#[must_use]
+pub fn secret_file_paths(cli: &Cli, config: &Config) -> Vec<std::path::PathBuf> {
+    secret_files(cli, config)
+        .into_iter()
+        .filter(|f| f.read_before_drop)
+        .map(|f| f.path)
         .collect()
 }
 
@@ -12931,6 +13054,114 @@ mod secret_read_tests {
         assert!(
             secret_file_paths(&parse_cli(&[])?, &config).is_empty(),
             "a run that names no secret file reads none"
+        );
+        Ok(())
+    }
+
+    /// Every secret file a run names is listed under the setting that named
+    /// it, so the fleet inventory can report each one's inode and mtime by a
+    /// name that is not a configuration value. The files read before the
+    /// drop are the ones `secret_file_paths` returns, and no other.
+    #[test]
+    fn every_secret_file_is_named_by_its_setting() -> Result<(), TestError> {
+        let flags: &[(&str, &[&str])] = &[
+            (
+                "--api-signing-key-file",
+                &["--api", "127.0.0.1:0", "--api-signing-key-file", "/s/a"],
+            ),
+            (
+                "--hep-auth-file",
+                &["--hep-send", "127.0.0.1:9", "--hep-auth-file", "/s/a"],
+            ),
+            (
+                "--redact-key-file",
+                &["--redact", "--redact-key-file", "/s/a"],
+            ),
+            (
+                "--metrics-auth-file",
+                &["--metrics", "127.0.0.1:0", "--metrics-auth-file", "/s/a"],
+            ),
+            ("--srtp-keys", &["--srtp-keys", "/s/a"]),
+            (
+                "--vcon-forward-auth-file",
+                &[
+                    "--vcon-forward",
+                    "/s/spool",
+                    "--vcon-forward-auth-file",
+                    "/s/a",
+                ],
+            ),
+            (
+                "--archive-password-file",
+                &["--archive-password-file", "/s/a"],
+            ),
+        ];
+        let config = Config::default();
+        for (setting, args) in flags {
+            let cli = parse_cli(args)?;
+            let files = secret_files(&cli, &config);
+            assert!(
+                files
+                    .iter()
+                    .any(|f| f.setting == *setting && f.path == std::path::Path::new("/s/a")),
+                "`{}` is not listed as {setting}: {files:?}",
+                args.join(" ")
+            );
+            let advance: Vec<std::path::PathBuf> = files
+                .iter()
+                .filter(|f| f.read_before_drop)
+                .map(|f| f.path.clone())
+                .collect();
+            assert_eq!(
+                advance,
+                secret_file_paths(&cli, &config),
+                "`{}`: the advance read is the read_before_drop rows",
+                args.join(" ")
+            );
+        }
+
+        let mut config = Config::default();
+        config.sip.th_callid_secret_file = Some("/c/th".into());
+        config.vcon_forward.auth_file = Some("/c/fwd".into());
+        config.vcon.sign_key = Some("/c/vsign".into());
+        config.vcon_input.key = Some("/c/vin".into());
+        config.vcon_fetch.decrypt_key = Some("/c/fetch".into());
+        config.api.tls_key = Some("/c/api.key".to_string());
+        let files = secret_files(&parse_cli(&[])?, &config);
+        for (setting, path) in [
+            ("[sip] th_callid_secret_file", "/c/th"),
+            ("--vcon-forward-auth-file", "/c/fwd"),
+            ("[vcon] sign_key", "/c/vsign"),
+            ("[vcon_input] key", "/c/vin"),
+            ("--vcon-fetch-decrypt-key", "/c/fetch"),
+            ("--api-tls-key", "/c/api.key"),
+        ] {
+            assert!(
+                files
+                    .iter()
+                    .any(|f| f.setting == setting && f.path == std::path::Path::new(path)),
+                "{setting} = {path} is missing from {files:?}"
+            );
+        }
+
+        // A flag overrides its key, as the run that reads the file does.
+        let cli = parse_cli(&[
+            "--vcon-forward",
+            "/s/spool",
+            "--vcon-forward-auth-file",
+            "/s/flag",
+        ])?;
+        let files = secret_files(&cli, &config);
+        let fwd: Vec<_> = files
+            .iter()
+            .filter(|f| f.setting == "--vcon-forward-auth-file")
+            .collect();
+        assert_eq!(fwd.len(), 1, "{files:?}");
+        assert_eq!(fwd[0].path, std::path::Path::new("/s/flag"), "{files:?}");
+
+        assert!(
+            secret_files(&parse_cli(&[])?, &Config::default()).is_empty(),
+            "a run that names no secret file lists none"
         );
         Ok(())
     }
