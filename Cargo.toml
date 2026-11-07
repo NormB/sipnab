@@ -97,6 +97,8 @@ include = [
   "/tests/fixtures/tfps-*",
   "/tests/fixtures/tls_rsa/**",
   "/tests/schemas/vcon.schema.json",
+  # The test PKI src/tls_listener.rs's unit tests mount with #[path].
+  "/tests/support/tls_pki.rs",
   "/yang/**",
 ]
 
@@ -212,9 +214,10 @@ sha1 = { version = "0.11", optional = true }
 # `ECDH-ES+A256KW` recipient (RFC 7518 section 4.6). ring agrees only with
 # an ephemeral key, which covers encrypting, and signs ES256 itself.
 p256 = { version = "0.14", default-features = false, features = ["ecdh", "pkcs8", "std"], optional = true }
-# X.509 path validation of a fetched vCon's signer (`--vcon-fetch-signer-ca`).
-# rustls already builds this crate for its certificate checks, so it adds
-# none to the build.
+# X.509 path validation of a fetched vCon's signer (`--vcon-fetch-signer-ca`),
+# and the subject alternative names of a verified client certificate on the
+# REST and MCP HTTPS listeners (`--api-tls-client-ca`). rustls already builds
+# this crate for its certificate checks, so it adds none to the build.
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["ring", "std"], optional = true }
 
 # Audio playback (feature-gated). The rodio/ALSA dependency lives in the
@@ -394,7 +397,9 @@ audio = ["dep:libloading", "dep:libc"]
 # `tls`: that feature is capture-side decryption and would drag rsa/aes/cbc in.
 # `ring` is the SHA-1 of the live audio route's WebSocket handshake
 # (src/output/websocket.rs); rustls already builds it, so it adds no crate.
-api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa", "dep:rustls", "dep:tokio-rustls", "dep:ring", "dep:hyper", "dep:hyper-util", "dep:futures-core"]
+# `webpki` reads a verified client certificate's names
+# (`--api-tls-client-ca`); rustls already builds it too.
+api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa", "dep:rustls", "dep:tokio-rustls", "dep:ring", "dep:hyper", "dep:hyper-util", "dep:futures-core", "dep:webpki"]
 mcp = ["native", "dep:tokio", "dep:rmcp", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]

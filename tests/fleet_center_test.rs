@@ -571,3 +571,153 @@ fn plain_http_is_refused_off_loopback_and_https_serves() -> Result<(), TestError
     assert!(resp.body.contains("\"accepted\":1"), "{resp:?}");
     Ok(())
 }
+
+/// `--tls-client-ca` makes the center's HTTPS handshake require a member
+/// certificate from that CA, on top of the member's token: a heartbeat
+/// without one is refused at the handshake, one with it is accepted. The
+/// settings that cannot be served are refused before anything is bound.
+#[test]
+fn a_client_ca_makes_the_center_require_a_member_certificate() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let key = private_file(dir.path(), "center.signing", KEY)?;
+    let store = dir.path().join("center.store");
+    let store_arg = store.to_str().ok_or("utf-8")?;
+    let key_arg = key.to_str().ok_or("utf-8")?;
+    let pki = tls_pki::test_pki("fleet-mtls")?;
+    let ca = tls_pki::client_ca("fleet-mtls")?;
+    let base = [
+        "--listen",
+        "127.0.0.1:0",
+        "--store",
+        store_arg,
+        "--signing-key-file",
+        key_arg,
+    ];
+
+    let mut no_ca = base.to_vec();
+    no_ca.extend([
+        "--tls-cert",
+        &pki.cert,
+        "--tls-key",
+        &pki.key,
+        "--tls-client-auth",
+        "required",
+    ]);
+    let (code, log) = refused(&no_ca)?;
+    assert_eq!(code, 2, "{log}");
+    assert!(
+        log.contains(
+            "--tls-client-auth required needs --tls-client-ca: name the CA that issues the \
+             client certificates"
+        ),
+        "{log}"
+    );
+    let mut no_tls = base.to_vec();
+    no_tls.extend(["--tls-client-ca", &ca.ca_file]);
+    let (code, log) = refused(&no_tls)?;
+    assert_eq!(code, 2, "{log}");
+    assert!(
+        log.contains("needs --tls-cert and --tls-key: a client certificate is asked for only"),
+        "{log}"
+    );
+
+    let mut args = base.to_vec();
+    args.extend([
+        "--tls-cert",
+        &pki.cert,
+        "--tls-key",
+        &pki.key,
+        "--tls-client-ca",
+        &ca.ca_file,
+    ]);
+    let c = Center::start(&args)?;
+    let tok = format!(
+        "Bearer {}",
+        token("edge-a", sipnab::auth::SCOPE_FLEET_REPORT)
+    );
+    let send = |client: Option<&tls_pki::ClientCert>| {
+        tls_pki::https_exchange_as(
+            &c.addr,
+            "POST /v1/fleet/ingest HTTP/1.1",
+            &[
+                ("Authorization", &tok),
+                ("Content-Type", "application/x-ndjson"),
+            ],
+            heartbeat("edge-a", "s", 1, 30).as_bytes(),
+            &pki.ca,
+            client,
+            Duration::from_secs(10),
+        )
+    };
+    let refused_hb = send(None);
+    assert!(refused_hb.is_err(), "no certificate: {refused_hb:?}");
+    let member = ca.issue("edge-a", tls_pki::Validity::Current)?;
+    let resp = send(Some(&member))?;
+    assert_eq!(resp.status, 200, "{resp:?}");
+    assert!(
+        c.wait_for_log(
+            "presented a verified client certificate",
+            Duration::from_secs(10)
+        )
+        .is_some(),
+        "the verified member is logged"
+    );
+    Ok(())
+}
+
+/// `--tls-client-auth optional` serves a member that sends no certificate,
+/// and still refuses one whose certificate another CA issued.
+#[test]
+fn an_optional_center_serves_no_certificate_but_refuses_a_bad_one() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let key = private_file(dir.path(), "center.signing", KEY)?;
+    let store = dir.path().join("center.store");
+    let pki = tls_pki::test_pki("fleet-mtls-opt")?;
+    let ca = tls_pki::client_ca("fleet-mtls-opt")?;
+    let c = Center::start(&[
+        "--listen",
+        "127.0.0.1:0",
+        "--store",
+        store.to_str().ok_or("utf-8")?,
+        "--signing-key-file",
+        key.to_str().ok_or("utf-8")?,
+        "--tls-cert",
+        &pki.cert,
+        "--tls-key",
+        &pki.key,
+        "--tls-client-ca",
+        &ca.ca_file,
+        "--tls-client-auth",
+        "optional",
+    ])?;
+    let tok = format!(
+        "Bearer {}",
+        token("edge-b", sipnab::auth::SCOPE_FLEET_REPORT)
+    );
+    let send = |client: Option<&tls_pki::ClientCert>| {
+        tls_pki::https_exchange_as(
+            &c.addr,
+            "POST /v1/fleet/ingest HTTP/1.1",
+            &[
+                ("Authorization", &tok),
+                ("Content-Type", "application/x-ndjson"),
+            ],
+            heartbeat("edge-b", "s", 1, 30).as_bytes(),
+            &pki.ca,
+            client,
+            Duration::from_secs(10),
+        )
+    };
+    let resp = send(None)?;
+    assert_eq!(
+        resp.status, 200,
+        "optional serves a member with no certificate: {resp:?}"
+    );
+    let stranger =
+        tls_pki::client_ca("fleet-other")?.issue("edge-b", tls_pki::Validity::Current)?;
+    assert!(
+        send(Some(&stranger)).is_err(),
+        "optional still refuses another CA's certificate"
+    );
+    Ok(())
+}

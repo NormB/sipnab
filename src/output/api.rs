@@ -1176,6 +1176,10 @@ pub struct ApiServerConfig {
     pub tls_cert: Option<String>,
     /// `--api-tls-key`: the PEM private key for `tls_cert`.
     pub tls_key: Option<String>,
+    /// `--api-tls-client-ca` / `--api-tls-client-auth`: which client
+    /// certificates the HTTPS handshake asks for and accepts. The default
+    /// asks for none.
+    pub client_auth: crate::config::ClientCertAuth,
     /// `--api-allowed-host` / `[api] allowed_hosts`: `Host` values served
     /// beyond the loopback names and the bound address. `*` disables the
     /// check. See [`crate::host_allowlist`].
@@ -1192,10 +1196,6 @@ pub const API_TLS_HANDSHAKE_TIMEOUT: Duration = crate::tls_listener::HANDSHAKE_T
 /// which caps requests in flight once a connection is established, over HTTPS
 /// as over plain HTTP.
 pub const API_TLS_MAX_HANDSHAKES: usize = crate::tls_listener::MAX_HANDSHAKES;
-
-/// The application protocols the API offers in the TLS handshake. See
-/// [`crate::tls_listener::HTTP1_ALPN`].
-const API_TLS_ALPN: &[&[u8]] = crate::tls_listener::HTTP1_ALPN;
 
 /// A bound API listener from [`prepare_listener`], with the TLS
 /// configuration it serves when `--api-tls-cert`/`--api-tls-key` were given.
@@ -1315,7 +1315,9 @@ pub fn prepare_listener(
 ///
 /// `crate::Error::Server` naming the file at fault: only one of the two
 /// flags, an unreadable file, no certificate, no private key, a
-/// world-readable key, or a key that is not the certificate's.
+/// world-readable key, or a key that is not the certificate's. Also a client
+/// CA setting [`crate::cli::client_auth_problem`] refuses, or a client CA
+/// file that cannot be read, holds no certificate, or any user can write.
 fn api_tls_config(
     server_config: &ApiServerConfig,
 ) -> Result<Option<Arc<rustls::ServerConfig>>, crate::Error> {
@@ -1324,14 +1326,20 @@ fn api_tls_config(
     if let Some(problem) = crate::cli::api_tls_pair_problem(cert, key) {
         return Err(crate::Error::Server(problem));
     }
+    if let Err(problem) = crate::cli::client_auth_problem(
+        crate::cli::API_CLIENT_AUTH_LABELS,
+        &server_config.client_auth,
+        cert.is_some() && key.is_some(),
+    ) {
+        return Err(crate::Error::Server(problem));
+    }
     let (Some(cert), Some(key)) = (cert, key) else {
         return Ok(None);
     };
-    crate::tls_files::server_config(
-        std::path::Path::new(cert),
-        std::path::Path::new(key),
+    crate::tls_listener::https_config(
+        (std::path::Path::new(cert), std::path::Path::new(key)),
+        &server_config.client_auth,
         "API TLS",
-        API_TLS_ALPN.iter().map(|p| p.to_vec()).collect(),
     )
     .map(Some)
     .map_err(|e| crate::Error::Server(format!("{e:#}")))
@@ -1472,22 +1480,24 @@ pub(crate) async fn serve_router(
     listener: ApiListener,
     router: Router,
 ) -> Result<(), crate::Error> {
-    use axum::serve::ListenerExt as _;
     let ApiListener { tcp, tls } = listener;
     let listener = tokio::net::TcpListener::from_std(tcp)
         .map_err(|e| crate::Error::Server(format!("failed to register the API listener: {e}")))?;
     log_listening(&listener, tls.is_some());
 
-    let service = router.into_make_service_with_connect_info::<SocketAddr>();
     let served = match tls {
-        None => axum::serve(listener, service).await,
-        // `tap_io` with a no-op is how the peer address reaches handlers:
-        // axum implements `Connected` for `L::Addr` of a `TapIo<L, _>` but
-        // not of an arbitrary listener, and implementing it here for
-        // `SocketAddr` would break the orphan rule.
+        None => {
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+        }
+        // The peer address and the verified client certificate, if any,
+        // reach handlers through `into_tls_service`.
         Some(config) => {
             let tls_listener = api_tls_listener(listener, config)?;
-            axum::serve(tls_listener.tap_io(|_| {}), service).await
+            axum::serve(tls_listener, crate::tls_listener::into_tls_service(router)).await
         }
     };
     served.map_err(|e| crate::Error::Server(format!("API server error: {e}")))
@@ -11604,8 +11614,23 @@ mod tests {
             max_conn: 0,
             tls_cert: cert.map(|p| p.to_string_lossy().into_owned()),
             tls_key: key.map(|p| p.to_string_lossy().into_owned()),
+            client_auth: crate::config::ClientCertAuth::default(),
             allowed_hosts: Vec::new(),
         }
+    }
+
+    /// A library caller of `prepare_listener` (the fleet center is one) gets
+    /// the refusal of a client CA on a listener without TLS.
+    #[test]
+    fn a_client_ca_without_tls_is_refused_by_the_listener() -> Result<(), TestError> {
+        let mut config = tls_server_config(None, None);
+        config.client_auth.ca = Some("clients.pem".to_string());
+        let err = tls_startup_error(&config)?;
+        assert!(
+            err.contains("--api-tls-client-ca clients.pem needs --api-tls-cert and --api-tls-key"),
+            "{err}"
+        );
+        Ok(())
     }
 
     /// The text of the startup error `prepare_listener` returns for `config`

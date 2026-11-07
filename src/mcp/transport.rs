@@ -489,7 +489,11 @@ mod http {
     ///
     /// Only one of the two flags; an unreadable file; no certificate; no
     /// private key; a key any other user can read; or a key that is not the
-    /// certificate's. Each names the file or flag at fault.
+    /// certificate's. Also client-certificate settings that contradict each
+    /// other or need TLS that is not configured (`--mcp-tls-client-ca`,
+    /// `--mcp-tls-client-auth`), or a client CA file that cannot be read,
+    /// holds no certificate, or any user can write. Each names the file or
+    /// flag at fault.
     ///
     /// # Side effects
     ///
@@ -497,23 +501,27 @@ mod http {
     pub fn mcp_tls_config(
         first_file: Option<&str>,
         second_file: Option<&str>,
+        client_auth: &crate::config::ClientCertAuth,
     ) -> anyhow::Result<Option<Arc<rustls::ServerConfig>>> {
         if let Some(problem) =
             crate::cli::tls_pair_problem(crate::cli::MCP_TLS_FLAGS, first_file, second_file)
         {
             anyhow::bail!(problem);
         }
+        if let Err(problem) = crate::cli::client_auth_problem(
+            crate::cli::MCP_CLIENT_AUTH_LABELS,
+            client_auth,
+            first_file.is_some() && second_file.is_some(),
+        ) {
+            anyhow::bail!(problem);
+        }
         let (Some(chain), Some(pem)) = (first_file, second_file) else {
             return Ok(None);
         };
-        crate::tls_files::server_config(
-            std::path::Path::new(chain),
-            std::path::Path::new(pem),
+        crate::tls_listener::https_config(
+            (std::path::Path::new(chain), std::path::Path::new(pem)),
+            client_auth,
             "MCP TLS",
-            crate::tls_listener::HTTP1_ALPN
-                .iter()
-                .map(|p| p.to_vec())
-                .collect(),
         )
         .map(Some)
     }
@@ -614,17 +622,17 @@ mod http {
             tracing::info!("MCP HTTP serves HTTPS only (TLS 1.2/1.3, ALPN http/1.1)");
         }
         tracing::info!("MCP HTTP server listening on {actual}");
-        let service = mcp_router.into_make_service_with_connect_info::<SocketAddr>();
         match tls {
             None => {
+                let service = mcp_router.into_make_service_with_connect_info::<SocketAddr>();
                 axum::serve(listener, service)
                     .with_graceful_shutdown(shutdown_requested())
                     .await?;
             }
-            // `tap_io` with a no-op is how the peer address reaches the
-            // handlers, as in the REST API's `serve_router`.
+            // The peer address and the verified client certificate, if
+            // any, reach the handlers through `into_tls_service`, as in the
+            // REST API's `serve_router`.
             Some(config) => {
-                use axum::serve::ListenerExt as _;
                 let tls_listener = crate::tls_listener::TlsListener::new(
                     "MCP TLS",
                     listener,
@@ -632,9 +640,12 @@ mod http {
                     crate::tls_listener::HANDSHAKE_TIMEOUT,
                     crate::tls_listener::MAX_HANDSHAKES,
                 )?;
-                axum::serve(tls_listener.tap_io(|_| {}), service)
-                    .with_graceful_shutdown(shutdown_requested())
-                    .await?;
+                axum::serve(
+                    tls_listener,
+                    crate::tls_listener::into_tls_service(mcp_router),
+                )
+                .with_graceful_shutdown(shutdown_requested())
+                .await?;
             }
         }
         Ok(())
@@ -819,6 +830,24 @@ mod http {
 
         /// Any error a test can return; `?` converts into it.
         type TestError = Box<dyn std::error::Error>;
+
+        /// A library caller of `mcp_tls_config` gets the same refusal of
+        /// client-certificate settings the startup check gives the binary.
+        #[test]
+        fn mcp_tls_config_refuses_a_mode_without_a_client_ca() {
+            let setting = crate::config::ClientCertAuth {
+                ca: None,
+                mode: Some(crate::config::ClientAuthMode::Required),
+            };
+            let err = mcp_tls_config(None, None, &setting)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            assert!(
+                err.starts_with("--mcp-tls-client-auth required needs --mcp-tls-client-ca"),
+                "{err}"
+            );
+        }
 
         /// Test signing key shared between minting and the router's verifier.
         ///

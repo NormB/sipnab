@@ -413,6 +413,7 @@ pages = [
   { path = "api-reference.md", menu = false },
   { path = "docs/api-clients.md", menu = false },
   { path = "docs/auth.md", menu = false },
+  { path = "docs/mtls.md", menu = false },
   { path = "docs/mcp-tools.md", menu = false },
   { path = "docs/mcp-tools-core.md", menu = false },
   { path = "docs/mcp-tools-signaling.md", menu = false },

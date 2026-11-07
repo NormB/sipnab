@@ -1705,7 +1705,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // +2 (the `sipnab fleet serve` paragraph and the --token-scope row),
     // errors.md +1, auth.md +1 and rest-api.md +1 (each to "Run a fleet
     // center"). Counted per file against origin/main f8705d984.
-    const EXPECTED_WIKI_LINKS: usize = 2427;
+    // 2427 -> 2461 (TOP3-MTLS, client certificates): mtls.md +19 (20 links,
+    // one an absolute GitHub URL the filter skips), cli-reference.md +6 net
+    // (the four flag rows, the fleet serve bullet and the examples, less the
+    // two rows rewritten in place), config-reference.md +2, errors.md +2,
+    // auth.md, fleet.md, mcp-deploy.md, rest-api.md and README.md +1 each.
+    // Counted per file against origin/main b5cb8b61c.
+    const EXPECTED_WIKI_LINKS: usize = 2461;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -2973,7 +2979,8 @@ fn every_docs_page_is_linked_from_the_index() -> Result<(), TestError> {
     // 107 -> 110 (#641): docs/capture-queries.md, docs/follow-a-call.md and
     // docs/expectations.md.
     // 110 -> 111 (#664): docs/relay-engines.md, reached from docs/README.md.
-    const EXPECTED_DOCS_PAGES: usize = 111;
+    // 111 -> 112 (TOP3-MTLS): docs/mtls.md, reached from docs/README.md.
+    const EXPECTED_DOCS_PAGES: usize = 112;
     // Links are extracted from PROSE, not from the file's bytes. A raw
     // `contains("](backers.md")` counted a link that had been wrapped in an
     // HTML comment: the substring was still there, the page was reachable from

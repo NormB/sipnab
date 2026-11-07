@@ -49,6 +49,8 @@ fn metrics_only() -> Selection {
         api_tls: (None, None),
         mcp_tls: (None, None),
         metrics_tls: (None, None),
+        api_client_auth: Default::default(),
+        mcp_client_auth: Default::default(),
         mcp_row_cap: Cli::DEFAULT_MCP_MAX_ROWS as usize,
         mcp_body_cap: Cli::DEFAULT_MCP_MAX_BODY_BYTES as usize,
         mcp_response_cap: Cli::DEFAULT_MCP_MAX_RESPONSE_BYTES as usize,

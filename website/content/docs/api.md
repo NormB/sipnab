@@ -457,8 +457,10 @@ curl --cacert /etc/sipnab/ca.pem -H "Authorization: Bearer secret" https://captu
   handshake and is not served.
 - TLS 1.2 and TLS 1.3 only. The server offers `http/1.1` by ALPN
   (application-layer protocol negotiation) and does not offer HTTP/2.
-- No client certificates. Clients authenticate with the bearer credential,
-  as over plain HTTP.
+- No client certificates unless you ask for them. Clients authenticate with
+  the bearer credential, as over plain HTTP. `--api-tls-client-ca` makes the
+  handshake also require a certificate from your CA, and the token is still
+  checked: see [Require client certificates](@/docs/mtls.md).
 - `[api] tls_cert` and `[api] tls_key` in
   [`sipnab.toml`](@/docs/config.md#api) set the same files. Each flag
   replaces its own key.

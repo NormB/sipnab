@@ -278,8 +278,12 @@ certificate, and each refuses a routable bind that has no credential:
 The exact refusal messages are in [A service that does not
 start](run-as-a-service.md#a-service-that-does-not-start).
 
-None of the four asks a client for a certificate. TLS encrypts the path, and
-the credential in the second column says who the client is.
+TLS encrypts the path, and the credential in the second column says who the
+client is. The REST API and MCP over HTTP can also ask each client for a
+certificate from your own CA (`--api-tls-client-ca`, `--mcp-tls-client-ca`),
+and then refuse a client without one. The token is still required: see
+[Require client certificates](mtls.md). The metrics and HEP listeners ask for
+none.
 
 ### Make a certificate
 

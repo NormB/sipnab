@@ -477,6 +477,12 @@ used.
   need that name in `--allowed-host`. [The CLI reference](cli-reference.md#fleet-inventory-sipnab-fleet)
   lists every flag.
 
+- **[center]** To refuse any member without a certificate from your own CA,
+  as well as its token, add `--tls-client-ca /etc/sipnab/members-ca.pem`.
+  [Require member certificates on a fleet center](mtls.md#require-member-certificates-on-a-fleet-center)
+  makes the CA and the member certificates, and says how a member presents
+  one.
+
 ### Step 2: mint a token for each member and for each reader
 
 - **[center]** A member's token has scope `fleet-report`, and its id is the

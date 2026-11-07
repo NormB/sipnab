@@ -665,6 +665,18 @@ PAGES: list[tuple[str, str, str, str, int, str]] = [
         "format, audience binding, configuring a signing key, minting tokens, "
         "expiry and key rotation.",
     ),
+    # The mutual-TLS how-to (2026-11-07): client certificates for the REST
+    # API and MCP over HTTP. Weight 87: the first weight free on the SITE side.
+    (
+        "docs/mtls.md",
+        "mtls.md",
+        "Require client certificates",
+        "Require client certificates",
+        87,
+        "Make a CA and client certificates, make the REST API and MCP over "
+        "HTTP refuse a client without one, and read why sipnab refused a "
+        "handshake.",
+    ),
     # Registered with the page itself, for the reason the tuning-capture entry
     # records: install.md, examples.md and mcp-deploy.md link it, and an
     # unregistered page would exist only on the wiki. Weight 67: this page

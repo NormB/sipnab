@@ -3314,6 +3314,8 @@ fn server_selection(
         api_tls: cli.api_tls_files(config),
         mcp_tls: cli.mcp_tls_files(config),
         metrics_tls: cli.metrics_tls_files(config),
+        api_client_auth: cli.api_client_auth(config),
+        mcp_client_auth: cli.mcp_client_auth(config),
         mcp_row_cap: cli.mcp_row_cap(config),
         mcp_body_cap: cli.mcp_body_cap(config),
         mcp_response_cap: cli.mcp_response_cap(config),

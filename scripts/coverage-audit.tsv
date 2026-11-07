@@ -103,3 +103,7 @@
 --max-gunzip-bytes	behavior	probe_max_gunzip_bytes turns "stripped" into "refused" at a 100-byte ceiling
 --completions	behavior	completions_emit_scripts_for_each_shell runs the real binary for bash/zsh/fish; unknown shell exits 2
 --recommend-block	behavior	a_swept_source_gets_a_rule_naming_it and an_established_source_carries_its_counter_evidence (tests/block_recommendation_test.rs) drive the real binary and assert the emitted rule; an_unaccused_capture_recommends_nothing is the anti-vacuity half
+--api-tls-client-ca	behavior	client_certs: no certificate, another CA's, expired, not yet valid and serverAuth-only refused with the logged reason; a good one served and logged; certificate without token is 401; startup refusals; unit tls_listener tests cover several CAs in one file, intermediates, self-signed, CA-as-client, TLS 1.2, one second past expiry, unicode and empty names, empty, corrupt, unreadable and world-writable CA files
+--api-tls-client-auth	behavior	optional serves no certificate and refuses a bad one; off overrides a config-file CA and logs that the CA is not read; required without a CA refused at startup
+--mcp-tls-client-ca	behavior	no certificate, another CA's and expired refused; a good one served and named in the audit record as client-cert=; [mcp] tls_client_ca key; refused on stdio
+--mcp-tls-client-auth	behavior	optional serves an agent without a certificate; optional without a CA refused at startup

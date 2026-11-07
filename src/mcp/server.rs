@@ -9511,7 +9511,7 @@ fn caller_of(extensions: &rmcp::model::Extensions) -> String {
                 .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
                 .map(|ci| ci.0.to_string())
                 .unwrap_or_else(|| "unknown-peer".to_string());
-            match parts.extensions.get::<McpAuth>() {
+            let admission = match parts.extensions.get::<McpAuth>() {
                 Some(McpAuth::BearerVerified { scope, token_id }) => {
                     let named = match token_id {
                         Some(id) => format!(" token={}", audit_token_id(id)),
@@ -9521,6 +9521,18 @@ fn caller_of(extensions: &rmcp::model::Extensions) -> String {
                 }
                 Some(McpAuth::Unauthenticated) => format!("{addr} unauthenticated"),
                 None => format!("{addr} no-admission-record"),
+            };
+            // The client a TLS handshake verified a certificate for, stamped
+            // by `crate::tls_listener::into_tls_service`. Encoded as a token
+            // id is: the CA chose the name, and it must not forge a field.
+            match parts
+                .extensions
+                .get::<crate::tls_listener::ClientIdentity>()
+            {
+                Some(client) => {
+                    format!("{admission} client-cert={}", audit_token_id(client.label()))
+                }
+                None => admission,
             }
         }
         None => "stdio".to_string(),
@@ -18963,6 +18975,51 @@ mod tests {
             "stdio holds every scope: process ownership is the boundary, and \
              an action is still refused unless --allow-action enables it for MCP"
         );
+        Ok(())
+    }
+
+    /// A call on a connection that verified a client certificate names the
+    /// client in the caller field, after the token, encoded so that a name a
+    /// CA chose cannot forge a field; a call without one carries no
+    /// `client-cert` key at all.
+    #[cfg(feature = "mcp-http")]
+    #[test]
+    fn the_caller_field_names_a_verified_client_certificate() -> Result<(), TestError> {
+        use crate::mcp::transport::McpAuth;
+        use crate::tls_listener::ClientIdentity;
+        let verified = |client: ClientIdentity| -> Result<String, TestError> {
+            let mut extensions = http_extensions(Some(McpAuth::BearerVerified {
+                scope: crate::auth::SCOPE_READ.to_string(),
+                token_id: Some("member-1".to_string()),
+            }))?;
+            let parts = extensions
+                .get_mut::<axum::http::request::Parts>()
+                .ok_or("parts")?;
+            parts.extensions.insert(client);
+            Ok(caller_of(&extensions))
+        };
+        let named = verified(ClientIdentity {
+            subject: "CN=member-1".to_string(),
+            dns_names: Vec::new(),
+            uris: vec!["spiffe://fleet.example.com/member/1".to_string()],
+        })?;
+        assert_eq!(
+            named,
+            "unknown-peer bearer-verified scope=read token=member-1 \
+             client-cert=spiffe:%2F%2Ffleet.example.com%2Fmember%2F1",
+            "the client follows the token, percent-encoded"
+        );
+        let forged = verified(ClientIdentity {
+            subject: "CN=x outcome=ok\n".to_string(),
+            dns_names: Vec::new(),
+            uris: Vec::new(),
+        })?;
+        assert!(
+            forged.ends_with(" client-cert=CN%3Dx%20outcome%3Dok%0A"),
+            "{forged}"
+        );
+        let plain = caller_of(&http_extensions(Some(McpAuth::Unauthenticated))?);
+        assert!(!plain.contains("client-cert"), "{plain}");
         Ok(())
     }
 

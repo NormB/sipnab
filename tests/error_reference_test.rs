@@ -927,7 +927,15 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // line), the torn-line, store-write and two rewrite warnings, the silence
 // warning, and the five batch refusals a member is answered with (too many
 // records, schema_version, kind, stream, heartbeat_secs). Nothing removed.
-const EXPECTED_TEMPLATES: usize = 580;
+// 580 -> 585 (TOP3-MTLS, client certificates): src/cli.rs +3: the two
+// refusals client_auth_problem returns (`{mode_label} {} needs {ca_label}:
+// name the CA that issues the client certificates` and `{ca_label} {file}
+// needs {cert} and {key}: a client certificate is asked for only in a TLS
+// handshake`) and the stdio refusal of
+// --mcp-tls-client-ca/--mcp-tls-client-auth; src/app/bootstrap.rs +2: the
+// uncompiled refusals of --api-tls-client-ca and --api-tls-client-auth.
+// Nothing removed.
+const EXPECTED_TEMPLATES: usize = 585;
 
 // ---------------------------------------------------------------------------
 // The page gates

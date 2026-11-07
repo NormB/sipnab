@@ -44,6 +44,9 @@ Each answers one "how do I" question and assumes you already know what you want.
 - **[Run sipnab as a service](run-as-a-service.md)**: the packaged systemd
   unit and one of your own, drop-ins, the log, signals, crash reports, audit
   file rotation, and a service that does not start.
+- **[Require client certificates](mtls.md)**: make a CA and client
+  certificates, make the REST API and MCP over HTTP refuse any client without
+  one, and read why sipnab refused a handshake.
 
 **Find out what went wrong**
 
