@@ -438,3 +438,14 @@ def test_ignored_files_are_read_but_the_build_directory_is_not_walked(repo):
     ignored = gc.ignored_files(repo, {})
     assert "docs/backlog.local.md" in ignored
     assert not any(p.startswith("target/") for p in ignored)
+
+
+def test_a_tools_own_cache_directory_is_not_an_input(repo):
+    """pytest rewrites .pytest_cache on every run, and the pre-commit hook runs
+    pytest: walked, it changed the snapshot under every run with script tests,
+    and the script-tests and whole-hook stamps were never written (2026-11-07)."""
+    cache = repo / "scripts/.pytest_cache/v/cache"
+    cache.mkdir(parents=True)
+    (repo / "scripts/.pytest_cache/.gitignore").write_text("*\n", encoding="utf-8")
+    (cache / "nodeids").write_text("[]\n", encoding="utf-8")
+    assert not any(".pytest_cache" in p for p in gc.ignored_files(repo, {}))

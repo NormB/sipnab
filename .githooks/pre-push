@@ -180,11 +180,23 @@ gate_hit() { # gate_hit <step>: 0, after printing CACHED, when a stamp covers it
 	gate_hit_key=$(gate_key "$1")
 	[ -n "$gate_hit_key" ] && python3 "$GATE_CACHE" hit pre-push "$1" "$gate_hit_key"
 }
+# Collected, and stamped from one snapshot when the hook exits, for the reason
+# .githooks/pre-commit gives beside its own copy. Step names and keys hold no
+# spaces, so one string carries the pairs.
+GATE_PASSED=""
 gate_pass() { # gate_pass <step>: stamp a step that has just passed
 	gate_pass_key=$(gate_key "$1")
-	[ -n "$gate_pass_key" ] || return 0
-	python3 "$GATE_CACHE" pass pre-push "$1" "$gate_pass_key" --hook-file "$0" || true
+	[ -n "$gate_pass_key" ] && GATE_PASSED="$GATE_PASSED $1 $gate_pass_key"
+	return 0
 }
+gate_flush() {
+	[ -n "$GATE_PASSED" ] || return 0
+	# Word splitting is intended: the string is space-separated pairs.
+	# shellcheck disable=SC2086
+	python3 "$GATE_CACHE" pass pre-push $GATE_PASSED --hook-file "$0" || true
+	GATE_PASSED=""
+}
+trap gate_flush EXIT
 
 # -- Hard gate: rustfmt -------------------------------------------------------
 # scripts/check-rustfmt.sh: the dated nightly rustfmt in .rustfmt-toolchain

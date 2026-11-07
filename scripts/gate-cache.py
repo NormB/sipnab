@@ -5,7 +5,7 @@
 
     gate-cache.py keys HOOK [--hook-file PATH]         "<step> <key>" per cached step, "info <text>" lines
     gate-cache.py hit HOOK STEP KEY [--line hook|step] [--quiet]
-    gate-cache.py pass HOOK STEP KEY [--hook-file PATH]
+    gate-cache.py pass HOOK STEP KEY [STEP KEY ...] [--hook-file PATH]
     gate-cache.py classify [PATH ...]                  each path's class, then the change's
     gate-cache.py list                                 the stamps of this worktree
     gate-cache.py clear                                remove them
@@ -341,8 +341,11 @@ def tree_files(root, env) -> dict[str, str]:
     return files
 
 
-# Build output and bytecode: written by every run, and no verdict reads them.
-_UNWALKED = {"target", "__pycache__", ".git", "node_modules"}
+# Build output, bytecode and pytest's cache: written by every run, and no
+# verdict reads them (the hook never passes pytest --lf or --ff). pytest's
+# cache was walked at first, and the hook's own script-test run rewrote it, so
+# the script-tests and whole-hook stamps were never written.
+_UNWALKED = {"target", "__pycache__", ".pytest_cache", ".git", "node_modules"}
 
 
 def _stat_id(path: str) -> str:
@@ -662,22 +665,30 @@ def cmd_hit(args) -> int:
 
 
 def cmd_pass(args) -> int:
+    """Stamp every (step, key) pair whose key the inputs still give, from ONE
+    snapshot: the hooks collect the steps that passed and call this once, when
+    they exit. A snapshot per step cost 13 per push."""
     env = _env()
-    if args.hook not in STEPS or args.step not in STEPS[args.hook]:
-        print(f"gate-cache: no step {args.step!r} in {args.hook}", file=sys.stderr)
+    if len(args.pairs) % 2:
+        print("gate-cache: pass takes STEP KEY pairs", file=sys.stderr)
+        return 2
+    pairs = list(zip(args.pairs[0::2], args.pairs[1::2]))
+    unknown = [step for step, _key in pairs if args.hook not in STEPS or step not in STEPS[args.hook]]
+    if unknown:
+        print(f"gate-cache: no step {unknown[0]!r} in {args.hook}", file=sys.stderr)
         return 2
     root = _root(env)
     snap = snapshot(root, env, args.hook_file or _default_hook_file(args.hook))
-    now_key = key_of(step_parts(args.hook, args.step, snap))
-    if now_key != args.key:
-        print(f"  No pass stamp for {args.step}: its inputs changed while it ran.")
-        return 0
     directory = _stamp_dir(env)
     now = time.time()
-    write_stamp(directory, args.hook, args.step, args.key, now, {"head": snap.head, "index_tree": snap.index_tree})
+    for step, key in pairs:
+        if key_of(step_parts(args.hook, step, snap)) != key:
+            print(f"  No pass stamp for {step}: its inputs changed while it ran.")
+            continue
+        write_stamp(directory, args.hook, step, key, now, {"head": snap.head, "index_tree": snap.index_tree})
+        if step == "hook":
+            print(f"  Pass stamp {key[:12]} written: an identical run is skipped (SIPNAB_GATE_NO_CACHE=1 forces one).")
     prune(directory, now)
-    if args.step == "hook":
-        print(f"  Pass stamp {args.key[:12]} written: an identical run is skipped (SIPNAB_GATE_NO_CACHE=1 forces one).")
     return 0
 
 
@@ -727,8 +738,7 @@ def main(argv=None) -> int:
     h.add_argument("--quiet", action="store_true")
     s = sub.add_parser("pass")
     s.add_argument("hook")
-    s.add_argument("step")
-    s.add_argument("key")
+    s.add_argument("pairs", nargs="+", metavar="STEP KEY")
     s.add_argument("--hook-file")
     c = sub.add_parser("classify")
     c.add_argument("paths", nargs="*")

@@ -93,7 +93,7 @@ class Sandbox:
 def write_rustc_stub(harness, version="rustc 1.90.0 (stub)\nhost: aarch64-unknown-linux-gnu"):
     (harness / "rustc-version").write_text(version + "\n")
     stub = harness / "bin/rustc"
-    stub.write_text(f'#!/bin/sh\ncat "{harness}/rustc-version"\n')
+    stub.write_text(f'#!/bin/sh\necho x >> "{harness}/rustc-calls"\ncat "{harness}/rustc-version"\n')
     stub.chmod(0o755)
 
 
@@ -635,3 +635,26 @@ def test_a_changed_ignored_input_is_a_full_run(pc):
     rc, out = pc.run()
     assert rc == 0 and "PASSED before" not in out, out
     assert any(c.startswith("nextest run --profile suite") for c in pc.cargo()), pc.cargo()
+
+
+def snapshots(sb):
+    """How many snapshots gate-cache.py took: each asks `rustc -Vv` once."""
+    calls = sb.harness / "rustc-calls"
+    n = len(calls.read_text().splitlines()) if calls.exists() else 0
+    calls.unlink(missing_ok=True)
+    return n
+
+
+def test_a_pre_commit_run_takes_one_snapshot_for_its_keys_and_one_for_its_stamps(pc):
+    """Each snapshot walks the tree and asks every tool its version. One per
+    passing step made test-pre-push.sh run past its 180 s test deadline."""
+    snapshots(pc)
+    passed(pc)
+    assert snapshots(pc) == 2
+
+
+def test_a_push_takes_one_snapshot_for_its_keys_and_one_for_its_stamps(pp):
+    snapshots(pp)
+    rc, out = push(pp)
+    assert rc == 0, out
+    assert snapshots(pp) == 2

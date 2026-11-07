@@ -89,12 +89,24 @@ gate_hit() { # gate_hit <step> [--quiet|--line hook]: 0 when a stamp covers the 
 	key=$(gate_key "$1")
 	[ -n "$key" ] && python3 "$GATE_CACHE" hit pre-commit "$1" "$key" "${@:2}"
 }
+# A step that passes is collected here and stamped when the hook exits, all
+# from one snapshot (gate-cache.py pass re-checks each key then). One snapshot
+# per step made the hook harnesses run past their test deadlines. The exit
+# trap also fires on a failure's `exit 1`, so the steps that passed before it
+# keep their stamps; a killed run writes none.
+GATE_PASSED=()
 gate_pass() { # gate_pass <step>: stamp a step that has just passed
 	local key
 	key=$(gate_key "$1")
-	[ -n "$key" ] || return 0
-	python3 "$GATE_CACHE" pass pre-commit "$1" "$key" --hook-file "$0" || true
+	[ -n "$key" ] && GATE_PASSED+=("$1" "$key")
+	return 0
 }
+gate_flush() {
+	[ "${#GATE_PASSED[@]}" -gt 0 ] || return 0
+	python3 "$GATE_CACHE" pass pre-commit "${GATE_PASSED[@]}" --hook-file "$0" || true
+	GATE_PASSED=()
+}
+trap gate_flush EXIT
 if gate_hit hook --line hook; then
 	exit 0
 fi
