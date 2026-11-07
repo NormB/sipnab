@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **The published `unsafe` count leaves out every block compiled only for tests: 111, not 115.** The homepage, the README and the [fault model](docs/fault-model.md#memory-safety-boundary) counted the blocks in two test modules as shipped code: `src/privilege.rs`'s, under `#[cfg(all(test, target_os = "linux"))]`, and `src/capture/keylog_source.rs`'s, under `#[cfg(all(test, unix, feature = "tls"))]`. The two gates that check the number now share one census, `tests/support/unsafe_census.rs`, which also counts a test-only module kept in its own file (`#[cfg(test)] mod x;`) as test code, and stops a `#[cfg(test)]` on an item with no braces (a `mod x;`, a `use`, a field, one statement) at that item instead of skipping the shipped code after it. The library's test allocator now lives in its own file, `src/test_alloc.rs`.
+
 ## [0.5.236] - 2026-11-06
 
 ### Added

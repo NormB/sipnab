@@ -17,6 +17,9 @@
 //! it. A claim that cannot be derived is a claim that goes stale silently, and
 //! the front page is the worst place for that.
 
+#[path = "support/unsafe_census.rs"]
+mod unsafe_census;
+
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -1113,67 +1116,27 @@ fn every_capability_row_links_to_a_page_that_exists() -> Result<(), TestError> {
 
 // ── G. The safety claim ──────────────────────────────────────────────
 
-/// `unsafe {` blocks in `src/`, excluding `#[cfg(test)]` modules.
+/// `unsafe {` blocks in `src/` outside test-only code.
 ///
-/// The same rule `tests/unsafe_census_test.rs` applies, because a second count
-/// of one fact is how `docs/fault-model.md` and
-/// `docs/internals/build-ci-release.md` came to publish 16 and 49 for the same
-/// tree. This walk is deliberately the simpler one: it only has to agree with
-/// the census on the number the page prints, and the census test fails loudly
-/// if the two ever diverge from the documentation.
-fn non_test_unsafe_blocks() -> usize {
-    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                walk(&p, out);
-            } else if p.extension().is_some_and(|x| x == "rs") {
-                out.push(p);
-            }
-        }
-    }
-    let mut files = Vec::new();
-    walk(&repo().join("src"), &mut files);
-    assert!(files.len() >= 20, "only {} file(s) under src/", files.len());
-    let mut total = 0;
-    for f in &files {
-        let Ok(text) = std::fs::read_to_string(f) else {
-            continue;
-        };
-        let mut depth: i64 = 0;
-        let mut in_test = false;
-        let mut opened = false;
-        for line in text.lines() {
-            if !in_test && line.trim_start().starts_with("#[cfg(test)]") {
-                in_test = true;
-                depth = 0;
-                opened = false;
-                continue;
-            }
-            if in_test {
-                depth += line.matches('{').count() as i64;
-                if depth > 0 {
-                    opened = true;
-                }
-                depth -= line.matches('}').count() as i64;
-                if opened && depth <= 0 {
-                    in_test = false;
-                }
-                continue;
-            }
-            total += line.matches("unsafe {").count();
-        }
-    }
-    total
+/// The number `tests/unsafe_census_test.rs` checks the fault model against,
+/// from the same function (`tests/support/unsafe_census.rs`). Two walks of one
+/// fact are how `docs/fault-model.md` and `docs/internals/build-ci-release.md`
+/// came to publish 16 and 49 for the same tree, and how this walk and the
+/// census came to disagree about what a `#[cfg(test)]` line means.
+fn non_test_unsafe_blocks() -> Result<usize, TestError> {
+    let (_, non_test, per_file) = unsafe_census::census(&repo().join("src"))?;
+    assert!(
+        per_file.len() >= 20,
+        "only {} file(s) under src/ hold shipped `unsafe`",
+        per_file.len()
+    );
+    Ok(non_test)
 }
 
 /// The homepage's `unsafe` count is the count the tree holds.
 #[test]
 fn homepage_unsafe_count_matches_the_tree() -> Result<(), TestError> {
-    let blocks = non_test_unsafe_blocks();
+    let blocks = non_test_unsafe_blocks()?;
     assert!(
         blocks >= 20,
         "the unsafe walk found only {blocks} block(s) — it stopped matching, so \
@@ -1211,7 +1174,7 @@ fn homepage_unsafe_count_matches_the_tree() -> Result<(), TestError> {
 #[test]
 fn homepage_does_not_claim_memory_safety_the_build_does_not_enforce() -> Result<(), TestError> {
     let forbids = read("src/lib.rs")?.contains("forbid(unsafe_code)");
-    let blocks = non_test_unsafe_blocks();
+    let blocks = non_test_unsafe_blocks()?;
     if forbids || blocks == 0 {
         return Err(format!(
             "src/ now forbids unsafe or contains none ({blocks} blocks) — the \
