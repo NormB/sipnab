@@ -21,8 +21,10 @@
 //! worker's inbox would be interleaved across files and packets would arrive
 //! **out of timestamp order**.
 //!
-//! `DialogStore::merge` is order-tolerant on purpose — `absorb_messages` sorts
-//! by timestamp and replays. But merge is the *offline* path. The live path is
+//! `DialogStore::merge` replays every fragment's messages through the rule
+//! `process_message` applies, in the read order its caller gives (it sorted by
+//! timestamp through 0.5.236, which made `--cores` disagree with `--cores 1` on
+//! sets whose files overlap in time). But merge is the *offline* path. The live path is
 //! `process_message`, fed in arrival order, and the backlog entry states that
 //! out-of-order arrival being harmless there is **not established**. PR1 is
 //! explicitly blocked on establishing it. This file is that work.
@@ -446,7 +448,7 @@ fn merge_recovers_timestamp_order_from_permuted_stores() -> Result<(), TestError
         for i in (0..mid).rev() {
             b.process_message(msgs[i].clone());
         }
-        a.merge(b);
+        a.merge([b], |m| m.timestamp);
 
         let dialog = a
             .get(shape.call_id())
@@ -459,8 +461,9 @@ fn merge_recovers_timestamp_order_from_permuted_stores() -> Result<(), TestError
         assert_eq!(
             *dialog.state(),
             baseline.state,
-            "{shape:?}: merge sorts by timestamp and replays, so it must reach \
-             the same state as a serial reader"
+            "{shape:?}: merge replays every message through the rule a serial \
+             reader applies, and the INVITE family reaches the same state in \
+             any order, so it must reach the same state as a serial reader"
         );
     }
     Ok(())

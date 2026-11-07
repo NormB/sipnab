@@ -1462,7 +1462,7 @@ impl DialogStore {
     /// `rotate` enabled. At capacity without `rotate`, messages for
     /// unknown Call-IDs are dropped (bumping the capacity-drop counter);
     /// updates to existing dialogs still land.
-    pub fn process_message(&mut self, mut msg: SipMessage) {
+    pub fn process_message(&mut self, msg: SipMessage) {
         self.generation += 1;
         self.sweep_th_mappings(msg.timestamp);
         // Look up by the borrowed Call-ID (str is Equivalent<String> for
@@ -1492,57 +1492,11 @@ impl DialogStore {
             let Some((_, dialog)) = self.dialogs.get_index_mut(idx) else {
                 return; // unreachable: idx came from get_index_of
             };
-            // Retransmission detection: same CSeq identity already seen.
-            // O(1) set probe that survives message capping and compaction
-            // (the old stored-message scan went amnesiac past the cap).
-            // First sighting is remembered, capped against CSeq cycling.
-            let seen_key = crate::sip::dialog::seen_cseq_key(&msg);
-            let retransmission = seen_key
-                .as_ref()
-                .is_some_and(|k| dialog.seen_cseq.contains(k));
-            if !retransmission
-                && dialog.seen_cseq.len() < crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG
-                && let Some(key) = seen_key
-            {
-                dialog.seen_cseq.insert(key);
-            }
-            if retransmission {
-                let cseq_key = cseq_key(&msg);
-                if let Some(key) = cseq_key {
-                    *dialog.timing.retransmit_counts.entry(key).or_insert(0) += 1;
-                }
-                // Mark as retransmission but store it for ladder display (capped)
-                msg.is_retransmission = true;
-                let ts = msg.timestamp;
-                if dialog.messages.len()
-                    < MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    dialog.messages.push(msg);
-                }
-                // Even a dropped (at-cap) retransmission is activity: use the
-                // arriving message's timestamp, not the stored tail's, so a
-                // retransmission flood keeps the dialog out of compact_idle.
-                dialog.updated_at = ts;
-                return;
-            }
-
-            // Update state machine
-            update_state(dialog, &msg);
-
-            // Update timing
-            update_timing(&mut dialog.timing, &msg, &dialog.method);
-
-            // SDP, REFER and SIPREC, in the one place all three arms use.
-            apply_message_derived(dialog, &msg);
-
-            // Record the message (move instead of clone, capped per D17)
-            let ts = msg.timestamp;
-            if dialog.messages.len()
-                < MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed)
-            {
-                dialog.messages.push(msg);
-            }
-            dialog.updated_at = ts;
+            advance_dialog(
+                dialog,
+                msg,
+                MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed),
+            );
         } else {
             // New dialog — check capacity
             if self.dialogs.len() >= self.max_dialogs {
@@ -1556,26 +1510,7 @@ impl DialogStore {
                 }
             }
 
-            // Create the new dialog
-            if let Some(mut dialog) = SipDialog::new(&msg) {
-                // Apply the creating message's own state transition. Dropping
-                // it is invisible in timestamp order -- the first message is
-                // the INVITE, whose effect is the `Trying` that
-                // `SipDialog::new` already set -- but a capture that begins
-                // mid-dialog leads with whatever came next, and its outcome
-                // was being thrown away: a call whose first seen message is a
-                // 486 or a CANCEL stayed `Trying`, reported as still in
-                // progress, forever.
-                update_state(&mut dialog, &msg);
-
-                // Update timing for the initial message
-                update_timing(&mut dialog.timing, &msg, &dialog.method);
-
-                // The creating message's own derived state. A SIPREC INVITE
-                // carries its metadata here and nowhere else, so an arm that
-                // only tracked SDP dropped it for the whole dialog.
-                apply_message_derived(&mut dialog, &msg);
-
+            if let Some(dialog) = open_dialog(&msg) {
                 // Insert under the SAME key the lookup used, or the next
                 // message for this unit would miss and create a duplicate.
                 let key = match composed {
@@ -1679,93 +1614,148 @@ impl DialogStore {
         self.dialogs.values()
     }
 
-    /// Fold another worker's dialogs into this one (multi-core merge, `--cores N`).
+    /// Fold other workers' dialogs into this store (multi-core merge,
+    /// `--cores N`), giving the store `--cores 1` builds from the same
+    /// packets.
     ///
-    /// # Same-Call-ID collisions are the normal case, not the rare one
+    /// # Same-key collisions are the normal case, not the rare one
     ///
     /// `crate::parallel` shards packets by host pair, which keeps an RTP stream
     /// and both directions of a flow on one worker. It does NOT keep a call's
     /// SIP on one worker: a call through a proxy or SBC is captured on two host
-    /// pairs (access side and trunk side) and therefore reconstructs as two
-    /// fragments on two workers. On a carrier capture that is most of the
-    /// traffic, not an edge case — measured at 1173 of 2311 dialogs in one
-    /// 100 MB file.
+    /// pairs (access side and trunk side), and a Call-ID that two files of an
+    /// `-I` set both carry may be on different pairs in each, so either
+    /// reconstructs as fragments on several workers. On a carrier capture that
+    /// is most of the traffic, not an edge case — measured at 1173 of 2311
+    /// dialogs in one 100 MB file.
     ///
-    /// So a collision is not a contest to be won. The fragments are disjoint
-    /// observations of one call and the merged dialog is their SUM: the message
-    /// lists are concatenated in capture-timestamp order and the state machine
-    /// is re-run over the result, reproducing what the single-threaded path
-    /// built from the same packets. Picking the longer fragment as a "base" —
-    /// which is what this used to do — discarded the other leg's signaling
-    /// outright, and because `merge` is Call-ID-keyed the loss was invisible in
-    /// every dialog *count* the tool prints.
+    /// The fragments are disjoint observations of one dialog, and the merged
+    /// dialog is the one a single store fed all of them builds: their messages
+    /// are replayed in READ order through the per-message rule
+    /// `process_message` applies (see `rebuild_in_read_order`). Read order is
+    /// the order the run read the packets in, which for a set of files is not
+    /// timestamp order when the files overlap in time; an earlier version
+    /// ordered the fragments by timestamp and combined their state, and its
+    /// result depended on which worker owned which host pair.
     ///
     /// # Arguments
     ///
-    /// * `other` — The worker store to fold in (consumed).
+    /// * `others` — The worker stores to fold in (consumed). All of them at
+    ///   once, because a dialog spread over three workers has to be replayed
+    ///   from all three fragments together.
+    /// * `read_position` — Where a message sits in the run's read order; any
+    ///   total order the caller read the messages in. `crate::parallel` gives
+    ///   (the file's place in the set, the frame's ordinal in the file).
     ///
     /// # Side effects
     ///
-    /// Inserts `other`'s distinct-Call-ID dialogs into `self`, subject to
-    /// `self`'s capacity (see below); on a collision concatenates the message
-    /// lists, unions the seen-CSeq set, retransmit counts and timing milestones
-    /// (`union_dialog_state`), and recomputes the message-derived state
-    /// (`replay_message_derived_state`); accumulates `other`'s lifetime
-    /// idle-eviction, capacity-rejection and capacity-eviction counters; and
-    /// bumps the generation counter.
+    /// Replaces this store's dialogs with the union of its own and `others'`,
+    /// one per key, inserted in the read order of each dialog's first message
+    /// and subject to `self`'s capacity (see below); accumulates `others'`
+    /// lifetime idle-eviction, capacity-rejection and capacity-eviction
+    /// counters, their dialogs-opened counts (a key two workers both opened
+    /// is counted once, as `process_message` counts it) and their engine
+    /// sightings; and bumps the generation counter.
     ///
     /// # Capacity
     ///
     /// The cap is enforced here as it is in `process_message`, because each
     /// worker enforces `--limit` only on its own shard: an unconditional insert
     /// let `--cores N` hold up to N × the cap, silently multiplying by the core
-    /// count the one number an operator sets to bound memory. Rotating stores
-    /// evict the oldest to make room, non-rotating stores reject the incoming
-    /// Call-ID, and either way the loss is counted.
-    pub fn merge(&mut self, other: DialogStore) {
+    /// count the one number an operator sets to bound memory. The dialogs are
+    /// admitted in the read order of their first message, as `process_message`
+    /// admits them, so which ones the cap keeps does not depend on the
+    /// sharding. Rotating stores evict the oldest to make room, non-rotating
+    /// stores reject the incoming key, and either way the loss is counted.
+    pub fn merge<K: Ord>(
+        &mut self,
+        others: impl IntoIterator<Item = DialogStore>,
+        read_position: impl Fn(&SipMessage) -> K,
+    ) {
         self.generation += 1;
-        for (cid, mut dialog) in other.dialogs {
-            match self.dialogs.get_index_of(&cid) {
-                Some(idx) => {
-                    let existing = &mut self.dialogs[idx];
-                    // The fragment that saw the call FIRST supplies the
-                    // identity the single-threaded path would have derived:
-                    // `SipDialog::new` mines From/To, the addresses and the
-                    // dialog `method` from the first message seen, and the
-                    // state machine dispatches on that method. Ordering by
-                    // message count instead would let a busier later leg
-                    // rename the call.
-                    if dialog.created_at < existing.created_at {
-                        std::mem::swap(existing, &mut dialog);
+        // Every fragment of every key: this store's first, then the others'
+        // in the order given. The order only breaks ties between positions.
+        let mut fragments: IndexMap<String, Vec<SipDialog>, ahash::RandomState> =
+            IndexMap::default();
+        for (key, dialog) in std::mem::take(&mut self.dialogs) {
+            fragments.entry(key).or_default().push(dialog);
+        }
+        for other in others {
+            for (key, dialog) in other.dialogs {
+                fragments.entry(key).or_default().push(dialog);
+            }
+            // Summed from the source, exactly like the counters below.
+            // Counting the inserts as well would double every dialog that
+            // survived the merge; counting nothing would lose every one the
+            // target's cap rejected. A key opened on several workers is
+            // corrected below.
+            for (method, count) in other.dialogs_opened_by_method {
+                *self.dialogs_opened_by_method.entry(method).or_insert(0) += count;
+            }
+            self.idle_messages_evicted += other.idle_messages_evicted;
+            self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
+            self.capacity_dialogs_evicted += other.capacity_dialogs_evicted;
+            self.engine_sightings.merge(other.engine_sightings);
+        }
+        let mut dialogs: Vec<(Option<K>, String, SipDialog)> = fragments
+            .into_iter()
+            .filter_map(|(key, mut parts)| {
+                let dialog = if parts.len() == 1 {
+                    parts.pop()?
+                } else {
+                    // Each worker counted its fragment as a dialog opened;
+                    // `process_message` opens the key once.
+                    for part in &parts {
+                        self.forget_opened(part.method.as_str());
                     }
-                    union_dialog_state(existing, &dialog);
-                    absorb_messages(existing, dialog.messages);
-                    replay_message_derived_state(existing);
-                }
-                None => {
-                    if self.dialogs.len() >= self.max_dialogs {
-                        if self.rotate {
-                            self.evict_oldest();
-                        } else {
-                            self.capacity_dialogs_dropped += 1;
-                            continue;
-                        }
-                    }
-                    self.dialogs.insert(cid, dialog);
+                    let dialog = rebuild_in_read_order(
+                        parts,
+                        &read_position,
+                        MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed),
+                    );
+                    *self
+                        .dialogs_opened_by_method
+                        .entry(dialog.method.as_str().to_string())
+                        .or_insert(0) += 1;
+                    dialog
+                };
+                let first = dialog.messages.first().map(&read_position);
+                Some((first, key, dialog))
+            })
+            .collect();
+        // Stable: a dialog with no message (none here; a store compacted to
+        // nothing could hold one) keeps its place after every positioned one.
+        dialogs.sort_by(|(a, ..), (b, ..)| match (a, b) {
+            (Some(a), Some(b)) => a.cmp(b),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+        for (_, key, dialog) in dialogs {
+            if self.dialogs.len() >= self.max_dialogs {
+                if self.rotate {
+                    self.evict_oldest();
+                } else {
+                    self.capacity_dialogs_dropped += 1;
+                    // Never opened, as `process_message` would never have
+                    // opened it.
+                    self.forget_opened(dialog.method.as_str());
+                    continue;
                 }
             }
+            self.dialogs.insert(key, dialog);
         }
-        // Summed from the source, exactly like the counters below. Counting
-        // the inserts above as well would double every dialog that survived
-        // the merge; counting nothing would lose every one the target's cap
-        // rejected.
-        for (method, count) in other.dialogs_opened_by_method {
-            *self.dialogs_opened_by_method.entry(method).or_insert(0) += count;
+    }
+
+    /// Take one dialog opened by `method` back out of the dialogs-opened
+    /// counts, removing the method once none is left.
+    fn forget_opened(&mut self, method: &str) {
+        if let Some(count) = self.dialogs_opened_by_method.get_mut(method) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.dialogs_opened_by_method.remove(method);
+            }
         }
-        self.idle_messages_evicted += other.idle_messages_evicted;
-        self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
-        self.capacity_dialogs_evicted += other.capacity_dialogs_evicted;
-        self.engine_sightings.merge(other.engine_sightings);
     }
 
     /// Reorder the dialogs by `key`, keeping equal keys in their current order.
@@ -2465,122 +2455,100 @@ impl DialogStore {
     }
 }
 
-/// Identity of ONE captured observation of a SIP message.
+/// Open a dialog from the first message seen for its key: the rule both
+/// [`DialogStore::process_message`] and [`DialogStore::merge`] apply, so a
+/// merged dialog is opened exactly as the single-threaded path opens it.
 ///
-/// Deliberately the whole capture event — when it was seen, between which two
-/// endpoints, and the exact bytes — and *not* the SIP-level identity
-/// (Call-ID + CSeq + branch). The distinction is the whole point of
-/// [`absorb_messages`]: when a message crosses a proxy the capture records it
-/// twice, once per host pair, and the single-threaded path stores both. Those
-/// two rows are the same *message* but different *observations*, and collapsing
-/// them would delete exactly the leg this merge exists to recover.
-///
-/// Cloning is cheap: `Bytes` is a refcounted view of the packet buffer, so the
-/// key never copies message bytes.
-#[derive(PartialEq, Eq, Hash)]
-struct CapturedObservation {
-    /// Capture timestamp of the packet that carried the message.
-    timestamp: chrono::DateTime<chrono::Utc>,
-    /// Network-layer source address.
-    src_addr: std::net::IpAddr,
-    /// Transport source port.
-    src_port: u16,
-    /// Network-layer destination address.
-    dst_addr: std::net::IpAddr,
-    /// Transport destination port.
-    dst_port: u16,
-    /// Raw message bytes exactly as captured.
-    raw: bytes::Bytes,
+/// `None` when the message cannot open one (no Call-ID, or a response with no
+/// CSeq to take the method from); see [`SipDialog::new`].
+fn open_dialog(msg: &SipMessage) -> Option<SipDialog> {
+    let mut dialog = SipDialog::new(msg)?;
+    // Apply the creating message's own state transition. Dropping it is
+    // invisible in timestamp order -- the first message is the INVITE, whose
+    // effect is the `Trying` that `SipDialog::new` already set -- but a
+    // capture that begins mid-dialog leads with whatever came next, and its
+    // outcome was being thrown away: a call whose first seen message is a 486
+    // or a CANCEL stayed `Trying`, reported as still in progress, forever.
+    update_state(&mut dialog, msg);
+
+    // Update timing for the initial message
+    update_timing(&mut dialog.timing, msg, &dialog.method);
+
+    // The creating message's own derived state. A SIPREC INVITE carries its
+    // metadata here and nowhere else, so an arm that only tracked SDP dropped
+    // it for the whole dialog.
+    apply_message_derived(&mut dialog, msg);
+    Some(dialog)
 }
 
-impl CapturedObservation {
-    /// The observation identity of `msg`.
-    fn of(msg: &SipMessage) -> Self {
-        Self {
-            timestamp: msg.timestamp,
-            src_addr: msg.src_addr,
-            src_port: msg.src_port,
-            dst_addr: msg.dst_addr,
-            dst_port: msg.dst_port,
-            raw: msg.raw.clone(),
-        }
+/// Fold one more message into a dialog the store already holds: the rule both
+/// [`DialogStore::process_message`] and [`DialogStore::merge`] apply.
+///
+/// A message whose CSeq identity (`seen_cseq_key`) the dialog has already seen
+/// is a retransmission: it is counted, marked, stored for the ladder while
+/// there is room, and changes nothing else but `updated_at`. Any other message
+/// advances the state machine, the timing milestones and the SDP, REFER and
+/// SIPREC state, and is stored while there is room. Either way `updated_at`
+/// becomes the message's timestamp. Everything here depends on the ORDER the
+/// messages arrive in, which is why a merge replays them through this function
+/// in read order rather than combining the fragments' results.
+///
+/// `cap` is the most messages the dialog stores, `MAX_MESSAGES_PER_DIALOG`
+/// for every caller but a test.
+fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
+    // Retransmission detection: same CSeq identity already seen. O(1) set
+    // probe that survives message capping and compaction (the old
+    // stored-message scan went amnesiac past the cap). First sighting is
+    // remembered, capped against CSeq cycling.
+    let seen_key = crate::sip::dialog::seen_cseq_key(&msg);
+    let retransmission = seen_key
+        .as_ref()
+        .is_some_and(|k| dialog.seen_cseq.contains(k));
+    if !retransmission
+        && dialog.seen_cseq.len() < crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG
+        && let Some(key) = seen_key
+    {
+        dialog.seen_cseq.insert(key);
     }
-}
-
-/// Append another fragment's messages to `base`'s, in capture-timestamp order.
-///
-/// # Why concatenate
-///
-/// The two fragments are one call seen on two host pairs, so their message
-/// lists are disjoint halves of the same reconstruction. Keeping one and
-/// dropping the other loses real signaling.
-///
-/// # What counts as a duplicate
-///
-/// Only a message `base` has already observed *identically* — same timestamp,
-/// same 5-tuple, same bytes (see [`CapturedObservation`]). A proxy's forwarded
-/// copy differs in source and destination address and so is kept, which is what
-/// the single-threaded path does with the same packets.
-///
-/// Two properties make that narrow rule the right one:
-///
-/// * `crate::parallel` routes each packet to exactly ONE worker, so on the
-///   `--cores` path no observation can appear in two fragments and the filter
-///   never fires. It cannot therefore change `--cores` output — it is a
-///   correctness guard for any caller that merges overlapping stores.
-/// * Only `incoming` is filtered, never `base`'s existing messages. A capture
-///   can legitimately contain the identical packet twice (a SPAN port mirroring
-///   both directions), the single-threaded path stores both, and both land on
-///   the same worker — so they must survive here too.
-///
-/// # Side effects
-///
-/// Extends, sorts and truncates `base.messages` to `MAX_MESSAGES_PER_DIALOG`.
-/// The truncation keeps the EARLIEST messages, matching `process_message`,
-/// which pushes until the cap is reached and then drops what arrives after.
-fn absorb_messages(base: &mut SipDialog, incoming: Vec<SipMessage>) {
-    if incoming.is_empty() {
+    if retransmission {
+        let cseq_key = cseq_key(&msg);
+        if let Some(key) = cseq_key {
+            *dialog.timing.retransmit_counts.entry(key).or_insert(0) += 1;
+        }
+        // Mark as retransmission but store it for ladder display (capped)
+        msg.is_retransmission = true;
+        let ts = msg.timestamp;
+        if dialog.messages.len() < cap {
+            dialog.messages.push(msg);
+        }
+        // Even a dropped (at-cap) retransmission is activity: use the arriving
+        // message's timestamp, not the stored tail's, so a retransmission flood
+        // keeps the dialog out of compact_idle.
+        dialog.updated_at = ts;
         return;
     }
-    let fresh: Vec<SipMessage> = {
-        let seen: std::collections::HashSet<CapturedObservation> =
-            base.messages.iter().map(CapturedObservation::of).collect();
-        incoming
-            .into_iter()
-            .filter(|m| !seen.contains(&CapturedObservation::of(m)))
-            .collect()
-    };
-    base.messages.extend(fresh);
-    // Stable, so equal timestamps keep base-then-incoming order.
-    base.messages.sort_by_key(|m| m.timestamp);
-    base.messages
-        .truncate(MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed));
+
+    // Update state machine
+    update_state(dialog, &msg);
+
+    // Update timing
+    update_timing(&mut dialog.timing, &msg, &dialog.method);
+
+    // SDP, REFER and SIPREC, in the one place all three arms use.
+    apply_message_derived(dialog, &msg);
+
+    // Record the message (move instead of clone, capped per D17)
+    let ts = msg.timestamp;
+    if dialog.messages.len() < cap {
+        dialog.messages.push(msg);
+    }
+    dialog.updated_at = ts;
 }
 
-/// Re-derive the per-message state of a merged dialog by replaying its whole
-/// message list, the way `process_message` derived it one message at a time.
-///
-/// Everything here is a pure function of the ordered message list, so after a
-/// merge it is stale by definition: the base fragment's state reflects only the
-/// base fragment's messages. The dialog `state` is the visible one — a worker
-/// that saw the INVITE and the ringing reports `Ringing` while the worker
-/// holding the 200 OK and the BYE saw the call complete — but the SDP timeline
-/// and the REFER/SIPREC fields have the same defect, and a merged dialog whose
-/// messages show an SDP exchange that its timeline does not is worse than
-/// either fragment alone.
-///
-/// State replay starts from the base fragment's current state rather than from
-/// scratch (`SipDialog::state` is private to the dialog module and only the
-/// state machine may write it). That is sound because the base is the fragment
-/// that saw the call FIRST, so it is the least advanced, and because every
-/// transition that could regress a call is guarded on the pre-answer states —
-/// a late 180 cannot un-answer a call, and a re-applied message is idempotent.
-///
 /// The derived state one message contributes to the dialog it belongs to.
 ///
-/// Called from all three places a message reaches a dialog: the arm that
-/// updates an existing one, the arm that creates one, and the replay a merge
-/// performs. One rule in one place, because this is what happens otherwise --
+/// Called from both places a message reaches a dialog: [`open_dialog`] and
+/// [`advance_dialog`], which a merge replays through as well. One rule in one place, because this is what happens otherwise --
 /// the update arm parsed SIPREC metadata and the creation arm did not, and an
 /// SRC puts that metadata on the INVITE that creates the dialog. The parser
 /// worked, its unit tests passed, and on a live capture the field was never
@@ -2604,99 +2572,190 @@ fn apply_message_derived(dialog: &mut SipDialog, msg: &SipMessage) {
     }
 }
 
-/// # Side effects
+/// Rebuild one key's dialog from its fragments, as the single-threaded path
+/// builds it: every fragment's messages in read order, the first through
+/// [`open_dialog`] and the rest through [`advance_dialog`].
 ///
-/// Rewrites `dialog.state`, `dialog.to_tag`, `dialog.sdp_timeline`,
-/// `dialog.refer_to` and `dialog.siprec_metadata` from `dialog.messages`.
-fn replay_message_derived_state(dialog: &mut SipDialog) {
-    let messages = std::mem::take(&mut dialog.messages);
-    dialog.sdp_timeline.clear();
-    dialog.refer_to = None;
-    dialog.siprec_metadata = None;
-    for msg in &messages {
-        update_state(dialog, msg);
-        apply_message_derived(dialog, msg);
+/// # Why replay, and why read order
+///
+/// A fragment's state is the result of ITS messages in ITS order, and most of
+/// that state cannot be combined after the fact. Which message is a
+/// retransmission depends on what was seen before it; the timing milestones
+/// keep the first sighting in processing order; `updated_at` is the last
+/// message processed; the SDP timeline lists offers and answers in processing
+/// order; the dialog's identity (From, To, method, first frame) comes from
+/// the first message. `--cores 1` processes a set file by file, in the order
+/// of each file's first packet, so when the files overlap in time that order
+/// is not timestamp order. The merge this replaced concatenated fragments in
+/// timestamp order and combined their state by rules (earliest milestone,
+/// latest `updated_at`, summed retransmits, SDP from every message, the
+/// earliest fragment as base): each was right for one shape of input, and the
+/// sum depended on which worker owned which host pair.
+///
+/// Replaying through the same two functions [`DialogStore::process_message`]
+/// uses makes the rebuilt dialog the single-threaded one by construction, for
+/// every rule those functions hold now or later.
+///
+/// # Ordering
+///
+/// `read_position` must place messages in the order the run read them. Each
+/// fragment's own list is already in that order: one worker processed it, and
+/// a worker receives its packets in read order. The fragments are merged
+/// rather than sorted, so a list whose positions are not monotonic (a TCP
+/// message released after a later frame) keeps its own order. Ties, which
+/// only messages without a frame can produce, go to the fragment whose first
+/// message comes first.
+///
+/// # What a full fragment could not keep
+///
+/// A fragment that reached `cap` (`MAX_MESSAGES_PER_DIALOG` outside tests)
+/// stopped storing messages
+/// but kept counting them, and the single-threaded path would have kept
+/// counting them too. Those messages cannot be replayed. Their effect is
+/// folded in afterwards by rules that do not depend on the order of the
+/// fragments ([`UnkeptTail`]), so the result is still independent of how the
+/// run was sharded; it is the single-threaded answer for every message the
+/// workers kept.
+fn rebuild_in_read_order<K: Ord>(
+    mut fragments: Vec<SipDialog>,
+    read_position: &impl Fn(&SipMessage) -> K,
+    cap: usize,
+) -> SipDialog {
+    let tails: Vec<UnkeptTail> = fragments
+        .iter()
+        .filter(|f| f.messages.len() >= cap)
+        .map(UnkeptTail::of)
+        .collect();
+    let mut lanes: Vec<std::collections::VecDeque<(K, SipMessage)>> = fragments
+        .iter_mut()
+        .map(|f| {
+            std::mem::take(&mut f.messages)
+                .into_iter()
+                // A message its worker marked a retransmission is one here
+                // too: the worker saw the earlier copy, which comes earlier
+                // in read order. So the marks stand, and the replay adds the
+                // ones only the whole sequence shows.
+                .map(|m| (read_position(&m), m))
+                .collect()
+        })
+        .filter(|lane: &std::collections::VecDeque<_>| !lane.is_empty())
+        .collect();
+    // Stable, so fragments whose first messages tie keep their order.
+    lanes.sort_by(|a, b| a.front().map(|(k, _)| k).cmp(&b.front().map(|(k, _)| k)));
+    let mut ordered = Vec::with_capacity(lanes.iter().map(std::collections::VecDeque::len).sum());
+    loop {
+        let mut next: Option<usize> = None;
+        for (i, lane) in lanes.iter().enumerate() {
+            let Some((key, _)) = lane.front() else {
+                continue;
+            };
+            let earlier = match next.and_then(|n| lanes[n].front()) {
+                Some((best, _)) => key < best,
+                None => true,
+            };
+            if earlier {
+                next = Some(i);
+            }
+        }
+        let Some((_, msg)) = next.and_then(|n| lanes[n].pop_front()) else {
+            break;
+        };
+        ordered.push(msg);
     }
-    dialog.messages = messages;
+    let mut messages = ordered.into_iter();
+    let Some(mut dialog) = messages.next().as_ref().and_then(open_dialog) else {
+        // No fragment kept a message that opens a dialog. Nothing can be
+        // replayed, so the first fragment stands for the key.
+        return fragments.swap_remove(0);
+    };
+    for msg in messages {
+        advance_dialog(&mut dialog, msg, cap);
+    }
+    UnkeptTail::fold_all(&tails, &mut dialog);
+    dialog
 }
 
-/// Fold the other fragment's COUNTED and MEASURED state into the `winner` on a
-/// same-Call-ID merge collision — the part that cannot simply be replayed.
+/// What a fragment that filled its message list counted about the messages it
+/// no longer stored, for [`rebuild_in_read_order`].
 ///
-/// The message-derived fields are rebuilt from the concatenated message list by
-/// [`replay_message_derived_state`]; what is left here is state a fragment
-/// accumulated but did not store: retransmit tallies whose messages were capped
-/// away, seen-CSeq identities that survive compaction, and milestones recorded
-/// on first sighting (`update_timing` writes each one only while it is `None`,
-/// so replaying cannot correct an out-of-order first observation — taking the
-/// earlier of the two can).
-///
-/// `winner` names the base fragment, not a contest result: the two copies are
-/// disjoint host-pair observations of the same call, so their state is
-/// combined, never one dropped:
-///
-/// * **seen-CSeq set** — set union (deduped by the `HashSet`), bounded by
-///   [`MAX_SEEN_CSEQ_PER_DIALOG`](crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG)
-///   so the union cannot exceed the per-dialog cap.
-/// * **retransmit counts** — summed per `"CSeq METHOD"` key: each worker
-///   counted retransmissions on its own leg, so the totals add.
-/// * **timing milestones** (`invite_sent`, `trying_at`, `ringing_at`,
-///   `answered_at`, `bye_sent`, `bye_answered`, `refer_sent_at`,
-///   `transfer_completed_at`) — earliest non-`None` wins: each records the
-///   *first* time that event was seen, so the true first is the earlier of
-///   the two observations.
-/// * **`invite_cseq`** — keep the base's if set, otherwise adopt the other's
-///   (it pins responses to the initial INVITE; either copy's value identifies
-///   the same transaction).
-/// * **`created_at`** — earliest (dialog began at the earlier sighting);
-///   **`updated_at`** — latest (most recent activity across both legs).
-fn union_dialog_state(winner: &mut SipDialog, loser: &SipDialog) {
-    // seen-CSeq set union, respecting the per-dialog cap.
-    for key in &loser.seen_cseq {
-        if winner.seen_cseq.contains(key) {
-            continue;
+/// Every fold is a union, a sum, a minimum or a maximum, so two full fragments
+/// fold to the same dialog in either order.
+struct UnkeptTail {
+    /// Retransmissions the fragment counted but did not store, per
+    /// `"CSeq METHOD"`: its counts less the retransmissions among the
+    /// messages it kept.
+    retransmits: std::collections::HashMap<String, u32>,
+    /// The fragment's milestones; a tail message can be the first sighting of
+    /// one the kept messages never reached.
+    timing: crate::sip::timing::DialogTiming,
+    /// The fragment's last activity, which a tail message set.
+    updated_at: chrono::DateTime<chrono::Utc>,
+    /// The CSeq identities the fragment saw, kept or not.
+    seen_cseq: std::collections::HashSet<String>,
+}
+
+impl UnkeptTail {
+    /// The tail of `fragment`, read before its messages are replayed.
+    fn of(fragment: &SipDialog) -> Self {
+        let mut retransmits = fragment.timing.retransmit_counts.clone();
+        for msg in fragment.messages.iter().filter(|m| m.is_retransmission) {
+            if let Some(count) = cseq_key(msg).and_then(|k| retransmits.get_mut(&k)) {
+                *count = count.saturating_sub(1);
+            }
         }
-        if winner.seen_cseq.len() >= crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG {
-            break;
+        retransmits.retain(|_, count| *count > 0);
+        Self {
+            retransmits,
+            timing: fragment.timing.clone(),
+            updated_at: fragment.updated_at,
+            seen_cseq: fragment.seen_cseq.clone(),
         }
-        winner.seen_cseq.insert(key.clone());
     }
 
-    // Retransmit counts: sum per transaction key.
-    for (key, count) in &loser.timing.retransmit_counts {
-        *winner
-            .timing
-            .retransmit_counts
-            .entry(key.clone())
-            .or_insert(0) += count;
-    }
-
-    // Timing milestones: the earliest observation of each event survives.
-    fn take_earliest(
-        dst: &mut Option<chrono::DateTime<chrono::Utc>>,
-        src: Option<chrono::DateTime<chrono::Utc>>,
-    ) {
-        *dst = match (*dst, src) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+    /// Fold every full fragment's tail into the rebuilt `dialog`.
+    fn fold_all(tails: &[Self], dialog: &mut SipDialog) {
+        if tails.is_empty() {
+            return;
+        }
+        for tail in tails {
+            for (key, count) in &tail.retransmits {
+                *dialog
+                    .timing
+                    .retransmit_counts
+                    .entry(key.clone())
+                    .or_insert(0) += count;
+            }
+            dialog.updated_at = dialog.updated_at.max(tail.updated_at);
+            for key in &tail.seen_cseq {
+                if dialog.seen_cseq.len() >= crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG {
+                    break;
+                }
+                dialog.seen_cseq.insert(key.clone());
+            }
+        }
+        // Only a milestone the replay never reached, and then the earliest
+        // any tail saw: a milestone the replay reached was reached by a kept
+        // message, which comes before every unkept one of its own fragment.
+        let earliest = |pick: fn(
+            &crate::sip::timing::DialogTiming,
+        ) -> Option<chrono::DateTime<chrono::Utc>>| {
+            tails.iter().filter_map(|t| pick(&t.timing)).min()
         };
+        let t = &mut dialog.timing;
+        t.invite_sent = t.invite_sent.or_else(|| earliest(|x| x.invite_sent));
+        t.trying_at = t.trying_at.or_else(|| earliest(|x| x.trying_at));
+        t.ringing_at = t.ringing_at.or_else(|| earliest(|x| x.ringing_at));
+        t.answered_at = t.answered_at.or_else(|| earliest(|x| x.answered_at));
+        t.bye_sent = t.bye_sent.or_else(|| earliest(|x| x.bye_sent));
+        t.bye_answered = t.bye_answered.or_else(|| earliest(|x| x.bye_answered));
+        t.refer_sent_at = t.refer_sent_at.or_else(|| earliest(|x| x.refer_sent_at));
+        t.transfer_completed_at = t
+            .transfer_completed_at
+            .or_else(|| earliest(|x| x.transfer_completed_at));
+        t.invite_cseq = t
+            .invite_cseq
+            .or_else(|| tails.iter().filter_map(|x| x.timing.invite_cseq).min());
     }
-    take_earliest(&mut winner.timing.invite_sent, loser.timing.invite_sent);
-    take_earliest(&mut winner.timing.trying_at, loser.timing.trying_at);
-    take_earliest(&mut winner.timing.ringing_at, loser.timing.ringing_at);
-    take_earliest(&mut winner.timing.answered_at, loser.timing.answered_at);
-    take_earliest(&mut winner.timing.bye_sent, loser.timing.bye_sent);
-    take_earliest(&mut winner.timing.bye_answered, loser.timing.bye_answered);
-    take_earliest(&mut winner.timing.refer_sent_at, loser.timing.refer_sent_at);
-    take_earliest(
-        &mut winner.timing.transfer_completed_at,
-        loser.timing.transfer_completed_at,
-    );
-    winner.timing.invite_cseq = winner.timing.invite_cseq.or(loser.timing.invite_cseq);
-
-    // Dialog lifetime bounds: earliest start, latest activity.
-    winner.created_at = winner.created_at.min(loser.created_at);
-    winner.updated_at = winner.updated_at.max(loser.updated_at);
 }
 
 /// Extract the `branch=` parameter value from a Via header value
@@ -2901,7 +2960,7 @@ mod tests {
         let mut b = DialogStore::new(16, false);
         b.record_engine_sighting("e1@example.invalid", engine_offer(2002, 60)?);
         b.record_engine_sighting("e2@example.invalid", engine_offer(2002, 61)?);
-        a.merge(b);
+        a.merge([b], |m| m.timestamp);
         assert_eq!(
             a.engine_sightings("e1@example.invalid"),
             [engine_offer(2001, 0)?, engine_offer(2002, 60)?],
@@ -2928,7 +2987,7 @@ mod tests {
         a.process_message(make_invite_msg("call-a@h", t0)?);
         let mut b = DialogStore::new(1000, true);
         b.process_message(make_invite_msg("call-b@h", t0)?);
-        a.merge(b);
+        a.merge([b], |m| m.timestamp);
         assert_eq!(a.len(), 2, "distinct Call-IDs unioned");
         assert!(a.get("call-a@h").is_some() && a.get("call-b@h").is_some());
 
@@ -2937,7 +2996,7 @@ mod tests {
         let mut c = DialogStore::new(1000, true);
         c.process_message(make_200_ok("call-a@h", t0 + TimeDelta::seconds(1))?);
         c.process_message(make_bye_msg("call-a@h", t0 + TimeDelta::seconds(2))?);
-        a.merge(c);
+        a.merge([c], |m| m.timestamp);
         assert_eq!(a.len(), 2, "collision is not double-counted");
         let d = a.get("call-a@h").ok_or("collided dialog")?;
         assert_eq!(
@@ -2982,7 +3041,7 @@ mod tests {
         far.process_message(observed_on_leg(&invite, proxy, uas, t0)?);
         far.process_message(observed_on_leg(&ok, uas, proxy, t1)?);
 
-        near.merge(far);
+        near.merge([far], |m| m.timestamp);
         assert_eq!(near.len(), 1, "one Call-ID, one dialog");
         assert_eq!(
             near.get("proxied@h").ok_or("dialog")?.messages.len(),
@@ -2993,42 +3052,39 @@ mod tests {
         Ok(())
     }
 
-    /// The same captured observation appearing in both fragments is folded to
-    /// one — the guard against merging overlapping inputs.
+    /// A captured observation that two fragments both hold is kept twice, as
+    /// one store fed it twice keeps it.
     ///
     /// Sharding sends each packet to exactly one worker, so this cannot happen
-    /// on the `--cores` path; it is what makes the concatenation safe for any
-    /// other caller. The identity is the whole capture observation (timestamp,
-    /// both addresses, both ports and the raw bytes), which is why the proxy
-    /// copies in `merge_reconstructs_a_proxied_call_from_both_legs` survive
-    /// while a byte-for-byte re-merge of the same store adds nothing.
+    /// on the `--cores` path. The merge used to fold such a pair to one, as a
+    /// guard for callers merging overlapping inputs; no caller does, and a
+    /// guard that made the merge disagree with `process_message` (which
+    /// stores a SPAN port's mirrored duplicate twice) is a second rule for one
+    /// question.
     #[test]
-    fn merge_folds_an_identical_observation_but_keeps_a_proxy_copy() -> Result<(), TestError> {
+    fn merge_keeps_an_identical_observation_as_one_store_does() -> Result<(), TestError> {
         let t0 = base_ts()?;
         let (uac, proxy) = (ip(10, 33, 6, 100), ip(10, 33, 6, 101));
-        let invite = make_invite_msg("dup@h", t0)?;
+        let invite = observed_on_leg(&make_invite_msg("dup@h", t0)?, uac, proxy, t0)?;
+
+        let mut serial = DialogStore::new(1000, true);
+        serial.process_message(invite.clone());
+        serial.process_message(invite.clone());
 
         let mut a = DialogStore::new(1000, true);
-        a.process_message(observed_on_leg(&invite, uac, proxy, t0)?);
-
-        // Same bytes, same timestamp, same 5-tuple: the same observation.
+        a.process_message(invite.clone());
         let mut same = DialogStore::new(1000, true);
-        same.process_message(observed_on_leg(&invite, uac, proxy, t0)?);
-        a.merge(same);
-        assert_eq!(
-            a.get("dup@h").ok_or("dialog")?.messages.len(),
-            1,
-            "an identical observation is not stored twice"
+        same.process_message(invite);
+        a.merge([same], |m| m.timestamp);
+        let (merged, one) = (
+            a.get("dup@h").ok_or("merged dialog")?,
+            serial.get("dup@h").ok_or("serial dialog")?,
         );
-
-        // Same bytes and timestamp, different host pair: a second observation.
-        let mut other_leg = DialogStore::new(1000, true);
-        other_leg.process_message(observed_on_leg(&invite, proxy, ip(10, 33, 6, 102), t0)?);
-        a.merge(other_leg);
+        assert_eq!(merged.messages.len(), 2, "both observations are kept");
         assert_eq!(
-            a.get("dup@h").ok_or("dialog")?.messages.len(),
-            2,
-            "the same message seen on another leg is a distinct observation"
+            observable(merged),
+            observable(one),
+            "the merge differs from one store fed both"
         );
         Ok(())
     }
@@ -3074,7 +3130,7 @@ mod tests {
             t0 + TimeDelta::seconds(2),
         )?);
 
-        near.merge(far);
+        near.merge([far], |m| m.timestamp);
         let d = near.get("state@h").ok_or("dialog")?;
         assert_eq!(d.messages.len(), 5, "every leg's messages are kept");
         assert_eq!(
@@ -3102,7 +3158,7 @@ mod tests {
         let mut incoming = DialogStore::new(2, true);
         incoming.process_message(make_invite_msg("new-1", t0)?);
         incoming.process_message(make_invite_msg("new-2", t0)?);
-        rotating.merge(incoming);
+        rotating.merge([incoming], |m| m.timestamp);
         assert!(
             rotating.len() <= 2,
             "merge must not exceed the store capacity: got {}",
@@ -3119,7 +3175,7 @@ mod tests {
         fixed.process_message(make_invite_msg("first-2", t0)?);
         let mut late = DialogStore::new(2, false);
         late.process_message(make_invite_msg("late-1", t0)?);
-        fixed.merge(late);
+        fixed.merge([late], |m| m.timestamp);
         assert_eq!(fixed.len(), 2, "a full no-rotate store stays at capacity");
         assert!(
             fixed.get("late-1").is_none(),
@@ -3175,7 +3231,7 @@ mod tests {
         other.process_message(make_invite_msg("o-2", t0)?);
         assert_eq!(other.total_capacity_dialogs_evicted(), 1);
         let before = store.total_capacity_dialogs_evicted();
-        store.merge(other);
+        store.merge([other], |m| m.timestamp);
         assert!(
             store.total_capacity_dialogs_evicted() > before,
             "merge folds in the other store's eviction count"
@@ -3183,83 +3239,670 @@ mod tests {
         Ok(())
     }
 
-    /// A same-Call-ID merge collision unions the losing reconstruction's
-    /// state into the winner instead of discarding it: seen-CSeq set union,
-    /// retransmit counts summed, timing milestones taken as the earliest
-    /// observation, `created_at` earliest / `updated_at` latest.
+    /// `msg` as the `index`-th message the run read: a frame pointer whose
+    /// ordinal is the read position [`read_index`] gives back.
+    fn read_as(mut msg: SipMessage, index: u64) -> SipMessage {
+        msg.frame = Some(crate::capture::packet::FrameRef {
+            source: std::sync::Arc::from("set"),
+            origin: crate::capture::packet::FrameOrigin {
+                ordinal: index,
+                digest: None,
+                verifiable: true,
+            },
+            kind: crate::capture::packet::FrameSource::Wire,
+            bytes: None,
+        });
+        msg
+    }
+
+    /// The read position [`read_as`] stamped on `msg`.
+    fn read_index(msg: &SipMessage) -> Option<u64> {
+        msg.frame.as_ref().map(|f| f.origin.ordinal)
+    }
+
+    /// Everything the reports read from one dialog, with its hashed sets in
+    /// sorted order, so that two dialogs compare by value.
+    fn observable(d: &SipDialog) -> String {
+        let mut seen: Vec<&String> = d.seen_cseq.iter().collect();
+        seen.sort();
+        let mut retransmits: Vec<(&String, &u32)> = d.timing.retransmit_counts.iter().collect();
+        retransmits.sort();
+        let messages: Vec<_> = d
+            .messages
+            .iter()
+            .map(|m| (read_index(m), m.timestamp, m.src_addr, m.is_retransmission))
+            .collect();
+        let t = &d.timing;
+        format!(
+            "{:?}",
+            (
+                (d.state(), &d.method, &d.from_user, &d.to_user, &d.to_tag),
+                (
+                    d.created_at,
+                    d.updated_at,
+                    d.first_frame.as_ref().map(|f| f.origin.ordinal)
+                ),
+                (d.src_addr, d.dst_addr, messages, seen, retransmits),
+                (t.invite_sent, t.trying_at, t.ringing_at, t.answered_at),
+                (t.bye_sent, t.bye_answered, t.invite_cseq),
+                &d.sdp_timeline,
+            )
+        )
+    }
+
+    /// One SIP message of a test call, before it is put on a leg: its first
+    /// line, Call-ID, top-Via branch, CSeq, whether the To carries the
+    /// callee's tag, and the address an SDP body names (no body when `None`).
+    struct Line<'a> {
+        first: &'a str,
+        call_id: &'a str,
+        branch: &'a str,
+        cseq: &'a str,
+        to_tag: bool,
+        sdp_addr: Option<&'a str>,
+    }
+
+    /// `line` as captured from `src` to `dst` at `ms` milliseconds.
+    fn leg_message(
+        line: Line<'_>,
+        (src, dst): (IpAddr, IpAddr),
+        ms: i64,
+    ) -> Result<SipMessage, TestError> {
+        let Line {
+            first,
+            call_id,
+            branch,
+            cseq,
+            to_tag,
+            sdp_addr,
+        } = line;
+        let body = sdp_addr.map_or_else(String::new, |a| {
+            format!(
+                "v=0\r\no=- 1 1 IN IP4 {a}\r\ns=-\r\nc=IN IP4 {a}\r\nt=0 0\r\n\
+                 m=audio 40000 RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+            )
+        });
+        let via = format!("Via: SIP/2.0/UDP {src}:5060;branch=z9hG4bK-{branch}");
+        let call = format!("Call-ID: {call_id}");
+        let cseq = format!("CSeq: {cseq}");
+        let to = if to_tag {
+            "To: <sip:bob@example.com>;tag=callee"
+        } else {
+            "To: <sip:bob@example.com>"
+        };
+        let length = format!("Content-Length: {}", body.len());
+        let mut headers = vec![
+            via.as_str(),
+            "From: <sip:alice@example.com>;tag=caller",
+            to,
+            call.as_str(),
+            cseq.as_str(),
+        ];
+        if !body.is_empty() {
+            headers.push("Content-Type: application/sdp");
+        }
+        headers.push(length.as_str());
+        let raw = build_sip(first, &headers, body.as_bytes());
+        let ts = base_ts()? + TimeDelta::milliseconds(ms);
+        Ok(
+            parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("should parse {first}: {e:?}"))?,
+        )
+    }
+
+    /// Three legs and the messages a run read on them, in read order, with
+    /// the leg each one was read on.
+    ///
+    /// Read order is not timestamp order: the run read one file, then a
+    /// second whose packets are mostly OLDER than the first file's last ones,
+    /// which is how `-I` reads a set of files that overlap in time. Call
+    /// `two-use@h` is used twice in the first file (a 486, then an answered
+    /// call on another leg) and appears again in the second, where its INVITE
+    /// reuses the first use's branch, so `process_message` reads it as a
+    /// retransmission. Call `ring@h` rings in the first file and again,
+    /// earlier, in the second, so its ringing milestone depends on the order.
+    /// Call `alone@h` is on one leg only.
+    fn read_sequence() -> Result<Vec<(usize, SipMessage)>, TestError> {
+        let legs = [
+            (ip(192, 0, 2, 1), ip(198, 51, 100, 1)),
+            (ip(192, 0, 2, 2), ip(198, 51, 100, 2)),
+            (ip(203, 0, 113, 1), ip(198, 51, 100, 3)),
+        ];
+        let rev = |(a, b): (IpAddr, IpAddr)| (b, a);
+        let inv = "INVITE sip:bob@example.com SIP/2.0";
+        let ack = "ACK sip:bob@example.com SIP/2.0";
+        let bye = "BYE sip:bob@example.com SIP/2.0";
+        let two = "two-use@h";
+        let mut seq = vec![
+            // First file.
+            (
+                0,
+                leg_message(
+                    Line {
+                        first: inv,
+                        call_id: two,
+                        branch: "a1",
+                        cseq: "1 INVITE",
+                        to_tag: false,
+                        sdp_addr: Some("192.0.2.1"),
+                    },
+                    legs[0],
+                    0,
+                )?,
+            ),
+            (
+                0,
+                leg_message(
+                    Line {
+                        first: inv,
+                        call_id: "ring@h",
+                        branch: "r1",
+                        cseq: "1 INVITE",
+                        to_tag: false,
+                        sdp_addr: None,
+                    },
+                    legs[0],
+                    50,
+                )?,
+            ),
+            (
+                0,
+                leg_message(
+                    Line {
+                        first: "SIP/2.0 180 Ringing",
+                        call_id: two,
+                        branch: "a1",
+                        cseq: "1 INVITE",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    rev(legs[0]),
+                    100,
+                )?,
+            ),
+            (
+                0,
+                leg_message(
+                    Line {
+                        first: "SIP/2.0 486 Busy Here",
+                        call_id: two,
+                        branch: "a1",
+                        cseq: "1 INVITE",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    rev(legs[0]),
+                    300,
+                )?,
+            ),
+            (
+                0,
+                leg_message(
+                    Line {
+                        first: ack,
+                        call_id: two,
+                        branch: "a1",
+                        cseq: "1 ACK",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    legs[0],
+                    310,
+                )?,
+            ),
+            (
+                1,
+                leg_message(
+                    Line {
+                        first: inv,
+                        call_id: "alone@h",
+                        branch: "x1",
+                        cseq: "1 INVITE",
+                        to_tag: false,
+                        sdp_addr: None,
+                    },
+                    legs[1],
+                    900,
+                )?,
+            ),
+            (
+                0,
+                leg_message(
+                    Line {
+                        first: "SIP/2.0 180 Ringing",
+                        call_id: "ring@h",
+                        branch: "r1",
+                        cseq: "1 INVITE",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    rev(legs[0]),
+                    1600,
+                )?,
+            ),
+            (
+                1,
+                leg_message(
+                    Line {
+                        first: inv,
+                        call_id: two,
+                        branch: "a2",
+                        cseq: "1 INVITE",
+                        to_tag: false,
+                        sdp_addr: Some("192.0.2.2"),
+                    },
+                    legs[1],
+                    2000,
+                )?,
+            ),
+            (
+                1,
+                leg_message(
+                    Line {
+                        first: "SIP/2.0 200 OK",
+                        call_id: two,
+                        branch: "a2",
+                        cseq: "1 INVITE",
+                        to_tag: true,
+                        sdp_addr: Some("198.51.100.2"),
+                    },
+                    rev(legs[1]),
+                    2300,
+                )?,
+            ),
+            (
+                1,
+                leg_message(
+                    Line {
+                        first: ack,
+                        call_id: two,
+                        branch: "a2-ack",
+                        cseq: "1 ACK",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    legs[1],
+                    2310,
+                )?,
+            ),
+            (
+                1,
+                leg_message(
+                    Line {
+                        first: bye,
+                        call_id: two,
+                        branch: "a2-bye",
+                        cseq: "2 BYE",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    legs[1],
+                    2500,
+                )?,
+            ),
+            (
+                1,
+                leg_message(
+                    Line {
+                        first: "SIP/2.0 200 OK",
+                        call_id: two,
+                        branch: "a2-bye",
+                        cseq: "2 BYE",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    rev(legs[1]),
+                    2505,
+                )?,
+            ),
+            // Second file: older packets, read later.
+            (
+                2,
+                leg_message(
+                    Line {
+                        first: inv,
+                        call_id: two,
+                        branch: "a1",
+                        cseq: "1 INVITE",
+                        to_tag: false,
+                        sdp_addr: Some("203.0.113.1"),
+                    },
+                    legs[2],
+                    400,
+                )?,
+            ),
+            (
+                2,
+                leg_message(
+                    Line {
+                        first: inv,
+                        call_id: "ring@h",
+                        branch: "r1",
+                        cseq: "1 INVITE",
+                        to_tag: false,
+                        sdp_addr: None,
+                    },
+                    legs[2],
+                    450,
+                )?,
+            ),
+            (
+                2,
+                leg_message(
+                    Line {
+                        first: "SIP/2.0 180 Ringing",
+                        call_id: "ring@h",
+                        branch: "r1",
+                        cseq: "1 INVITE",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    rev(legs[2]),
+                    500,
+                )?,
+            ),
+            (
+                2,
+                leg_message(
+                    Line {
+                        first: "SIP/2.0 200 OK",
+                        call_id: two,
+                        branch: "a1",
+                        cseq: "1 INVITE",
+                        to_tag: true,
+                        sdp_addr: Some("198.51.100.3"),
+                    },
+                    rev(legs[2]),
+                    700,
+                )?,
+            ),
+            (
+                2,
+                leg_message(
+                    Line {
+                        first: bye,
+                        call_id: two,
+                        branch: "a3-bye",
+                        cseq: "2 BYE",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    legs[2],
+                    1000,
+                )?,
+            ),
+        ];
+        for (i, (_, msg)) in seq.iter_mut().enumerate() {
+            *msg = read_as(msg.clone(), u64::try_from(i)?);
+        }
+        Ok(seq)
+    }
+
+    /// One store fed `seq` in order: what `--cores 1` builds.
+    fn serial_store(seq: &[(usize, SipMessage)]) -> DialogStore {
+        let mut store = DialogStore::new(1000, true);
+        for (_, msg) in seq {
+            store.process_message(msg.clone());
+        }
+        store
+    }
+
+    /// A merge gives the store one store fed every message in read order
+    /// gives, whichever worker each leg was on and whatever order the
+    /// workers are merged in.
+    ///
+    /// This is the rule `--cores N` depends on to match `--cores 1`. Every
+    /// assignment of the three legs to one, two or three workers is tried,
+    /// with the workers merged first to last and last to first. The merge
+    /// this replaced ordered a dialog's fragments by timestamp and combined
+    /// their state (earliest milestone, latest activity, summed
+    /// retransmits), and failed here on the duration, the retransmissions,
+    /// the ringing time and the SDP timeline.
     #[test]
-    fn merge_unions_collision_state_not_just_messages() -> Result<(), TestError> {
-        let t0 = base_ts()?;
-        let t1 = t0 + TimeDelta::seconds(1);
-        let t5 = t0 + TimeDelta::seconds(5);
-        let t6 = t0 + TimeDelta::seconds(6);
+    fn merge_equals_one_store_fed_every_fragment_in_read_order() -> Result<(), TestError> {
+        let seq = read_sequence()?;
+        let serial = serial_store(&seq);
+        let keys = |s: &DialogStore| s.iter().map(|d| d.call_id.clone()).collect::<Vec<_>>();
+        let mut tried = 0;
+        for workers in 1..=3usize {
+            for assignment in 0..workers.pow(3) {
+                // Leg l goes to worker digit l of `assignment` in base `workers`.
+                let worker_of = |leg: usize| (assignment / workers.pow(leg as u32)) % workers;
+                for reversed in [false, true] {
+                    let mut stores: Vec<DialogStore> =
+                        (0..workers).map(|_| DialogStore::new(1000, true)).collect();
+                    for (leg, msg) in &seq {
+                        stores[worker_of(*leg)].process_message(msg.clone());
+                    }
+                    if reversed {
+                        stores.reverse();
+                    }
+                    let mut merged = DialogStore::new(1000, true);
+                    merged.merge(stores, read_index);
+                    let what =
+                        format!("{workers} workers, assignment {assignment}, reversed {reversed}");
+                    assert_eq!(keys(&merged), keys(&serial), "{what}: dialog order");
+                    for d in serial.iter() {
+                        let m = merged
+                            .get(&d.call_id)
+                            .ok_or(format!("{what}: {} missing", d.call_id))?;
+                        assert_eq!(observable(m), observable(d), "{what}: {}", d.call_id);
+                    }
+                    assert_eq!(
+                        merged.total_dialogs_opened(),
+                        serial.total_dialogs_opened(),
+                        "{what}: a key two workers opened is one dialog opened"
+                    );
+                    tried += 1;
+                }
+            }
+        }
+        assert_eq!(tried, 2 * (1 + 8 + 27), "every assignment was tried");
+        Ok(())
+    }
 
-        // Winner: more messages (INVITE + 3 retransmissions), no answer/BYE.
-        let mut a = DialogStore::new(1000, true);
-        a.process_message(make_invite_msg("call-x@h", t0)?);
-        a.process_message(make_invite_msg("call-x@h", t0)?); // retransmit
-        a.process_message(make_invite_msg("call-x@h", t0)?); // retransmit
-        a.process_message(make_invite_msg("call-x@h", t0)?); // retransmit
+    /// The fixture's calls really do differ between read order and timestamp
+    /// order, so the test above cannot pass on a merge that orders by time.
+    #[test]
+    fn the_read_sequence_is_not_in_timestamp_order() -> Result<(), TestError> {
+        let seq = read_sequence()?;
+        let serial = serial_store(&seq);
+        let two = serial.get("two-use@h").ok_or("two-use@h")?;
         assert_eq!(
-            a.get("call-x@h")
-                .ok_or("call-x@h is in the store")?
-                .timing
-                .total_retransmits(),
-            3
+            two.updated_at,
+            base_ts()? + TimeDelta::milliseconds(1000),
+            "the last message READ is the second file's BYE, older than the first file's last"
         );
+        assert_eq!(
+            two.timing.total_retransmits(),
+            1,
+            "the second file's INVITE reuses the first use's branch"
+        );
+        let ring = serial.get("ring@h").ok_or("ring@h")?;
+        assert_eq!(
+            ring.timing.ringing_at,
+            Some(base_ts()? + TimeDelta::milliseconds(1600)),
+            "the first 180 READ, not the earliest"
+        );
+        Ok(())
+    }
 
-        // Loser: fewer messages but distinct state — later INVITE start, one
-        // retransmit, an answer and a BYE the winner never saw.
-        let mut b = DialogStore::new(1000, true);
-        b.process_message(make_invite_msg("call-x@h", t1)?);
-        b.process_message(make_invite_msg("call-x@h", t1)?); // retransmit
-        b.process_message(make_200_ok("call-x@h", t5)?);
-        b.process_message(make_bye_msg("call-x@h", t6)?);
-        assert_eq!(
-            b.get("call-x@h")
-                .ok_or("call-x@h is in the store")?
-                .timing
-                .total_retransmits(),
-            1
+    /// When two fragments' messages tie on read position, which only
+    /// messages without a frame can, the fragment whose first message comes
+    /// first goes first, whatever order the fragments are merged in.
+    #[test]
+    fn a_tie_in_read_position_does_not_depend_on_fragment_order() -> Result<(), TestError> {
+        let legs = [
+            (ip(192, 0, 2, 1), ip(198, 51, 100, 1)),
+            (ip(203, 0, 113, 1), ip(198, 51, 100, 3)),
+        ];
+        let rev = |(a, b): (IpAddr, IpAddr)| (b, a);
+        let fragments = || -> Result<[DialogStore; 2], TestError> {
+            let mut near = DialogStore::new(1000, true);
+            near.process_message(leg_message(
+                Line {
+                    first: "INVITE sip:bob@example.com SIP/2.0",
+                    call_id: "tie@h",
+                    branch: "t1",
+                    cseq: "1 INVITE",
+                    to_tag: false,
+                    sdp_addr: None,
+                },
+                legs[0],
+                0,
+            )?);
+            near.process_message(leg_message(
+                Line {
+                    first: "SIP/2.0 180 Ringing",
+                    call_id: "tie@h",
+                    branch: "t1",
+                    cseq: "1 INVITE",
+                    to_tag: true,
+                    sdp_addr: None,
+                },
+                rev(legs[0]),
+                5,
+            )?);
+            let mut far = DialogStore::new(1000, true);
+            far.process_message(leg_message(
+                Line {
+                    first: "SIP/2.0 200 OK",
+                    call_id: "tie@h",
+                    branch: "t2",
+                    cseq: "1 INVITE",
+                    to_tag: true,
+                    sdp_addr: None,
+                },
+                rev(legs[1]),
+                5,
+            )?);
+            Ok([near, far])
+        };
+        let [near, far] = fragments()?;
+        let mut forward = DialogStore::new(1000, true);
+        forward.merge([near, far], |m| m.timestamp);
+        let [near, far] = fragments()?;
+        let mut backward = DialogStore::new(1000, true);
+        backward.merge([far, near], |m| m.timestamp);
+        let (f, b) = (
+            forward.get("tie@h").ok_or("forward")?,
+            backward.get("tie@h").ok_or("backward")?,
         );
+        assert_eq!(
+            observable(f),
+            observable(b),
+            "the order of the fragments decided a tie"
+        );
+        assert_eq!(
+            f.messages.iter().map(|m| m.src_addr).collect::<Vec<_>>(),
+            [legs[0].0, legs[0].1, legs[1].1],
+            "the 180 of the fragment that began first, then the tied 200"
+        );
+        Ok(())
+    }
 
-        a.merge(b);
-        assert_eq!(a.len(), 1, "same Call-ID stays a single dialog");
-        let d = a.get("call-x@h").ok_or("call-x@h is in the store")?;
-
-        // Retransmit counts are summed across both reconstructions.
+    /// A fragment that filled its message list folds in what it counted but
+    /// could not keep, the same whichever order the fragments come in.
+    ///
+    /// The full fragment is built as a worker at a cap of two builds it: one
+    /// store fed every message, its list then cut to the two it would have
+    /// kept. Its counts still cover all five.
+    #[test]
+    fn a_full_fragment_folds_its_unkept_tail_in_either_order() -> Result<(), TestError> {
+        const CAP: usize = 2;
+        let legs = [
+            (ip(192, 0, 2, 1), ip(198, 51, 100, 1)),
+            (ip(203, 0, 113, 1), ip(198, 51, 100, 3)),
+        ];
+        let inv = "INVITE sip:bob@example.com SIP/2.0";
+        let bye = "BYE sip:bob@example.com SIP/2.0";
+        let full = || -> Result<SipDialog, TestError> {
+            let mut store = DialogStore::new(1000, true);
+            // An INVITE and three retransmissions, then a BYE.
+            for (i, ms) in [0, 10, 20, 30].into_iter().enumerate() {
+                store.process_message(read_as(
+                    leg_message(
+                        Line {
+                            first: inv,
+                            call_id: "tail@h",
+                            branch: "t1",
+                            cseq: "1 INVITE",
+                            to_tag: false,
+                            sdp_addr: None,
+                        },
+                        legs[0],
+                        ms,
+                    )?,
+                    u64::try_from(i)?,
+                ));
+            }
+            store.process_message(read_as(
+                leg_message(
+                    Line {
+                        first: bye,
+                        call_id: "tail@h",
+                        branch: "t1-bye",
+                        cseq: "2 BYE",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    legs[0],
+                    5000,
+                )?,
+                4,
+            ));
+            let mut d = store.dialogs.swap_remove("tail@h").ok_or("full fragment")?;
+            d.messages.truncate(CAP);
+            Ok(d)
+        };
+        let other = || -> Result<SipDialog, TestError> {
+            let mut store = DialogStore::new(1000, true);
+            store.process_message(read_as(
+                leg_message(
+                    Line {
+                        first: "SIP/2.0 200 OK",
+                        call_id: "tail@h",
+                        branch: "t9",
+                        cseq: "1 INVITE",
+                        to_tag: true,
+                        sdp_addr: None,
+                    },
+                    legs[1],
+                    100,
+                )?,
+                5,
+            ));
+            Ok(store
+                .dialogs
+                .swap_remove("tail@h")
+                .ok_or("other fragment")?)
+        };
+        let forward = rebuild_in_read_order(vec![full()?, other()?], &read_index, CAP);
+        let backward = rebuild_in_read_order(vec![other()?, full()?], &read_index, CAP);
         assert_eq!(
-            d.timing.total_retransmits(),
-            4,
-            "retransmit counts unioned (summed), not dropped"
-        );
-        // Timing milestones: earliest non-None wins.
-        assert_eq!(
-            d.timing.invite_sent,
-            Some(t0),
-            "earliest INVITE timestamp survives"
+            observable(&forward),
+            observable(&backward),
+            "fragment order changed the result"
         );
         assert_eq!(
-            d.timing.answered_at,
-            Some(t5),
-            "answer milestone adopted from the losing reconstruction"
+            forward.messages.len(),
+            CAP,
+            "the cap still bounds the merged list"
         );
         assert_eq!(
-            d.timing.bye_sent,
-            Some(t6),
-            "BYE milestone adopted from the losing reconstruction"
+            forward.timing.total_retransmits(),
+            3,
+            "the retransmissions the full fragment counted but did not keep are kept"
         );
-        // created_at earliest, updated_at latest.
-        assert_eq!(d.created_at, t0, "created_at is the earliest of the two");
-        assert_eq!(d.updated_at, t6, "updated_at is the latest of the two");
-        // seen-CSeq set union: the loser's 200-OK and BYE identities are folded in.
-        assert!(
-            d.seen_cseq.iter().any(|k| k.contains("2 BYE")),
-            "loser's BYE seen-CSeq identity unioned in"
+        assert_eq!(
+            forward.timing.bye_sent,
+            Some(base_ts()? + TimeDelta::milliseconds(5000)),
+            "a milestone only an unkept message reached is folded in"
         );
-        assert!(
-            d.seen_cseq.iter().any(|k| k.starts_with("r200")),
-            "loser's 200-OK seen-CSeq identity unioned in"
+        assert_eq!(
+            forward.updated_at,
+            base_ts()? + TimeDelta::milliseconds(5000),
+            "the unkept tail's last activity"
         );
         Ok(())
     }
@@ -3343,7 +3986,7 @@ mod tests {
         other.process_message(make_invite_msg("m-1", base_ts()?)?);
         other.process_message(make_invite_msg("m-2", base_ts()?)?); // dropped
         assert_eq!(other.total_capacity_dialogs_dropped(), 1);
-        store.merge(other);
+        store.merge([other], |m| m.timestamp);
         assert_eq!(store.len(), 2, "merge respects the capacity of its target");
         assert_eq!(
             store.total_capacity_dialogs_dropped(),
@@ -6484,12 +7127,13 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         Ok(())
     }
 
-    /// A merge carries the source's opens, and does not recount them.
+    /// A merge carries the source's opens, does not recount them, and takes
+    /// back the ones its own cap rejects.
     ///
     /// The other cumulative counters are summed from the source at merge time.
     /// Counting an insert here as well would double every dialog that survived
-    /// the merge, and counting nothing would lose every dialog the target's
-    /// cap rejected.
+    /// the merge. A dialog the target's cap rejects is one `process_message`
+    /// would never have opened.
     #[test]
     fn a_merge_adds_the_sources_opens_exactly_once() -> Result<(), TestError> {
         let mut store = DialogStore::new(1, false);
@@ -6500,11 +7144,12 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         other.process_message(make_invite_msg("s-2", base_ts()?)?);
         assert_eq!(other.total_dialogs_opened(), 2);
 
-        store.merge(other);
+        store.merge([other], |m| m.timestamp);
         assert_eq!(
             store.total_dialogs_opened(),
-            3,
-            "one of its own plus the source's two, however many the cap kept"
+            1,
+            "its own one: the two the target's cap rejected were never opened, \
+             as one store fed all three never opens them"
         );
         Ok(())
     }

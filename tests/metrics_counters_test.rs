@@ -291,6 +291,7 @@ fn a_cores_read_counts_each_packet_it_read_once() -> Result<(), Box<dyn std::err
         max_reassembly: 1024,
         reassembly: Default::default(),
         parse_limit: Default::default(),
+        shard_assignment: 0,
         portrange: (5060, 5061),
         no_dialog: false,
         dialog_tracking: Default::default(),

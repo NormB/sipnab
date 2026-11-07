@@ -245,7 +245,7 @@ AssertWithoutMessage	src/sip/contact_rewrite.rs	16
 AssertWithoutMessage	src/sip/diagnosis.rs	68
 AssertWithoutMessage	src/sip/dialog.rs	74
 AssertWithoutMessage	src/sip/dialog_state_machine.rs	2
-AssertWithoutMessage	src/sip/dialog_store.rs	147
+AssertWithoutMessage	src/sip/dialog_store.rs	145
 AssertWithoutMessage	src/sip/dsl.rs	290
 AssertWithoutMessage	src/sip/endpoint.rs	14
 AssertWithoutMessage	src/sip/group_metrics.rs	16

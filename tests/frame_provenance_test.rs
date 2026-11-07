@@ -296,6 +296,7 @@ fn the_parallel_reader_gives_each_file_of_a_set_its_own_source() -> Result<(), T
         max_reassembly: 1024,
         reassembly: Default::default(),
         parse_limit: Default::default(),
+        shard_assignment: 0,
         portrange: (1, 65535),
         no_dialog: false,
         dialog_tracking: Default::default(),

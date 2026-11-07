@@ -950,7 +950,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // links .config/nextest.toml and the action (+2). Measured: with HEAD's
     // testing.md swapped back in the scan reads 757, with HEAD's
     // build-ci-release.md 759.
-    const EXPECTED_CODE_LINKS: usize = 761;
+    // 761 -> 763 (PARALLEL-MULTIFILE-CALLID-DIVERGENCE):
+    // docs/internals/subsystem-guide.md's paragraph on the dialog merge links
+    // src/sip/dialog_store.rs and tests/cores_callid_span_test.rs (+2); every
+    // other developer page unchanged.
+    const EXPECTED_CODE_LINKS: usize = 763;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1025,7 +1029,10 @@ fn linked_symbols_resolve_to_a_definition() -> Result<(), TestError> {
     // same paragraph instead. One symbol claim out, one in, same page.
     // 88 -> 86: the same two citations of `run_offline_parallel()`, removed
     // with the function (docs/internals/subsystem-guide.md, threading.md).
-    const EXPECTED_SYMBOL_CLAIMS: usize = 86;
+    // 86 -> 87: docs/internals/subsystem-guide.md cites `DialogStore::merge()`
+    // in its paragraph on the dialog merge (+1); every other developer page
+    // unchanged.
+    const EXPECTED_SYMBOL_CLAIMS: usize = 87;
     // A definition boundary, not a substring. `source.contains("fn run_offline_paral")`
     // was satisfied by `fn run_offline_parallel`, so a doc could name a function
     // that has never existed and resolve against a real one whose name merely
