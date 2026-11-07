@@ -325,6 +325,9 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     (
         "cacert",
         &[
+            // The fleet center how-to's `curl` heartbeat and members read.
+            "docs/fleet.md",
+            "website/content/docs/fleet.md",
             "docs/vcon.md",
             "website/content/docs/vcon.md",
             "docs/auth.md",
@@ -457,7 +460,13 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // turn it into one.
     (
         "data-binary",
-        &["docs/rest-api.md", "website/content/docs/api.md"],
+        &[
+            "docs/rest-api.md",
+            "website/content/docs/api.md",
+            // The fleet center how-to POSTs a heartbeat file with curl.
+            "docs/fleet.md",
+            "website/content/docs/fleet.md",
+        ],
     ),
     // `cargo llvm-cov`'s, named by the coverage note that documents the CI
     // gate and the local rehearsal of it. `--fail-under-lines` is the floor
@@ -6045,7 +6054,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 2026-11-07 entry of benches/BASELINES.md (+1). Not mirrored to the
     // site. Counted per file against origin/main 520857987: no other changed
     // page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1415;
+    // 1415 -> 1417 (fleet center P1): the heartbeat field table in
+    // docs/fleet.md's "Run a fleet center" (+1) and its site mirror
+    // website/content/docs/fleet.md (+1). Counted per file against
+    // origin/main f8705d984.
+    const EXPECTED_TABLES: usize = 1417;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

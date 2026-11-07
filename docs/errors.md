@@ -5138,6 +5138,155 @@ so the URL most likely names something that is not a sipnab REST API.
 
 **Exit code:** 1. The other instances are still in the report.
 
+## Fleet center (`sipnab fleet serve`)
+
+`sipnab fleet serve` prints these messages, and answers a member with some of
+them. [Run a fleet center](fleet.md#run-a-fleet-center) describes the command.
+A message that starts with `sipnab fleet serve:` stops the center with exit
+code 2. A message the center answers a member with goes in the `detail` of a
+`400` answer, and the center keeps running.
+
+### `sipnab fleet serve: {e}`
+
+The center refused to start. The rest of the message says why: an argument, the
+signing key, the store or the listener, each with its own entry here or under
+the flag it names. A listener problem names the address or the TLS file, as
+the REST API's does.
+
+**What to do:** Fix what the rest of the message names, and start the center
+again.
+
+**Exit code:** 2.
+
+### `sipnab fleet serve: the runtime did not start: {e}`
+
+The center could not start the threads it serves with. The system is short of
+threads or memory.
+
+**What to do:** Check the user's process and memory limits (`ulimit -u`,
+`ulimit -v`, the unit's `TasksMax=`).
+
+**Exit code:** 2.
+
+### `--signing-key-file '{}' is empty`
+
+The center's signing key file holds nothing but whitespace. The center needs
+the key to verify member and reader tokens.
+
+**What to do:** Put the key in the file, for example
+`head -c 32 /dev/urandom | base64 > /etc/sipnab/center.signing`, and mint the
+tokens again with it.
+
+**Exit code:** 2.
+
+### `--store '{}' {why}`
+
+Other users can read or write the store file. The store holds every member's
+inventory. The message ends `can be read or written by other users (mode
+0644); chmod 600 it`, with the file's mode.
+
+**What to do:** Run `chmod 600` on the store file, as the center's user.
+
+**Exit code:** 2.
+
+### `--store '{shown}': {e}`
+
+The center could not read or create the store file. The rest of the message is
+the system's reason, such as `Permission denied (os error 13)` or `No such file
+or directory (os error 2)` for a directory that does not exist.
+
+**What to do:** Create the store's directory, owned by the center's user.
+
+**Exit code:** 2.
+
+### `--store '{shown}': line {} is not a member record: {e}`
+
+A line of the store file, before its last line, is not a record the center
+wrote. Someone edited the file, or `--store` names another file.
+
+**What to do:** Check that `--store` names the center's store. To start again
+with no members, move the file away. Members reappear with their next
+heartbeat.
+
+**Exit code:** 2.
+
+### `--store '{shown}': line {} is incomplete, from a write the center did not finish; it is dropped`
+
+A warning. The last line of the store is incomplete, because the center
+stopped while writing it. The center never acknowledged that heartbeat, so the
+member sends it again.
+
+**What to do:** Nothing.
+
+### `fleet center: the store could not be written: {e}`
+
+The center could not append a heartbeat to its store, for the system's reason
+in the message, such as a full disk. It answers the member `503` and counts
+nothing, so the member sends the batch again.
+
+**What to do:** Free space on the store's file system, or fix its
+permissions.
+
+### `fleet center: the store was not rewritten: {e}`
+
+A warning. Every minute in which heartbeats arrived or retention removed a
+member, the center rewrites its store, and the rewrite failed. The store still holds every heartbeat. It stays larger
+than it needs to be until a rewrite succeeds.
+
+**What to do:** Free space on the store's file system, or fix the permissions
+of its directory: the rewrite creates a file beside the store.
+
+### `fleet center: the store was not rewritten on the way out: {e}`
+
+A warning, as the one above, from the rewrite the center makes when it stops.
+
+**What to do:** As above. The next start rewrites the store.
+
+### `fleet member '{}' is silent: no heartbeat for {} s, more than {missed} of its {} s intervals`
+
+A warning. The center has had no heartbeat from the member for more than
+`--silent-after-missed` of the intervals the member said it sends at. A line
+`fleet member '<member>' is heard again` follows when one arrives.
+
+**What to do:** Check the member: whether it runs, whether it reaches the
+center, and whether the center refuses its token (`401`).
+
+### `line {n}: more than {MAX_BATCH_RECORDS} records in one batch`
+
+The center's answer to an ingest batch with more than 1000 records. It
+accepted none of them.
+
+**What to do:** Send at most 1000 records per request.
+
+### `schema_version {}; this center reads {RECORD_SCHEMA_VERSION}`
+
+The center's answer to a record of another format version, after the line
+number. It reads version 1, and accepted none of the batch.
+
+**What to do:** Run the same sipnab version on the center as on the members,
+or a newer one on the center.
+
+### `kind {:?}; this center accepts {KIND_HEARTBEAT:?}`
+
+The center's answer to a record whose `kind` is not `heartbeat`, after the
+line number. It accepted none of the batch.
+
+**What to do:** Send only heartbeats to this center's version.
+
+### `stream must be 1 to {MAX_ID_LEN} letters, digits, '.', '_' or '-'`
+
+The center's answer to a record whose `stream` is empty, longer than 64
+characters, or holds another character, after the line number.
+
+**What to do:** Choose a stream id of letters, digits, `.`, `_` and `-`.
+
+### `heartbeat_secs {} is outside {MIN_HEARTBEAT_SECS} to {MAX_HEARTBEAT_SECS}`
+
+The center's answer to a record whose interval is under 1 second or over
+3600, after the line number.
+
+**What to do:** Send `heartbeat_secs` from 1 to 3600.
+
 ## Startup, privileges and the process
 
 ### `--allow-coredump: a core dump would contain the archive password this run holds`

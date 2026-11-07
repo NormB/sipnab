@@ -1107,3 +1107,31 @@ fn a_rotated_secret_file_shows_in_the_inventory() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+/// A fleet member's `fleet-report` token, minted with an instance's own
+/// key, opens nothing on that instance's REST API: not the inventory, not
+/// the dialogs, not the metrics. It is a credential for a fleet center's
+/// ingest alone.
+#[test]
+fn a_fleet_report_token_opens_nothing_on_an_instance() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (cfg, _) = config_file(dir.path(), "r.toml", "edge-r.cred")?;
+    let srv = instance("edge-r", &cfg)?;
+    let report = sipnab::auth::mint(
+        KEY.as_bytes(),
+        "edge-r",
+        chrono::Utc::now().timestamp() + 3600,
+        sipnab::auth::AUDIENCE_API,
+        sipnab::auth::SCOPE_FLEET_REPORT,
+    );
+    for path in ["/v1/inventory", "/v1/dialogs", "/v1/stats", "/metrics"] {
+        let resp = srv.get_bearer(path, &report)?;
+        assert_eq!(resp.status, 401, "{path}: {}", resp.body);
+    }
+    assert_eq!(
+        srv.get_bearer("/v1/inventory", &inventory_token())?.status,
+        200,
+        "the route answers an inventory token, so the 401 is the scope's"
+    );
+    Ok(())
+}

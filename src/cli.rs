@@ -5011,15 +5011,20 @@ pub struct TokenArgs {
     /// /v1/calls/{call_id}/audio`, and nothing else; no other scope reaches
     /// them. REST API tokens only.
     ///
-    /// An `inventory` token reaches `GET /v1/inventory` and nothing else —
-    /// mint one for `sipnab fleet inventory` rather than handing a fleet
-    /// controller a credential that reads every call. REST API tokens only.
+    /// An `inventory` token reaches `GET /v1/inventory` and, on a fleet
+    /// center, `GET /v1/fleet/members`, and nothing else — mint one for
+    /// `sipnab fleet inventory` rather than handing a fleet controller a
+    /// credential that reads every call. REST API tokens only.
+    ///
+    /// A `fleet-report` token reaches a fleet center's `POST
+    /// /v1/fleet/ingest` and nothing else, and no other scope reaches it:
+    /// its `--token-id` is the member's name. REST API tokens only.
     #[arg(
         help_heading = "Token minting",
         long = "token-scope",
         value_name = "SCOPE",
         default_value = "full",
-        value_parser = ["full", "metrics", "read", "actions", "admin", "audio", "inventory"]
+        value_parser = ["full", "metrics", "read", "actions", "admin", "audio", "inventory", "fleet-report"]
     )]
     pub token_scope: String,
 }

@@ -1699,7 +1699,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // rest-api.md#get-v1inventory. The removed "mixed HEP HMAC version" entry
     // lost its link to config-reference.md and the new section gained one.
     // Counted per file against origin/main fd7d466e6.
-    const EXPECTED_WIKI_LINKS: usize = 2418;
+    // 2418 -> 2427 (fleet center P1): fleet.md +4 (the intro's link to "Run a
+    // fleet center", and the section's links to the CLI reference, to
+    // GET /v1/inventory and to the errors page's new section), cli-reference.md
+    // +2 (the `sipnab fleet serve` paragraph and the --token-scope row),
+    // errors.md +1, auth.md +1 and rest-api.md +1 (each to "Run a fleet
+    // center"). Counted per file against origin/main f8705d984.
+    const EXPECTED_WIKI_LINKS: usize = 2427;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

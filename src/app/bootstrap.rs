@@ -4340,7 +4340,13 @@ fn sandbox_paths(
 /// (errors from double initialization are ignored). Reads the
 /// `SIPNAB_LOG` environment variable.
 pub fn init_logging(cli: &Cli) {
-    let default_level = default_log_level(cli);
+    init_logging_at(default_log_level(cli));
+}
+
+/// The logging [`init_logging`] sets up, at `default_level` unless
+/// `SIPNAB_LOG` says otherwise: also for the commands that parse no capture
+/// command line, such as `sipnab fleet serve`.
+pub fn init_logging_at(default_level: &str) {
     // The tracing subscriber writes to stderr — preserves the stdio MCP
     // invariant that stdout is the JSON-RPC wire.
     // tracing-log routes any remaining `log::*` events from third-party deps
@@ -7895,6 +7901,16 @@ fn mint_token(cli: &Cli) -> Result<String, String> {
         return Err(
             "--token-scope inventory applies to the REST API only; on the MCP surface \
              a `read` token reaches the fleet_inventory tool"
+                .to_string(),
+        );
+    }
+    // Nor a member credential: the fleet center is a REST API surface.
+    if cli.token_args.token_scope == crate::auth::SCOPE_FLEET_REPORT
+        && audience == crate::auth::AUDIENCE_MCP
+    {
+        return Err(
+            "--token-scope fleet-report applies to the REST API only: it is a fleet \
+             member's credential for a fleet center (sipnab fleet serve)"
                 .to_string(),
         );
     }

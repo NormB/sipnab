@@ -10,6 +10,8 @@ pub mod batch;
 pub mod bootstrap;
 #[cfg(feature = "api")]
 pub mod fleet;
+#[cfg(feature = "api")]
+pub mod fleet_center;
 #[cfg(feature = "g729")]
 pub mod g729_install;
 #[cfg(any(feature = "vcon", feature = "g729", feature = "api"))]

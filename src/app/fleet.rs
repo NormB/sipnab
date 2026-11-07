@@ -470,11 +470,39 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
             return if e.use_stderr() { 2 } else { 0 };
         }
     };
-    let crate::cli::fleet_args::FleetCommand::Inventory {
-        hosts,
-        json,
-        timeout,
-    } = cli.command;
+    let (hosts, json, timeout) = match cli.command {
+        crate::cli::fleet_args::FleetCommand::Inventory {
+            hosts,
+            json,
+            timeout,
+        } => (hosts, json, timeout),
+        crate::cli::fleet_args::FleetCommand::Serve {
+            listen,
+            store,
+            signing_key_file,
+            revoked_file,
+            tls_cert,
+            tls_key,
+            retention_hours,
+            silent_after_missed,
+            allowed_host,
+            rate_limit_per_peer,
+        } => {
+            crate::app::bootstrap::init_logging_at("info");
+            return super::fleet_center::serve(super::fleet_center::ServeArgs {
+                listen,
+                store,
+                signing_key_file,
+                revoked_file,
+                tls_cert,
+                tls_key,
+                retention_hours,
+                silent_after_missed,
+                allowed_hosts: allowed_host,
+                rate_limit_per_peer,
+            });
+        }
+    };
     let mut err = std::io::stderr();
     let entries = match std::fs::read_to_string(&hosts)
         .map_err(|e| e.to_string())
