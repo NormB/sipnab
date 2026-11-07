@@ -14,6 +14,10 @@ entry that carries them.
 
 - **The published `unsafe` count leaves out every block compiled only for tests: 111, not 115.** The homepage, the README and the [fault model](docs/fault-model.md#memory-safety-boundary) counted the blocks in two test modules as shipped code: `src/privilege.rs`'s, under `#[cfg(all(test, target_os = "linux"))]`, and `src/capture/keylog_source.rs`'s, under `#[cfg(all(test, unix, feature = "tls"))]`. The two gates that check the number now share one census, `tests/support/unsafe_census.rs`, which also counts a test-only module kept in its own file (`#[cfg(test)] mod x;`) as test code, and stops a `#[cfg(test)]` on an item with no braces (a `mod x;`, a `use`, a field, one statement) at that item instead of skipping the shipped code after it. The library's test allocator now lives in its own file, `src/test_alloc.rs`.
 
+### Performance
+
+- **Each RTP packet finds its stream with one lookup.** The stream store hashed a packet's stream key into its table up to three times: to check whether a later call had renegotiated the stream's sockets, to update the stream, and, when it kept the packet's audio, to find the stream's position. It now looks the key up once and uses the position for all three. On the regression gate's 535,000-packet corpus, measured on the aarch64 build host over 9 interleaved rounds on a host at least 96% idle, `--cores 1` ran in 0.9827 of the time (range 0.9523 to 1.0013, faster in 8 of 9) with 2.6% fewer cycles and 2.2% fewer instructions. At `--cores 4`, where the reader rather than the store is the serial stage, it used 3.0% fewer cycles in all, and the wall clock did not move outside its noise (0.9237 to 1.0484 of the time, median 1.0071). `--report`, `--json-dialogs`, `--json-analyze` and the vCon containers are byte-identical to the code before it at `--cores 1` and `--cores 4`, on that corpus and on three other synthetic captures, one of them a two-file set.
+
 ## [0.5.236] - 2026-11-06
 
 ### Added
