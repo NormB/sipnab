@@ -719,6 +719,7 @@ fn parallel_config(
         audio_limits: config.limits.audio_limits(),
         reassembly: !cli.capture_args.no_reassembly,
         parse_limit: cli.capture_args.limitlen,
+        shard_assignment: 0,
     }
 }
 

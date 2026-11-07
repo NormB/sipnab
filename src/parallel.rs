@@ -21,11 +21,16 @@
 //! pairs — access side and trunk side — and shards to two workers, which
 //! reconstruct two fragments of one Call-ID. That is the common case on carrier
 //! traffic, not an exotic one: in one 100 MB file of the reference corpus 1173
-//! of 2311 dialogs were proxied. `crate::sip::dialog_store::DialogStore::merge`
-//! is what makes them whole again — it concatenates the fragments' message
-//! lists in capture-timestamp order and re-runs the state machine over the
-//! result, so the merged dialog is the one the single-threaded path would have
-//! built. (An earlier version of this doc claimed a call's SIP "stays together",
+//! of 2311 dialogs were proxied. A Call-ID that two files of an `-I` set both
+//! carry, on different host pairs, splits the same way.
+//! `crate::sip::dialog_store::DialogStore::merge` is what makes them whole
+//! again — it replays every fragment's messages in READ order (the file's
+//! place in the set, then the frame's ordinal in the file) through the
+//! per-message rule the single-threaded path applies, so the merged dialog is
+//! the one that path builds. Not timestamp order: the set is read file by file,
+//! so when its files overlap in time the two orders differ, and a merge by
+//! timestamp gave answers that depended on which worker owned which host pair.
+//! (An earlier version of this doc claimed a call's SIP "stays together",
 //! and `merge` was written to that premise: it kept whichever fragment held more
 //! messages and dropped the other. Roughly half of every proxied call's
 //! signaling vanished, invisibly, because the dialog COUNT was unaffected.)
@@ -71,11 +76,27 @@ use std::net::IpAddr;
 /// bidirectional flow never splits across workers. `jobs <= 1` always returns 0
 /// (the single-threaded path).
 pub fn shard_for(src: IpAddr, dst: IpAddr, jobs: usize) -> usize {
+    shard_assigned(src, dst, jobs, 0)
+}
+
+/// [`shard_for`] under another assignment of host pairs to workers: the
+/// number `assignment` is hashed before the pair, so each number groups the
+/// pairs differently. Number 0 hashes nothing extra and IS [`shard_for`].
+///
+/// What [`ParallelConfig::shard_assignment`] selects, so that a test can show a
+/// run's output does not depend on which host pairs share a worker. Every
+/// number keeps the two properties a run relies on: direction independence and
+/// `jobs <= 1` mapping to 0. Not a secret and not cryptographic: the hash is
+/// only a spread.
+fn shard_assigned(src: IpAddr, dst: IpAddr, jobs: usize, assignment: u64) -> usize {
     if jobs <= 1 {
         return 0;
     }
     let (a, b) = if src <= dst { (src, dst) } else { (dst, src) };
     let mut h = DefaultHasher::new();
+    if assignment != 0 {
+        assignment.hash(&mut h);
+    }
     a.hash(&mut h);
     b.hash(&mut h);
     (h.finish() % jobs as u64) as usize
@@ -193,6 +214,13 @@ pub struct ParallelConfig {
     pub reassembly: bool,
     /// Cap on parsed bytes per packet (`-S`/`--limitlen`).
     pub parse_limit: Option<usize>,
+    /// Which assignment of host pairs to workers the run uses: 0, the
+    /// [`shard_for`] assignment, for every run sipnab makes. Any other value
+    /// groups the pairs differently (`shard_assigned`); it exists so a test
+    /// can show the output does not depend on the grouping, which is what
+    /// lets a later change to the shard hash land without changing a report.
+    #[doc(hidden)]
+    pub shard_assignment: u64,
 }
 
 /// The stream store one `--cores` worker reconstructs into.
@@ -265,6 +293,9 @@ struct Fanout {
     portrange: (u16, u16),
     /// `--hep-parse`.
     hep_parse: bool,
+    /// [`ParallelConfig::shard_assignment`], carried here because this is the
+    /// run-wide rule every reader already takes.
+    shard_assignment: u64,
 }
 
 impl Fanout {
@@ -274,7 +305,15 @@ impl Fanout {
             enabled: !cfg.no_rtp && !cfg.no_dialog,
             portrange: cfg.portrange,
             hep_parse: cfg.hep_parse,
+            shard_assignment: cfg.shard_assignment,
         }
+    }
+
+    /// The worker that owns a packet between `hosts` in a run of `n`
+    /// workers, under this run's [`ParallelConfig::shard_assignment`]; `None` when
+    /// the peek found no host pair.
+    fn shard_of(&self, hosts: Option<(IpAddr, IpAddr)>, n: usize) -> Option<usize> {
+        hosts.map(|(a, b)| shard_assigned(a, b, n, self.shard_assignment))
     }
 
     /// Whether every worker reads `packet`. See [`Fanout`].
@@ -1124,8 +1163,8 @@ fn shard_opened<S: ShardSink>(
                 }
                 // One walk to the outer IP header for both questions.
                 let peek = crate::capture::parse::peek_frame(&packet);
-                let s = match peek.hosts {
-                    Some((a, b)) => shard_for(a, b, n),
+                let s = match fanout.shard_of(peek.hosts, n) {
+                    Some(s) => s,
                     // Counted, not merely tolerated: the count feeds
                     // `shard_fallback_notice`. One `u64` increment on the
                     // reader's serial path: no atomic, no lock, no allocation.
@@ -2463,15 +2502,23 @@ pub fn run_offline_parallel_set(
     ss.set_audio_capture(cfg.retain_audio);
     ss.set_audio_limits(cfg.audio_limits);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
+    let mut dialog_stores = Vec::with_capacity(workers.len());
     for w in workers {
         if let Ok((wds, wss, wsip, wrtp, wtot)) = w.join() {
-            ds.merge(wds);
+            dialog_stores.push(wds);
             ss.merge(wss);
             sip_count += wsip;
             rtp_count += wrtp;
             total += wtot;
         }
     }
+    // All workers at once and in read order: a dialog whose messages several
+    // workers hold is rebuilt from every fragment as `--cores 1` builds it,
+    // whichever workers they are (see `DialogStore::merge`).
+    let read_order = &progress.read_order;
+    ds.merge(dialog_stores, |m| {
+        (read_order.position(m.frame.as_ref()), m.timestamp)
+    });
     ss.reassociate_all();
     progress.read_order.restore(&mut ds, &mut ss);
     final_sweep(&progress.clock, &mut ds);
@@ -2702,6 +2749,85 @@ mod tests {
     fn jobs_one_is_always_shard_zero() -> Result<(), TestError> {
         assert_eq!(shard_for(ip(10, 0, 0, 1), ip(10, 0, 0, 2), 1), 0);
         assert_eq!(shard_for(ip(1, 2, 3, 4), ip(5, 6, 7, 8), 0), 0);
+        Ok(())
+    }
+
+    /// Assignment 0 is the production one, every assignment keeps a pair's two
+    /// directions together and `jobs <= 1` on worker 0, and different numbers
+    /// really group the pairs differently, so a test that varies the number
+    /// varies which pairs share a worker.
+    #[test]
+    fn an_assignment_regroups_host_pairs_and_keeps_the_sharding_rules() -> Result<(), TestError> {
+        let pairs: Vec<(IpAddr, IpAddr)> = (0..48u8)
+            .map(|i| (ip(192, 0, 2, i), ip(198, 51, 100, i)))
+            .collect();
+        for &(a, b) in &pairs {
+            for n in 1..=8 {
+                assert_eq!(
+                    shard_assigned(a, b, n, 0),
+                    shard_for(a, b, n),
+                    "assignment 0 is the production assignment: {a} {b} over {n}"
+                );
+                for assignment in 1..16 {
+                    assert_eq!(
+                        shard_assigned(a, b, n, assignment),
+                        shard_assigned(b, a, n, assignment),
+                        "assignment {assignment} split {a} {b} by direction over {n}"
+                    );
+                    assert!(
+                        shard_assigned(a, b, n, assignment) < n.max(1),
+                        "assignment {assignment} chose a worker past {n}"
+                    );
+                }
+            }
+            assert_eq!(
+                shard_assigned(a, b, 1, 7),
+                0,
+                "one worker owns every pair, whatever the assignment"
+            );
+        }
+        let grouping = |assignment: u64| -> Vec<usize> {
+            pairs
+                .iter()
+                .map(|&(a, b)| shard_assigned(a, b, 4, assignment))
+                .collect()
+        };
+        let distinct: std::collections::BTreeSet<Vec<usize>> = (0..16).map(grouping).collect();
+        assert_eq!(
+            distinct.len(),
+            16,
+            "each of 16 numbers groups the 48 pairs its own way"
+        );
+        Ok(())
+    }
+
+    /// The reader shards by the run's assignment: number 0 is [`shard_for`],
+    /// and any other number gives its own grouping.
+    #[cfg(feature = "native")]
+    #[test]
+    fn the_reader_shards_by_the_runs_assignment() -> Result<(), TestError> {
+        let (a, b) = (ip(192, 0, 2, 7), ip(198, 51, 100, 9));
+        assert_eq!(
+            Fanout::of(&pcfg(4)).shard_of(Some((a, b)), 4),
+            Some(shard_for(a, b, 4)),
+            "the production run shards as shard_for does"
+        );
+        assert_eq!(
+            Fanout::of(&pcfg(4)).shard_of(None, 4),
+            None,
+            "a packet with no host pair has no owner; the reader counts it"
+        );
+        for assignment in 1..32 {
+            let cfg = ParallelConfig {
+                shard_assignment: assignment,
+                ..pcfg(4)
+            };
+            assert_eq!(
+                Fanout::of(&cfg).shard_of(Some((a, b)), 4),
+                Some(shard_assigned(a, b, 4, assignment)),
+                "the reader ignored assignment {assignment}"
+            );
+        }
         Ok(())
     }
 
@@ -3160,6 +3286,7 @@ mod tests {
             leg_correlation_window_ms: crate::sip::dialog_store::DEFAULT_LEG_CORRELATION_WINDOW_MS,
             reassembly: true,
             parse_limit: None,
+            shard_assignment: 0,
             retain_audio: false,
             audio_limits: crate::rtp::stream_store::AudioLimits::default(),
         }

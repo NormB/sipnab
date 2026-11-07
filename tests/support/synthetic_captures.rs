@@ -2840,6 +2840,276 @@ pub fn interleaved_calls() -> Vec<u8> {
     pcap(65535, &records)
 }
 
+// ── one Call-ID in two files on three host pairs, for --cores parity ──
+
+/// Calls in each capture of [`callid_across_files`].
+pub const SPANNING_CALLS: u8 = 16;
+
+/// The host pairs that carry Call-ID `span-{i}@example.com` in
+/// [`callid_across_files`]: the edge capture's first use, its second use, and
+/// the core capture's.
+pub fn spanning_pairs(i: u8) -> [([u8; 4], [u8; 4]); 3] {
+    [
+        ([192, 0, 2, 10 + i], [198, 51, 100, 10 + i]),
+        ([192, 0, 2, 60 + i], [198, 51, 100, 60 + i]),
+        ([203, 0, 113, 10 + i], [198, 51, 100, 110 + i]),
+    ]
+}
+
+/// Two captures that reuse the same Call-IDs on different host pairs, with
+/// overlapping times: `[edge, core]`.
+///
+/// `-I` reads a set file by file, in the order of each file's first packet,
+/// so the edge capture (first packet at 0 ms) is read before the core
+/// capture (first packet at 400 ms), although most of the core capture's
+/// packets are older than the edge capture's last ones. For a Call-ID that
+/// appears in both, the order `--cores 1` processes its messages in is
+/// therefore not their timestamp order. That is the case where a `--cores N`
+/// merge that orders a call's fragments by timestamp gives a different
+/// answer.
+///
+/// Call `span-{i}@example.com`, for `i` in `0..SPANNING_CALLS`:
+///
+/// * edge, first use, at `20 i` ms on [`spanning_pairs`]`(i)[0]`: INVITE,
+///   100, 180, then 200 OK, ACK, five RTP packets each way and BYE / 200 for
+///   even `i`, or 486 Busy Here and ACK for odd `i`;
+/// * edge, second use, at `2000 + 20 i` ms on the second pair: an answered
+///   call with its own branch and media, BYE at about 2.5 s;
+/// * core, at `400 + 20 i` ms on the third pair: an answered call with media
+///   on 203.0.113.0/24. For `i % 3 == 0` its INVITE and 200 OK reuse the
+///   edge first use's Via branch, so `--cores 1` reads them as
+///   retransmissions of what it already saw; otherwise the branch is new.
+///
+/// Sixteen Call-IDs on 48 host pairs, so for every worker count from two up
+/// some Call-ID's pairs land on different workers.
+pub fn callid_across_files() -> [Vec<u8>; 2] {
+    let frame = |src: [u8; 4], dst: [u8; 4], sport: u16, dport: u16, payload: &[u8]| {
+        let ip = Ip {
+            src,
+            dst,
+            tos: 0,
+            ident: 0,
+            flags: DF,
+            checksum: true,
+        };
+        ethernet(
+            doc_mac(2),
+            doc_mac(1),
+            &ipv4_udp(&ip, &udp(&ip, sport, dport, payload, true)),
+        )
+    };
+    let dotted = |a: [u8; 4]| format!("{}.{}.{}.{}", a[0], a[1], a[2], a[3]);
+    let sdp = |addr: [u8; 4], port: u16| {
+        let a = dotted(addr);
+        format!(
+            "v=0\r\no=- 1 1 IN IP4 {a}\r\ns=-\r\nc=IN IP4 {a}\r\nt=0 0\r\n\
+             m=audio {port} RTP/AVP 0\r\na=rtpmap:0 PCMU/8000\r\n"
+        )
+    };
+    // One SIP message of call `i`; `via` is the transaction's requester.
+    let sip =
+        |first: &str, i: u8, via: [u8; 4], branch: &str, to_tag: bool, cseq: &str, body: &str| {
+            let to_tag = if to_tag { ";tag=callee" } else { "" };
+            let ct = if body.is_empty() {
+                String::new()
+            } else {
+                "Content-Type: application/sdp\r\n".to_string()
+            };
+            format!(
+                "{first}\r\n\
+             Via: SIP/2.0/UDP {v}:5060;branch=z9hG4bK-{branch}\r\n\
+             From: <sip:caller{i}@example.com>;tag=caller{i}\r\n\
+             To: <sip:callee{i}@example.com>{to_tag}\r\n\
+             Call-ID: span-{i}@example.com\r\n\
+             CSeq: {cseq}\r\n\
+             {ct}Content-Length: {len}\r\n\r\n{body}",
+                v = dotted(via),
+                len = body.len(),
+            )
+        };
+    // (at_ms, frame) per file, sorted by time before writing.
+    let mut edge: Vec<(u32, Vec<u8>)> = Vec::new();
+    let mut core: Vec<(u32, Vec<u8>)> = Vec::new();
+    // One answered call on `(a, b)` from `at` ms: setup, media, teardown.
+    let answered = |out: &mut Vec<(u32, Vec<u8>)>,
+                    i: u8,
+                    (a, b): ([u8; 4], [u8; 4]),
+                    at: u32,
+                    branch: &str,
+                    port: u16,
+                    ssrc: u32| {
+        let invite = format!("INVITE sip:callee{i}@example.com SIP/2.0");
+        let ack = format!("ACK sip:callee{i}@example.com SIP/2.0");
+        let bye = format!("BYE sip:callee{i}@example.com SIP/2.0");
+        let msgs = [
+            (
+                0,
+                true,
+                invite.as_str(),
+                branch.to_string(),
+                false,
+                "1 INVITE",
+                sdp(a, port),
+            ),
+            (
+                5,
+                false,
+                "SIP/2.0 100 Trying",
+                branch.to_string(),
+                false,
+                "1 INVITE",
+                String::new(),
+            ),
+            (
+                100,
+                false,
+                "SIP/2.0 180 Ringing",
+                branch.to_string(),
+                true,
+                "1 INVITE",
+                String::new(),
+            ),
+            (
+                300,
+                false,
+                "SIP/2.0 200 OK",
+                branch.to_string(),
+                true,
+                "1 INVITE",
+                sdp(b, port + 1),
+            ),
+            (
+                305,
+                true,
+                ack.as_str(),
+                format!("{branch}-ack"),
+                true,
+                "1 ACK",
+                String::new(),
+            ),
+            (
+                500,
+                true,
+                bye.as_str(),
+                format!("{branch}-bye"),
+                true,
+                "2 BYE",
+                String::new(),
+            ),
+            (
+                505,
+                false,
+                "SIP/2.0 200 OK",
+                format!("{branch}-bye"),
+                true,
+                "2 BYE",
+                String::new(),
+            ),
+        ];
+        for (dt, from_a, first, br, tag, cseq, body) in msgs {
+            let text = sip(first, i, a, &br, tag, cseq, &body);
+            let (s, d) = if from_a { (a, b) } else { (b, a) };
+            out.push((at + dt, frame(s, d, 5060, 5060, text.as_bytes())));
+        }
+        let payload = [0xffu8; 160];
+        for seq in 0..5u16 {
+            let ts = u32::from(seq) * 160;
+            let t = at + 320 + u32::from(seq) * 20;
+            out.push((
+                t,
+                frame(
+                    a,
+                    b,
+                    port,
+                    port + 1,
+                    &rtp(seq == 0, 0, seq, ts, ssrc, &payload),
+                ),
+            ));
+            out.push((
+                t + 1,
+                frame(
+                    b,
+                    a,
+                    port + 1,
+                    port,
+                    &rtp(seq == 0, 0, seq, ts, ssrc + 1, &payload),
+                ),
+            ));
+        }
+    };
+    for i in 0..SPANNING_CALLS {
+        let [first, second, third] = spanning_pairs(i);
+        let step = 20 * u32::from(i);
+        let port = |base: u16| base + 4 * u16::from(i);
+        let ssrc = |base: u32| base + 4 * u32::from(i);
+        let first_branch = format!("s{i}-1");
+        if i % 2 == 0 {
+            answered(
+                &mut edge,
+                i,
+                first,
+                step,
+                &first_branch,
+                port(20_000),
+                ssrc(0x1000),
+            );
+        } else {
+            let (a, b) = first;
+            let invite = format!("INVITE sip:callee{i}@example.com SIP/2.0");
+            let ack = format!("ACK sip:callee{i}@example.com SIP/2.0");
+            let msgs = [
+                (0, true, invite.as_str(), false, sdp(a, port(20_000))),
+                (5, false, "SIP/2.0 100 Trying", false, String::new()),
+                (100, false, "SIP/2.0 180 Ringing", true, String::new()),
+                (300, false, "SIP/2.0 486 Busy Here", true, String::new()),
+                (305, true, ack.as_str(), true, String::new()),
+            ];
+            for (dt, from_a, line, tag, body) in msgs {
+                let cseq = if line.starts_with("ACK") {
+                    "1 ACK"
+                } else {
+                    "1 INVITE"
+                };
+                let text = sip(line, i, a, &first_branch, tag, cseq, &body);
+                let (s, d) = if from_a { (a, b) } else { (b, a) };
+                edge.push((step + dt, frame(s, d, 5060, 5060, text.as_bytes())));
+            }
+        }
+        answered(
+            &mut edge,
+            i,
+            second,
+            2000 + step,
+            &format!("s{i}-2"),
+            port(22_000),
+            ssrc(0x2000),
+        );
+        let core_branch = if i % 3 == 0 {
+            first_branch
+        } else {
+            format!("s{i}-3")
+        };
+        answered(
+            &mut core,
+            i,
+            third,
+            400 + step,
+            &core_branch,
+            port(24_000),
+            ssrc(0x3000),
+        );
+    }
+    let write = |mut packets: Vec<(u32, Vec<u8>)>| {
+        packets.sort_by_key(|(at, _)| *at);
+        let records: Vec<Record> = packets
+            .into_iter()
+            .map(|(at, data)| Record::whole(LEGACY_EPOCH + at / 1000, (at % 1000) * 1000, data))
+            .collect();
+        pcap(65535, &records)
+    };
+    [write(edge), write(core)]
+}
+
 // ── rtcp-xr-call.pcap: a far end that reports over RTCP ─────────────
 
 /// One RTCP sender report from `sender`, with one reception report block

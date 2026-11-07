@@ -205,8 +205,8 @@ written to avoid even a single owned-key allocation per message. A per-message
 The version that looks like it works is worse. Because the merge is Call-ID
 keyed, two observations of one call fold into a single dialog whose message list
 is the concatenation and whose state machine has been re-run over the union
-(`absorb_messages` then `replay_message_derived_state`,
-[`dialog_store.rs:652-653`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L652-L653)). A comparison view
+(`DialogStore::merge`, which after 0.5.236 replays every fragment's messages
+in read order through the rule `process_message` applies). A comparison view
 sitting on top of that would render one row and report the *merged* verdict as
 if it were both captures agreeing. The disagreement it was built to find is the
 thing the store destroyed before the view ran.

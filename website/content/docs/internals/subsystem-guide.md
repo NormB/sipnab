@@ -332,7 +332,7 @@ sequenceDiagram
 - The reason: a per-packet channel hop capped throughput past two cores.
 - The reconstruction work did not.
 
-The merge is a union, since a host pair belongs to exactly one worker.
+The stream merge is a union, since a host pair belongs to exactly one worker.
 
 - One case is the exception.
   It makes [`reassociate_all()`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs) necessary.
@@ -340,6 +340,19 @@ The merge is a union, since a host pair belongs to exactly one worker.
   - Then one worker sees the offer and another sees the media.
 - Each [`merge()`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs) carries its endpoints along.
 - The re-association pass after merging links those streams to their calls.
+
+The dialog merge is not a union.
+
+- A call's SIP can cross host pairs.
+  - A capture sees a proxied call once on each side of the proxy.
+  - Two files of an `-I` set can carry one Call-ID on different host pairs.
+- So one dialog can be in pieces on several workers.
+- [`DialogStore::merge()`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs) takes every worker's store at once.
+- It replays a split dialog's messages in read order through the rule `process_message` applies.
+  - Read order is the file's place in the set, then the frame's ordinal in the file.
+  - `--cores 1` processes the messages in that order, so the merged dialog is the one `--cores 1` builds.
+  - Timestamp order is not the same: when the files of a set overlap in time, the two orders differ.
+- [`tests/cores_callid_span_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/cores_callid_span_test.rs) holds the output equal at every core count and every grouping of host pairs onto workers.
 
 ## Presentation
 

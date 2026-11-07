@@ -269,7 +269,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
    routinely land on different workers when the carrier advertises a separate
    media IP.
 3. **`final_sweep` runs exactly ONCE, after the merge, at the capture's final
-   timestamp** ([`parallel.rs:116`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L116)) — and
+   timestamp** ([`parallel.rs:140`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L140)) — and
    [`parallel.rs:47-53`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L47-L53) records why it is not per worker:
    a worker's local last timestamp can be minutes behind the capture's, so a
    per-worker sweep *"would measure each fragment against its own clock and
