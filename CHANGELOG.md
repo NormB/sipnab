@@ -8,9 +8,7 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
-## [Unreleased]
-
-**Held:** 0.5.237 is cut once the fleet test top-up lands (Norm's rule of 2026-11-07: at least 50 tests per feature), so the fleet center, member and inventory ship together and tested to that rule.
+## [0.5.237] - 2026-11-08
 
 ### Added
 
