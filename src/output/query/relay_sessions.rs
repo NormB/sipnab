@@ -2545,6 +2545,7 @@ mod tests {
                     2008 => Some(std::net::SocketAddr::from(([127, 0, 0, 1], 2223))),
                     _ => None,
                 },
+                frame: None,
             };
             crate::relay::engines::CallEvidence {
                 sdp: Vec::new(),
@@ -2736,12 +2737,14 @@ mod tests {
                         ))),
                         verb: EngineVerb::Offer,
                         reported_listen_ng: None,
+                        frame: None,
                     },
                     EngineSighting {
                         at: at() + chrono::TimeDelta::seconds(60),
                         engine: EngineIdentity::HomerId(2002),
                         verb: EngineVerb::Offer,
                         reported_listen_ng: None,
+                        frame: None,
                     },
                 ]
             } else {

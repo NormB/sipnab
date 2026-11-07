@@ -5753,7 +5753,11 @@ fn process_parsed_packet(
             // capture reports orphaned.
             if message.carries_anything() {
                 if !packet.ctx.cli.dialog_args.no_dialog {
-                    crate::pipeline::apply_engine_sighting(packet.state.dialog_store, &message);
+                    crate::pipeline::apply_engine_sighting(
+                        packet.state.dialog_store,
+                        &message,
+                        pp.frame,
+                    );
                 }
                 crate::pipeline::apply_relay_control(
                     packet.state.stream_store,

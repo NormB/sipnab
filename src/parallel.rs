@@ -675,7 +675,7 @@ fn reconstruct(
         }
         PacketAction::RelayControl(message) => {
             if !cfg.no_dialog && (message.carries_anything()) {
-                crate::pipeline::apply_engine_sighting(ds, &message);
+                crate::pipeline::apply_engine_sighting(ds, &message, pp.frame);
                 crate::pipeline::apply_relay_control(ss, &message, pp.input_origin, pp.timestamp);
             }
         }
@@ -2516,9 +2516,7 @@ pub fn run_offline_parallel_set(
     // workers hold is rebuilt from every fragment as `--cores 1` builds it,
     // whichever workers they are (see `DialogStore::merge`).
     let read_order = &progress.read_order;
-    ds.merge(dialog_stores, |m| {
-        (read_order.position(m.frame.as_ref()), m.timestamp)
-    });
+    ds.merge(dialog_stores, |frame, at| (read_order.position(frame), at));
     ss.reassociate_all();
     progress.read_order.restore(&mut ds, &mut ss);
     final_sweep(&progress.clock, &mut ds);

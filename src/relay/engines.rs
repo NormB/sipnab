@@ -1253,7 +1253,7 @@ pub fn call_sightings(
             .get(call_id)
             .map(|d| sightings(&d.sdp_timeline))
             .unwrap_or_default(),
-        ng: store.engine_sightings(call_id).to_vec(),
+        ng: store.engine_sightings(call_id),
     }
 }
 
@@ -2306,6 +2306,7 @@ mod tests {
             engine,
             verb,
             reported_listen_ng: None,
+            frame: None,
         })
     }
 
