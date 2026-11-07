@@ -19,6 +19,27 @@ CONTRIBUTING.md "Running Benchmarks").
 > Do not edit an old one: the value of a baseline is that it records what was
 > actually measured, and rewriting it destroys exactly that.
 
+## 2026-11-07 — aarch64 (Jetson AGX Thor, Linux 6.8.12-rt-tegra, 14 cores), rustc 1.99.0, search without formatting
+
+`tui_derived` before and after the change that compares a dialog's two
+addresses with the search query without `to_string()`. A query that holds a
+byte an address's text cannot hold is answered without formatting; any other
+query is matched against the address written into a stack buffer. Plain
+`cargo bench --features tui --bench tui_derived`, both binaries built from
+main `520857987` (before) and the change (after), then run alternately, 7
+rounds, each run only once the host was at least 96% idle over 2 s with no
+cargo or rustc running (lowest idle seen: 98.4%). Criterion medians, then the
+median and range over the 7 rounds. `displayed_10k_search_addr_miss` is new
+with this change: an address-shaped query ("10.0.0.9") that matches nothing,
+which must still write each address out.
+
+| case | before | after | after / before, median [range] |
+|---|---|---|---|
+| tui_derived/displayed_10k_plain | 0.0195 ms | 0.0195 ms | 1.0001 [0.9113, 1.0103] |
+| tui_derived/displayed_10k_search_miss | 2.2323 ms | 0.9629 ms | 0.4336 [0.4295, 0.4417], faster in 7 of 7 |
+| tui_derived/displayed_10k_search_addr_miss | 4.2761 ms | 4.2087 ms | 0.9807 [0.9716, 0.9941], faster in 7 of 7 |
+| tui_derived/search_frame_10k | 0.0949 ms | 0.0955 ms | 1.0067 [0.9687, 1.0401] |
+
 ## 2026-11-06 — aarch64 (Jetson AGX Thor, Linux 6.8.12-rt-tegra, 14 cores), rustc 1.99.0, source stamp
 
 One group, `source_stamp` in `pipeline_bench`, added with the change that
