@@ -2388,6 +2388,13 @@
             "description": "Whether this run recorded its configuration. `false` means every\ndigest below is unknown, not empty.",
             "type": "boolean"
           },
+          "secret_files": {
+            "description": "Each secret or credential file this run named, by its inode and\nmodification time when the run started: a rotation shows here,\nwhere no digest moves.",
+            "items": {
+              "$ref": "#/components/schemas/SecretFileStamp"
+            },
+            "type": "array"
+          },
           "shadowed": {
             "description": "Default-location files present but not read.",
             "items": {
@@ -2405,7 +2412,8 @@
         },
         "required": [
           "recorded",
-          "shadowed"
+          "shadowed",
+          "secret_files"
         ],
         "type": "object"
       },
@@ -3358,6 +3366,13 @@
             "minimum": 0,
             "type": "integer"
           },
+          "refused_sources": {
+            "description": "The addresses it refused packets from, most refused first, at most\n[`MAX_HEP_PEERS`]. A refused address is never in `senders`: a\nrefused packet proved nothing about who sent it.",
+            "items": {
+              "$ref": "#/components/schemas/HepRefusedPeer"
+            },
+            "type": "array"
+          },
           "senders": {
             "description": "The senders it tracks, at most [`MAX_HEP_PEERS`].",
             "items": {
@@ -3369,7 +3384,8 @@
         "required": [
           "listening",
           "packets_refused",
-          "senders"
+          "senders",
+          "refused_sources"
         ],
         "type": "object"
       },
@@ -3385,6 +3401,10 @@
               "null"
             ]
           },
+          "last_seen": {
+            "description": "When its latest admitted packet arrived (RFC 3339, UTC).",
+            "type": "string"
+          },
           "peer": {
             "description": "The address its packets came from.",
             "type": "string"
@@ -3396,7 +3416,46 @@
         },
         "required": [
           "peer",
-          "silent"
+          "silent",
+          "last_seen"
+        ],
+        "type": "object"
+      },
+      "HepRefusedPeer": {
+        "description": "One address a HEP listener refused packets from.",
+        "properties": {
+          "by_reason": {
+            "additionalProperties": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "Those packets by refusal reason, only the reasons that occurred.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "last_seen": {
+            "description": "When the latest of them arrived (RFC 3339, UTC). A sender admitted\nafter this time has been fixed since.",
+            "type": "string"
+          },
+          "packets": {
+            "description": "Packets refused from it while the listener has tracked it.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "peer": {
+            "description": "The address the refused packets came from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "peer",
+          "packets",
+          "by_reason",
+          "last_seen"
         ],
         "type": "object"
       },
@@ -5803,6 +5862,42 @@
           "packets_per_second",
           "calls_per_second",
           "calls_per_second_by_method"
+        ],
+        "type": "object"
+      },
+      "SecretFileStamp": {
+        "description": "One secret or credential file this run named, described by what a\nrotation changes and by nothing derived from its contents.\n\nA secret held in a file is named by its path, and the path is all the\nconfiguration digests cover, so replacing the key in it changes no\ndigest. Hashing the contents would let anyone holding an `inventory`\ntoken test guesses at a low-entropy secret, such as a password, offline.\nThe inode and the modification time change when the file is replaced or\nrewritten and say nothing about what it holds. Taken when the run starts,\nbefore any privilege drop, so it describes the file the run read.\n\nThe path is left out: it is a configuration value, and the inventory\ncarries none. `setting` names the file instead.",
+        "properties": {
+          "error": {
+            "description": "Why the file could not be read, without its path.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inode": {
+            "description": "The file's inode number; absent when it could not be read, or on a\nsystem with no inodes.",
+            "format": "int64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "mtime": {
+            "description": "The file's modification time, RFC 3339 in UTC with nanoseconds;\nabsent when it could not be read.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "setting": {
+            "description": "The setting that named the file: a flag such as\n`--api-signing-key-file`, also when the value came from its config\nkey, or `[section] key` for a key with no flag.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "setting"
         ],
         "type": "object"
       },

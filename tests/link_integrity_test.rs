@@ -1693,7 +1693,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // twice, #opensips-and-kamailio once) and rtpengine-sipnab.md +1 (its
     // link to the new startup section). Counted per file against origin/main
     // 86a902663.
-    const EXPECTED_WIKI_LINKS: usize = 2414;
+    // 2414 -> 2418 (FLEET-P0.1 and P0.2): fleet.md +4, from 4 to 8: the
+    // intro's links to its two new sections, the troubleshooting entry's link
+    // to the refused-sender section, and the rotation section's link to
+    // rest-api.md#get-v1inventory. The removed "mixed HEP HMAC version" entry
+    // lost its link to config-reference.md and the new section gained one.
+    // Counted per file against origin/main fd7d466e6.
+    const EXPECTED_WIKI_LINKS: usize = 2418;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

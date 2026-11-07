@@ -146,6 +146,42 @@ impl HepRefusal {
         }
     }
 
+    /// Whether a key or token decided this refusal: no key, a key that does
+    /// not match, or any HMAC check.
+    ///
+    /// The fleet inventory reports a listed sender refused for one of these
+    /// as `hep_sender_refused`. They are one class there, not one finding
+    /// each, because the reason alone does not say which end is wrong: a
+    /// sender with the wrong key and a sender on a different HMAC version
+    /// can both arrive as a MAC that does not verify, depending on which
+    /// build each end runs. An exhaustive match, so a new reason must be
+    /// classified before it compiles.
+    #[must_use]
+    pub const fn is_authentication(self) -> bool {
+        match self {
+            Self::AuthMissing
+            | Self::AuthMismatch
+            | Self::HmacBadFormat
+            | Self::HmacUnsupportedVersion
+            | Self::HmacTimestampOutOfWindow
+            | Self::HmacBadMac
+            | Self::HmacReplay => true,
+            Self::Allowlist
+            | Self::RateLimitGlobal
+            | Self::RateLimitPerPeer
+            | Self::PeerTrackingFull
+            | Self::Malformed
+            | Self::EventSenderNotListed => false,
+        }
+    }
+
+    /// The reason whose [`Self::as_str`] is `name`, or `None` for a name no
+    /// reason has, such as one a newer build added.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.as_str() == name)
+    }
+
     /// What the reason means, and where an operator would look, in words.
     #[must_use]
     pub const fn describe(self) -> &'static str {
@@ -958,6 +994,47 @@ impl SilenceWarning {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The authentication reasons are exactly the ones a key or token
+    /// decides: no key, a key that does not match, and every HMAC check. The
+    /// allowlist, the rate limits, the tracking table, a packet that does not
+    /// parse and an unlisted event sender are not, because a right key would
+    /// not change them.
+    #[test]
+    fn the_authentication_reasons_are_the_key_and_token_checks() {
+        let want = [
+            HepRefusal::AuthMissing,
+            HepRefusal::AuthMismatch,
+            HepRefusal::HmacBadFormat,
+            HepRefusal::HmacUnsupportedVersion,
+            HepRefusal::HmacTimestampOutOfWindow,
+            HepRefusal::HmacBadMac,
+            HepRefusal::HmacReplay,
+        ];
+        for r in HepRefusal::ALL {
+            assert_eq!(
+                r.is_authentication(),
+                want.contains(&r),
+                "{r:?} is classified wrongly"
+            );
+        }
+    }
+
+    /// Every reason's machine name reads back as that reason, and a name no
+    /// reason has reads as none, so a report from a newer build is not
+    /// misread.
+    #[test]
+    fn every_reason_name_reads_back() {
+        for r in HepRefusal::ALL {
+            assert_eq!(HepRefusal::from_name(r.as_str()), Some(r), "{r:?}");
+        }
+        assert_eq!(
+            HepRefusal::from_name("no_such_reason"),
+            None,
+            "a name no reason has reads as none"
+        );
+        assert_eq!(HepRefusal::from_name(""), None, "an empty name is none");
+    }
 
     /// Every reason sits at its own index, so a per-reason array never
     /// counts two reasons in one slot.

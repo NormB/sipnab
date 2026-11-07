@@ -103,15 +103,20 @@ fn main() {
 
     // 5a. What this run loaded, as digests, for the fleet inventory
     //     (`GET /v1/inventory`, `fleet_inventory`). Taken once, here, so the
-    //     answer describes the configuration this run applied.
+    //     answer describes the configuration this run applied. The secret
+    //     files are stamped here too: before the chroot and the privilege
+    //     drop, so the stat sees the files the run reads.
     #[cfg(any(feature = "api", feature = "mcp"))]
     {
         let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-        sipnab::output::inventory::record_run(sipnab::output::inventory::RunRecord::of(
-            &loaded,
-            &argv,
-            chrono::Utc::now(),
-        ));
+        let stamps = bootstrap::secret_files(&cli, &loaded.config)
+            .iter()
+            .map(|f| sipnab::output::inventory::SecretFileStamp::of(&f.setting, &f.path))
+            .collect();
+        sipnab::output::inventory::record_run(
+            sipnab::output::inventory::RunRecord::of(&loaded, &argv, chrono::Utc::now())
+                .with_secret_files(stamps),
+        );
     }
 
     // 5b-6b. The crash policy, and the commands that need only the config.

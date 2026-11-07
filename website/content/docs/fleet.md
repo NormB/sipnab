@@ -21,8 +21,11 @@ The table shows, for each instance:
 - the user it runs as, and how long it has been up.
 
 Below the table it names the instances that did not answer, the instances on
-a different build from the rest, and the HEP senders a collector receives from
-that are not in your list. It reports. It changes nothing on any instance.
+a different build from the rest, the HEP senders a collector receives from
+that are not in your list, and the listed instances whose HEP a listed
+collector refuses for authentication. Each instance also reports when each of
+its key, token and password files was last replaced, so you can check that a
+rotation took effect. It reports. It changes nothing on any instance.
 
 Some upgrades need every sender and its collector on the same build, such as
 the HEP HMAC version 2 change in
@@ -32,7 +35,12 @@ The report shows which instances are still on the old build.
 The commands and output on this page come from a run on 2026-11-03: four
 instances in containers on the network `192.0.2.0/24`, and the controller on
 the host. The instances ran a development build of 0.5.232 with this feature,
-and one ran release 0.5.130.
+and one ran release 0.5.130. The output of
+[A listed sender the collector refuses](#a-listed-sender-the-collector-refuses)
+and [Check that a key rotation took effect](#check-that-a-key-rotation-took-effect)
+comes from a run on 2026-11-07 on one host, with a development build of
+0.5.236: the collector `hub` on `127.0.0.2` and the sender `edge-a` on
+`127.0.0.1`.
 
 ## How it works
 
@@ -240,29 +248,9 @@ Each output below comes from the same run, with one thing changed.
   edge-a           unreachable  token_file '/etc/sipnab/fleet/open.token' can be read or written by other users (mode 0644); chmod 600 it
   ```
 
-- **A mixed HEP HMAC version.** A sender on 0.5.130 or earlier signs HEP with
-  HMAC version 1, and a collector on 0.5.131 or later drops every packet it
-  sends. In the run, `edge-old` (0.5.130) sent to `hub`. Listed in the hosts
-  file, `edge-old`'s row is `refused` with HTTP `404`, as above. The collector
-  logs `HEP HMAC auth is REFUSING version-1 tokens` once, and counts the
-  dropped packets. Read the count from the JSON report:
-
-  ```bash
-  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml --json \
-    | jq -c '.hosts[] | {name, refused: .inventory.hep_listener.packets_refused, senders: [.inventory.hep_listener.senders[].peer]}'
-  ```
-
-  ```text
-  {"name":"hub","refused":10,"senders":["192.0.2.11","192.0.2.12"]}
-  {"name":"edge-a","refused":0,"senders":[]}
-  {"name":"edge-b","refused":0,"senders":[]}
-  ```
-
-  The hub refused 10 packets, and `192.0.2.13` is not among its senders. The
-  report itself is `ok` when the old sender is not in the hosts file: a
-  refused packet is not a finding. Upgrade the sender, as
-  [Upgrade a fleet that uses HMAC authentication](@/docs/config.md#upgrade-a-fleet-that-uses-hmac-authentication)
-  describes.
+- **`finding hep_sender_refused`.** A collector in the list refuses the HEP of
+  an instance in the list for authentication. See
+  [A listed sender the collector refuses](#a-listed-sender-the-collector-refuses).
 
 - **`finding unlisted_hep_sender`.** A collector in the list receives HEP
   from an address that no listed instance's URL resolves to. Add that sender
@@ -285,6 +273,137 @@ Each output below comes from the same run, with one thing changed.
   edge-next        incompatible the instance answered inventory schema_version 2; this sipnab reads up to 1
   ```
 
+## A listed sender the collector refuses
+
+A collector that refuses a sender's HEP drops every packet it refuses. The
+sender counts them as sent, because UDP reports no delivery, so neither end
+fails. The report names that sender, and exits `1`, while the collector
+refused the latest packet it received from it.
+
+- **[controller]** Run the report. In this run `edge-a` sent with a key the
+  collector `hub` does not hold:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml
+  ```
+
+  ```text
+  NAME             STATE        VERSION      COMMIT       BINARY       CONFIG          UID   UPTIME_S
+  hub              ok           0.5.236      fd7d466e     d7cd2b7e5769 a5dc546e4913   1000          5
+  edge-a           ok           0.5.236      fd7d466e     d7cd2b7e5769 79480fa13223   1000          3
+  finding hep_sender_refused: hub refused 7 HEP packets from edge-a (127.0.0.1): refused: authentication (wrong key or HMAC version); the collector's reasons: hmac_bad_mac 7
+  ```
+
+  It exited `1`.
+
+  - The finding names the collector, every listed instance whose URL resolves
+    to the refused address, the address, and the authentication refusals only.
+  - `refused: authentication (wrong key or HMAC version)` names both causes and
+    claims neither. A sender with the wrong key, and a sender on a different
+    HEP HMAC version, can both arrive as a MAC that does not verify, depending
+    on which build each end runs.
+  - `the collector's reasons` are the collector's own refusal reasons, with
+    the names `GET /v1/hep/senders` uses: `hmac_bad_mac` for a MAC that does
+    not verify, `hmac_unsupported_version` for a version-1 token on a collector
+    on 0.5.131 or later, `auth_mismatch` for a wrong `plain` key, and
+    `auth_missing`, `hmac_bad_format`, `hmac_timestamp_out_of_window` and
+    `hmac_replay`. Refusals for other reasons, such as the rate limit or the
+    allowlist, are not this finding.
+
+- **[controller]** See the collector's refusals, from the same report:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml --json \
+    | jq -c '.hosts[] | {name, refused: .inventory.hep_listener.refused_sources}'
+  ```
+
+  ```text
+  {"name":"hub","refused":[{"by_reason":{"hmac_bad_mac":7},"last_seen":"2026-11-07T12:52:30.675Z","packets":7,"peer":"127.0.0.1"}]}
+  {"name":"edge-a","refused":[]}
+  ```
+
+- **[sender]** Fix the sender. Give it the collector's key, or upgrade it to
+  the collector's build when the reason is `hmac_unsupported_version`, as
+  [Upgrade a fleet that uses HMAC authentication](@/docs/config.md#upgrade-a-fleet-that-uses-hmac-authentication)
+  describes. Restart it.
+
+- **[controller]** Verify. The collector keeps counting the old refusals for as
+  long as it runs, but it has admitted the sender since its last refusal, so
+  the report has no finding and exits `0`:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml --json \
+    | jq -c '.hosts[0].inventory.hep_listener | {senders: [.senders[] | {peer, last_seen}], refused: [.refused_sources[] | {peer, packets, last_seen}]}'
+  ```
+
+  ```text
+  {"senders":[{"peer":"127.0.0.1","last_seen":"2026-11-07T12:52:43.016Z"}],"refused":[{"peer":"127.0.0.1","packets":7,"last_seen":"2026-11-07T12:52:30.675Z"}]}
+  ```
+
+**Troubleshoot:**
+
+- **The collector refuses the sender, and there is no finding.** The refused address is no
+  listed instance's: the check compares addresses, as `unlisted_hep_sender`
+  does. A sender whose packets leave from another address than its API URL
+  names is not matched. Read the collector's `refused_sources` as above.
+- **No `refused_sources` at all.** A collector on a build before this check
+  does not report them. Its `packets_refused` still counts every refusal.
+- **The finding stays after the fix.** The collector has not admitted a packet
+  from that address since its last refusal: the sender is not sending yet, or
+  is still refused. Its `last_seen` in `senders` must be later than in
+  `refused_sources`.
+
+## Check that a key rotation took effect
+
+The configuration digests cover a key file's path only, so replacing the key
+in it changes no digest. Each instance therefore reports, for every secret or
+credential file it named, the file's inode and modification time when it
+started, under the setting that named it. The answer holds nothing derived
+from the key. See [GET /v1/inventory](@/docs/api.md#get-v1-inventory) for the
+fields.
+
+- **[each instance]** Rotate the key the usual way: write the new key to a new
+  file, rename it over the old one, and restart sipnab. This run fixed
+  `edge-a`'s HEP key:
+
+  ```bash
+  install -m 600 hep.key edge-hep.key.new && mv edge-hep.key.new edge-hep.key
+  ```
+
+- **[controller]** Before and after the restart, read each instance's stamps:
+
+  ```bash
+  sipnab fleet inventory --hosts /etc/sipnab/fleet/fleet.toml --json \
+    | jq -c '.hosts[] | {name, secrets: [.inventory.config.secret_files[] | {setting, inode, mtime}]}'
+  ```
+
+  Before:
+
+  ```text
+  {"name":"hub","secrets":[{"setting":"--api-signing-key-file","inode":6849703,"mtime":"2026-11-07T12:41:19.472148552Z"},{"setting":"--hep-auth-file","inode":6849697,"mtime":"2026-11-07T12:41:19.472148552Z"}]}
+  {"name":"edge-a","secrets":[{"setting":"--api-signing-key-file","inode":6849705,"mtime":"2026-11-07T12:41:19.476148542Z"},{"setting":"--hep-auth-file","inode":6852341,"mtime":"2026-11-07T12:52:28.642390890Z"}]}
+  ```
+
+  After:
+
+  ```text
+  {"name":"hub","secrets":[{"setting":"--api-signing-key-file","inode":6849703,"mtime":"2026-11-07T12:41:19.472148552Z"},{"setting":"--hep-auth-file","inode":6849697,"mtime":"2026-11-07T12:41:19.472148552Z"}]}
+  {"name":"edge-a","secrets":[{"setting":"--api-signing-key-file","inode":6849705,"mtime":"2026-11-07T12:41:19.476148542Z"},{"setting":"--hep-auth-file","inode":6817841,"mtime":"2026-11-07T12:52:41.958355975Z"}]}
+  ```
+
+**Verify:** the rotated file's `inode` or `mtime` changed on the instance you
+rotated, and on no other. `CONFIG` did not change: the path is the same.
+
+**Troubleshoot:**
+
+- **Nothing changed.** The instance has not restarted: sipnab takes the stamp
+  at start, and it describes the file the run read. Restart it.
+- **Only `mtime` changed.** The key was rewritten in place rather than
+  replaced. That is a rotation too.
+- **`error` holds a reason.** The instance could not stat the file at start, for
+  example `No such file or directory (os error 2)`. The reason never names the
+  path.
+
 ## States and findings
 
 **State of each instance:**
@@ -302,6 +421,7 @@ Each output below comes from the same run, with one thing changed.
 |---|---|
 | `version_mismatch` | The instances that answered do not all run the same build. The finding names each build and the instances on it. |
 | `unlisted_hep_sender` | A HEP collector in the list receives from an address that no listed instance's URL resolves to. |
+| `hep_sender_refused` | A HEP collector in the list refused packets from a listed instance's address for authentication, and has not admitted a packet from it since. |
 
 ## Check a binary against its release
 
@@ -324,11 +444,13 @@ prove which binary it is, and one that someone had tampered with would report
 
 - Every field is the instance's own claim. An attacker who controls a host can make
   it report anything.
-- For a secret held in a file, the digests cover its path only. The configuration and
-  the command line name key, token and password files by path, so replacing
-  the contents of such a file, for example rotating the key in
-  `--api-signing-key-file`, changes no digest. A secret given as a value, such
-  as `--api-signing-key` or a `${NAME}` the configuration expands, changes
+- For a secret held in a file, the digests cover its path only. Replacing the
+  contents of such a file, for example rotating the key in
+  `--api-signing-key-file`, changes no digest; it changes the file's `inode` or
+  `mtime` in `config.secret_files` once the instance restarts. Two instances
+  that hold different keys at the same path look the same: the answer holds
+  nothing derived from a key. A secret given as a value, such as
+  `--api-signing-key` or a `${NAME}` the configuration expands, changes
   `config.effective_sha256`.
 - It reads only the instances in your hosts file. An instance nobody listed is
   invisible to it, unless it sends HEP to a listed collector.

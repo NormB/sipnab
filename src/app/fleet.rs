@@ -16,8 +16,9 @@
 //!
 //! [`parse_hosts`] and [`merge`] take their inputs as arguments and are where
 //! every rule lives: which answer is usable, which instances disagree, which
-//! HEP sender nobody listed. [`fetch`] is the one function that opens a
-//! connection, and it decides nothing.
+//! HEP sender nobody listed, which listed sender a collector refuses.
+//! [`fetch`] is the one function that opens a connection, and it decides
+//! nothing.
 
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -142,19 +143,98 @@ pub struct HostRow {
 /// One finding across the fleet.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Finding {
-    /// `version_mismatch` or `unlisted_hep_sender`.
+    /// `version_mismatch`, `unlisted_hep_sender` or `hep_sender_refused`.
     pub kind: String,
     /// What was found, naming the instances.
     pub detail: String,
 }
 
+/// How a `hep_sender_refused` finding labels its refusals.
+///
+/// One label for every authentication reason, because the reason a collector
+/// records does not say which end is wrong: a wrong key and a sender on a
+/// different HMAC version can both arrive as a MAC that does not verify. The
+/// label names both causes and claims neither.
+pub const REFUSED_AUTHENTICATION: &str = "refused: authentication (wrong key or HMAC version)";
+
+/// The `hep_sender_refused` finding for one refused-source row of
+/// `collector`'s inventory, when the row's address is a listed instance's
+/// and the collector refused it for authentication; `None` otherwise.
+///
+/// `listed` maps each address a listed URL resolved to onto the names that
+/// resolved to it. Reasons are read by name with
+/// [`HepRefusal::from_name`](crate::capture::hep_roster::HepRefusal::from_name),
+/// so a reason this build does not know is not counted as authentication.
+///
+/// The collector counts refusals for as long as it runs, so a sender whose
+/// key was fixed keeps them. `senders` is the collector's list of admitted
+/// senders: when it admitted a packet from the same address after the last
+/// refusal, the sender is fixed and this is `None`. A time that is missing
+/// or does not parse is read as no proof of a fix.
+fn refused_sender(
+    collector: &str,
+    row: &serde_json::Value,
+    senders: &[serde_json::Value],
+    listed: &std::collections::BTreeMap<IpAddr, Vec<String>>,
+) -> Option<Finding> {
+    use crate::capture::hep_roster::HepRefusal;
+    let peer = row["peer"].as_str()?;
+    let names = listed.get(&peer.parse::<IpAddr>().ok()?)?;
+    let time = |v: &serde_json::Value| {
+        v["last_seen"]
+            .as_str()
+            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+    };
+    if let Some(refused_at) = time(row) {
+        let admitted_after = senders
+            .iter()
+            .filter(|s| s["peer"].as_str() == Some(peer))
+            .filter_map(time)
+            .any(|admitted_at| admitted_at > refused_at);
+        if admitted_after {
+            return None;
+        }
+    }
+    let reasons: Vec<(&str, u64)> = row["by_reason"]
+        .as_object()?
+        .iter()
+        .filter(|(name, _)| HepRefusal::from_name(name).is_some_and(HepRefusal::is_authentication))
+        .filter_map(|(name, n)| Some((name.as_str(), n.as_u64().filter(|n| *n > 0)?)))
+        .collect();
+    if reasons.is_empty() {
+        return None;
+    }
+    let total = reasons
+        .iter()
+        .fold(0u64, |sum, (_, n)| sum.saturating_add(*n));
+    let packets = if total == 1 { "packet" } else { "packets" };
+    let detail = reasons
+        .iter()
+        .map(|(name, n)| format!("{name} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(Finding {
+        kind: "hep_sender_refused".to_string(),
+        detail: format!(
+            "{collector} refused {total} HEP {packets} from {} ({peer}): \
+             {REFUSED_AUTHENTICATION}; the collector's reasons: {detail}",
+            names.join(", ")
+        ),
+    })
+}
+
 /// The report for `results`.
 #[must_use]
 pub fn merge(results: Vec<HostResult>) -> FleetReport {
-    let listed: std::collections::BTreeSet<IpAddr> = results
-        .iter()
-        .flat_map(|r| r.addresses.iter().copied())
-        .collect();
+    let mut listed_names: std::collections::BTreeMap<IpAddr, Vec<String>> = Default::default();
+    for r in &results {
+        for ip in &r.addresses {
+            let names = listed_names.entry(*ip).or_default();
+            if !names.contains(&r.name) {
+                names.push(r.name.clone());
+            }
+        }
+    }
     let mut hosts = Vec::with_capacity(results.len());
     let mut versions: std::collections::BTreeMap<String, Vec<String>> = Default::default();
     let mut findings = Vec::new();
@@ -194,7 +274,9 @@ pub fn merge(results: Vec<HostResult>) -> FleetReport {
                 let Some(text) = peer["peer"].as_str() else {
                     continue;
                 };
-                let known = text.parse::<IpAddr>().is_ok_and(|ip| listed.contains(&ip));
+                let known = text
+                    .parse::<IpAddr>()
+                    .is_ok_and(|ip| listed_names.contains_key(&ip));
                 if !known {
                     findings.push(Finding {
                         kind: "unlisted_hep_sender".to_string(),
@@ -206,6 +288,12 @@ pub fn merge(results: Vec<HostResult>) -> FleetReport {
                     });
                 }
             }
+            let refused = v["hep_listener"]["refused_sources"]
+                .as_array()
+                .map(Vec::as_slice);
+            findings.extend(refused.unwrap_or_default().iter().filter_map(|row| {
+                refused_sender(&r.name, row, senders.unwrap_or_default(), &listed_names)
+            }));
         }
         hosts.push(HostRow {
             name: r.name,
@@ -602,6 +690,205 @@ mod tests {
             r.findings
         );
         assert!(r.findings[0].detail.contains("hub"), "{:?}", r.findings);
+        Ok(())
+    }
+
+    /// `v` with one refused source at `peer`, refused for `reasons`.
+    fn refusing(
+        mut v: serde_json::Value,
+        peer: &str,
+        reasons: &[(&str, u64)],
+    ) -> serde_json::Value {
+        let by_reason: serde_json::Map<String, serde_json::Value> = reasons
+            .iter()
+            .map(|(r, n)| ((*r).to_string(), serde_json::json!(n)))
+            .collect();
+        let packets: u64 = reasons.iter().map(|(_, n)| n).sum();
+        let row = serde_json::json!({"peer": peer, "packets": packets, "by_reason": by_reason});
+        match v["hep_listener"]["refused_sources"].as_array_mut() {
+            Some(rows) => rows.push(row),
+            None => v["hep_listener"]["refused_sources"] = serde_json::json!([row]),
+        }
+        v
+    }
+
+    /// The case seen live: a listed sender whose every packet the collector
+    /// refuses for authentication. The report is not ok, and the finding
+    /// names the collector, the sender, its address and how many packets,
+    /// with the one label that does not claim to know which of the two
+    /// causes it was.
+    #[test]
+    fn a_listed_sender_refused_for_authentication_is_a_finding() -> Result<(), TestError> {
+        let hub = refusing(
+            inv("hub", "v1", &["192.0.2.11"]),
+            "192.0.2.13",
+            &[("hmac_unsupported_version", 10)],
+        );
+        let r = merge(vec![
+            host("hub", "192.0.2.10", Answer::Inventory(hub))?,
+            host(
+                "edge-a",
+                "192.0.2.11",
+                Answer::Inventory(inv("edge-a", "v1", &[])),
+            )?,
+            host("edge-old", "192.0.2.13", Answer::Refused(404))?,
+        ]);
+        assert!(!r.ok, "a refused listed sender makes the fleet not ok");
+        let refused: Vec<&Finding> = r
+            .findings
+            .iter()
+            .filter(|f| f.kind == "hep_sender_refused")
+            .collect();
+        assert_eq!(refused.len(), 1, "{:?}", r.findings);
+        let d = &refused[0].detail;
+        for want in [
+            "hub",
+            "edge-old",
+            "192.0.2.13",
+            "10",
+            "refused: authentication (wrong key or HMAC version)",
+            "hmac_unsupported_version",
+        ] {
+            assert!(d.contains(want), "{want} missing from {d}");
+        }
+        assert!(
+            !d.contains("edge-a"),
+            "the finding names only the refused sender: {d}"
+        );
+        Ok(())
+    }
+
+    /// Every authentication reason is flagged, and the packet count is the
+    /// authentication refusals only; a listed sender refused only for a
+    /// reason a key does not decide (the rate limit, the allowlist, a packet
+    /// that does not parse) is no such finding.
+    #[test]
+    fn only_authentication_refusals_of_a_listed_sender_are_flagged() -> Result<(), TestError> {
+        for reason in crate::capture::hep_roster::HepRefusal::ALL {
+            let hub = refusing(
+                inv("hub", "v1", &[]),
+                "192.0.2.11",
+                &[(reason.as_str(), 3), ("rate_limit_per_peer", 5)],
+            );
+            let r = merge(vec![
+                host("hub", "192.0.2.10", Answer::Inventory(hub))?,
+                host(
+                    "edge-a",
+                    "192.0.2.11",
+                    Answer::Inventory(inv("edge-a", "v1", &[])),
+                )?,
+            ]);
+            let found: Vec<&Finding> = r
+                .findings
+                .iter()
+                .filter(|f| f.kind == "hep_sender_refused")
+                .collect();
+            if reason.is_authentication() {
+                assert_eq!(found.len(), 1, "{reason:?}: {:?}", r.findings);
+                assert!(
+                    found[0].detail.contains("refused 3 HEP packets"),
+                    "{reason:?}: the count is the authentication refusals: {}",
+                    found[0].detail
+                );
+                assert!(!r.ok, "{reason:?}");
+            } else {
+                assert!(found.is_empty(), "{reason:?}: {:?}", r.findings);
+            }
+        }
+        Ok(())
+    }
+
+    /// The collector counts refusals for as long as it runs, so a sender
+    /// whose key was fixed still has them. Once the collector has admitted
+    /// a packet from that address after its last refusal, the sender is no
+    /// longer flagged; while the last refusal is the newer, it is. A row
+    /// that carries no time is read as current, so nothing is hidden.
+    #[test]
+    fn a_sender_admitted_after_its_last_refusal_is_not_flagged() -> Result<(), TestError> {
+        let at =
+            |admitted: Option<&str>, refused: Option<&str>| -> Result<FleetReport, TestError> {
+                let mut hub = inv("hub", "v1", &["192.0.2.11"]);
+                if let Some(t) = admitted {
+                    hub["hep_listener"]["senders"][0]["last_seen"] = serde_json::json!(t);
+                }
+                let mut hub = refusing(hub, "192.0.2.11", &[("hmac_bad_mac", 7)]);
+                if let Some(t) = refused {
+                    hub["hep_listener"]["refused_sources"][0]["last_seen"] = serde_json::json!(t);
+                }
+                Ok(merge(vec![
+                    host("hub", "192.0.2.10", Answer::Inventory(hub))?,
+                    host(
+                        "edge-a",
+                        "192.0.2.11",
+                        Answer::Inventory(inv("edge-a", "v1", &[])),
+                    )?,
+                ]))
+            };
+        let flagged = |r: &FleetReport| r.findings.iter().any(|f| f.kind == "hep_sender_refused");
+        let fixed = at(
+            Some("2026-11-07T12:00:05.000Z"),
+            Some("2026-11-07T12:00:01.000Z"),
+        )?;
+        assert!(!flagged(&fixed), "admitted after the refusals: {fixed:?}");
+        assert!(fixed.ok, "{fixed:?}");
+        let broken = at(
+            Some("2026-11-07T12:00:01.000Z"),
+            Some("2026-11-07T12:00:05.000Z"),
+        )?;
+        assert!(
+            flagged(&broken),
+            "refused after the last admission: {broken:?}"
+        );
+        let same = at(
+            Some("2026-11-07T12:00:01.000Z"),
+            Some("2026-11-07T12:00:01.000Z"),
+        )?;
+        assert!(flagged(&same), "a tie is not proof of a fix: {same:?}");
+        // Another sender admitted later proves nothing about this one.
+        let mut hub = inv("hub", "v1", &["192.0.2.99"]);
+        hub["hep_listener"]["senders"][0]["last_seen"] =
+            serde_json::json!("2026-11-07T12:00:09.000Z");
+        let mut hub = refusing(hub, "192.0.2.11", &[("hmac_bad_mac", 7)]);
+        hub["hep_listener"]["refused_sources"][0]["last_seen"] =
+            serde_json::json!("2026-11-07T12:00:01.000Z");
+        let other = merge(vec![
+            host("hub", "192.0.2.10", Answer::Inventory(hub))?,
+            host(
+                "edge-a",
+                "192.0.2.11",
+                Answer::Inventory(inv("edge-a", "v1", &[])),
+            )?,
+            host(
+                "edge-b",
+                "192.0.2.99",
+                Answer::Inventory(inv("edge-b", "v1", &[])),
+            )?,
+        ]);
+        assert!(flagged(&other), "another address was admitted: {other:?}");
+        for (a, r) in [
+            (None, Some("2026-11-07T12:00:01.000Z")),
+            (Some("2026-11-07T12:00:05.000Z"), None),
+            (Some("not a time"), Some("2026-11-07T12:00:01.000Z")),
+        ] {
+            let rep = at(a, r)?;
+            assert!(flagged(&rep), "{a:?} / {r:?}: {rep:?}");
+        }
+        Ok(())
+    }
+
+    /// An address no listed instance accounts for is not this finding: the
+    /// collector's own refused-source list is where to read it, and an
+    /// unlisted address is often not a sipnab at all.
+    #[test]
+    fn an_unlisted_refused_source_is_not_a_finding() -> Result<(), TestError> {
+        let hub = refusing(
+            inv("hub", "v1", &[]),
+            "198.51.100.66",
+            &[("hmac_bad_mac", 40)],
+        );
+        let r = merge(vec![host("hub", "192.0.2.10", Answer::Inventory(hub))?]);
+        assert!(r.ok, "{r:?}");
+        assert!(r.findings.is_empty(), "{:?}", r.findings);
         Ok(())
     }
 

@@ -161,6 +161,8 @@ pub struct RunRecord {
     pub effective_sha256: Option<String>,
     /// When the record was taken, RFC 3339.
     pub started: String,
+    /// The secret files this run named, stamped when it started.
+    pub secret_files: Vec<SecretFileStamp>,
 }
 
 impl RunRecord {
@@ -188,6 +190,88 @@ impl RunRecord {
             parsed_sha256,
             argv_sha256,
             started: started.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            secret_files: Vec::new(),
+        }
+    }
+
+    /// This record, with `stamps` as its secret files.
+    #[must_use]
+    pub fn with_secret_files(mut self, stamps: Vec<SecretFileStamp>) -> Self {
+        self.secret_files = stamps;
+        self
+    }
+}
+
+/// One secret or credential file this run named, described by what a
+/// rotation changes and by nothing derived from its contents.
+///
+/// A secret held in a file is named by its path, and the path is all the
+/// configuration digests cover, so replacing the key in it changes no
+/// digest. Hashing the contents would let anyone holding an `inventory`
+/// token test guesses at a low-entropy secret, such as a password, offline.
+/// The inode and the modification time change when the file is replaced or
+/// rewritten and say nothing about what it holds. Taken when the run starts,
+/// before any privilege drop, so it describes the file the run read.
+///
+/// The path is left out: it is a configuration value, and the inventory
+/// carries none. `setting` names the file instead.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+pub struct SecretFileStamp {
+    /// The setting that named the file: a flag such as
+    /// `--api-signing-key-file`, also when the value came from its config
+    /// key, or `[section] key` for a key with no flag.
+    pub setting: String,
+    /// The file's inode number; absent when it could not be read, or on a
+    /// system with no inodes.
+    pub inode: Option<u64>,
+    /// The file's modification time, RFC 3339 in UTC with nanoseconds;
+    /// absent when it could not be read.
+    pub mtime: Option<String>,
+    /// Why the file could not be read, without its path.
+    pub error: Option<String>,
+}
+
+impl SecretFileStamp {
+    /// The stamp of the file at `path`, named by `setting`, now.
+    ///
+    /// Follows a symbolic link, so a key published by swapping a link (as a
+    /// Kubernetes secret volume does) is stamped by the file the link names.
+    ///
+    /// # Side effects
+    ///
+    /// Stats `path`. Never opens or reads it.
+    #[must_use]
+    pub fn of(setting: &str, path: &std::path::Path) -> Self {
+        match std::fs::metadata(path) {
+            Ok(meta) => {
+                #[cfg(unix)]
+                let inode = {
+                    use std::os::unix::fs::MetadataExt as _;
+                    Some(meta.ino())
+                };
+                #[cfg(not(unix))]
+                let inode = None;
+                let mtime = meta.modified().ok().map(|t| {
+                    chrono::DateTime::<chrono::Utc>::from(t)
+                        .to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+                });
+                Self {
+                    setting: setting.to_string(),
+                    inode,
+                    mtime,
+                    error: None,
+                }
+            }
+            // `io::Error`'s text names the cause, never the path.
+            Err(e) => Self {
+                setting: setting.to_string(),
+                inode: None,
+                mtime: None,
+                error: Some(e.to_string()),
+            },
         }
     }
 }
@@ -349,6 +433,10 @@ pub struct ConfigInfo {
     /// effective configuration. The one configuration digest to compare
     /// across instances.
     pub effective_sha256: Option<String>,
+    /// Each secret or credential file this run named, by its inode and
+    /// modification time when the run started: a rotation shows here,
+    /// where no digest moves.
+    pub secret_files: Vec<SecretFileStamp>,
 }
 
 /// The privilege the process holds.
@@ -430,6 +518,27 @@ pub struct HepListenerInfo {
     pub packets_refused: u64,
     /// The senders it tracks, at most [`MAX_HEP_PEERS`].
     pub senders: Vec<HepPeer>,
+    /// The addresses it refused packets from, most refused first, at most
+    /// [`MAX_HEP_PEERS`]. A refused address is never in `senders`: a
+    /// refused packet proved nothing about who sent it.
+    pub refused_sources: Vec<HepRefusedPeer>,
+}
+
+/// One address a HEP listener refused packets from.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "mcp", derive(rmcp::schemars::JsonSchema))]
+#[cfg_attr(feature = "mcp", schemars(crate = "rmcp::schemars"))]
+#[cfg_attr(feature = "api", derive(utoipa::ToSchema))]
+pub struct HepRefusedPeer {
+    /// The address the refused packets came from.
+    pub peer: String,
+    /// Packets refused from it while the listener has tracked it.
+    pub packets: u64,
+    /// Those packets by refusal reason, only the reasons that occurred.
+    pub by_reason: std::collections::BTreeMap<String, u64>,
+    /// When the latest of them arrived (RFC 3339, UTC). A sender admitted
+    /// after this time has been fixed since.
+    pub last_seen: String,
 }
 
 /// One HEP sender.
@@ -444,6 +553,8 @@ pub struct HepPeer {
     pub capture_id: Option<u32>,
     /// Whether it has been silent past the warning threshold.
     pub silent: bool,
+    /// When its latest admitted packet arrived (RFC 3339, UTC).
+    pub last_seen: String,
 }
 
 /// The build half of the record, from the one `--version` source.
@@ -477,6 +588,7 @@ pub fn config_info(record: Option<&RunRecord>) -> ConfigInfo {
             parsed_sha256: r.parsed_sha256.clone(),
             argv_sha256: Some(r.argv_sha256.clone()),
             effective_sha256: r.effective_sha256.clone(),
+            secret_files: r.secret_files.clone(),
         },
         None => ConfigInfo {
             recorded: false,
@@ -486,6 +598,7 @@ pub fn config_info(record: Option<&RunRecord>) -> ConfigInfo {
             parsed_sha256: None,
             argv_sha256: None,
             effective_sha256: None,
+            secret_files: Vec::new(),
         },
     }
 }
@@ -522,6 +635,17 @@ pub fn hep_listener_info(meter: Option<&crate::capture::channel::CaptureMeter>) 
                     peer: row.peer,
                     capture_id: row.capture_id,
                     silent: row.silent,
+                    last_seen: row.last_seen,
+                })
+                .collect(),
+            refused_sources: report
+                .refused_sources
+                .into_iter()
+                .map(|row| HepRefusedPeer {
+                    peer: row.peer,
+                    packets: row.packets,
+                    by_reason: row.by_reason,
+                    last_seen: row.last_seen,
                 })
                 .collect(),
         }
@@ -842,6 +966,102 @@ mod tests {
             argv_digest(&v(&["/usr/local/bin/sipnab", "ab", "c"])),
             "the program path is left out of the digest"
         );
+    }
+
+    /// A secret file is described by its inode and modification time, the
+    /// two things a rotation changes, and by nothing derived from its
+    /// contents: neither the bytes nor their digest is in the stamp.
+    #[cfg(unix)]
+    #[test]
+    fn a_secret_file_is_stamped_by_inode_and_mtime_not_content() -> Result<(), TestError> {
+        use std::os::unix::fs::MetadataExt as _;
+        const KEY: &str = "low-entropy-key-7";
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("signing.key");
+        std::fs::write(&path, KEY)?;
+        let meta = std::fs::metadata(&path)?;
+        let stamp = SecretFileStamp::of("--api-signing-key-file", &path);
+        assert_eq!(stamp.setting, "--api-signing-key-file", "{stamp:?}");
+        assert_eq!(stamp.inode, Some(meta.ino()), "{stamp:?}");
+        let mtime: chrono::DateTime<chrono::Utc> = meta.modified()?.into();
+        assert_eq!(
+            stamp.mtime,
+            Some(mtime.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)),
+            "{stamp:?}"
+        );
+        assert_eq!(stamp.error, None, "{stamp:?}");
+        let json = serde_json::to_string(&stamp)?;
+        assert!(
+            !json.contains(KEY),
+            "the contents reached the stamp: {json}"
+        );
+        assert!(
+            !json.contains(&reference_hex(KEY.as_bytes())),
+            "a digest of the contents reached the stamp: {json}"
+        );
+        assert!(
+            !json.contains(&path.display().to_string()),
+            "the path is a configuration value and stays out: {json}"
+        );
+
+        // A rotation the usual way, a new file renamed over the old one,
+        // gives a new inode, whatever the clock's resolution.
+        let next = dir.path().join("signing.key.new");
+        std::fs::write(&next, "low-entropy-key-8")?;
+        std::fs::rename(&next, &path)?;
+        let rotated = SecretFileStamp::of("--api-signing-key-file", &path);
+        assert_ne!(rotated.inode, stamp.inode, "{rotated:?} vs {stamp:?}");
+        assert_eq!(
+            rotated.inode,
+            Some(std::fs::metadata(&path)?.ino()),
+            "{rotated:?}"
+        );
+
+        // A file that cannot be read is said so, with no inode or time and
+        // no path in the reason.
+        let missing = SecretFileStamp::of("--hep-auth-file", &dir.path().join("absent"));
+        assert_eq!(
+            (missing.inode, &missing.mtime),
+            (None, &None),
+            "{missing:?}"
+        );
+        let why = missing
+            .error
+            .as_deref()
+            .ok_or("an error for a missing file")?;
+        assert!(!why.contains("absent"), "{why}");
+        Ok(())
+    }
+
+    /// A run's record carries the stamps it was given, and the
+    /// configuration half of the inventory reports them as they are.
+    #[test]
+    fn the_record_carries_its_secret_file_stamps() -> Result<(), TestError> {
+        let loaded = crate::config::LoadedConfig {
+            config: crate::config::Config::default(),
+            source: None,
+            shadowed: Vec::new(),
+            file_text: None,
+        };
+        let at = chrono::DateTime::from_timestamp(1_790_000_000, 0).ok_or("a time")?;
+        let stamps = vec![SecretFileStamp {
+            setting: "--hep-auth-file".to_string(),
+            inode: Some(42),
+            mtime: Some("2026-11-07T00:00:00.000000001Z".to_string()),
+            error: None,
+        }];
+        let record =
+            RunRecord::of(&loaded, &["sipnab".into()], at).with_secret_files(stamps.clone());
+        assert_eq!(
+            config_info(Some(&record)).secret_files,
+            stamps,
+            "the record's stamps reach the configuration half as given"
+        );
+        assert!(
+            config_info(None).secret_files.is_empty(),
+            "no record, no stamps"
+        );
+        Ok(())
     }
 
     /// The file digest is SHA-256 of the file's bytes.
