@@ -205,9 +205,10 @@ Gate 0 runs first because it is the cheapest check in either hook (~1.4s).
 - But it cannot catch the mistake early. A formatting slip that only surfaces
   at push time costs a full commit-and-push cycle to undo.
 
-Gate 2 runs the whole suite, so **every commit takes minutes**. Gate 5 means
-that adding a test obliges you to update the count in
-`website/templates/index.html` in the same commit.
+Gate 2 runs the whole suite, so a commit takes minutes whenever the suite's
+inputs changed. [Pass stamps](#pass-stamps-what-the-hooks-skip) skip the
+steps whose inputs did not change. Gate 5 checks that the homepage test count
+is still generated at deploy time. You do not edit a count.
 
 **`commit-msg`** runs after `pre-commit`. It refuses a commit message that
 names any of these:
@@ -296,6 +297,153 @@ CI's full feature matrix is not in the hook. That matrix is every combination
 - CI runs the same gates anyway.
 - Verify the hooks themselves with `scripts/test-pre-commit.sh` and
   `scripts/test-pre-push.sh`.
+
+### Pass stamps: what the hooks skip
+
+Both hooks record a stamp when a slow step passes, and skip that step on a
+later run whose inputs are identical. `scripts/gate-cache.py` computes the
+keys and keeps the stamps. The comment at the top of that script states the
+full rule.
+
+**Why.** In the shared host's heavy-run log from 2026-11-06T13:04Z to
+2026-11-07T22:14Z, hook runs were 112 of 187 jobs in the main slot and 631 of
+their 1,128 minutes of run time. Nine times, the next job from a directory
+where a hand run of the pre-commit hook had just passed was `git commit`, which
+ran the hook again: 40.4 minutes in all.
+
+**Prerequisites.** None beyond the hooks themselves: `python3`, and
+`core.hooksPath` set to `.githooks`. No other system changes.
+
+**The cached steps.**
+
+| Hook | Steps with a stamp | What the key covers |
+|---|---|---|
+| `pre-commit` | the whole hook; clippy; the suite; the `sipnab-bpf-types` tests; the script tests | The whole hook, the suite and the script tests: every file. The other two: the build inputs only. |
+| `pre-push` | clippy; rustdoc; the fuzz and BPF clippy runs; the `tls` and `api` checks; clippy with no features; the wasm and cross-architecture checks; the non-Linux check; vale; codespell | vale and codespell: every file. The other steps: the build inputs only. |
+
+Every key also covers:
+
+- the hook file, and every file under `scripts/` and `.config/`;
+- `Cargo.lock`;
+- `rustc -Vv`, and the versions of cargo-nextest, Python, `pytest`, vale and
+  codespell;
+- the `RUST*`, `CARGO_*`, `NEXTEST_*` and `SIPNAB_*` variables, and the tool
+  overrides such as `VALE_BIN`.
+
+"Every file" means:
+
+- every tracked and untracked path, with its content;
+- the ignored files outside `target/`, by size and modification time;
+- the index tree, `HEAD` and the tags.
+
+The build inputs are the paths that can change what cargo compiles:
+
+- everything outside `docs/`, `website/` and `man/`, except the top-level
+  `*.md` files;
+- any file under those roots that a Rust file includes with `include_str!`,
+  `include_bytes!` or `include!`, such as `docs/library.md`, `CHANGELOG.md`
+  and `README.md`;
+- any `*.rs`, `Cargo.*`, `build.rs` or toolchain file, wherever it is.
+
+**Documentation-only changes.**
+
+- The suite never skips a documentation change. Several tests read every
+  tracked file: `tests/repo_hygiene_test.rs`,
+  `tests/private_identity_test.rs` and `tests/source_file_headers_test.rs`.
+- What a documentation change skips is clippy and the `sipnab-bpf-types`
+  tests at commit time, and every cargo step of `pre-push`. The prose linters
+  still run.
+- To see how the rule classifies paths, run `python3 scripts/gate-cache.py
+  classify`, followed by the paths. Without paths, it classifies the staged
+  paths.
+
+**Never cached.**
+
+- The prerequisite check, formatting and the other checks that take seconds.
+  Each one runs on every commit that is not skipped whole.
+- The signature, message and test-count gates of `pre-push`, which judge the
+  pushed commits.
+- The release-delivery test, which reads tags.
+- The YANG, TUI, corpus and site gates.
+
+**What a skipped run prints.** A whole pre-commit run on identical inputs
+prints one line and exits:
+
+```text
+pre-commit: PASSED before on these exact inputs; no check re-run (stamp 3f44e53ce2de, written 2026-11-07T22:01:13Z). Full run: SIPNAB_GATE_NO_CACHE=1
+```
+
+A single step prints `CACHED (passed on these inputs: stamp <id>, <time>)`
+in place of `OK`.
+
+**The tests that failed in the last run go first.**
+
+- When the suite fails, the hook records the failed tests in
+  `.git/sipnab-pre-commit-failed-tests.json`. In a linked worktree, that is
+  the worktree's own git directory.
+- The next run replays those tests first, with `cargo nextest run
+  --fail-fast`, before clippy and the suite.
+- A failure there stops the hook at once.
+- A pass goes on to every step, the full suite included.
+- A full suite that passes removes the record.
+
+**Force a full run.** Set `SIPNAB_GATE_NO_CACHE=1`. Every step then runs. A
+step that passes still writes its stamp. For a commit:
+
+```bash
+SIPNAB_GATE_NO_CACHE=1 git commit
+```
+
+For a push:
+
+```bash
+SIPNAB_GATE_NO_CACHE=1 git push
+```
+
+**Clear the stamps.** This removes the stamps of the current worktree:
+
+```bash
+python3 scripts/gate-cache.py clear
+```
+
+The command removes the directory `sipnab-gate-pass` under the path that
+`git rev-parse --git-dir` prints. Deleting that directory by hand does the
+same.
+
+**Verify.**
+
+1. `python3 scripts/gate-cache.py list` prints each stamp with its hook,
+   step, key prefix and time. A lookup ignores a stamp that is not valid, and
+   `list` prints such a stamp as `INVALID (ignored)`.
+2. Run the pre-commit hook twice on an unchanged tree. The second run prints
+   the one `PASSED before` line.
+3. Edit any tracked file and run it again. That run is a full run.
+4. The tests of the mechanism: `cd scripts && python3 -m pytest
+   tests/test_gate_cache.py tests/test_gate_cache_hooks.py
+   tests/test_parallel_tests_rerun.py`.
+
+**Where the stamps are, and how long they last.**
+
+- Stamps are in `<git dir>/sipnab-gate-pass/`, one directory for each
+  worktree. `git worktree remove` deletes them with the worktree.
+- A stamp older than seven days is not used.
+- Each write keeps the newest 256 stamps and removes the rest.
+
+**Troubleshooting.**
+
+- The hook says that pass stamps are `NOT USED` because
+  `scripts/gate-cache.py` could not read the inputs: the script exited with an
+  error, and its message is above that line. Every step runs, so the hook
+  skips nothing.
+- `No pass stamp for <step>: its inputs changed while it ran`: a file changed
+  during the run, so the run cannot vouch for the tree as it is now. The next
+  run checks it.
+- A step you expected to skip ran: something in its key differed. Common
+  causes are an untracked file, a different `RUSTFLAGS`, a rebuilt toolchain,
+  or a file that a tool or test rewrote under `docs/` or `website/data/`.
+- A test that reads state outside the repository, such as another worktree,
+  can change its verdict without changing the key. Run with
+  `SIPNAB_GATE_NO_CACHE=1` to check again at once.
 
 ## Code style
 
