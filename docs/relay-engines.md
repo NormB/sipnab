@@ -545,10 +545,12 @@ network could otherwise choose where sipnab sends `query`.
 
 - The newest `offer` by capture time chooses the engine. A `delete` alone
   chooses nothing.
-- sipnab remembers the newest 16 `offer` and `delete` requests of each call,
-  for as many calls as the dialog limit allows (`--limit`), at most
-  `MAX_SIGHTING_CALLS` (16,384). Past that it forgets the call it saw first,
-  and a forgotten `offer` can no longer mark a call as moved.
+- sipnab remembers the `offer` and `delete` requests it read last, of any
+  call: 4 for each dialog the dialog limit allows (`--limit`), at most
+  `MAX_SIGHTINGS` (65,536) in all. Of each call it keeps the last 16 of
+  those. Past that it forgets the request it read first, and a call with no
+  request left. A forgotten `offer` can no longer mark a call as moved.
+  `--cores N` remembers the same requests as `--cores 1`.
 - sipnab copies only `offer` and `delete` into its evidence. `answer`,
   replies, and the `query` and `list` that sipnab itself sends (rtpengine
   copies those too) change nothing.

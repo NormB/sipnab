@@ -448,7 +448,7 @@ fn merge_recovers_timestamp_order_from_permuted_stores() -> Result<(), TestError
         for i in (0..mid).rev() {
             b.process_message(msgs[i].clone());
         }
-        a.merge([b], |m| m.timestamp);
+        a.merge([b], |_, at| at);
 
         let dialog = a
             .get(shape.call_id())

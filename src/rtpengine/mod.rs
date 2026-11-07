@@ -480,6 +480,7 @@ pub fn engine_sighting_from_ng(
             engine,
             verb,
             reported_listen_ng,
+            frame: None,
         },
     ))
 }
@@ -529,6 +530,7 @@ mod engine_sighting_tests {
                     engine: EngineIdentity::HomerId(2002),
                     verb: EngineVerb::Offer,
                     reported_listen_ng: Some("127.0.0.1:2223".parse()?),
+                    frame: None,
                 }
             )),
             "an offer is a sighting of the engine that received it"

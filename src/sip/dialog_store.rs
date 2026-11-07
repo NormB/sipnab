@@ -1004,9 +1004,7 @@ impl DialogStore {
                 |&(max, ttl)| crate::sip::th_mapping::ThMappingTable::new(max, ttl),
             ),
             th_mappings_swept: None,
-            engine_sightings: crate::relay_vocab::EngineSightings::new(
-                max_dialogs.clamp(1, crate::relay_vocab::EngineSightings::MAX_SIGHTING_CALLS),
-            ),
+            engine_sightings: crate::relay_vocab::EngineSightings::for_dialogs(max_dialogs),
         }
     }
 
@@ -1021,7 +1019,7 @@ impl DialogStore {
 
     /// The engine sightings of `call_id`, oldest first.
     #[must_use]
-    pub fn engine_sightings(&self, call_id: &str) -> &[crate::relay_vocab::EngineSighting] {
+    pub fn engine_sightings(&self, call_id: &str) -> Vec<crate::relay_vocab::EngineSighting> {
         self.engine_sightings.of(call_id)
     }
 
@@ -1643,9 +1641,10 @@ impl DialogStore {
     /// * `others` — The worker stores to fold in (consumed). All of them at
     ///   once, because a dialog spread over three workers has to be replayed
     ///   from all three fragments together.
-    /// * `read_position` — Where a message sits in the run's read order; any
-    ///   total order the caller read the messages in. `crate::parallel` gives
-    ///   (the file's place in the set, the frame's ordinal in the file).
+    /// * `read_position` — Where a message or an engine sighting sits in the
+    ///   run's read order, from its frame and its timestamp; any total order
+    ///   the caller read them in. `crate::parallel` gives (the file's place in
+    ///   the set, the frame's ordinal in the file), then the timestamp.
     ///
     /// # Side effects
     ///
@@ -1670,9 +1669,14 @@ impl DialogStore {
     pub fn merge<K: Ord>(
         &mut self,
         others: impl IntoIterator<Item = DialogStore>,
-        read_position: impl Fn(&SipMessage) -> K,
+        read_position: impl Fn(
+            Option<&crate::capture::packet::FrameRef>,
+            chrono::DateTime<chrono::Utc>,
+        ) -> K,
     ) {
         self.generation += 1;
+        let message_position = |m: &SipMessage| read_position(m.frame.as_ref(), m.timestamp);
+        let mut sightings = Vec::new();
         // Every fragment of every key: this store's first, then the others'
         // in the order given. The order only breaks ties between positions.
         let mut fragments: IndexMap<String, Vec<SipDialog>, ahash::RandomState> =
@@ -1695,8 +1699,10 @@ impl DialogStore {
             self.idle_messages_evicted += other.idle_messages_evicted;
             self.capacity_dialogs_dropped += other.capacity_dialogs_dropped;
             self.capacity_dialogs_evicted += other.capacity_dialogs_evicted;
-            self.engine_sightings.merge(other.engine_sightings);
+            sightings.push(other.engine_sightings);
         }
+        self.engine_sightings
+            .merge(sightings, |s| read_position(s.frame.as_ref(), s.at));
         let mut dialogs: Vec<(Option<K>, String, SipDialog)> = fragments
             .into_iter()
             .filter_map(|(key, mut parts)| {
@@ -1710,7 +1716,7 @@ impl DialogStore {
                     }
                     let dialog = rebuild_in_read_order(
                         parts,
-                        &read_position,
+                        &message_position,
                         MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed),
                     );
                     *self
@@ -1719,7 +1725,7 @@ impl DialogStore {
                         .or_insert(0) += 1;
                     dialog
                 };
-                let first = dialog.messages.first().map(&read_position);
+                let first = dialog.messages.first().map(message_position);
                 Some((first, key, dialog))
             })
             .collect();
@@ -1799,10 +1805,7 @@ impl DialogStore {
     pub fn clear(&mut self) {
         self.generation += 1;
         self.dialogs.clear();
-        self.engine_sightings = crate::relay_vocab::EngineSightings::new(
-            self.max_dialogs
-                .clamp(1, crate::relay_vocab::EngineSightings::MAX_SIGHTING_CALLS),
-        );
+        self.engine_sightings = crate::relay_vocab::EngineSightings::for_dialogs(self.max_dialogs);
     }
 
     /// Retain only dialogs for which `predicate` returns `true`.
@@ -2947,24 +2950,51 @@ mod tests {
             engine: crate::relay_vocab::EngineIdentity::HomerId(id),
             verb: crate::relay_vocab::EngineVerb::Offer,
             reported_listen_ng: None,
+            frame: None,
         })
     }
 
+    /// `offer` sighting `ordinal` of a run's read order, at homer-id `id`,
+    /// `secs` in.
+    fn engine_offer_read(
+        ordinal: u64,
+        id: u32,
+        secs: i64,
+    ) -> Result<crate::relay_vocab::EngineSighting, TestError> {
+        let mut offer = engine_offer(id, secs)?;
+        offer.frame = Some(
+            crate::capture::packet::FrameLocator {
+                source: "engine-offers.pcap",
+                origin: crate::capture::packet::FrameOrigin {
+                    ordinal,
+                    digest: None,
+                    verifiable: true,
+                },
+            }
+            .to_frame_ref(),
+        );
+        Ok(offer)
+    }
+
     /// A `--cores` merge carries each worker's engine sightings, so a call
-    /// whose offers two workers saw keeps both; clearing the store forgets
-    /// them with the dialogs.
+    /// whose offers two workers saw keeps both, in the order the run read
+    /// them, which the merge reads from each sighting's frame; clearing the
+    /// store forgets them with the dialogs.
     #[test]
     fn merge_carries_engine_sightings_and_clear_forgets_them() -> Result<(), TestError> {
         let mut a = DialogStore::new(16, false);
-        a.record_engine_sighting("e1@example.invalid", engine_offer(2001, 0)?);
+        a.record_engine_sighting("e1@example.invalid", engine_offer_read(2, 2001, 0)?);
         let mut b = DialogStore::new(16, false);
-        b.record_engine_sighting("e1@example.invalid", engine_offer(2002, 60)?);
-        b.record_engine_sighting("e2@example.invalid", engine_offer(2002, 61)?);
-        a.merge([b], |m| m.timestamp);
+        b.record_engine_sighting("e1@example.invalid", engine_offer_read(1, 2002, 60)?);
+        b.record_engine_sighting("e2@example.invalid", engine_offer_read(3, 2002, 61)?);
+        a.merge([b], |frame, _| frame.map(|f| f.origin.ordinal));
         assert_eq!(
             a.engine_sightings("e1@example.invalid"),
-            [engine_offer(2001, 0)?, engine_offer(2002, 60)?],
-            "both workers' offers of one call, in time order"
+            [
+                engine_offer_read(1, 2002, 60)?,
+                engine_offer_read(2, 2001, 0)?
+            ],
+            "both workers' offers of one call, in read order, not time order"
         );
         assert_eq!(
             a.engine_sightings("e2@example.invalid").len(),
@@ -2987,7 +3017,7 @@ mod tests {
         a.process_message(make_invite_msg("call-a@h", t0)?);
         let mut b = DialogStore::new(1000, true);
         b.process_message(make_invite_msg("call-b@h", t0)?);
-        a.merge([b], |m| m.timestamp);
+        a.merge([b], |_, at| at);
         assert_eq!(a.len(), 2, "distinct Call-IDs unioned");
         assert!(a.get("call-a@h").is_some() && a.get("call-b@h").is_some());
 
@@ -2996,7 +3026,7 @@ mod tests {
         let mut c = DialogStore::new(1000, true);
         c.process_message(make_200_ok("call-a@h", t0 + TimeDelta::seconds(1))?);
         c.process_message(make_bye_msg("call-a@h", t0 + TimeDelta::seconds(2))?);
-        a.merge([c], |m| m.timestamp);
+        a.merge([c], |_, at| at);
         assert_eq!(a.len(), 2, "collision is not double-counted");
         let d = a.get("call-a@h").ok_or("collided dialog")?;
         assert_eq!(
@@ -3041,7 +3071,7 @@ mod tests {
         far.process_message(observed_on_leg(&invite, proxy, uas, t0)?);
         far.process_message(observed_on_leg(&ok, uas, proxy, t1)?);
 
-        near.merge([far], |m| m.timestamp);
+        near.merge([far], |_, at| at);
         assert_eq!(near.len(), 1, "one Call-ID, one dialog");
         assert_eq!(
             near.get("proxied@h").ok_or("dialog")?.messages.len(),
@@ -3075,7 +3105,7 @@ mod tests {
         a.process_message(invite.clone());
         let mut same = DialogStore::new(1000, true);
         same.process_message(invite);
-        a.merge([same], |m| m.timestamp);
+        a.merge([same], |_, at| at);
         let (merged, one) = (
             a.get("dup@h").ok_or("merged dialog")?,
             serial.get("dup@h").ok_or("serial dialog")?,
@@ -3130,7 +3160,7 @@ mod tests {
             t0 + TimeDelta::seconds(2),
         )?);
 
-        near.merge([far], |m| m.timestamp);
+        near.merge([far], |_, at| at);
         let d = near.get("state@h").ok_or("dialog")?;
         assert_eq!(d.messages.len(), 5, "every leg's messages are kept");
         assert_eq!(
@@ -3158,7 +3188,7 @@ mod tests {
         let mut incoming = DialogStore::new(2, true);
         incoming.process_message(make_invite_msg("new-1", t0)?);
         incoming.process_message(make_invite_msg("new-2", t0)?);
-        rotating.merge([incoming], |m| m.timestamp);
+        rotating.merge([incoming], |_, at| at);
         assert!(
             rotating.len() <= 2,
             "merge must not exceed the store capacity: got {}",
@@ -3175,7 +3205,7 @@ mod tests {
         fixed.process_message(make_invite_msg("first-2", t0)?);
         let mut late = DialogStore::new(2, false);
         late.process_message(make_invite_msg("late-1", t0)?);
-        fixed.merge([late], |m| m.timestamp);
+        fixed.merge([late], |_, at| at);
         assert_eq!(fixed.len(), 2, "a full no-rotate store stays at capacity");
         assert!(
             fixed.get("late-1").is_none(),
@@ -3231,7 +3261,7 @@ mod tests {
         other.process_message(make_invite_msg("o-2", t0)?);
         assert_eq!(other.total_capacity_dialogs_evicted(), 1);
         let before = store.total_capacity_dialogs_evicted();
-        store.merge([other], |m| m.timestamp);
+        store.merge([other], |_, at| at);
         assert!(
             store.total_capacity_dialogs_evicted() > before,
             "merge folds in the other store's eviction count"
@@ -3678,7 +3708,7 @@ mod tests {
                         stores.reverse();
                     }
                     let mut merged = DialogStore::new(1000, true);
-                    merged.merge(stores, read_index);
+                    merged.merge(stores, |frame, _| frame.map(|f| f.origin.ordinal));
                     let what =
                         format!("{workers} workers, assignment {assignment}, reversed {reversed}");
                     assert_eq!(keys(&merged), keys(&serial), "{what}: dialog order");
@@ -3780,10 +3810,10 @@ mod tests {
         };
         let [near, far] = fragments()?;
         let mut forward = DialogStore::new(1000, true);
-        forward.merge([near, far], |m| m.timestamp);
+        forward.merge([near, far], |_, at| at);
         let [near, far] = fragments()?;
         let mut backward = DialogStore::new(1000, true);
-        backward.merge([far, near], |m| m.timestamp);
+        backward.merge([far, near], |_, at| at);
         let (f, b) = (
             forward.get("tie@h").ok_or("forward")?,
             backward.get("tie@h").ok_or("backward")?,
@@ -3986,7 +4016,7 @@ mod tests {
         other.process_message(make_invite_msg("m-1", base_ts()?)?);
         other.process_message(make_invite_msg("m-2", base_ts()?)?); // dropped
         assert_eq!(other.total_capacity_dialogs_dropped(), 1);
-        store.merge([other], |m| m.timestamp);
+        store.merge([other], |_, at| at);
         assert_eq!(store.len(), 2, "merge respects the capacity of its target");
         assert_eq!(
             store.total_capacity_dialogs_dropped(),
@@ -7144,7 +7174,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         other.process_message(make_invite_msg("s-2", base_ts()?)?);
         assert_eq!(other.total_dialogs_opened(), 2);
 
-        store.merge([other], |m| m.timestamp);
+        store.merge([other], |_, at| at);
         assert_eq!(
             store.total_dialogs_opened(),
             1,

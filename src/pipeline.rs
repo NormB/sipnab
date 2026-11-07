@@ -1872,13 +1872,18 @@ pub fn apply_relay_control(
 /// Every applier of [`PacketAction::RelayControl`] calls this beside
 /// [`apply_relay_control`], which writes the stream store; they are two
 /// functions because the live path takes the two stores' locks one at a time.
+/// `frame` is the packet's, which the sighting keeps as its place in the
+/// run's read order (see [`crate::relay_vocab::EngineSightings::merge`]).
 pub fn apply_engine_sighting(
     ds: &mut sip::dialog_store::DialogStore,
     message: &RelayControlMessage,
+    frame: Option<crate::capture::packet::FrameLocator>,
 ) {
     if let Some(seen) = &message.engine_sighting {
         let (call_id, sighting) = &**seen;
-        ds.record_engine_sighting(call_id, sighting.clone());
+        let mut sighting = sighting.clone();
+        sighting.frame = frame.map(crate::capture::packet::FrameLocator::to_frame_ref);
+        ds.record_engine_sighting(call_id, sighting);
     }
 }
 
@@ -3135,7 +3140,7 @@ pub fn process_packet(
             if message.carries_anything() {
                 // One lock at a time: the dialog store's, then the stream
                 // store's.
-                apply_engine_sighting(&mut dialog_store.write(), &message);
+                apply_engine_sighting(&mut dialog_store.write(), &message, pp.frame);
                 apply_relay_control(
                     &mut stream_store.write(),
                     &message,
@@ -5757,6 +5762,7 @@ mod engine_sighting_claim_tests {
                     engine: EngineIdentity::ListenNg(engine()?),
                     verb: EngineVerb::Offer,
                     reported_listen_ng: None,
+                    frame: None,
                 }
             ))),
             "a captured offer names the engine it was sent to"
