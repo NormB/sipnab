@@ -13,6 +13,7 @@ entry that carries them.
 ### Fixed
 
 - **The published `unsafe` count leaves out every block compiled only for tests: 111, not 115.** The homepage, the README and the [fault model](docs/fault-model.md#memory-safety-boundary) counted the blocks in two test modules as shipped code: `src/privilege.rs`'s, under `#[cfg(all(test, target_os = "linux"))]`, and `src/capture/keylog_source.rs`'s, under `#[cfg(all(test, unix, feature = "tls"))]`. The two gates that check the number now share one census, `tests/support/unsafe_census.rs`, which also counts a test-only module kept in its own file (`#[cfg(test)] mod x;`) as test code, and stops a `#[cfg(test)]` on an item with no braces (a `mod x;`, a `use`, a field, one statement) at that item instead of skipping the shipped code after it. The library's test allocator now lives in its own file, `src/test_alloc.rs`.
+- **The action-journal recovery tests no longer run at the disk's sync speed.** The journal syncs every record, and one test in `tests/actions_recovery_test.rs` journals about 4,097 of them, so its run time was the host disk's sync latency: 243.9 s alone on the build host, past the suite's 180 s deadline, which failed a pre-commit run. The file's temp dirs now go on `/dev/shm` where that is a tmpfs, and the file runs in 2.4 s. These tests check what the journal records, bounds and replays, not that a sync survives a power cut.
 
 ### Performance
 

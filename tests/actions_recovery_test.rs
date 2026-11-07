@@ -41,8 +41,45 @@ struct Rig {
     t0: Instant,
 }
 
+/// The filesystem type `mounts` (the text of `/proc/self/mounts`) gives the
+/// mount `path` is on: the one whose mount point is the longest whole-component
+/// prefix of `path`.
+fn fs_type_in(mounts: &str, path: &std::path::Path) -> Option<String> {
+    mounts
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split(' ');
+            let _source = fields.next()?;
+            let point = fields.next()?.replace("\\040", " ");
+            let kind = fields.next()?;
+            path.starts_with(&point)
+                .then(|| (point.len(), kind.to_string()))
+        })
+        .max_by_key(|(len, _)| *len)
+        .map(|(_, kind)| kind)
+}
+
+/// The filesystem type of the mount `path` is on, from `/proc/self/mounts`;
+/// `None` where there is no such file.
+fn fs_type(path: &std::path::Path) -> Option<String> {
+    let mounts = std::fs::read_to_string("/proc/self/mounts").ok()?;
+    fs_type_in(&mounts, &path.canonicalize().ok()?)
+}
+
+/// A fresh temp dir for one rig: under `/dev/shm` when that is a tmpfs, so
+/// the journal's per-record sync costs nothing (see
+/// `the_rig_keeps_its_journal_on_tmpfs_where_the_host_has_one`), else in the
+/// system temp dir.
+fn scratch() -> Result<tempfile::TempDir, TestError> {
+    let shm = std::path::Path::new("/dev/shm");
+    if fs_type(shm).as_deref() == Some("tmpfs") {
+        return Ok(tempfile::tempdir_in(shm)?);
+    }
+    Ok(tempfile::tempdir()?)
+}
+
 fn rig() -> Result<Rig, TestError> {
-    let tmp = tempfile::tempdir()?;
+    let tmp = scratch()?;
     let dir = tmp.path().join("journal");
     let tfps = FakeTfps::new(&dir);
     Ok(Rig {
@@ -317,7 +354,7 @@ fn a_ban_past_its_expiry_is_not_lapsed_by_the_peer() -> Result<(), TestError> {
 
 #[test]
 fn reconcile_with_tfps_unreachable_changes_nothing() -> Result<(), TestError> {
-    let tmp = tempfile::tempdir()?;
+    let tmp = scratch()?;
     let dir = tmp.path().join("journal");
     let tfps = Arc::new(FakeTfps {
         journal_dir: dir.clone(),
@@ -495,7 +532,7 @@ fn revert_all_is_newest_first_even_for_bans_in_the_same_second() -> Result<(), T
 
 #[test]
 fn a_ban_that_went_between_the_check_and_the_unban_ends_as_lapsed() -> Result<(), TestError> {
-    let tmp = tempfile::tempdir()?;
+    let tmp = scratch()?;
     let dir = tmp.path().join("journal");
     let tfps = Arc::new(FakeTfps {
         journal_dir: dir.clone(),
@@ -534,6 +571,67 @@ fn a_ban_tfps_dropped_while_sipnab_was_down_is_found_at_start() -> Result<(), Te
     let svc = start_with(&r, enabled("tfps:rest")?, roomy()?, T0 + 30)?;
     assert!(svc.owned(addr(20)).is_none());
     assert!(kinds(&r)?.contains(&"lapsed_by_peer".to_string()));
+    Ok(())
+}
+
+/// `fs_type_in` picks the mount by whole path components, longest first.
+#[test]
+fn the_mount_of_a_path_is_its_longest_whole_component_prefix() {
+    let mounts = "/dev/root / ext4 rw 0 0\n\
+                  tmpfs /dev/shm tmpfs rw,nosuid,nodev 0 0\n\
+                  /dev/sda2 /mnt/my\\040disk xfs rw 0 0\n";
+    let at = |p: &str| fs_type_in(mounts, std::path::Path::new(p));
+    assert_eq!(
+        at("/dev/shm/x/journal").as_deref(),
+        Some("tmpfs"),
+        "under /dev/shm"
+    );
+    assert_eq!(
+        at("/dev/shm").as_deref(),
+        Some("tmpfs"),
+        "the mount point itself"
+    );
+    assert_eq!(
+        at("/dev/shmx/y").as_deref(),
+        Some("ext4"),
+        "a longer name is not under it"
+    );
+    assert_eq!(at("/tmp/x").as_deref(), Some("ext4"), "the root mount");
+    assert_eq!(
+        at("/mnt/my disk/a").as_deref(),
+        Some("xfs"),
+        "an escaped space"
+    );
+}
+
+/// The rig's journal is on a memory-backed filesystem wherever the host has
+/// one at `/dev/shm`.
+///
+/// `Journal::append` syncs every record (`sync_data`), and
+/// `refusals_from_many_callers_stay_bounded` journals about 4,097 of them: one
+/// per tracked caller up to `MAX_TRACKED` (4,096), then the overflow key. On
+/// the build host's shared disk on 2026-11-07 that one test took 243.9 s run
+/// alone, past nextest's 180 s deadline, and 0.18 s with its temp dir on
+/// `/dev/shm`. These tests check what the journal records, bounds and
+/// replays, not that a sync survives a power cut, so the disk's sync latency
+/// only made their run time depend on whatever else the host was writing.
+#[test]
+fn the_rig_keeps_its_journal_on_tmpfs_where_the_host_has_one() -> Result<(), TestError> {
+    let shm = fs_type(std::path::Path::new("/dev/shm"));
+    let r = rig()?;
+    let parent = r.dir.parent().ok_or("the journal dir has a parent")?;
+    if shm.as_deref() == Some("tmpfs") {
+        assert_eq!(
+            fs_type(parent).as_deref(),
+            Some("tmpfs"),
+            "/dev/shm is a tmpfs, so the rig's temp dir {parent:?} must be on it"
+        );
+    } else {
+        assert!(
+            parent.starts_with(std::env::temp_dir()),
+            "without a tmpfs at /dev/shm ({shm:?}) the rig uses the system temp dir, not {parent:?}"
+        );
+    }
     Ok(())
 }
 
@@ -668,7 +766,7 @@ fn the_first_start_has_no_previous_run() -> Result<(), TestError> {
 fn a_stop_does_not_wait_for_an_action_in_flight_and_admits_no_new_one() -> Result<(), TestError> {
     // Stop means stop: an action whose TFPS call is still running is not
     // waited for. Its intent stays in doubt and the next start resolves it.
-    let tmp = tempfile::tempdir()?;
+    let tmp = scratch()?;
     let dir = tmp.path().join("journal");
     let tfps = Arc::new(FakeTfps {
         journal_dir: dir.clone(),
