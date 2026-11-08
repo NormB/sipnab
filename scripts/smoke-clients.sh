@@ -88,6 +88,14 @@ FAILED=0
 # shellcheck source=lib/smoke-expect.sh
 . "$(dirname "$0")/lib/smoke-expect.sh"
 
+# The first $1 characters of standard input, read to the end. It replaces
+# `| head -c N`, which under pipefail can kill the writer with SIGPIPE.
+clip() {
+	local text
+	text=$(cat)
+	printf '%s' "${text:0:$1}"
+}
+
 # A free loopback port, so a second run on the same machine does not collide.
 free_port() {
 	"$PYTHON" -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])'
@@ -119,8 +127,8 @@ wait_for() {
 			cat "$WORK/$name.log" >&2
 			exit 1
 		fi
-		if curl -sf -H "Authorization: Bearer $SIPNAB_API_KEY" "$url" 2>/dev/null |
-			grep -qE -- "$pattern"; then
+		if body=$(curl -sf -H "Authorization: Bearer $SIPNAB_API_KEY" "$url" 2>/dev/null) &&
+			grep -qE -- "$pattern" <<<"$body"; then
 			return 0
 		fi
 		sleep 0.1
@@ -637,7 +645,7 @@ mint "$WORK/api-audience.token" --api-signing-key-file "$MCP_KEY"
 expect_exit "python agent_triage (HTTP, signed read token)" 1 "${PROBLEM_TRIAGE[@]}" \
 	-- "$PYTHON" clients/python/agent_triage.py --url "$MCP_URL" --token-file "$WORK/agent.token"
 cmp -s "$WORK/out" "$WORK/agent-stdio.out" ||
-	fail "agent_triage.py printed one verdict over stdio and another over HTTP: $(diff "$WORK/agent-stdio.out" "$WORK/out" | head -c 400)"
+	fail "agent_triage.py printed one verdict over stdio and another over HTTP: $(diff "$WORK/agent-stdio.out" "$WORK/out" | clip 400)"
 for token in wrong-key api-audience; do
 	expect_exit "python agent_triage (HTTP, $token token)" 3 \
 		-- "$PYTHON" clients/python/agent_triage.py --url "$MCP_URL" --token-file "$WORK/$token.token"
@@ -672,14 +680,14 @@ for run in 1 2; do
 	expect "python evidence_handoff (run $run)" "${HANDOFF_LINES[@]}" \
 		-- "$PYTHON" clients/python/evidence_handoff.py tests/pcap-samples/sip-problem-call.pcap \
 		--file-root "$WORK/handoff-$run" --name failed-calls
-	grep -q '^PROBLEM' "$WORK/out" && fail "evidence_handoff.py found a problem: $(grep '^PROBLEM' "$WORK/out" | head -c 400)"
+	grep -q '^PROBLEM' "$WORK/out" && fail "evidence_handoff.py found a problem: $(grep '^PROBLEM' "$WORK/out" | clip 400)"
 	cp "$WORK/out" "$WORK/handoff-$run.out"
 done
 if cmp -s "$WORK/handoff-1.out" "$WORK/handoff-2.out" &&
 	diff -r "$WORK/handoff-1" "$WORK/handoff-2" >"$WORK/handoff.diff" 2>&1; then
 	echo "ok   two runs wrote a byte-identical package and repro scripts"
 else
-	fail "two evidence_handoff.py runs over one capture differ: $(head -c 400 "$WORK/handoff.diff") $(diff "$WORK/handoff-1.out" "$WORK/handoff-2.out" | head -c 400)"
+	fail "two evidence_handoff.py runs over one capture differ: $(head -c 400 "$WORK/handoff.diff") $(diff "$WORK/handoff-1.out" "$WORK/handoff-2.out" | clip 400)"
 fi
 [ "$(grep -c '^sha256 ' "$WORK/handoff-1.out")" = 15 ] ||
 	fail "evidence_handoff.py did not digest the 11 package files and 4 scenarios"

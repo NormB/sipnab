@@ -773,8 +773,8 @@ jobs:
               # `|| true`: under pipefail a readelf that cannot read the file
               # would end the step silently here, before the error below
               # could name the mismatch.
-              bid=$(readelf -n "$bin" 2>/dev/null | sed -n 's/.*Build ID: *\([0-9a-f]*\).*/\1/p' | head -1) || true
-              did=$(readelf -n "$dbg" 2>/dev/null | sed -n 's/.*Build ID: *\([0-9a-f]*\).*/\1/p' | head -1) || true
+              bid=$(readelf -n "$bin" 2>/dev/null | sed -n 's/.*Build ID: *\([0-9a-f]*\).*/\1/p' | sed -n 1p) || true
+              did=$(readelf -n "$dbg" 2>/dev/null | sed -n 's/.*Build ID: *\([0-9a-f]*\).*/\1/p' | sed -n 1p) || true
               if [ -z "$bid" ] || [ "$bid" != "$did" ]; then
                 echo "::error::build ID mismatch: $bin is '${bid}', $dbg is '${did}'"
                 exit 1
@@ -798,8 +798,8 @@ jobs:
                 echo "::error::no $zip after the split"
                 exit 1
               fi
-              bu=$(dwarfdump --uuid "$bin" | awk '/^UUID:/ { print $2; exit }')
-              du=$(dwarfdump --uuid "$bin.dSYM" | awk '/^UUID:/ { print $2; exit }')
+              bu=$(dwarfdump --uuid "$bin" | awk '/^UUID:/ && !f { print $2; f = 1 }')
+              du=$(dwarfdump --uuid "$bin.dSYM" | awk '/^UUID:/ && !f { print $2; f = 1 }')
               if [ -z "$bu" ] || [ "$bu" != "$du" ]; then
                 echo "::error::UUID mismatch: $bin is '${bu}', $bin.dSYM is '${du}'"
                 exit 1

@@ -254,6 +254,7 @@ Each one exists because the thing it guards silently rotted at least once.
 | [`cookbook_recipes_test`](../../tests/cookbook_recipes_test.rs) | A command in [`docs/examples.md`](../../docs/examples.md) no longer runs or names a flag `--help` lacks; or a command it executes has no output golden in [`tests/cli/cookbook/`](../../tests/cli/cookbook) and no reason in the checker's `OUTPUT_UNPINNED` table; or a golden there is one no cookbook command produces. |
 | [`support_selftest`](../../tests/support_selftest.rs) | The shared normalization helper changes behavior under the tests that depend on it. |
 | [`released_port_scan_test`](../../tests/released_port_scan_test.rs) | A test under `tests/` binds a loopback port 0, reads the port, and releases the socket before using the number, which a test running alongside can take in between. |
+| [`pipefail_early_exit_test`](../../tests/pipefail_early_exit_test.rs) | A tracked shell script, git hook or workflow `run:` block pipes into a reader that can stop before its writer finishes (`grep -q`, `grep -m`, `grep -l`, `head`, `awk` with `exit`, `sed` with `q`, `read`, a `while read` loop that breaks) in a shell with `pipefail` on. The writer then dies of SIGPIPE and the pipeline fails although the reader matched. It names the file and line. The matcher, [`tests/support/pipefail_scan.rs`](../../tests/support/pipefail_scan.rs), reads quoting, comments, here-documents, `case` patterns, `[[ ]]` and GitHub's per-step shell, and fails on a `defaults:` block or a file that mentions `pipefail` in a format it does not scan. The safe forms are in [CONTRIBUTING.md](../../CONTRIBUTING.md#shell-and-pipefail). |
 
 The rule for all of them: **the gate is not the problem**.
 
@@ -602,3 +603,25 @@ Existing gates hold the field on every surface as well:
 [`tests/mcp_untrusted_fencing_test.rs`](../../tests/mcp_untrusted_fencing_test.rs),
 and the merge oracle's `observable`, which compares `latest_message_at` across
 every assignment of a call's legs to workers.
+
+## Test matrix: readers that stop early under `pipefail`
+
+Under `set -o pipefail`, a pipe into a reader that stops early fails the
+pipeline when the writer still has output: the writer dies of SIGPIPE (141).
+The 2026-11-08 sweep found 53 such sites in tracked scripts and workflows and
+changed every one. The gate and its matcher keep the pattern out.
+
+The tests, by what they check. SUCCESS: the gate accepts a safe form, or it
+runs correctly. FAILURE: the gate flags an unsafe form, or it loses the race. EDGE: text
+that only looks like a pipe, or a position that must stay exact.
+
+| Where | SUCCESS | FAILURE | EDGE |
+|---|---|---|---|
+| [`tests/pipefail_early_exit_test.rs`](../../tests/pipefail_early_exit_test.rs) (matcher, workflow shells, the repository gate) | 17 | 30 | 19 |
+| [`tests/pipefail_early_exit_test.rs`](../../tests/pipefail_early_exit_test.rs) (the race: each old form fails all 200 runs, each new form passes all 200) | 5 | 5 | 0 |
+| [`tests/tag_signature_gate_test.rs`](../../tests/tag_signature_gate_test.rs) (the release check with a `git` that prints 1 MiB after the signature) | 1 | 1 | 0 |
+| Total, 78 | 23 | 36 | 19 |
+
+The race tests use a writer that prints `MATCH` and then 1 MiB, sixteen times
+a pipe's capacity, so the outcome does not depend on timing. 256 KiB was not
+enough: `mawk` 1.3.4 reads that far ahead before it acts on `exit`.

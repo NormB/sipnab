@@ -46,7 +46,7 @@ docker run -d --name sipnab-th-opensips --network "$net" --ip 192.0.2.10 \
   -v "$work/opensips.cfg:/etc/opensips/th.cfg:ro" --entrypoint opensips \
   "$image" -F -f /etc/opensips/th.cfg >/dev/null
 sleep 2
-docker ps --filter name=sipnab-th-opensips --format '{{.Status}}' | grep -q Up \
+{ status=$(docker ps --filter name=sipnab-th-opensips --format '{{.Status}}') && grep -q Up <<<"$status"; } \
   || { docker logs sipnab-th-opensips; exit 1; }
 
 dumpcap -q -i "$net" -f "udp port 5060 or udp port 5070 or udp port 5080" -P -w "$work/raw.pcap" &

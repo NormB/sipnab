@@ -96,7 +96,7 @@ if [ -z "${SKIP_BUILD:-}" ]; then
     ZOLA_HAVE=$("$ZOLA_BIN" --version 2>/dev/null | awk '{print $2}' || true)
     ZOLA_PIN=$(grep -oE "ZOLA_VERSION: '[0-9.]+'" \
         "$repo_root/.github/workflows/pages.yml" 2>/dev/null \
-        | grep -oE '[0-9.]+' | head -1 || true)
+        | grep -oE '[0-9.]+' | sed -n 1p || true)
     if [ -z "$ZOLA_PIN" ]; then
         echo "warning: no ZOLA_VERSION pin found in .github/workflows/pages.yml," >&2
         echo "         so this build cannot be compared against what CI publishes." >&2

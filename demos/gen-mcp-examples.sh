@@ -38,7 +38,7 @@ BIN="${SIPNAB_BIN:-$ROOT/target/release/sipnab}"
 # The same refusal demos/Makefile makes, for the same reason: an example
 # rendered by a binary that disagrees with the tree publishes an answer this
 # code does not give.
-WANT="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)"
+WANT="$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | sed -n 1p)"
 GOT="$("$BIN" --version | awk '{print $2}')"
 [ "$GOT" = "$WANT" ] || { echo "gen-mcp-examples: $BIN reports $GOT, Cargo.toml says $WANT" >&2; exit 1; }
 case "$("$BIN" --version)" in
@@ -90,7 +90,7 @@ gen() {
         # the whole check.
         if ! diff -u "$file" "$tmp" >/dev/null 2>&1; then
             echo "DRIFTED: $name" >&2
-            diff -u "$file" "$tmp" | head -30 >&2
+            diff -u "$file" "$tmp" | sed -n '1,30p' >&2
             rm -f "$tmp"; return 1
         fi
         echo "ok: $name"
@@ -122,7 +122,7 @@ gen() {
         jq "$volatile" "$tmp"  > "$tmp.got"  2>/dev/null
         if ! diff -u "$tmp.want" "$tmp.got" >/dev/null 2>&1; then
             echo "DRIFTED: $name" >&2
-            diff -u "$tmp.want" "$tmp.got" | head -30 >&2
+            diff -u "$tmp.want" "$tmp.got" | sed -n '1,30p' >&2
             rm -f "$tmp" "$tmp.want" "$tmp.got"; return 1
         fi
         echo "ok: $name"

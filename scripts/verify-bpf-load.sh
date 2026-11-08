@@ -54,15 +54,15 @@ classify() {
     # Refusal first. A rejection can be followed by ordinary shutdown logging,
     # and a capture summary printed after a failure must not outvote it.
     local refusal
-    refusal=$(printf '%s\n' "$text" | grep -m1 -E \
-        'verifier rejected|BPF_PROG_LOAD|refus(ed|ing)|not supported|Permission denied' || true)
+    refusal=$(grep -m1 -E \
+        'verifier rejected|BPF_PROG_LOAD|refus(ed|ing)|not supported|Permission denied' <<<"$text" || true)
     if [ -n "$refusal" ]; then
         printf 'REFUSED: %s\n' "$refusal"
         return 1
     fi
 
     local attach
-    attach=$(printf '%s\n' "$text" | grep -m1 -F 'BPF capture attached to' || true)
+    attach=$(grep -m1 -F 'BPF capture attached to' <<<"$text" || true)
     if [ -n "$attach" ]; then
         printf 'ATTACHED: %s\n' "$attach"
         return 0
@@ -130,8 +130,11 @@ sha256sum -c "${tarball}.sha256"
 tar xzf "$tarball"
 bin="$work/sipnab-${version}-${target}/sipnab"
 
-echo "==> $($bin --version)"
-if ! "$bin" --version | grep -q 'bpf'; then
+# Captured, then searched: `"$bin" --version | grep -q` under pipefail can
+# fail when grep exits while sipnab is still writing (SIGPIPE, 141).
+bin_version=$("$bin" --version)
+echo "==> $bin_version"
+if ! grep -q 'bpf' <<<"$bin_version"; then
     echo "this artifact was built without the bpf feature" >&2
     exit 3
 fi
