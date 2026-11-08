@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Pinned download
+description: >-
+  Put one pinned release archive in the job's temporary directory, from the
+  actions cache when an earlier run on main fetched it and from its URL only
+  on a miss. The sha256 is checked on every run, hit or miss, by
+  scripts/fetch-pinned.sh, which also retries an outage for up to five minutes.
+
+# WHY THIS EXISTS (CI-TOOL-DOWNLOAD-RESILIENCE)
+#
+# On 2026-11-08 github.com answered release downloads with HTTP 504 from at
+# least 08:57Z to at least 09:48Z. main's Pages deploy and the Docs,
+# Accessibility and Lighthouse jobs of two pull requests failed in their
+# install steps, each one live `curl --retry 5 --retry-delay 5` of a pinned,
+# checksummed archive: about 25 s of retries. .github/actions/pagefind and
+# .github/actions/nextest had each grown their own copy of a cached fetch for
+# the same reason (PAGEFIND-DOWNLOAD-504); Zola, Vale and its Google style had
+# none.
+#
+# ONE RULE. Every pinned release download in a workflow or action goes through
+# this action, or, in release.yml where no cache can help, through
+# scripts/fetch-pinned.sh directly. `no_workflow_installs_a_release_artifact_
+# without_checking_its_bytes` in tests/workflow_supply_chain_test.rs fails a
+# step that fetches a release asset any other way, and
+# `pinned_download_is_one_cached_and_verified_rule` holds the shape below.
+#
+# - The key is the tool's name, its version and the sha256. A new version or
+#   a new hash is a new key, so a cached file is never used for a pin it was
+#   not fetched for.
+# - The fetch step runs on every run, with no `if:`. On a hit it hashes the
+#   restored file, and a file that does not match is deleted and fetched
+#   again: a cache entry is data another run wrote, and it is trusted no more
+#   than a download. An entry is never overwritten, so the script's warning
+#   names it for deletion (gh cache delete <key>).
+# - The save runs only after a miss and only on main, as
+#   tests/ci_cache_policy_test.rs requires of the cargo caches: an entry a pull
+#   request run saves is readable only by that pull request but counts against
+#   the repository's 10 GB.
+# - The directory is the job's own ${{ runner.temp }}: the self-hosted runners
+#   share one home directory, and on run 42267347105 two jobs fetching into one
+#   file under it corrupted each other's check.
+#
+# The how-to (bumping a pin, an outage) is in docs/internals/build-ci-release.md
+# under "Pinned tool downloads".
+inputs:
+  name:
+    description: >-
+      The tool, e.g. zola. Names the cache key and the directory, so two tools
+      never share either. Letters, digits, dots and hyphens.
+    required: true
+  version:
+    description: The pinned version, e.g. 0.19.2. Part of the cache key.
+    required: true
+  sha256:
+    description: The archive's pinned sha256, 64 lowercase hex digits.
+    required: true
+  url:
+    description: Where to fetch the archive on a cache miss.
+    required: true
+  file:
+    description: The file name to keep the archive under, e.g. zola.tar.gz.
+    required: true
+outputs:
+  path:
+    description: The absolute path of the verified archive.
+    value: ${{ steps.fetch.outputs.path }}
+runs:
+  using: composite
+  steps:
+    - name: Restore the pinned archive
+      id: cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ runner.temp }}/sipnab-pinned/${{ inputs.name }}
+        key: pinned-${{ inputs.name }}-${{ inputs.version }}-${{ inputs.sha256 }}
+
+    - name: Verify the restored archive, or fetch it
+      id: fetch
+      shell: bash
+      env:
+        URL: ${{ inputs.url }}
+        SHA256: ${{ inputs.sha256 }}
+        DEST: ${{ runner.temp }}/sipnab-pinned/${{ inputs.name }}/${{ inputs.file }}
+      run: |
+        set -euo pipefail
+        bash "$GITHUB_WORKSPACE/scripts/fetch-pinned.sh" --url "$URL" --sha256 "$SHA256" --dest "$DEST"
+        echo "path=$DEST" >> "$GITHUB_OUTPUT"
+
+    - name: Save the pinned archive
+      if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ runner.temp }}/sipnab-pinned/${{ inputs.name }}
+        key: pinned-${{ inputs.name }}-${{ inputs.version }}-${{ inputs.sha256 }}

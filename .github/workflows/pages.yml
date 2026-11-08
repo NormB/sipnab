@@ -109,14 +109,28 @@ jobs:
           # third-party actions to read. Nothing here pushes with it:
           # wiki-sync and release pass the token explicitly via GH_TOKEN.
           persist-credentials: false
+      # From the actions cache, keyed on ZOLA_VERSION and ZOLA_SHA256, and from
+      # GitHub releases only on a miss, with the sha256 checked either way and
+      # an outage retried for up to five minutes: .github/actions/pinned-download
+      # (CI-TOOL-DOWNLOAD-RESILIENCE). On 2026-11-08 this step failed on a run
+      # of HTTP 504s from github.com, one live download with 25 s of retries.
+      - name: Fetch Zola (pinned, cached)
+        id: zola
+        uses: ./.github/actions/pinned-download
+        with:
+          name: zola
+          version: ${{ env.ZOLA_VERSION }}
+          sha256: ${{ env.ZOLA_SHA256 }}
+          url: https://github.com/getzola/zola/releases/download/v${{ env.ZOLA_VERSION }}/zola-v${{ env.ZOLA_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
+          file: zola.tar.gz
       - name: Install Zola
+        env:
+          ZOLA_TARBALL: ${{ steps.zola.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
-            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
-          tar xzf zola.tar.gz
+          tar xzf "$ZOLA_TARBALL" zola
           sudo install -m 0755 zola /usr/local/bin/zola
+          rm -f zola
           zola --version
 
       # Single source of truth: derive the site version (homepage badge +

@@ -571,6 +571,75 @@ Branch protection sets `required_status_checks.strict: true`.
 - [`tests/crate_package_test.rs`](../../tests/crate_package_test.rs) is the fast half.
   It packages without compiling on every test run.
 
+### Pinned tool downloads
+
+CI installs Zola, Vale, the Vale Google style, `pagefind`, cargo-nextest and bpf-linker from GitHub release assets.
+The workflows pin each one by version and by sha256.
+
+On 2026-11-08 github.com answered release downloads with HTTP 504 from at least 08:57Z to at least 09:48Z.
+
+- Each install step was one curl download of the archive with five retries 5 seconds apart, which is about 25 seconds of retries.
+- main's Pages deploy failed at "Install Zola".
+- The Docs, Accessibility and Lighthouse jobs of pull requests #698 and #699 failed at the same step.
+
+Every such download now goes through one rule:
+
+- [`scripts/fetch-pinned.sh`](../../scripts/fetch-pinned.sh) puts the pinned bytes of one file at a destination.
+  - It hashes a file already at the destination first.
+    On a match it uses that file and fetches nothing.
+    On a mismatch it deletes the file with a warning, then fetches it again.
+  - It retries HTTP 408, 429 and 5xx, timeouts, refused or reset connections and short transfers.
+    The delay starts at 5 seconds and doubles up to 60.
+    It retries only while the time spent plus the next delay stays within 300 seconds.
+  - curl's time limit bounds each attempt.
+  - The exit status names the kind of failure: 1 is an outage, so a re-run can pass.
+    3 is bytes that do not match the pin, so a re-run cannot.
+    4 is a permanent refusal such as HTTP 404, so the URL or the version is wrong.
+  - Each error names the URL and the last HTTP status or curl error.
+- [`.github/actions/pinned-download`](../../.github/actions/pinned-download/action.yml) runs that script between an `actions/cache` restore and save.
+  - The key is the tool's name, its version and its sha256.
+  - The script runs on every run, so it hashes a restored file before anything uses it.
+  - The save runs only after a miss, and only on `main`.
+  - The directory is the job's own `runner.temp`.
+- `release.yml` runs the script for bpf-linker without the cache.
+  A release runs on a tag, and an entry a tag run saves is readable only by that tag.
+- [`tests/workflow_supply_chain_test.rs`](../../tests/workflow_supply_chain_test.rs) fails a workflow or action step that names a `releases/download/` URL and does not go through the action or the script.
+  [`tests/ci_curl_retry_test.rs`](../../tests/ci_curl_retry_test.rs) fails a CI file that runs `curl` itself.
+- [`scripts/tests/test_fetch_pinned.py`](../../scripts/tests/test_fetch_pinned.py) drives the script against a local HTTP server.
+
+To bump a tool:
+
+1. Change its `_VERSION` value in every workflow that pins it.
+   `a_tool_installed_by_more_than_one_workflow_is_pinned_identically` fails while two copies differ.
+   cargo-nextest's version is in [`.github/actions/nextest/action.yml`](../../.github/actions/nextest/action.yml) and [`.config/nextest.toml`](../../.config/nextest.toml).
+2. Download the new archive and hash it:
+
+   ```sh
+   # Run all of these, in order.
+   curl -fsSL -o archive "<the release asset URL>"
+   sha256sum archive
+   ```
+
+   Where the release publishes a checksum file, as Vale and cargo-nextest do, compare the two.
+3. Put the hash in the matching `_SHA256` value.
+   The new version and hash are a new cache key, so the first run on `main` fetches and saves the archive.
+
+During a download outage:
+
+- A run that fails with exit 1 from `fetch-pinned.sh` failed on the network.
+  Re-run it once a manual `curl` of the URL succeeds:
+
+  ```sh
+  curl -sS -o /dev/null -w '%{http_code}\n' -L "<the URL in the error>"
+  ```
+
+- A job whose archive is in the cache does not reach github.com, so an outage reaches only pins `main` has not yet saved.
+- An exit 3 means the bytes served differ from the pin.
+  Do not re-run.
+  Download the asset and compare its hash with the release's own checksum file before changing the pin.
+- A warning that a cached file does not match its pin names the entry.
+  Delete it with `gh cache delete <key>`, because an entry is never overwritten.
+
 ## Hooks
 
 Activate once per clone: `git config core.hooksPath .githooks`.
