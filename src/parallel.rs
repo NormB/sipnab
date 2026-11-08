@@ -40,31 +40,36 @@
 //! different worker than the RTP — and is likewise resolved globally at merge
 //! (`crate::rtp::stream_store::StreamStore::reassociate_all`).
 //!
-//! # The sweep runs once, after the merge
+//! # The sweeps are replayed by the merge
 //!
-//! The single-threaded receive loop compacts idle dialogs every five seconds of
-//! capture time. This module used to do neither that nor the orphan flagging
-//! that used to accompany it, so the same bytes gave two answers: on one
-//! reference-corpus set `--cores 4` reported no orphaned streams at all where
-//! the single-threaded path reported 80, and the report's "Orphaned Streams:"
-//! header was absent entirely — those streams appeared in the ordinary RTP
-//! section instead, reading as though they belonged to a call.
+//! The single-threaded receive loop compacts idle dialogs at every sweep, each
+//! time the capture's newest timestamp enters a new five-second interval
+//! (`crate::app::batch::SweepClock`). This module used to do neither that nor
+//! the orphan flagging that used to accompany it, so the same bytes gave two
+//! answers: on one reference-corpus set `--cores 4` reported no orphaned
+//! streams at all where the single-threaded path reported 80, and the report's
+//! "Orphaned Streams:" header was absent entirely — those streams appeared in
+//! the ordinary RTP section instead, reading as though they belonged to a
+//! call.
 //!
 //! Half of that divergence is now unrepresentable rather than fixed: orphan
 //! status is derived from `associated_dialog` at every read
 //! ([`crate::rtp::stream::RtpStream::orphaned`]), so no path can flag it
-//! differently from another. What remains is compaction, and `final_sweep`
-//! runs it exactly ONCE, after the merge, at the capture's final timestamp. Not
-//! per worker: a call's SIP does not stay on one worker (see above), and a
-//! worker only sees the packets of its own host pairs, so its local last
-//! timestamp can be minutes behind the capture's. A per-worker sweep would
-//! measure each fragment against its own clock and produce a THIRD answer,
-//! matching neither path — worse than the divergence it replaced, because it
-//! would look right.
+//! differently from another. What remains is compaction. It cannot run in the
+//! workers: a call's SIP does not stay on one worker (see above), and a worker
+//! only sees the packets of its own host pairs, so its clock can be minutes
+//! behind the capture's. A sweep once after the merge, which this module did
+//! next, kept different messages whenever a dialog was compacted while idle
+//! and then used again, and whenever the run's last packet came after its last
+//! sweep.
 //!
-//! The "now" comes from `crate::app::batch::SweepClock`, the same capture clock
-//! the single-threaded loop uses, so the result is a function of the bytes
-//! rather than of how fast the machine read them.
+//! So the readers record where `--cores 1` sweeps, the packets at which a
+//! file's newest timestamp enters a new interval (`SweepMark`), and the run
+//! folds them, file by file in read order, through the same clock into the
+//! list of sweeps `--cores 1` makes. The dialog merge replays those sweeps
+//! between each dialog's messages (`DialogStore::merge_replaying`). The "now"
+//! of each is the capture's, so the result is a function of the bytes rather
+//! than of how fast the machine read them.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -110,47 +115,6 @@ use crate::capture::frames::Frames;
 use crate::capture::parse::ParsedPacket;
 use crate::rtp::stream_store::StreamStore;
 use crate::sip::dialog_store::DialogStore;
-
-/// Compact the MERGED dialog store once, at the capture's final timestamp.
-///
-/// `compact_idle` is the memory bound: it evicts messages from dialogs that
-/// have gone quiet, keeping the ones that say what the dialog did. Without it
-/// the parallel path retains every message the capture held.
-///
-/// It no longer sweeps orphans. Orphan status is derived from
-/// `associated_dialog` at every read — see
-/// [`RtpStream::orphaned`](crate::rtp::stream::RtpStream::orphaned) — so there
-/// is no flag for a sweep to set, and the ordering hazard the sweep carried
-/// goes with it: this used to have to run AFTER
-/// [`reassociate_all`](crate::rtp::stream_store::StreamStore::reassociate_all),
-/// because a sticky flag set before cross-worker association resolved would
-/// permanently mark streams whose SDP merely landed on another worker.
-///
-/// # Arguments
-///
-/// * `clock` — the run's capture clock, fed every packet the reader saw.
-/// * `ds` — the merged dialog store, compacted in place.
-///
-/// # Side effects
-///
-/// Drops messages from idle dialogs on `ds` (counted into its lifetime
-/// retention totals, which the batch summary reports), and logs a `debug!` line
-/// naming what compaction shed. Does nothing at all when the run read no
-/// packets, because then there is no capture time to measure against and
-/// nothing in the store to compact.
-fn final_sweep(clock: &SweepClock, ds: &mut DialogStore) {
-    let Some(now) = clock.final_now() else {
-        return;
-    };
-    let compacted = ds.compact_idle(now.get());
-    if compacted.messages_evicted > 0 {
-        tracing::debug!(
-            "idle-dialog compaction: dropped {} messages from {} dialogs",
-            compacted.messages_evicted,
-            compacted.dialogs_compacted
-        );
-    }
-}
 
 /// Configuration for the offline parallel reconstruction engine.
 #[derive(Clone)]
@@ -277,6 +241,12 @@ fn worker_stream_store(cfg: &ParallelConfig) -> StreamStore {
 ///   connection is only readable after the ones before it;
 /// * every IP fragment, whose ports are unknown until reassembly;
 /// * under `--hep-parse`, every HEP datagram, whose SIP no port range gates;
+/// * a HEP datagram addressed to the HEP mirror port (9060), which may be
+///   rtpengine's `ng` control plane mirrored to a collector: an `offer` or
+///   `answer` carries SDP that binds media on another host pair;
+/// * under `--rtpproxy-control`, every UDP datagram to or from that socket:
+///   rtpproxy's reply names the port the relay opened for a call, and that
+///   port's media runs between other hosts;
 /// * a pre-parsed packet that is SIP;
 /// * and none of these under `--no-rtp` (no stream to split) or `--no-dialog`
 ///   (no SDP is linked).
@@ -285,6 +255,8 @@ fn worker_stream_store(cfg: &ParallelConfig) -> StreamStore {
 ///
 /// SIP inside a tunnel the peek does not open (GRE, VXLAN, IP-in-IP): the
 /// peek reads the outer header only, and the outer host pair is the tunnel's.
+/// The merge then keeps, for an endpoint the workers learned differently,
+/// the entry read last (`StreamStore::merge_in_read_order`).
 #[derive(Debug, Clone, Copy)]
 struct Fanout {
     /// Whether a copy could change any worker's answer.
@@ -293,6 +265,8 @@ struct Fanout {
     portrange: (u16, u16),
     /// `--hep-parse`.
     hep_parse: bool,
+    /// `--rtpproxy-control`.
+    rtpproxy_control: Option<std::net::SocketAddr>,
     /// [`ParallelConfig::shard_assignment`], carried here because this is the
     /// run-wide rule every reader already takes.
     shard_assignment: u64,
@@ -305,6 +279,7 @@ impl Fanout {
             enabled: !cfg.no_rtp && !cfg.no_dialog,
             portrange: cfg.portrange,
             hep_parse: cfg.hep_parse,
+            rtpproxy_control: cfg.rtpproxy_control,
             shard_assignment: cfg.shard_assignment,
         }
     }
@@ -326,14 +301,16 @@ impl Fanout {
     /// does. See [`Fanout`].
     #[cfg(test)]
     fn copy_of(&self, packet: &crate::capture::packet::Packet) -> Option<CopyRead> {
-        self.copy_read(packet, crate::capture::parse::peek_transport(packet))
+        let peek = crate::capture::parse::peek_frame(packet);
+        self.copy_read(packet, peek.hosts, peek.transport)
     }
 
-    /// [`Self::copy_of`] for a packet whose transport the dispatcher has
-    /// already peeked (`crate::capture::parse::peek_frame`).
+    /// [`Self::copy_of`] for a packet whose host pair and transport the
+    /// dispatcher has already peeked (`crate::capture::parse::peek_frame`).
     fn copy_read(
         &self,
         packet: &crate::capture::packet::Packet,
+        hosts: Option<(IpAddr, IpAddr)>,
         transport: Option<crate::capture::parse::TransportPeek<'_>>,
     ) -> Option<CopyRead> {
         use crate::capture::parse::TransportPeek;
@@ -358,12 +335,59 @@ impl Fanout {
                 src_port,
                 dst_port,
                 payload,
-            } => (is_hep(payload)
-                || (port_in_range(src_port, dst_port, self.portrange)
-                    && starts_sip_message(payload)
-                    && (names_sdp(payload) || body_starts_sdp(payload))))
-            .then_some(CopyRead::Shared),
+            } => {
+                if is_hep(payload)
+                    || (port_in_range(src_port, dst_port, self.portrange)
+                        && starts_sip_message(payload)
+                        && (names_sdp(payload) || body_starts_sdp(payload)))
+                {
+                    return Some(CopyRead::Shared);
+                }
+                // The relay control rules after the SIP one, and each by its
+                // port first: this runs on every datagram the reader reads,
+                // media included, and almost none is control traffic.
+                if let Some(control) = self.rtpproxy_control
+                    && on_socket(control, hosts, src_port, dst_port)
+                {
+                    // Every worker pairs rtpproxy's commands with their
+                    // replies itself, so each reads its own copy.
+                    return Some(CopyRead::Reassembled);
+                }
+                is_hep_mirror(payload, dst_port).then_some(CopyRead::Shared)
+            }
         }
+    }
+}
+
+/// Whether a UDP datagram between `hosts` on these ports goes to or comes
+/// from `control`. The ports are compared first.
+fn on_socket(
+    control: std::net::SocketAddr,
+    hosts: Option<(IpAddr, IpAddr)>,
+    src_port: u16,
+    dst_port: u16,
+) -> bool {
+    let port = control.port();
+    if src_port != port && dst_port != port {
+        return false;
+    }
+    hosts.is_some_and(|(src, dst)| {
+        (src_port == port && src == control.ip()) || (dst_port == port && dst == control.ip())
+    })
+}
+
+/// Whether `payload` is a HEP datagram addressed to the port a sniffed
+/// rtpengine `ng` mirror is believed on: the datagrams whose `ng` SDP
+/// `crate::pipeline` reads without `--hep-parse`.
+fn is_hep_mirror(payload: &[u8], dst_port: u16) -> bool {
+    #[cfg(feature = "hep")]
+    {
+        crate::rtpengine::sniffed_mirror_port_allowed(dst_port) && payload.starts_with(b"HEP3")
+    }
+    #[cfg(not(feature = "hep"))]
+    {
+        let _ = (payload, dst_port);
+        false
     }
 }
 
@@ -411,7 +435,8 @@ enum CopyRead {
     Shared,
     /// A TCP segment or an IP fragment: what it holds depends on the segments
     /// and fragments before it, so each worker reads it through its own
-    /// reassembly of the copies.
+    /// reassembly of the copies. Also an rtpproxy control datagram, which
+    /// each worker pairs with the datagrams before it in its own table.
     Reassembled,
 }
 
@@ -451,14 +476,16 @@ impl Delivery {
 #[derive(Debug, Default)]
 struct SharedRead(std::sync::OnceLock<Option<Vec<CopyLinks>>>);
 
-/// The SDP links in one parsed packet, with the provenance they are recorded
-/// under.
+/// What one parsed copy binds, with the provenance and read position it is
+/// recorded under.
 #[derive(Debug)]
 struct CopyLinks {
-    /// When and from which kind of source the SDP was seen.
+    /// The frame, the copy's place in the run's read order.
+    frame: Option<crate::capture::packet::FrameLocator>,
+    /// When and from which kind of source the SDP was seen, and who said it.
     provenance: crate::rtp::stream_store::SdpProvenance,
-    /// The media sockets it names and the call each belongs to.
-    links: Vec<(IpAddr, u16, String, crate::sip::sdp::SdpMedia)>,
+    /// The SDP links or relay links it carries.
+    learning: crate::pipeline::CopyLearning,
 }
 
 /// Hand `packet`, which worker `owner` of `n` owns, to `send`: first a copy
@@ -676,7 +703,14 @@ fn reconstruct(
         PacketAction::RelayControl(message) => {
             if !cfg.no_dialog && (message.carries_anything()) {
                 crate::pipeline::apply_engine_sighting(ds, &message, pp.frame);
-                crate::pipeline::apply_relay_control(ss, &message, pp.input_origin, pp.timestamp);
+                ss.learning_at(pp.frame, |ss| {
+                    crate::pipeline::apply_relay_control(
+                        ss,
+                        &message,
+                        pp.input_origin,
+                        pp.timestamp,
+                    );
+                });
             }
         }
         PacketAction::Rtcp(pkts) => {
@@ -709,13 +743,16 @@ fn pipeline_options(cfg: &ParallelConfig) -> crate::pipeline::PipelineOptions {
 ///
 /// Same provenance the single-threaded router records, so a `--cores` run
 /// and a `--cores 1` run reach the same answer about which source advertised
-/// an endpoint and when.
+/// an endpoint and when. Stamped with the frame's read position, which the
+/// merge orders the workers' endpoints by.
 fn learn_links(
     ss: &mut StreamStore,
     pp: &ParsedPacket,
     links: &[(IpAddr, u16, String, crate::sip::sdp::SdpMedia)],
 ) {
-    learn_links_from(ss, sdp_provenance(pp), links);
+    ss.learning_at(pp.frame, |ss| {
+        learn_links_from(ss, sdp_provenance(pp), links)
+    });
 }
 
 /// The provenance SDP in `pp` is recorded under.
@@ -723,14 +760,35 @@ fn sdp_provenance(pp: &ParsedPacket) -> crate::rtp::stream_store::SdpProvenance 
     crate::rtp::stream_store::SdpProvenance::observed(pp.input_origin, pp.timestamp)
 }
 
-/// The SDP links in one parsed copy, read as `opts` reads them: `None` when
-/// `--hep-parse` cannot unwrap it. Called inside [`crate::capture::untallied`].
+/// What one parsed copy binds, read as `opts` reads it
+/// ([`crate::pipeline::copy_learning`]): `None` when `--hep-parse` cannot
+/// unwrap it. Called inside [`crate::capture::untallied`].
 fn copy_links(pp: &ParsedPacket, opts: &crate::pipeline::PipelineOptions) -> Option<CopyLinks> {
     let pp = crate::pipeline::apply_hep_parse(pp, opts.hep_parse)?;
+    let learning = crate::pipeline::copy_learning(&pp, opts);
+    let provenance = match &learning {
+        crate::pipeline::CopyLearning::Relay(message) => {
+            crate::pipeline::relay_provenance(message, pp.input_origin, pp.timestamp)
+        }
+        _ => sdp_provenance(&pp),
+    };
     Some(CopyLinks {
-        provenance: sdp_provenance(&pp),
-        links: crate::pipeline::sdp_links_of(&pp, opts),
+        frame: pp.frame,
+        provenance,
+        learning,
     })
+}
+
+/// Bind what a copy carries, in `ss`, at the copy's read position.
+fn learn_copy(ss: &mut StreamStore, copy: &CopyLinks) {
+    use crate::pipeline::CopyLearning;
+    ss.learning_at(copy.frame, |ss| match &copy.learning {
+        CopyLearning::Nothing => {}
+        CopyLearning::Sdp(links) => learn_links_from(ss, copy.provenance, links),
+        CopyLearning::Relay(message) => {
+            crate::pipeline::learn_relay_links(ss, message, copy.provenance);
+        }
+    });
 }
 
 /// [`learn_links`] for links already read, with the provenance they carry.
@@ -835,7 +893,7 @@ impl Worker {
             });
             if let Some(read) = read {
                 for copy in read {
-                    learn_links_from(&mut self.ss, copy.provenance, &copy.links);
+                    learn_copy(&mut self.ss, copy);
                 }
                 return;
             }
@@ -879,7 +937,7 @@ impl Worker {
         let opts = pipeline_options(&self.cfg);
         crate::capture::untallied(|| {
             if let Some(copy) = copy_links(pp, &opts) {
-                learn_links_from(&mut self.ss, copy.provenance, &copy.links);
+                learn_copy(&mut self.ss, &copy);
             }
         });
     }
@@ -1000,10 +1058,16 @@ struct ReadProgress {
     /// [`Self::dropped`] is: the operator ran one analysis, not four, and a
     /// per-file share would understate a set whose encapsulation is uniform.
     unshardable: u64,
-    /// Capture clock, fed every packet, read once by [`final_sweep`].
+    /// Capture clock, fed every file's sweep marks and newest timestamp in
+    /// read order.
     clock: SweepClock,
     /// The order the set's files were read in, for the merged stores.
     read_order: ReadOrder,
+    /// The idle-compaction sweeps `--cores 1` makes over the set: after
+    /// which packet (the file's place in the read order, the ordinal), and
+    /// the "now" each measures idleness against. Replayed by the dialog
+    /// merge.
+    sweeps: Vec<((usize, u64), chrono::DateTime<chrono::Utc>)>,
 }
 
 impl ReadProgress {
@@ -1023,10 +1087,21 @@ impl ReadProgress {
     fn absorb(&mut self, read: FileRead) -> Option<anyhow::Error> {
         self.count += read.count;
         self.unshardable += read.unshardable;
+        self.read_order.observe(read.source.as_ref());
+        let file = read
+            .source
+            .as_ref()
+            .and_then(|source| self.read_order.sources.iter().position(|s| s == source))
+            .unwrap_or(usize::MAX);
+        for mark in &read.sweep_marks {
+            self.clock.observe(mark.at);
+            if let Some(now) = self.clock.take_due(crate::app::batch::SWEEP_INTERVAL) {
+                self.sweeps.push(((file, mark.ordinal), now.get()));
+            }
+        }
         if let Some(latest) = read.latest {
             self.clock.observe(latest);
         }
-        self.read_order.observe(read.source.as_ref());
         read.stopped
     }
 }
@@ -1086,6 +1161,8 @@ fn shard_opened<S: ShardSink>(
     // What every packet of this file is stamped with; see `SourceName`.
     let stamp = crate::capture::packet::SourceName::interned(&source);
     let mut ordinal: u64 = 0;
+    // This file's sweep marks; see `FileRead::sweep_marks`.
+    let mut marks = SweepMarks::default();
 
     // One partial batch per shard, this FILE's own; see the doc comment.
     let mut batches: Vec<Vec<Delivery>> = (0..n).map(|_| Vec::with_capacity(BATCH)).collect();
@@ -1160,6 +1237,10 @@ fn shard_opened<S: ShardSink>(
                 // has to be the SET's last timestamp, not this file's.
                 if read.latest.is_none_or(|latest| packet.timestamp > latest) {
                     read.latest = Some(packet.timestamp);
+                    // The packets at which this file's newest timestamp
+                    // enters a new sweep interval: the only packets a sweep
+                    // of `--cores 1` can follow (see `SweepMark`).
+                    marks.note_newest(ordinal - 1, packet.timestamp);
                 }
                 // One walk to the outer IP header for both questions.
                 let peek = crate::capture::parse::peek_frame(&packet);
@@ -1176,7 +1257,7 @@ fn shard_opened<S: ShardSink>(
                 // The copies ride in each other worker's batch at the
                 // packet's place in the capture (see `Fanout`). They are not
                 // read packets: `read.count` counts the original once.
-                let copy = fanout.copy_read(&packet, peek.transport);
+                let copy = fanout.copy_read(&packet, peek.hosts, peek.transport);
                 let delivered = deliver(packet, s, n, copy, |w, delivery| {
                     if matches!(delivery, Delivery::Owned(_)) {
                         read.count += 1;
@@ -1197,6 +1278,7 @@ fn shard_opened<S: ShardSink>(
             }
         }
     }
+    read.sweep_marks = marks.marks;
     // Flushed on EVERY path out, including the error one. The partial batches
     // used to belong to the set and were flushed once at the end of the run;
     // now that they belong to the file, the file has to flush them — and a
@@ -1259,6 +1341,54 @@ struct FileRead {
     stopped: Option<anyhow::Error>,
     /// The source this file's frames name, for the run's [`ReadOrder`].
     source: Option<std::sync::Arc<str>>,
+    /// The packets at which this file's newest timestamp entered a new sweep
+    /// interval, in read order; see [`SweepMark`].
+    sweep_marks: Vec<SweepMark>,
+}
+
+/// A packet at which a file's newest timestamp so far entered a new interval
+/// of the sweep clock (`crate::app::batch::sweep_bucket`): the file's first
+/// packet, and each later one whose timestamp is past every earlier one's
+/// interval.
+///
+/// `--cores 1` sweeps after a packet that moves the run's newest timestamp
+/// into a new interval, and such a packet is one of these in its own file:
+/// its timestamp is past every earlier packet of the set, so past every
+/// earlier packet of its file. Which marks are sweeps depends on the files
+/// before only through the newest timestamp they held, so each file's reader
+/// records its marks on its own and the run folds them in file order
+/// ([`ReadProgress::absorb`]). One mark per interval the file's timeline
+/// enters, not per packet: an hour of capture is 720.
+#[derive(Debug, Clone, Copy)]
+struct SweepMark {
+    /// The packet's ordinal in its file.
+    ordinal: u64,
+    /// Its timestamp.
+    at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One file's [`SweepMark`]s as its reader finds them.
+#[derive(Debug, Default)]
+struct SweepMarks {
+    /// The marks so far, in read order.
+    marks: Vec<SweepMark>,
+    /// Where the next mark's interval starts: `None` before the first packet.
+    next: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl SweepMarks {
+    /// Note the packet at `ordinal`, whose timestamp `at` is newer than every
+    /// earlier packet of its file. One comparison per packet; the boundary is
+    /// computed again only when a mark is made.
+    fn note_newest(&mut self, ordinal: u64, at: chrono::DateTime<chrono::Utc>) {
+        if self.next.is_none_or(|next| at >= next) {
+            self.marks.push(SweepMark { ordinal, at });
+            self.next = Some(crate::app::batch::next_sweep_boundary(
+                at,
+                crate::app::batch::SWEEP_INTERVAL,
+            ));
+        }
+    }
 }
 
 /// Where a finished batch goes once the reader has filled it.
@@ -2415,13 +2545,15 @@ pub fn run_offline_parallel_set(
             // `capture::deferred`.
             thread::spawn(move || {
                 crate::capture::captured_packets_deferred(|| {
-                    let mut worker = Worker::new(cfg);
-                    for batch in wrx.iter() {
-                        for delivery in batch.iter() {
-                            worker.feed(delivery);
+                    crate::relay::rtpproxy::with_worker_pairings(|| {
+                        let mut worker = Worker::new(cfg);
+                        for batch in wrx.iter() {
+                            for delivery in batch.iter() {
+                                worker.feed(delivery);
+                            }
                         }
-                    }
-                    worker.finish()
+                        worker.finish()
+                    })
                 })
             })
         })
@@ -2437,6 +2569,7 @@ pub fn run_offline_parallel_set(
         unshardable: 0,
         clock: SweepClock::new(true),
         read_order: ReadOrder::default(),
+        sweeps: Vec::new(),
     };
     let mut tally = crate::capture::file::ReadTally {
         given: paths.len(),
@@ -2503,10 +2636,11 @@ pub fn run_offline_parallel_set(
     ss.set_audio_limits(cfg.audio_limits);
     let (mut sip_count, mut rtp_count, mut total) = (0u64, 0u64, 0u64);
     let mut dialog_stores = Vec::with_capacity(workers.len());
+    let mut stream_stores = Vec::with_capacity(workers.len());
     for w in workers {
         if let Ok((wds, wss, wsip, wrtp, wtot)) = w.join() {
             dialog_stores.push(wds);
-            ss.merge(wss);
+            stream_stores.push(wss);
             sip_count += wsip;
             rtp_count += wrtp;
             total += wtot;
@@ -2514,12 +2648,29 @@ pub fn run_offline_parallel_set(
     }
     // All workers at once and in read order: a dialog whose messages several
     // workers hold is rebuilt from every fragment as `--cores 1` builds it,
-    // whichever workers they are (see `DialogStore::merge`).
+    // whichever workers they are (see `DialogStore::merge`), and the streams
+    // are admitted under `--max-streams` in the order `--cores 1` creates
+    // them (see `StreamStore::merge_in_read_order`).
     let read_order = &progress.read_order;
-    ds.merge(dialog_stores, |frame, at| (read_order.position(frame), at));
+    ss.merge_in_read_order(stream_stores, |frame| read_order.position(frame));
+    // A sweep follows every message of the packet that made it due.
+    let sweeps: Vec<_> = progress
+        .sweeps
+        .iter()
+        .map(|&(after, now)| ((after, chrono::DateTime::<chrono::Utc>::MAX_UTC), now))
+        .collect();
+    let compacted_before = ds.total_idle_messages_evicted();
+    ds.merge_replaying(
+        dialog_stores,
+        |frame, at| (read_order.position(frame), at),
+        &sweeps,
+    );
     ss.reassociate_all();
     progress.read_order.restore(&mut ds, &mut ss);
-    final_sweep(&progress.clock, &mut ds);
+    let compacted = ds.total_idle_messages_evicted() - compacted_before;
+    if compacted > 0 {
+        tracing::debug!("idle-dialog compaction: dropped {compacted} messages");
+    }
     let result = ReconResult {
         dialog_store: ds,
         stream_store: ss,
@@ -3592,6 +3743,7 @@ mod tests {
             unshardable: 0,
             clock: SweepClock::new(true),
             read_order: ReadOrder::default(),
+            sweeps: Vec::new(),
         };
         let mut tally = crate::capture::file::ReadTally {
             given: paths.len(),
@@ -3631,6 +3783,7 @@ mod tests {
             unshardable: 0,
             clock: SweepClock::new(true),
             read_order: ReadOrder::default(),
+            sweeps: Vec::new(),
         };
         let mut tally = crate::capture::file::ReadTally {
             given: paths.len(),
@@ -4612,12 +4765,15 @@ mod tests {
     }
 
     /// Under `--hep-parse` a HEP datagram goes to every worker, whatever its
-    /// port: the SIP inside it is not gated by `--portrange`.
+    /// port: the SIP inside it is not gated by `--portrange`. Without it, a
+    /// HEP datagram off the mirror port is its owner's alone (one TO the
+    /// mirror port is copied for its `ng` SDP; see
+    /// `hep_mirror_datagrams_are_read_by_every_worker`).
     #[cfg(feature = "native")]
     #[test]
     fn hep_is_read_by_every_worker_only_under_hep_parse() {
         let (a, b) = SIP_HOSTS;
-        let hep = eth_packet(eth_udp_between(a, b, 40_000, 9060, b"HEP3\x00\x10rest"));
+        let hep = eth_packet(eth_udp_between(a, b, 40_000, 9070, b"HEP3\x00\x10rest"));
         assert!(!Fanout::of(&pcfg_default_range()).needs(&hep));
         let hep_parse = ParallelConfig {
             hep_parse: true,
@@ -4866,7 +5022,10 @@ mod tests {
             .as_ref()
             .ok_or("a whole datagram's read is shared")?;
         assert_eq!(recorded.len(), 1, "one parsed packet");
-        assert_eq!(recorded[0].links.len(), 1, "one media socket");
+        assert!(
+            matches!(&recorded[0].learning, crate::pipeline::CopyLearning::Sdp(links) if links.len() == 1),
+            "one media socket"
+        );
 
         let names_nothing = SharedRead::default();
         assert!(names_nothing.0.set(Some(Vec::new())).is_ok());
@@ -4925,6 +5084,223 @@ mod tests {
             before + 1,
             "one frame, counted once"
         );
+        Ok(())
+    }
+
+    // ── relay control copies and the sweep schedule ─────────────────
+
+    /// The rtpproxy control socket the relay tests name, and a proxy.
+    const RTPPROXY: ([u8; 4], u16) = ([192, 0, 2, 40], 7722);
+    const RP_PROXY: ([u8; 4], u16) = ([192, 0, 2, 10], 43000);
+
+    /// A config naming the rtpproxy control socket.
+    fn pcfg_rtpproxy() -> ParallelConfig {
+        ParallelConfig {
+            rtpproxy_control: Some(std::net::SocketAddr::from(RTPPROXY)),
+            ..pcfg_default_range()
+        }
+    }
+
+    /// Every worker reads a datagram to or from the rtpproxy control socket,
+    /// each through its own pairing; one to another port of the relay host
+    /// goes to its owner only.
+    #[cfg(feature = "native")]
+    #[test]
+    fn rtpproxy_control_datagrams_are_read_by_every_worker() {
+        let fanout = Fanout::of(&pcfg_rtpproxy());
+        let (relay, proxy) = (RTPPROXY.0, RP_PROXY.0);
+        let command = eth_packet(eth_udp_between(
+            proxy, relay, RP_PROXY.1, RTPPROXY.1, b"c1 I\n",
+        ));
+        let reply = eth_packet(eth_udp_between(
+            relay, proxy, RTPPROXY.1, RP_PROXY.1, b"c1 0\n",
+        ));
+        assert_eq!(
+            fanout.copy_of(&command),
+            Some(CopyRead::Reassembled),
+            "a command to the control socket: every worker pairs it itself"
+        );
+        assert_eq!(
+            fanout.copy_of(&reply),
+            Some(CopyRead::Reassembled),
+            "a reply from the control socket: every worker pairs it itself"
+        );
+        let elsewhere = eth_packet(eth_udp_between(proxy, relay, RP_PROXY.1, 7723, b"c1 I\n"));
+        assert_eq!(fanout.copy_of(&elsewhere), None, "not the named socket");
+        let unnamed = Fanout::of(&pcfg_default_range());
+        assert_eq!(unnamed.copy_of(&command), None, "no --rtpproxy-control");
+    }
+
+    /// Under `--no-rtp` no stream is reconstructed, so no relay control is
+    /// copied: there is no media for it to bind.
+    #[cfg(feature = "native")]
+    #[test]
+    fn relay_control_is_not_copied_when_no_stream_is_reconstructed() {
+        let cfg = ParallelConfig {
+            no_rtp: true,
+            ..pcfg_rtpproxy()
+        };
+        let (relay, proxy) = (RTPPROXY.0, RP_PROXY.0);
+        let command = eth_packet(eth_udp_between(
+            proxy, relay, RP_PROXY.1, RTPPROXY.1, b"c1 I\n",
+        ));
+        assert_eq!(
+            Fanout::of(&cfg).copy_of(&command),
+            None,
+            "no rtpproxy copy under --no-rtp"
+        );
+        let mirror = eth_packet(eth_udp_between(relay, proxy, 47000, 9060, b"HEP3\x00\x10"));
+        assert_eq!(
+            Fanout::of(&cfg).copy_of(&mirror),
+            None,
+            "no HEP mirror copy under --no-rtp"
+        );
+    }
+
+    /// A HEP datagram to the mirror port, which can carry rtpengine's `ng`
+    /// SDP, is read by every worker; one to another port is not.
+    #[cfg(all(feature = "native", feature = "hep"))]
+    #[test]
+    fn hep_mirror_datagrams_are_read_by_every_worker() {
+        let fanout = Fanout::of(&pcfg_default_range());
+        let (a, b) = ([192, 0, 2, 40], [192, 0, 2, 60]);
+        let mirror = eth_packet(eth_udp_between(a, b, 47000, 9060, b"HEP3\x00\x10"));
+        assert_eq!(
+            fanout.copy_of(&mirror),
+            Some(CopyRead::Shared),
+            "a whole HEP datagram to 9060: read once, shared"
+        );
+        let off_port = eth_packet(eth_udp_between(a, b, 47000, 9061, b"HEP3\x00\x10"));
+        assert_eq!(
+            fanout.copy_of(&off_port),
+            None,
+            "not believed off the HEP port"
+        );
+        let not_hep = eth_packet(eth_udp_between(a, b, 47000, 9060, b"HEPX\x00\x10"));
+        assert_eq!(fanout.copy_of(&not_hep), None, "not HEP");
+    }
+
+    /// A worker reading copies of rtpproxy's command and reply learns the
+    /// media the reply names, and counts no cookie: the owner counts it.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_worker_learns_rtpproxy_media_from_copies_and_counts_nothing() -> Result<(), TestError> {
+        let (relay, proxy) = (RTPPROXY.0, RP_PROXY.0);
+        let command = b"c1 U rp@example.com 198.51.100.200 40000 ftag\n";
+        let reply = b"c1 30000 203.0.113.40\n";
+        crate::relay::rtpproxy::with_worker_pairings(|| -> Result<(), TestError> {
+            let mut worker = Worker::new(pcfg_rtpproxy());
+            for frame in [
+                eth_udp_between(proxy, relay, RP_PROXY.1, RTPPROXY.1, command),
+                eth_udp_between(relay, proxy, RTPPROXY.1, RP_PROXY.1, reply),
+            ] {
+                worker.feed(&Delivery::Copy(eth_packet(frame), None));
+            }
+            let media: IpAddr = "203.0.113.40".parse()?;
+            assert!(
+                worker.ss.sdp_endpoint_provenance(media, 30000).is_some(),
+                "the copy's reply named the relay's port"
+            );
+            assert!(
+                worker.ss.relay_control_summary().is_empty(),
+                "a copy counts no cookie"
+            );
+            Ok(())
+        })
+    }
+
+    /// A worker pairs rtpproxy's commands with their replies in a table of
+    /// its own: a reply inside the scope pairs with the command before it,
+    /// and a command seen inside the scope never reaches the process-wide
+    /// table, so a reply outside it names nothing.
+    #[cfg(feature = "native")]
+    #[test]
+    fn a_worker_pairs_rtpproxy_control_in_a_table_of_its_own() -> Result<(), TestError> {
+        use crate::relay::rtpproxy::{observe_on, with_worker_pairings};
+        let control: std::net::SocketAddr = "192.0.2.41:7722".parse()?;
+        let proxy: std::net::SocketAddr = "192.0.2.10:43000".parse()?;
+        let command = b"c9 U rp@example.com 198.51.100.200 40000 ftag\n";
+        let reply = b"c9 30000 203.0.113.41\n";
+        let inside = with_worker_pairings(|| {
+            let _ = observe_on(control, proxy, control, command);
+            observe_on(control, control, proxy, reply).and_then(|(link, _)| link)
+        });
+        assert_eq!(
+            inside.map(|l| l.port),
+            Some(30000),
+            "paired inside the scope"
+        );
+        with_worker_pairings(|| {
+            let _ = observe_on(control, proxy, control, command);
+        });
+        let outside = observe_on(control, control, proxy, reply);
+        assert_eq!(
+            outside.and_then(|(link, _)| link),
+            None,
+            "the scope's command never reached the process-wide table"
+        );
+        Ok(())
+    }
+
+    /// Folding each file's sweep marks in read order gives exactly the sweeps
+    /// a clock fed every packet gives, on files whose timestamps overlap and
+    /// run backwards.
+    #[test]
+    fn the_files_sweep_marks_fold_to_the_per_packet_clock() -> Result<(), TestError> {
+        let at = |ms: i64| -> Result<chrono::DateTime<chrono::Utc>, TestError> {
+            chrono::DateTime::from_timestamp_millis(1_700_000_000_000 + ms)
+                .ok_or("timestamp".into())
+        };
+        // Three files, in read order, in milliseconds.
+        let files: [&[i64]; 3] = [
+            &[0, 1_000, 4_999, 5_000, 5_001, 3_000, 12_000, 12_500],
+            &[2_000, 9_999, 10_000, 30_000, 14_000, 30_001, 35_000],
+            &[34_000, 34_999, 35_001, 40_000, 39_000, 52_345],
+        ];
+        let sources: Vec<std::sync::Arc<str>> = ["f0", "f1", "f2"]
+            .into_iter()
+            .map(std::sync::Arc::from)
+            .collect();
+        let mut expected = Vec::new();
+        let mut clock = SweepClock::new(true);
+        for (file, stamps) in files.iter().enumerate() {
+            for (ordinal, &ms) in stamps.iter().enumerate() {
+                clock.observe(at(ms)?);
+                if let Some(now) = clock.take_due(crate::app::batch::SWEEP_INTERVAL) {
+                    expected.push(((file, u64::try_from(ordinal)?), now.get()));
+                }
+            }
+        }
+        let mut progress = ReadProgress {
+            count: 0,
+            dropped: 0,
+            unshardable: 0,
+            clock: SweepClock::new(true),
+            read_order: ReadOrder::default(),
+            sweeps: Vec::new(),
+        };
+        for (file, stamps) in files.iter().enumerate() {
+            let mut marks = SweepMarks::default();
+            let mut latest: Option<chrono::DateTime<chrono::Utc>> = None;
+            for (ordinal, &ms) in stamps.iter().enumerate() {
+                let ts = at(ms)?;
+                if latest.is_none_or(|l| ts > l) {
+                    latest = Some(ts);
+                    marks.note_newest(u64::try_from(ordinal)?, ts);
+                }
+            }
+            let _ = progress.absorb(FileRead {
+                latest,
+                source: Some(std::sync::Arc::clone(&sources[file])),
+                sweep_marks: marks.marks,
+                ..FileRead::default()
+            });
+        }
+        assert_eq!(
+            progress.sweeps, expected,
+            "the folded marks name the sweeps, and the packets they follow, of the per-packet clock"
+        );
+        assert!(expected.len() >= 6, "the fixture sweeps: {expected:?}");
         Ok(())
     }
 }

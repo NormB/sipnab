@@ -67,7 +67,7 @@ keyed on Call-ID. That works only if a Call-ID identifies at most one call in
 the combined view. It does not.
 
 The clearest statement of this is in the code that had to cope with it.
-`DialogStore::merge` ([`dialog_store.rs:1667`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1667))
+`DialogStore::merge` ([`dialog_store.rs:1633`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1633))
 carries a doc section headed *"Same-Call-ID collisions are the normal case, not
 the rare one"* ([`:594`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L594)), and explains that a
 call through a proxy or SBC reconstructs as two fragments keyed on the same

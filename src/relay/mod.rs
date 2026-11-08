@@ -50,7 +50,9 @@ static MEDIA_CREATING_SEEN: AtomicU64 = AtomicU64::new(0);
 
 /// Record that a media-creating command went past unattributed.
 pub fn note_media_creating_command() {
-    MEDIA_CREATING_SEEN.fetch_add(1, Ordering::Relaxed);
+    // Through the capture tally, so a `--cores` worker reading another
+    // worker's copy of the command does not count it a second time.
+    crate::capture::tally(&MEDIA_CREATING_SEEN, 1);
 }
 
 /// How many media-creating commands this process has seen.

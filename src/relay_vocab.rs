@@ -67,11 +67,16 @@ pub enum ControlDelivery {
 ///
 /// A relay that keeps a reply cache answers a repeated cookie with the cached
 /// reply, so a command sent twice under one cookie is a retry, not two
-/// requests. The store counts these per control socket.
+/// requests. The store counts these per control socket, and recognizes a
+/// retry per sender: the cookie is the sender's own (see
+/// [`ControlChannels`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlCookie {
     /// The relay's control socket the datagram went to or came from.
     pub relay: std::net::SocketAddr,
+    /// The other end: the socket a command came from, or the one a reply
+    /// went to. The proxy that chose the cookie.
+    pub peer: std::net::SocketAddr,
     /// Which relay's protocol carried it.
     pub implementation: RelayImplementation,
     /// The cookie, as the datagram wrote it.
@@ -97,36 +102,60 @@ pub struct ControlChannelCounts {
     pub retried_after_answer: u64,
 }
 
-/// One socket's counts and the cookies it still remembers.
+/// One socket's counts and, per sender, the cookies it still remembers.
 #[derive(Debug, Clone)]
 struct Channel {
     /// What this socket's traffic has counted so far.
     counts: ControlChannelCounts,
+    /// The cookies each sender used, by the sender's socket.
+    senders: std::collections::HashMap<std::net::SocketAddr, Window>,
+}
+
+/// The cookies one sender used on one control socket, most recent last.
+#[derive(Debug, Clone, Default)]
+struct Window {
     /// cookie -> whether an answer to it has been seen.
     seen: std::collections::HashMap<String, bool>,
-    /// First-seen order, for forgetting the oldest past `capacity`.
+    /// First-seen order, for forgetting the oldest past the capacity.
     order: std::collections::VecDeque<String>,
 }
 
 /// Per-socket retry counting for relay control traffic (RP4).
 ///
 /// A relay with a reply cache answers a repeated cookie with the cached
-/// reply, so the same cookie on a second command is a retry. Remembers at most
-/// `capacity` cookies per socket, oldest forgotten first, so a long capture
-/// cannot grow it without bound; a retry of a forgotten cookie is not counted.
+/// reply, so the same cookie on a second command is a retry: the proxy sent
+/// the command again because it did not hear the answer in time
+/// (`docs/mcp-tools-media.md`). A retry is the same sender sending again, so
+/// the cookies are remembered per (socket, sender). A cookie another proxy
+/// also happens to use is that proxy's own command, not a retry, and one
+/// proxy's resend is recognized however many commands other proxies sent to
+/// the socket in between.
+///
+/// Per sender is also what a `--cores` run can keep exactly. A sender and the
+/// control socket are one host pair, so one worker sees all of a sender's
+/// commands and answers, in read order, and its window is the one
+/// `--cores 1` keeps; the merge adds the workers' counts. A window per
+/// socket could not be: each worker would hold only its own senders' cookies.
+///
+/// Remembers at most `capacity` cookies per (socket, sender), oldest
+/// forgotten first, so a long capture cannot grow one window without bound; a
+/// retry of a forgotten cookie is not counted.
 #[derive(Debug, Clone, Default)]
 pub struct ControlChannels {
-    /// Cookies remembered per socket before the oldest is forgotten.
+    /// Cookies remembered per (socket, sender) before the oldest is
+    /// forgotten.
     capacity: usize,
     /// One channel per relay control socket, in socket order.
     channels: std::collections::BTreeMap<std::net::SocketAddr, Channel>,
 }
 
 impl ControlChannels {
-    /// Cookies remembered per control socket by [`Self::default_capacity`].
+    /// Cookies remembered per (control socket, sender) by
+    /// [`Self::default_capacity`].
     pub const DEFAULT_CAPACITY: usize = 4096;
 
-    /// An empty counter remembering at most `capacity` cookies per socket.
+    /// An empty counter remembering at most `capacity` cookies per (socket,
+    /// sender).
     #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
@@ -155,33 +184,39 @@ impl ControlChannels {
                     retried_commands: 0,
                     retried_after_answer: 0,
                 },
-                seen: std::collections::HashMap::new(),
-                order: std::collections::VecDeque::new(),
+                senders: std::collections::HashMap::new(),
             });
         if control.command {
             channel.counts.commands += 1;
-            if let Some(answered) = channel.seen.get(&control.cookie) {
+            let window = channel.senders.entry(control.peer).or_default();
+            if let Some(answered) = window.seen.get(&control.cookie) {
                 channel.counts.retried_commands += 1;
                 if *answered {
                     channel.counts.retried_after_answer += 1;
                 }
             } else {
-                channel.seen.insert(control.cookie.clone(), false);
-                channel.order.push_back(control.cookie.clone());
-                while channel.order.len() > capacity {
-                    if let Some(old) = channel.order.pop_front() {
-                        channel.seen.remove(&old);
+                window.seen.insert(control.cookie.clone(), false);
+                window.order.push_back(control.cookie.clone());
+                while window.order.len() > capacity {
+                    if let Some(old) = window.order.pop_front() {
+                        window.seen.remove(&old);
                     }
                 }
             }
-        } else if let Some(answered) = channel.seen.get_mut(&control.cookie) {
+        } else if let Some(answered) = channel
+            .senders
+            .get_mut(&control.peer)
+            .and_then(|window| window.seen.get_mut(&control.cookie))
+        {
             *answered = true;
         }
     }
 
-    /// Add another counter's counts, socket by socket. Each worker of a
-    /// `--cores` run sees a command and its retries together, since both
-    /// travel between the same two hosts, so the counts add.
+    /// Add another counter's counts, socket by socket. A sender's commands,
+    /// its retries and the relay's answers to it travel between the same two
+    /// hosts, so each `--cores` worker counts a disjoint set of senders in
+    /// full and the counts add. The windows are not combined: they only decide
+    /// what the counts are, and those are final once the input has been read.
     pub fn merge(&mut self, other: ControlChannels) {
         for (relay, theirs) in other.channels {
             match self.channels.get_mut(&relay) {
@@ -215,8 +250,19 @@ mod control_channel_tests {
     }
 
     fn feed(channels: &mut ControlChannels, cookie: &str, command: bool) -> Result<(), TestError> {
+        feed_from(channels, "192.0.2.10:43000", cookie, command)
+    }
+
+    /// One datagram between the proxy at `peer` and the relay.
+    fn feed_from(
+        channels: &mut ControlChannels,
+        peer: &str,
+        cookie: &str,
+        command: bool,
+    ) -> Result<(), TestError> {
         channels.record(&ControlCookie {
             relay: relay()?,
+            peer: peer.parse()?,
             implementation: RelayImplementation::Rtpproxy,
             cookie: cookie.to_string(),
             command,
@@ -287,6 +333,120 @@ mod control_channel_tests {
         assert_eq!(ch.summary()[0].retried_commands, 0, "a was forgotten");
         feed(&mut ch, "c", true)?;
         assert_eq!(ch.summary()[0].retried_commands, 1, "c was remembered");
+        Ok(())
+    }
+
+    /// Two proxies that happen to choose one cookie each sent their own
+    /// command: neither is a retry.
+    #[test]
+    fn a_cookie_two_senders_share_is_not_a_retry() -> Result<(), TestError> {
+        let mut ch = ControlChannels::new(16);
+        feed_from(&mut ch, "192.0.2.10:43000", "7", true)?;
+        feed_from(&mut ch, "192.0.2.11:43000", "7", true)?;
+        let row = &ch.summary()[0];
+        assert_eq!(row.commands, 2, "both commands are counted");
+        assert_eq!(row.retried_commands, 0, "two senders, two commands");
+        Ok(())
+    }
+
+    /// A sender's resend is a retry however many commands other senders put
+    /// on the socket in between: their cookies do not push its own out.
+    #[test]
+    fn a_senders_retry_survives_other_senders_filling_the_window() -> Result<(), TestError> {
+        let mut ch = ControlChannels::new(4);
+        feed_from(&mut ch, "192.0.2.10:43000", "k", true)?;
+        for i in 0..8 {
+            feed_from(&mut ch, "192.0.2.11:43000", &format!("o{i}"), true)?;
+        }
+        feed_from(&mut ch, "192.0.2.10:43000", "k", true)?;
+        assert_eq!(
+            ch.summary()[0].retried_commands,
+            1,
+            "the first sender's resend of k is a retry"
+        );
+        Ok(())
+    }
+
+    /// Each sender's window holds exactly `capacity` cookies: the oldest of
+    /// `capacity` is still remembered, and one more forgets it.
+    #[test]
+    fn a_senders_window_holds_exactly_the_capacity() -> Result<(), TestError> {
+        let mut kept = ControlChannels::new(3);
+        for c in ["a", "b", "c"] {
+            feed_from(&mut kept, "192.0.2.10:43000", c, true)?;
+        }
+        feed_from(&mut kept, "192.0.2.10:43000", "a", true)?;
+        assert_eq!(
+            kept.summary()[0].retried_commands,
+            1,
+            "a is the third most recent"
+        );
+
+        let mut forgot = ControlChannels::new(3);
+        for c in ["a", "b", "c", "d"] {
+            feed_from(&mut forgot, "192.0.2.10:43000", c, true)?;
+        }
+        feed_from(&mut forgot, "192.0.2.10:43000", "a", true)?;
+        assert_eq!(forgot.summary()[0].retried_commands, 0, "a was the fourth");
+        Ok(())
+    }
+
+    /// The relay's answer to one sender does not mark a cookie another sender
+    /// used: that sender's resend is a retry before any answer it could see.
+    #[test]
+    fn an_answer_to_one_sender_does_not_mark_anothers_cookie() -> Result<(), TestError> {
+        let mut ch = ControlChannels::new(16);
+        feed_from(&mut ch, "192.0.2.10:43000", "7", true)?;
+        feed_from(&mut ch, "192.0.2.11:43000", "7", true)?;
+        feed_from(&mut ch, "192.0.2.10:43000", "7", false)?;
+        feed_from(&mut ch, "192.0.2.11:43000", "7", true)?;
+        let row = &ch.summary()[0];
+        assert_eq!(row.retried_commands, 1, "the second sender resent once");
+        assert_eq!(row.retried_after_answer, 0, "its own answer never came");
+        Ok(())
+    }
+
+    /// Any split of the senders over two counters, merged, counts what one
+    /// counter fed every datagram counts: the `--cores` merge is exact.
+    #[test]
+    fn merging_any_split_of_the_senders_equals_one_counter() -> Result<(), TestError> {
+        let senders = ["192.0.2.10:1", "192.0.2.11:1", "192.0.2.12:1"];
+        // (sender, cookie, command), in read order, with retries, answers,
+        // shared cookies and a window overflow on a capacity of 2.
+        let traffic = [
+            (0, "1", true),
+            (1, "1", true),
+            (0, "1", false),
+            (0, "1", true),
+            (2, "x", true),
+            (2, "y", true),
+            (2, "z", true),
+            (1, "1", true),
+            (2, "x", true),
+            (2, "z", true),
+        ];
+        let mut one = ControlChannels::new(2);
+        for &(who, cookie, command) in &traffic {
+            feed_from(&mut one, senders[who], cookie, command)?;
+        }
+        for split in 0u8..8 {
+            let (mut a, mut b) = (ControlChannels::new(2), ControlChannels::new(2));
+            for &(who, cookie, command) in &traffic {
+                let side = if split & (1 << who) == 0 {
+                    &mut a
+                } else {
+                    &mut b
+                };
+                feed_from(side, senders[who], cookie, command)?;
+            }
+            a.merge(b);
+            assert_eq!(a.summary(), one.summary(), "split {split:03b}");
+        }
+        assert_eq!(
+            one.summary()[0].retried_commands,
+            3,
+            "sender 0 after the answer, sender 1, and sender 2's z"
+        );
         Ok(())
     }
 

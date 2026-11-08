@@ -108,6 +108,99 @@ struct SdpEndpoint {
     bound_seq: u64,
 }
 
+/// Where in a run's read order a remembered endpoint or `a=rtcp` port was
+/// first recorded and last refreshed: the frames [`StreamStore::learning_at`]
+/// named. Kept only by a `--cores` worker, the only store a merge reads it
+/// from, in tables beside the entries rather than in them, so the entries a
+/// single-threaded run looks up for every RTP packet stay as small as they
+/// were.
+#[derive(Debug, Clone, Copy, Default)]
+struct Learned {
+    /// The frame that first recorded it.
+    first: Option<crate::capture::packet::FrameLocator>,
+    /// The frame that last refreshed it.
+    last: Option<crate::capture::packet::FrameLocator>,
+}
+
+impl Learned {
+    /// Learned now, at `frame`.
+    fn at(frame: Option<crate::capture::packet::FrameLocator>) -> Self {
+        Self {
+            first: frame,
+            last: frame,
+        }
+    }
+
+    /// Refreshed now, at `frame`.
+    fn refresh(&mut self, frame: Option<crate::capture::packet::FrameLocator>) {
+        self.last = frame;
+    }
+}
+
+/// Where a `--cores` worker learned the entries of one of its remembered
+/// tables, by the entry's index in the table. See [`Learned`].
+///
+/// Empty until something is learned with a frame, and then a prefix of the
+/// table: entry `i` of the column is entry `i` of the table, an entry past
+/// the column's end was learned without a frame, and the column drops its
+/// front as the table does. An index rather than a key, so a worker pays no
+/// second hash per SDP it learns.
+#[derive(Debug, Clone, Default)]
+struct LearnedColumn(Vec<Learned>);
+
+impl LearnedColumn {
+    /// Note that entry `index` of a table now `len` long was learned at
+    /// `frame`: recorded afresh when `fresh` (just inserted) or never
+    /// recorded, refreshed otherwise. A frameless learning changes nothing.
+    fn note(
+        &mut self,
+        index: usize,
+        len: usize,
+        fresh: bool,
+        frame: Option<crate::capture::packet::FrameLocator>,
+    ) {
+        if frame.is_none() {
+            if fresh && self.0.len() > index {
+                self.0[index] = Learned::default();
+            }
+            return;
+        }
+        if self.0.len() < len {
+            self.0.resize(len, Learned::default());
+        }
+        let slot = &mut self.0[index];
+        if fresh || slot.first.is_none() {
+            *slot = Learned::at(frame);
+        } else {
+            slot.refresh(frame);
+        }
+    }
+
+    /// Keep `learned`, a merged entry's positions, for entry `index` of a
+    /// table now `len` long. Nothing is kept for an entry learned without a
+    /// frame, unless the column already covers it.
+    fn keep(&mut self, index: usize, len: usize, learned: Learned) {
+        if learned.first.is_none() && learned.last.is_none() && self.0.len() <= index {
+            return;
+        }
+        if self.0.len() < len {
+            self.0.resize(len, Learned::default());
+        }
+        self.0[index] = learned;
+    }
+
+    /// The table dropped its first `n` entries.
+    fn drop_front(&mut self, n: usize) {
+        let n = n.min(self.0.len());
+        self.0.drain(0..n);
+    }
+
+    /// Where entry `index` was learned, if it was with a frame.
+    fn get(&self, index: usize) -> Learned {
+        self.0.get(index).copied().unwrap_or_default()
+    }
+}
+
 /// WHO asserted a media endpoint — as opposed to how the assertion reached
 /// sipnab, which is [`crate::capture::parse::InputOrigin`].
 ///
@@ -811,6 +904,14 @@ pub struct StreamStore {
     /// Counter bumped each time an SDP endpoint is recorded for the first
     /// time or moved to a different Call-ID. See `SdpEndpoint::bound_seq`.
     binding_seq: u64,
+    /// The frame whose SDP or relay control is being learned, while
+    /// [`StreamStore::learning_at`] runs.
+    learning_frame: Option<crate::capture::packet::FrameLocator>,
+    /// Where each SDP endpoint was learned, for the entries learned with a
+    /// frame: only a `--cores` worker's.
+    endpoints_learned: LearnedColumn,
+    /// Where each `a=rtcp` port was learned, as `endpoints_learned`.
+    rtcp_learned: LearnedColumn,
 }
 
 /// Whether a stream bound to `stream_call`, which began when the store's
@@ -870,7 +971,34 @@ impl StreamStore {
             relay_control: crate::relay_vocab::ControlChannels::default_capacity(),
             live_sessions: std::collections::HashMap::default(),
             binding_seq: 0,
+            learning_frame: None,
+            endpoints_learned: LearnedColumn::default(),
+            rtcp_learned: LearnedColumn::default(),
         }
+    }
+
+    /// Run `learn` with `frame` as the read position of every SDP endpoint
+    /// and `a=rtcp` port it records or refreshes.
+    ///
+    /// For a `--cores` worker, whose store is merged with the others' at the
+    /// end of the run: the merge keeps, for an endpoint several workers
+    /// learned, the entry the LATEST read refreshed, which is the entry a
+    /// single store fed every packet in read order holds (see
+    /// [`Self::merge_in_read_order`]). Every other caller learns without
+    /// one, and nothing reads the position there.
+    ///
+    /// # Side effects
+    ///
+    /// None beyond `learn`'s: the position is cleared again when it returns.
+    pub fn learning_at<R>(
+        &mut self,
+        frame: Option<crate::capture::packet::FrameLocator>,
+        learn: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let outer = std::mem::replace(&mut self.learning_frame, frame);
+        let out = learn(self);
+        self.learning_frame = outer;
+        out
     }
 
     /// The key of the stream that receives packets on `flow`'s SSRC and
@@ -1832,8 +1960,17 @@ impl StreamStore {
         {
             let batch = (self.max_streams / 10).max(1).min(self.rtcp_ports.len());
             self.rtcp_ports.drain(0..batch);
+            self.rtcp_learned.drop_front(batch);
         }
-        self.rtcp_ports.insert((addr, rtcp_port), (addr, rtp_port));
+        let (index, known) = self
+            .rtcp_ports
+            .insert_full((addr, rtcp_port), (addr, rtp_port));
+        self.rtcp_learned.note(
+            index,
+            self.rtcp_ports.len(),
+            known.is_none(),
+            self.learning_frame,
+        );
     }
 
     /// Records/refreshes the endpoint in `sdp_endpoints` (for streams
@@ -1981,8 +2118,11 @@ impl StreamStore {
         ptime: Option<u32>,
         provenance: SdpProvenance,
     ) {
-        match self.sdp_endpoints.get_mut(&(addr, port)) {
-            Some(existing) => {
+        let frame = self.learning_frame;
+        let len = self.sdp_endpoints.len();
+        match self.sdp_endpoints.get_full_mut(&(addr, port)) {
+            Some((index, _, existing)) => {
+                self.endpoints_learned.note(index, len, false, frame);
                 if existing.call_id != call_id {
                     self.binding_seq += 1;
                     existing.bound_seq = self.binding_seq;
@@ -2019,6 +2159,7 @@ impl StreamStore {
                 if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams {
                     let batch = (self.max_streams / 10).max(1).min(self.sdp_endpoints.len());
                     self.sdp_endpoints.drain(0..batch);
+                    self.endpoints_learned.drop_front(batch);
                 }
                 self.sdp_endpoints.insert(
                     (addr, port),
@@ -2035,6 +2176,8 @@ impl StreamStore {
                         },
                     },
                 );
+                let len = self.sdp_endpoints.len();
+                self.endpoints_learned.note(len - 1, len, true, frame);
             }
         }
     }
@@ -2397,6 +2540,8 @@ impl StreamStore {
         self.endpoint_index.clear();
         self.sdp_endpoints.clear();
         self.rtcp_ports.clear();
+        self.endpoints_learned = LearnedColumn::default();
+        self.rtcp_learned = LearnedColumn::default();
         self.provenance.clear();
         self.live_sessions.clear();
         self.relay_control = crate::relay_vocab::ControlChannels::default_capacity();
@@ -2467,51 +2612,171 @@ impl StreamStore {
         self.streams.values().filter(|s| s.orphaned()).count()
     }
 
-    /// Fold another worker's store into this one (multi-core merge, `--cores N`).
-    /// Streams sharded by host pair never collide across workers, so this is a
-    /// union; the ssrc/endpoint indexes are rebuilt for the moved streams and the
-    /// SDP endpoints are combined. Probe counters accumulate. Call
-    /// `reassociate_all` afterwards to link streams to a
-    /// dialog whose SDP was processed on a different worker.
+    /// Fold another worker's store into this one (multi-core merge, `--cores N`):
+    /// [`Self::merge_in_read_order`] with no read positions, so this store's
+    /// streams and endpoints come first and an endpoint both hold keeps this
+    /// store's entry.
     pub fn merge(&mut self, other: StreamStore) {
-        for (key, stream) in other.streams {
-            if !self.streams.contains_key(&key) {
-                self.ssrc_index
-                    .entry(key.ssrc)
-                    .or_default()
-                    .push(key.clone());
-                self.index_endpoints(&key);
-                // Carry the stream's provenance across with it: dropping it
-                // would silently turn "the far end claimed X" into "nobody
-                // reported anything" on every multi-core run.
-                if let Some(p) = other.provenance.get(&key) {
-                    self.provenance.insert(key.clone(), p.clone());
-                }
-                self.audio_bytes_retained = self
-                    .audio_bytes_retained
-                    .saturating_add(buffer_charge(&stream.payload_buffer));
-                self.streams.insert(key, stream);
-                self.generation += 1;
+        self.merge_in_read_order([other], |_| ());
+    }
+
+    /// Fold the workers' stores of a `--cores N` run into this one, giving the
+    /// store `--cores 1` builds from the same packets as far as one can be
+    /// rebuilt from the parts.
+    ///
+    /// # Streams
+    ///
+    /// Sharded by host pair, so no stream is on two workers and the streams
+    /// are a union. They are admitted in the read order of their first packet
+    /// (`read_position` of [`RtpStream::first_frame`]), the order a single
+    /// store creates them in, and each admission makes room as creation does
+    /// (`ensure_capacity`): `--max-streams` bounds the merged store,
+    /// and the streams it evicts are the ones a single store evicts. Each
+    /// worker enforced the cap only on its own shard, and inserting without
+    /// it let `--cores N` hold up to N x `--max-streams`.
+    ///
+    /// What cannot be rebuilt: a stream a single store evicted and then saw
+    /// again is created afresh there, holding only the packets after its
+    /// return. A worker that did not evict it kept one stream of all its
+    /// packets, and the merge admits that one stream at its first packet, so
+    /// it is evicted whole. This needs streams past the cap to keep sending
+    /// after newer ones were created.
+    ///
+    /// # Remembered endpoints
+    ///
+    /// The SDP endpoints and `a=rtcp` ports every worker learned. A worker
+    /// learns the SDP of every packet that can carry it, its own and the
+    /// copies of other workers' (see `crate::parallel`), so the workers'
+    /// tables normally agree. Where they do not (SDP no copy carried, such as
+    /// SIP inside a tunnel), an endpoint several workers hold keeps the entry
+    /// the latest READ refreshed, as one store's last write wins, rather than
+    /// the first worker's. The entries are then ordered by the read position
+    /// that first recorded them and bounded as one store bounds them, oldest
+    /// out. Positions are those [`Self::learning_at`] stamped; an entry with
+    /// none sorts as `read_position(None)` places it. An SRTP mark from any
+    /// worker stands, as one store never clears it.
+    ///
+    /// # Arguments
+    ///
+    /// * `others` — the worker stores, consumed; this store's own streams and
+    ///   endpoints come first and break ties.
+    /// * `read_position` — where a frame sits in the run's read order.
+    ///
+    /// # Side effects
+    ///
+    /// Rebuilds the SSRC and endpoint indexes, carries each stream's
+    /// provenance and retained-audio charge, accumulates the probe counters,
+    /// merges relay control counts, keeps the highest binding counter, and
+    /// bumps the generation for every stream admitted.
+    pub fn merge_in_read_order<K: Ord>(
+        &mut self,
+        others: impl IntoIterator<Item = StreamStore>,
+        read_position: impl Fn(Option<&crate::capture::packet::FrameRef>) -> K,
+    ) {
+        let locator_position = |frame: Option<crate::capture::packet::FrameLocator>| {
+            let frame = frame.map(crate::capture::packet::FrameLocator::to_frame_ref);
+            read_position(frame.as_ref())
+        };
+        let mut streams = Vec::new();
+        let mut endpoints: Vec<Remembered<SdpEndpoint>> = Vec::new();
+        let mut rtcp: Vec<Remembered<(IpAddr, u16)>> = Vec::new();
+        let mut take = |store: &mut StreamStore, streams: &mut Vec<_>| {
+            let mut provenance = std::mem::take(&mut store.provenance);
+            for (key, stream) in std::mem::take(&mut store.streams) {
+                let p = provenance.remove(&key);
+                streams.push((key, stream, p));
             }
+            let learned = std::mem::take(&mut store.endpoints_learned);
+            endpoints.extend(
+                std::mem::take(&mut store.sdp_endpoints)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (k, v))| (k, v, learned.get(i))),
+            );
+            let learned = std::mem::take(&mut store.rtcp_learned);
+            rtcp.extend(
+                std::mem::take(&mut store.rtcp_ports)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (k, v))| (k, v, learned.get(i))),
+            );
+        };
+        take(self, &mut streams);
+        self.ssrc_index.clear();
+        self.endpoint_index.clear();
+        self.audio_bytes_retained = 0;
+        self.audio_release_cursor = 0;
+        for mut other in others {
+            take(&mut other, &mut streams);
+            for (flow, session) in other.live_sessions {
+                let live = self.live_sessions.entry(flow).or_insert(session);
+                *live = (*live).max(session);
+            }
+            self.binding_seq = self.binding_seq.max(other.binding_seq);
+            self.link_scan_iters += other.link_scan_iters;
+            self.evict_shift_work += other.evict_shift_work;
+            self.relay_control.merge(other.relay_control);
         }
-        for (ep, sdp) in other.sdp_endpoints {
-            // An SRTP mark from either worker survives the union: one that
-            // saw only a plain description must not unmark what the other
-            // learned.
-            let srtp = sdp.srtp;
-            let kept = self.sdp_endpoints.entry(ep).or_insert(sdp);
-            kept.srtp |= srtp;
+        // Stable: equal positions keep the order the stores were given in.
+        streams.sort_by_cached_key(|(_, stream, _)| read_position(stream.first_frame.as_ref()));
+        for (key, stream, provenance) in streams {
+            if self.streams.contains_key(&key) {
+                continue;
+            }
+            self.ensure_capacity();
+            self.ssrc_index
+                .entry(key.ssrc)
+                .or_default()
+                .push(key.clone());
+            self.index_endpoints(&key);
+            // Carry the stream's provenance across with it: dropping it
+            // would silently turn "the far end claimed X" into "nobody
+            // reported anything" on every multi-core run.
+            if let Some(p) = provenance {
+                self.provenance.insert(key.clone(), p);
+            }
+            self.audio_bytes_retained = self
+                .audio_bytes_retained
+                .saturating_add(buffer_charge(&stream.payload_buffer));
+            self.streams.insert(key, stream);
+            self.generation += 1;
         }
-        for (flow, session) in other.live_sessions {
-            let live = self.live_sessions.entry(flow).or_insert(session);
-            *live = (*live).max(session);
+        // A flow whose live session went with an evicted stream starts again
+        // at session 0, as `ensure_capacity` leaves it.
+        let streams = &self.streams;
+        self.live_sessions.retain(|flow, session| {
+            streams.contains_key(&StreamKey {
+                session: *session,
+                ..flow.clone()
+            })
+        });
+
+        let srtp: std::collections::HashSet<(IpAddr, u16)> = endpoints
+            .iter()
+            .filter(|(_, e, _)| e.srtp)
+            .map(|(k, ..)| *k)
+            .collect();
+        for (ep, mut entry, learned) in latest_read(endpoints, locator_position) {
+            if self.max_streams > 0 && self.sdp_endpoints.len() >= self.max_streams {
+                let batch = (self.max_streams / 10).max(1).min(self.sdp_endpoints.len());
+                self.sdp_endpoints.drain(0..batch);
+                self.endpoints_learned.drop_front(batch);
+            }
+            entry.srtp |= srtp.contains(&ep);
+            let (index, _) = self.sdp_endpoints.insert_full(ep, entry);
+            self.endpoints_learned
+                .keep(index, self.sdp_endpoints.len(), learned);
         }
-        for (rtcp, rtp) in other.rtcp_ports {
-            self.rtcp_ports.entry(rtcp).or_insert(rtp);
+        for (port, entry, learned) in latest_read(rtcp, locator_position) {
+            if self.max_streams > 0 && self.rtcp_ports.len() >= self.max_streams {
+                let batch = (self.max_streams / 10).max(1).min(self.rtcp_ports.len());
+                self.rtcp_ports.drain(0..batch);
+                self.rtcp_learned.drop_front(batch);
+            }
+            let (index, _) = self.rtcp_ports.insert_full(port, entry);
+            self.rtcp_learned
+                .keep(index, self.rtcp_ports.len(), learned);
         }
-        self.link_scan_iters += other.link_scan_iters;
-        self.evict_shift_work += other.evict_shift_work;
-        self.relay_control.merge(other.relay_control);
     }
 
     /// Count one relay control datagram toward its socket's retries (RP4).
@@ -2603,6 +2868,52 @@ impl StreamStore {
     }
 }
 
+/// One remembered entry of a worker's table, by its key, with where the
+/// worker learned it.
+type Remembered<V> = ((IpAddr, u16), V, Learned);
+
+/// An entry [`latest_read`] keeps, by its key: the read positions of its
+/// first recording and last refresh, the entry, and the frames of both.
+type Chosen<K, V> = ((IpAddr, u16), (K, K, V, Learned));
+
+/// One entry per key from `entries`, as a single store fed every learning in
+/// read order holds it: the one whose LAST refresh was read latest (the first
+/// given on a tie), in the read order of the FIRST recording of each.
+///
+/// For [`StreamStore::merge_in_read_order`]'s remembered endpoints.
+fn latest_read<V, K: Ord>(
+    entries: Vec<Remembered<V>>,
+    position: impl Fn(Option<crate::capture::packet::FrameLocator>) -> K,
+) -> Vec<Remembered<V>> {
+    let mut chosen: IndexMap<(IpAddr, u16), (K, K, V, Learned), ahash::RandomState> =
+        IndexMap::default();
+    for (key, value, seen) in entries {
+        let (first, last) = (position(seen.first), position(seen.last));
+        match chosen.get_mut(&key) {
+            Some(kept) => {
+                if first < kept.0 {
+                    kept.0 = first;
+                    kept.3.first = seen.first;
+                }
+                if last > kept.1 {
+                    kept.1 = last;
+                    kept.2 = value;
+                    kept.3.last = seen.last;
+                }
+            }
+            None => {
+                chosen.insert(key, (first, last, value, seen));
+            }
+        }
+    }
+    let mut ordered: Vec<Chosen<K, V>> = chosen.into_iter().collect();
+    ordered.sort_by(|a, b| a.1.0.cmp(&b.1.0));
+    ordered
+        .into_iter()
+        .map(|(key, (_, _, v, learned))| (key, v, learned))
+        .collect()
+}
+
 /// The refusal for a Call-ID that neither the dialog store nor any RTP stream
 /// holds.
 ///
@@ -2682,6 +2993,9 @@ mod tests {
     fn clearing_the_store_forgets_relay_retries() -> Result<(), TestError> {
         let cookie = crate::relay_vocab::ControlCookie {
             relay: "192.0.2.40:7722"
+                .parse()
+                .map_err(|e| format!("addr: {e:?}"))?,
+            peer: "192.0.2.10:43000"
                 .parse()
                 .map_err(|e| format!("addr: {e:?}"))?,
             implementation: crate::relay_vocab::RelayImplementation::Rtpproxy,
@@ -3647,6 +3961,277 @@ a=rtpmap:96 H264/90000\r\n";
             );
         }
         Ok(())
+    }
+
+    // ── --cores merge in read order ──────────────────────────────────
+
+    /// A frame of the test set at `ordinal`.
+    fn frame_at(ordinal: u64) -> crate::capture::packet::FrameLocator {
+        crate::capture::packet::FrameLocator {
+            source: "set",
+            origin: crate::capture::packet::FrameOrigin {
+                ordinal,
+                digest: None,
+                verifiable: true,
+            },
+        }
+    }
+
+    /// The read position the merge tests order by: the frame's ordinal.
+    fn ordinal_of(frame: Option<&crate::capture::packet::FrameRef>) -> Option<u64> {
+        frame.map(|f| f.origin.ordinal)
+    }
+
+    /// A store of `cap` streams holding one stream per ordinal, SSRC
+    /// `0x100 + ordinal`, each first read at that ordinal.
+    fn store_with_streams(cap: usize, ordinals: &[u64]) -> Result<StreamStore, TestError> {
+        let mut store = StreamStore::new(cap);
+        for &ordinal in ordinals {
+            let port = 20_000 + u16::try_from(ordinal)? * 2;
+            let pp = ParsedPacket {
+                frame: Some(frame_at(ordinal)),
+                ..make_parsed(port, 30_000, 160)
+            };
+            store.process_rtp(
+                &pp,
+                &make_rtp_header(0x100 + u32::try_from(ordinal)?, 1),
+                ts(0),
+            );
+        }
+        Ok(store)
+    }
+
+    /// The SSRCs a store holds, in its order.
+    fn ssrcs(store: &StreamStore) -> Vec<u32> {
+        store.iter().map(|s| s.key.ssrc).collect()
+    }
+
+    /// Over the cap, the merge admits the workers' streams in the read order
+    /// of their first packets and evicts the oldest, as one store does: never
+    /// more than `--max-streams`.
+    #[test]
+    fn a_merge_over_the_stream_cap_keeps_what_one_store_keeps() -> Result<(), TestError> {
+        let one = store_with_streams(4, &[0, 1, 2, 3, 4, 5])?;
+        let mut merged = StreamStore::new(4);
+        merged.merge_in_read_order(
+            [
+                store_with_streams(4, &[0, 2, 4])?,
+                store_with_streams(4, &[1, 3, 5])?,
+            ],
+            ordinal_of,
+        );
+        assert_eq!(merged.len(), 4, "the cap bounds the merged store");
+        assert_eq!(ssrcs(&merged), ssrcs(&one), "the streams one store keeps");
+        assert_eq!(
+            ssrcs(&merged),
+            vec![0x102, 0x103, 0x104, 0x105],
+            "the two oldest by first packet are evicted"
+        );
+        Ok(())
+    }
+
+    /// Under the cap, every stream is kept, in read order whatever order the
+    /// workers are merged in.
+    #[test]
+    fn a_merge_under_the_stream_cap_keeps_every_stream_in_read_order() -> Result<(), TestError> {
+        for flip in [false, true] {
+            let (a, b) = (
+                store_with_streams(8, &[0, 3])?,
+                store_with_streams(8, &[1, 2])?,
+            );
+            let workers = if flip { [b, a] } else { [a, b] };
+            let mut merged = StreamStore::new(8);
+            merged.merge_in_read_order(workers, ordinal_of);
+            assert_eq!(
+                ssrcs(&merged),
+                vec![0x100, 0x101, 0x102, 0x103],
+                "flip {flip}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A store that learned `socket` for `call` at read position `ordinal`.
+    fn store_learning(
+        cap: usize,
+        socket: (IpAddr, u16),
+        call: &str,
+        ordinal: u64,
+    ) -> Result<StreamStore, TestError> {
+        let mut store = StreamStore::new(cap);
+        let media = media_on_30000("a=rtcp:31555\r\n")?;
+        store.learning_at(Some(frame_at(ordinal)), |s| {
+            s.link_to_dialog_with_sdp_from(
+                socket.0,
+                socket.1,
+                call,
+                &media,
+                SdpProvenance::observed(crate::capture::parse::InputOrigin::Wire, ts(0)),
+            );
+        });
+        Ok(store)
+    }
+
+    /// An endpoint two workers learned differently keeps the entry the LATER
+    /// read refreshed, as one store's last write wins, in either merge order.
+    #[test]
+    fn a_merge_keeps_the_endpoint_the_latest_read_refreshed() -> Result<(), TestError> {
+        let socket = (v4(10, 0, 0, 2), 30000);
+        for flip in [false, true] {
+            let late = store_learning(64, socket, "late-call", 9)?;
+            let early = store_learning(64, socket, "early-call", 5)?;
+            let workers = if flip { [early, late] } else { [late, early] };
+            let mut merged = StreamStore::new(64);
+            merged.merge_in_read_order(workers, ordinal_of);
+            assert_eq!(
+                merged.call_for_rtcp(socket, STRANGER, ts(1)),
+                Some("late-call"),
+                "flip {flip}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Refreshing an endpoint moves its read position: a worker that learned
+    /// it first and refreshed it last is the one whose entry is kept.
+    #[test]
+    fn a_refresh_moves_an_endpoints_read_position() -> Result<(), TestError> {
+        let socket = (v4(10, 0, 0, 2), 30000);
+        let mut refreshed = store_learning(64, socket, "first", 1)?;
+        refreshed.learning_at(Some(frame_at(9)), |s| {
+            s.link_endpoint(socket.0, socket.1, "refreshed", &[])
+        });
+        let middle = store_learning(64, socket, "middle", 5)?;
+        let mut merged = StreamStore::new(64);
+        merged.merge_in_read_order([middle, refreshed], ordinal_of);
+        assert_eq!(
+            merged.call_for_rtcp(socket, STRANGER, ts(1)),
+            Some("refreshed"),
+            "refreshed at 9, after the other worker's 5"
+        );
+        Ok(())
+    }
+
+    /// An endpoint a worker evicted takes its read position with it: the
+    /// endpoints the worker still holds keep their own positions, so the
+    /// worker's later learnings still win the merge.
+    #[test]
+    fn an_evicted_endpoint_takes_its_read_position_with_it() -> Result<(), TestError> {
+        let at = |i: u8| (v4(10, 0, 2, i), 30000);
+        let media = media_on_30000("a=rtcp:31555\r\n")?;
+        let learn = |store: &mut StreamStore, i: u8, call: &str, ordinal: u64| {
+            store.learning_at(Some(frame_at(ordinal)), |s| {
+                s.link_to_dialog_with_sdp_from(
+                    at(i).0,
+                    at(i).1,
+                    call,
+                    &media,
+                    SdpProvenance::observed(crate::capture::parse::InputOrigin::Wire, ts(0)),
+                );
+            });
+        };
+        // A worker of two endpoints learns three: the first, at 0, is
+        // evicted; the second is learned at 3; the third at 4, refreshed at 9.
+        let mut worker = StreamStore::new(2);
+        learn(&mut worker, 0, "w0", 0);
+        learn(&mut worker, 1, "w1", 3);
+        learn(&mut worker, 2, "w2-early", 4);
+        learn(&mut worker, 2, "w2-late", 9);
+        // Another worker learned the second at 2 and the third at 5.
+        let mut other = StreamStore::new(2);
+        learn(&mut other, 1, "other1", 2);
+        learn(&mut other, 2, "other2", 5);
+        let mut merged = StreamStore::new(2);
+        merged.merge_in_read_order([other, worker], ordinal_of);
+        assert_eq!(
+            merged.call_for_rtcp(at(1), STRANGER, ts(1)),
+            Some("w1"),
+            "the worker's second endpoint keeps its own position, 3, after the first is evicted"
+        );
+        assert_eq!(
+            merged.call_for_rtcp(at(2), STRANGER, ts(1)),
+            Some("w2-late"),
+            "the worker's refresh at 9 is the latest read"
+        );
+        Ok(())
+    }
+
+    /// The merged endpoints and `a=rtcp` ports are bounded as one store bounds
+    /// them: the newest by first recording survive.
+    #[test]
+    fn a_merge_bounds_the_remembered_endpoints_and_rtcp_ports() -> Result<(), TestError> {
+        let at = |i: u8| (v4(10, 0, 1, i), 30000);
+        let mut a = store_learning(2, at(0), "c0", 0)?;
+        a.merge(store_learning(2, at(2), "c2", 2)?);
+        let mut b = store_learning(2, at(1), "c1", 1)?;
+        b.merge(store_learning(2, at(3), "c3", 3)?);
+        let mut merged = StreamStore::new(2);
+        merged.merge_in_read_order([a, b], ordinal_of);
+        assert_eq!(
+            merged.sdp_endpoints.len(),
+            2,
+            "endpoints bounded at the cap"
+        );
+        assert_eq!(
+            merged.rtcp_ports.len(),
+            2,
+            "a=rtcp ports bounded at the cap"
+        );
+        for i in [2, 3] {
+            assert!(
+                merged.sdp_endpoint_provenance(at(i).0, at(i).1).is_some(),
+                "{i} kept"
+            );
+        }
+        for i in [0, 1] {
+            assert!(
+                merged.sdp_endpoint_provenance(at(i).0, at(i).1).is_none(),
+                "{i} evicted"
+            );
+        }
+        Ok(())
+    }
+
+    /// An SRTP mark one worker learned stands after the merge, whichever
+    /// worker's entry is kept: one store never clears it.
+    #[test]
+    fn a_merge_keeps_an_srtp_mark_from_any_worker() -> Result<(), TestError> {
+        let socket = (v4(10, 0, 0, 2), 30000);
+        let mut marked = store_learning(64, socket, "call", 1)?;
+        marked.remember_media_protection(socket.0, socket.1, true);
+        let later = store_learning(64, socket, "call", 2)?;
+        let mut merged = StreamStore::new(64);
+        merged.merge_in_read_order([marked, later], ordinal_of);
+        let entry = merged.sdp_endpoints.get(&socket).ok_or("the endpoint")?;
+        assert!(entry.srtp, "the later entry is kept, and the mark with it");
+        Ok(())
+    }
+
+    /// With no read positions, the first store's endpoint stands, as the
+    /// merge always kept it.
+    #[test]
+    fn a_merge_without_positions_keeps_the_first_stores_endpoint() -> Result<(), TestError> {
+        let socket = (v4(10, 0, 0, 2), 30000);
+        let mut first = StreamStore::new(64);
+        first.link_endpoint(socket.0, socket.1, "first-call", &[]);
+        let mut second = StreamStore::new(64);
+        second.link_endpoint(socket.0, socket.1, "second-call", &[]);
+        first.merge(second);
+        assert_eq!(
+            first.call_for_rtcp(socket, STRANGER, ts(1)),
+            Some("first-call"),
+            "a tie keeps the first store's entry"
+        );
+        Ok(())
+    }
+
+    /// Merging no stores into an empty one leaves it empty.
+    #[test]
+    fn a_merge_of_no_stores_is_empty() {
+        let mut merged = StreamStore::new(4);
+        merged.merge_in_read_order(std::iter::empty(), ordinal_of);
+        assert_eq!(merged.len(), 0, "no streams to admit");
+        assert!(merged.sdp_endpoints.is_empty(), "no endpoints to keep");
     }
 
     /// merge() carries an `a=rtcp` port learned on another worker, as it
