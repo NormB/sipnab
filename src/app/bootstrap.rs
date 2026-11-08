@@ -1641,28 +1641,88 @@ fn cores_unsupported_flags(cli: &Cli, config: &Config) -> Vec<&'static str> {
     .collect()
 }
 
-/// Descriptors a `--cores` run keeps free beside the files it opens up front:
+/// Descriptors a run keeps free beside the input files it opens up front:
 /// the standard streams, the log, the workers' channels and the outputs.
-const CORES_FD_RESERVE: usize = 64;
+const SET_FD_RESERVE: usize = 64;
 
-/// The refusal for a set of `files` that will not fit under the descriptor
-/// limit `soft_limit` once opened up front, or `None`.
-fn cores_fd_budget_refusal(files: usize, soft_limit: u64) -> Option<String> {
-    let room = usize::try_from(soft_limit)
-        .unwrap_or(usize::MAX)
-        .saturating_sub(CORES_FD_RESERVE);
-    (files > room).then(|| {
-        format!(
-            "--cores opens all {files} input file(s) before dropping root privileges, \
-             and this process may hold {soft_limit} open files. Raise the limit \
-             (ulimit -n), read fewer files per run, or run as an ordinary user, \
-             which opens each file when it is read."
-        )
-    })
+/// What a run that opens every input file before it confines itself must do
+/// about its open-file limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SetFdBudget {
+    /// The set fits under the soft limit as it stands.
+    Fits,
+    /// The set fits once the soft limit is raised to this, which is at most
+    /// the hard limit: a process may raise its soft limit that far without
+    /// privilege.
+    RaiseSoftTo(u64),
+    /// The set does not fit under the hard limit. The refusal says why.
+    Refuse(String),
 }
 
-/// The soft limit on open files for this process.
-fn open_file_soft_limit() -> u64 {
+/// What a run that opens `files` inputs up front, beside the
+/// [`SET_FD_RESERVE`] descriptors it keeps for itself, must do under the soft
+/// and hard open-file limits `soft` and `hard`. Pure.
+fn set_fd_budget(files: usize, soft: u64, hard: u64) -> SetFdBudget {
+    let needed = u64::try_from(files.saturating_add(SET_FD_RESERVE)).unwrap_or(u64::MAX);
+    if needed <= soft {
+        SetFdBudget::Fits
+    } else if needed <= hard {
+        SetFdBudget::RaiseSoftTo(needed)
+    } else {
+        SetFdBudget::Refuse(format!(
+            "sipnab opens all {files} input file(s) before it drops root privileges or \
+             chroots, beside {SET_FD_RESERVE} descriptors of its own, and this process may \
+             hold at most {hard} open files. Raise the limit (ulimit -n), read fewer files \
+             per run, or run as an ordinary user, which opens each file when it is read."
+        ))
+    }
+}
+
+/// Whether a run opens every file of its `-I` set before its source is
+/// reported open ([`CaptureConfig::open_set_up_front`]): when it will drop
+/// privileges (`will_drop`) or chroot (`chroots`) after that. Pure.
+fn opens_set_up_front(will_drop: bool, chroots: bool) -> bool {
+    will_drop || chroots
+}
+
+/// Whether a run reads the pcapng metadata of its input files before it
+/// confines itself: when it opened its set up front because it will drop
+/// privileges or chroot (`opened_up_front`), and it is a batch run in a build
+/// that decrypts TLS, the one reader of the secrets embedded there. Pure.
+fn reads_input_metadata_before_confinement(opened_up_front: bool, mode: &RunMode) -> bool {
+    opened_up_front && matches!(mode, RunMode::Batch) && cfg!(feature = "tls")
+}
+
+/// Whether this run opens its `-I` set up front, and room for it under the
+/// open-file limit when it does. `false` for any source but a file set.
+///
+/// # Errors
+///
+/// As [`fit_set_under_open_file_limit`].
+fn set_opened_up_front(
+    cli: &Cli,
+    config: &Config,
+    source: &CaptureSource,
+) -> Result<bool, PlanError> {
+    let CaptureSource::File { paths } = source else {
+        return Ok(false);
+    };
+    let will_drop = privilege::drop_skip(
+        effective_user(cli, config),
+        cli.no_priv_drop(config),
+        privilege::is_root(),
+    )
+    .is_none();
+    if !opens_set_up_front(will_drop, effective_chroot(cli, config).is_some()) {
+        return Ok(false);
+    }
+    fit_set_under_open_file_limit(paths.len())?;
+    Ok(true)
+}
+
+/// The soft and hard limits on open files for this process, or no limit
+/// when they cannot be read.
+fn open_file_limits() -> (u64, u64) {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
@@ -1670,9 +1730,63 @@ fn open_file_soft_limit() -> u64 {
     // SAFETY: getrlimit writes only the struct it is given and has no other
     // effect; the struct is a valid, initialized local.
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0 {
-        limit.rlim_cur
+        (limit.rlim_cur, limit.rlim_max)
     } else {
-        u64::MAX
+        (u64::MAX, u64::MAX)
+    }
+}
+
+/// Raise this process's soft limit on open files to `soft`, keeping the
+/// hard limit `hard`.
+///
+/// # Errors
+///
+/// The kernel refused the new limit.
+fn raise_open_file_soft_limit(soft: u64, hard: u64) -> std::io::Result<()> {
+    let limit = libc::rlimit {
+        rlim_cur: soft,
+        rlim_max: hard,
+    };
+    // SAFETY: setrlimit reads only the struct it is given, a valid,
+    // initialized local; raising the soft limit up to the hard one needs no
+    // privilege and changes nothing else.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Make room under this process's open-file limit for a set of `files`
+/// inputs opened up front, raising the soft limit when the hard one allows.
+/// One rule for the single-core reader and for `--cores`, which open their
+/// sets up front for the same reason.
+///
+/// # Errors
+///
+/// Exit 2 when the set does not fit under the hard limit, exit 1 when the
+/// soft limit could not be raised.
+fn fit_set_under_open_file_limit(files: usize) -> Result<(), PlanError> {
+    let (soft, hard) = open_file_limits();
+    match set_fd_budget(files, soft, hard) {
+        SetFdBudget::Fits => Ok(()),
+        SetFdBudget::RaiseSoftTo(raised) => {
+            raise_open_file_soft_limit(raised, hard).map_err(|e| {
+                PlanError::new(
+                    1,
+                    format!(
+                        "Failed to raise the open-file limit from {soft} to {raised} for \
+                         {files} input file(s): {e}"
+                    ),
+                )
+            })?;
+            tracing::info!(
+                "Raised the open-file limit from {soft} to {raised}: the {files} input \
+                 file(s) are opened before the run confines itself"
+            );
+            Ok(())
+        }
+        SetFdBudget::Refuse(refusal) => Err(PlanError::arg(refusal)),
     }
 }
 
@@ -1684,6 +1798,10 @@ fn open_file_soft_limit() -> u64 {
 /// reads from those handles. A run that will not drop (not root, or
 /// `--no-priv-drop`) returns `None` and reads each file by path, as before.
 ///
+/// The directories archive members were extracted into are handed to the
+/// user the run drops to first ([`crate::capture::archive::ExtractionHandover`]),
+/// so the run can still remove them when it ends.
+///
 /// # Errors
 ///
 /// The set does not fit under the open-file limit (exit 2), the drop failed
@@ -1694,19 +1812,43 @@ pub fn prepare_cores_inputs(
     paths: &[std::path::PathBuf],
     may_map: bool,
 ) -> Result<Option<crate::parallel::PreOpenedSet>, PlanError> {
-    let user = effective_user(cli, config);
-    let no_priv_drop = cli.no_priv_drop(config);
-    if privilege::drop_is_skipped(user, no_priv_drop, privilege::is_root()) {
+    let Some(target) =
+        privilege::resolve_drop_target(effective_user(cli, config), cli.no_priv_drop(config))
+            .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?
+    else {
         return Ok(None);
-    }
-    if let Some(refusal) = cores_fd_budget_refusal(paths.len(), open_file_soft_limit()) {
-        return Err(PlanError::arg(refusal));
-    }
+    };
+    fit_set_under_open_file_limit(paths.len())?;
     let set = crate::parallel::pre_open_set(paths, may_map);
-    privilege::drop_privileges(user, no_priv_drop)
+    hand_over_extractions(effective_chroot(cli, config).is_some(), Some(&target));
+    privilege::drop_to(&target)
         .map_err(|e| PlanError::new(1, format!("Failed to drop privileges: {e}")))?;
     unwritable_output_refusal(cli)?;
     Ok(Some(set))
+}
+
+/// Hand the directories this run extracted archive members into to what
+/// comes after its confinement: to the user it drops to (`target`), or
+/// removed now when it `chroots`. See
+/// [`crate::capture::archive::ExtractionHandover`].
+///
+/// A failure is reported and the run goes on: every member is open already,
+/// so only the removal at exit is lost, and a later run's sweep removes what
+/// is left.
+///
+/// # Side effects
+///
+/// Changes the owner of, or removes, every extraction directory the run
+/// holds, and logs a warning when that fails.
+fn hand_over_extractions(chroots: bool, target: Option<&privilege::DropTarget>) {
+    let handover =
+        crate::capture::archive::extraction_handover(chroots, target.map(|t| (t.uid(), t.gid())));
+    if let Err(e) = crate::capture::archive::hand_over_run_extractions(handover) {
+        tracing::warn!(
+            "Could not hand the extracted archive members over before confining the run \
+             ({e}); they stay on disk until a later run removes them"
+        );
+    }
 }
 
 /// Refuse `--cores N` beside an output the parallel reader cannot produce.
@@ -3181,14 +3323,37 @@ pub fn launch(
     // snapshot above is. Prints and returns; the run proceeds.
     report_relay_statistics(cli, config, Some(&source));
 
+    // A run that drops privileges or chroots once its source is open opens
+    // its whole `-I` set first, so a file it reaches after that is still read
+    // (`CaptureConfig::open_set_up_front`).
+    let capture_config = &CaptureConfig {
+        open_set_up_front: match set_opened_up_front(cli, config, &source) {
+            Ok(up_front) => up_front,
+            Err(e) => e.exit(),
+        },
+        ..capture_config.clone()
+    };
+
+    // The input files whose pcapng metadata, the TLS secrets embedded in it
+    // among it, is read before the run confines itself.
+    let read_in_advance = match &source {
+        CaptureSource::File { paths }
+            if reads_input_metadata_before_confinement(capture_config.open_set_up_front, mode) =>
+        {
+            paths.clone()
+        }
+        _ => Vec::new(),
+    };
+
     let reconfigure = RuntimeReconfigure::for_source(cli, &source);
     let (capture, (reconfigure_control, reconfigure_outcomes)) =
         start_capture_thread(cli, source, capture_config, reconfigure);
 
-    let confined = match confine_after_capture_start(cli, config, mode, transmit_permit) {
-        Ok(c) => c,
-        Err(e) => capture.abort(e),
-    };
+    let confined =
+        match confine_after_capture_start(cli, config, mode, transmit_permit, &read_in_advance) {
+            Ok(c) => c,
+            Err(e) => capture.abort(e),
+        };
 
     Launched {
         handle: capture.handle,
@@ -3226,6 +3391,7 @@ fn confine_after_capture_start(
     config: &Config,
     mode: &RunMode,
     transmit_permit: Option<TransmitPermit>,
+    read_in_advance: &[std::path::PathBuf],
 ) -> Result<Confined, PlanError> {
     // 16-kill. Start the scanner-kill worker process BEFORE the chroot and
     //         both sandboxes below. It is this binary re-executed, and each of
@@ -3264,8 +3430,26 @@ fn confine_after_capture_start(
     //      stop with exit 2 at the first one (OPS-11). The files are read
     //      here, in one phase, and `secret_files` answers for them from then
     //      on. `read_secrets_then_confine` is what holds the order.
+    // 15f. Read the pcapng metadata of the input files BEFORE the chroot and
+    //      the drop, for the same reason as 15c: the batch run reads the TLS
+    //      secrets embedded in its input after this point, and a root-only
+    //      capture, or one the new root does not hold, used to yield none
+    //      without a word (EMBEDDED-SECRETS-AFTER-DROP). Empty unless the run
+    //      opened its set up front and reads those secrets.
+    crate::capture::pcapng_meta::read_before_confinement(read_in_advance);
+
     let (secrets, keylog_source) =
         read_secrets_then_confine(this_runs_advance_read(cli, config), || {
+            // 15e. Hand the extracted archive members over BEFORE the chroot
+            //      and the drop: to the user the run drops to, so it can remove
+            //      them at exit, or removed now when the run chroots, after
+            //      which their path does not resolve. Every member is open by
+            //      now (`CaptureConfig::open_set_up_front`).
+            hand_over_extractions(
+                effective_chroot(cli, config).is_some(),
+                drop_target.as_ref(),
+            );
+
             // 16. Chroot BEFORE dropping privileges (chroot requires root).
             // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
             if let Some(chroot_dir) = effective_chroot(cli, config) {
@@ -6920,6 +7104,9 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
         // start from: it is what every capture asked for before the choice
         // existed, so nothing here can quietly change a ring format on its own.
         immediate_mode: true,
+        // Decided by `launch` from the source it resolves and whether the run
+        // drops privileges or chroots; see `open_set_up_front`.
+        open_set_up_front: false,
     })
 }
 
@@ -12631,16 +12818,121 @@ mod decision_tests {
     }
 
     /// The `--cores` refusal lists every per-message output asked for.
-    /// A root `--cores` run opens its whole set before dropping privileges, one
-    /// descriptor per file, so a set that would not fit under the soft limit
-    /// (with room for the run's own descriptors) is refused before anything is
-    /// opened; one that fits runs.
+    /// A run that opens its whole set before it confines itself holds one
+    /// descriptor per file beside its own, and a set that fits under the soft
+    /// limit with that room, exactly or with some to spare, changes nothing.
     #[test]
-    fn a_pre_opened_set_must_fit_the_descriptor_limit() {
-        assert!(cores_fd_budget_refusal(10, 1024).is_none());
-        assert!(cores_fd_budget_refusal(1024 - CORES_FD_RESERVE, 1024).is_none());
-        let msg = cores_fd_budget_refusal(1024 - CORES_FD_RESERVE + 1, 1024).unwrap_or_default();
-        assert!(msg.contains("1024") && msg.contains("ulimit -n"), "{msg}");
+    fn a_set_that_fits_under_the_soft_limit_changes_nothing() {
+        assert_eq!(
+            set_fd_budget(10, 1024, 4096),
+            SetFdBudget::Fits,
+            "a small set fits"
+        );
+        assert_eq!(
+            set_fd_budget(1024 - SET_FD_RESERVE, 1024, 4096),
+            SetFdBudget::Fits,
+            "exactly the soft limit fits"
+        );
+    }
+
+    /// One file more than the soft limit holds raises it to what the set
+    /// needs, and no further.
+    #[test]
+    fn a_set_one_over_the_soft_limit_raises_it_to_what_it_needs() {
+        assert_eq!(
+            set_fd_budget(1024 - SET_FD_RESERVE + 1, 1024, 4096),
+            SetFdBudget::RaiseSoftTo(1025),
+            "the soft limit rises by the one descriptor missing"
+        );
+    }
+
+    /// A set that needs the whole hard limit raises the soft limit to it.
+    #[test]
+    fn a_set_that_needs_the_whole_hard_limit_raises_the_soft_one_to_it() {
+        assert_eq!(
+            set_fd_budget(4096 - SET_FD_RESERVE, 1024, 4096),
+            SetFdBudget::RaiseSoftTo(4096),
+            "exactly the hard limit fits"
+        );
+    }
+
+    /// One file more than the hard limit holds is refused, naming the set
+    /// and the limit, and how to change either.
+    #[test]
+    fn a_set_one_over_the_hard_limit_is_refused_naming_the_set_and_the_limit()
+    -> Result<(), TestError> {
+        let SetFdBudget::Refuse(msg) = set_fd_budget(4096 - SET_FD_RESERVE + 1, 1024, 4096) else {
+            return Err("one file over the hard limit must be refused".into());
+        };
+        assert!(
+            msg.contains("4033 input file(s)")
+                && msg.contains("4096 open files")
+                && msg.contains("ulimit -n"),
+            "{msg}"
+        );
+        Ok(())
+    }
+
+    /// A set so large that its count plus the reserve does not fit in a
+    /// `usize` is refused, not wrapped round to a small number that fits.
+    #[test]
+    fn a_set_whose_count_overflows_is_refused_not_wrapped() -> Result<(), TestError> {
+        let budget = set_fd_budget(usize::MAX, u64::MAX - 1, u64::MAX - 1);
+        let SetFdBudget::Refuse(msg) = budget else {
+            return Err("a set of usize::MAX files must be refused".into());
+        };
+        assert!(
+            msg.contains(&format!("{} input file(s)", usize::MAX)),
+            "{msg}"
+        );
+        Ok(())
+    }
+
+    /// A hard limit below the descriptors sipnab keeps for itself refuses
+    /// even a set of one file.
+    #[test]
+    fn a_hard_limit_below_the_reserve_refuses_a_set_of_one() -> Result<(), TestError> {
+        let hard = u64::try_from(SET_FD_RESERVE)? - 1;
+        let SetFdBudget::Refuse(msg) = set_fd_budget(1, hard, hard) else {
+            return Err("one file cannot fit under a hard limit below the reserve".into());
+        };
+        assert!(
+            msg.contains("1 input file(s)") && msg.contains(&format!("{hard} open files")),
+            "{msg}"
+        );
+        Ok(())
+    }
+
+    /// The input's pcapng metadata is read before the confinement only by a
+    /// batch run that opened its set up front.
+    #[test]
+    fn input_metadata_is_read_in_advance_only_by_a_confined_batch_run() {
+        assert!(
+            reads_input_metadata_before_confinement(true, &RunMode::Batch),
+            "a batch run that confines itself reads the embedded secrets after"
+        );
+        assert!(
+            !reads_input_metadata_before_confinement(false, &RunMode::Batch),
+            "a run that keeps its credentials reads them by path"
+        );
+        assert!(
+            !reads_input_metadata_before_confinement(true, &RunMode::Tui),
+            "the TUI does not read them"
+        );
+        assert!(
+            !reads_input_metadata_before_confinement(true, &RunMode::CoresFile),
+            "nor does --cores, which decrypts no TLS"
+        );
+    }
+
+    /// A set is opened up front exactly when the run will drop privileges or
+    /// chroot once its source is open.
+    #[test]
+    fn a_set_is_opened_up_front_only_when_the_run_drops_or_chroots() {
+        assert!(opens_set_up_front(true, false), "a drop");
+        assert!(opens_set_up_front(false, true), "a chroot");
+        assert!(opens_set_up_front(true, true), "both");
+        assert!(!opens_set_up_front(false, false), "neither");
     }
 
     #[test]

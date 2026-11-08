@@ -332,6 +332,17 @@ pub struct CaptureConfig {
     /// degrades to one socket with a warning naming the reason elsewhere. See
     /// [`crate::capture::fanout`].
     pub fanout_sockets: usize,
+    /// Open every file of a `-I` set before the reader signals that its
+    /// source is open, and read each file from the descriptor opened then.
+    ///
+    /// Set by `app::bootstrap` when the run will chroot or drop privileges
+    /// once the source is open: a file opened by path after that is opened
+    /// as the user the run dropped to, or inside the new root, and a capture
+    /// only root may read, or whose path the new root does not hold, is then
+    /// lost. A run that keeps its credentials and its root opens each file
+    /// when its turn comes, so a set of any size stays within its open-file
+    /// limit. Ignored by every source but a file set.
+    pub open_set_up_front: bool,
 }
 
 /// Default kernel capture buffer, in MiB — the ring libpcap fills and sipnab
@@ -382,6 +393,9 @@ impl Default for CaptureConfig {
             immediate_mode: true,
             // One socket: what a live capture has always been.
             fanout_sockets: 1,
+            // Each file opened when its turn comes: what a run that keeps its
+            // credentials has always done.
+            open_set_up_front: false,
         }
     }
 }

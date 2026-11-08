@@ -113,6 +113,28 @@ impl<'a> Frames<'a> {
         }
     }
 
+    /// The mapped arm when `mapped` holds a mapping, made by the caller from a
+    /// descriptor it already holds, else the libpcap arm. Opens nothing by
+    /// path: the `-I` reader of a run that drops privileges reads a file
+    /// opened before the drop, and its path may then lead nowhere, or, inside
+    /// a new root, to a different file.
+    pub(crate) fn from_mapping(
+        cap: &'a mut pcap::Capture<pcap::Offline>,
+        mapped: Option<crate::capture::mapped::MappedPcap>,
+    ) -> Self {
+        match mapped {
+            Some(mapped) => Frames::Mapped(Box::new(mapped)),
+            None => {
+                let link_type = cap.get_datalink().0;
+                Frames::Libpcap {
+                    cap,
+                    block: bytes::BytesMut::with_capacity(Self::BLOCK),
+                    link_type,
+                }
+            }
+        }
+    }
+
     /// The mapped arm for `path`, or `None` when the file will not map and
     /// libpcap must read it.
     fn try_map(path: &std::path::Path) -> Option<Self> {

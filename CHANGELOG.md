@@ -8,6 +8,15 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- A root run that drops privileges or chroots opens every file of its `-I` set before the drop and reads each one through that descriptor. Files it reached after the drop used to be skipped with `Permission denied` (`No such file or directory` under `--chroot`), because only the first file was opened as root.
+- Archive members a root run extracts are given to the user it drops to, or removed before a `--chroot`, so they are read and then removed at exit instead of left on disk. They were extracted as root-only files that the dropped run could neither read nor remove.
+- TLS secrets embedded in a root-only pcapng input (a Decryption Secrets Block) are read before the privilege drop. They were read by path after the drop, the read failed, and nothing said so (EMBEDDED-SECRETS-AFTER-DROP).
+- A `-I` set larger than the open-file soft limit raises it up to the hard limit, for `--cores` too, and is refused with exit 2, naming the set and the limit, only above the hard limit.
+
 ## [0.5.239] - 2026-11-08
 
 ### Fixed
