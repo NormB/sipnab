@@ -1858,7 +1858,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 143 -> 145 (#617): README.md's OpenSIPS topology-hiding bullet links
     // docs/opensips-sipnab.md's section and its mapping how-to. Counted
     // against origin/main e019a2d55.
-    const EXPECTED_COMMUNITY_LINKS: usize = 145;
+    // 145 -> 146 (ci/gate-speed): CONTRIBUTING.md's link from the pre-commit
+    // paragraph to its new "Pass stamps: what the hooks skip" section (+1).
+    // Counted per file against origin/main b5cb8b61c.
+    const EXPECTED_COMMUNITY_LINKS: usize = 146;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

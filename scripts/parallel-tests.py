@@ -46,6 +46,15 @@ and compiles nothing else. FILE records what the shard ran.
 every shard exactly once with every target in exactly one shard, and writes
 the outputs in shard order to --output: one run's output, which
 scripts/published-test-count.py counts as it counts an unsharded run.
+
+    parallel-tests.py record-failures OUTPUT RECORD
+    parallel-tests.py --rerun RECORD [--jobs N] -- ARGS...
+
+The pre-commit hook records the tests a failed suite run names (`test NAME
+... FAILED`, under the binary of its `Running` or `Doc-tests` header) and
+replays them first on its next run: nextest with a filterset of exactly
+those tests and `--fail-fast`, then the recorded doctests, stopping at the
+first failure. A record with no failures is removed.
 """
 
 from __future__ import annotations
@@ -434,6 +443,124 @@ def run_commands(commands: list[list[str]]) -> int:
     return rc
 
 
+# ── The tests that failed last run, first ────────────────────────────────
+#
+# Any failure used to restart the whole pre-commit hook, every test included.
+# The hook records what a failed run names (`record-failures`) and its next
+# run replays those tests first (`--rerun`), stopping at the first failure. A
+# pass goes on to the full suite: the replay is a shortcut to a red verdict,
+# never a substitute for the green one.
+
+FAILURE_RECORD_SCHEMA = 1
+# What a nextest filterset takes unquoted, checked against the pinned 0.9.148:
+# `::`, `/` (bin/NAME) and `-` included. A name with anything else is left to
+# the full suite rather than spelled into an expression it might break.
+_FILTER_SAFE = re.compile(r"^[A-Za-z0-9_:/.\-]+$")
+_RUNNING = re.compile(r"^\s+Running (\S+)\s*$")
+_DOCTESTS = re.compile(r"^\s+Doc-tests (\S+)\s*$")
+_FAILED = re.compile(r"^test (.+) \.\.\. FAILED$")
+# The package whose doctests the suite runs (`cargo test ARGS --doc`), as
+# rustdoc names it in its `Doc-tests` header.
+DOC_PREFIX = "doc:"
+
+
+def failed_tests(text: str) -> list[tuple[str, str]]:
+    """(binary, test) for every `test NAME ... FAILED` line of a suite's output.
+
+    The binary is the nextest binary id of the `Running` header above the
+    line (the rendered report), or `doc:<crate>` under a `Doc-tests` header.
+    A failure under no header names no binary and is not recorded.
+    """
+    found: list[tuple[str, str]] = []
+    binary = None
+    for line in text.splitlines():
+        m = _RUNNING.match(line)
+        if m:
+            binary = m.group(1)
+            continue
+        m = _DOCTESTS.match(line)
+        if m:
+            binary = DOC_PREFIX + m.group(1)
+            continue
+        m = _FAILED.match(line)
+        if m and binary is not None and (binary, m.group(1)) not in found:
+            found.append((binary, m.group(1)))
+    return found
+
+
+def filterset(failures: list[tuple[str, str]]) -> str | None:
+    """The nextest filterset that selects exactly these (binary, test) pairs."""
+    terms = [
+        f"(binary_id(={b}) & test(={t}))"
+        for b, t in failures
+        if not b.startswith(DOC_PREFIX) and _FILTER_SAFE.match(b) and _FILTER_SAFE.match(t)
+    ]
+    return " | ".join(terms) or None
+
+
+def rerun_commands(failures: list[tuple[str, str]], cargo_args: list[str], jobs: int | None) -> list[list[str]]:
+    """The cargo commands that replay `failures`, without the `cargo`.
+
+    nextest with the filterset, `--fail-fast`, and `--no-tests pass` (a test
+    renamed since is not a failure: the full suite still runs it); then the
+    doctests of the package the suite tests, by libtest substring filter.
+    """
+    cargo, harness = split_args(cargo_args)
+    commands = []
+    expr = filterset(failures)
+    if expr:
+        commands.append(
+            nextest_command(cargo, ["-E", expr, "--fail-fast", "--no-tests", "pass"], harness, jobs)
+        )
+    package = DOC_PREFIX + PACKAGE.replace("-", "_")
+    docs = [t for b, t in failures if b == package]
+    if docs:
+        commands.append(["test", *cargo, "--doc", *(harness or ["--"]), *docs])
+    return commands
+
+
+def run_rerun(commands: list[list[str]]) -> int:
+    """Run each replay command in turn, stopping at the first that fails."""
+    for cmd in commands:
+        if cmd[0] == "nextest":
+            rc = run_nextest(cmd)
+        else:
+            sys.stdout.flush()
+            rc = subprocess.run(["cargo", *cmd], stderr=subprocess.STDOUT, check=False).returncode
+        if rc != 0:
+            return rc
+    return 0
+
+
+def write_failure_record(path, failures: list[tuple[str, str]]) -> None:
+    """Record `failures` at `path` (atomically); no failures removes the record."""
+    path = pathlib.Path(path)
+    if not failures:
+        path.unlink(missing_ok=True)
+        return
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(
+        json.dumps({"schema": FAILURE_RECORD_SCHEMA, "failures": [list(f) for f in failures]}), encoding="utf-8"
+    )
+    os.replace(tmp, path)
+
+
+def read_failure_record(path) -> list[tuple[str, str]] | None:
+    """The recorded failures, or None when there is no record or it is not one."""
+    try:
+        data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != FAILURE_RECORD_SCHEMA:
+        return None
+    failures = data.get("failures")
+    if not isinstance(failures, list) or not all(
+        isinstance(f, list) and len(f) == 2 and all(isinstance(x, str) for x in f) for f in failures
+    ):
+        return None
+    return [(b, t) for b, t in failures]
+
+
 def check_nextest() -> int:
     problem = nextest_problem(nextest_version(), installed_nextest())
     if problem:
@@ -463,7 +590,20 @@ def main() -> int:
         p.add_argument("dirs", nargs="+")
         a = p.parse_args(argv[1:])
         return merge(a.output, a.dirs)
+    if argv[:1] == ["record-failures"]:
+        p = argparse.ArgumentParser(prog="parallel-tests.py record-failures")
+        p.add_argument("output", help="a suite run's output")
+        p.add_argument("record", help="where to record the tests it names as failed")
+        a = p.parse_args(argv[1:])
+        try:
+            text = pathlib.Path(a.output).read_text(encoding="utf-8", errors="replace")
+            write_failure_record(a.record, failed_tests(text))
+        except OSError as e:
+            print(f"parallel-tests record-failures: {e}", file=sys.stderr)
+            return 1
+        return 0
     p = argparse.ArgumentParser(prog="parallel-tests.py")
+    p.add_argument("--rerun", metavar="RECORD", help="replay the failures RECORD names, stopping at the first")
     p.add_argument("--jobs", type=int)
     p.add_argument("--shard-index", type=int)
     p.add_argument("--shard-count", type=int)
@@ -478,6 +618,15 @@ def main() -> int:
         if any(x is None for x in sharded):
             p.error("--shard-index, --shard-count and --manifest go together")
         return run_shard(a.shard_index, a.shard_count, a.manifest, cargo_args, a.jobs)
+    if a.rerun is not None:
+        failures = read_failure_record(a.rerun)
+        commands = rerun_commands(failures or [], cargo_args, a.jobs)
+        if not commands:
+            print(f"parallel-tests: {a.rerun} names no test to replay", file=sys.stderr)
+            return 0
+        if check_nextest():
+            return 2
+        return run_rerun(commands)
     if check_nextest():
         return 2
     return run_commands(suite_commands(cargo_args, a.jobs))

@@ -34,6 +34,9 @@ GIT_FIXTURE_TESTS = [
     "scripts/tests/test_check_line_drift.py::test_an_untracked_page_under_docs_is_not_read",
     "scripts/tests/test_fetch_vcon_datasets.py::test_a_cached_checkout_at_another_commit_is_moved_to_the_pin",
     "scripts/tests/test_flag_since.py::test_write_fixes_the_table_and_check_then_agrees",
+    "scripts/tests/test_gate_cache.py::test_an_untracked_file_is_in_the_snapshot",
+    "scripts/tests/test_gate_cache_hooks.py::test_a_docs_only_change_reuses_the_build_stamps_and_runs_the_suite",
+    "scripts/tests/test_gate_cache_hooks.py::test_a_second_push_of_the_same_tree_runs_no_cached_step",
 ]
 
 

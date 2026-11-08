@@ -711,6 +711,17 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "no-verify",
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
+    // cargo-nextest's `--fail-fast`, with which the pre-commit hook replays
+    // the tests that failed last run, and git's `rev-parse --git-dir`, which
+    // names the directory that holds the hooks' pass stamps.
+    (
+        "fail-fast",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    (
+        "git-dir",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
     // `rustup toolchain install ... --component rustfmt`, the command that
     // installs the pinned rustfmt the format gate runs.
     (
@@ -6076,7 +6087,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/config-reference.md (+1 each), and their site mirrors
     // website/content/docs/cli.md and config.md (+1 each). Counted per file
     // against origin/main b5cb8b61c.
-    const EXPECTED_TABLES: usize = 1425;
+    // 1425 -> 1427 (ci/gate-speed): the cached-steps table in CONTRIBUTING.md's
+    // "Pass stamps: what the hooks skip" (+1) and its site mirror
+    // website/content/docs/contributing.md (+1). Counted per file against
+    // origin/main 52ee95329: no other changed page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1427;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

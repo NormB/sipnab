@@ -57,6 +57,61 @@ else
 	echo "  Prerequisites... NOT CHECKED -- scripts/check-hook-prerequisites.py is not on this branch"
 fi
 
+# ── Pass stamps: a check that passed on these exact inputs is not re-run ──
+# In the host's heavy-run log from 2026-11-06T13:04Z to 2026-11-07T22:14Z, hook
+# runs were 631 of the 1,128 minutes of main-slot run time, and nine times a
+# hand run of this hook that passed was followed, from the same directory, by
+# `git commit` running it again (40.4 minutes). scripts/gate-cache.py keys each cached step
+# on everything it reads -- the index tree, the working tree including
+# untracked and ignored files, HEAD and the tags, this file and every script
+# under scripts/ and .config/, Cargo.lock, `rustc -Vv`, the nextest, Python,
+# vale and codespell versions, and the variables that can change a verdict.
+# A step whose key has a stamp prints CACHED and is skipped; any difference in
+# the key means it runs. A whole run whose key has a stamp prints one line and
+# exits. A stamp is written only after its step passed, and only when the key
+# computed again then still matches, so a failed, killed or edited-under run
+# writes none. SIPNAB_GATE_NO_CACHE=1 runs every step. The rules, and why the
+# suite's key covers every file (the suite reads every tracked file), are in
+# that script's docstring; CONTRIBUTING.md has the how-to.
+GATE_CACHE="$(dirname "$0")/../scripts/gate-cache.py"
+GATE_KEYS=""
+if [ ! -f "$GATE_CACHE" ]; then
+	echo "  Pass stamps... NOT USED -- scripts/gate-cache.py is not on this branch"
+elif ! GATE_KEYS=$(python3 "$GATE_CACHE" keys pre-commit --hook-file "$0"); then
+	echo -e "  Pass stamps... ${YELLOW}NOT USED -- scripts/gate-cache.py could not read the inputs; every step runs${NC}"
+	GATE_KEYS=""
+fi
+gate_key() { # gate_key <step>: the step's key, empty when there is none
+	printf '%s\n' "$GATE_KEYS" | sed -n "s/^$1 //p"
+}
+gate_hit() { # gate_hit <step> [--quiet|--line hook]: 0 when a stamp covers the step
+	local key
+	key=$(gate_key "$1")
+	[ -n "$key" ] && python3 "$GATE_CACHE" hit pre-commit "$1" "$key" "${@:2}"
+}
+# A step that passes is collected here and stamped when the hook exits, all
+# from one snapshot (gate-cache.py pass re-checks each key then). One snapshot
+# per step made the hook harnesses run past their test deadlines. The exit
+# trap also fires on a failure's `exit 1`, so the steps that passed before it
+# keep their stamps; a killed run writes none.
+GATE_PASSED=()
+gate_pass() { # gate_pass <step>: stamp a step that has just passed
+	local key
+	key=$(gate_key "$1")
+	[ -n "$key" ] && GATE_PASSED+=("$1" "$key")
+	return 0
+}
+gate_flush() {
+	[ "${#GATE_PASSED[@]}" -gt 0 ] || return 0
+	python3 "$GATE_CACHE" pass pre-commit "${GATE_PASSED[@]}" --hook-file "$0" || true
+	GATE_PASSED=()
+}
+trap gate_flush EXIT
+if gate_hit hook --line hook; then
+	exit 0
+fi
+printf '%s\n' "$GATE_KEYS" | sed -n 's/^info //p'
+
 echo -e "${YELLOW}Running pre-commit checks...${NC}"
 
 # ── Naming what failed ─────────────────────────────────────────────
@@ -231,6 +286,114 @@ if [ "$prose_commit_fail" -ne 0 ]; then
     exit 1
 fi
 
+# ── Reporting a failed suite run ───────────────────────────────────
+# The suite's failure report, for step 2 and for the replay below (0c): the
+# names of the failed tests, the first three panics, the summary lines and a
+# reproduce line, each capped, and the whole output in <log-path>.
+report_suite_failure() { # report_suite_failure <log-path>: reads TEST_OUTPUT and TEST_RC
+    printf '%s\n' "$TEST_OUTPUT" > "$1"
+    # Extractions from here on are greps that may legitimately match nothing,
+    # and an aborted report is the defect this replaced.
+    set +e
+    FAILED_TESTS=$(printf '%s\n' "$TEST_OUTPUT" \
+        | sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' | sort -u)
+    if [ -n "$FAILED_TESTS" ]; then
+        echo "  $(printf '%s\n' "$FAILED_TESTS" | wc -l | tr -d ' ') test(s) failed:"
+        printf '%s\n' "$FAILED_TESTS" | emit_capped 10 "$1"
+        # libtest collects each failing test's panic under
+        # `---- <name> stdout ----`, which carries the panic location and the
+        # assertion message — the two facts that decide whether the break is
+        # yours or was already there. Three tests deep is enough to see a
+        # pattern; the rest is in the log.
+        SHOWN=0
+        while IFS= read -r t; do
+            [ "$SHOWN" -ge 3 ] && break
+            SHOWN=$((SHOWN + 1))
+            BLOCK=$(printf '%s\n' "$TEST_OUTPUT" | awk -v pfx="---- $t " '
+                inb && index($0, "---- ") == 1 { exit }
+                inb && (/^failures:/ || /^test result:/) { exit }
+                index($0, pfx) == 1 { inb = 1; next }
+                inb && n == 0 && /^[[:space:]]*$/ { next }
+                inb { print; if (++n >= 12) exit }')
+            if [ -n "$BLOCK" ]; then
+                echo ""
+                echo "  $t"
+                printf '%s\n' "$BLOCK" | emit_capped 12 "$1"
+            fi
+        done <<< "$FAILED_TESTS"
+        SUMMARY=$(printf '%s\n' "$TEST_OUTPUT" | grep '^test result: FAILED')
+        if [ -n "$SUMMARY" ]; then
+            echo ""
+            printf '%s\n' "$SUMMARY" | emit_capped 5 "$1"
+        fi
+        FIRST=$(printf '%s\n' "$FAILED_TESTS" | head -1)
+        echo ""
+        case "$FIRST" in
+        *\ *)
+            # A doctest name ("src/lib.rs - foo (line 12)") is not a filter.
+            echo "  Reproduce: cargo test --features full --doc"
+            ;;
+        *)
+            echo "  Reproduce: cargo test --features full $FIRST -- --exact --nocapture"
+            ;;
+        esac
+    else
+        # No `test ... FAILED` line means the suite never got that far. A
+        # compile error names a file and a line, so print those; anything else
+        # (a signal, a linker failure, an out-of-memory kill) has no structure
+        # to key on, so print the tail. Printing the tail beats printing
+        # nothing, which is what this did for every one of these cases.
+        BUILD_ERRORS=$(printf '%s\n' "$TEST_OUTPUT" \
+            | grep -E '^(error|warning)(\[[^]]*\])?:|^ +--> ')
+        if [ -n "$BUILD_ERRORS" ]; then
+            echo "  The suite did not build:"
+            printf '%s\n' "$BUILD_ERRORS" | emit_capped 20 "$1"
+        else
+            echo "  The run ended without naming a test (exit $TEST_RC). Last lines:"
+            printf '%s\n' "$TEST_OUTPUT" | tail -n 20 | emit_capped 20 "$1"
+        fi
+        echo "  Reproduce: cargo test --features full"
+    fi
+    echo "  Full output: $1"
+}
+
+# The tests a failed run named, for the next run to replay first (0c).
+FAILED_RECORD="$LOG_DIR/sipnab-pre-commit-failed-tests.json"
+record_suite_failures() { # record_suite_failures <output-file>
+	python3 scripts/parallel-tests.py record-failures "$1" "$FAILED_RECORD" >/dev/null 2>&1 || true
+	if [ -s "$FAILED_RECORD" ]; then
+		echo "  The next run replays these first (recorded in $FAILED_RECORD)."
+	fi
+}
+
+# ── 0c. The tests that failed last run, first ──────────────────────
+# Any failure used to restart this whole hook, every test included, so
+# learning whether a fix worked cost a full suite: in the same log, 18 of 31
+# hand runs of this hook failed. The tests the last failed run named (step 2 records them)
+# run first, under nextest's --fail-fast, before clippy and the suite. A
+# failure stops the hook here. A pass goes on to every step below, the full
+# suite included, so a pass still means the full suite passed on this tree.
+# scripts/parallel-tests.py --rerun builds the command; a test renamed since
+# selects nothing and is not a failure.
+if [ -s "$FAILED_RECORD" ] && ! gate_hit tests --quiet; then
+	echo -n "  Tests that failed last run, first... "
+	REPLAY_LIVE="$LOG_DIR/sipnab-pre-commit-replay.live"
+	set +e
+	env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS python3 scripts/parallel-tests.py --rerun "$FAILED_RECORD" \
+		${SIPNAB_TEST_JOBS:+--jobs "$SIPNAB_TEST_JOBS"} -- --features full --color never >"$REPLAY_LIVE" 2>&1
+	TEST_RC=$?
+	set -e
+	TEST_OUTPUT=$(cat "$REPLAY_LIVE")
+	rm -f "$REPLAY_LIVE"
+	if [ "$TEST_RC" -ne 0 ]; then
+		echo -e "${RED}FAIL${NC}"
+		echo "  Stopped at the first failure: clippy and the full suite did not run."
+		report_suite_failure "$LOG_DIR/sipnab-pre-commit-tests.log"
+		exit 1
+	fi
+	echo -e "${GREEN}OK${NC} (they pass now; the full suite still runs)"
+fi
+
 # ── 1. Clippy must pass ────────────────────────────────────────────
 # `--color never` so the greps below key on the diagnostic and not on whatever
 # CARGO_TERM_COLOR wrapped it in.
@@ -257,6 +420,9 @@ fi
 # weaker; a different one would have been slower too.
 # `tests/clippy_scope_parity_test.rs` holds the three scopes equal.
 echo -n "  Clippy (CI's exact scope)... "
+# Its stamp's key covers the build inputs only (gate-cache.py's path_class), so
+# a change of documentation alone reuses it. The body is not re-indented.
+if ! gate_hit clippy; then
 set +e
 CLIPPY_OUTPUT=$(cargo clippy --workspace --all-features --all-targets --color never -- -D warnings 2>&1)
 CLIPPY_RC=$?
@@ -277,6 +443,8 @@ if [ "$CLIPPY_RC" -ne 0 ]; then
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"
+gate_pass clippy
+fi
 
 # ── 2. Tests must pass ─────────────────────────────────────────────
 # Capture the full run once: step 5 reuses this exact output for the
@@ -286,6 +454,12 @@ echo -e "${GREEN}OK${NC}"
 # a partial/aborted run fails HERE (honestly, "retry") instead of passing
 # and feeding step 5 a truncated sum.
 echo -n "  Tests... "
+# Its stamp's key covers every file: the suite reads every tracked file. The
+# body is not re-indented.
+TEST_CACHED=0
+if gate_hit tests; then
+TEST_CACHED=1
+else
 set +e
 # The suite has wedged twice: once for 20 minutes and once left running for
 # 1d17h, both at ~0% CPU with every thread sleeping. There was no timeout, and
@@ -444,7 +618,11 @@ while kill -0 "$TEST_PID" 2>/dev/null; do
 		kill -9 "$TEST_PID" $TEST_TREE 2>/dev/null
 		break
 	fi
-	sleep 5
+	# One second, not five: the loop is also how the hook learns the suite
+	# ended, and every run waited up to the whole interval for it. Against
+	# scripts/lib-hook-sandbox.sh's stub suite this step took 5.3 s with a
+	# five-second poll and 1.3 s with this one (measured 2026-11-07).
+	sleep 1
 done
 wait "$TEST_PID"
 TEST_RC=$?
@@ -455,79 +633,27 @@ if [ "$TEST_WEDGED" -eq 1 ]; then
 	echo "  Thread stacks: $STACKS"
 	echo "  Partial output: $TEST_LIVE"
 	echo "  This is a known, unreproduced defect -- please keep both files."
+	record_suite_failures "$TEST_LIVE"
 	exit 1
 fi
 set -e
 if [ "$TEST_RC" -ne 0 ] || echo "$TEST_OUTPUT" | grep -q "FAILED\|error\["; then
     echo -e "${RED}FAIL${NC}"
     TEST_LOG="$LOG_DIR/sipnab-pre-commit-tests.log"
-    printf '%s\n' "$TEST_OUTPUT" > "$TEST_LOG"
-    # Extractions from here on are greps that may legitimately match nothing,
-    # and an aborted report is the defect this replaced.
-    set +e
-    FAILED_TESTS=$(printf '%s\n' "$TEST_OUTPUT" \
-        | sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' | sort -u)
-    if [ -n "$FAILED_TESTS" ]; then
-        echo "  $(printf '%s\n' "$FAILED_TESTS" | wc -l | tr -d ' ') test(s) failed:"
-        printf '%s\n' "$FAILED_TESTS" | emit_capped 10 "$TEST_LOG"
-        # libtest collects each failing test's panic under
-        # `---- <name> stdout ----`, which carries the panic location and the
-        # assertion message — the two facts that decide whether the break is
-        # yours or was already there. Three tests deep is enough to see a
-        # pattern; the rest is in the log.
-        SHOWN=0
-        while IFS= read -r t; do
-            [ "$SHOWN" -ge 3 ] && break
-            SHOWN=$((SHOWN + 1))
-            BLOCK=$(printf '%s\n' "$TEST_OUTPUT" | awk -v pfx="---- $t " '
-                inb && index($0, "---- ") == 1 { exit }
-                inb && (/^failures:/ || /^test result:/) { exit }
-                index($0, pfx) == 1 { inb = 1; next }
-                inb && n == 0 && /^[[:space:]]*$/ { next }
-                inb { print; if (++n >= 12) exit }')
-            if [ -n "$BLOCK" ]; then
-                echo ""
-                echo "  $t"
-                printf '%s\n' "$BLOCK" | emit_capped 12 "$TEST_LOG"
-            fi
-        done <<< "$FAILED_TESTS"
-        SUMMARY=$(printf '%s\n' "$TEST_OUTPUT" | grep '^test result: FAILED')
-        if [ -n "$SUMMARY" ]; then
-            echo ""
-            printf '%s\n' "$SUMMARY" | emit_capped 5 "$TEST_LOG"
-        fi
-        FIRST=$(printf '%s\n' "$FAILED_TESTS" | head -1)
-        echo ""
-        case "$FIRST" in
-        *\ *)
-            # A doctest name ("src/lib.rs - foo (line 12)") is not a filter.
-            echo "  Reproduce: cargo test --features full --doc"
-            ;;
-        *)
-            echo "  Reproduce: cargo test --features full $FIRST -- --exact --nocapture"
-            ;;
-        esac
-    else
-        # No `test ... FAILED` line means the suite never got that far. A
-        # compile error names a file and a line, so print those; anything else
-        # (a signal, a linker failure, an out-of-memory kill) has no structure
-        # to key on, so print the tail. Printing the tail beats printing
-        # nothing, which is what this did for every one of these cases.
-        BUILD_ERRORS=$(printf '%s\n' "$TEST_OUTPUT" \
-            | grep -E '^(error|warning)(\[[^]]*\])?:|^ +--> ')
-        if [ -n "$BUILD_ERRORS" ]; then
-            echo "  The suite did not build:"
-            printf '%s\n' "$BUILD_ERRORS" | emit_capped 20 "$TEST_LOG"
-        else
-            echo "  The run ended without naming a test (exit $TEST_RC). Last lines:"
-            printf '%s\n' "$TEST_OUTPUT" | tail -n 20 | emit_capped 20 "$TEST_LOG"
-        fi
-        echo "  Reproduce: cargo test --features full"
-    fi
-    echo "  Full output: $TEST_LOG"
+    report_suite_failure "$TEST_LOG"
+    record_suite_failures "$TEST_LOG"
     exit 1
 fi
 echo -e "${GREEN}OK${NC}"
+# Passed: nothing is left to replay. The count step (5) needs this run's
+# output; it is read here, so the stamp vouches for both, and step 5 reports it.
+rm -f "$FAILED_RECORD"
+COUNT_RC=0
+COUNT_OUT=$(printf '%s\n' "$TEST_OUTPUT" | python3 scripts/published-test-count.py - 2>&1) || COUNT_RC=$?
+if [ "$COUNT_RC" -eq 0 ]; then
+    gate_pass tests
+fi
+fi
 
 # ── 2b. The sipnab-bpf-types crate's own tests and doctests ────────
 # Step 2 tests the sipnab package only: `cargo test` without `-p` or
@@ -537,8 +663,13 @@ echo -e "${GREEN}OK${NC}"
 # a broken example would have reached crates.io unnoticed. Kept out of step 2's
 # log on purpose: the homepage count is sipnab's suite, and CI counts the same.
 echo -n "  sipnab-bpf-types tests and doctests... "
-if BPF_TYPES_OUT=$(cargo test -p sipnab-bpf-types --no-fail-fast --color never 2>&1); then
+# A build-only key: the crate reads nothing at run time outside crates/, and
+# its README, which its doctests come from, is an include_str! input.
+if gate_hit bpf-types; then
+    :
+elif BPF_TYPES_OUT=$(cargo test -p sipnab-bpf-types --no-fail-fast --color never 2>&1); then
     echo -e "${GREEN}OK${NC}"
+    gate_pass bpf-types
 else
     echo -e "${RED}FAIL${NC}"
     printf '%s\n' "$BPF_TYPES_OUT" | grep -E 'FAILED|panicked|^error' | head -n 20 || true
@@ -691,8 +822,11 @@ fi
 if git diff --cached --name-only | grep -qE "^scripts/"; then
     echo -n "  Script tests... "
     if command -v python3 >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null; then
-        if SCRIPT_OUT=$(cd scripts && python3 -m pytest tests/ -q 2>&1); then
+        if gate_hit script-tests; then
+            :
+        elif SCRIPT_OUT=$(cd scripts && python3 -m pytest tests/ -q 2>&1); then
             echo -e "${GREEN}OK${NC} ($(echo "$SCRIPT_OUT" | tail -1))"
+            gate_pass script-tests
         else
             echo -e "${RED}FAIL${NC}"
             echo "$SCRIPT_OUT" | tail -12 | sed 's/^/    /'
@@ -736,7 +870,12 @@ fi
 # keeps them the same suite.
 echo -n "  Homepage test count generated... "
 if [ -f "website/templates/index.html" ]; then
-    if ! COUNT_OUT=$(printf '%s\n' "$TEST_OUTPUT" | python3 scripts/published-test-count.py - 2>&1); then
+    # COUNT_OUT and COUNT_RC are step 2's reading of its own run. A suite
+    # skipped by its stamp was counted by the run that wrote the stamp: the
+    # stamp is written only when that count succeeded.
+    if [ "$TEST_CACHED" = 1 ]; then
+        COUNT_OUT="counted when stamp $(gate_key tests | cut -c1-12) was written"
+    elif [ "$COUNT_RC" -ne 0 ]; then
         echo -e "${RED}FAIL${NC}"
         echo "  $COUNT_OUT"
         echo "  scripts/published-test-count.py cannot count the step-2 run, so the"
@@ -856,4 +995,5 @@ else
     echo -e "${GREEN}OK${NC}"
 fi
 
+gate_pass hook
 echo -e "${GREEN}All pre-commit checks passed.${NC}"

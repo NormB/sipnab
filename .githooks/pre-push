@@ -149,6 +149,55 @@ if ! command -v cargo >/dev/null 2>&1; then
 	exit 1
 fi
 
+# -- Pass stamps: a step that passed on these exact inputs is not re-run -------
+# The same mechanism as .githooks/pre-commit, keyed by scripts/gate-cache.py.
+# Each build step's key (clippy, rustdoc, the fuzz and BPF clippy runs, the
+# reduced feature combinations, the wasm and cross-architecture checks, the
+# non-Linux check) covers the build inputs of the tree being checked -- the
+# working tree, which is what every gate here reads -- plus this file, every
+# script under scripts/ and .config/, Cargo.lock, `rustc -Vv` and the
+# variables that can change a verdict. The prose linters' keys cover every
+# file. A step with a stamp prints CACHED and is skipped, so a push of the same
+# tree, or of a change to documentation alone, re-runs only what that change
+# can affect; and a push that failed at one step keeps the stamps of the steps
+# before it. Never cached: the signature, message and test-count gates, which
+# judge the pushed commits rather than the tree; the release-delivery test,
+# which reads tags; the YANG, TUI, corpus and site gates, which read state or
+# timing a key cannot hold. SIPNAB_GATE_NO_CACHE=1 runs every step.
+GATE_CACHE="$(dirname "$0")/../scripts/gate-cache.py"
+GATE_KEYS=""
+if [ ! -f "$GATE_CACHE" ]; then
+	printf '  Pass stamps... NOT USED -- scripts/gate-cache.py is not on this branch\n'
+elif ! GATE_KEYS=$(python3 "$GATE_CACHE" keys pre-push --hook-file "$0"); then
+	printf '  Pass stamps... %bNOT USED -- scripts/gate-cache.py could not read the inputs; every step runs%b\n' "$YELLOW" "$NC"
+	GATE_KEYS=""
+fi
+printf '%s\n' "$GATE_KEYS" | sed -n 's/^info //p'
+gate_key() { # gate_key <step>: the step's key, empty when there is none
+	printf '%s\n' "$GATE_KEYS" | sed -n "s/^$1 //p"
+}
+gate_hit() { # gate_hit <step>: 0, after printing CACHED, when a stamp covers it
+	gate_hit_key=$(gate_key "$1")
+	[ -n "$gate_hit_key" ] && python3 "$GATE_CACHE" hit pre-push "$1" "$gate_hit_key"
+}
+# Collected, and stamped from one snapshot when the hook exits, for the reason
+# .githooks/pre-commit gives beside its own copy. Step names and keys hold no
+# spaces, so one string carries the pairs.
+GATE_PASSED=""
+gate_pass() { # gate_pass <step>: stamp a step that has just passed
+	gate_pass_key=$(gate_key "$1")
+	[ -n "$gate_pass_key" ] && GATE_PASSED="$GATE_PASSED $1 $gate_pass_key"
+	return 0
+}
+gate_flush() {
+	[ -n "$GATE_PASSED" ] || return 0
+	# Word splitting is intended: the string is space-separated pairs.
+	# shellcheck disable=SC2086
+	python3 "$GATE_CACHE" pass pre-push $GATE_PASSED --hook-file "$0" || true
+	GATE_PASSED=""
+}
+trap gate_flush EXIT
+
 # -- Hard gate: rustfmt -------------------------------------------------------
 # scripts/check-rustfmt.sh: the dated nightly rustfmt in .rustfmt-toolchain
 # over every tracked `.rs` file, `fuzz/` and `bpf/` included, which are not
@@ -183,8 +232,11 @@ fi
 # the CI line above it; the two are one rule, and a gate that asks for less
 # than its CI counterpart is not a gate.
 printf '  cargo clippy --workspace --all-features --all-targets -- -D warnings ... '
-if cargo clippy --workspace --all-features --all-targets -- -D warnings; then
+if gate_hit clippy; then
+	:
+elif cargo clippy --workspace --all-features --all-targets -- -D warnings; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
+	gate_pass clippy
 else
 	printf '%bFAIL%b\n' "$RED" "$NC"
 	printf '\n'
@@ -202,18 +254,25 @@ fi
 # RUSTDOCFLAGS=-D warnings). Catches broken or private intra-doc links that
 # clippy and the test suite never build.
 printf '  cargo doc --no-deps --all-features --workspace (RUSTDOCFLAGS=-D warnings) ... '
-if RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace; then
-	printf '%bOK%b\n' "$GREEN" "$NC"
+# Nested rather than `elif`: tests/rustdoc_visibility_test.rs holds the
+# `cargo doc` line to be an `if` condition.
+if gate_hit doc; then
+	:
 else
-	printf '%bFAIL%b\n' "$RED" "$NC"
-	printf '\n'
-	printf '%bPush blocked: rustdoc reported warnings (e.g. a broken or private intra-doc link).%b\n' "$RED" "$NC"
-	printf 'Reproduce with:\n'
-	printf '    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace\n'
-	printf 'fix the docs, then commit and push again.\n'
-	printf '\n'
-	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
-	exit 1
+	if RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace; then
+		printf '%bOK%b\n' "$GREEN" "$NC"
+		gate_pass doc
+	else
+		printf '%bFAIL%b\n' "$RED" "$NC"
+		printf '\n'
+		printf '%bPush blocked: rustdoc reported warnings (e.g. a broken or private intra-doc link).%b\n' "$RED" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features --workspace\n'
+		printf 'fix the docs, then commit and push again.\n'
+		printf '\n'
+		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
+		exit 1
+	fi
 fi
 
 # -- Hard gate: fuzz targets --------------------------------------------------
@@ -225,8 +284,11 @@ fi
 # `cargo check` does. Skipped if the fuzz/ directory is absent (matches CI).
 if [ -d fuzz ]; then
 	printf '  (cd fuzz && cargo clippy --all-targets -- -D warnings) ... '
-	if ( cd fuzz && cargo clippy --all-targets -- -D warnings ); then
+	if gate_hit fuzz-clippy; then
+		:
+	elif ( cd fuzz && cargo clippy --all-targets -- -D warnings ); then
 		printf '%bOK%b\n' "$GREEN" "$NC"
+		gate_pass fuzz-clippy
 	else
 		printf '%bFAIL%b\n' "$RED" "$NC"
 		printf '\n'
@@ -248,8 +310,11 @@ fi
 # Skipped if the bpf/ directory is absent (matches the fuzz gate).
 if [ -d bpf ]; then
 	printf '  (cd bpf && cargo clippy -- -D warnings) ... '
-	if ( cd bpf && cargo clippy -- -D warnings ); then
+	if gate_hit bpf-clippy; then
+		:
+	elif ( cd bpf && cargo clippy -- -D warnings ); then
 		printf '%bOK%b\n' "$GREEN" "$NC"
+		gate_pass bpf-clippy
 	else
 		printf '%bFAIL%b\n' "$RED" "$NC"
 		printf '\n'
@@ -322,8 +387,11 @@ for combo in tls api; do
 		continue
 	fi
 	printf '  cargo check --no-default-features --features %s --tests ... ' "$combo"
-	if cargo check --no-default-features --features "$combo" --tests; then
+	if gate_hit "check-$combo"; then
+		:
+	elif cargo check --no-default-features --features "$combo" --tests; then
 		printf '%bOK%b\n' "$GREEN" "$NC"
+		gate_pass "check-$combo"
 	else
 		printf '%bFAIL%b\n' "$RED" "$NC"
 		printf '\n'
@@ -349,8 +417,11 @@ done
 # are.
 if [ -f src/lib.rs ]; then
 	printf '  cargo clippy --no-default-features --lib -- -D warnings ... '
-	if cargo clippy --no-default-features --lib -- -D warnings; then
+	if gate_hit clippy-no-default; then
+		:
+	elif cargo clippy --no-default-features --lib -- -D warnings; then
 		printf '%bOK%b\n' "$GREEN" "$NC"
+		gate_pass clippy-no-default
 	else
 		printf '%bFAIL%b\n' "$RED" "$NC"
 		printf '\n'
@@ -381,8 +452,11 @@ if ! rustup target list --installed 2>/dev/null | grep -qx "$WASM_TARGET"; then
 	printf '    Install it with: rustup target add %s\n' "$WASM_TARGET"
 else
 printf '  cargo check --target %s --no-default-features --features wasm --lib ... ' "$WASM_TARGET"
-if cargo check --target "$WASM_TARGET" --no-default-features --features wasm --lib; then
+if gate_hit wasm; then
+	:
+elif cargo check --target "$WASM_TARGET" --no-default-features --features wasm --lib; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
+	gate_pass wasm
 else
 	printf '%bFAIL%b\n' "$RED" "$NC"
 	printf '\n'
@@ -415,8 +489,11 @@ elif ! rustup target list --installed 2>/dev/null | grep -qx "$CROSS_TARGET"; th
 	printf '    Install it with: rustup target add %s\n' "$CROSS_TARGET"
 else
 printf '  cargo clippy --target %s --features full --tests ... ' "$CROSS_TARGET"
-if CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/cross-arch" cargo clippy --target "$CROSS_TARGET" --features full --tests -- -D warnings; then
+if gate_hit cross-arch; then
+	:
+elif CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/cross-arch" cargo clippy --target "$CROSS_TARGET" --features full --tests -- -D warnings; then
 	printf '%bOK%b\n' "$GREEN" "$NC"
+	gate_pass cross-arch
 else
 	printf '%bFAIL%b\n' "$RED" "$NC"
 	printf '\n'
@@ -494,13 +571,19 @@ if [ ! -f "$NONLINUX_GATE" ]; then
 	printf '    missing one means this checkout is incomplete rather than misconfigured.\n'
 else
 	printf '  non-Linux cfg (the macOS arm of every target_os split) ... '
-	set +e
-	NONLINUX_OUTPUT=$(sh "$NONLINUX_GATE" 2>&1)
-	NONLINUX_RC=$?
-	set -e
+	if gate_hit non-linux; then
+		NONLINUX_RC=cached
+	else
+		set +e
+		NONLINUX_OUTPUT=$(sh "$NONLINUX_GATE" 2>&1)
+		NONLINUX_RC=$?
+		set -e
+	fi
 	case "$NONLINUX_RC" in
+	cached) ;;
 	0)
 		printf '%bOK%b\n' "$GREEN" "$NC"
+		gate_pass non-linux
 		;;
 	2)
 		# The script could not run -- wrong host, no clippy, no platform cfgs
@@ -1255,10 +1338,16 @@ printf '  vale (prose style) ... '
 # `prose_vale_run` returning the CONTRACT's 1 killed the hook before the `case`
 # that renders the findings. A blocked push with no reason printed is worse than
 # no gate at all -- the next move is a guess.
-prose_vale_run && prose_rc=0 || prose_rc=$?
+if gate_hit vale; then
+	prose_rc=cached
+else
+	prose_vale_run && prose_rc=0 || prose_rc=$?
+fi
 case $prose_rc in
+cached) ;;
 0)
 	printf '%bOK%b\n' "$GREEN" "$NC"
+	gate_pass vale
 	;;
 1)
 	printf '%bFAIL%b\n' "$RED" "$NC"
@@ -1271,14 +1360,20 @@ case $prose_rc in
 	printf '    point VALE_BIN at one, to check here.\n'
 	;;
 esac
-rm -f "$PROSE_OUTPUT"
+[ "$prose_rc" = cached ] || rm -f "$PROSE_OUTPUT"
 
 printf '  codespell (spelling) ... '
 # Same shape as vale above, and it failed the same way.
-prose_codespell_run && prose_rc=0 || prose_rc=$?
+if gate_hit codespell; then
+	prose_rc=cached
+else
+	prose_codespell_run && prose_rc=0 || prose_rc=$?
+fi
 case $prose_rc in
+cached) ;;
 0)
 	printf '%bOK%b\n' "$GREEN" "$NC"
+	gate_pass codespell
 	;;
 1)
 	printf '%bFAIL%b\n' "$RED" "$NC"
@@ -1291,7 +1386,7 @@ case $prose_rc in
 	printf '    CODESPELL_BIN at one in a venv, to check here.\n'
 	;;
 esac
-rm -f "$PROSE_OUTPUT"
+[ "$prose_rc" = cached ] || rm -f "$PROSE_OUTPUT"
 
 fi
 
