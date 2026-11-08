@@ -610,13 +610,13 @@ fn state_str(state: &DialogState) -> &'static str {
     state.as_str()
 }
 
-/// Format the dialog duration (`created_at` to `updated_at`) as a
+/// Format the dialog duration (`created_at` to `latest_message_at`) as a
 /// human-readable string; `"0s"` for dialogs with fewer than 2 messages.
 fn format_duration(dialog: &SipDialog) -> String {
     format_seconds(dialog_duration_secs(dialog))
 }
 
-/// A dialog's duration in whole seconds, `created_at` to `updated_at`; `0`
+/// A dialog's duration in whole seconds, `created_at` to `latest_message_at`; `0`
 /// for a dialog with fewer than 2 messages. The one rule the dialog table's
 /// Duration column and the vCon container report's durations both read.
 #[must_use]
@@ -624,10 +624,7 @@ pub fn dialog_duration_secs(dialog: &SipDialog) -> i64 {
     if dialog.messages.len() < 2 {
         return 0;
     }
-    dialog
-        .updated_at
-        .signed_duration_since(dialog.created_at)
-        .num_seconds()
+    dialog.duration().num_seconds()
 }
 
 /// Format seconds into a compact human-readable string
@@ -1076,6 +1073,7 @@ mod tests {
         crate::sip::dialog::update_state(&mut dialog, &bye);
         dialog.messages.push(bye.clone());
         dialog.updated_at = bye.timestamp;
+        dialog.latest_message_at = dialog.updated_at;
         Ok(dialog)
     }
 
@@ -2067,6 +2065,30 @@ mod tests {
     #[test]
     fn a_run_that_saw_none_says_nothing_about_them() -> Result<(), TestError> {
         assert_eq!(super::media_creating_note(0), None, "zero is not a finding");
+        Ok(())
+    }
+}
+
+/// The dialog table's Duration on a call read out of timestamp order: see
+/// [`crate::test_utils::call_read_out_of_order`].
+#[cfg(test)]
+mod latest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The table's duration is whole seconds to the newest message: 2.505 s
+    /// is 2, where the last message read, 0.905 s in, would make it 0.
+    #[test]
+    fn the_table_duration_runs_to_the_newest_message() -> Result<(), TestError> {
+        let (store, _) =
+            crate::test_utils::call_read_out_of_order("table@example.com", [192, 0, 2, 1].into())?;
+        let d = store.get("table@example.com").ok_or("the call")?;
+        assert_eq!(
+            dialog_duration_secs(d),
+            2,
+            "2.505 s to the newest message is 2 whole seconds; 0.905 s to the last read would be 0"
+        );
         Ok(())
     }
 }

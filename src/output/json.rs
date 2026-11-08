@@ -556,8 +556,8 @@ struct DialogJson {
     method: String,
     /// Number of SIP messages in the dialog.
     msg_count: usize,
-    /// Wall-clock span from first to last message, seconds (0 for
-    /// single-message dialogs).
+    /// Wall-clock span from the first message to the newest one, seconds (0
+    /// for single-message dialogs).
     duration_sec: f64,
     /// User-defined classification tags; omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -850,9 +850,7 @@ pub fn dialog_to_json(
     delay: crate::rtp::quality::MosDelay<'_>,
 ) -> String {
     let duration_sec = if dialog.messages.len() >= 2 {
-        let first = dialog.created_at;
-        let last = dialog.updated_at;
-        (last - first).num_milliseconds() as f64 / 1000.0
+        dialog.duration().num_milliseconds() as f64 / 1000.0
     } else {
         0.0
     };

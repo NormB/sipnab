@@ -6092,7 +6092,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // "Pass stamps: what the hooks skip" (+1) and its site mirror
     // website/content/docs/contributing.md (+1). Counted per file against
     // origin/main 52ee95329: no other changed page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1427;
+    // 1427 -> 1431 (LATEST-MESSAGE-AT): the field table of "Which dialog time
+    // to read" in docs/output-formats.md and the test matrix in
+    // docs/internals/testing.md (+1 each), and their site mirrors (+1 each).
+    // Counted per file against origin/main c736934f3.
+    const EXPECTED_TABLES: usize = 1431;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

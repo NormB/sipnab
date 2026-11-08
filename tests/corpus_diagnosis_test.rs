@@ -290,7 +290,7 @@ fn corpus_compaction_preserves_the_final_status_code() -> Result<(), TestError> 
             .collect();
 
         // Nothing to prove on a capture with no dialog long enough to compact.
-        let Some(latest) = store.iter().map(|d| d.updated_at).max() else {
+        let Some(latest) = store.iter().map(|d| d.latest_message_at).max() else {
             continue;
         };
         if !before
@@ -351,7 +351,7 @@ fn corpus_eviction_counter_is_reachable_and_counts() -> Result<(), TestError> {
             0,
             "a store that has never been compacted has evicted nothing"
         );
-        let Some(latest) = store.iter().map(|d| d.updated_at).max() else {
+        let Some(latest) = store.iter().map(|d| d.latest_message_at).max() else {
             continue;
         };
         let stats = store.compact_idle(latest + chrono::TimeDelta::hours(1));

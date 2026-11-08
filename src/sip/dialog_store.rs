@@ -1307,8 +1307,9 @@ impl DialogStore {
     ///
     /// # Arguments
     ///
-    /// * `now` — Current time; dialogs whose `updated_at` is more than
-    ///   `idle_compact_after` before `now` are considered idle.
+    /// * `now` — Current time; dialogs whose newest message
+    ///   (`latest_message_at`) is more than `idle_compact_after` before `now`
+    ///   are considered idle.
     ///
     /// # Returns
     ///
@@ -2002,7 +2003,7 @@ impl DialogStore {
     fn capture_now(&self) -> chrono::DateTime<chrono::Utc> {
         self.dialogs
             .values()
-            .map(|d| d.updated_at)
+            .map(|d| d.latest_message_at)
             .max()
             .unwrap_or_else(chrono::Utc::now)
     }
@@ -2015,13 +2016,13 @@ impl DialogStore {
             .count()
     }
 
-    /// Whether a dialog has been touched inside [`active_idle_window`].
+    /// Whether a dialog's newest message is inside [`active_idle_window`].
     ///
     /// A capture read from a file is dated by its packets, so `now` must be the
     /// caller's clock rather than the wall clock, or every offline dialog ages
     /// out at once.
     fn recently_seen(dialog: &SipDialog, now: chrono::DateTime<chrono::Utc>) -> bool {
-        now.signed_duration_since(dialog.updated_at) <= active_idle_window()
+        now.signed_duration_since(dialog.latest_message_at) <= active_idle_window()
     }
 
     /// Count calls that are up: dialogs in `InCall`, and nothing else.
@@ -2432,7 +2433,7 @@ impl DialogStore {
         }];
         let mut total_messages = root.messages.len();
         let mut first_activity = root.created_at;
-        let mut last_activity = root.updated_at;
+        let mut last_activity = root.latest_message_at;
 
         // Seeded with the root so a leg correlating back to it -- which most
         // strategies do, being symmetric -- is not re-added as its own child.
@@ -2474,7 +2475,7 @@ impl DialogStore {
                 max_depth = max_depth.max(child_depth);
                 total_messages += r.dialog.messages.len();
                 first_activity = first_activity.min(r.dialog.created_at);
-                last_activity = last_activity.max(r.dialog.updated_at);
+                last_activity = last_activity.max(r.dialog.latest_message_at);
                 legs.push(TreeLeg {
                     call_id: r.dialog.call_id.clone(),
                     depth: child_depth,
@@ -2636,7 +2637,9 @@ impl DialogStore {
 /// replays the sweeps of `--cores 1` between a dialog's messages
 /// ([`DialogStore::merge_replaying`]).
 fn compact_dialog(dialog: &mut SipDialog, now: chrono::DateTime<chrono::Utc>) -> usize {
-    if now - dialog.updated_at <= idle_compact_after() {
+    // From the newest message, not the last one read: an older-stamped
+    // message read late does not make a dialog that is still talking idle.
+    if now - dialog.latest_message_at <= idle_compact_after() {
         return 0;
     }
     let Some(keep) = retained_indices(
@@ -2695,10 +2698,11 @@ fn open_dialog(msg: &SipMessage) -> Option<SipDialog> {
 ///
 /// A message whose CSeq identity (`seen_cseq_key`) the dialog has already seen
 /// is a retransmission: it is counted, marked, stored for the ladder while
-/// there is room, and changes nothing else but `updated_at`. Any other message
-/// advances the state machine, the timing milestones and the SDP, REFER and
-/// SIPREC state, and is stored while there is room. Either way `updated_at`
-/// becomes the message's timestamp. Everything here depends on the ORDER the
+/// there is room, and changes nothing else but the two times. Any other
+/// message advances the state machine, the timing milestones and the SDP,
+/// REFER and SIPREC state, and is stored while there is room. Either way
+/// `updated_at` becomes the message's timestamp, and `latest_message_at` the
+/// later of itself and that timestamp. Everything here depends on the ORDER the
 /// messages arrive in, which is why a merge replays them through this function
 /// in read order rather than combining the fragments' results.
 ///
@@ -2734,6 +2738,7 @@ fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
         // message's timestamp, not the stored tail's, so a retransmission flood
         // keeps the dialog out of compact_idle.
         dialog.updated_at = ts;
+        dialog.latest_message_at = dialog.latest_message_at.max(ts);
         return;
     }
 
@@ -2752,6 +2757,7 @@ fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
         dialog.messages.push(msg);
     }
     dialog.updated_at = ts;
+    dialog.latest_message_at = dialog.latest_message_at.max(ts);
 }
 
 /// The derived state one message contributes to the dialog it belongs to.
@@ -2791,15 +2797,17 @@ fn apply_message_derived(dialog: &mut SipDialog, msg: &SipMessage) {
 /// that state cannot be combined after the fact. Which message is a
 /// retransmission depends on what was seen before it; the timing milestones
 /// keep the first sighting in processing order; `updated_at` is the last
-/// message processed; the SDP timeline lists offers and answers in processing
-/// order; the dialog's identity (From, To, method, first frame) comes from
-/// the first message. `--cores 1` processes a set file by file, in the order
-/// of each file's first packet, so when the files overlap in time that order
-/// is not timestamp order. The merge this replaced concatenated fragments in
-/// timestamp order and combined their state by rules (earliest milestone,
-/// latest `updated_at`, summed retransmits, SDP from every message, the
-/// earliest fragment as base): each was right for one shape of input, and the
-/// sum depended on which worker owned which host pair.
+/// message processed (`latest_message_at`, the newest, is a maximum that a
+/// merge could combine, but it is replayed with the rest); the SDP timeline
+/// lists offers and answers in processing order; the dialog's identity (From,
+/// To, method, first frame) comes from the first message. `--cores 1`
+/// processes a set file by file, in the order of each file's first packet, so
+/// when the files overlap in time that order is not timestamp order. The merge
+/// this replaced concatenated fragments in timestamp order and combined their
+/// state by rules (earliest milestone, latest `updated_at`, summed
+/// retransmits, SDP from every message, the earliest fragment as base): each
+/// was right for one shape of input, and the sum depended on which worker
+/// owned which host pair.
 ///
 /// Replaying through the same two functions [`DialogStore::process_message`]
 /// uses makes the rebuilt dialog the single-threaded one by construction, for
@@ -2920,7 +2928,8 @@ fn compaction_due<K: Ord>(
         {
             return true;
         }
-        quiet_since = Some(msg.timestamp);
+        // Quiet since the newest message so far, as compact_dialog measures.
+        quiet_since = Some(quiet_since.map_or(msg.timestamp, |q| q.max(msg.timestamp)));
     }
     match (sweeps.get(next_sweep..).and_then(<[_]>::last), quiet_since) {
         (Some((_, now)), Some(since)) => *now - since > idle,
@@ -2981,6 +2990,8 @@ struct UnkeptTail {
     timing: crate::sip::timing::DialogTiming,
     /// The fragment's last activity, which a tail message set.
     updated_at: chrono::DateTime<chrono::Utc>,
+    /// The fragment's newest message, which can be a tail message.
+    latest_message_at: chrono::DateTime<chrono::Utc>,
     /// The CSeq identities the fragment saw, kept or not.
     seen_cseq: std::collections::HashSet<String>,
 }
@@ -2999,6 +3010,7 @@ impl UnkeptTail {
             retransmits,
             timing: fragment.timing.clone(),
             updated_at: fragment.updated_at,
+            latest_message_at: fragment.latest_message_at,
             seen_cseq: fragment.seen_cseq.clone(),
         }
     }
@@ -3017,6 +3029,7 @@ impl UnkeptTail {
                     .or_insert(0) += count;
             }
             dialog.updated_at = dialog.updated_at.max(tail.updated_at);
+            dialog.latest_message_at = dialog.latest_message_at.max(tail.latest_message_at);
             for key in &tail.seen_cseq {
                 if dialog.seen_cseq.len() >= crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG {
                     break;
@@ -3616,6 +3629,7 @@ mod tests {
                 (
                     d.created_at,
                     d.updated_at,
+                    d.latest_message_at,
                     d.first_frame.as_ref().map(|f| f.origin.ordinal)
                 ),
                 (d.src_addr, d.dst_addr, messages, seen, retransmits),
@@ -4239,6 +4253,11 @@ mod tests {
             forward.updated_at,
             base_ts()? + TimeDelta::milliseconds(5000),
             "the unkept tail's last activity"
+        );
+        assert_eq!(
+            forward.latest_message_at,
+            base_ts()? + TimeDelta::milliseconds(5000),
+            "the unkept tail's newest message"
         );
         Ok(())
     }
@@ -8542,6 +8561,433 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             (0, 0, 1),
             "the store's traffic past the lifetime expires it: {c:?}"
         );
+        Ok(())
+    }
+
+    // ── latest_message_at: the newest message, whatever the read order ──
+
+    /// `base_ts` plus `ms` milliseconds.
+    fn at_ms(ms: i64) -> Result<DateTime<Utc>, TestError> {
+        Ok(base_ts()? + TimeDelta::milliseconds(ms))
+    }
+
+    /// A store fed, in this order, an INVITE for `call_id` at `first_ms` and
+    /// one in-dialog request (CSeq 10, 11, ...) at each of `later_ms`.
+    fn store_read_in_order(
+        call_id: &str,
+        first_ms: i64,
+        later_ms: &[i64],
+    ) -> Result<DialogStore, TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_msg(call_id, at_ms(first_ms)?)?);
+        for (i, ms) in later_ms.iter().enumerate() {
+            store.process_message(make_in_dialog_filler(
+                call_id,
+                10 + u32::try_from(i)?,
+                at_ms(*ms)?,
+            )?);
+        }
+        Ok(store)
+    }
+
+    /// The dialog `call_id` of `store`.
+    fn held<'a>(store: &'a DialogStore, call_id: &str) -> Result<&'a SipDialog, TestError> {
+        Ok(store.get(call_id).ok_or("the dialog is in the store")?)
+    }
+
+    /// A dialog of one message: its newest message is that message, which is
+    /// also its first and its last read, and it has lasted no time.
+    #[test]
+    fn a_one_message_dialogs_newest_message_is_that_message() -> Result<(), TestError> {
+        let store = store_read_in_order("one@h", 1500, &[])?;
+        let d = held(&store, "one@h")?;
+        assert_eq!(
+            d.latest_message_at,
+            at_ms(1500)?,
+            "the newest message of a one-message dialog is that message"
+        );
+        assert_eq!(
+            d.created_at, d.latest_message_at,
+            "its first message is its newest"
+        );
+        assert_eq!(
+            d.updated_at, d.latest_message_at,
+            "its last message read is its newest"
+        );
+        assert_eq!(d.duration(), TimeDelta::zero(), "one message lasts no time");
+        Ok(())
+    }
+
+    /// A message newer than every earlier one moves `latest_message_at` to
+    /// its timestamp.
+    #[test]
+    fn a_newer_message_moves_latest_message_at_forward() -> Result<(), TestError> {
+        let store = store_read_in_order("newer@h", 0, &[1000, 2500])?;
+        assert_eq!(
+            held(&store, "newer@h")?.latest_message_at,
+            at_ms(2500)?,
+            "the newest of 0, 1000 and 2500 ms is 2500 ms"
+        );
+        Ok(())
+    }
+
+    /// A message read after a newer one does not move `latest_message_at`
+    /// back to its older timestamp.
+    #[test]
+    fn an_older_message_read_later_does_not_move_latest_message_at_back() -> Result<(), TestError> {
+        let store = store_read_in_order("older@h", 0, &[2500, 900])?;
+        assert_eq!(
+            held(&store, "older@h")?.latest_message_at,
+            at_ms(2500)?,
+            "900 ms read after 2500 ms does not move the newest back"
+        );
+        Ok(())
+    }
+
+    /// `updated_at` stays the last message READ: an older message read after
+    /// a newer one moves it back. The live vCon export detects change through
+    /// it, so this is the regression guard for keeping it.
+    #[test]
+    fn an_older_message_read_later_still_moves_updated_at_to_it() -> Result<(), TestError> {
+        let store = store_read_in_order("read@h", 0, &[2500, 900])?;
+        assert_eq!(
+            held(&store, "read@h")?.updated_at,
+            at_ms(900)?,
+            "updated_at is the last message read, 900 ms, though 2500 ms is newer"
+        );
+        Ok(())
+    }
+
+    /// Messages that share one timestamp leave `latest_message_at` on it, and
+    /// a dialog all of whose messages share it has lasted no time.
+    #[test]
+    fn messages_at_one_instant_keep_latest_message_at_on_it() -> Result<(), TestError> {
+        let store = store_read_in_order("tie@h", 700, &[700, 700])?;
+        let d = held(&store, "tie@h")?;
+        assert_eq!(
+            d.latest_message_at,
+            at_ms(700)?,
+            "three messages at 700 ms: the newest is 700 ms"
+        );
+        assert_eq!(
+            d.messages.len(),
+            3,
+            "a message at the same instant is not a retransmission and is kept"
+        );
+        assert_eq!(
+            d.duration(),
+            TimeDelta::zero(),
+            "messages at one instant last no time"
+        );
+        Ok(())
+    }
+
+    /// A retransmission read late with an older timestamp is still counted
+    /// as one, moves `updated_at` to itself, and leaves `latest_message_at`
+    /// on the newest message.
+    #[test]
+    fn a_late_retransmission_with_an_older_timestamp_leaves_the_newest_message()
+    -> Result<(), TestError> {
+        let mut store = store_read_in_order("retx-old@h", 0, &[4000])?;
+        store.process_message(make_invite_msg("retx-old@h", at_ms(200)?)?);
+        let d = held(&store, "retx-old@h")?;
+        assert_eq!(
+            d.timing.total_retransmits(),
+            1,
+            "counted as a retransmission"
+        );
+        assert_eq!(d.updated_at, at_ms(200)?, "the last message read");
+        assert_eq!(d.latest_message_at, at_ms(4000)?, "the newest message");
+        assert_eq!(
+            d.duration(),
+            TimeDelta::milliseconds(4000),
+            "the duration runs to the newest message, 4000 ms, not to the retransmission at 200 ms"
+        );
+        Ok(())
+    }
+
+    /// A retransmission the dialog is too full to store still carries a
+    /// timestamp, and a newer one moves `latest_message_at` forward.
+    #[test]
+    fn a_retransmission_dropped_at_the_cap_still_moves_latest_message_at() -> Result<(), TestError>
+    {
+        let cap = DEFAULT_MAX_MESSAGES_PER_DIALOG;
+        let mut store = store_with_messages("retx-full@h", cap)?;
+        store.process_message(make_invite_msg("retx-full@h", at_ms(9000)?)?);
+        let d = held(&store, "retx-full@h")?;
+        assert_eq!(d.messages.len(), cap, "the retransmission was not stored");
+        assert_eq!(
+            d.latest_message_at,
+            at_ms(9000)?,
+            "a dropped retransmission at 9000 ms is still the newest message"
+        );
+        Ok(())
+    }
+
+    /// The duration runs from the first message to the newest one, not to the
+    /// last one read.
+    #[test]
+    fn the_duration_runs_to_the_newest_message() -> Result<(), TestError> {
+        let store = store_read_in_order("dur@h", 0, &[2505, 905])?;
+        assert_eq!(
+            held(&store, "dur@h")?.duration(),
+            TimeDelta::milliseconds(2505),
+            "read order 0, 2505, 905 ms lasts 2505 ms"
+        );
+        Ok(())
+    }
+
+    /// A dialog whose last message read is older than the one that opened it
+    /// does not report a negative duration.
+    #[test]
+    fn the_duration_is_never_negative() -> Result<(), TestError> {
+        let store = store_read_in_order("neg@h", 2000, &[1000])?;
+        let d = held(&store, "neg@h")?;
+        assert_eq!(d.duration(), TimeDelta::zero(), "{:?}", d.duration());
+        Ok(())
+    }
+
+    /// A store holding `call_id` with `keep_messages_per_idle_dialog() + 5`
+    /// messages: the newest at `newest_ms`, and an older one at `last_read_ms`
+    /// read last.
+    fn idle_candidate(
+        call_id: &str,
+        newest_ms: i64,
+        last_read_ms: i64,
+    ) -> Result<DialogStore, TestError> {
+        let mut later: Vec<i64> = (1..i64::try_from(keep_messages_per_idle_dialog() + 3)?)
+            .map(|i| i * 10)
+            .collect();
+        later.push(newest_ms);
+        later.push(last_read_ms);
+        store_read_in_order(call_id, 0, &later)
+    }
+
+    /// Quiet EXACTLY the idle limit since its newest message is not idle past
+    /// it, although the last message read is older still.
+    #[test]
+    fn quiet_exactly_the_idle_limit_since_the_newest_message_is_not_compacted()
+    -> Result<(), TestError> {
+        let mut store = idle_candidate("edge@h", 20_000, 5_000)?;
+        let now = at_ms(20_000)? + idle_compact_after();
+        let stats = store.compact_idle(now);
+        assert_eq!(stats.dialogs_compacted, 0, "{stats:?}");
+        Ok(())
+    }
+
+    /// One millisecond past the idle limit since the newest message is idle.
+    #[test]
+    fn quiet_one_millisecond_past_the_idle_limit_is_compacted() -> Result<(), TestError> {
+        let mut store = idle_candidate("past@h", 20_000, 5_000)?;
+        let now = at_ms(20_001)? + idle_compact_after();
+        let stats = store.compact_idle(now);
+        assert_eq!(stats.dialogs_compacted, 1, "{stats:?}");
+        assert_eq!(
+            held(&store, "past@h")?.messages.len(),
+            keep_messages_per_idle_dialog(),
+            "300 s since the newest message is not idle, though 699 s since the last read is"
+        );
+        Ok(())
+    }
+
+    /// An older message read last does not make a dialog idle: idleness is
+    /// measured from the newest message, 300 s before the sweep, not from the
+    /// last one read, past the limit.
+    #[test]
+    fn an_older_message_read_last_does_not_make_a_dialog_idle() -> Result<(), TestError> {
+        let mut store = idle_candidate("recent@h", 400_000, 1_000)?;
+        let now = at_ms(700_000)?;
+        assert!(now - at_ms(1_000)? > idle_compact_after(), "the fixture");
+        let stats = store.compact_idle(now);
+        assert_eq!(stats.dialogs_compacted, 0, "{stats:?}");
+        Ok(())
+    }
+
+    /// A dialog whose newest message is inside the active window is active,
+    /// though the message read last is far older.
+    #[test]
+    fn a_dialog_with_a_recent_newest_message_is_active() -> Result<(), TestError> {
+        let store = store_read_in_order("live@h", 0, &[900_000, 1_000])?;
+        let now = at_ms(900_000)? + active_idle_window() - TimeDelta::seconds(1);
+        assert!(now - at_ms(1_000)? > active_idle_window(), "the fixture");
+        assert_eq!(
+            store.active_dialog_count_at(now),
+            1,
+            "inside the active window from the newest message"
+        );
+        Ok(())
+    }
+
+    /// A dialog whose newest message is past the active window is not active.
+    #[test]
+    fn a_dialog_whose_newest_message_is_past_the_window_is_not_active() -> Result<(), TestError> {
+        let store = store_read_in_order("gone@h", 0, &[900_000, 1_000])?;
+        let now = at_ms(900_001)? + active_idle_window();
+        assert_eq!(
+            store.active_dialog_count_at(now),
+            0,
+            "past the active window from the newest message"
+        );
+        Ok(())
+    }
+
+    /// Exactly the active window since its newest message is still active.
+    #[test]
+    fn exactly_the_active_window_since_the_newest_message_is_active() -> Result<(), TestError> {
+        let store = store_read_in_order("rim@h", 0, &[900_000, 1_000])?;
+        let now = at_ms(900_000)? + active_idle_window();
+        assert_eq!(
+            store.active_dialog_count_at(now),
+            1,
+            "exactly the active window from the newest message is still inside it"
+        );
+        Ok(())
+    }
+
+    /// The concurrent-call count measures from the newest message as well.
+    #[test]
+    fn the_call_count_measures_from_the_newest_message() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_msg("up@h", at_ms(0)?)?);
+        store.process_message(make_200_ok("up@h", at_ms(900_000)?)?);
+        store.process_message(make_in_dialog_filler("up@h", 10, at_ms(1_000)?)?);
+        assert_eq!(
+            held(&store, "up@h")?.state(),
+            &DialogState::InCall,
+            "the fixture is an answered call"
+        );
+        let now = at_ms(900_000)? + active_idle_window() - TimeDelta::seconds(1);
+        assert_eq!(
+            store.active_call_count_at(now),
+            1,
+            "the call is up and its newest message is inside the window"
+        );
+        Ok(())
+    }
+
+    /// The store's own clock, for the counts asked without a time, is its
+    /// newest message: a dialog read last with an old stamp does not wind it
+    /// back so far that a dialog past the window still counts.
+    #[test]
+    fn the_store_clock_is_its_newest_message() -> Result<(), TestError> {
+        let mut store = store_read_in_order("clock@h", 0, &[5_000_000, 1_000])?;
+        store.process_message(make_invite_msg("stale@h", at_ms(10_000)?)?);
+        assert!(
+            at_ms(5_000_000)? - at_ms(10_000)? > active_idle_window(),
+            "the fixture"
+        );
+        // clock@h is active at its own newest message; stale@h is far behind it.
+        assert_eq!(
+            store.active_dialog_count(),
+            1,
+            "the store clock is clock@h's newest message, so only clock@h is active"
+        );
+        Ok(())
+    }
+
+    /// A call tree's last activity is the newest message of any of its legs.
+    #[test]
+    fn a_call_trees_last_activity_is_the_newest_message() -> Result<(), TestError> {
+        let store = store_read_in_order("tree@h", 0, &[7_000, 2_000])?;
+        let tree = store
+            .correlation_tree("tree@h", 10)
+            .ok_or("a tree for the root")?;
+        assert_eq!(
+            tree.last_activity,
+            Some(at_ms(7_000)?),
+            "the tree's last activity is the root's newest message, 7 s, not its last read, 2 s"
+        );
+        Ok(())
+    }
+
+    /// The change-tracking page keeps paging on `updated_at`, the last
+    /// message read: it exists to report change, and a message with an older
+    /// stamp is a change.
+    #[test]
+    fn the_tail_page_orders_by_the_last_message_read() -> Result<(), TestError> {
+        let mut store = store_read_in_order("moved@h", 0, &[10_000, 2_000])?;
+        store.process_message(make_invite_msg("still@h", at_ms(5_000)?)?);
+        let (page, _) = store.tail_page(None, 10);
+        let order: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
+        assert_eq!(
+            order,
+            ["moved@h", "still@h"],
+            "the tail page orders by updated_at: moved@h was read last at 2 s, before still@h at 5 s"
+        );
+        Ok(())
+    }
+
+    /// One call read out of timestamp order across two legs merges, under
+    /// every assignment of its legs to workers, to the dialog one store
+    /// builds: the newest message is the newest of either leg, and the last
+    /// one read is the last one read.
+    #[test]
+    fn a_merge_keeps_the_newest_message_of_a_call_read_out_of_order() -> Result<(), TestError> {
+        let mut seq = Vec::new();
+        for n in 0..=4u32 {
+            seq.push((0, parity_msg("ooo@h", n, 10 * i64::from(n), u64::from(n))?));
+        }
+        seq.push((1, parity_msg("ooo@h", 5, 15, 5)?));
+        let serial = assert_every_assignment_merges_to_serial(&seq, &[], 2, 1000, true)?;
+        let d = held(&serial, "ooo@h")?;
+        assert_eq!(
+            d.latest_message_at,
+            base_ts()? + TimeDelta::seconds(40),
+            "the newest message is 40 s, from leg 0, whichever worker held it"
+        );
+        assert_eq!(
+            d.updated_at,
+            base_ts()? + TimeDelta::seconds(15),
+            "the last message read is the 15 s one on leg 1"
+        );
+        Ok(())
+    }
+
+    /// A merge replays a sweep that finds a call quiet past the limit since
+    /// its last message read but not since its newest: one store keeps every
+    /// message, and so does every assignment of its legs to workers.
+    #[test]
+    fn a_merge_measures_idleness_from_the_newest_message() -> Result<(), TestError> {
+        let mut seq = Vec::new();
+        for n in 0..=30u32 {
+            seq.push((0, parity_msg("quiet@h", n, i64::from(n), u64::from(n))?));
+        }
+        seq.push((1, parity_msg("quiet@h", 31, 1, 31)?));
+        seq.push((1, parity_msg("other@h", 0, 629, 32)?));
+        let sweeps = [(32, base_ts()? + TimeDelta::seconds(629))];
+        let serial = assert_every_assignment_merges_to_serial(&seq, &sweeps, 2, 1000, true)?;
+        assert_eq!(
+            held(&serial, "quiet@h")?.messages.len(),
+            32,
+            "599 s after the newest message nothing is compacted"
+        );
+        assert_eq!(
+            serial.total_idle_messages_evicted(),
+            0,
+            "no message was evicted"
+        );
+        Ok(())
+    }
+
+    /// The merge's shortcut, which skips the replay for a fragment no sweep
+    /// compacts, finds no compaction due for a dialog quiet past the limit
+    /// only since its last message read.
+    #[test]
+    fn no_compaction_is_due_for_a_dialog_recent_by_its_newest_message() -> Result<(), TestError> {
+        let mut store = DialogStore::new(1000, true);
+        for n in 0..=30u32 {
+            store.process_message(parity_msg("due@h", n, i64::from(n), u64::from(n))?);
+        }
+        store.process_message(parity_msg("due@h", 31, 1, 31)?);
+        let d = held(&store, "due@h")?;
+        let sweeps = [(Some(40u64), base_ts()? + TimeDelta::seconds(629))];
+        let due = compaction_due(
+            d,
+            &|m: &SipMessage| read_index(m),
+            &sweeps,
+            keep_messages_per_idle_dialog(),
+        );
+        assert!(!due, "629 s is 599 s after the newest message");
         Ok(())
     }
 }

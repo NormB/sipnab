@@ -374,15 +374,12 @@ fn generate_text_report(
     let _ = writeln!(out, "{}", "\u{2550}".repeat(40));
 
     // Identification
-    let duration_sec = dialog
-        .updated_at
-        .signed_duration_since(dialog.created_at)
-        .num_seconds();
+    let duration_sec = dialog.duration().num_seconds();
     let _ = writeln!(
         out,
         "Time:       {} -> {} ({}s)",
         dialog.created_at.format("%Y-%m-%d %H:%M:%S"),
-        dialog.updated_at.format("%H:%M:%S"),
+        dialog.latest_message_at.format("%H:%M:%S"),
         duration_sec,
     );
 
@@ -551,10 +548,7 @@ fn generate_markdown_report(
     let _ = writeln!(out);
 
     // Identification
-    let duration_sec = dialog
-        .updated_at
-        .signed_duration_since(dialog.created_at)
-        .num_seconds();
+    let duration_sec = dialog.duration().num_seconds();
     let _ = writeln!(out, "## Summary");
     let _ = writeln!(out);
     let _ = writeln!(out, "| Field | Value |");
@@ -563,7 +557,7 @@ fn generate_markdown_report(
         out,
         "| Time | {} -> {} ({}s) |",
         dialog.created_at.format("%Y-%m-%d %H:%M:%S"),
-        dialog.updated_at.format("%H:%M:%S"),
+        dialog.latest_message_at.format("%H:%M:%S"),
         duration_sec,
     );
     let _ = writeln!(
@@ -866,11 +860,13 @@ mod tests {
         crate::sip::timing::update_timing(&mut d.timing, &ringing, &crate::sip::SipMethod::Invite);
         d.messages.push(ringing.clone());
         d.updated_at = ringing.timestamp;
+        d.latest_message_at = d.updated_at;
 
         dialog::update_state(&mut d, &ok);
         crate::sip::timing::update_timing(&mut d.timing, &ok, &crate::sip::SipMethod::Invite);
         d.messages.push(ok.clone());
         d.updated_at = ok.timestamp;
+        d.latest_message_at = d.updated_at;
 
         Ok(d)
     }
@@ -1796,6 +1792,7 @@ mod sdp_label_tests {
         let (offer, answer) = crate::test_utils::sdp_offer_and_answer("report-sdp")?;
         let mut d = SipDialog::new(&offer).ok_or("a dialog from the INVITE")?;
         d.updated_at = answer.timestamp;
+        d.latest_message_at = d.updated_at;
         d.messages.push(answer);
         Ok(d)
     }
@@ -1814,6 +1811,60 @@ mod sdp_label_tests {
         let mut out = String::new();
         write_transaction_flow(&mut out, &dialog()?);
         assert_eq!(out, "  INVITE (SDP) -> 200 (SDP) (500ms)\n");
+        Ok(())
+    }
+}
+
+/// The call report's Time line on a call read out of timestamp order: see
+/// [`crate::test_utils::call_read_out_of_order`].
+#[cfg(test)]
+mod latest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The report of the out-of-order call in `format`.
+    fn report(format: ReportFormat) -> Result<String, TestError> {
+        let (store, _) =
+            crate::test_utils::call_read_out_of_order("report@example.com", [192, 0, 2, 1].into())?;
+        let d = store.get("report@example.com").ok_or("the call")?;
+        Ok(generate_call_report(
+            d,
+            &[],
+            &MediaDiagnosis::default(),
+            format,
+            crate::rtp::quality::MosDelay::unknown(),
+        ))
+    }
+
+    /// The text report's Time line ends at the newest message, 22:13:22,
+    /// and counts the 2 whole seconds to it.
+    #[test]
+    fn the_text_reports_time_ends_at_the_newest_message() -> Result<(), TestError> {
+        let text = report(ReportFormat::Text)?;
+        assert!(
+            text.contains("Time:       2023-11-14 22:13:20 -> 22:13:22 (2s)"),
+            "{text}"
+        );
+        Ok(())
+    }
+
+    /// The Markdown report's Time row says the same.
+    #[test]
+    fn the_markdown_reports_time_ends_at_the_newest_message() -> Result<(), TestError> {
+        let md = report(ReportFormat::Markdown)?;
+        assert!(
+            md.contains("| Time | 2023-11-14 22:13:20 -> 22:13:22 (2s) |"),
+            "{md}"
+        );
+        Ok(())
+    }
+
+    /// The JSON report's `duration_sec` runs to the newest message.
+    #[test]
+    fn the_json_reports_duration_runs_to_the_newest_message() -> Result<(), TestError> {
+        let v: serde_json::Value = serde_json::from_str(&report(ReportFormat::Json)?)?;
+        assert_eq!(v["duration_sec"].as_f64(), Some(2.505), "{v}");
         Ok(())
     }
 }

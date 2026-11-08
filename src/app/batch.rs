@@ -12334,6 +12334,92 @@ mod tests {
         Ok(())
     }
 
+    /// The out-of-order call's store with all its messages but the last: its
+    /// `updated_at` is then the BYE's, 2.505 s in, its newest message.
+    #[cfg(feature = "vcon")]
+    fn written_before_its_last_message() -> Result<(DialogStore, crate::sip::SipMessage), TestError>
+    {
+        let mut messages =
+            crate::test_utils::out_of_order_messages("late-ok@example.com", [192, 0, 2, 1].into())?;
+        let last = messages.pop().ok_or("the call has messages")?;
+        let mut store = DialogStore::new(16, true);
+        for msg in messages {
+            store.process_message(msg);
+        }
+        Ok((store, last))
+    }
+
+    /// A call written live and then sent one more message, stamped OLDER than
+    /// its newest, is written again: the change moved `updated_at` and not
+    /// `latest_message_at`, and the live export watches `updated_at`. The
+    /// regression guard for keeping `updated_at` the last message read.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_live_sweep_rewrites_a_call_sent_an_older_stamped_message() -> Result<(), TestError> {
+        const CALL: &str = "late-ok@example.com";
+        let tmp = tempfile::tempdir().map_err(|e| format!("temp dir: {e:?}"))?;
+        let out = tmp.path().join("one.json");
+        let cli = cli_exporting_one(&out, CALL);
+        let (mut dialogs, last) = written_before_its_last_message()?;
+        let streams = StreamStore::new(16);
+        let mut tracker = LiveVconTracker::default();
+        let now = swept_after(&dialogs)?;
+        let sweep = |dialogs: &DialogStore, tracker: &mut LiveVconTracker| {
+            live_vcon_sweep(
+                &cli,
+                None,
+                CaptureRead {
+                    dialogs,
+                    streams: &streams,
+                    frames_read: 5,
+                },
+                None,
+                tracker,
+                now,
+            )
+        };
+        assert_eq!(sweep(&dialogs, &mut tracker), 1, "written once settled");
+        let newest = dialogs.get(CALL).ok_or("the call")?.latest_message_at;
+        dialogs.process_message(last);
+        let d = dialogs.get(CALL).ok_or("the call")?;
+        assert_eq!(
+            d.latest_message_at, newest,
+            "the newest message is unchanged"
+        );
+        assert_eq!(sweep(&dialogs, &mut tracker), 1, "the change is written");
+        assert_eq!(
+            tracker.written_at(CALL),
+            Some(d.updated_at),
+            "the rewrite is recorded at the new, older updated_at"
+        );
+        Ok(())
+    }
+
+    /// A call written at its newest message's time and then sent an older
+    /// stamped message is not taken for written: matching the newest message
+    /// is not enough, the container must be at the current `updated_at`.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_call_written_at_its_newest_message_is_not_written_after_an_older_one()
+    -> Result<(), TestError> {
+        let (mut dialogs, last) = written_before_its_last_message()?;
+        let mut tracker = LiveVconTracker::default();
+        let before = dialogs.get("late-ok@example.com").ok_or("the call")?;
+        tracker.record(&before.call_id, before.updated_at);
+        dialogs.process_message(last);
+        let d = dialogs.get("late-ok@example.com").ok_or("the call")?;
+        assert_eq!(
+            tracker.written_at(&d.call_id),
+            Some(d.latest_message_at),
+            "the tracker holds the newest message's time, the fixture's premise"
+        );
+        assert!(
+            !written_live(Some(&tracker), d),
+            "an older-stamped message changed the call after it was written"
+        );
+        Ok(())
+    }
+
     /// STOP-AUDIT-1: a live sweep writes the `--export-vcon` call to
     /// `--vcon-out` once it has ended and settled, records it, and does not
     /// write it again unchanged. Before the settle period it writes nothing.

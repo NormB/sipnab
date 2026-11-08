@@ -411,11 +411,18 @@ Returns one page of dialog summaries from the live capture store.
 | `capture_identity` | object | Which capture answered — see [`capture_status`](#capture-status). A changed `instance` voids every cursor you hold. |
 
 Each `DialogSummary` row carries `call_id`, `state`, `method`, `from_user`,
-`to_user`, `msg_count`, `duration_sec`, `created_at`, `updated_at`, a `timing`
-object (`pdd_ms`, `setup_ms`, `retransmits`, `duration_ms`, each `null` when the
-capture never showed it) and a `frame` pointer for
-[`show_evidence`](@/docs/mcp-tools-captures.md#show-evidence). `from_user` and `to_user` arrive fenced,
-because an endpoint chose them.
+`to_user`, `msg_count`, `duration_sec`, `created_at`, `updated_at`,
+`latest_message_at`, a `timing` object (`pdd_ms`, `setup_ms`, `retransmits`,
+`duration_ms`, each `null` when the capture never showed it) and a `frame`
+pointer for [`show_evidence`](@/docs/mcp-tools-captures.md#show-evidence). `from_user`
+and `to_user` arrive fenced, because an endpoint chose them.
+
+`updated_at` is the timestamp of the message processed last, and
+`latest_message_at` the newest timestamp among the dialog's messages.
+`duration_sec` runs from `created_at` to `latest_message_at`. The two differ
+only when sipnab read an older-stamped message after a newer one, as on an
+`-I` set whose files overlap in time: see
+[Which dialog time to read](@/docs/output-formats.md#which-dialog-time-to-read-updated-at-or-latest-message-at).
 
 Two more keys appear when sipnab knows them, and are **left out rather than sent
 as null** when it does not, so an absent key means "not known here":
@@ -450,6 +457,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
       "duration_sec": 0.036,
       "created_at": "2016-11-17T21:52:35.303349+00:00",
       "updated_at": "2016-11-17T21:52:35.339349+00:00",
+      "latest_message_at": "2016-11-17T21:52:35.339349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -470,6 +478,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
       "duration_sec": 0.036,
       "created_at": "2016-11-17T21:52:35.403349+00:00",
       "updated_at": "2016-11-17T21:52:35.439349+00:00",
+      "latest_message_at": "2016-11-17T21:52:35.439349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -631,6 +640,7 @@ invalid_params (-32602) naming the offending value.
       "duration_sec": 0.03,
       "created_at": "2016-11-17T21:54:34.903349+00:00",
       "updated_at": "2016-11-17T21:54:34.933349+00:00",
+      "latest_message_at": "2016-11-17T21:54:34.933349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -895,6 +905,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
     "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
     "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
     "input_origin": "wire",
+    "latest_message_at": "2016-11-26T14:53:08.170676+00:00",
     "method": "INVITE",
     "msg_count": 6,
     "state": "Completed",
