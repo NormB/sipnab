@@ -954,7 +954,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // docs/internals/subsystem-guide.md's paragraph on the dialog merge links
     // src/sip/dialog_store.rs and tests/cores_callid_span_test.rs (+2); every
     // other developer page unchanged.
-    const EXPECTED_CODE_LINKS: usize = 763;
+    // 763 -> 764 (SDP-ORIGIN-REUSE): docs/internals/domain-primer.md's
+    // `SdpOrigin` row links src/sip/sdp_origin.rs (+1); every other developer
+    // page unchanged.
+    const EXPECTED_CODE_LINKS: usize = 764;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

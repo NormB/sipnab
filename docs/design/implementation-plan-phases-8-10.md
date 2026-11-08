@@ -1672,7 +1672,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 | MCP tool | Wraps |
 |---|---|
 | `list_dialogs` | `DialogStore::iter` ([`src/sip/dialog_store.rs:1613`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1613)) + `FilterExpr::matches_dialog` ([`src/sip/dsl.rs:1101`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L1101)) + `expand_alias` ([`src/sip/dsl.rs:746`](https://github.com/NormB/sipnab/blob/main/src/sip/dsl.rs#L746)) |
-| `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1578`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1578)) + iterate `dialog.messages` + `output::json::message_to_json` |
+| `get_dialog` | `DialogStore::get` ([`src/sip/dialog_store.rs:1597`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1597)) + iterate `dialog.messages` + `output::json::message_to_json` |
 | `get_dialog_report` | `output::generate_call_report` ([`src/output/call_report.rs:53`](https://github.com/NormB/sipnab/blob/main/src/output/call_report.rs#L53)) with `ReportFormat::Json/Markdown/Text` |
 | `get_message` | `output::json::message_to_json` ([`src/output/json.rs:725`](https://github.com/NormB/sipnab/blob/main/src/output/json.rs#L725)) |
 | `render_ladder` | `output::generate_call_report` with `ReportFormat::Markdown` (v0.4); rich SVG ladder deferred |

@@ -661,29 +661,49 @@ is no cursor: when `total_matched` is larger than the legs returned, raise
 `limit`, up to `--mcp-max-rows`.
 
 The example runs against
-[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap),
-whose two calls share an SDP origin:
+[`tests/fixtures/th-callid/opensips-4.0-default.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/th-callid/opensips-4.0-default.pcap),
+three calls one second apart through OpenSIPS `topology_hiding("C")`. OpenSIPS
+gives each callee leg a new Call-ID and passes the SDP through, so the first
+leg is the call's own callee leg, tied by its SDP origin. The other four are
+the two later calls, tied by timing alone:
 
 ```jsonc
-// find_correlated { "call_id": "1-1966@10.0.2.20" }
+// find_correlated { "call_id": "1-th-call@example.com" }
 {
   "schema_version": 1,
-  "source_call_id": "1-1966@10.0.2.20",
+  "source_call_id": "1-th-call@example.com",
   "legs": [
-    { "call_id": "1-1968@10.0.2.20", "score": 90, "strategy": "sdp_origin",
+    { "call_id": "DLGCH_fl0RBn4qMT8jMAAWMiQgPypeBgE+", "score": 90, "strategy": "sdp_origin",
       "method": "sdp", "identifier_match": true, "observed_gap_ms": null,
-      "th_callid": null }
+      "th_callid": "no_secret" },
+    { "call_id": "2-th-call@example.com", "score": 50, "strategy": "timing_heuristic",
+      "method": "timing", "identifier_match": false, "observed_gap_ms": 999,
+      "th_callid": null },
+    { "call_id": "DLGCH_fV0RBn4qMT8jMAAWMiQgPypeBgE+", "score": 50, "strategy": "timing_heuristic",
+      "method": "timing", "identifier_match": false, "observed_gap_ms": 1000,
+      "th_callid": "no_secret" },
+    { "call_id": "3-th-call@example.com", "score": 50, "strategy": "timing_heuristic",
+      "method": "timing", "identifier_match": false, "observed_gap_ms": 1999,
+      "th_callid": null },
+    { "call_id": "DLGCH_fF0RBn4qMT8jMAAWMiQgPypeBgE+", "score": 50, "strategy": "timing_heuristic",
+      "method": "timing", "identifier_match": false, "observed_gap_ms": 2000,
+      "th_callid": "no_secret" }
   ],
-  "total_matched": 1,
+  "total_matched": 5,
   "heuristic_only": false,
   "th_callid": null,                // set only for an OpenSIPS topology-hiding leg
   "capture_identity": {
     "node": "capture-01",
-    "instance": "12cfb618df00766c6ccc3d-2",
-    "dialog_generation": 13,
-    "stream_generation": 2
+    "instance": "35da4818e6038418739747-2",
+    "dialog_generation": 39,
+    "stream_generation": 0
   },
-  "timing_clock": null,             // non-null only when a timing_heuristic leg is returned
+  "timing_clock": {                 // non-null only when a timing_heuristic leg is returned
+    "available": true,
+    "synchronized": true,
+    "est_error_us": 0,
+    "max_error_us": 1855500
+  },
   "source_exhausted": true,
   "source_stopped_early": false
 }
@@ -699,7 +719,7 @@ the same claim:
 | `charging_vector_related_icid` | One leg's [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `related-icid` names the other's `icid-value` | Yes — but only when the B2BUA chose to emit it (`MAY`) |
 | `th_callid_decoded` | One leg's OpenSIPS `topology_hiding("C")` Call-ID decodes, with the configured secret, to the other leg's Call-ID, and the From tags match ([Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding)) | Yes, for OpenSIPS with the secret configured |
 | `th_callid_mapping` | The OpenSIPS script named both Call-IDs in an `E_SIPNAB_TH_MAP` event | Yes, for OpenSIPS with the script change |
-| `sdp_origin` | The [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) SDP origin tuple matched | Only if the SBC forwards SDP untouched |
+| `sdp_origin` | The [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) SDP origin tuple matched, the two legs were open at one time, and no two calls in the store used the origin on one hop at once ([When an SDP origin counts](follow-a-call.md#when-an-sdp-origin-counts)) | Only if the SBC forwards SDP untouched |
 | `charging_vector_icid` | Both legs carry the same RFC 7315 `icid-value` | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `via_branch` | Two INVITEs shared a Via branch | No: a new transaction gets a new branch |
 | `timing_heuristic` | Same endpoint, close in time | Not an identifier at all |
@@ -751,7 +771,10 @@ explains. The top-level `th_callid` describes the source, and each leg's
 `th_callid`.
 
 `identifier_match` is `true` when the leg matched on a value both legs carry,
-and `false` for `timing_heuristic`. `heuristic_only` is `true` when *every*
+and `false` for `timing_heuristic`. sipnab does not report a shared SDP origin
+that the rule above refuses as `sdp_origin`: SIPp and some endpoints write one
+origin into every call, so the next strategy that matches the leg reports it,
+at that strategy's strength, or none does. `heuristic_only` is `true` when *every*
 returned leg came from `timing_heuristic`: treat such a set of legs as a
 hypothesis to confirm, not a finding.
 
@@ -779,18 +802,19 @@ reaches, the same set the TUI's extended call flow (the `x` key) shows.
 | `limit?` | u32? | Maximum legs including the root. Ceiling is `--mcp-max-rows` (1000 by default), higher clamps to it, `0` means the default. | 50 legs. |
 
 The example runs against
-[`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap),
-whose two calls share an SDP origin, with each leg's `dialog` summary trimmed to
-its first three keys:
+[`tests/fixtures/th-callid/opensips-4.0-default.pcap`](https://github.com/NormB/sipnab/raw/main/tests/fixtures/th-callid/opensips-4.0-default.pcap),
+the capture in the [`find_correlated`](#find_correlated) example, with each
+leg's `dialog` summary trimmed to its first three keys. The walk follows
+the callee leg, and not the four timing guesses:
 
 ```jsonc
-// get_call_tree { "call_id": "1-1966@10.0.2.20" }
+// get_call_tree { "call_id": "1-th-call@example.com" }
 {
   "schema_version": 1,
-  "root_call_id": "1-1966@10.0.2.20",
+  "root_call_id": "1-th-call@example.com",
   "legs": [
     {
-      "call_id": "1-1966@10.0.2.20",
+      "call_id": "1-th-call@example.com",
       "depth": 0,
       "parent_call_id": null,
       "score": null,
@@ -799,30 +823,75 @@ its first three keys:
       "identifier_match": null,
       "followed": true,
       "th_callid": null,
-      "dialog": { "call_id": "1-1966@10.0.2.20", "state": "Completed", "method": "INVITE" }
-    },
-    {
-      "call_id": "1-1968@10.0.2.20",
+      "dialog": { "call_id": "1-th-call@example.com", "state": "Completed", "method": "INVITE" }
+    },\n    {
+      "call_id": "DLGCH_fl0RBn4qMT8jMAAWMiQgPypeBgE+",
       "depth": 1,
-      "parent_call_id": "1-1966@10.0.2.20",
+      "parent_call_id": "1-th-call@example.com",
       "score": 90,
       "strategy": "sdp_origin",
       "method": "sdp",
       "identifier_match": true,
       "followed": true,
+      "th_callid": "no_secret",
+      "dialog": { "call_id": "DLGCH_fl0RBn4qMT8jMAAWMiQgPypeBgE+", "state": "Completed", "method": "INVITE" }
+    },\n    {
+      "call_id": "2-th-call@example.com",
+      "depth": 1,
+      "parent_call_id": "1-th-call@example.com",
+      "score": 50,
+      "strategy": "timing_heuristic",
+      "method": "timing",
+      "identifier_match": false,
+      "followed": false,
       "th_callid": null,
-      "dialog": { "call_id": "1-1968@10.0.2.20", "state": "InCall", "method": "INVITE" }
+      "dialog": { "call_id": "2-th-call@example.com", "state": "Completed", "method": "INVITE" }
+    },\n    {
+      "call_id": "DLGCH_fV0RBn4qMT8jMAAWMiQgPypeBgE+",
+      "depth": 1,
+      "parent_call_id": "1-th-call@example.com",
+      "score": 50,
+      "strategy": "timing_heuristic",
+      "method": "timing",
+      "identifier_match": false,
+      "followed": false,
+      "th_callid": "no_secret",
+      "dialog": { "call_id": "DLGCH_fV0RBn4qMT8jMAAWMiQgPypeBgE+", "state": "Completed", "method": "INVITE" }
+    },\n    {
+      "call_id": "3-th-call@example.com",
+      "depth": 1,
+      "parent_call_id": "1-th-call@example.com",
+      "score": 50,
+      "strategy": "timing_heuristic",
+      "method": "timing",
+      "identifier_match": false,
+      "followed": false,
+      "th_callid": null,
+      "dialog": { "call_id": "3-th-call@example.com", "state": "Completed", "method": "INVITE" }
+    },\n    {
+      "call_id": "DLGCH_fF0RBn4qMT8jMAAWMiQgPypeBgE+",
+      "depth": 1,
+      "parent_call_id": "1-th-call@example.com",
+      "score": 50,
+      "strategy": "timing_heuristic",
+      "method": "timing",
+      "identifier_match": false,
+      "followed": false,
+      "th_callid": "no_secret",
+      "dialog": { "call_id": "DLGCH_fF0RBn4qMT8jMAAWMiQgPypeBgE+", "state": "Completed", "method": "INVITE" }
     }
   ],
-  "total_legs": 2,
+  "total_legs": 6,
   "max_depth": 1,
   "truncated": false,
-  "heuristic_edges": 0,
-  "total_messages": 10,
-  "first_activity": "2016-11-26T14:52:59.666393+00:00",
-  "last_activity": "2016-11-26T14:53:08.290927+00:00",
-  "capture_identity": { "node": "capture-01", "instance": "cc2cb18df0ea68adfb9c9-2",
-                        "dialog_generation": 13, "stream_generation": 2 }
+  "heuristic_edges": 4,
+  "total_messages": 39,
+  "first_activity": "2026-11-03T03:16:48.435806+00:00",
+  "last_activity": "2026-11-03T03:16:50.943827+00:00",
+  "source_exhausted": true,
+  "source_stopped_early": false,
+  "capture_identity": { "node": "capture-01", "instance": "35dad618e6038581effeae-2",
+                        "dialog_generation": 39, "stream_generation": 0 }
 }
 ```
 

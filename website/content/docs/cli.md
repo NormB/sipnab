@@ -1496,17 +1496,27 @@ The REST route `GET /v1/dialogs/{call_id}/tree` and the MCP tool
 List the calls sipnab ties to one call, and how:
 
 ```sh
-sipnab -I tests/pcap-samples/sip-rtp-g711.pcap --correlate 1-1966@10.0.2.20 --no-cli-print --quiet
+sipnab -I tests/fixtures/th-callid/opensips-4.0-default.pcap --correlate 1-th-call@example.com --no-cli-print --quiet
 ```
 
 ```text
-Legs correlated with 1-1966@10.0.2.20: 1 leg
-Leg               Strategy    Method  Score  Match       Gap ms  TH
--------------------------------------------------------------------
-1-1968@10.0.2.20  sdp_origin  sdp     90     identifier  -       -
+Legs correlated with 1-th-call@example.com: 5 legs
+Leg                                 Strategy          Method  Score  Match       Gap ms  TH
+--------------------------------------------------------------------------------------------------
+DLGCH_fl0RBn4qMT8jMAAWMiQgPypeBgE+  sdp_origin        sdp     90     identifier  -       no_secret
+2-th-call@example.com               timing_heuristic  timing  50     guess       999     -
+DLGCH_fV0RBn4qMT8jMAAWMiQgPypeBgE+  timing_heuristic  timing  50     guess       1000    no_secret
+3-th-call@example.com               timing_heuristic  timing  50     guess       1999    -
+DLGCH_fF0RBn4qMT8jMAAWMiQgPypeBgE+  timing_heuristic  timing  50     guess       2000    no_secret
 ```
 
-The two calls carry the same SDP origin, an identifier, so the score is high.
+OpenSIPS passed the call's SDP through to the callee leg, so the two legs carry
+one SDP origin, an identifier, and the score is high. An SDP origin counts only
+while both legs were open, and only when no two calls in the capture used it on
+one hop at once, because SIPp and some endpoints reuse one origin across calls
+([When an SDP origin counts](@/docs/follow-a-call.md#when-an-sdp-origin-counts)). The
+other rows are the capture's two later calls, tied by timing alone.
+
 When no identifier ties two legs and only their timing does, the match is a
 guess, `Gap ms` shows how far apart the two calls began, and the answer says
 so:

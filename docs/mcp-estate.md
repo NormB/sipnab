@@ -732,6 +732,10 @@ Three limits:
 
 - `sdp_origin` identifies the *media session* rather than the dialog.
   So it goes away the moment anything re-originates SDP.
+  - It also counts only while both legs were open, and only when no two calls
+    used the origin on one hop at once. SIPp's built-in `uac` scenario and some
+    endpoints write one origin into every call. See
+    [When an SDP origin counts](follow-a-call.md#when-an-sdp-origin-counts).
 - `via_branch` is an identifier match, but it never crosses a B2BUA. A
   back-to-back user agent opens a new transaction by definition.
 - `charging_vector_icid` is the weaker of the two charging strategies. The
