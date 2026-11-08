@@ -1028,3 +1028,396 @@ mod tests {
         Ok(())
     }
 }
+
+/// One behavior each, by category, for the inventory report's rules
+/// (SUCCESS, FAILURE, EDGE): [`merge`], [`parse_hosts`] and
+/// [`render_table`].
+#[cfg(test)]
+mod behavior_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn inv(node: &str, line: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 1,
+            "node_name": node,
+            "build": {"version_line": line, "version": "0.0.0", "commit": "abc"},
+            "binary": {"sha256": "00"},
+            "config": {"effective_sha256": "eff0123456789abc"},
+            "privilege": {"uid": 1000},
+            "process": {"uptime_seconds": 42},
+            "hep_listener": {"listening": false, "senders": [], "refused_sources": []},
+        })
+    }
+
+    fn host(name: &str, ips: &[&str], answer: Answer) -> Result<HostResult, TestError> {
+        Ok(HostResult {
+            name: name.to_string(),
+            url: format!("http://{name}.example.net:8080"),
+            addresses: ips.iter().map(|ip| ip.parse()).collect::<Result<_, _>>()?,
+            answer,
+        })
+    }
+
+    fn with_senders(mut v: serde_json::Value, peers: &[&str]) -> serde_json::Value {
+        v["hep_listener"]["senders"] = serde_json::json!(
+            peers
+                .iter()
+                .map(|p| serde_json::json!({"peer": p}))
+                .collect::<Vec<_>>()
+        );
+        v
+    }
+
+    fn with_refused(
+        mut v: serde_json::Value,
+        peer: &str,
+        by_reason: serde_json::Value,
+    ) -> serde_json::Value {
+        v["hep_listener"]["refused_sources"] =
+            serde_json::json!([{"peer": peer, "packets": 1, "by_reason": by_reason}]);
+        v
+    }
+
+    fn kinds(r: &FleetReport) -> Vec<&str> {
+        r.findings.iter().map(|f| f.kind.as_str()).collect()
+    }
+
+    const ONE_HOST: &str =
+        "[[host]]\nname = \"a\"\nurl = \"http://192.0.2.1:8080\"\ntoken_file = \"t\"\n";
+
+    // ── SUCCESS ─────────────────────────────────────────────────────────
+
+    /// One instance that answers is a healthy fleet of one.
+    #[test]
+    fn success_a_fleet_of_one_is_ok() -> Result<(), TestError> {
+        let r = merge(vec![host(
+            "a",
+            &["192.0.2.1"],
+            Answer::Inventory(inv("a", "v1")),
+        )?]);
+        assert!(r.ok && r.findings.is_empty(), "{r:?}");
+        Ok(())
+    }
+
+    /// The report says which format it is.
+    #[test]
+    fn success_the_report_names_its_schema_version() -> Result<(), TestError> {
+        let r = merge(vec![host(
+            "a",
+            &["192.0.2.1"],
+            Answer::Inventory(inv("a", "v1")),
+        )?]);
+        assert_eq!(r.schema_version, REPORT_SCHEMA_VERSION, "{r:?}");
+        Ok(())
+    }
+
+    /// A hosts entry's `ca_file` is read.
+    #[test]
+    fn success_a_hosts_ca_file_is_read() -> Result<(), TestError> {
+        let hosts = parse_hosts(&format!("{ONE_HOST}ca_file = \"/etc/sipnab/ca.pem\"\n"))?;
+        assert_eq!(
+            hosts[0].ca_file.as_deref(),
+            Some(std::path::Path::new("/etc/sipnab/ca.pem")),
+            "{hosts:?}"
+        );
+        Ok(())
+    }
+
+    /// The table shows each instance's uptime and user id.
+    #[test]
+    fn success_the_table_shows_uid_and_uptime() -> Result<(), TestError> {
+        let r = merge(vec![host(
+            "a",
+            &["192.0.2.1"],
+            Answer::Inventory(inv("a", "v1")),
+        )?]);
+        let t = render_table(&r);
+        let row = t.lines().find(|l| l.starts_with('a')).ok_or("a row")?;
+        assert!(
+            row.contains("1000") && row.trim_end().ends_with("42"),
+            "{row}"
+        );
+        Ok(())
+    }
+
+    /// A HEP sender at a listed instance's address is no finding.
+    #[test]
+    fn success_a_listed_hep_sender_is_no_finding() -> Result<(), TestError> {
+        let hub = with_senders(inv("hub", "v1"), &["192.0.2.2"]);
+        let r = merge(vec![
+            host("hub", &["192.0.2.1"], Answer::Inventory(hub))?,
+            host("edge", &["192.0.2.2"], Answer::Inventory(inv("edge", "v1")))?,
+        ]);
+        assert!(r.findings.is_empty(), "{:?}", r.findings);
+        Ok(())
+    }
+
+    // ── FAILURE ─────────────────────────────────────────────────────────
+
+    /// A hosts file that is not TOML is refused.
+    #[test]
+    fn failure_a_hosts_file_that_is_not_toml_is_refused() {
+        assert!(
+            parse_hosts("[[host]\nname = ").is_err_and(|e| !e.contains("names no")),
+            "TOML's own refusal, not the empty-file one"
+        );
+    }
+
+    /// A `[[host]]` with an empty URL is refused, naming the host.
+    #[test]
+    fn failure_an_empty_url_is_refused_by_host() {
+        let text = "[[host]]\nname = \"edge-a\"\nurl = \"\"\ntoken_file = \"t\"\n";
+        assert!(
+            parse_hosts(text).is_err_and(|e| e.contains("edge-a") && e.contains("url")),
+            "empty url"
+        );
+    }
+
+    /// A `[[host]]` without `token_file` is refused.
+    #[test]
+    fn failure_a_host_without_a_token_file_is_refused() {
+        let text = "[[host]]\nname = \"a\"\nurl = \"http://192.0.2.1:8080\"\n";
+        assert!(parse_hosts(text).is_err(), "no token_file");
+    }
+
+    /// A URL of only spaces is refused like an empty one.
+    #[test]
+    fn failure_a_url_of_spaces_is_refused() {
+        let text = "[[host]]\nname = \"a\"\nurl = \"   \"\ntoken_file = \"t\"\n";
+        assert!(parse_hosts(text).is_err(), "whitespace url");
+    }
+
+    /// A name of only spaces is refused like an empty one.
+    #[test]
+    fn failure_a_name_of_spaces_is_refused() {
+        let text = "[[host]]\nname = \"  \"\nurl = \"http://192.0.2.1\"\ntoken_file = \"t\"\n";
+        assert!(parse_hosts(text).is_err(), "whitespace name");
+    }
+
+    /// An instance answering `500` is refused, naming the status.
+    #[test]
+    fn failure_a_500_is_a_refused_row_naming_the_status() -> Result<(), TestError> {
+        let r = merge(vec![host("a", &["192.0.2.1"], Answer::Refused(500))?]);
+        assert_eq!(
+            (r.hosts[0].state.as_str(), r.hosts[0].error.as_deref()),
+            ("refused", Some("the instance answered HTTP 500")),
+            "{r:?}"
+        );
+        Ok(())
+    }
+
+    /// An inventory of `schema_version` 0 is incompatible, not read.
+    #[test]
+    fn failure_schema_version_zero_is_incompatible() -> Result<(), TestError> {
+        let mut v = inv("a", "v1");
+        v["schema_version"] = serde_json::json!(0);
+        let r = merge(vec![host("a", &["192.0.2.1"], Answer::Inventory(v))?]);
+        assert_eq!(r.hosts[0].state, "incompatible", "{r:?}");
+        Ok(())
+    }
+
+    /// A `schema_version` that is a string is incompatible.
+    #[test]
+    fn failure_a_string_schema_version_is_incompatible() -> Result<(), TestError> {
+        let mut v = inv("a", "v1");
+        v["schema_version"] = serde_json::json!("1");
+        let r = merge(vec![host("a", &["192.0.2.1"], Answer::Inventory(v))?]);
+        assert_eq!(r.hosts[0].state, "incompatible", "{r:?}");
+        Ok(())
+    }
+
+    /// An instance that is down makes the report not ok even with no finding.
+    #[test]
+    fn failure_one_host_down_makes_the_fleet_not_ok() -> Result<(), TestError> {
+        let r = merge(vec![host(
+            "a",
+            &["192.0.2.1"],
+            Answer::Unreachable("timed out".into()),
+        )?]);
+        assert!(!r.ok && r.findings.is_empty(), "{r:?}");
+        Ok(())
+    }
+
+    // ── EDGE ────────────────────────────────────────────────────────────
+
+    /// A HEP sender over IPv6 at a listed address is matched.
+    #[test]
+    fn edge_an_ipv6_sender_is_matched() -> Result<(), TestError> {
+        let hub = with_senders(inv("hub", "v1"), &["2001:db8::2"]);
+        let r = merge(vec![
+            host("hub", &["2001:db8::1"], Answer::Inventory(hub))?,
+            host(
+                "edge",
+                &["2001:db8::2"],
+                Answer::Inventory(inv("edge", "v1")),
+            )?,
+        ]);
+        assert!(r.findings.is_empty(), "{:?}", r.findings);
+        Ok(())
+    }
+
+    /// A sender whose peer is not an address is reported unlisted, never
+    /// matched by accident.
+    #[test]
+    fn edge_a_sender_that_is_not_an_address_is_unlisted() -> Result<(), TestError> {
+        let hub = with_senders(inv("hub", "v1"), &["not-an-ip"]);
+        let r = merge(vec![host("hub", &["192.0.2.1"], Answer::Inventory(hub))?]);
+        assert_eq!(kinds(&r), ["unlisted_hep_sender"], "{:?}", r.findings);
+        Ok(())
+    }
+
+    /// Two instances on one address are both named in a refusal finding.
+    #[test]
+    fn edge_two_instances_on_one_address_are_both_named() -> Result<(), TestError> {
+        let hub = with_refused(
+            inv("hub", "v1"),
+            "192.0.2.2",
+            serde_json::json!({"hmac_bad_mac": 3}),
+        );
+        let r = merge(vec![
+            host("hub", &["192.0.2.1"], Answer::Inventory(hub))?,
+            host(
+                "edge-x",
+                &["192.0.2.2"],
+                Answer::Inventory(inv("edge-x", "v1")),
+            )?,
+            host(
+                "edge-y",
+                &["192.0.2.2"],
+                Answer::Inventory(inv("edge-y", "v1")),
+            )?,
+        ]);
+        let f = r
+            .findings
+            .iter()
+            .find(|f| f.kind == "hep_sender_refused")
+            .ok_or("a finding")?;
+        assert!(f.detail.contains("edge-x, edge-y"), "{}", f.detail);
+        Ok(())
+    }
+
+    /// A refused source with no reasons recorded is no finding.
+    #[test]
+    fn edge_a_refused_source_with_no_reasons_is_no_finding() -> Result<(), TestError> {
+        let hub = with_refused(inv("hub", "v1"), "192.0.2.2", serde_json::json!({}));
+        let r = merge(vec![
+            host("hub", &["192.0.2.1"], Answer::Inventory(hub))?,
+            host("edge", &["192.0.2.2"], Answer::Inventory(inv("edge", "v1")))?,
+        ]);
+        assert!(r.findings.is_empty(), "{:?}", r.findings);
+        Ok(())
+    }
+
+    /// An authentication reason counted zero times is no finding.
+    #[test]
+    fn edge_a_zero_count_is_no_finding() -> Result<(), TestError> {
+        let hub = with_refused(
+            inv("hub", "v1"),
+            "192.0.2.2",
+            serde_json::json!({"hmac_bad_mac": 0}),
+        );
+        let r = merge(vec![
+            host("hub", &["192.0.2.1"], Answer::Inventory(hub))?,
+            host("edge", &["192.0.2.2"], Answer::Inventory(inv("edge", "v1")))?,
+        ]);
+        assert!(r.findings.is_empty(), "{:?}", r.findings);
+        Ok(())
+    }
+
+    /// A reason name this build does not know is not counted as
+    /// authentication.
+    #[test]
+    fn edge_an_unknown_reason_is_not_authentication() -> Result<(), TestError> {
+        let hub = with_refused(
+            inv("hub", "v1"),
+            "192.0.2.2",
+            serde_json::json!({"from_the_future": 9}),
+        );
+        let r = merge(vec![
+            host("hub", &["192.0.2.1"], Answer::Inventory(hub))?,
+            host("edge", &["192.0.2.2"], Answer::Inventory(inv("edge", "v1")))?,
+        ]);
+        assert!(r.findings.is_empty(), "{:?}", r.findings);
+        Ok(())
+    }
+
+    /// One refused packet is said in the singular.
+    #[test]
+    fn edge_one_refused_packet_is_singular() -> Result<(), TestError> {
+        let hub = with_refused(
+            inv("hub", "v1"),
+            "192.0.2.2",
+            serde_json::json!({"auth_missing": 1}),
+        );
+        let r = merge(vec![
+            host("hub", &["192.0.2.1"], Answer::Inventory(hub))?,
+            host("edge", &["192.0.2.2"], Answer::Inventory(inv("edge", "v1")))?,
+        ]);
+        assert!(
+            r.findings[0].detail.contains("refused 1 HEP packet from"),
+            "{}",
+            r.findings[0].detail
+        );
+        Ok(())
+    }
+
+    /// An instance whose URL resolved to nothing never matches a sender.
+    #[test]
+    fn edge_a_host_with_no_addresses_matches_nothing() -> Result<(), TestError> {
+        let hub = with_senders(inv("hub", "v1"), &["192.0.2.2"]);
+        let r = merge(vec![
+            host("hub", &["192.0.2.1"], Answer::Inventory(hub))?,
+            host("edge", &[], Answer::Unreachable("no such host".into()))?,
+        ]);
+        assert!(
+            kinds(&r).contains(&"unlisted_hep_sender"),
+            "{:?}",
+            r.findings
+        );
+        Ok(())
+    }
+
+    /// Unicode host names keep their row and their order.
+    #[test]
+    fn edge_unicode_host_names_keep_their_rows() -> Result<(), TestError> {
+        let text = "[[host]]\nname = \"zürich\"\nurl = \"http://192.0.2.1\"\ntoken_file = \"t\"\n\
+                    [[host]]\nname = \"東京\"\nurl = \"http://192.0.2.2\"\ntoken_file = \"t\"\n";
+        let names: Vec<String> = parse_hosts(text)?.into_iter().map(|h| h.name).collect();
+        assert_eq!(names, ["zürich", "東京"], "order and spelling kept");
+        Ok(())
+    }
+
+    /// A table row's digest columns show at most twelve characters.
+    #[test]
+    fn edge_digests_are_cut_to_twelve_characters() -> Result<(), TestError> {
+        let r = merge(vec![host(
+            "a",
+            &["192.0.2.1"],
+            Answer::Inventory(inv("a", "v1")),
+        )?]);
+        let t = render_table(&r);
+        assert!(
+            t.contains("eff012345678 ") && !t.contains("eff0123456789"),
+            "{t}"
+        );
+        Ok(())
+    }
+
+    /// An inventory missing its build still gets a row, with dashes.
+    #[test]
+    fn edge_a_missing_build_shows_dashes() -> Result<(), TestError> {
+        let mut v = inv("a", "v1");
+        v["build"] = serde_json::json!(null);
+        let r = merge(vec![host("a", &["192.0.2.1"], Answer::Inventory(v))?]);
+        let row = render_table(&r)
+            .lines()
+            .find(|l| l.starts_with('a'))
+            .map(str::to_string)
+            .ok_or("row")?;
+        let version = row.split_whitespace().nth(2);
+        assert_eq!(version, Some("-"), "the VERSION column is a dash: {row}");
+        Ok(())
+    }
+}

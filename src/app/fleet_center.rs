@@ -245,8 +245,14 @@ pub fn is_silent(
     missed: u32,
 ) -> bool {
     let allowed = heartbeat_secs.saturating_mul(u64::from(missed));
-    let allowed = i64::try_from(allowed).unwrap_or(i64::MAX);
-    now.signed_duration_since(last) > chrono::Duration::seconds(allowed)
+    // Saturating, not panicking: a record read back from the store carries
+    // whatever interval the file holds, and chrono refuses a span past its
+    // range by panicking.
+    let allowed = i64::try_from(allowed)
+        .ok()
+        .and_then(chrono::Duration::try_seconds)
+        .unwrap_or(chrono::Duration::MAX);
+    now.signed_duration_since(last) > allowed
 }
 
 /// One member's newest accepted heartbeat, as the store keeps it.
@@ -1483,6 +1489,816 @@ mod tests {
                 assert!(why.contains("--tls-cert"), "{why}");
             }
         }
+        Ok(())
+    }
+}
+
+/// One behavior each, by category, for the center's rules (SUCCESS, FAILURE,
+/// EDGE). The routes are driven in process through the router the center
+/// serves, with no socket; the rules through their functions.
+#[cfg(test)]
+mod behavior_tests {
+    use super::*;
+    use tower::ServiceExt as _;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The key tokens are minted with in these tests, derived at run time
+    /// (a literal here is a hard-coded cryptographic value to CodeQL).
+    fn key() -> &'static [u8] {
+        crate::test_material::key_bytes("fleet-center-behavior")
+    }
+
+    fn t(s: &str) -> Result<DateTime<Utc>, TestError> {
+        Ok(DateTime::parse_from_rfc3339(s)?.with_timezone(&Utc))
+    }
+
+    fn hb(stream: &str, seq: u64, sent_at: &str) -> Result<Heartbeat, TestError> {
+        Ok(Heartbeat {
+            stream: stream.to_string(),
+            seq,
+            sent_at: t(sent_at)?,
+            heartbeat_secs: 30,
+            inventory: serde_json::json!({"node_name": "edge-a"}),
+        })
+    }
+
+    fn record(v: serde_json::Value) -> String {
+        let mut base = serde_json::json!({
+            "schema_version": 1,
+            "kind": "heartbeat",
+            "stream": "s-1",
+            "seq": 1,
+            "sent_at": "2026-11-07T12:00:00Z",
+            "heartbeat_secs": 30,
+            "inventory": {"node_name": "edge-a"},
+        });
+        if let (Some(b), Some(o)) = (base.as_object_mut(), v.as_object()) {
+            for (k, val) in o {
+                b.insert(k.clone(), val.clone());
+            }
+        }
+        base.to_string()
+    }
+
+    fn without(key: &str) -> String {
+        let mut v: serde_json::Value =
+            serde_json::from_str(&record(serde_json::json!({}))).unwrap_or_default();
+        if let Some(o) = v.as_object_mut() {
+            o.remove(key);
+        }
+        v.to_string()
+    }
+
+    fn token(id: &str, scope: &str, exp_offset: i64, audience: &str) -> String {
+        crate::auth::mint(
+            key(),
+            id,
+            Utc::now().timestamp() + exp_offset,
+            audience,
+            scope,
+        )
+    }
+
+    fn member(id: &str) -> String {
+        token(
+            id,
+            crate::auth::SCOPE_FLEET_REPORT,
+            3600,
+            crate::auth::AUDIENCE_API,
+        )
+    }
+
+    /// A center state over a store in `dir`, `rate` requests per second.
+    fn state(dir: &Path, rate: u32) -> Result<CenterState, TestError> {
+        let (store, records) = Store::open(&dir.join("center.store"))?;
+        Ok(CenterState {
+            center: Arc::new(parking_lot::Mutex::new(Center {
+                registry: Registry::from_records(records),
+                store,
+            })),
+            verifier: Arc::new(crate::auth::TokenVerifier::new(
+                crate::auth::VerifierConfig {
+                    signing_keys: vec![key().to_vec()],
+                    static_keys: Vec::new(),
+                    revoked_file: None,
+                    audience: crate::auth::AUDIENCE_API.to_string(),
+                },
+            )),
+            limiter: Arc::new(parking_lot::Mutex::new(
+                crate::output::api::RateLimiter::new(rate, 64),
+            )),
+            missed: 3,
+            retention_hours: 72,
+        })
+    }
+
+    /// One request through the center's router: status and body.
+    async fn call(
+        st: &CenterState,
+        method: &str,
+        path: &str,
+        auth: Option<&str>,
+        body: Vec<u8>,
+    ) -> Result<(u16, String), TestError> {
+        let mut req = axum::http::Request::builder().method(method).uri(path);
+        if let Some(a) = auth {
+            req = req.header("authorization", a);
+        }
+        let mut req = req.body(axum::body::Body::from(body))?;
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                [127, 0, 0, 1],
+                40000,
+            ))));
+        let resp = router(st.clone()).oneshot(req).await?;
+        let status = resp.status().as_u16();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await?;
+        Ok((status, String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    fn bearer(tok: &str) -> String {
+        format!("Bearer {tok}")
+    }
+
+    fn line() -> Vec<u8> {
+        (record(serde_json::json!({"sent_at": Utc::now().to_rfc3339()})) + "\n").into_bytes()
+    }
+
+    // ── SUCCESS ─────────────────────────────────────────────────────────
+
+    /// A batch of exactly the most records parses.
+    #[test]
+    fn success_a_batch_at_the_record_limit_parses() -> Result<(), TestError> {
+        let body: String = (1..=MAX_BATCH_RECORDS as u64)
+            .map(|n| record(serde_json::json!({"seq": n})) + "\n")
+            .collect();
+        assert_eq!(
+            parse_batch(body.as_bytes())?.len(),
+            MAX_BATCH_RECORDS,
+            "exactly the limit is accepted"
+        );
+        Ok(())
+    }
+
+    /// A gap in a stream's positions (heartbeats the member's cap dropped)
+    /// is still new.
+    #[test]
+    fn success_a_gap_in_positions_is_new() -> Result<(), TestError> {
+        let at = Cursor {
+            stream: "s".into(),
+            seq: 5,
+            sent_at: t("2026-11-07T12:00:00Z")?,
+        };
+        assert!(
+            admits(Some(&at), &hb("s", 9, "2026-11-07T12:02:00Z")?),
+            "seq 9 after 5 is new"
+        );
+        Ok(())
+    }
+
+    /// Reopened, the registry holds the last record of each member in file
+    /// order.
+    #[test]
+    fn success_the_last_record_per_member_wins() -> Result<(), TestError> {
+        let reg = Registry::default();
+        let a1 = reg
+            .plan(
+                "a",
+                "192.0.2.1",
+                t("2026-11-07T12:00:00Z")?,
+                &[hb("s", 1, "2026-11-07T12:00:00Z")?],
+            )
+            .record
+            .ok_or("a record")?;
+        let a2 = reg
+            .plan(
+                "a",
+                "192.0.2.2",
+                t("2026-11-07T12:01:00Z")?,
+                &[hb("s", 2, "2026-11-07T12:01:00Z")?],
+            )
+            .record
+            .ok_or("a record")?;
+        let reg = Registry::from_records(vec![a1, a2]);
+        assert_eq!(reg.records()[0].peer, "192.0.2.2", "the later record");
+        Ok(())
+    }
+
+    /// The members answer lists members by id.
+    #[test]
+    fn success_members_are_listed_by_id() -> Result<(), TestError> {
+        let mut reg = Registry::default();
+        for m in ["edge-c", "edge-a", "edge-b"] {
+            let p = reg.plan(
+                m,
+                "192.0.2.1",
+                t("2026-11-07T12:00:00Z")?,
+                &[hb("s", 1, "2026-11-07T12:00:00Z")?],
+            );
+            reg.commit(p);
+        }
+        let v = reg.report(t("2026-11-07T12:00:01Z")?, 3, 72);
+        let ids: Vec<&str> = v["members"]
+            .as_array()
+            .ok_or("members")?
+            .iter()
+            .filter_map(|r| r["member"].as_str())
+            .collect();
+        assert_eq!(ids, ["edge-a", "edge-b", "edge-c"], "sorted by member id");
+        Ok(())
+    }
+
+    /// Two members' plans are independent: one's cursor does not touch the
+    /// other's.
+    #[test]
+    fn success_members_have_their_own_cursors() -> Result<(), TestError> {
+        let mut reg = Registry::default();
+        let p = reg.plan(
+            "a",
+            "192.0.2.1",
+            t("2026-11-07T12:00:00Z")?,
+            &[hb("s", 5, "2026-11-07T12:00:00Z")?],
+        );
+        reg.commit(p);
+        let p = reg.plan(
+            "b",
+            "192.0.2.2",
+            t("2026-11-07T12:00:00Z")?,
+            &[hb("s", 1, "2026-11-07T11:00:00Z")?],
+        );
+        assert_eq!(p.accepted, 1, "b's first record is new whatever a holds");
+        Ok(())
+    }
+
+    /// A rewritten store reopens to the same registry.
+    #[test]
+    fn success_a_compacted_store_reopens_the_same() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("s");
+        let (mut store, _) = Store::open(&path)?;
+        let mut reg = Registry::default();
+        for m in ["a", "b"] {
+            let p = reg.plan(
+                m,
+                "192.0.2.1",
+                t("2026-11-07T12:00:00Z")?,
+                &[hb("s", 1, "2026-11-07T12:00:00Z")?],
+            );
+            store.append(p.record.as_ref().ok_or("r")?)?;
+            reg.commit(p);
+        }
+        store.compact(&reg)?;
+        drop(store);
+        let (_, loaded) = Store::open(&path)?;
+        assert_eq!(Registry::from_records(loaded), reg, "same registry");
+        Ok(())
+    }
+
+    /// The ingest answers `200` with the member, and counts.
+    #[tokio::test]
+    async fn success_the_ingest_answers_the_counts() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let (status, body) = call(
+            &st,
+            "POST",
+            "/v1/fleet/ingest",
+            Some(&bearer(&member("edge-a"))),
+            line(),
+        )
+        .await?;
+        assert_eq!(status, 200, "{body}");
+        let v: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            (
+                v["member"].clone(),
+                v["accepted"].clone(),
+                v["duplicate"].clone()
+            ),
+            ("edge-a".into(), 1.into(), 0.into()),
+            "{v}"
+        );
+        Ok(())
+    }
+
+    /// The `Bearer` scheme is matched without regard to case.
+    #[tokio::test]
+    async fn success_a_lowercase_bearer_scheme_is_accepted() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let auth = format!("bearer {}", member("edge-a"));
+        let (status, body) = call(&st, "POST", "/v1/fleet/ingest", Some(&auth), line()).await?;
+        assert_eq!(status, 200, "{body}");
+        Ok(())
+    }
+
+    /// An `admin` token reads the members list.
+    #[tokio::test]
+    async fn success_an_admin_token_reads_the_members() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let tok = token(
+            "op",
+            crate::auth::SCOPE_ADMIN,
+            3600,
+            crate::auth::AUDIENCE_API,
+        );
+        let (status, _) = call(
+            &st,
+            "GET",
+            "/v1/fleet/members",
+            Some(&bearer(&tok)),
+            Vec::new(),
+        )
+        .await?;
+        assert_eq!(status, 200, "admin reads the members");
+        Ok(())
+    }
+
+    /// A heartbeat taken through the route is in the store file at once.
+    #[tokio::test]
+    async fn success_an_accepted_heartbeat_is_on_disk() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        call(
+            &st,
+            "POST",
+            "/v1/fleet/ingest",
+            Some(&bearer(&member("edge-a"))),
+            line(),
+        )
+        .await?;
+        let text = std::fs::read_to_string(dir.path().join("center.store"))?;
+        assert!(
+            text.contains("\"member\":\"edge-a\""),
+            "appended before the answer: {text}"
+        );
+        Ok(())
+    }
+
+    /// The members answer carries the center's settings.
+    #[test]
+    fn success_the_answer_carries_the_settings() -> Result<(), TestError> {
+        let v = Registry::default().report(t("2026-11-07T12:00:00Z")?, 5, 24);
+        assert_eq!(
+            (
+                v["silent_after_missed"].clone(),
+                v["retention_hours"].clone(),
+                v["now"].clone()
+            ),
+            (5.into(), 24.into(), "2026-11-07T12:00:00Z".into()),
+            "{v}"
+        );
+        Ok(())
+    }
+
+    // ── FAILURE ─────────────────────────────────────────────────────────
+
+    /// A body that is not UTF-8 is refused.
+    #[test]
+    fn failure_a_body_that_is_not_utf8_is_refused() {
+        assert!(
+            parse_batch(&[0xff, 0xfe, b'\n']).is_err_and(|e| e.contains("UTF-8")),
+            "not UTF-8"
+        );
+    }
+
+    /// A record without its `inventory` is refused, by line.
+    #[test]
+    fn failure_a_record_without_an_inventory_is_refused() {
+        let body = without("inventory") + "\n";
+        assert!(
+            parse_batch(body.as_bytes()).is_err_and(|e| e.starts_with("line 1: not a record")),
+            "a missing field"
+        );
+    }
+
+    /// An inventory of `null` is refused.
+    #[test]
+    fn failure_a_null_inventory_is_refused() {
+        let body = record(serde_json::json!({"inventory": null}));
+        assert!(
+            parse_batch(body.as_bytes()).is_err_and(|e| e.contains("inventory")),
+            "null inventory"
+        );
+    }
+
+    /// No `Authorization` header: `401`.
+    #[tokio::test]
+    async fn failure_no_credential_is_401() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        assert_eq!(
+            call(&st, "POST", "/v1/fleet/ingest", None, line()).await?.0,
+            401,
+            "no header"
+        );
+        Ok(())
+    }
+
+    /// A `Basic` credential: `401`.
+    #[tokio::test]
+    async fn failure_a_basic_credential_is_401() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let auth = format!("Basic {}", member("edge-a"));
+        assert_eq!(
+            call(&st, "POST", "/v1/fleet/ingest", Some(&auth), line())
+                .await?
+                .0,
+            401,
+            "Basic"
+        );
+        Ok(())
+    }
+
+    /// An expired member token: `401`.
+    #[tokio::test]
+    async fn failure_an_expired_token_is_401() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let tok = token(
+            "edge-a",
+            crate::auth::SCOPE_FLEET_REPORT,
+            -10,
+            crate::auth::AUDIENCE_API,
+        );
+        assert_eq!(
+            call(&st, "POST", "/v1/fleet/ingest", Some(&bearer(&tok)), line())
+                .await?
+                .0,
+            401,
+            "expired"
+        );
+        Ok(())
+    }
+
+    /// A member token minted for the MCP audience: `401`.
+    #[tokio::test]
+    async fn failure_an_mcp_audience_token_is_401() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let tok = token(
+            "edge-a",
+            crate::auth::SCOPE_FLEET_REPORT,
+            3600,
+            crate::auth::AUDIENCE_MCP,
+        );
+        assert_eq!(
+            call(&st, "POST", "/v1/fleet/ingest", Some(&bearer(&tok)), line())
+                .await?
+                .0,
+            401,
+            "mcp audience"
+        );
+        Ok(())
+    }
+
+    /// A token id longer than a member name: `403`.
+    #[tokio::test]
+    async fn failure_a_token_id_too_long_is_403() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let tok = member(&"a".repeat(MAX_ID_LEN + 1));
+        assert_eq!(
+            call(&st, "POST", "/v1/fleet/ingest", Some(&bearer(&tok)), line())
+                .await?
+                .0,
+            403,
+            "65 characters"
+        );
+        Ok(())
+    }
+
+    /// A body past the limit: `413`, and nothing counted.
+    #[tokio::test]
+    async fn failure_an_oversized_body_is_413() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let body = vec![b'x'; MAX_INGEST_BYTES + 1];
+        let (status, _) = call(
+            &st,
+            "POST",
+            "/v1/fleet/ingest",
+            Some(&bearer(&member("edge-a"))),
+            body,
+        )
+        .await?;
+        assert_eq!(status, 413, "past MAX_INGEST_BYTES");
+        Ok(())
+    }
+
+    /// Past the rate limit: `503`, before the credential is looked at.
+    #[tokio::test]
+    async fn failure_past_the_rate_limit_is_503() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 1)?;
+        let auth = bearer(&member("edge-a"));
+        call(&st, "POST", "/v1/fleet/ingest", Some(&auth), line()).await?;
+        let (status, _) = call(&st, "POST", "/v1/fleet/ingest", None, line()).await?;
+        assert_eq!(status, 503, "the second request in the second");
+        Ok(())
+    }
+
+    /// The ingest takes `POST` only.
+    #[tokio::test]
+    async fn failure_get_on_the_ingest_is_405() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let (status, _) = call(
+            &st,
+            "GET",
+            "/v1/fleet/ingest",
+            Some(&bearer(&member("edge-a"))),
+            Vec::new(),
+        )
+        .await?;
+        assert_eq!(status, 405, "GET");
+        Ok(())
+    }
+
+    /// A store that cannot be written: `503`, and the heartbeat is not
+    /// counted, so the member sends it again.
+    #[tokio::test]
+    async fn failure_an_unwritable_store_is_503_and_counts_nothing() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        std::fs::remove_file(dir.path().join("center.store"))?;
+        std::fs::create_dir(dir.path().join("center.store"))?;
+        let (status, _) = call(
+            &st,
+            "POST",
+            "/v1/fleet/ingest",
+            Some(&bearer(&member("edge-a"))),
+            line(),
+        )
+        .await?;
+        assert_eq!(status, 503, "the append failed");
+        assert!(
+            st.center.lock().registry.records().is_empty(),
+            "nothing counted"
+        );
+        Ok(())
+    }
+
+    /// A store path that is a directory is refused.
+    #[test]
+    fn failure_a_store_that_is_a_directory_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        assert!(Store::open(dir.path()).is_err(), "a directory");
+        Ok(())
+    }
+
+    /// A route the center does not serve: `404`.
+    #[tokio::test]
+    async fn failure_an_unknown_route_is_404() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let tok = token(
+            "op",
+            crate::auth::SCOPE_FULL,
+            3600,
+            crate::auth::AUDIENCE_API,
+        );
+        let (status, _) = call(&st, "GET", "/v1/dialogs", Some(&bearer(&tok)), Vec::new()).await?;
+        assert_eq!(status, 404, "the center serves no dialogs");
+        Ok(())
+    }
+
+    // ── EDGE ────────────────────────────────────────────────────────────
+
+    /// Zero members: an empty list.
+    #[tokio::test]
+    async fn edge_zero_members_is_an_empty_list() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let tok = token(
+            "r",
+            crate::auth::SCOPE_INVENTORY,
+            3600,
+            crate::auth::AUDIENCE_API,
+        );
+        let (_, body) = call(
+            &st,
+            "GET",
+            "/v1/fleet/members",
+            Some(&bearer(&tok)),
+            Vec::new(),
+        )
+        .await?;
+        let v: serde_json::Value = serde_json::from_str(&body)?;
+        assert_eq!(v["members"], serde_json::json!([]), "{v}");
+        Ok(())
+    }
+
+    /// A member clock far ahead holds the cursor there: another stream's
+    /// record sent "earlier" is not new until the clock passes it.
+    #[test]
+    fn edge_a_clock_far_ahead_holds_the_cursor() -> Result<(), TestError> {
+        let at = Cursor {
+            stream: "s-1".into(),
+            seq: 1,
+            sent_at: t("2030-01-01T00:00:00Z")?,
+        };
+        assert!(
+            !admits(Some(&at), &hb("s-2", 1, "2026-11-07T12:00:00Z")?),
+            "behind a future send time"
+        );
+        Ok(())
+    }
+
+    /// A new stream sent at exactly the newest send time is not new.
+    #[test]
+    fn edge_a_new_stream_at_the_same_instant_is_not_new() -> Result<(), TestError> {
+        let at = Cursor {
+            stream: "s-1".into(),
+            seq: 1,
+            sent_at: t("2026-11-07T12:00:00Z")?,
+        };
+        assert!(
+            !admits(Some(&at), &hb("s-2", 1, "2026-11-07T12:00:00Z")?),
+            "a tie"
+        );
+        Ok(())
+    }
+
+    /// The largest interval and count do not overflow the silence check.
+    #[test]
+    fn edge_the_silence_check_does_not_overflow() -> Result<(), TestError> {
+        let last = t("2026-11-07T12:00:00Z")?;
+        assert!(
+            !is_silent(t("2026-11-08T12:00:00Z")?, last, u64::MAX, u32::MAX),
+            "saturates rather than wraps"
+        );
+        Ok(())
+    }
+
+    /// Retention on an empty registry removes nothing.
+    #[test]
+    fn edge_retention_on_no_members_removes_nothing() -> Result<(), TestError> {
+        let mut reg = Registry::default();
+        assert!(
+            reg.expire(t("2026-11-07T12:00:00Z")?, chrono::Duration::hours(1))
+                .is_empty(),
+            "none"
+        );
+        Ok(())
+    }
+
+    /// A member id of exactly 64 characters reports.
+    #[tokio::test]
+    async fn edge_a_64_character_member_reports() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let tok = member(&"m".repeat(MAX_ID_LEN));
+        assert_eq!(
+            call(&st, "POST", "/v1/fleet/ingest", Some(&bearer(&tok)), line())
+                .await?
+                .0,
+            200,
+            "64"
+        );
+        Ok(())
+    }
+
+    /// Unicode in an inventory reaches the members answer unchanged.
+    #[test]
+    fn edge_unicode_in_the_inventory_is_kept() -> Result<(), TestError> {
+        let mut reg = Registry::default();
+        let mut h = hb("s", 1, "2026-11-07T12:00:00Z")?;
+        h.inventory = serde_json::json!({"node_name": "edge-zürich-東京"});
+        let p = reg.plan("a", "192.0.2.1", t("2026-11-07T12:00:00Z")?, &[h]);
+        reg.commit(p);
+        let v = reg.report(t("2026-11-07T12:00:01Z")?, 3, 72);
+        assert_eq!(
+            v["members"][0]["self_reported"]["inventory"]["node_name"], "edge-zürich-東京",
+            "{v}"
+        );
+        Ok(())
+    }
+
+    /// A record repeated inside one batch is counted once.
+    #[test]
+    fn edge_a_record_repeated_in_one_batch_counts_once() -> Result<(), TestError> {
+        let reg = Registry::default();
+        let h = hb("s", 1, "2026-11-07T12:00:00Z")?;
+        let p = reg.plan(
+            "a",
+            "192.0.2.1",
+            t("2026-11-07T12:00:00Z")?,
+            &[h.clone(), h],
+        );
+        assert_eq!((p.accepted, p.duplicate), (1, 1), "{p:?}");
+        Ok(())
+    }
+
+    /// The largest position is accepted, and nothing in that stream follows.
+    #[test]
+    fn edge_the_largest_position_ends_the_stream() -> Result<(), TestError> {
+        let at = Cursor {
+            stream: "s".into(),
+            seq: u64::MAX,
+            sent_at: t("2026-11-07T12:00:00Z")?,
+        };
+        assert!(
+            !admits(Some(&at), &hb("s", u64::MAX, "2026-11-07T12:01:00Z")?),
+            "no seq past MAX"
+        );
+        Ok(())
+    }
+
+    /// An empty store file opens with no members.
+    #[test]
+    fn edge_an_empty_store_opens_empty() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("s");
+        Store::open(&path)?;
+        assert!(Store::open(&path)?.1.is_empty(), "no records");
+        Ok(())
+    }
+
+    /// Blank lines between records are passed over.
+    #[test]
+    fn edge_blank_lines_in_the_store_are_passed_over() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("s");
+        let (mut store, _) = Store::open(&path)?;
+        let reg = Registry::default();
+        let p = reg.plan(
+            "a",
+            "192.0.2.1",
+            t("2026-11-07T12:00:00Z")?,
+            &[hb("s", 1, "2026-11-07T12:00:00Z")?],
+        );
+        store.append(p.record.as_ref().ok_or("r")?)?;
+        let text = std::fs::read_to_string(&path)?;
+        std::fs::write(&path, format!("\n{text}\n\n{text}"))?;
+        assert_eq!(
+            Store::open(&path)?.1.len(),
+            2,
+            "two records, blank lines skipped"
+        );
+        Ok(())
+    }
+
+    /// Rewriting an empty registry leaves an empty store.
+    #[test]
+    fn edge_compacting_no_members_leaves_an_empty_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("s");
+        let (mut store, _) = Store::open(&path)?;
+        store.compact(&Registry::default())?;
+        assert_eq!(std::fs::read_to_string(&path)?, "", "empty");
+        Ok(())
+    }
+
+    /// A receive time after `now` (the clock stepped back) reports zero
+    /// seconds, never a negative age.
+    #[test]
+    fn edge_a_receive_time_in_the_future_reports_zero_seconds() -> Result<(), TestError> {
+        let mut reg = Registry::default();
+        let p = reg.plan(
+            "a",
+            "192.0.2.1",
+            t("2026-11-07T12:10:00Z")?,
+            &[hb("s", 1, "2026-11-07T12:10:00Z")?],
+        );
+        reg.commit(p);
+        let v = reg.report(t("2026-11-07T12:00:00Z")?, 3, 72);
+        assert_eq!(v["members"][0]["seconds_since_heartbeat"], 0, "{v}");
+        Ok(())
+    }
+
+    /// Plain HTTP on a routable IPv6 address is refused.
+    #[test]
+    fn edge_plain_http_on_routable_ipv6_is_refused() -> Result<(), TestError> {
+        assert!(
+            plain_http_refusal("[2001:db8::1]:8444".parse()?, false).is_some(),
+            "routable IPv6"
+        );
+        Ok(())
+    }
+
+    /// An IPv4-mapped IPv6 peer is reported as its IPv4 address.
+    #[tokio::test]
+    async fn edge_an_ipv4_mapped_peer_is_reported_as_ipv4() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let mut req = axum::http::Request::builder()
+            .method("POST")
+            .uri("/v1/fleet/ingest")
+            .header("authorization", bearer(&member("edge-a")))
+            .body(axum::body::Body::from(line()))?;
+        req.extensions_mut().insert(axum::extract::ConnectInfo(
+            "[::ffff:192.0.2.7]:40000".parse::<std::net::SocketAddr>()?,
+        ));
+        router(st.clone()).oneshot(req).await?;
+        assert_eq!(
+            st.center.lock().registry.records()[0].peer,
+            "192.0.2.7",
+            "canonical"
+        );
         Ok(())
     }
 }
