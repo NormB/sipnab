@@ -5,8 +5,10 @@
 //! acceptance must not outlive the problem it accepts.
 //!
 //! Adding `@lhci/cli` for the Lighthouse gate pulled three vulnerable packages
-//! into `e2e/`: `tmp`, `uuid` and `extract-zip`. All three are now pinned out
-//! through npm `overrides`, and the lockfile is where that is checked.
+//! into `e2e/`: `tmp`, `uuid` and `extract-zip`. `uuid` is pinned out through
+//! npm `overrides`, and the lockfile is where that is checked. `@lhci/cli`
+//! 0.16 no longer depends on `tmp`, so its override went with it; a test below
+//! still refuses a vulnerable `tmp` at any path.
 //!
 //! `extract-zip` was the hard one, and it is why this file used to carry an
 //! ACCEPTANCE table. Its newest published release IS the vulnerable one — no
@@ -124,10 +126,6 @@ fn overrides() -> Result<Vec<(String, String)>, TestError> {
 /// asks npm at run time fails offline and passes when the registry is having a
 /// bad day, which is the opposite of a gate.
 const MUST_BE_PATCHED: &[(&str, &str)] = &[
-    // GHSA on `tmp`: arbitrary file write via symlink. Dependabot could not
-    // resolve it and errored, which turned its workflow red on the release
-    // commit and blocked the tag.
-    ("tmp", "0.2.7"),
     // CVE-2026-41907: missing buffer bounds check in v3/v5/v6 when `buf` is
     // provided. First patched in 11.1.1.
     ("uuid", "11.1.1"),
@@ -139,6 +137,13 @@ const MUST_BE_PATCHED: &[(&str, &str)] = &[
     // `the_lockfile_no_longer_contains_extract_zip` below states the real
     // property instead of trusting this number to imply it.
     ("@puppeteer/browsers", "3.0.2"),
+    // GHSA-3g3m-2fjr-6pw4 (CVE-2026-118773): an aborted `glob` walk keeps
+    // reading the filesystem after its AbortSignal fires. Affects 9.0.0 up to
+    // 14.0.2. `@lhci/cli` 0.16 brought `glob` in through
+    // `lighthouse -> @sentry/node -> @sentry/bundler-plugins`; 11.10.0 asks
+    // for `glob` 13, and 11.11.0 for `glob` 14 (which also takes `minimatch`
+    // 11, past GHSA-g3hv-75wg-m249; tests/minimatch_advisory_test.rs).
+    ("glob", "14.0.2"),
 ];
 
 /// Compare two dotted versions numerically.
@@ -207,10 +212,14 @@ fn every_package_with_a_published_fix_is_patched() -> Result<(), TestError> {
 }
 
 /// `tmp` specifically, because its failure blocked a release.
+///
+/// GHSA on `tmp`: arbitrary file write via symlink, fixed in 0.2.7.
+/// `@lhci/cli` 0.16 dropped the dependency, so the lockfile has no `tmp` and
+/// `MUST_BE_PATCHED` and the override no longer name it. A `tmp` that comes
+/// back at any path must still be 0.2.7 or later.
 #[test]
-fn the_lockfile_pins_tmp_past_the_advisory() -> Result<(), TestError> {
+fn no_tmp_below_the_advisory_fix_is_in_the_lockfile() -> Result<(), TestError> {
     let found = versions_of("tmp")?;
-    assert!(!found.is_empty(), "tmp is absent from the lockfile");
     for v in &found {
         assert!(
             at_least(v, "0.2.7"),

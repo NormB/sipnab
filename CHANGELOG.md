@@ -8,6 +8,18 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Dependencies
+
+- Fuzz targets: `log` 0.4.34 → 0.4.35, `aes` 0.9.3 → 0.9.4, `zip` 9.1.3 → 9.3.0, `sevenz-rust2` 0.24.1 → 0.24.2 and `js-sys` 0.3.106 → 0.3.107 (with `wasm-bindgen` 0.2.129 → 0.2.130). The `log`, `aes`, `zip` and `sevenz-rust2` versions are the ones the main crate takes. From Dependabot #687.
+- `log` 0.4.34 → 0.4.35, `aes` 0.9.3 → 0.9.4, `zip` 9.1.3 → 9.3.0, `sevenz-rust2` 0.24.1 → 0.24.2 and `wat` 1.262.0 → 1.263.0 (with the `wasm-tools` crates it depends on, at 0.263). `THIRD-PARTY-NOTICES.md` is regenerated for them; no license changes. From Dependabot #688.
+- eBPF capture backend: `aya` 0.15.0 → 0.16.0 (with `aya-obj` 0.5.0 → 0.6.0). The loader needs no change: none of the `aya` interfaces it calls changed. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes. From Dependabot #689.
+- Python clients: `pydantic` 2.14.1 → 2.14.2 with `pydantic-core` 2.50.1 → 2.50.2, `anyio` 4.15.1 → 4.16.0, `opentelemetry-api` 1.45.1 → 1.45.2, `python-multipart` 0.0.32 → 0.0.33 and `typing-inspection` 0.4.4 → 0.4.5 in `clients/python/requirements-mcp.txt` and `requirements-examples.txt`, each by hash. From Dependabot #690, which proposed `pydantic-core` 2.50.3; `pydantic` 2.14.2 requires exactly 2.50.2.
+- Site test tooling: `@lhci/cli` 0.15.1 → 0.16.0, with `@sentry/node` 11.10.0 → 11.11.0 so that `glob` is 14.0.4 and `minimatch` 11.0.5, past GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249. `@lhci/cli` 0.16 no longer depends on `tmp`, so the `tmp` override in `e2e/package.json` is removed. From Dependabot #685.
+- TypeScript MCP client: `@types/node` 22.20.4 → 26.6.6 (with `undici-types` 6.21.0 → 8.9.0). The client still runs on Node.js 22.18 or later: it uses only `process.argv`, `process.env` and `fetch` from Node.js. From Dependabot #686.
+- GitHub Actions: `taiki-e/install-action` 2.87.32 → 2.90.1, `github/codeql-action` 4.39.1 → 4.39.3 and `sigstore/cosign-installer` 4.1.2 → 4.1.3, each still pinned by commit SHA. From Dependabot #691.
+
 ## [0.5.237] - 2026-11-08
 
 ### Added
