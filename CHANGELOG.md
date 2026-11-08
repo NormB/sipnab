@@ -13,6 +13,7 @@ entry that carries them.
 ### Dependencies
 
 - Fuzz targets: `log` 0.4.34 → 0.4.35, `aes` 0.9.3 → 0.9.4, `zip` 9.1.3 → 9.3.0, `sevenz-rust2` 0.24.1 → 0.24.2 and `js-sys` 0.3.106 → 0.3.107 (with `wasm-bindgen` 0.2.129 → 0.2.130). The `log`, `aes`, `zip` and `sevenz-rust2` versions are the ones the main crate takes. From Dependabot #687.
+- `log` 0.4.34 → 0.4.35, `aes` 0.9.3 → 0.9.4, `zip` 9.1.3 → 9.3.0, `sevenz-rust2` 0.24.1 → 0.24.2 and `wat` 1.262.0 → 1.263.0 (with the `wasm-tools` crates it depends on, at 0.263). `THIRD-PARTY-NOTICES.md` is regenerated for them; no license changes. From Dependabot #688.
 
 ## [0.5.237] - 2026-11-08
 
