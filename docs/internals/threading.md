@@ -233,6 +233,18 @@ dispatcher + N workers.
   - So each worker's `StreamStore` sees a later call take over a socket and an
     SSRC at the point in the capture where it did, and starts that call's
     stream there, as the single-threaded path does.
+  - The same holds for a relay's control plane: the dispatcher also copies a
+    HEP datagram to the mirror port (9060) and every datagram to or from
+    `--rtpproxy-control`. Each worker pairs rtpproxy's commands and replies in
+    its own table (`relay::rtpproxy::with_worker_pairings`).
+- The merge rebuilds what the single store holds under its limits.
+  - It admits streams in the read order of their first packet, under
+    `--max-streams` (`StreamStore::merge_in_read_order`).
+  - It replays dialogs in read order. When they do not fit under `--limit`, it
+    replays every message through `process_message`
+    (`DialogStore::merge_replaying`).
+  - Each reader records where the single-threaded path would sweep idle
+    dialogs (`SweepMark`), and the merge compacts each dialog at those sweeps.
 
 ## Lock discipline
 

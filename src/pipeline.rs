@@ -1842,13 +1842,41 @@ pub fn apply_relay_control(
     if let Some(control) = &message.control {
         ss.record_relay_control(control);
     }
+    learn_relay_links(
+        ss,
+        message,
+        relay_provenance(message, input_origin, timestamp),
+    );
+}
 
-    let provenance = rtp::stream_store::SdpProvenance::relay_asserted(
+/// The provenance the media a relay control message names is recorded
+/// under: the relay's own assertion, as it reached the capture.
+#[must_use]
+pub fn relay_provenance(
+    message: &RelayControlMessage,
+    input_origin: crate::capture::parse::InputOrigin,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> rtp::stream_store::SdpProvenance {
+    rtp::stream_store::SdpProvenance::relay_asserted(
         message.implementation,
         message.delivery,
         input_origin,
         timestamp,
-    );
+    )
+}
+
+/// Bind the media a relay control message names to its call, in `ss`: the
+/// linking half of [`apply_relay_control`], without the retry count.
+///
+/// Also what a `--cores` worker applies for a copy of a control packet
+/// another worker owns (see `crate::parallel`): the owner counts the
+/// packet's cookie, and every worker learns the media it names at the same
+/// place in the capture.
+pub fn learn_relay_links(
+    ss: &mut rtp::stream_store::StreamStore,
+    message: &RelayControlMessage,
+    provenance: rtp::stream_store::SdpProvenance,
+) {
     for (ip, port, call_id, media) in &message.sdp_links {
         ss.link_to_dialog_with_sdp_from(*ip, *port, call_id, media, provenance);
     }
@@ -2243,8 +2271,9 @@ pub struct RelayControlMessage {
     pub delivery: crate::relay::ControlDelivery,
     /// The datagram's cookie, when its protocol has one, so a retried
     /// command is counted per capture (RP4). `None` for a message that
-    /// carries no cookie this decoder reads.
-    pub control: Option<crate::relay_vocab::ControlCookie>,
+    /// carries no cookie this decoder reads. Boxed so it does not set the
+    /// size of [`PacketAction`]: only rtpproxy's datagrams carry one.
+    pub control: Option<Box<crate::relay_vocab::ControlCookie>>,
     /// The engine an `offer` or `delete` reached, and the call it names.
     /// `None` for every other message. Boxed so it does not set the size of
     /// [`PacketAction`], which every classified packet pays.
@@ -2553,8 +2582,20 @@ pub fn sdp_links_of(
     if !sip::parser::starts_sip_message(&payload) {
         return Vec::new();
     }
+    sdp_links_in(pp, opts, &payload, transport)
+}
+
+/// The SDP links of the SIP message `payload`, which `pp` carried over
+/// `transport`: [`sdp_links_of`] once the gate and the WebSocket unwrap have
+/// chosen the bytes.
+fn sdp_links_in(
+    pp: &ParsedPacket,
+    opts: &PipelineOptions,
+    payload: &bytes::Bytes,
+    transport: TransportProto,
+) -> Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)> {
     match sip::parser::parse_sip_bytes(
-        &payload,
+        payload,
         pp.timestamp,
         pp.src_addr,
         pp.dst_addr,
@@ -2670,6 +2711,14 @@ fn claim_control(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketActi
     if let Some(action) = claim_llmnr(pp, opts) {
         return Some(action);
     }
+    claim_relay_control(pp, opts)
+}
+
+/// The relay control half of [`claim_control`]: rtpengine's `ng` over HEP,
+/// `ng` captured on its port, and rtpproxy's control socket. `None` when the
+/// packet is none of them.
+#[inline]
+fn claim_relay_control(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketAction> {
     #[cfg(feature = "hep")]
     if let Some(action) = claim_rtpengine_ng(pp) {
         return Some(action);
@@ -2678,6 +2727,61 @@ fn claim_control(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketActi
         return Some(action);
     }
     claim_rtpproxy(pp, opts)
+}
+
+/// What a `--cores` worker learns from a copy of a packet another worker
+/// owns (see `crate::parallel`).
+#[derive(Debug)]
+pub enum CopyLearning {
+    /// Nothing: the packet binds no media socket to a call.
+    Nothing,
+    /// The SDP links of a SIP message.
+    Sdp(Vec<(std::net::IpAddr, u16, String, sip::sdp::SdpMedia)>),
+    /// The media a relay control message names, with its cookie and engine
+    /// sighting removed: the packet's owner records those, once.
+    Relay(RelayControlMessage),
+}
+
+/// What [`classify_packet`] would bind from `pp`, and nothing else: the SDP
+/// links of a SIP message, or the media a relay control message names.
+///
+/// For a `--cores` worker reading a copy, as [`sdp_links_of`] is, now for the
+/// relay control plane too. The rules are the classifier's own, in its
+/// order: an OpenSIPS mapping event, then SIP on the port gate, then LLMNR,
+/// then the relay arms. Run with the process-wide tallies off
+/// (`crate::capture::untallied`): the owner counts the packet once.
+///
+/// One rule does change state: rtpproxy's command-reply pairing, which every
+/// worker keeps for itself (`crate::relay::rtpproxy::with_worker_pairings`)
+/// so that each pairs every control datagram, owned or copied, in read order.
+#[cfg(feature = "native")]
+pub fn copy_learning(pp: &ParsedPacket, opts: &PipelineOptions) -> CopyLearning {
+    if opts.no_dialog || pp.hep.as_ref().is_some_and(|h| h.json_event) {
+        return CopyLearning::Nothing;
+    }
+    crate::capture::untallied(|| {
+        let (payload, transport): (bytes::Bytes, TransportProto) = match websocket_sip(pp) {
+            Some(WebSocketSip::OnPort(payload)) => (payload.into(), TransportProto::Ws),
+            Some(WebSocketSip::OffPort(_)) => return CopyLearning::Nothing,
+            None => (pp.payload.clone(), pp.transport),
+        };
+        if sip_port_ok(pp, opts) && sip::parser::starts_sip_message(&payload) {
+            return CopyLearning::Sdp(sdp_links_in(pp, opts, &payload, transport));
+        }
+        if pp.transport == TransportProto::Udp
+            && crate::llmnr::is_llmnr_packet(&pp.payload, pp.src_port, pp.dst_port)
+        {
+            return CopyLearning::Nothing;
+        }
+        match claim_relay_control(pp, opts) {
+            Some(PacketAction::RelayControl(message)) => CopyLearning::Relay(RelayControlMessage {
+                control: None,
+                engine_sighting: None,
+                ..message
+            }),
+            _ => CopyLearning::Nothing,
+        }
+    })
 }
 
 /// rtpengine's `ng` control traffic captured on its way to or from an engine,
@@ -2922,7 +3026,7 @@ fn claim_rtpproxy(pp: &ParsedPacket, opts: &PipelineOptions) -> Option<PacketAct
         relay_links: named.into_iter().collect(),
         implementation: crate::relay::RelayImplementation::Rtpproxy,
         delivery: crate::relay::ControlDelivery::BareDatagram,
-        control: Some(cookie),
+        control: Some(Box::new(cookie)),
         engine_sighting: None,
     }))
 }

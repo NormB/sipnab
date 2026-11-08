@@ -59,9 +59,11 @@ proxy did not hear the relay's answer in time.
 | `retried_commands` | Commands that repeated a cookie already seen. rtpproxy answers a repeated cookie from its reply cache, so the same cookie twice is the proxy sending the command again because it did not hear an answer in time |
 | `retried_after_answer` | Of those, retries sent after the relay's answer was already on the wire: the answer got lost, or arrived late, on its way back to the proxy. The rest went out before the capture showed any answer |
 
-sipnab remembers the 4,096 most recent cookies per socket, so a retry of an
-older one does not count. A headless run prints the same counts as a warning
-at the end when the proxy retried any command.
+A retry is one proxy sending a cookie it sent before: sipnab remembers the
+4,096 most recent cookies of each proxy on each socket, so a retry of an older
+one does not count, and a cookie two proxies both use is two commands. A
+headless run prints the same counts as a warning at the end when the proxy
+retried any command.
 
 Each orphan carries one of three verdicts in `reason`, and each points at a
 different missing piece:

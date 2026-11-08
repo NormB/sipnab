@@ -265,16 +265,18 @@ Three things happen at that EOF, and none of them has a live equivalent:
    fragments in capture-timestamp order and re-runs the state machine. Live,
    there is no moment at which a dialog is finished arriving.
 2. **`StreamStore::reassociate_all` links streams to dialogs globally**
-   ([`stream_store.rs:2526`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2526)), because SDP and RTP
+   ([`stream_store.rs:2799`](https://github.com/NormB/sipnab/blob/main/src/rtp/stream_store.rs#L2799)), because SDP and RTP
    routinely land on different workers when the carrier advertises a separate
    media IP.
-3. **`final_sweep` runs exactly ONCE, after the merge, at the capture's final
-   timestamp** ([`parallel.rs:140`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L140)) — and
-   [`parallel.rs:47-53`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L47-L53) records why it is not per worker:
-   a worker's local last timestamp can be minutes behind the capture's, so a
-   per-worker sweep *"would measure each fragment against its own clock and
-   produce a THIRD answer, matching neither path — worse than the divergence it
-   replaced, because it would look right."*
+3. **The merge replays the single-threaded path's idle-compaction sweeps.**
+   Each reader records the packets at which its file's newest timestamp
+   enters a new sweep interval (`SweepMark`,
+   [`parallel.rs:1354`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1354)), the run folds them in file order into the
+   sweeps `--cores 1` makes, and the dialog merge compacts each dialog at
+   them. [`parallel.rs:58-63`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L58-L63) records why compaction cannot run in a
+   worker: a worker *"only sees the packets of its own host pairs, so its
+   clock can be minutes behind the capture's."* The schedule is only known
+   once every file has been read, in order.
 
 Point 3 transfers verbatim to a live worker pool, and it is the one that should
 stop anyone from treating this as CT4's sequel. The live loop already sweeps
@@ -287,8 +289,8 @@ flows. That is a wrong answer that renders as a normal report.
 The three shapes a live processing pool could take, and what each costs:
 
 - **Periodic merge into a shared store.** Reintroduces a global write lock at
-  merge cadence, and makes *"once, at the final timestamp"* undefined —
-  `final_sweep`'s contract has no meaning under a repeated merge.
+  merge cadence, and a sweep replayed at the merge has no meaning under a
+  repeated merge: the sweeps after the last merge are not known yet.
 - **Shared stores with per-packet locking.** This is the design the single-writer
   rule exists to avoid ([`docs/internals/invariants.md`](../internals/invariants.md)),
   and it is the arrangement `--cores` was built to escape.
@@ -298,7 +300,7 @@ The three shapes a live processing pool could take, and what each costs:
 
 **Recommendation: do not attempt live processing fan-out as a follow-on to CT4.**
 If it is ever attempted, it needs its own page, and the first thing that page has
-to answer is what replaces `final_sweep`'s single well-defined moment.
+to answer is what replaces the merge's replay of a schedule known only at EOF.
 
 ## 5. The experiment, and the result that means "do not ship"
 
