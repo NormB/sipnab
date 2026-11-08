@@ -116,7 +116,6 @@ const ACTIONS: &[(&str, Runs)] = &[
         "google/osv-scanner-action/osv-scanner-action",
         Runs::Container("ghcr.io/google/osv-scanner-action:v2.6.0"),
     ),
-    ("lycheeverse/lychee-action", Runs::Composite),
     (
         "ossf/scorecard-action",
         Runs::Container("ghcr.io/ossf/scorecard-action:v2.4.4"),

@@ -534,6 +534,13 @@ jobs:
       # a tag alone is not enough. Zola publishes no checksum manifest, so the
       # hash is recorded from the artifact served at v0.19.2.
       ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+      # lychee runs the two dead-link passes. It was lycheeverse/lychee-action,
+      # which downloads lychee from GitHub releases itself with one `curl -sfLO`
+      # and no checksum; on 2026-11-08 that download failed this job with exit
+      # 22 during the github.com 504 outage. This hash equals the release's own
+      # lychee-x86_64-unknown-linux-gnu.tar.gz.sha256 (checked 2026-11-08).
+      LYCHEE_VERSION: '0.24.2'
+      LYCHEE_SHA256: '1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -641,6 +648,26 @@ jobs:
           *) echo "::error::codespell did not run: $PROSE_REASON"; exit 1 ;;
           esac
 
+      - name: Fetch lychee (pinned, cached)
+        id: lychee
+        uses: ./.github/actions/pinned-download
+        with:
+          name: lychee
+          version: ${{ env.LYCHEE_VERSION }}
+          sha256: ${{ env.LYCHEE_SHA256 }}
+          url: https://github.com/lycheeverse/lychee/releases/download/lychee-v${{ env.LYCHEE_VERSION }}/lychee-x86_64-unknown-linux-gnu.tar.gz
+          file: lychee.tar.gz
+      - name: Install lychee
+        env:
+          LYCHEE_TARBALL: ${{ steps.lychee.outputs.path }}
+        run: |
+          set -euo pipefail
+          unpack=$(mktemp -d)
+          tar xzf "$LYCHEE_TARBALL" -C "$unpack"
+          sudo install -m 0755 "$unpack/lychee-x86_64-unknown-linux-gnu/lychee" /usr/local/bin/lychee
+          rm -rf "$unpack"
+          lychee --version
+
       # Pass one: Markdown that resolves on the filesystem. 257 unique links.
       #
       # Deliberately WITHOUT --include-fragments. Anchors are already gated, and
@@ -666,16 +693,15 @@ jobs:
       # `doc_link_hygiene_test` resolve these against the working tree, which
       # is the stronger check: it cannot be satisfied by a stale copy on main.
       # External links, including other repositories on github.com, still run.
+      # lychee exits non-zero on a dead link, which fails the step, as the
+      # action's `fail: true` did. It reads GITHUB_TOKEN for github.com links.
       - name: Dead links (docs Markdown)
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-        with:
-          args: >-
-            --no-progress --config lychee.toml
-            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/'
-            'docs/**/*.md' 'README.md' 'CONTRIBUTING.md' 'SECURITY.md'
-          fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          lychee --no-progress --config lychee.toml \
+            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/' \
+            'docs/**/*.md' 'README.md' 'CONTRIBUTING.md' 'SECURITY.md'
 
       # Pass two: the built site, where site-absolute links like /docs/install/
       # can actually be resolved. lychee reports those as unresolvable during
@@ -769,17 +795,14 @@ jobs:
       # which 404s the same way (#622).
       # `every_dead_link_pass_excludes_both_own_url_forms` keeps the passes alike.
       - name: Dead links (built site)
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-        with:
-          args: >-
-            --no-progress --config lychee.toml
-            --exclude '^https://sipnab\.com/'
-            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/'
-            --root-dir "$GITHUB_WORKSPACE/website/public"
-            'website/public/**/*.html'
-          fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          lychee --no-progress --config lychee.toml \
+            --exclude '^https://sipnab\.com/' \
+            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/' \
+            --root-dir "$GITHUB_WORKSPACE/website/public" \
+            'website/public/**/*.html'
 
   # ---------------------------------------------------------------------------
   # Accessibility: axe-core against the RENDERED site, WCAG 2 Level A and AA.

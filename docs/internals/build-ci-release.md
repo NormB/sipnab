@@ -573,7 +573,7 @@ Branch protection sets `required_status_checks.strict: true`.
 
 ### Pinned tool downloads
 
-CI installs Zola, Vale, the Vale Google style, `pagefind`, cargo-nextest and bpf-linker from GitHub release assets.
+CI installs Zola, Vale, the Vale Google style, lychee, `pagefind`, cargo-nextest and bpf-linker from GitHub release assets.
 The workflows pin each one by version and by sha256.
 
 On 2026-11-08 github.com answered release downloads with HTTP 504 from at least 08:57Z to at least 09:48Z.
@@ -605,6 +605,9 @@ Every such download now goes through one rule:
   A release runs on a tag, and an entry a tag run saves is readable only by that tag.
 - [`tests/workflow_supply_chain_test.rs`](../../tests/workflow_supply_chain_test.rs) fails a workflow or action step that names a `releases/download/` URL and does not go through the action or the script.
   [`tests/ci_curl_retry_test.rs`](../../tests/ci_curl_retry_test.rs) fails a CI file that runs `curl` itself.
+  `no_workflow_uses_an_action_that_fetches_its_tool_unchecked` fails a step that uses `lycheeverse/lychee-action`.
+  That action downloads lychee from a release with one `curl` and no checksum, and on 2026-11-08 that download failed the Docs job.
+  `taiki-e/install-action` and `sigstore/cosign-installer` still fetch their tools from GitHub releases themselves.
 - [`scripts/tests/test_fetch_pinned.py`](../../scripts/tests/test_fetch_pinned.py) drives the script against a local HTTP server.
 
 To bump a tool:

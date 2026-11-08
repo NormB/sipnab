@@ -238,6 +238,47 @@ fn no_workflow_installs_a_release_artifact_without_checking_its_bytes() -> Resul
     Ok(())
 }
 
+/// A third-party action that downloads its own tool from a GitHub release,
+/// with no checksum and one live attempt, is the same fragility the one rule
+/// removes, one layer down where a `releases/download/` scan cannot see it.
+///
+/// lycheeverse/lychee-action v2.9.0 runs `curl -sfLO` of
+/// `lychee/releases/download/lychee-v0.24.2/...` with no retry. On
+/// 2026-11-08, after this pull request's own fetches recovered from 504s and a
+/// timeout, that download failed the Docs job's "Dead links" step with
+/// exit 22. lychee is now fetched through `pinned-download` and run directly.
+///
+/// Not yet covered, recorded rather than hidden: taiki-e/install-action
+/// (ci.yml, quality.yml, release.yml) and sigstore/cosign-installer
+/// (release.yml) also fetch their tools from GitHub releases themselves.
+const ACTIONS_THAT_FETCH_THEIR_OWN_TOOL: &[&str] = &["lycheeverse/lychee-action"];
+
+/// No workflow uses an action listed in `ACTIONS_THAT_FETCH_THEIR_OWN_TOOL`.
+#[test]
+fn no_workflow_uses_an_action_that_fetches_its_tool_unchecked() -> Result<(), TestError> {
+    let mut found = Vec::new();
+    for (name, body) in workflows()? {
+        for (i, line) in body.lines().enumerate() {
+            let t = line.trim_start().trim_start_matches("- ");
+            let Some(used) = t.strip_prefix("uses: ") else {
+                continue;
+            };
+            let action = used.split('@').next().unwrap_or(used);
+            if ACTIONS_THAT_FETCH_THEIR_OWN_TOOL.contains(&action) {
+                found.push(format!("{name}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "these steps use an action that downloads its own tool from a GitHub \
+         release with no checksum and no retry. Fetch the tool through \
+         {PINNED_DOWNLOAD} and run it directly:\n  {}",
+        found.join("\n  ")
+    );
+    Ok(())
+}
+
 /// `.github/actions/pinned-download` is one cached, verified rule.
 ///
 /// It restores the archive from the actions cache under a key made of the
