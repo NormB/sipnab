@@ -968,7 +968,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // and .config/nextest.toml (+7). Measured: with origin/main's
     // build-ci-release.md swapped back in the scan reads 783; CHANGELOG.md
     // adds none.
-    const EXPECTED_CODE_LINKS: usize = 790;
+    // 790 -> 792 (TAG-GATE-WAITS-FOR-MERGE-CI): build-ci-release.md's tag
+    // gate paragraph links scripts/tag-push-proof.py and
+    // scripts/tests/test_tag_ci_proof.py (+2).
+    const EXPECTED_CODE_LINKS: usize = 792;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -383,6 +383,31 @@ tag-only push: b255c4f28 (merge of PR #694, head 8ae7313e2, same tree) is on ori
 - `SIPNAB_GATE_NO_CACHE=1` also runs every gate.
 - The rule is `decide` in `scripts/tag-push-proof.py`.
 
+**The tag CI gate and the merged pull request's head.** The CI check of a
+tag passes when every workflow run on the tagged commit succeeded. It also
+passes while the runs on the merge commit are still going, when the head of the
+merged pull request proves the same tree:
+
+- the tagged commit is on `main`.
+- GitHub reports the same tree for the commit and the head.
+- every check that `main` requires concluded `success` on the head.
+- every workflow run on the head succeeded: the newest of each name, with
+  scheduled runs set aside. So the macOS leg, which `CI success` leaves out,
+  still gates the release.
+- no run on the tagged commit itself concluded `failure`, `timed_out`,
+  `action_required` or `startup_failure`.
+
+The hook then prints the pull request, its head and the counts, and does not
+wait for the runs on the merge commit. Under that proof, exit 2 from the code
+scanning check (no analysis of this commit yet) passes too. The reason: `CI
+success` on the head needs the `code-scanning-clean` job, which judged the same
+tree. Open alerts still block. When the hook cannot read an answer, the runs on
+the tagged commit decide, as before. The rule is `tag_ci` in
+`scripts/tag-push-proof.py`. To see the verdict without pushing, run
+`python3 scripts/tag-push-proof.py --tag-ci <commit>`. It exits 0 (the runs on
+the commit are green), 10 (the head proves it), 3 (no runs), 4 (not green) or
+5 (`gh` gave no answer).
+
 **Never cached.**
 
 - The prerequisite check, formatting and the other checks that take seconds.

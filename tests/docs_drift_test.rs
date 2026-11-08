@@ -705,6 +705,12 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/contributing.md",
         ],
     ),
+    // scripts/tag-push-proof.py's `--tag-ci <commit>`, which prints the tag
+    // CI gate's verdict on one commit without pushing.
+    (
+        "tag-ci",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
     // git's `--no-verify`, which skips the commit-msg hook: the pre-push
     // message gate exists for a commit made that way.
     (
