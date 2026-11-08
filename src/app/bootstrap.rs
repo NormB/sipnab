@@ -3393,7 +3393,7 @@ type PrivilegedKeylog = Option<crate::capture::keylog_source::KeylogSource>;
 #[cfg(not(feature = "tls"))]
 type PrivilegedKeylog = ();
 
-/// The files the advance read reads: `secret`, plus, when the run chroots,
+/// The files the advance read reads: `files`, plus, when the run chroots,
 /// the host's CA bundle that `pin` finds before the chroot.
 ///
 /// A TLS client with no CA file of its own (`--hep-send-transport tls`
@@ -3403,16 +3403,16 @@ type PrivilegedKeylog = ();
 /// system CA bundle found". A run that does not chroot keeps reading the
 /// bundle when its client is built, as before.
 fn advance_read_paths(
-    mut secret: Vec<std::path::PathBuf>,
+    mut files: Vec<std::path::PathBuf>,
     chroot: Option<&str>,
     pin: impl FnOnce() -> Option<std::path::PathBuf>,
 ) -> Vec<std::path::PathBuf> {
     if chroot.is_some()
         && let Some(bundle) = pin()
     {
-        secret.push(bundle);
+        files.push(bundle);
     }
-    secret
+    files
 }
 
 /// [`advance_read_paths`] for this run: its secret files, and the host's CA
@@ -13431,8 +13431,7 @@ mod secret_read_tests {
         let paths = advance_read_paths(Vec::new(), Some("/var/empty"), || None);
         assert!(
             paths.is_empty(),
-            "no secrets and no host bundle: nothing to read, got {} path(s)",
-            paths.len()
+            "no secret files and no host bundle: nothing to read"
         );
     }
 
