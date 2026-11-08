@@ -957,7 +957,18 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 763 -> 764 (SDP-ORIGIN-REUSE): docs/internals/domain-primer.md's
     // `SdpOrigin` row links src/sip/sdp_origin.rs (+1); every other developer
     // page unchanged.
-    const EXPECTED_CODE_LINKS: usize = 764;
+    // 764 -> 783 (LATEST-MESSAGE-AT): docs/internals/testing.md's dialog-times
+    // test matrix links the 19 source and test files it counts (+19); every
+    // other developer page unchanged.
+    // 783 -> 790 (CI-TOOL-DOWNLOAD-RESILIENCE): docs/internals/build-ci-release.md's
+    // "Pinned tool downloads" section links scripts/fetch-pinned.sh,
+    // .github/actions/pinned-download/action.yml,
+    // tests/workflow_supply_chain_test.rs, tests/ci_curl_retry_test.rs,
+    // scripts/tests/test_fetch_pinned.py, .github/actions/nextest/action.yml
+    // and .config/nextest.toml (+7). Measured: with origin/main's
+    // build-ci-release.md swapped back in the scan reads 783; CHANGELOG.md
+    // adds none.
+    const EXPECTED_CODE_LINKS: usize = 790;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

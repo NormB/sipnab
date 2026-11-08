@@ -85,7 +85,8 @@ impl OriginCarrier {
             dst: dialog.dst_addr,
             dst_port: dialog.dst_port,
             start: dialog.created_at,
-            end: dialog.updated_at.max(dialog.created_at),
+            // The newest message, which is never before the first.
+            end: dialog.latest_message_at.max(dialog.created_at),
         }
     }
 
@@ -386,6 +387,33 @@ mod tests {
             c.end, dialog.created_at,
             "a last message stamped before the first does not end the dialog early"
         );
+        Ok(())
+    }
+}
+
+/// A carrier's lifetime on a call read out of timestamp order: see
+/// [`crate::test_utils::call_read_out_of_order`].
+#[cfg(test)]
+mod latest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The carrier's lifetime ends at the newest message, not at the last
+    /// message read, so a leg that overlaps the call's end is seen to.
+    #[test]
+    fn a_carriers_lifetime_ends_at_the_newest_message() -> Result<(), TestError> {
+        let (store, _) = crate::test_utils::call_read_out_of_order(
+            "carrier@example.com",
+            [192, 0, 2, 1].into(),
+        )?;
+        let d = store.get("carrier@example.com").ok_or("the call")?;
+        assert_eq!(
+            OriginCarrier::of(d).end,
+            d.latest_message_at,
+            "the lifetime ends at the newest message"
+        );
+        assert!(d.latest_message_at > d.updated_at, "the fixture");
         Ok(())
     }
 }

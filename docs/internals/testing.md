@@ -538,3 +538,67 @@ Audited, found sound (true-positive findings: none):
   Its FFI input is length-checked. The codec itself is not fuzzed here.
 - No disk-full test for the pcap/wav writers. Writes propagate `?`, so there is
   no panic, but no test covers the error path.
+
+## Test matrix: dialog times (`updated_at` and `latest_message_at`)
+
+A dialog keeps two times of its newest activity. `updated_at` is the
+timestamp of the message processed last, and the live vCon export and the
+tail cursors read it to detect change. `latest_message_at` is the newest
+timestamp among the dialog's messages, and durations, idle compaction, the
+active counts and the newest-first sorts read it. They differ when sipnab
+reads an older-stamped message after a newer one, as on an `-I` set whose
+files overlap in time. [Which dialog time to read](../output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at)
+is the user-facing how-to.
+
+The tests, by what they check. SUCCESS: a reader gives the right answer.
+FAILURE: sipnab refuses a wrong answer, or it does not happen. EDGE: a boundary or a
+degenerate input.
+
+| Where | SUCCESS | FAILURE | EDGE |
+|---|---|---|---|
+| [`src/sip/dialog_store.rs`](../../src/sip/dialog_store.rs) (store, compaction, active counts, call tree, tail page, merge oracle) | 9 | 6 | 7 |
+| [`src/output/model.rs`](../../src/output/model.rs) (`DialogSummary`) | 3 | 0 | 0 |
+| [`src/sip/dsl.rs`](../../src/sip/dsl.rs) (`duration`) | 1 | 1 | 0 |
+| [`src/output/dialog_report.rs`](../../src/output/dialog_report.rs) and [`src/output/call_report.rs`](../../src/output/call_report.rs) | 4 | 0 | 0 |
+| [`src/security/fraud_detect.rs`](../../src/security/fraud_detect.rs) (short calls) | 1 | 1 | 0 |
+| [`src/sip/endpoint.rs`](../../src/sip/endpoint.rs) and [`src/sip/sdp_origin.rs`](../../src/sip/sdp_origin.rs) | 2 | 0 | 0 |
+| [`src/tui/mod.rs`](../../src/tui/mod.rs) and [`src/tui/call_list.rs`](../../src/tui/call_list.rs) (Duration column and sort) | 2 | 0 | 0 |
+| [`src/app/batch.rs`](../../src/app/batch.rs) (live vCon export) | 1 | 1 | 0 |
+| [`tests/latest_message_at_test.rs`](../../tests/latest_message_at_test.rs) (CLI, worker counts, schema) | 5 | 4 | 4 |
+| [`tests/openapi_contract_test.rs`](../../tests/openapi_contract_test.rs) | 1 | 0 | 0 |
+| [`tests/cores_parity_test.rs`](../../tests/cores_parity_test.rs) (idle compaction at `--cores` 1, 2, 4, 8) | 0 | 1 | 2 |
+| Total, 56 | 29 | 14 | 13 |
+
+The cases the matrix covers:
+
+- **Files out of order and overlapping.** The two-file fixture
+  `callid_across_files` in
+  [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs):
+  sixteen calls whose newest messages are in the file read first. Every call
+  lasts 2.505 s; read to the last message it lasted 0.905 s.
+- **Identical timestamps,** in one file and across two.
+- **A single message.**
+- **A late retransmission with an older timestamp:** still counted, and the
+  duration stays at the newest message.
+- **A dialog read newest first:** no negative duration.
+- **Idle compaction at exactly 600 s from the newest message** (not
+  compacted), one millisecond past it (compacted), and past 600 s only from
+  the message read last (not compacted), in one store and end to end at
+  `--cores` 1, 2, 4 and 8. The `--cores` merge oracle and the shortcut of the
+  merge (`compaction_due`) cover the last case.
+- **The live vCon export** writing a call again after a message stamped older
+  than its newest. This is the guard for keeping `updated_at` the last
+  message read.
+- **The output schema:** [`tests/schemas/dialog.schema.json`](../../tests/schemas/dialog.schema.json) and the OpenAPI
+  `DialogSummary` component require `latest_message_at` as a date-time, and
+  refuse a summary without it or with a number in it.
+
+Existing gates hold the field on every surface as well:
+`every_remaining_schema_agrees_with_the_projection_it_describes` in
+[`tests/json_schema_test.rs`](../../tests/json_schema_test.rs),
+`the_dialog_summary_component_declares_exactly_what_the_projection_emits` in
+[`tests/openapi_contract_test.rs`](../../tests/openapi_contract_test.rs),
+`every_dialog_summary_field_is_classified_as_fenced_or_verbatim` in
+[`tests/mcp_untrusted_fencing_test.rs`](../../tests/mcp_untrusted_fencing_test.rs),
+and the merge oracle's `observable`, which compares `latest_message_at` across
+every assignment of a call's legs to workers.

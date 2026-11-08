@@ -58,13 +58,14 @@ fn fixture(name: &str) -> String {
 /// A store holding one real dialog, grown past whatever the keep-limit is.
 ///
 /// Returns the store, the Call-ID, the message count it was grown to, and the
-/// dialog's own `updated_at`.
+/// dialog's own `latest_message_at`, its newest message, which idleness is
+/// measured from.
 ///
 /// The growth is deliberate: the checked-in fixtures are short calls, and a
 /// compaction test over a dialog under the keep-limit evicts nothing and
 /// proves nothing. `provenance_surfaces_test.rs` records that exact mistake.
 ///
-/// `updated_at` is returned rather than assumed because a fixture's dialog
+/// `latest_message_at` is returned rather than assumed because a fixture's dialog
 /// carries the CAPTURE's clock, not the wall clock. Measuring idleness from
 /// `Utc::now()` makes every fixture dialog idle by years, so a window test
 /// written that way reports "compacted" under any window and measures nothing.
@@ -97,7 +98,7 @@ fn store_with_long_dialog(
     let _ = reader.join();
 
     let call_id = store.iter().next().ok_or("a dialog")?.call_id.clone();
-    let (grown_to, updated_at) = {
+    let (grown_to, newest) = {
         let d = store.get_mut(&call_id).ok_or("dialog")?;
         let seed: Vec<_> = d.messages.clone();
         assert!(
@@ -107,9 +108,9 @@ fn store_with_long_dialog(
         while d.messages.len() <= target {
             d.messages.extend(seed.iter().cloned());
         }
-        (d.messages.len(), d.updated_at)
+        (d.messages.len(), d.latest_message_at)
     };
-    Ok((store, call_id, grown_to, updated_at))
+    Ok((store, call_id, grown_to, newest))
 }
 
 /// Raising `keep_messages_per_idle_dialog` keeps more of the ladder.
@@ -124,12 +125,12 @@ fn store_with_long_dialog(
 #[serial_test::serial(dialog_retention_knobs)]
 fn raising_the_keep_limit_keeps_more_of_the_ladder() -> Result<(), TestError> {
     let raised = DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG * 4;
-    let (mut store, call_id, grown_to, updated_at) = store_with_long_dialog(raised * 2)?;
+    let (mut store, call_id, grown_to, newest) = store_with_long_dialog(raised * 2)?;
 
     set_keep_messages_per_idle_dialog(raised);
     assert_eq!(keep_messages_per_idle_dialog(), raised);
 
-    let idle = updated_at + idle_compact_after() + chrono::TimeDelta::minutes(1);
+    let idle = newest + idle_compact_after() + chrono::TimeDelta::minutes(1);
     let stats = store.compact_idle(idle);
 
     assert!(
@@ -162,7 +163,7 @@ fn raising_the_keep_limit_keeps_more_of_the_ladder() -> Result<(), TestError> {
 #[cfg(feature = "native")]
 #[serial_test::serial(dialog_retention_knobs)]
 fn widening_the_idle_window_spares_a_quiet_dialog() -> Result<(), TestError> {
-    let (mut store, call_id, _, updated_at) =
+    let (mut store, call_id, _, newest) =
         store_with_long_dialog(DEFAULT_KEEP_MESSAGES_PER_IDLE_DIALOG * 3)?;
     let before = store.get(&call_id).ok_or("dialog")?.messages.len();
 
@@ -173,7 +174,7 @@ fn widening_the_idle_window_spares_a_quiet_dialog() -> Result<(), TestError> {
         "the fixture must be idle under the DEFAULT window or the widened \
          window proves nothing"
     );
-    let now = updated_at + quiet_for;
+    let now = newest + quiet_for;
 
     set_idle_compact_after_secs(chrono::TimeDelta::hours(1).num_seconds());
     assert_eq!(idle_compact_after(), chrono::TimeDelta::hours(1));

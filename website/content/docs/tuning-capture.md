@@ -730,6 +730,11 @@ stores at the end of the input. The merge rebuilds what the one store holds:
   is.
 - **sipnab counts rtpproxy retries per proxy.** A retry is a proxy sending a
   cookie it sent before. A cookie two proxies both use is two commands.
+- **Durations and idleness run to each dialog's newest message.** On an `-I`
+  set whose files overlap in time, the message sipnab reads last can be older
+  than the newest. `duration_sec`, idle compaction and the active counts
+  measure from `latest_message_at`, the newest, at every `--cores`. See
+  [Which dialog time to read](@/docs/output-formats.md#which-dialog-time-to-read-updated-at-or-latest-message-at).
 
 Two differences remain:
 

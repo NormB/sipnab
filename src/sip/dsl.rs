@@ -299,7 +299,7 @@ enum Field {
     DstPort,
     /// `state` — current dialog state name (e.g. `'InCall'`).
     State,
-    /// `duration` — seconds between dialog creation and last update.
+    /// `duration` — seconds from the dialog's first message to its newest.
     Duration,
     /// `msg_count` — number of SIP messages stored in the dialog.
     MsgCount,
@@ -2335,7 +2335,7 @@ fn eval_compare(
         Field::SrcPort => compare_num(f64::from(dialog.src_port), op, value),
         Field::DstPort => compare_num(f64::from(dialog.dst_port), op, value),
         Field::Duration => {
-            let dur = (dialog.updated_at - dialog.created_at).num_milliseconds() as f64 / 1000.0;
+            let dur = dialog.duration().num_milliseconds() as f64 / 1000.0;
             compare_num(dur, op, value)
         }
         Field::MsgCount => compare_num(dialog.messages.len() as f64, op, value),
@@ -6383,6 +6383,45 @@ mod bare_value_tests {
             .ok_or("caret line")?;
         let caret_col = caret_line.chars().count() - 1 - 2;
         assert_eq!(caret_col, char_col, "caret and position agree:\n{err}");
+        Ok(())
+    }
+}
+
+/// The filter's `duration` on a call read out of timestamp order: see
+/// [`crate::test_utils::call_read_out_of_order`].
+#[cfg(test)]
+mod latest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Whether `expr` selects the out-of-order call.
+    fn selects_the_call(expr: &str) -> Result<bool, TestError> {
+        let (store, _) =
+            crate::test_utils::call_read_out_of_order("dsl@example.com", [192, 0, 2, 1].into())?;
+        let dialog = store.get("dsl@example.com").ok_or("the call")?;
+        Ok(FilterExpr::parse(expr)
+            .map_err(|e| format!("{expr:?} must parse: {e}"))?
+            .matches_dialog(dialog, &[], CaptureMedia::Absent, MosDelay::unknown()))
+    }
+
+    /// `duration` is measured to the newest message, 2.505 s in.
+    #[test]
+    fn duration_reaches_the_newest_message() -> Result<(), TestError> {
+        assert!(
+            selects_the_call("duration > 2.5")?,
+            "the call lasted 2.505 s to its newest message"
+        );
+        Ok(())
+    }
+
+    /// `duration` is not measured to the last message read, 0.905 s in.
+    #[test]
+    fn duration_is_not_cut_at_the_last_message_read() -> Result<(), TestError> {
+        assert!(
+            !selects_the_call("duration < 1")?,
+            "0.905 s, to the last message read, is not the duration"
+        );
         Ok(())
     }
 }

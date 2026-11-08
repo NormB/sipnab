@@ -13,11 +13,14 @@ description: >-
 # scripts/parallel-tests.py needs that one version: the script refuses any
 # other, because a newer nextest can change what the `suite` profile means.
 #
-# The same shape as .github/actions/pagefind, for the same reason: a pinned,
-# checksummed tarball fetched from github.com on every run fails the job
-# whenever github.com does (PAGEFIND-DOWNLOAD-504). The key is the version,
-# the target and the sha256, so a cached tarball is never used for a pin it
-# was not fetched for, and the check runs on a restored tarball too.
+# The tarball comes through .github/actions/pinned-download, the one rule
+# every pinned release download in CI shares (CI-TOOL-DOWNLOAD-RESILIENCE): a
+# pinned, checksummed tarball fetched from github.com on every run fails the
+# job whenever github.com does (PAGEFIND-DOWNLOAD-504, and a 504 outage of
+# most of an hour on 2026-11-08). The target is in the tool name, so the key
+# is the target, the version and the sha256: a cached tarball is never used
+# for a pin it was not fetched for, and the check runs on a restored tarball
+# too.
 #
 # The binary goes into a directory of this job's own, put first on PATH, not
 # into ~/.cargo/bin: the self-hosted runners share one home directory, and a
@@ -27,8 +30,8 @@ description: >-
 # the same reason. It was a directory under the home cache at first, and on run
 # 42267347105 the two Features jobs, on two runners of one host, fetched into
 # that one file at once: one verified it while the other was still writing
-# it, and its check FAILED. .github/actions/pagefind keeps its tarball the
-# same way.
+# it, and its check FAILED. .github/actions/pinned-download keeps every
+# pinned archive the same way.
 #
 # VERSION is the pin in .config/nextest.toml; the step below refuses to run
 # when the two differ, and
@@ -70,52 +73,26 @@ runs:
           echo "tarball=cargo-nextest-$NEXTEST_VERSION-$target.tar.gz"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Restore the cargo-nextest tarball
-      id: cache
-      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+    - name: Fetch the cargo-nextest tarball (pinned, cached)
+      id: archive
+      uses: ./.github/actions/pinned-download
       with:
-        path: ${{ runner.temp }}/sipnab-nextest
-        key: nextest-${{ steps.pick.outputs.version }}-${{ steps.pick.outputs.target }}-${{ steps.pick.outputs.sha256 }}
-
-    - name: Fetch the cargo-nextest tarball (cache miss)
-      if: steps.cache.outputs.cache-hit != 'true'
-      shell: bash
-      env:
-        NEXTEST_VERSION: ${{ steps.pick.outputs.version }}
-        TARBALL: ${{ steps.pick.outputs.tarball }}
-      run: |
-        set -euo pipefail
-        mkdir -p "$RUNNER_TEMP/sipnab-nextest"
-        curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 \
-          -o "$RUNNER_TEMP/sipnab-nextest/$TARBALL" \
-          "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${NEXTEST_VERSION}/${TARBALL}"
-
-    - name: Verify the cargo-nextest tarball
-      shell: bash
-      env:
-        NEXTEST_SHA256: ${{ steps.pick.outputs.sha256 }}
-        TARBALL: ${{ steps.pick.outputs.tarball }}
-      run: |
-        set -euo pipefail
-        echo "${NEXTEST_SHA256}  $RUNNER_TEMP/sipnab-nextest/$TARBALL" | shasum -a 256 -c -
-
-    - name: Save the cargo-nextest tarball
-      if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
-      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-      with:
-        path: ${{ runner.temp }}/sipnab-nextest
-        key: nextest-${{ steps.pick.outputs.version }}-${{ steps.pick.outputs.target }}-${{ steps.pick.outputs.sha256 }}
+        name: cargo-nextest-${{ steps.pick.outputs.target }}
+        version: ${{ steps.pick.outputs.version }}
+        sha256: ${{ steps.pick.outputs.sha256 }}
+        url: https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${{ steps.pick.outputs.version }}/${{ steps.pick.outputs.tarball }}
+        file: ${{ steps.pick.outputs.tarball }}
 
     - name: Install cargo-nextest
       shell: bash
       env:
         NEXTEST_VERSION: ${{ steps.pick.outputs.version }}
-        TARBALL: ${{ steps.pick.outputs.tarball }}
+        TARBALL: ${{ steps.archive.outputs.path }}
       run: |
         set -euo pipefail
         bin="$RUNNER_TEMP/sipnab-nextest-bin"
         mkdir -p "$bin"
-        tar xzf "$RUNNER_TEMP/sipnab-nextest/$TARBALL" -C "$bin"
+        tar xzf "$TARBALL" -C "$bin"
         chmod 0755 "$bin/cargo-nextest"
         echo "$bin" >> "$GITHUB_PATH"
         PATH="$bin:$PATH" cargo nextest --version

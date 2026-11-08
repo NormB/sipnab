@@ -1333,6 +1333,7 @@ The blocks below run against
       "final_status_code": 403,
       "created_at": "2016-05-17T08:01:35.431471+00:00",
       "updated_at": "2016-05-17T08:01:35.433107+00:00",
+      "latest_message_at": "2016-05-17T08:01:35.433107+00:00",
       "timing": { "pdd_ms": null, "setup_ms": null, "retransmits": 0, "duration_ms": null },
       "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
       "input_origin": "wire"
@@ -2576,7 +2577,7 @@ text block.
     "content": [
       {
         "type": "text",
-        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"final_status_code\":403,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
+        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"final_status_code\":403,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"latest_message_at\":\"2016-05-17T08:01:35.433107+00:00\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
       },
       {
         "type": "text",
@@ -2605,6 +2606,7 @@ text block.
           "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
           "from_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
           "input_origin": "wire",
+          "latest_message_at": "2016-05-17T08:01:35.433107+00:00",
           "method": "REGISTER",
           "msg_count": 4,
           "state": "Failed",
@@ -2641,7 +2643,8 @@ text block.
 Each row is a dialog summary: the compact projection.
 
 - It holds `call_id`, `state`, `method`, `from_user`, `to_user`,
-  `msg_count`, `duration_sec`, `created_at`, `updated_at`, `timing`, `frame`.
+  `msg_count`, `duration_sec`, `created_at`, `updated_at`,
+  `latest_message_at`, `timing`, `frame`.
 - It adds `final_status_code` and `input_origin` where sipnab knows them.
 - The full aggregated dialog document is what `get_dialog_report` returns.
   (The [REST API](rest-api.md#get-v1-dialogs-call-id-report) returns the same

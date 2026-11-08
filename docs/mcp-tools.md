@@ -534,7 +534,7 @@ The rules:
   `data.valid_values` list the fields the row carries:
 
   ```json
-  {"code":-32602,"message":"unknown field 'stat'; this row carries: call_id, created_at, duration_sec, final_status_code, frame, from_user, input_origin, method, msg_count, state, timing, to_user, updated_at","data":{"param":"fields","reason":"invalid_choice","valid_values":["call_id","created_at","duration_sec","final_status_code","frame","from_user","input_origin","method","msg_count","state","timing","to_user","updated_at"]}}
+  {"code":-32602,"message":"unknown field 'stat'; this row carries: call_id, created_at, duration_sec, final_status_code, frame, from_user, input_origin, latest_message_at, method, msg_count, state, timing, to_user, updated_at","data":{"param":"fields","reason":"invalid_choice","valid_values":["call_id","created_at","duration_sec","final_status_code","frame","from_user","input_origin","latest_message_at","method","msg_count","state","timing","to_user","updated_at"]}}
   ```
 
 - **The page fields are always kept.** `total_matched`, `truncated`,
@@ -771,7 +771,7 @@ which:**
 | `th_mappings` | Yes, `total_matched` | One answer narrowed by Call-ID and state, ordered by state, and the same fields and values `GET /v1/th-mappings` returns | Raise `limit`, or narrow with `call_id` or `state` |
 | `get_call_tree` | No, `truncated` only | A breadth-first walk outward from one call, stopped at `limit` legs | Raise `limit` |
 | `top_talkers` | Yes, `distinct_talkers` | A ranking by dialog count | Raise `limit` |
-| `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `updated_at`, which moves each time a call gains a message, so a cursor on it would skip rows | [`list_dialogs`](mcp-tools-core.md#list_dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |
+| `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `latest_message_at`, which moves each time a call gains a newer message, so a cursor on it would skip rows | [`list_dialogs`](mcp-tools-core.md#list_dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |
 | `hep_senders` | Yes, `senders_tracked` and `refused_sources_tracked` | Two lists in one answer, the refused sources ranked by count, and the same fields and values `GET /v1/hep/senders` returns | Raise `limit`, and raise `--mcp-max-rows` as well when the listener tracks more than 1000 senders |
 | `tfps_labels` | No: `total` counts the rows TFPS returned, and `truncated` says it held more | TFPS's `log` command takes a row count and no offset, so there is no position to resume from | Raise `limit`, or run `tfps_ctl log --json --limit N` on the TFPS host |
 | `tail_dialogs` | No | It has a cursor. The table names it because it has no total | Follow `next_cursor` until the page comes back empty |

@@ -16,9 +16,17 @@
 //! includes a connection reset mid-transfer. `--max-time` bounds each attempt
 //! so a stalled transfer fails and is retried instead of holding the job.
 //!
-//! This test finds every `curl` command in `.github/workflows/*.yml` and
-//! `.github/actions/*/action.yml`, joining `\`-continued lines, and requires
-//! all three options at each one.
+//! That was not enough. On 2026-11-08 github.com answered release downloads
+//! with HTTP 504 from at least 08:57Z to at least 09:48Z, and five retries 5 s
+//! apart are about 25 s. Every CI download now goes through
+//! `scripts/fetch-pinned.sh` (CI-TOOL-DOWNLOAD-RESILIENCE), whose own loop
+//! retries with exponential backoff for up to five minutes and whose
+//! behavior `scripts/tests/test_fetch_pinned.py` drives against a local
+//! server. So the rule here is now: no CI file runs `curl` itself, and the
+//! script's one `curl` bounds each attempt and leaves retrying to the loop.
+//!
+//! The scanner finds every `curl` command in `.github/workflows/*.yml` and
+//! `.github/actions/*/action.yml`, joining `\`-continued lines.
 
 use std::path::{Path, PathBuf};
 
@@ -130,12 +138,17 @@ fn the_scanner_reads_a_continued_command_and_judges_it() {
     );
 }
 
-/// Every download in CI retries and is bounded.
+/// No CI file runs `curl` itself: downloads go through the one rule.
 #[test]
-fn every_ci_curl_download_retries_and_is_bounded() -> Result<(), TestError> {
-    let mut seen = 0;
-    let mut bad = Vec::new();
-    for file in ci_files()? {
+fn no_ci_file_runs_curl_itself() -> Result<(), TestError> {
+    let mut found = Vec::new();
+    let files = ci_files()?;
+    assert!(
+        files.len() > 5,
+        "found only {} CI files; the scan stopped matching",
+        files.len()
+    );
+    for file in files {
         let text = std::fs::read_to_string(&file)?;
         let rel = file
             .strip_prefix(env!("CARGO_MANIFEST_DIR"))
@@ -143,24 +156,47 @@ fn every_ci_curl_download_retries_and_is_bounded() -> Result<(), TestError> {
             .display()
             .to_string();
         for (line, cmd) in curl_commands(&text) {
-            seen += 1;
-            let missing = missing_options(&cmd);
-            if !missing.is_empty() {
-                bad.push(format!("{rel}:{line} lacks {}", missing.join(", ")));
-            }
+            found.push(format!("{rel}:{line}: {cmd}"));
         }
     }
-    // Pinned so a scanner that stops finding commands cannot pass vacuously:
-    // the bpf-linker download in release.yml, one in pages.yml (Zola), five
-    // in quality.yml (Vale, its Google style and three Zola) and one in
-    // .github/actions/pagefind, which pages.yml and quality.yml both call
-    // since PAGEFIND-DOWNLOAD-504 (it was one fetch in each before: 9 -> 8).
-    assert!(seen >= 8, "found only {seen} curl commands in CI");
     assert!(
-        bad.is_empty(),
-        "{} CI download(s) fail a job on one transient error:\n  {}",
-        bad.len(),
-        bad.join("\n  ")
+        found.is_empty(),
+        "{} CI step(s) run curl themselves. Fetch a pinned file through \
+         .github/actions/pinned-download, or scripts/fetch-pinned.sh where no \
+         cache can help: it verifies the sha256 and retries an outage for up \
+         to five minutes, where a bare curl gave up after about 25 s:\n  {}",
+        found.len(),
+        found.join("\n  ")
+    );
+    Ok(())
+}
+
+/// The script's one `curl` bounds each attempt, fails on an HTTP error, and
+/// leaves retrying to the script's budgeted loop.
+#[test]
+fn fetch_pinned_bounds_each_attempt_and_owns_the_retries() -> Result<(), TestError> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/fetch-pinned.sh");
+    let text = std::fs::read_to_string(&path)?;
+    let cmds = curl_commands(&text);
+    assert_eq!(
+        cmds.len(),
+        1,
+        "scripts/fetch-pinned.sh should run curl in one place: {cmds:?}"
+    );
+    let words: Vec<&str> = cmds[0].1.split_whitespace().collect();
+    for opt in ["--max-time", "--connect-timeout", "--fail"] {
+        assert!(
+            words.contains(&opt),
+            "the script's curl lacks {opt}: {}",
+            cmds[0].1
+        );
+    }
+    // curl's own --retry inside the loop would multiply the attempts, and
+    // the time, past the budget the loop enforces.
+    assert!(
+        !words.iter().any(|w| w.starts_with("--retry")),
+        "the script's curl retries by itself as well as in the loop: {}",
+        cmds[0].1
     );
     Ok(())
 }

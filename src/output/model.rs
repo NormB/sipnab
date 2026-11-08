@@ -72,13 +72,19 @@ pub struct DialogSummary {
     /// a zero would read as a real code to anything doing arithmetic on it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_status_code: Option<u16>,
-    /// Wall-clock span from first to last message, seconds (0 for
-    /// single-message dialogs).
+    /// Wall-clock span from the first message to the newest one
+    /// (`latest_message_at`), seconds (0 for single-message dialogs).
     pub duration_sec: f64,
     /// RFC 3339 timestamp of the first message.
     pub created_at: String,
-    /// RFC 3339 timestamp of the most recent message.
+    /// RFC 3339 timestamp of the message processed last. On a set of
+    /// capture files that overlap in time that is not always the newest
+    /// message; it changes on every message, so it is the field to watch for
+    /// change.
     pub updated_at: String,
+    /// RFC 3339 timestamp of the newest message, whatever order the messages
+    /// were read in. `duration_sec` runs from `created_at` to it.
+    pub latest_message_at: String,
     /// Transaction timing metrics.
     pub timing: TimingSummary,
     /// Pointer to the frame this dialog opened in, as `<source>#<ordinal>`.
@@ -117,7 +123,7 @@ impl From<&SipDialog> for DialogSummary {
     /// `d.timing`. Pure — the dialog is not modified.
     fn from(d: &SipDialog) -> Self {
         let duration_sec = if d.messages.len() >= 2 {
-            (d.updated_at - d.created_at).num_milliseconds() as f64 / 1000.0
+            d.duration().num_milliseconds() as f64 / 1000.0
         } else {
             0.0
         };
@@ -137,6 +143,7 @@ impl From<&SipDialog> for DialogSummary {
             duration_sec,
             created_at: d.created_at.to_rfc3339(),
             updated_at: d.updated_at.to_rfc3339(),
+            latest_message_at: d.latest_message_at.to_rfc3339(),
             timing: TimingSummary {
                 pdd_ms: d.timing.pdd_ms(),
                 setup_ms: d.timing.setup_ms(),
@@ -993,6 +1000,60 @@ mod wideband_tests {
         assert_eq!(out.mos_wideband, None);
         assert_eq!(out.mos_wideband_context, None);
         assert_eq!(out.mos_wideband_unavailable, None);
+        Ok(())
+    }
+}
+
+/// `DialogSummary`'s times on a call read out of timestamp order, as one
+/// store reads an `-I` set whose files overlap: see
+/// [`crate::test_utils::call_read_out_of_order`].
+#[cfg(test)]
+mod latest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The summary of the out-of-order call.
+    fn summary() -> Result<DialogSummary, TestError> {
+        let (store, _) = crate::test_utils::call_read_out_of_order(
+            "summary@example.com",
+            [192, 0, 2, 1].into(),
+        )?;
+        Ok(DialogSummary::from(
+            store.get("summary@example.com").ok_or("the call")?,
+        ))
+    }
+
+    /// `latest_message_at` names the newest message, the BYE at +2.505 s.
+    #[test]
+    fn the_summary_names_the_newest_message() -> Result<(), TestError> {
+        assert_eq!(
+            summary()?.latest_message_at,
+            "2023-11-14T22:13:22.505+00:00",
+            "latest_message_at is the BYE at +2.505 s, not the 200 OK read last"
+        );
+        Ok(())
+    }
+
+    /// `duration_sec` runs from the first message to the newest one.
+    #[test]
+    fn the_summary_duration_runs_to_the_newest_message() -> Result<(), TestError> {
+        assert_eq!(
+            summary()?.duration_sec,
+            2.505,
+            "duration_sec runs to the newest message, not to the last one read (0.905 s)"
+        );
+        Ok(())
+    }
+
+    /// `updated_at` stays the message read last, the 200 OK stamped +0.905 s.
+    #[test]
+    fn the_summary_keeps_updated_at_on_the_last_message_read() -> Result<(), TestError> {
+        assert_eq!(
+            summary()?.updated_at,
+            "2023-11-14T22:13:20.905+00:00",
+            "updated_at stays the 200 OK read last, stamped +0.905 s"
+        );
         Ok(())
     }
 }

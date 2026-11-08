@@ -514,6 +514,33 @@ jobs:
       # action's inputs read them through the `env` context.
       PAGEFIND_VERSION: '1.5.2'
       PAGEFIND_SHA256: 'afb824a9e7f64905a934900481cea5be679c03975e527329e0e5e6cc70f5feda'
+      # The pins below are job-level, not step-level, for the same reason: the
+      # steps that fetch them use .github/actions/pinned-download, whose inputs
+      # read the `env` context (CI-TOOL-DOWNLOAD-RESILIENCE).
+      VALE_VERSION: '3.16.0'
+      # Pinned by content, not just by tag: a release asset can be replaced
+      # after publication. This hash is the one in Vale's own published
+      # manifest (vale_3.16.0_checksums.txt), so it is upstream's record of
+      # what it shipped rather than a note of whatever we happened to fetch.
+      VALE_SHA256: '1049f4a585ccd1af96dcf4bdc16800cb3ce426b432da2b27893def42dcfe0ccb'
+      # The Google style's release tag. The fetch step below builds its URL
+      # from it, and that URL must equal `Packages =` in .vale.ini: a test
+      # holds the two together, because a drifting pair would lint against one
+      # package locally and a different one here.
+      VALE_GOOGLE_VERSION: '0.7.0'
+      VALE_GOOGLE_SHA256: 'dddb3dca035a067fe9ab13a1d8d8f89cb63e8b83ab4cf1934a935d60cd91d697'
+      ZOLA_VERSION: '0.19.2'
+      # Same pin as the Pages workflow installs; see the comment there for why
+      # a tag alone is not enough. Zola publishes no checksum manifest, so the
+      # hash is recorded from the artifact served at v0.19.2.
+      ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+      # lychee runs the two dead-link passes. It was lycheeverse/lychee-action,
+      # which downloads lychee from GitHub releases itself with one `curl -sfLO`
+      # and no checksum; on 2026-11-08 that download failed this job with exit
+      # 22 during the github.com 504 outage. This hash equals the release's own
+      # lychee-x86_64-unknown-linux-gnu.tar.gz.sha256 (checked 2026-11-08).
+      LYCHEE_VERSION: '0.24.2'
+      LYCHEE_SHA256: '1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -525,21 +552,27 @@ jobs:
       # Vale's Google package is not vendored here; it is fetched below. The
       # project's own rules and vocabulary ARE committed, under
       # .vale/styles/sipnab and .vale/styles/config.
+      # Each pinned archive in this job comes from the actions cache and from
+      # GitHub releases only on a miss, with the sha256 checked either way and
+      # an outage retried for up to five minutes: .github/actions/pinned-download
+      # (CI-TOOL-DOWNLOAD-RESILIENCE).
+      - name: Fetch Vale (pinned, cached)
+        id: vale
+        uses: ./.github/actions/pinned-download
+        with:
+          name: vale
+          version: ${{ env.VALE_VERSION }}
+          sha256: ${{ env.VALE_SHA256 }}
+          url: https://github.com/errata-ai/vale/releases/download/v${{ env.VALE_VERSION }}/vale_${{ env.VALE_VERSION }}_Linux_64-bit.tar.gz
+          file: vale.tar.gz
       - name: Install Vale
         env:
-          VALE_VERSION: '3.16.0'
-          # Pinned by content, not just by tag: a release asset can be replaced
-          # after publication. This hash is the one in Vale's own published
-          # manifest (vale_3.16.0_checksums.txt), so it is upstream's record of
-          # what it shipped rather than a note of whatever we happened to fetch.
-          VALE_SHA256: '1049f4a585ccd1af96dcf4bdc16800cb3ce426b432da2b27893def42dcfe0ccb'
+          VALE_TARBALL: ${{ steps.vale.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o vale.tar.gz \
-            "https://github.com/errata-ai/vale/releases/download/v${VALE_VERSION}/vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
-          echo "${VALE_SHA256}  vale.tar.gz" | sha256sum -c -
-          tar xzf vale.tar.gz vale
+          tar xzf "$VALE_TARBALL" vale
           sudo install -m 0755 vale /usr/local/bin/vale
+          rm -f vale
           vale --version
 
       # `vale sync` reads the `Packages =` URL from .vale.ini and unpacks whatever
@@ -548,25 +581,28 @@ jobs:
       # binaries above -- the package is 36 YAML rule files, so a substitution
       # changes which prose passes lint rather than executing anything -- but it is
       # the same unpinned-fetch shape, and it is the last one in CI.
-      #
-      # Keep VALE_GOOGLE_URL identical to `Packages =` in .vale.ini. A test holds
-      # the two together, because a drifting pair would lint against one package
-      # locally and a different one here.
+
+      - name: Fetch the Vale Google style (pinned, cached)
+        id: vale-google
+        uses: ./.github/actions/pinned-download
+        with:
+          name: vale-google
+          version: ${{ env.VALE_GOOGLE_VERSION }}
+          sha256: ${{ env.VALE_GOOGLE_SHA256 }}
+          url: https://github.com/errata-ai/Google/releases/download/v${{ env.VALE_GOOGLE_VERSION }}/Google.zip
+          file: Google.zip
       - name: Install Vale styles
         env:
-          VALE_GOOGLE_URL: 'https://github.com/errata-ai/Google/releases/download/v0.7.0/Google.zip'
-          VALE_GOOGLE_SHA256: 'dddb3dca035a067fe9ab13a1d8d8f89cb63e8b83ab4cf1934a935d60cd91d697'
+          VALE_GOOGLE_ZIP: ${{ steps.vale-google.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o Google.zip "${VALE_GOOGLE_URL}"
-          echo "${VALE_GOOGLE_SHA256}  Google.zip" | sha256sum -c -
           # No post-condition check on the extracted directory, deliberately. The
           # checksum already fixes the archive, so its layout is not in question,
           # and the next step cannot pass without the styles present. Naming the
           # extracted path here would also assert a gitignored directory exists,
           # which is true on a machine that has synced and false in a fresh
           # checkout -- a test that passes locally and fails in CI.
-          unzip -q -o Google.zip -d .vale/styles/
+          unzip -q -o "$VALE_GOOGLE_ZIP" -d .vale/styles/
 
       # Published docs only; docs/design and docs/research are
       # exempted by glob sections in .vale.ini because they are working
@@ -612,6 +648,26 @@ jobs:
           *) echo "::error::codespell did not run: $PROSE_REASON"; exit 1 ;;
           esac
 
+      - name: Fetch lychee (pinned, cached)
+        id: lychee
+        uses: ./.github/actions/pinned-download
+        with:
+          name: lychee
+          version: ${{ env.LYCHEE_VERSION }}
+          sha256: ${{ env.LYCHEE_SHA256 }}
+          url: https://github.com/lycheeverse/lychee/releases/download/lychee-v${{ env.LYCHEE_VERSION }}/lychee-x86_64-unknown-linux-gnu.tar.gz
+          file: lychee.tar.gz
+      - name: Install lychee
+        env:
+          LYCHEE_TARBALL: ${{ steps.lychee.outputs.path }}
+        run: |
+          set -euo pipefail
+          unpack=$(mktemp -d)
+          tar xzf "$LYCHEE_TARBALL" -C "$unpack"
+          sudo install -m 0755 "$unpack/lychee-x86_64-unknown-linux-gnu/lychee" /usr/local/bin/lychee
+          rm -rf "$unpack"
+          lychee --version
+
       # Pass one: Markdown that resolves on the filesystem. 257 unique links.
       #
       # Deliberately WITHOUT --include-fragments. Anchors are already gated, and
@@ -637,16 +693,15 @@ jobs:
       # `doc_link_hygiene_test` resolve these against the working tree, which
       # is the stronger check: it cannot be satisfied by a stale copy on main.
       # External links, including other repositories on github.com, still run.
+      # lychee exits non-zero on a dead link, which fails the step, as the
+      # action's `fail: true` did. It reads GITHUB_TOKEN for github.com links.
       - name: Dead links (docs Markdown)
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-        with:
-          args: >-
-            --no-progress --config lychee.toml
-            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/'
-            'docs/**/*.md' 'README.md' 'CONTRIBUTING.md' 'SECURITY.md'
-          fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          lychee --no-progress --config lychee.toml \
+            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/' \
+            'docs/**/*.md' 'README.md' 'CONTRIBUTING.md' 'SECURITY.md'
 
       # Pass two: the built site, where site-absolute links like /docs/install/
       # can actually be resolved. lychee reports those as unresolvable during
@@ -654,20 +709,23 @@ jobs:
       # them in a Markdown pass -- the built output is the only place the check
       # is real. This is also the pass that covers the download page's own links,
       # since it is a template rather than Markdown and nothing else reads it.
+      - name: Fetch Zola (pinned, cached)
+        id: zola
+        uses: ./.github/actions/pinned-download
+        with:
+          name: zola
+          version: ${{ env.ZOLA_VERSION }}
+          sha256: ${{ env.ZOLA_SHA256 }}
+          url: https://github.com/getzola/zola/releases/download/v${{ env.ZOLA_VERSION }}/zola-v${{ env.ZOLA_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
+          file: zola.tar.gz
       - name: Install Zola
         env:
-          ZOLA_VERSION: '0.19.2'
-          # Same pin as the Pages workflow installs; see the comment there for why
-          # a tag alone is not enough. Zola publishes no checksum manifest, so the
-          # hash is recorded from the artifact served at v0.19.2.
-          ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+          ZOLA_TARBALL: ${{ steps.zola.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
-            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
-          tar xzf zola.tar.gz
+          tar xzf "$ZOLA_TARBALL" zola
           sudo install -m 0755 zola /usr/local/bin/zola
+          rm -f zola
           zola --version
 
       - name: Build site
@@ -737,17 +795,14 @@ jobs:
       # which 404s the same way (#622).
       # `every_dead_link_pass_excludes_both_own_url_forms` keeps the passes alike.
       - name: Dead links (built site)
-        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
-        with:
-          args: >-
-            --no-progress --config lychee.toml
-            --exclude '^https://sipnab\.com/'
-            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/'
-            --root-dir "$GITHUB_WORKSPACE/website/public"
-            'website/public/**/*.html'
-          fail: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          lychee --no-progress --config lychee.toml \
+            --exclude '^https://sipnab\.com/' \
+            --exclude '^https://github\.com/NormB/sipnab/(blob|raw)/' \
+            --root-dir "$GITHUB_WORKSPACE/website/public" \
+            'website/public/**/*.html'
 
   # ---------------------------------------------------------------------------
   # Accessibility: axe-core against the RENDERED site, WCAG 2 Level A and AA.
@@ -776,6 +831,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Job-level, because the Zola fetch step uses
+    # .github/actions/pinned-download, whose inputs read the `env` context.
+    # Same pin as the Pages workflow and the Docs job install; see the comment
+    # in pages.yml for why a tag alone is not enough.
+    # `a_tool_installed_by_more_than_one_workflow_is_pinned_identically` holds
+    # every copy together.
+    env:
+      ZOLA_VERSION: '0.19.2'
+      ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -783,22 +847,23 @@ jobs:
           # third-party actions to read. This job only reads the tree.
           persist-credentials: false
 
+      - name: Fetch Zola (pinned, cached, accessibility)
+        id: zola
+        uses: ./.github/actions/pinned-download
+        with:
+          name: zola
+          version: ${{ env.ZOLA_VERSION }}
+          sha256: ${{ env.ZOLA_SHA256 }}
+          url: https://github.com/getzola/zola/releases/download/v${{ env.ZOLA_VERSION }}/zola-v${{ env.ZOLA_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
+          file: zola.tar.gz
       - name: Install Zola (accessibility)
         env:
-          ZOLA_VERSION: '0.19.2'
-          # Same pin as the Pages workflow and the Docs job install; see the
-          # comment in pages.yml for why a tag alone is not enough.
-          # `a_tool_installed_by_more_than_one_workflow_is_pinned_identically`
-          # holds all three copies together.
-          ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+          ZOLA_TARBALL: ${{ steps.zola.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
-            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
-          tar xzf zola.tar.gz
+          tar xzf "$ZOLA_TARBALL" zola
           sudo install -m 0755 zola /usr/local/bin/zola
-          rm -f zola zola.tar.gz
+          rm -f zola
           zola --version
 
       # `--base-url` is not cosmetic here, it is what makes the run mean
@@ -926,6 +991,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # Job-level, because the Zola fetch step uses
+    # .github/actions/pinned-download, whose inputs read the `env` context.
+    # Same pin as the Pages workflow and the Docs job install; see the comment
+    # in pages.yml for why a tag alone is not enough.
+    # `a_tool_installed_by_more_than_one_workflow_is_pinned_identically` holds
+    # every copy together.
+    env:
+      ZOLA_VERSION: '0.19.2'
+      ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -933,20 +1007,23 @@ jobs:
           # third-party actions to read. This job only reads the tree.
           persist-credentials: false
 
+      - name: Fetch Zola (pinned, cached, lighthouse)
+        id: zola
+        uses: ./.github/actions/pinned-download
+        with:
+          name: zola
+          version: ${{ env.ZOLA_VERSION }}
+          sha256: ${{ env.ZOLA_SHA256 }}
+          url: https://github.com/getzola/zola/releases/download/v${{ env.ZOLA_VERSION }}/zola-v${{ env.ZOLA_VERSION }}-x86_64-unknown-linux-gnu.tar.gz
+          file: zola.tar.gz
       - name: Install Zola (lighthouse)
         env:
-          ZOLA_VERSION: '0.19.2'
-          # Same pin as the Pages workflow and the Docs job install; see the
-          # comment in pages.yml for why a tag alone is not enough.
-          ZOLA_SHA256: '0798e69b86c628ddcb264ebd86c8cc8dce7670b9049060bf94faa73f6857cd9c'
+          ZOLA_TARBALL: ${{ steps.zola.outputs.path }}
         run: |
           set -euo pipefail
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o zola.tar.gz \
-            "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${ZOLA_SHA256}  zola.tar.gz" | sha256sum -c -
-          tar xzf zola.tar.gz
+          tar xzf "$ZOLA_TARBALL" zola
           sudo install -m 0755 zola /usr/local/bin/zola
-          rm -f zola zola.tar.gz
+          rm -f zola
           zola --version
 
       # The port matches `collect.url` in e2e/lighthouserc.json, and it has to:

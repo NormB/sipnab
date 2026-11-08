@@ -186,6 +186,7 @@ The example runs against
       "frame": "tests/pcap-samples/sip-rtp-g711.pcap#433@b034a3ca525e06ff",
       "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2016-11-26T14:53:08.290927+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "InCall",

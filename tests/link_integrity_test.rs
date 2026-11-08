@@ -1719,7 +1719,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // sdp_origin row and the get_call_tree example's link to find_correlated),
     // cli-reference.md +1 and mcp-estate.md +1 (each to "When an SDP origin
     // counts"). Counted per file against origin/main 0c789238c.
-    const EXPECTED_WIKI_LINKS: usize = 2471;
+    // 2471 -> 2481 (LATEST-MESSAGE-AT): output-formats.md +4 (the how-to's
+    // links to the API check, the tail route, tail_dialogs and its own "When
+    // the two differ"), mcp-tools-signaling.md +2, mcp-tools-core.md,
+    // rest-api.md, tuning-capture.md and internals/testing.md +1 each, to
+    // "Which dialog time to read". Counted per file against origin/main
+    // c736934f3.
+    const EXPECTED_WIKI_LINKS: usize = 2481;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

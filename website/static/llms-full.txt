@@ -7902,6 +7902,7 @@ console.log(`${dialogs.length} dialogs (${total} total)`);
       },
       "created_at": "2026-04-13T10:30:00Z",
       "updated_at": "2026-04-13T10:30:03Z",
+      "latest_message_at": "2026-04-13T10:30:03Z",
       "frame": "capture.pcap#41@6f3a1c02b8d4e795"
     }
   ],
@@ -7987,6 +7988,13 @@ Four list-row keys drop out rather than reading null:
     process captures from an interface and a HEP mirror at once.
 - `tags`: the labels `--tag` gave this run's dialogs, absent when the run set
   none.
+
+`updated_at` is the timestamp of the message processed last, and
+`latest_message_at` the newest timestamp among the dialog's messages.
+`duration_sec` runs from `created_at` to `latest_message_at`. They differ only
+when sipnab read an older-stamped message after a newer one, as on an `-I` set
+whose files overlap in time. [Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at)
+says which to use for what.
 
 The list rows carry `from_user`/`to_user`. The single-dialog and report
 endpoints below carry `from`/`to` instead. A client that walks the list and
@@ -33170,6 +33178,117 @@ The same document is what you get from:
 `--on-quality-exec` is separate. It passes the stream object on its own, under
 its own variable name: `SIPNAB_STREAM_JSON`, **not** `SIPNAB_JSON`.
 
+## Which dialog time to read: `updated_at` or `latest_message_at`
+
+A dialog summary carries three times. The REST rows (`GET /v1/dialogs`,
+`GET /v1/dialogs/tail` and the other routes that return a dialog summary), the
+MCP dialog summaries and the dialogs the TUI saves as JSON all carry them:
+
+| Field | What it holds | Read it to |
+|---|---|---|
+| `created_at` | The timestamp of the first message sipnab read for the dialog. | Find when sipnab first saw the call. |
+| `updated_at` | The timestamp of the message sipnab processed last. | Detect that a dialog changed. |
+| `latest_message_at` | The newest timestamp among the dialog's messages. | Measure how long the call lasted, or how long it has been quiet. |
+
+`duration_sec` is `latest_message_at` minus `created_at`, in seconds.
+`--json-dialogs` carries `duration_sec` but none of the three times.
+
+### When the two differ
+
+On a live capture, and on one file whose timestamps only go forward, sipnab
+reads a dialog's messages in timestamp order, and `updated_at` equals
+`latest_message_at`. They differ when sipnab reads an older-stamped message
+after a newer one:
+
+- **An `-I` set whose files overlap in time.** sipnab reads a set file by
+  file, in the order of each file's first packet. A file read second can hold
+  messages stamped before the last message of the file read first.
+- **A capture whose timestamps go backwards.** For example, one capture
+  merged from two hosts whose clocks differ.
+
+`updated_at` then moves back to the older stamp. `latest_message_at` does not
+move back.
+
+### Before you start
+
+- A sipnab binary with the `api` feature for the REST steps, or the `mcp`
+  feature for the MCP ones. [Check your binary has the API](rest-api.md#check-your-binary-has-the-api)
+  shows how to tell.
+- Nothing changes on any other system: sipnab derives both fields from the
+  captures it already reads.
+
+### Read the times
+
+1. Start sipnab on the capture or the set:
+
+   ```bash
+   sipnab -N -I edge.pcap -I core.pcap --api 127.0.0.1:8080
+   ```
+
+2. Read each dialog's three times and its duration:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs \
+     | jq -c '.dialogs[] | {call_id, created_at, updated_at, latest_message_at, duration_sec}'
+   ```
+
+3. For how long a call lasted, read `duration_sec`, or subtract `created_at`
+   from `latest_message_at`.
+4. For which calls changed since your last poll, poll
+   [`GET /v1/dialogs/tail`](rest-api.md#get-v1-dialogs-tail) or the MCP
+   [`tail_dialogs`](mcp-tools-signaling.md#tail_dialogs) tool. Both page on
+   `updated_at`.
+
+### Check the result
+
+- In every row, `latest_message_at` is never earlier than `created_at` or
+  `updated_at`.
+- `duration_sec` equals `latest_message_at` minus `created_at`.
+
+On a two-file set where the first file read holds a call from its INVITE to
+the 200 OK to its BYE 2.505 s later, and the second file holds the same
+call's messages up to 0.905 s, the row reads:
+
+```json
+{
+  "created_at": "2023-11-14T22:13:20+00:00",
+  "updated_at": "2023-11-14T22:13:20.905+00:00",
+  "latest_message_at": "2023-11-14T22:13:22.505+00:00",
+  "duration_sec": 2.505
+}
+```
+
+### What sipnab reads each one for
+
+- **`latest_message_at`:** `duration_sec` on every output, the dialog
+  table's Duration column, the call report's `Time` line, the TUI's Duration
+  column and its sort, `duration` in the filter DSL, the short-call check of
+  the fraud detector, idle compaction, the active dialog and call counts, a
+  call tree's `last_activity`, the newest-first order of `describe_endpoint`'s
+  recent dialogs, and the lifetime the `sdp_origin` correlation compares.
+- **`updated_at`:** the live vCon export, which records the `updated_at` it
+  wrote each container at and writes the container again when `updated_at`
+  changes, and measures an ended call's settle wait from it; the
+  `GET /v1/dialogs/tail` and `tail_dialogs` cursors; and the TUI's call-flow
+  cache. Each of these asks whether a dialog changed, and a message stamped
+  older than the newest is a change.
+
+### Troubleshooting
+
+- **`duration_sec` on an `-I` set changed after an upgrade.** Before
+  `latest_message_at` existed, `duration_sec` ran to the message read last.
+  On a set whose files overlap in time that was shorter than the call, and
+  below zero when the message read last was older than the first one read.
+  It now runs to the newest message.
+- **A tail poller did not see a dialog again.** The tail route and
+  `tail_dialogs` return dialogs whose `updated_at` is after the cursor. A
+  message stamped older than the cursor moves `updated_at` behind it, so
+  neither returns that dialog again. After sipnab has read the input, list
+  the dialogs once with `GET /v1/dialogs` or `list_dialogs`.
+- **`updated_at` is earlier than `latest_message_at`.** The capture holds a
+  message stamped older than one sipnab read before it. See
+  [When the two differ](#when-the-two-differ).
+
 ## STUN / TURN JSON (`--json-stun`)
 
 NDJSON, emitted after capture:
@@ -36805,6 +36924,7 @@ The blocks below run against
       "final_status_code": 403,
       "created_at": "2016-05-17T08:01:35.431471+00:00",
       "updated_at": "2016-05-17T08:01:35.433107+00:00",
+      "latest_message_at": "2016-05-17T08:01:35.433107+00:00",
       "timing": { "pdd_ms": null, "setup_ms": null, "retransmits": 0, "duration_ms": null },
       "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
       "input_origin": "wire"
@@ -38048,7 +38168,7 @@ text block.
     "content": [
       {
         "type": "text",
-        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"final_status_code\":403,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
+        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"final_status_code\":403,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"latest_message_at\":\"2016-05-17T08:01:35.433107+00:00\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
       },
       {
         "type": "text",
@@ -38077,6 +38197,7 @@ text block.
           "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
           "from_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
           "input_origin": "wire",
+          "latest_message_at": "2016-05-17T08:01:35.433107+00:00",
           "method": "REGISTER",
           "msg_count": 4,
           "state": "Failed",
@@ -38113,7 +38234,8 @@ text block.
 Each row is a dialog summary: the compact projection.
 
 - It holds `call_id`, `state`, `method`, `from_user`, `to_user`,
-  `msg_count`, `duration_sec`, `created_at`, `updated_at`, `timing`, `frame`.
+  `msg_count`, `duration_sec`, `created_at`, `updated_at`,
+  `latest_message_at`, `timing`, `frame`.
 - It adds `final_status_code` and `input_origin` where sipnab knows them.
 - The full aggregated dialog document is what `get_dialog_report` returns.
   (The [REST API](rest-api.md#get-v1-dialogs-call-id-report) returns the same
@@ -40472,7 +40594,7 @@ The rules:
   `data.valid_values` list the fields the row carries:
 
   ```json
-  {"code":-32602,"message":"unknown field 'stat'; this row carries: call_id, created_at, duration_sec, final_status_code, frame, from_user, input_origin, method, msg_count, state, timing, to_user, updated_at","data":{"param":"fields","reason":"invalid_choice","valid_values":["call_id","created_at","duration_sec","final_status_code","frame","from_user","input_origin","method","msg_count","state","timing","to_user","updated_at"]}}
+  {"code":-32602,"message":"unknown field 'stat'; this row carries: call_id, created_at, duration_sec, final_status_code, frame, from_user, input_origin, latest_message_at, method, msg_count, state, timing, to_user, updated_at","data":{"param":"fields","reason":"invalid_choice","valid_values":["call_id","created_at","duration_sec","final_status_code","frame","from_user","input_origin","latest_message_at","method","msg_count","state","timing","to_user","updated_at"]}}
   ```
 
 - **The page fields are always kept.** `total_matched`, `truncated`,
@@ -40709,7 +40831,7 @@ which:**
 | `th_mappings` | Yes, `total_matched` | One answer narrowed by Call-ID and state, ordered by state, and the same fields and values `GET /v1/th-mappings` returns | Raise `limit`, or narrow with `call_id` or `state` |
 | `get_call_tree` | No, `truncated` only | A breadth-first walk outward from one call, stopped at `limit` legs | Raise `limit` |
 | `top_talkers` | Yes, `distinct_talkers` | A ranking by dialog count | Raise `limit` |
-| `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `updated_at`, which moves each time a call gains a message, so a cursor on it would skip rows | [`list_dialogs`](mcp-tools-core.md#list_dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |
+| `describe_endpoint` | Yes, `dialogs` | `recent_dialogs` is newest first by `latest_message_at`, which moves each time a call gains a newer message, so a cursor on it would skip rows | [`list_dialogs`](mcp-tools-core.md#list_dialogs) with a filter such as `src.ip == '192.0.2.10'` or `from.user == 'alice'` pages that endpoint's dialogs |
 | `hep_senders` | Yes, `senders_tracked` and `refused_sources_tracked` | Two lists in one answer, the refused sources ranked by count, and the same fields and values `GET /v1/hep/senders` returns | Raise `limit`, and raise `--mcp-max-rows` as well when the listener tracks more than 1000 senders |
 | `tfps_labels` | No: `total` counts the rows TFPS returned, and `truncated` says it held more | TFPS's `log` command takes a row count and no offset, so there is no position to resume from | Raise `limit`, or run `tfps_ctl log --json --limit N` on the TFPS host |
 | `tail_dialogs` | No | It has a cursor. The table names it because it has no total | Follow `next_cursor` until the page comes back empty |
@@ -41160,11 +41282,18 @@ Returns one page of dialog summaries from the live capture store.
 | `capture_identity` | object | Which capture answered — see [`capture_status`](#capture_status). A changed `instance` voids every cursor you hold. |
 
 Each `DialogSummary` row carries `call_id`, `state`, `method`, `from_user`,
-`to_user`, `msg_count`, `duration_sec`, `created_at`, `updated_at`, a `timing`
-object (`pdd_ms`, `setup_ms`, `retransmits`, `duration_ms`, each `null` when the
-capture never showed it) and a `frame` pointer for
-[`show_evidence`](mcp-tools-captures.md#show_evidence). `from_user` and `to_user` arrive fenced,
-because an endpoint chose them.
+`to_user`, `msg_count`, `duration_sec`, `created_at`, `updated_at`,
+`latest_message_at`, a `timing` object (`pdd_ms`, `setup_ms`, `retransmits`,
+`duration_ms`, each `null` when the capture never showed it) and a `frame`
+pointer for [`show_evidence`](mcp-tools-captures.md#show_evidence). `from_user`
+and `to_user` arrive fenced, because an endpoint chose them.
+
+`updated_at` is the timestamp of the message processed last, and
+`latest_message_at` the newest timestamp among the dialog's messages.
+`duration_sec` runs from `created_at` to `latest_message_at`. The two differ
+only when sipnab read an older-stamped message after a newer one, as on an
+`-I` set whose files overlap in time: see
+[Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at).
 
 Two more keys appear when sipnab knows them, and are **left out rather than sent
 as null** when it does not, so an absent key means "not known here":
@@ -41199,6 +41328,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
       "duration_sec": 0.036,
       "created_at": "2016-11-17T21:52:35.303349+00:00",
       "updated_at": "2016-11-17T21:52:35.339349+00:00",
+      "latest_message_at": "2016-11-17T21:52:35.339349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -41219,6 +41349,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
       "duration_sec": 0.036,
       "created_at": "2016-11-17T21:52:35.403349+00:00",
       "updated_at": "2016-11-17T21:52:35.439349+00:00",
+      "latest_message_at": "2016-11-17T21:52:35.439349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -41380,6 +41511,7 @@ invalid_params (-32602) naming the offending value.
       "duration_sec": 0.03,
       "created_at": "2016-11-17T21:54:34.903349+00:00",
       "updated_at": "2016-11-17T21:54:34.933349+00:00",
+      "latest_message_at": "2016-11-17T21:54:34.933349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -41644,6 +41776,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
     "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
     "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
     "input_origin": "wire",
+    "latest_message_at": "2016-11-26T14:53:08.170676+00:00",
     "method": "INVITE",
     "msg_count": 6,
     "state": "Completed",
@@ -42559,6 +42692,15 @@ so the next page can skip or repeat dialogs that share the timestamp, with no
 error. `|` occurs in neither an RFC 3339 timestamp nor a valid Call-ID
 ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) `word`).
 
+The cursor pages on `updated_at`, the timestamp of the message processed
+last, and not on `latest_message_at`, the newest: the tool reports change, and
+a message stamped older than the newest is a change. On an `-I` set whose
+files overlap in time, such a message can move a dialog's `updated_at` behind
+a cursor already returned, and the dialog is not returned again. Once
+`source_exhausted` is `true`, one [`list_dialogs`](mcp-tools-core.md#list_dialogs)
+sweep reads every dialog as it ended. See
+[Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at).
+
 `source_exhausted` is `false` while more dialog updates can still
 arrive and `true` once the capture source is fully drained — the end of
 an `-I` pcap replay, or a live capture that has hit its
@@ -42581,6 +42723,7 @@ has finished: stop when it turns `true` instead of polling forever.
       "duration_sec": 8.504,
       "created_at": "2016-11-26T14:52:59.666393+00:00",
       "updated_at": "2016-11-26T14:53:08.170676+00:00",
+      "latest_message_at": "2016-11-26T14:53:08.170676+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": 4,
@@ -42683,6 +42826,7 @@ which holds four failed calls:
       "frame": "tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b",
       "from_user": "⟦untrusted-capture-data⟧carol⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2023-11-14T22:13:24.810+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "Failed",
@@ -42703,6 +42847,7 @@ which holds four failed calls:
       "frame": "tests/pcap-samples/sip-problem-call.pcap#9@4201862d9613e2f2",
       "from_user": "⟦untrusted-capture-data⟧erin⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2023-11-14T22:13:27.810+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "Failed",
@@ -42723,6 +42868,7 @@ which holds four failed calls:
       "frame": "tests/pcap-samples/sip-problem-call.pcap#13@091b886751922950",
       "from_user": "⟦untrusted-capture-data⟧grace⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2023-11-14T22:13:30.810+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "Failed",
@@ -42743,6 +42889,7 @@ which holds four failed calls:
       "frame": "tests/pcap-samples/sip-problem-call.pcap#17@cc2aeb6bbdcb704c",
       "from_user": "⟦untrusted-capture-data⟧ivan⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2023-11-14T22:13:33.810+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "Failed",
@@ -45348,6 +45495,7 @@ The example runs against
       "frame": "tests/pcap-samples/sip-rtp-g711.pcap#433@b034a3ca525e06ff",
       "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2016-11-26T14:53:08.290927+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "InCall",
@@ -51630,6 +51778,11 @@ stores at the end of the input. The merge rebuilds what the one store holds:
   is.
 - **sipnab counts rtpproxy retries per proxy.** A retry is a proxy sending a
   cookie it sent before. A cookie two proxies both use is two commands.
+- **Durations and idleness run to each dialog's newest message.** On an `-I`
+  set whose files overlap in time, the message sipnab reads last can be older
+  than the newest. `duration_sec`, idle compaction and the active counts
+  measure from `latest_message_at`, the newest, at every `--cores`. See
+  [Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at).
 
 Two differences remain:
 
@@ -79826,6 +79979,70 @@ Audited, found sound (true-positive findings: none):
 - No disk-full test for the pcap/wav writers. Writes propagate `?`, so there is
   no panic, but no test covers the error path.
 
+## Test matrix: dialog times (`updated_at` and `latest_message_at`)
+
+A dialog keeps two times of its newest activity. `updated_at` is the
+timestamp of the message processed last, and the live vCon export and the
+tail cursors read it to detect change. `latest_message_at` is the newest
+timestamp among the dialog's messages, and durations, idle compaction, the
+active counts and the newest-first sorts read it. They differ when sipnab
+reads an older-stamped message after a newer one, as on an `-I` set whose
+files overlap in time. [Which dialog time to read](../output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at)
+is the user-facing how-to.
+
+The tests, by what they check. SUCCESS: a reader gives the right answer.
+FAILURE: sipnab refuses a wrong answer, or it does not happen. EDGE: a boundary or a
+degenerate input.
+
+| Where | SUCCESS | FAILURE | EDGE |
+|---|---|---|---|
+| [`src/sip/dialog_store.rs`](../../src/sip/dialog_store.rs) (store, compaction, active counts, call tree, tail page, merge oracle) | 9 | 6 | 7 |
+| [`src/output/model.rs`](../../src/output/model.rs) (`DialogSummary`) | 3 | 0 | 0 |
+| [`src/sip/dsl.rs`](../../src/sip/dsl.rs) (`duration`) | 1 | 1 | 0 |
+| [`src/output/dialog_report.rs`](../../src/output/dialog_report.rs) and [`src/output/call_report.rs`](../../src/output/call_report.rs) | 4 | 0 | 0 |
+| [`src/security/fraud_detect.rs`](../../src/security/fraud_detect.rs) (short calls) | 1 | 1 | 0 |
+| [`src/sip/endpoint.rs`](../../src/sip/endpoint.rs) and [`src/sip/sdp_origin.rs`](../../src/sip/sdp_origin.rs) | 2 | 0 | 0 |
+| [`src/tui/mod.rs`](../../src/tui/mod.rs) and [`src/tui/call_list.rs`](../../src/tui/call_list.rs) (Duration column and sort) | 2 | 0 | 0 |
+| [`src/app/batch.rs`](../../src/app/batch.rs) (live vCon export) | 1 | 1 | 0 |
+| [`tests/latest_message_at_test.rs`](../../tests/latest_message_at_test.rs) (CLI, worker counts, schema) | 5 | 4 | 4 |
+| [`tests/openapi_contract_test.rs`](../../tests/openapi_contract_test.rs) | 1 | 0 | 0 |
+| [`tests/cores_parity_test.rs`](../../tests/cores_parity_test.rs) (idle compaction at `--cores` 1, 2, 4, 8) | 0 | 1 | 2 |
+| Total, 56 | 29 | 14 | 13 |
+
+The cases the matrix covers:
+
+- **Files out of order and overlapping.** The two-file fixture
+  `callid_across_files` in
+  [`tests/support/synthetic_captures.rs`](../../tests/support/synthetic_captures.rs):
+  sixteen calls whose newest messages are in the file read first. Every call
+  lasts 2.505 s; read to the last message it lasted 0.905 s.
+- **Identical timestamps,** in one file and across two.
+- **A single message.**
+- **A late retransmission with an older timestamp:** still counted, and the
+  duration stays at the newest message.
+- **A dialog read newest first:** no negative duration.
+- **Idle compaction at exactly 600 s from the newest message** (not
+  compacted), one millisecond past it (compacted), and past 600 s only from
+  the message read last (not compacted), in one store and end to end at
+  `--cores` 1, 2, 4 and 8. The `--cores` merge oracle and the shortcut of the
+  merge (`compaction_due`) cover the last case.
+- **The live vCon export** writing a call again after a message stamped older
+  than its newest. This is the guard for keeping `updated_at` the last
+  message read.
+- **The output schema:** [`tests/schemas/dialog.schema.json`](../../tests/schemas/dialog.schema.json) and the OpenAPI
+  `DialogSummary` component require `latest_message_at` as a date-time, and
+  refuse a summary without it or with a number in it.
+
+Existing gates hold the field on every surface as well:
+`every_remaining_schema_agrees_with_the_projection_it_describes` in
+[`tests/json_schema_test.rs`](../../tests/json_schema_test.rs),
+`the_dialog_summary_component_declares_exactly_what_the_projection_emits` in
+[`tests/openapi_contract_test.rs`](../../tests/openapi_contract_test.rs),
+`every_dialog_summary_field_is_classified_as_fenced_or_verbatim` in
+[`tests/mcp_untrusted_fencing_test.rs`](../../tests/mcp_untrusted_fencing_test.rs),
+and the merge oracle's `observable`, which compares `latest_message_at` across
+every assignment of a call's legs to workers.
+
 ---
 
 <!-- source: docs/internals/walkthroughs.md -->
@@ -80826,6 +81043,78 @@ Branch protection sets `required_status_checks.strict: true`.
   fails here rather than at `cargo publish`.
 - [`tests/crate_package_test.rs`](../../tests/crate_package_test.rs) is the fast half.
   It packages without compiling on every test run.
+
+### Pinned tool downloads
+
+CI installs Zola, Vale, the Vale Google style, lychee, `pagefind`, cargo-nextest and bpf-linker from GitHub release assets.
+The workflows pin each one by version and by sha256.
+
+On 2026-11-08 github.com answered release downloads with HTTP 504 from at least 08:57Z to at least 09:48Z.
+
+- Each install step was one curl download of the archive with five retries 5 seconds apart, which is about 25 seconds of retries.
+- main's Pages deploy failed at "Install Zola".
+- The Docs, Accessibility and Lighthouse jobs of pull requests #698 and #699 failed at the same step.
+
+Every such download now goes through one rule:
+
+- [`scripts/fetch-pinned.sh`](../../scripts/fetch-pinned.sh) puts the pinned bytes of one file at a destination.
+  - It hashes a file already at the destination first.
+    On a match it uses that file and fetches nothing.
+    On a mismatch it deletes the file with a warning, then fetches it again.
+  - It retries HTTP 408, 429 and 5xx, timeouts, refused or reset connections and short transfers.
+    The delay starts at 5 seconds and doubles up to 60.
+    It retries only while the time spent plus the next delay stays within 300 seconds.
+  - curl's time limit bounds each attempt.
+  - The exit status names the kind of failure: 1 is an outage, so a re-run can pass.
+    3 is bytes that do not match the pin, so a re-run cannot.
+    4 is a permanent refusal such as HTTP 404, so the URL or the version is wrong.
+  - Each error names the URL and the last HTTP status or curl error.
+- [`.github/actions/pinned-download`](../../.github/actions/pinned-download/action.yml) runs that script between an `actions/cache` restore and save.
+  - The key is the tool's name, its version and its sha256.
+  - The script runs on every run, so it hashes a restored file before anything uses it.
+  - The save runs only after a miss, and only on `main`.
+  - The directory is the job's own `runner.temp`.
+- `release.yml` runs the script for bpf-linker without the cache.
+  A release runs on a tag, and an entry a tag run saves is readable only by that tag.
+- [`tests/workflow_supply_chain_test.rs`](../../tests/workflow_supply_chain_test.rs) fails a workflow or action step that names a `releases/download/` URL and does not go through the action or the script.
+  [`tests/ci_curl_retry_test.rs`](../../tests/ci_curl_retry_test.rs) fails a CI file that runs `curl` itself.
+  `no_workflow_uses_an_action_that_fetches_its_tool_unchecked` fails a step that uses `lycheeverse/lychee-action`.
+  That action downloads lychee from a release with one `curl` and no checksum, and on 2026-11-08 that download failed the Docs job.
+  `taiki-e/install-action` and `sigstore/cosign-installer` still fetch their tools from GitHub releases themselves.
+- [`scripts/tests/test_fetch_pinned.py`](../../scripts/tests/test_fetch_pinned.py) drives the script against a local HTTP server.
+
+To bump a tool:
+
+1. Change its `_VERSION` value in every workflow that pins it.
+   `a_tool_installed_by_more_than_one_workflow_is_pinned_identically` fails while two copies differ.
+   cargo-nextest's version is in [`.github/actions/nextest/action.yml`](../../.github/actions/nextest/action.yml) and [`.config/nextest.toml`](../../.config/nextest.toml).
+2. Download the new archive and hash it:
+
+   ```sh
+   # Run all of these, in order.
+   curl -fsSL -o archive "<the release asset URL>"
+   sha256sum archive
+   ```
+
+   Where the release publishes a checksum file, as Vale and cargo-nextest do, compare the two.
+3. Put the hash in the matching `_SHA256` value.
+   The new version and hash are a new cache key, so the first run on `main` fetches and saves the archive.
+
+During a download outage:
+
+- A run that fails with exit 1 from `fetch-pinned.sh` failed on the network.
+  Re-run it once a manual `curl` of the URL succeeds:
+
+  ```sh
+  curl -sS -o /dev/null -w '%{http_code}\n' -L "<the URL in the error>"
+  ```
+
+- A job whose archive is in the cache does not reach github.com, so an outage reaches only pins `main` has not yet saved.
+- An exit 3 means the bytes served differ from the pin.
+  Do not re-run.
+  Download the asset and compare its hash with the release's own checksum file before changing the pin.
+- A warning that a cached file does not match its pin names the entry.
+  Delete it with `gh cache delete <key>`, because an entry is never overwritten.
 
 ## Hooks
 
