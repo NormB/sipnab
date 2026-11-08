@@ -35,7 +35,7 @@ docker run -d --name sipnab-refer-opensips --network "$net" --ip 198.51.100.10 \
   -v "$here/opensips.cfg:/etc/opensips/refer.cfg:ro" --entrypoint opensips \
   "$image" -F -f /etc/opensips/refer.cfg >/dev/null
 sleep 2
-docker ps --filter name=sipnab-refer-opensips --format '{{.Status}}' | grep -q Up \
+{ status=$(docker ps --filter name=sipnab-refer-opensips --format '{{.Status}}') && grep -q Up <<<"$status"; } \
   || { docker logs sipnab-refer-opensips; exit 1; }
 
 dumpcap -q -i "$net" -f "udp port 5060 or udp port 5070 or udp port 5080" -P -w "$work/raw.pcap" &

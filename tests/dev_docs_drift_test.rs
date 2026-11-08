@@ -960,7 +960,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 764 -> 783 (LATEST-MESSAGE-AT): docs/internals/testing.md's dialog-times
     // test matrix links the 19 source and test files it counts (+19); every
     // other developer page unchanged.
-    const EXPECTED_CODE_LINKS: usize = 783;
+    // 783 -> 788 (PIPEFAIL-GREP-Q-SWEEP): docs/internals/testing.md's gate
+    // roster row links tests/pipefail_early_exit_test.rs and
+    // tests/support/pipefail_scan.rs (+2), and its early-exit reader test matrix links
+    // the test files it counts (+3); every other developer page unchanged.
+    const EXPECTED_CODE_LINKS: usize = 788;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

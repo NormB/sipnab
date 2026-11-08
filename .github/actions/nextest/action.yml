@@ -119,5 +119,8 @@ runs:
         chmod 0755 "$bin/cargo-nextest"
         echo "$bin" >> "$GITHUB_PATH"
         PATH="$bin:$PATH" cargo nextest --version
-        PATH="$bin:$PATH" cargo nextest --version | grep -qF "cargo-nextest ${NEXTEST_VERSION} " \
+        # Captured, then searched: a pipe into grep -q fails under pipefail when
+        # grep exits while cargo is still writing (SIGPIPE, 141).
+        resolved=$(PATH="$bin:$PATH" cargo nextest --version) \
+          && grep -qF "cargo-nextest ${NEXTEST_VERSION} " <<<"$resolved" \
           || { echo "::error::cargo resolves another cargo-nextest than the one just installed"; exit 1; }

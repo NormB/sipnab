@@ -63,6 +63,8 @@ use std::process::Command;
 mod ai_attribution;
 #[path = "support/executable.rs"]
 mod executable;
+#[path = "support/pipefail_scan.rs"]
+mod pipefail_scan;
 
 type TestError = Box<dyn std::error::Error>;
 
@@ -974,29 +976,18 @@ fn message_script_passes_a_clean_run_followed_by_long_output() -> Result<(), Tes
 /// script to the same rule: `grep -q` exits at its first match and `awk`
 /// at `exit`, and under `set -o pipefail` the writer's SIGPIPE then fails the
 /// pipeline. The script reads captured text from a here-string instead, which
-/// no writer process feeds. split_debuginfo_test.rs holds
-/// scripts/split-debuginfo.sh to the same rule.
+/// no writer process feeds. The rule is tests/support/pipefail_scan.rs, the
+/// one tests/pipefail_early_exit_test.rs applies to every tracked script.
 #[test]
 fn message_script_never_pipes_into_a_reader_that_stops_early() -> Result<(), TestError> {
     let script = std::fs::read_to_string(repo().join(MESSAGE_SCRIPT))
         .map_err(|e| format!("{MESSAGE_SCRIPT}: {e}"))?;
-    let offenders: Vec<(usize, &str)> = script
-        .lines()
-        .enumerate()
-        .filter(|(_, l)| !l.trim_start().starts_with('#'))
-        .filter(|(_, l)| {
-            let piped: Vec<&str> = l.split('|').skip(1).map(str::trim_start).collect();
-            piped
-                .iter()
-                .any(|s| s.starts_with("grep") || s.starts_with("awk"))
-        })
-        .map(|(i, l)| (i + 1, l.trim()))
-        .collect();
+    let offenders = pipefail_scan::scan_shell_file(&script);
     assert!(
         offenders.is_empty(),
-        "{MESSAGE_SCRIPT} pipes into `grep` or `awk`, which can stop reading \
-         before the writer is done; under pipefail the writer's SIGPIPE fails \
-         the pipeline. Read a here-string instead: {offenders:?}"
+        "{MESSAGE_SCRIPT} pipes into a reader that can stop reading before the \
+         writer is done; under pipefail the writer's SIGPIPE fails the \
+         pipeline. Read a here-string instead: {offenders:?}"
     );
     Ok(())
 }

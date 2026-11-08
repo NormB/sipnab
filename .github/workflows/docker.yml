@@ -199,7 +199,7 @@ jobs:
             sipnab:smoke -N -I /pcaps/codec-negotiation.pcap 2>&1)
           echo "$out"
           echo "::endgroup::"
-          if ! printf '%s' "$out" | grep -q "packets captured"; then
+          if ! grep -q "packets captured" <<<"$out"; then
             echo "::error::the image ran but did not parse the fixture capture — runtime layer is broken"
             exit 1
           fi

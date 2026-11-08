@@ -6096,7 +6096,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // to read" in docs/output-formats.md and the test matrix in
     // docs/internals/testing.md (+1 each), and their site mirrors (+1 each).
     // Counted per file against origin/main c736934f3.
-    const EXPECTED_TABLES: usize = 1431;
+    // 1431 -> 1433 (PIPEFAIL-GREP-Q-SWEEP): the early-exit reader test matrix in
+    // docs/internals/testing.md (+1) and its site mirror (+1). Counted per
+    // file against origin/main 47f2630b5: CONTRIBUTING.md's new shell section has
+    // no table.
+    const EXPECTED_TABLES: usize = 1433;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

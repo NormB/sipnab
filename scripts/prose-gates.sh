@@ -65,7 +65,7 @@ prose_paths() {
 # reporting NOT CHECKED -- a gate switching itself off quietly.
 prose_vale_pin() {
 	grep -oE "VALE_VERSION: '[0-9.]+'" .github/workflows/quality.yml 2>/dev/null |
-		grep -oE '[0-9.]+' | head -1
+		grep -oE '[0-9.]+' | sed -n 1p
 }
 
 # Run vale over .config/vale-paths.txt. See CONTRACT above.
@@ -97,7 +97,7 @@ prose_vale_run() {
 		PROSE_REASON='no VALE_VERSION in .github/workflows/quality.yml'
 		return 2
 	fi
-	PROSE_HAVE=$("$_vale" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+	PROSE_HAVE=$("$_vale" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | sed -n 1p)
 	if [ "$PROSE_HAVE" != "$PROSE_PIN" ]; then
 		# The version is part of the check, not a detail. Vale.Spelling consults
 		# an internal dictionary that changes between releases, and the Google
@@ -126,7 +126,7 @@ prose_vale_run() {
 # is the version CI runs.
 prose_codespell_pin() {
 	sed -n 's/^codespell==\([0-9.]*\).*/\1/p' scripts/requirements-codespell.txt 2>/dev/null |
-		head -1
+		sed -n 1p
 }
 
 # Run codespell over .config/codespell-paths.txt. See CONTRACT above.
@@ -158,7 +158,7 @@ prose_codespell_run() {
 		PROSE_REASON='no codespell== pin in scripts/requirements-codespell.txt'
 		return 2
 	fi
-	PROSE_HAVE=$("$_cs" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)
+	PROSE_HAVE=$("$_cs" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | sed -n 1p)
 	if [ "$PROSE_HAVE" != "$PROSE_PIN" ]; then
 		PROSE_REASON="codespell ${PROSE_HAVE:-unknown}, CI pins $PROSE_PIN"
 		return 2

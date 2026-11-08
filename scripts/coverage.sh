@@ -29,7 +29,7 @@ if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
     exit 127
 fi
 
-FLOOR=$(grep -oE -- '--fail-under-lines [0-9]+' "$WORKFLOW" | grep -oE '[0-9]+' | head -1)
+FLOOR=$(grep -oE -- '--fail-under-lines [0-9]+' "$WORKFLOW" | grep -oE '[0-9]+' | sed -n 1p)
 if [ -z "$FLOOR" ]; then
     echo "::error:: no --fail-under-lines found in $WORKFLOW — refusing to" >&2
     echo "  enforce a floor this script invented rather than read." >&2
@@ -42,7 +42,7 @@ fi
 # weekly branch job and this rehearsal must measure one population.
 scope_var() {
     local value
-    value=$(sed -nE "s/^  $1: (.*)$/\1/p" "$WORKFLOW" | head -1)
+    value=$(sed -nE "s/^  $1: (.*)$/\1/p" "$WORKFLOW" | sed -n 1p)
     if [ -z "$value" ]; then
         echo "::error:: no workflow-level $1 in $WORKFLOW -- refusing to" >&2
         echo "  measure a scope this script invented rather than read." >&2

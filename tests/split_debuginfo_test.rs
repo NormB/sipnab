@@ -32,6 +32,9 @@ use dbgsym::{build_fixture, build_id, debuglink, have, sections, split, symboliz
 #[path = "support/executable.rs"]
 mod executable;
 
+#[path = "support/pipefail_scan.rs"]
+mod pipefail_scan;
+
 /// Assert everything a finished split must be, on any architecture: the
 /// shipped binary has no symbols or DWARF, keeps its build ID, and links to
 /// `debug` by name; `debug` has the line table and symbols under the same ID.
@@ -536,24 +539,21 @@ fn the_macos_split_reads_a_large_debug_map_and_line_table() -> Result<(), TestEr
     Ok(())
 }
 
-/// No `cmd | grep -q` in the script at all, not only in the two checks the
-/// large-output test drives: `grep -q` exits at its first match, the writer
-/// dies of SIGPIPE, and the script's `set -o pipefail` turns a found match
-/// into a failure. Which commands print enough to lose that race depends on
-/// the binary, so the pattern is refused everywhere.
+/// No pipe in the script feeds a reader that can stop early, not only in
+/// the two checks the large-output test drives: `grep -q` exits at its first
+/// match, `head` after its count and `awk` at `exit`, the writer dies of
+/// SIGPIPE, and the script's `set -o pipefail` turns a found match into a
+/// failure. Which commands print enough to lose that race depends on the
+/// binary, so the pattern is refused everywhere, by the rule
+/// `tests/pipefail_early_exit_test.rs` applies to every tracked script.
 #[test]
 fn the_script_never_pipes_into_grep_q() -> Result<(), TestError> {
     let text = std::fs::read_to_string(dbgsym::script())?;
-    let offenders: Vec<(usize, &str)> = text
-        .lines()
-        .enumerate()
-        .filter(|(_, l)| !l.trim_start().starts_with('#') && l.contains("grep -q"))
-        .map(|(i, l)| (i + 1, l.trim()))
-        .collect();
+    let offenders = pipefail_scan::scan_shell_file(&text);
     assert!(
         offenders.is_empty(),
-        "split-debuginfo.sh pipes into `grep -q`, which under pipefail reports \
-         a match as a failure when the writer is still printing: {offenders:?}"
+        "split-debuginfo.sh pipes into a reader that can stop before the writer \
+         is done, which under pipefail reports a match as a failure: {offenders:?}"
     );
     Ok(())
 }
