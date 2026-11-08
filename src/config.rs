@@ -1184,6 +1184,12 @@ impl VconForwardConfig {
     }
 }
 
+/// The `signer_ca` value (`[vcon_fetch] signer_ca`, `--vcon-fetch-signer-ca`)
+/// that names the host's CA bundle instead of a file. Defined here, where
+/// every build has it, so the secret-file table and the fetcher read one
+/// value.
+pub const SIGNER_CA_SYSTEM: &str = "system";
+
 /// `[vcon_fetch]`: the settings of the vCon fetcher
 /// (`sipnab --vcon-fetch <UUID>...`), each the value of the flag of the same
 /// name, which overrides it.

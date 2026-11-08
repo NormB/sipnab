@@ -8,6 +8,13 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- A root run with `--api-allow-vcon-fetch` or `--mcp-allow-vcon-fetch` reads the `[vcon_fetch]` store's credential, decryption key and CA files before it drops privileges, so root-only (`0600`) files work. It read them when the servers started, after the drop, and stopped with exit 2 (`Permission denied`). The credential's permission rule is unchanged: the advance read keeps each file's owner and mode, and sipnab applies the rule as the user the run is by then (OPS-11).
+- A run with `--chroot` finds and reads the host's CA bundle before it changes root. A TLS HEP sender without `--hep-tls-ca`, an HTTPS `[vcon_fetch]` store without `ca` and `signer_ca = "system"` used to look for it inside the new root and stop with `no system CA bundle found`.
+
 ## [0.5.238] - 2026-11-08
 
 ### Changed

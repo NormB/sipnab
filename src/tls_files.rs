@@ -55,16 +55,63 @@ const SYSTEM_CA_BUNDLES: &[&str] = &[
 
 /// The host's CA bundle: `$SSL_CERT_FILE` if it names a file, else the first
 /// of [`SYSTEM_CA_BUNDLES`] that exists, else `None`.
+///
+/// Once [`pin_host_ca_bundle`] has run, the bundle it found is the answer: a
+/// run that chroots pins it before the chroot, because inside the new root
+/// the candidate paths normally do not exist.
 #[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
 pub(crate) fn host_ca_bundle() -> Option<std::path::PathBuf> {
-    std::env::var_os("SSL_CERT_FILE")
+    bundle_from(
+        std::env::var_os("SSL_CERT_FILE"),
+        PINNED_HOST_BUNDLE.get(),
+        |p| p.is_file(),
+    )
+}
+
+/// The bundle [`pin_host_ca_bundle`] found, once it has run.
+#[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
+static PINNED_HOST_BUNDLE: std::sync::OnceLock<Option<std::path::PathBuf>> =
+    std::sync::OnceLock::new();
+
+/// Find the host's CA bundle now and make it [`host_ca_bundle`]'s answer
+/// for the rest of the process. Called before a chroot, while the host's
+/// files are still visible; the bundle's bytes are read in the same advance
+/// read as the secret files (`crate::secret_files`).
+///
+/// # Side effects
+///
+/// Reads `$SSL_CERT_FILE` and stats the candidate paths, once.
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "native",
+    any(feature = "hep", feature = "vcon", feature = "g729", feature = "api")
+))]
+pub(crate) fn pin_host_ca_bundle() -> Option<std::path::PathBuf> {
+    PINNED_HOST_BUNDLE
+        .get_or_init(|| bundle_from(std::env::var_os("SSL_CERT_FILE"), None, |p| p.is_file()))
+        .clone()
+}
+
+/// The bundle rule, its inputs passed in: `ssl_cert_file` is
+/// `$SSL_CERT_FILE`, `pinned` the answer [`pin_host_ca_bundle`] recorded, and
+/// `is_file` the existence test.
+#[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
+fn bundle_from(
+    ssl_cert_file: Option<std::ffi::OsString>,
+    pinned: Option<&Option<std::path::PathBuf>>,
+    is_file: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    if let Some(Some(found)) = pinned {
+        return Some(found.clone());
+    }
+    ssl_cert_file
         .map(std::path::PathBuf::from)
-        .filter(|p| p.is_file())
+        .filter(|p| is_file(p))
         .or_else(|| {
             SYSTEM_CA_BUNDLES
                 .iter()
                 .map(std::path::PathBuf::from)
-                .find(|p| p.is_file())
+                .find(|p| is_file(p))
         })
 }
 
@@ -445,6 +492,70 @@ pub(crate) fn pem_private_key(
 
 #[cfg(test)]
 mod tests {
+    /// After `--chroot`, the bundle found before it is the answer, though
+    /// no candidate path exists inside the new root.
+    #[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
+    #[test]
+    fn a_pinned_bundle_answers_though_no_candidate_exists_any_more() {
+        let pinned = Some(std::path::PathBuf::from(
+            "/etc/ssl/certs/ca-certificates.crt",
+        ));
+        assert_eq!(
+            super::bundle_from(None, Some(&pinned), |_| false),
+            pinned,
+            "the bundle found before the chroot must still answer"
+        );
+    }
+
+    /// A pin wins over `$SSL_CERT_FILE` read later: the run uses the bundle
+    /// it found while it could see the host's files.
+    #[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
+    #[test]
+    fn a_pinned_bundle_wins_over_a_later_lookup() {
+        let pinned = Some(std::path::PathBuf::from("/etc/pki/tls/certs/ca-bundle.crt"));
+        assert_eq!(
+            super::bundle_from(Some("/other.pem".into()), Some(&pinned), |_| true),
+            pinned,
+            "the pinned bundle wins over SSL_CERT_FILE=/other.pem"
+        );
+    }
+
+    /// A pin that found no bundle leaves the lookup to run then, so a bundle
+    /// the operator placed inside the chroot is still found, as before.
+    #[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
+    #[test]
+    fn a_pin_that_found_nothing_falls_through_to_the_lookup() {
+        let inside = std::path::Path::new("/etc/ssl/cert.pem");
+        assert_eq!(
+            super::bundle_from(None, Some(&None), |p| p == inside),
+            Some(inside.to_path_buf()),
+            "a pin that found nothing looks again and finds {}",
+            inside.display()
+        );
+    }
+
+    /// Without a pin the rule is unchanged: `$SSL_CERT_FILE` when it names a
+    /// file, else the first candidate that exists, else nothing.
+    #[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
+    #[test]
+    fn without_a_pin_ssl_cert_file_then_the_first_candidate_answers() {
+        let env = std::path::Path::new("/run/bundle.pem");
+        assert_eq!(
+            super::bundle_from(Some(env.into()), None, |_| true),
+            Some(env.to_path_buf()),
+            "an SSL_CERT_FILE naming a file answers first"
+        );
+        assert_eq!(
+            super::bundle_from(Some(env.into()), None, |p| p != env),
+            Some(std::path::PathBuf::from(super::SYSTEM_CA_BUNDLES[0])),
+            "an SSL_CERT_FILE naming no file falls back to the candidates"
+        );
+        assert_eq!(
+            super::bundle_from(None, None, |_| false),
+            None,
+            "no SSL_CERT_FILE and no candidate exists: no bundle"
+        );
+    }
     use super::*;
 
     /// A CA file that cannot be read is refused naming the setting that

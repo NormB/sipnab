@@ -54,13 +54,11 @@ enum Entry {
     Read {
         /// The file's contents.
         bytes: Vec<u8>,
-        /// `st_mode & 0o7777`. Read by [`mode`], which exists only where a
-        /// private-key reader does.
-        #[cfg_attr(
-            not(any(test, feature = "hep", feature = "api", feature = "metrics")),
-            allow(dead_code, reason = "read by `mode`, compiled out in this build")
-        )]
+        /// `st_mode & 0o7777`, read by [`mode`] and [`advance`].
         mode: u32,
+        /// The owner's uid (`st_uid`), or `0` where the platform has none.
+        /// `privilege::read_private_file` judges the file by it.
+        owner: u32,
     },
     /// The read failed. Kept as the OS error number when there was one, so a
     /// reader reports exactly the text it would have reported itself.
@@ -140,6 +138,7 @@ impl SecretFiles {
                     Ok(bytes) => Entry::Read {
                         bytes,
                         mode: permission_bits(&meta),
+                        owner: owner_uid(&meta),
                     },
                     Err(e) => Entry::failed(&e),
                 },
@@ -176,6 +175,35 @@ impl SecretFiles {
             Entry::Read { mode, .. } => Ok(*mode),
             Entry::Failed { .. } => Err(entry.error()?),
         })
+    }
+
+    /// The owner of `path` as read in advance, or `None` when it was not.
+    ///
+    /// # Errors
+    ///
+    /// The error the advance read met.
+    #[cfg(test)]
+    pub fn owner(&self, path: &Path) -> Option<std::io::Result<u32>> {
+        let entry = self.files.get(path)?;
+        Some(match entry {
+            Entry::Read { owner, .. } => Ok(*owner),
+            Entry::Failed { .. } => Err(entry.error()?),
+        })
+    }
+}
+
+/// `st_uid`, or `0` where the platform has no Unix owner.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+fn owner_uid(meta: &std::fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        meta.uid()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        0
     }
 }
 
@@ -220,6 +248,34 @@ fn installed(path: &Path) -> Option<Entry> {
     INSTALLED.get()?.lock().get(path).cloned()
 }
 
+/// A file as the advance read found it: what a reader that applies an
+/// owner-dependent rule needs (`privilege::read_private_file`).
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+#[derive(Debug)]
+pub struct Advance {
+    /// The file's contents.
+    pub bytes: Vec<u8>,
+    /// The owner's uid when it was read.
+    pub owner: u32,
+    /// `st_mode & 0o7777` when it was read.
+    pub mode: u32,
+}
+
+/// The advance read of `path`, or `None` when it was not read in advance.
+///
+/// # Errors
+///
+/// The error the advance read met, as [`read`] gives it.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+#[must_use]
+pub fn advance(path: &Path) -> Option<std::io::Result<Advance>> {
+    let entry = installed(path)?;
+    Some(match entry {
+        Entry::Read { bytes, mode, owner } => Ok(Advance { bytes, owner, mode }),
+        Entry::Failed { .. } => Err(entry.into_error()),
+    })
+}
+
 /// The bytes of `path`: as read before the privilege drop when it was, from
 /// disk otherwise.
 ///
@@ -258,7 +314,12 @@ pub fn read_to_string(path: &Path) -> std::io::Result<String> {
 /// # Errors
 ///
 /// As [`std::fs::metadata`], or the error the advance read met.
-#[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
+#[cfg(any(
+    feature = "hep",
+    feature = "api",
+    feature = "metrics",
+    feature = "vcon"
+))]
 pub fn mode(path: &Path) -> std::io::Result<u32> {
     if let Some(entry) = installed(path) {
         return match entry {
@@ -345,7 +406,12 @@ mod tests {
             "tok\n",
             "read_to_string answers from the store"
         );
-        #[cfg(any(feature = "hep", feature = "api", feature = "metrics"))]
+        #[cfg(any(
+            feature = "hep",
+            feature = "api",
+            feature = "metrics",
+            feature = "vcon"
+        ))]
         assert_eq!(mode(&path)?, 0o600, "mode answers from the store");
         let on_disk = dir.path().join("on-disk");
         std::fs::write(&on_disk, b"disk")?;
@@ -429,6 +495,294 @@ mod tests {
             loaded.is_ok(),
             "the key read before the drop loads: {:?}",
             loaded.err()
+        );
+        Ok(())
+    }
+
+    /// Install one entry as if the advance read had found it: `owner` and
+    /// `mode` as given, which a test cannot otherwise arrange for a uid it
+    /// does not run as.
+    #[cfg(feature = "vcon")]
+    fn install_as_found(dir: &Path, name: &str, bytes: &[u8], owner: u32, mode: u32) -> PathBuf {
+        let path = dir.join(name);
+        let mut files = HashMap::new();
+        files.insert(
+            path.clone(),
+            Entry::Read {
+                bytes: bytes.to_vec(),
+                mode,
+                owner,
+            },
+        );
+        install(SecretFiles { files });
+        path
+    }
+
+    /// The advance read keeps the owner, which the private-file rule needs.
+    #[test]
+    fn the_advance_read_keeps_the_owner() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let file = dir.path().join("owned");
+        std::fs::write(&file, b"x")?;
+        let read = SecretFiles::read_all([file.clone()]);
+        assert_eq!(
+            read.owner(&file).ok_or("file not read")??,
+            crate::privilege::current_uid(),
+            "the file this test wrote is its own"
+        );
+        Ok(())
+    }
+
+    /// OPS-11, `[vcon_fetch] auth_file`: a credential read before the drop is
+    /// what the fetcher uses after it, though the file can no longer be read.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_vcon_fetch_credential_read_before_the_drop_is_used_after_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = installed_then_removed(
+            dir.path(),
+            "fetch.auth",
+            b"Authorization: Bearer t0ken\n",
+            0o600,
+        )?;
+        let header = crate::app::vcon_forward::AuthHeader::read_file_for(
+            &path,
+            "[vcon_fetch] auth_file",
+            crate::app::vcon_forward::StoreKind::Generic,
+        );
+        assert!(
+            header.is_ok(),
+            "the credential read before the drop must be used: {:?}",
+            header.err()
+        );
+        Ok(())
+    }
+
+    /// The private-file rule is unchanged by the advance read: the reader's
+    /// own file that other users can read is refused, with the same text
+    /// `privilege::open_private_file` gives.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_credential_read_before_the_drop_keeps_the_private_file_rule() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = installed_then_removed(
+            dir.path(),
+            "open.auth",
+            b"Authorization: Bearer t0ken\n",
+            0o640,
+        )?;
+        let err = crate::app::vcon_forward::AuthHeader::read_file_for(
+            &path,
+            "[vcon_fetch] auth_file",
+            crate::app::vcon_forward::StoreKind::Generic,
+        )
+        .err()
+        .ok_or("a 0640 file of the reader's own must be refused")?;
+        assert_eq!(
+            err,
+            format!(
+                "[vcon_fetch] auth_file '{}' can be read or written by other users \
+                 (mode 0640); chmod 600 it",
+                path.display()
+            ),
+            "the advance read refuses a 0640 file with privilege::open_private_file's text"
+        );
+        Ok(())
+    }
+
+    /// The rule judges the file as the user reading it NOW: a file another
+    /// user owns is accepted whatever its mode, as it was when the dropped
+    /// user opened it itself. This is what keeps the accepted set the same
+    /// for a root run, whose advance read runs as root.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_credential_another_user_owns_is_judged_as_its_reader_would() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let other = crate::privilege::current_uid().wrapping_add(1);
+        let path = install_as_found(
+            dir.path(),
+            "theirs.auth",
+            b"Authorization: Bearer t0ken\n",
+            other,
+            0o644,
+        );
+        let header = crate::app::vcon_forward::AuthHeader::read_file_for(
+            &path,
+            "[vcon_fetch] auth_file",
+            crate::app::vcon_forward::StoreKind::Generic,
+        );
+        assert!(
+            header.is_ok(),
+            "a file another user owns is its owner's decision: {:?}",
+            header.err()
+        );
+        let mine = install_as_found(
+            dir.path(),
+            "mine.auth",
+            b"Authorization: Bearer t0ken\n",
+            crate::privilege::current_uid(),
+            0o604,
+        );
+        let err = crate::app::vcon_forward::AuthHeader::read_file_for(
+            &mine,
+            "[vcon_fetch] auth_file",
+            crate::app::vcon_forward::StoreKind::Generic,
+        )
+        .err()
+        .ok_or("an others-readable file of the reader's own is refused")?;
+        assert!(err.contains("(mode 0604)"), "{err}");
+        Ok(())
+    }
+
+    /// A credential the advance read could not read reports what reading it
+    /// would have reported, naming the setting and the path.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_credential_the_advance_read_missed_reports_the_same_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("absent.auth");
+        install(SecretFiles::read_all([path.clone()]));
+        let err = crate::app::vcon_forward::AuthHeader::read_file_for(
+            &path,
+            "[vcon_fetch] auth_file",
+            crate::app::vcon_forward::StoreKind::Generic,
+        )
+        .err()
+        .ok_or("a missing credential is an error")?;
+        assert_eq!(
+            err,
+            format!(
+                "[vcon_fetch] auth_file '{}': {}",
+                path.display(),
+                std::io::Error::from_raw_os_error(libc::ENOENT)
+            ),
+            "a credential the advance read missed reports ENOENT, naming setting and path"
+        );
+        Ok(())
+    }
+
+    /// The size bound holds for a credential read in advance: one byte past
+    /// `MAX_AUTH_FILE` is refused, and exactly that many is not refused for
+    /// its size.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_credential_read_before_the_drop_keeps_its_size_bound() -> Result<(), TestError> {
+        use crate::app::vcon_forward::{AuthHeader, MAX_AUTH_FILE, StoreKind};
+        let dir = tempfile::tempdir()?;
+        let mut long = b"Authorization: Bearer ".to_vec();
+        long.resize(MAX_AUTH_FILE + 1, b'a');
+        let path = installed_then_removed(dir.path(), "long.auth", &long, 0o600)?;
+        let err = AuthHeader::read_file_for(&path, "[vcon_fetch] auth_file", StoreKind::Generic)
+            .err()
+            .ok_or("an oversized credential is refused")?;
+        assert!(
+            err.contains(&format!("larger than {MAX_AUTH_FILE} bytes")),
+            "{err}"
+        );
+        long.truncate(MAX_AUTH_FILE);
+        let path = installed_then_removed(dir.path(), "edge.auth", &long, 0o600)?;
+        let at_limit =
+            AuthHeader::read_file_for(&path, "[vcon_fetch] auth_file", StoreKind::Generic);
+        assert!(
+            !at_limit
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.contains("larger than")),
+            "exactly {MAX_AUTH_FILE} bytes is within the bound: {at_limit:?}"
+        );
+        Ok(())
+    }
+
+    /// OPS-11, `[vcon_fetch] decrypt_key`: the decryption key read before
+    /// the drop loads after it.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_decryption_key_read_before_the_drop_is_used_after_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let pem = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/vcon-jose/fake_grp.key"
+        ))?;
+        let path = installed_then_removed(dir.path(), "decrypt.pem", &pem, 0o600)?;
+        let opener = crate::output::vcon_jose::Opener::load(&path);
+        assert!(
+            opener.is_ok(),
+            "the key read before the drop must load: {:?}",
+            opener.err()
+        );
+        Ok(())
+    }
+
+    /// The decryption key's own rule (owner-only, whoever owns it) applies to
+    /// the mode the key had when it was read.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_decryption_key_read_before_the_drop_keeps_its_mode_rule() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let pem = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/vcon-jose/fake_grp.key"
+        ))?;
+        let path = installed_then_removed(dir.path(), "group.pem", &pem, 0o640)?;
+        let err = crate::output::vcon_jose::Opener::load(&path)
+            .err()
+            .ok_or("a group-readable decryption key is refused")?;
+        assert!(
+            err.contains("can be read by other users (mode 640)"),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    /// OPS-11, `[vcon_fetch] signer_ca`: the CA read before the drop is the
+    /// one a decrypted container's signer is checked against.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_signer_ca_read_before_the_drop_is_used_after_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let pem = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/vcon-jose/fake_ca_root.crt"
+        ))?;
+        let path = installed_then_removed(dir.path(), "signer.ca", &pem, 0o600)?;
+        let ca = crate::app::vcon_fetch::signer_ca(
+            &path,
+            "[vcon_fetch] signer_ca",
+            crate::settings::Origin::ConfigFile,
+        );
+        let trust = crate::app::vcon_fetch::signer_trust(Some(&ca), None);
+        assert!(
+            trust.is_ok(),
+            "the CA read before the drop must load: {:?}",
+            trust.err().map(|(_, e)| e)
+        );
+        Ok(())
+    }
+
+    /// `[vcon_fetch] ca` reaches the HTTPS client through the certificate
+    /// reader, which already answers from the store.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_fetch_ca_read_before_the_drop_is_used_after_it() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let pem = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/vcon-jose/fake_ca_root.crt"
+        ))?;
+        let path = installed_then_removed(dir.path(), "fetch.ca", &pem, 0o644)?;
+        let config = crate::app::https_client::client_config(
+            Some(&path),
+            None,
+            &crate::tls_files::TrustNames {
+                ca: "[vcon_fetch] ca",
+                extra: "[vcon_fetch] extra_ca",
+                issuer: "the store's issuer",
+            },
+        );
+        assert!(
+            config.is_ok(),
+            "the CA read before the drop must load: {:?}",
+            config.err()
         );
         Ok(())
     }

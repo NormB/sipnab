@@ -397,6 +397,47 @@ pub fn open_private_file(path: &std::path::Path, what: &str) -> Result<std::fs::
     Ok(file)
 }
 
+/// The bytes of a secret file, at most `limit` of them, by
+/// [`permission_refusal`]: [`open_private_file`]'s rule, for a file that may
+/// have been read before the privilege drop.
+///
+/// A file in the advance read (`crate::secret_files`) is judged by the owner
+/// and mode it had then, against the user this process runs as NOW. After a
+/// root run's drop that is the dropped user, which is who used to open the
+/// file itself, so the advance read changes no verdict: a file the dropped
+/// user owns with group or other bits is still refused, and a root-only
+/// (`0600`) file, which the dropped user could not open, is now read
+/// (OPS-11). Any other file is opened now, by [`open_private_file`].
+///
+/// # Errors
+///
+/// As [`open_private_file`], or the error the advance read met, with the
+/// same text. Never the contents.
+pub fn read_private_file(
+    path: &std::path::Path,
+    what: &str,
+    limit: u64,
+) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let shown = path.display();
+    #[cfg(unix)]
+    if let Some(found) = crate::secret_files::advance(path) {
+        let found = found.map_err(|e| format!("{what} '{shown}': {e}"))?;
+        if let Some(why) = permission_refusal(found.owner, current_uid(), found.mode, true) {
+            return Err(format!("{what} '{shown}' {why}"));
+        }
+        let mut bytes = found.bytes;
+        bytes.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        return Ok(bytes);
+    }
+    let file = open_private_file(path, what)?;
+    let mut bytes = Vec::new();
+    file.take(limit)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{what} '{shown}': {e}"))?;
+    Ok(bytes)
+}
+
 /// Check if the current process is running as root (UID 0).
 pub fn is_root() -> bool {
     // SAFETY: getuid() is always safe — it reads kernel state and cannot fail.

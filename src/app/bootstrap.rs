@@ -3265,7 +3265,7 @@ fn confine_after_capture_start(
     //      here, in one phase, and `secret_files` answers for them from then
     //      on. `read_secrets_then_confine` is what holds the order.
     let (secrets, keylog_source) =
-        read_secrets_then_confine(secret_file_paths(cli, config), || {
+        read_secrets_then_confine(this_runs_advance_read(cli, config), || {
             // 16. Chroot BEFORE dropping privileges (chroot requires root).
             // Correct POSIX sequence: chroot → chdir("/") → setgroups → setgid → setuid
             if let Some(chroot_dir) = effective_chroot(cli, config) {
@@ -3393,6 +3393,42 @@ type PrivilegedKeylog = Option<crate::capture::keylog_source::KeylogSource>;
 #[cfg(not(feature = "tls"))]
 type PrivilegedKeylog = ();
 
+/// The files the advance read reads: `secret`, plus, when the run chroots,
+/// the host's CA bundle that `pin` finds before the chroot.
+///
+/// A TLS client with no CA file of its own (`--hep-send-transport tls`
+/// without `--hep-tls-ca`, an HTTPS `[vcon_fetch]` store without `ca`) trusts
+/// the host's bundle. After a chroot both its lookup and its read ran inside
+/// the new root, which normally holds no bundle, and the run stopped with "no
+/// system CA bundle found". A run that does not chroot keeps reading the
+/// bundle when its client is built, as before.
+fn advance_read_paths(
+    mut secret: Vec<std::path::PathBuf>,
+    chroot: Option<&str>,
+    pin: impl FnOnce() -> Option<std::path::PathBuf>,
+) -> Vec<std::path::PathBuf> {
+    if chroot.is_some()
+        && let Some(bundle) = pin()
+    {
+        secret.push(bundle);
+    }
+    secret
+}
+
+/// [`advance_read_paths`] for this run: its secret files, and the host's CA
+/// bundle when it chroots.
+fn this_runs_advance_read(cli: &Cli, config: &Config) -> Vec<std::path::PathBuf> {
+    #[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
+    let pin = crate::tls_files::pin_host_ca_bundle;
+    #[cfg(not(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api")))]
+    let pin = || None;
+    advance_read_paths(
+        secret_file_paths(cli, config),
+        effective_chroot(cli, config),
+        pin,
+    )
+}
+
 /// Read `paths`, THEN run `confine`: the chroot and the privilege drop.
 ///
 /// The order is the point of the function. Every file in `paths` is read
@@ -3458,11 +3494,15 @@ pub struct SecretFile {
 ///   change, so they cannot be read once. `revocation_file_refusal` stops the
 ///   run when the user it dropped to cannot read one. They hold token ids,
 ///   not secrets, and are not listed.
-/// - `[vcon_fetch]` files, read when `--api-allow-vcon-fetch` or
-///   `--mcp-allow-vcon-fetch` is set, are checked by
-///   `privilege::open_private_file`, whose rule depends on which user reads
-///   the file, so moving the read before the drop would change which files it
-///   accepts. They are listed with `read_before_drop` false.
+/// - `[vcon_fetch]` files (the credential, the decryption key and the three
+///   CA files), which `--api-allow-vcon-fetch` and `--mcp-allow-vcon-fetch`
+///   read when the servers start, are read in advance like the others. The
+///   credential's permission rule depends on which user reads it, so the
+///   advance read keeps each file's owner and mode, and
+///   `privilege::read_private_file` judges them as the user the run is by
+///   then: the dropped user, who used to open the file itself. The rule
+///   accepts and refuses the same files as before; a root-only file is now
+///   read. `signer_ca = "system"` names the host's bundle, not a file.
 #[must_use]
 pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
     use std::path::PathBuf;
@@ -3475,7 +3515,10 @@ pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
     let fetch = &cli.vcon_fetch_args;
     let api_client_ca = cli.api_client_auth(config).ca;
     let mcp_client_ca = cli.mcp_client_auth(config).ca;
-    let advance: [(&str, Option<PathBuf>); 22] = [
+    let flag_or_key = |flag: &Option<PathBuf>, key: &Option<PathBuf>| flag.clone().or(key.clone());
+    let signer_ca = flag_or_key(&fetch.vcon_fetch_signer_ca, &config.vcon_fetch.signer_ca)
+        .filter(|p| p.as_os_str() != crate::config::SIGNER_CA_SYSTEM);
+    let advance: [(&str, Option<PathBuf>); 27] = [
         (
             "--api-signing-key-file",
             cli.listener_args
@@ -3526,9 +3569,30 @@ pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
                 .clone()
                 .or(config.fleet.report_token_file.clone()),
         ),
+        // `--api-allow-vcon-fetch` and `--mcp-allow-vcon-fetch` build their
+        // fetcher when the servers start, after the drop.
+        (
+            "--vcon-fetch-auth-file",
+            flag_or_key(&fetch.vcon_fetch_auth_file, &config.vcon_fetch.auth_file),
+        ),
+        (
+            "--vcon-fetch-decrypt-key",
+            flag_or_key(
+                &fetch.vcon_fetch_decrypt_key,
+                &config.vcon_fetch.decrypt_key,
+            ),
+        ),
+        (
+            "--vcon-fetch-ca",
+            flag_or_key(&fetch.vcon_fetch_ca, &config.vcon_fetch.ca),
+        ),
+        (
+            "--vcon-fetch-extra-ca",
+            flag_or_key(&fetch.vcon_fetch_extra_ca, &config.vcon_fetch.extra_ca),
+        ),
+        ("--vcon-fetch-signer-ca", signer_ca),
     ];
-    let flag_or_key = |flag: &Option<PathBuf>, key: &Option<PathBuf>| flag.clone().or(key.clone());
-    let planned: [(&str, Option<PathBuf>); 9] = [
+    let planned: [(&str, Option<PathBuf>); 7] = [
         (
             "--archive-password-file",
             cli.archive_args.archive_password_file.clone(),
@@ -3553,17 +3617,6 @@ pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
             flag_or_key(
                 &fwd.vcon_forward_scitt_sign_key,
                 &config.vcon_forward.scitt_sign_key,
-            ),
-        ),
-        (
-            "--vcon-fetch-auth-file",
-            flag_or_key(&fetch.vcon_fetch_auth_file, &config.vcon_fetch.auth_file),
-        ),
-        (
-            "--vcon-fetch-decrypt-key",
-            flag_or_key(
-                &fetch.vcon_fetch_decrypt_key,
-                &config.vcon_fetch.decrypt_key,
             ),
         ),
         ("[vcon_input] key", config.vcon_input.key.clone()),
@@ -13241,6 +13294,145 @@ mod secret_read_tests {
             );
         }
         Ok(())
+    }
+
+    /// Every `[vcon_fetch]` file a server door reads is read before the drop.
+    ///
+    /// `--api-allow-vcon-fetch` and `--mcp-allow-vcon-fetch` build their
+    /// fetcher when the servers start, after the drop, so a root-only (0600)
+    /// credential, decryption key or CA stopped a root run with exit 2. The
+    /// permission rule stays the reader's (see
+    /// `privilege::read_private_file`).
+    #[test]
+    fn every_vcon_fetch_file_is_read_before_the_drop() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.vcon_fetch.url = Some("https://store.example.com/v/{uuid}".to_string());
+        config.vcon_fetch.auth_file = Some("/c/fetch.auth".into());
+        config.vcon_fetch.decrypt_key = Some("/c/fetch.key".into());
+        config.vcon_fetch.ca = Some("/c/fetch.ca".into());
+        config.vcon_fetch.signer_ca = Some("/c/signer.ca".into());
+        let cli = parse_cli(&["--api", "127.0.0.1:0", "--api-allow-vcon-fetch"])?;
+        let paths = secret_file_paths(&cli, &config);
+        for want in [
+            "/c/fetch.auth",
+            "/c/fetch.key",
+            "/c/fetch.ca",
+            "/c/signer.ca",
+        ] {
+            assert!(
+                paths.iter().any(|p| p == std::path::Path::new(want)),
+                "[vcon_fetch] {want} is read after the drop unless it is read \
+                 here; the list was {paths:?}"
+            );
+        }
+        let mut config = Config::default();
+        config.vcon_fetch.extra_ca = Some("/c/fetch.extra".into());
+        let paths = secret_file_paths(&parse_cli(&[])?, &config);
+        assert!(
+            paths
+                .iter()
+                .any(|p| p == std::path::Path::new("/c/fetch.extra")),
+            "[vcon_fetch] extra_ca is missing from {paths:?}"
+        );
+        Ok(())
+    }
+
+    /// The `--vcon-fetch-*` flags name the same files as the keys, and a flag
+    /// wins over its key in the advance read as it does in the fetcher.
+    #[test]
+    fn a_vcon_fetch_flag_file_is_read_before_the_drop() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.vcon_fetch.auth_file = Some("/c/key.auth".into());
+        let cli = parse_cli(&[
+            "--vcon-fetch",
+            "018bcfe5-6800-8a6b-a667-78f1c5213800",
+            "--vcon-fetch-url",
+            "https://store.example.com/v/{uuid}",
+            "--vcon-fetch-auth-file",
+            "/s/flag.auth",
+            "--vcon-fetch-decrypt-key",
+            "/s/flag.key",
+            "--vcon-fetch-extra-ca",
+            "/s/flag.extra",
+            "--vcon-fetch-signer-ca",
+            "/s/flag.signer",
+        ])?;
+        let paths = secret_file_paths(&cli, &config);
+        for want in [
+            "/s/flag.auth",
+            "/s/flag.key",
+            "/s/flag.extra",
+            "/s/flag.signer",
+        ] {
+            assert!(
+                paths.iter().any(|p| p == std::path::Path::new(want)),
+                "{want} is missing from {paths:?}"
+            );
+        }
+        assert!(
+            !paths
+                .iter()
+                .any(|p| p == std::path::Path::new("/c/key.auth")),
+            "the flag overrides [vcon_fetch] auth_file: {paths:?}"
+        );
+        Ok(())
+    }
+
+    /// `signer_ca = "system"` names the host's bundle, not a file, so it adds
+    /// no path called `system` to the advance read.
+    #[test]
+    fn a_system_signer_ca_adds_no_file_named_system() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.vcon_fetch.signer_ca = Some("system".into());
+        let files = secret_files(&parse_cli(&[])?, &config);
+        assert!(
+            !files
+                .iter()
+                .any(|f| f.path == std::path::Path::new("system")),
+            "{files:?}"
+        );
+        Ok(())
+    }
+
+    /// A run that chroots reads the host's CA bundle before the chroot.
+    #[test]
+    fn a_chroot_run_reads_the_host_bundle_before_the_chroot() {
+        let bundle = std::path::PathBuf::from("/etc/ssl/certs/ca-certificates.crt");
+        let paths = advance_read_paths(vec!["/s/key".into()], Some("/var/empty"), || {
+            Some(bundle.clone())
+        });
+        assert_eq!(
+            paths,
+            [std::path::PathBuf::from("/s/key"), bundle],
+            "a chroot run reads the secret and then the host CA bundle in advance"
+        );
+    }
+
+    /// A run that does not chroot finds and reads the bundle when its client
+    /// is built, as it always did: nothing is pinned or read in advance.
+    #[test]
+    fn a_run_without_a_chroot_leaves_the_bundle_to_its_reader() {
+        let looked = std::cell::Cell::new(false);
+        let paths = advance_read_paths(vec!["/s/key".into()], None, || {
+            looked.set(true);
+            None
+        });
+        assert!(!looked.get(), "no chroot: the bundle must not be pinned");
+        assert_eq!(
+            paths,
+            [std::path::PathBuf::from("/s/key")],
+            "without a chroot only the secret is read in advance"
+        );
+    }
+
+    /// A chroot run on a host with no bundle adds nothing to read.
+    #[test]
+    fn a_chroot_run_on_a_host_with_no_bundle_adds_nothing() {
+        let paths = advance_read_paths(Vec::new(), Some("/var/empty"), || None);
+        assert!(
+            paths.is_empty(),
+            "no secrets and no host bundle: nothing to read: {paths:?}"
+        );
     }
 
     /// A revocation list the dropped user cannot open stops the run; a
