@@ -130,8 +130,8 @@ EOF
 }
 
 if [ -n "$REF" ]; then
-    echo "reference $("$REF" --version 2>&1 | head -1)"
-    echo "candidate $("$BIN" --version 2>&1 | head -1)"
+    echo "reference $("$REF" --version 2>&1 | sed -n 1p)"
+    echo "candidate $("$BIN" --version 2>&1 | sed -n 1p)"
     PAIRS=""
     i=1
     while [ "$i" -le "$ROUNDS" ]; do

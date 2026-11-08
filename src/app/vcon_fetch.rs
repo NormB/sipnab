@@ -183,7 +183,7 @@ impl std::fmt::Debug for SignerCa {
 }
 
 /// The value of `--vcon-fetch-signer-ca` that names the host's CA bundle.
-pub const SIGNER_CA_SYSTEM: &str = "system";
+pub const SIGNER_CA_SYSTEM: &str = crate::config::SIGNER_CA_SYSTEM;
 
 /// The flag that names the uuids, quoted in their refusals.
 const MODE_FLAG: &str = "--vcon-fetch";
@@ -507,7 +507,8 @@ pub fn signer_trust(
                     ),
                 )
             })?;
-            let pem = std::fs::read_to_string(&bundle).map_err(|e| {
+            // Read before a chroot when this run chroots.
+            let pem = crate::secret_files::read_to_string(&bundle).map_err(|e| {
                 (
                     *origin,
                     format!("{from} system: '{}': {e}", bundle.display()),
@@ -527,7 +528,9 @@ pub fn signer_trust(
                     format!("{} '{}': {e}", source.from, source.path.display()),
                 )
             };
-            let pem = std::fs::read_to_string(&source.path).map_err(|e| refuse(e.to_string()))?;
+            // Read before the privilege drop when this run drops.
+            let pem = crate::secret_files::read_to_string(&source.path)
+                .map_err(|e| refuse(e.to_string()))?;
             SignerTrust::from_ca_pem(&pem, true).map_err(refuse)?
         }
     };

@@ -98,6 +98,14 @@ sipnab looks the user up before it changes root, so `DIR` needs no
 up inside `DIR` and stopped with `Failed to drop privileges: User 'nobody' not
 found` unless `DIR` held an `etc/passwd` naming the user.
 
+A TLS client that names no CA file of its own (a `--hep-send-transport tls`
+sender without `--hep-tls-ca`, an HTTPS `[vcon_fetch]` store without `ca`)
+trusts the host's CA bundle. A run with `--chroot` finds and reads that bundle
+before it changes root, so `DIR` needs no copy of it. 0.5.238 and earlier
+looked for it inside `DIR` and stopped with exit `2`: `Failed to create HEP
+sender: no system CA bundle found; name the collector's issuer with
+--hep-tls-ca`. If no bundle exists outside `DIR`, sipnab still looks inside it.
+
 A directory that does not exist stops the run with exit `1`: `Failed to
 chroot: chroot(/var/empty) failed: No such file or directory (os error 2)`.
 Debian and Ubuntu have no `/var/empty`. Make an empty directory for it:

@@ -95,7 +95,7 @@ command -v python3 >/dev/null || { echo "error: python3 is required" >&2; exit 2
 # 0.5.78 in /usr/local/bin shadowed the 0.5.80 in /usr/bin, and the report
 # would have carried 0.5.78's numbers under 0.5.80's name.
 RESOLVED=$(command -v "$BIN")
-VERSION_LINE=$("$RESOLVED" --version 2>&1 | head -1)
+VERSION_LINE=$("$RESOLVED" --version 2>&1 | sed -n 1p)
 
 OUT="sipnab-field-report-$(hostname -s)-$(date -u +%Y%m%dT%H%M%SZ).txt"
 LOGDIR=$(mktemp -d "${TMPDIR:-/tmp}/sipnab-field-XXXXXX")
@@ -120,7 +120,7 @@ INVOCATION=$(sed -n '/^run_sipnab() {/,/^}/p' "$0")
   echo "REFUSING TO RUN: could not extract the sipnab invocation to check it." >&2
   exit 1; }
 set +e
-printf '%s' "$INVOCATION" | grep -qE -- "$FORBIDDEN"
+grep -qE -- "$FORBIDDEN" <<<"$INVOCATION"
 gate_rc=$?
 set -e
 case "$gate_rc" in
@@ -180,7 +180,7 @@ say "  memory MB:  $(free -m | awk 'NR==2{print $2}')"
 say "  interface:  $IFACE"
 say "  driver:     $(ethtool -i "$IFACE" 2>/dev/null | awk -F': ' '/^driver/{print $2}' || true)"
 say "  speed:      $(ethtool "$IFACE" 2>/dev/null | awk -F': ' '/Speed/{print $2}' || true)"
-say "  ring rx:    $(ethtool -g "$IFACE" 2>/dev/null | awk '/^RX:/{print $2; exit}' || true)"
+say "  ring rx:    $(ethtool -g "$IFACE" 2>/dev/null | awk '/^RX:/ && !f {print $2; f = 1}' || true)"
 say ""
 
 # ------------------------------------------------- interface baseline counters
@@ -263,7 +263,7 @@ run_sipnab() {
     say "  RUN FAILED: the MCP endpoint never answered. No counters were read."
     say "  This is NOT a clean wire and must not be read as one."
     say "  log kept at: $log"
-    say "  first error line: $(grep -iE 'error|panic|refus|denied' "$log" | head -1 || echo '(none found)')"
+    say "  first error line: $(grep -m1 -iE 'error|panic|refus|denied' "$log" || echo '(none found)')"
     say ""
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
@@ -292,7 +292,7 @@ run_sipnab() {
   local bpf_desc="(auto-generated encapsulation-aware filter)"
   [ $# -gt 0 ] && bpf_desc="$*"
   local autogen
-  autogen=$(grep -oP 'Auto-generated BPF filter: \K.*' "$log" | head -1 || true)
+  autogen=$(grep -oP 'Auto-generated BPF filter: \K.*' "$log" | sed -n 1p || true)
 
   say "  bpf requested: $bpf_desc"
   if [ -n "$autogen" ]; then
@@ -386,7 +386,7 @@ run_sipnab "old-portrange-filter" "portrange 5060-5061"
 # "new filter instructions: 0" -- a measurement that never happened, formatted
 # exactly like one that did, in the script written to expose silent zeros.
 say "== compiled BPF program size =="
-NEWF=$(grep -ohP 'Auto-generated BPF filter: \K.*' "$LOGDIR"/*.log 2>/dev/null | head -1 || true)
+NEWF=$(grep -ohP 'Auto-generated BPF filter: \K.*' "$LOGDIR"/*.log 2>/dev/null | sed -n 1p || true)
 bpf_len() {
   local n
   n=$(tcpdump -d -i "$IFACE" "$1" 2>/dev/null | wc -l)

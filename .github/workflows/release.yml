@@ -534,7 +534,11 @@ jobs:
           set -euo pipefail
           bin="target/${{ matrix.target }}/release/sipnab"
           size=$(stat -c%s "$bin" 2>/dev/null || stat -f%z "$bin")
-          if readelf -S "$bin" | grep -qE '\.symtab'; then
+          # Captured, then searched: `readelf | grep -q` under pipefail fails when
+          # grep exits while readelf is still writing (SIGPIPE, 141), and a
+          # readelf that fails now fails the step instead of reading as stripped.
+          sections=$(readelf -S "$bin")
+          if grep -qE '\.symtab' <<<"$sections"; then
             echo "::error::$bin still has a .symtab — [profile.release] strip = true is no longer taking effect, and this artifact would ship with its symbol table"
             exit 1
           fi
@@ -664,7 +668,7 @@ jobs:
           }
           echo "$out"
           echo "::endgroup::"
-          if ! printf '%s' "$out" | grep -q "packets captured"; then
+          if ! grep -q "packets captured" <<<"$out"; then
             echo "::error::$bin ran but did not parse the fixture capture"
             exit 1
           fi
@@ -694,7 +698,10 @@ jobs:
           # not the words: sipnab's own "libpcap version" text sits packed
           # between other Rust literals, and taking the first line with the
           # words read it as the banner and failed 0.5.185's musl builds.
-          banner=$(strings "$bin" | grep -m1 -E '^libpcap version [0-9]+\.[0-9]+' || true)
+          # grep reads all of `strings` (no -m1, which would kill strings with
+          # SIGPIPE under pipefail); the shell keeps the first matching line.
+          banner=$(strings "$bin" | grep -E '^libpcap version [0-9]+\.[0-9]+' || true)
+          banner=${banner%%$'\n'*}
           case "${{ matrix.target }}" in
             *-linux-musl)
               if [ -z "$banner" ]; then
@@ -702,7 +709,7 @@ jobs:
                 exit 1
               fi
               echo "embedded: $banner"
-              if ! printf '%s' "$banner" | grep -q netmap; then
+              if ! grep -q netmap <<<"$banner"; then
                 echo "::error::the embedded libpcap has no netmap module, and docs/install.md says the musl artifacts do. Fix the claim in docs/install.md or the toolchain that dropped it: $banner"
                 exit 1
               fi
@@ -1043,7 +1050,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          subject=$(ls artifacts/*-x86_64-unknown-linux-musl.tar.gz | head -1)
+          subjects=(artifacts/*-x86_64-unknown-linux-musl.tar.gz)
+          subject=${subjects[0]}
+          [ -e "$subject" ] || { echo "::error::no x86_64 musl tarball in artifacts/"; exit 1; }
           echo "verifying $subject"
 
           # `gh attestation verify` prints its human summary only on a TTY, so
@@ -1067,7 +1076,7 @@ jobs:
             | if ($c | length) == 0 then "（no provenance fields found; raw output below）"
               else ($c[0] | "issuer: \(.issuer // "?")\nrepo:   \(.sourceRepositoryURI // "?")\nsha:    \(.sourceRepositoryDigest // "?")")
               end' 2>/dev/null \
-            || printf '%s\n' "$out" | head -20
+            || sed -n '1,20p' <<<"$out"
           echo "-------------------------"
 
       # The attestation above lives in GitHub's attestation API, where

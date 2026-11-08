@@ -557,6 +557,39 @@ This project enforces consistent style through tooling and convention:
 - **Rustdoc on public types.** Every `pub fn`, `pub struct`, and `pub enum` must have a `///` doc comment.
 - **No `unsafe` without justification.** Where code needs `unsafe`, add a `// SAFETY:` comment explaining the invariant.
 
+### Shell and `pipefail`
+
+Under `set -o pipefail` (also `set -euo pipefail`, and a workflow step with
+`shell: bash`), never pipe into a reader that can stop before the writer
+finishes: `grep -q`, `grep -m`, `grep -l`, `grep -L`, `head`, `awk` with `exit`,
+`sed` with `q`, `read`, or a `while read` loop that breaks.
+
+- **Why:** the reader exits at its match, the writer's next write gets SIGPIPE,
+  the writer dies with status 141, and `pipefail` fails the pipeline although
+  the reader found what it looked for. With a short output the script loses
+  the race rarely (one run in 2400, measured on a loaded host); with more
+  output than a pipe holds it loses every time.
+- **Safe forms:**
+  - a here-string: `grep -q pattern <<<"$out"`;
+  - a file operand: `grep -q pattern file`, `grep -m1 pattern file`;
+  - capture first, then search: `out=$(cmd) && grep -q pattern <<<"$out"`,
+    which also keeps `cmd`'s own failure;
+  - a reader that reads to the end: `sed -n 1p` for `head -1`,
+    `sed -n '1,20p'` for `head -20`, `awk '/re/ && !f { print; f = 1 }'` for
+    `awk '/re/ { print; exit }'`, and `grep` without `-q` or `-m` followed by
+    `${v%%$'\n'*}` for the first match.
+- **Do not** add `|| true`: it hides the writer's real failures as well.
+  Do not rely on `grep >/dev/null` or `grep -c`: GNU grep reads to the end for
+  both, but other greps do not.
+- **When stopping the writer is the point,** because it would otherwise print
+  millions of lines for a diagnostic, run that one pipeline without `pipefail`
+  and say why: `(set +o pipefail; cmp -l "$a" "$b" | head -10)`.
+- **The gate:** [`tests/pipefail_early_exit_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/pipefail_early_exit_test.rs)
+  scans every tracked shell script, git hook and workflow `run:` block with
+  the matcher in [`tests/support/pipefail_scan.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/pipefail_scan.rs)
+  and names the file and line of each site. A site that is provably safe goes
+  in its `ALLOWED` list with the reason; the list starts empty.
+
 ## Never publish a machine, an account, or a network
 
 This repository is public.

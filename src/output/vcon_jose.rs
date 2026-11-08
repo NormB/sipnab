@@ -1990,14 +1990,16 @@ impl Opener {
 /// The PEM text of the private key at `path`, `what` naming it in errors. On
 /// Unix the file must be readable by its owner only, as ssh requires of its
 /// keys: a key other users can read has already leaked.
+///
+/// Both the mode and the text come from `crate::secret_files`, so a key read
+/// before the privilege drop (`[vcon_fetch] decrypt_key`) is judged by the
+/// mode it had then. The rule names no owner, so the advance read changes no
+/// verdict.
 fn read_private_key(what: &str, path: &std::path::Path) -> Result<String, String> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt as _;
-        let mode = std::fs::metadata(path)
-            .map_err(|e| format!("cannot read '{}': {e}", path.display()))?
-            .permissions()
-            .mode();
+        let mode = crate::secret_files::mode(path)
+            .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
         if mode & 0o077 != 0 {
             return Err(format!(
                 "the {what} '{}' can be read by other users (mode {:o}): chmod 600 it",
@@ -2006,7 +2008,8 @@ fn read_private_key(what: &str, path: &std::path::Path) -> Result<String, String
             ));
         }
     }
-    std::fs::read_to_string(path).map_err(|e| format!("cannot read '{}': {e}", path.display()))
+    crate::secret_files::read_to_string(path)
+        .map_err(|e| format!("cannot read '{}': {e}", path.display()))
 }
 
 #[cfg(test)]

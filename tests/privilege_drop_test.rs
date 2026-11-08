@@ -1030,7 +1030,7 @@ fn localhost_cert() -> Result<(String, String), TestError> {
 }
 
 /// The path as a `&str`, for an argv.
-#[cfg(any(all(feature = "hep", feature = "tls"), feature = "api"))]
+#[cfg(any(feature = "hep", feature = "api"))]
 fn arg(p: &std::path::Path) -> Result<&str, TestError> {
     Ok(p.to_str().ok_or("path is not UTF-8")?)
 }
@@ -1222,6 +1222,386 @@ fn a_root_run_reads_its_root_only_server_credentials_before_the_drop() -> Result
     Ok(())
 }
 
+/// The `[vcon_fetch]` store a root run's server doors read, written to
+/// `dir/sipnab.toml`, with `auth`, `key`, `ca` and `signer` as its files.
+#[cfg(all(feature = "api", feature = "vcon"))]
+fn vcon_fetch_config(
+    dir: &std::path::Path,
+    auth: &std::path::Path,
+    key: &std::path::Path,
+    ca: &std::path::Path,
+    signer: &std::path::Path,
+) -> Result<std::path::PathBuf, TestError> {
+    let config = dir.join("sipnab.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[vcon_fetch]\nurl = \"https://127.0.0.1:9/v/{{uuid}}\"\n\
+             auth_file = \"{}\"\ndecrypt_key = \"{}\"\nca = \"{}\"\nsigner_ca = \"{}\"\n",
+            auth.display(),
+            key.display(),
+            ca.display(),
+            signer.display()
+        ),
+    )?;
+    Ok(config)
+}
+
+/// Run `sudo sipnab` as a REST server with `--api-allow-vcon-fetch` and the
+/// config file `config`, for up to five seconds, then stop it.
+#[cfg(all(feature = "api", feature = "vcon"))]
+fn serve_vcon_fetch_door(
+    config: &std::path::Path,
+    test: &str,
+    extra: &[&str],
+) -> Result<(Option<std::process::ExitStatus>, Output), TestError> {
+    let (_fixture_dir, fixture) = world_readable_fixture(test)?;
+    let run_dir = dir_nobody_can_write()?;
+    let child = Command::new("sudo")
+        .current_dir(run_dir.path())
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
+        .args(["-f", arg(config)?])
+        .args(["--api", "127.0.0.1:0", "--api-allow-vcon-fetch"])
+        .args(extra)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    // A refusal arrives within a second of startup; five is the margin.
+    let stopped = wait_or_stop(child, std::time::Duration::from_secs(5));
+    let _ = std::fs::remove_file(&fixture);
+    stopped
+}
+
+/// OPS-11, `[vcon_fetch]`: a root run whose REST door may fetch from a vCon
+/// store reads the store's root-only (0600) credential, decryption key, CA
+/// and signer CA before the drop, and serves as `nobody`.
+///
+/// It used to build the fetcher when the servers started, after the drop,
+/// and stop with exit 2: `--api-allow-vcon-fetch: [vcon_fetch] auth_file
+/// '...': Permission denied (os error 13)`.
+#[cfg(all(feature = "api", feature = "vcon"))]
+#[test]
+fn a_root_run_reads_its_root_only_vcon_fetch_files_before_the_drop() -> Result<(), TestError> {
+    let test = "a_root_run_reads_its_root_only_vcon_fetch_files_before_the_drop";
+    if !sudo_available() {
+        announce_skip(
+            test,
+            "passwordless sudo is not available, so sipnab cannot be run as root here",
+        );
+        return Ok(());
+    }
+    let jose = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
+    let key = std::fs::read(format!("{jose}/fake_grp.key"))?;
+    let ca = std::fs::read(format!("{jose}/fake_ca_root.crt"))?;
+    let dir = tempfile::tempdir()?;
+    let files = root_only_files(
+        dir.path(),
+        &[
+            ("fetch.auth", b"Authorization: Bearer fetch-token-0123\n"),
+            ("decrypt.pem", &key),
+            ("store-ca.pem", &ca),
+            ("signer-ca.pem", &ca),
+        ],
+    )?;
+    let [auth, key, ca, signer] = files.as_slice() else {
+        return Err("expected four files".into());
+    };
+    let config = vcon_fetch_config(dir.path(), auth, key, ca, signer)?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-before-drop", &[])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        early.is_none(),
+        "the run stopped by itself before it was signaled, exit {:?}: a \
+         [vcon_fetch] file was read after the drop:\n{stderr}",
+        early.and_then(|s| s.code())
+    );
+    assert!(
+        out.status.success(),
+        "SIGTERM must stop the run cleanly, got {:?}:\n{stderr}",
+        out.status.code()
+    );
+    assert!(!stderr.contains("Permission denied"), "{stderr}");
+    Ok(())
+}
+
+/// The advance read keeps the credential's permission rule as the dropped
+/// user applied it: a credential that user owns, with a group bit set, is
+/// still refused with exit 2, naming the mode.
+#[cfg(all(feature = "api", feature = "vcon"))]
+#[test]
+fn a_root_run_still_refuses_a_vcon_fetch_credential_its_drop_user_lets_others_read()
+-> Result<(), TestError> {
+    let test = "a_root_run_still_refuses_a_vcon_fetch_credential_its_drop_user_lets_others_read";
+    if !sudo_available() {
+        announce_skip(
+            test,
+            "passwordless sudo is not available, so sipnab cannot be run as root here",
+        );
+        return Ok(());
+    }
+    let jose = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
+    let key = std::fs::read(format!("{jose}/fake_grp.key"))?;
+    let ca = std::fs::read(format!("{jose}/fake_ca_root.crt"))?;
+    // Traversable, so `nobody` reaches its own file and the refusal is the
+    // permission rule's, before the fix and after it.
+    let dir = tempfile::tempdir()?;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o711))?;
+    }
+    let files = root_only_files(
+        dir.path(),
+        &[
+            ("decrypt.pem", &key),
+            ("store-ca.pem", &ca),
+            ("signer-ca.pem", &ca),
+        ],
+    )?;
+    let [key, ca, signer] = files.as_slice() else {
+        return Err("expected three files".into());
+    };
+    let staged = dir.path().join("nobody.auth.staged");
+    let auth = dir.path().join("nobody.auth");
+    std::fs::write(&staged, b"Authorization: Bearer fetch-token-0123\n")?;
+    let installed = Command::new("sudo")
+        .args(["-n", "install", "-m", "0640", "-o", "nobody"])
+        .arg(&staged)
+        .arg(&auth)
+        .status()?;
+    assert!(installed.success(), "sudo install of the nobody-owned file");
+    let config = vcon_fetch_config(dir.path(), &auth, key, ca, signer)?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-refusal-kept", &[])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        early.and_then(|s| s.code()),
+        Some(2),
+        "a credential the dropped user owns with mode 0640 must still be \
+         refused with exit 2:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("can be read or written by other users (mode 0640)"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// The four root-only `[vcon_fetch]` files, the store's CA doubling as the
+/// signer CA, in `dir`: (auth, key, ca, signer).
+#[cfg(all(feature = "api", feature = "vcon"))]
+fn root_only_fetch_files(dir: &std::path::Path) -> Result<[std::path::PathBuf; 4], TestError> {
+    let jose = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
+    let key = std::fs::read(format!("{jose}/fake_grp.key"))?;
+    let ca = std::fs::read(format!("{jose}/fake_ca_root.crt"))?;
+    let files = root_only_files(
+        dir,
+        &[
+            ("fetch.auth", b"Authorization: Bearer fetch-token-0123\n"),
+            ("decrypt.pem", &key),
+            ("store-ca.pem", &ca),
+            ("signer-ca.pem", &ca),
+        ],
+    )?;
+    let [a, k, c, g] = files.as_slice() else {
+        return Err("expected four files".into());
+    };
+    Ok([a.clone(), k.clone(), c.clone(), g.clone()])
+}
+
+/// The run stopped by itself with exit 2 within the wait, and its stderr.
+#[cfg(all(feature = "api", feature = "vcon"))]
+fn refused_with_2(early: Option<std::process::ExitStatus>, out: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        early.and_then(|s| s.code()),
+        Some(2),
+        "the run must stop with exit 2:\n{stderr}"
+    );
+    stderr
+}
+
+/// A `[vcon_fetch] auth_file` that does not exist stops a root run with exit
+/// 2, naming the door's flag, the setting and the path.
+#[cfg(all(feature = "api", feature = "vcon"))]
+#[test]
+fn a_root_run_names_a_missing_vcon_fetch_credential() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_names_a_missing_vcon_fetch_credential",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let [_, key, ca, signer] = root_only_fetch_files(dir.path())?;
+    let missing = dir.path().join("no-such.auth");
+    let config = vcon_fetch_config(dir.path(), &missing, &key, &ca, &signer)?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-missing-auth", &[])?;
+    let stderr = refused_with_2(early, &out);
+    assert!(
+        stderr.contains(&format!(
+            "--api-allow-vcon-fetch: [vcon_fetch] auth_file '{}': No such file or directory",
+            missing.display()
+        )),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// A root-owned decryption key other users can read is refused with exit 2:
+/// read before the drop, it is still judged by its mode.
+#[cfg(all(feature = "api", feature = "vcon"))]
+#[test]
+fn a_root_run_refuses_a_world_readable_decryption_key() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_refuses_a_world_readable_decryption_key",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let [auth, _, ca, signer] = root_only_fetch_files(dir.path())?;
+    let staged = dir.path().join("open.pem.staged");
+    let key = dir.path().join("open.pem");
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/vcon-jose/fake_grp.key"
+        ),
+        &staged,
+    )?;
+    let ok = Command::new("sudo")
+        .args(["-n", "install", "-m", "0644", "-o", "0", "-g", "0"])
+        .arg(&staged)
+        .arg(&key)
+        .status()?;
+    assert!(ok.success(), "sudo install of the world-readable key");
+    let config = vcon_fetch_config(dir.path(), &auth, &key, &ca, &signer)?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-open-key", &[])?;
+    let stderr = refused_with_2(early, &out);
+    assert!(
+        stderr.contains("can be read by other users (mode 644): chmod 600 it"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// A credential named through a symbolic link to a root-only file is read
+/// through the link before the drop, and the run serves.
+#[cfg(all(feature = "api", feature = "vcon"))]
+#[test]
+fn a_root_run_reads_a_root_only_credential_through_a_symlink() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_reads_a_root_only_credential_through_a_symlink",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let [auth, key, ca, signer] = root_only_fetch_files(dir.path())?;
+    let link = dir.path().join("link.auth");
+    std::os::unix::fs::symlink(&auth, &link)?;
+    let config = vcon_fetch_config(dir.path(), &link, &key, &ca, &signer)?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-symlink", &[])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(early.is_none(), "the run stopped by itself:\n{stderr}");
+    assert!(out.status.success(), "SIGTERM stops it cleanly:\n{stderr}");
+    Ok(())
+}
+
+/// Both doors that may fetch, REST and MCP over HTTP, serve from one
+/// root-only `[vcon_fetch]` store read before the drop.
+#[cfg(all(feature = "api", feature = "vcon", feature = "mcp-http"))]
+#[test]
+fn a_root_run_serves_both_fetch_doors_from_root_only_files() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_serves_both_fetch_doors_from_root_only_files",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let [auth, key, ca, signer] = root_only_fetch_files(dir.path())?;
+    let config = vcon_fetch_config(dir.path(), &auth, &key, &ca, &signer)?;
+    let mcp = [
+        "--mcp",
+        "--mcp-transport",
+        "http",
+        "--mcp-bind",
+        "127.0.0.1:0",
+        "--mcp-allow-vcon-fetch",
+    ];
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-both-doors", &mcp)?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(early.is_none(), "the run stopped by itself:\n{stderr}");
+    assert!(out.status.success(), "SIGTERM stops it cleanly:\n{stderr}");
+    assert!(!stderr.contains("Permission denied"), "{stderr}");
+    Ok(())
+}
+
+/// A drop user that does not exist stops a root run with exit 1 before any
+/// secret is used, naming the user; with `--chroot` as well, because the
+/// user is looked up before the chroot.
+#[test]
+fn a_root_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_with_a_missing_drop_user_stops_naming_it",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let (_fixture_dir, fixture) = world_readable_fixture("missing-drop-user")?;
+    let out = Command::new("sudo")
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-q", "-I"])
+        .arg(&fixture)
+        .args(["--user", "sipnab-no-such-user-ops2"])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("Failed to drop privileges: User 'sipnab-no-such-user-ops2' not found"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// The same refusal under `--chroot`: the lookup runs before the new root,
+/// so the message names the missing user, not a missing password database.
+#[test]
+fn a_chroot_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_chroot_run_with_a_missing_drop_user_stops_naming_it",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let jail = tempfile::tempdir()?;
+    let (_fixture_dir, fixture) = world_readable_fixture("missing-drop-user-chroot")?;
+    let out = Command::new("sudo")
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-q", "-I"])
+        .arg(&fixture)
+        .args(["--user", "sipnab-no-such-user-ops2", "--chroot"])
+        .arg(jail.path())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("User 'sipnab-no-such-user-ops2' not found"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
 /// A revocation list only root can read stops a root run once it has dropped
 /// privileges, with exit 2 and the reason.
 ///
@@ -1313,6 +1693,114 @@ fn a_root_run_with_chroot_resolves_the_drop_user_first() -> Result<(), TestError
         out.status.code()
     );
     assert!(!stderr.contains("not found"), "{stderr}");
+    Ok(())
+}
+
+/// The host bundles sipnab looks for, as `tls_files::SYSTEM_CA_BUNDLES` lists
+/// them on Linux; a test that needs one skips when the host has none.
+#[cfg(feature = "hep")]
+const HOST_BUNDLES: [&str; 4] = [
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/ca-bundle.pem",
+    "/etc/ssl/cert.pem",
+];
+
+/// Run `sudo sipnab` with `--chroot` into an empty directory and a TLS HEP
+/// sender to a port nothing listens on, with `extra` appended, or `None`
+/// when the host has no CA bundle to find.
+#[cfg(feature = "hep")]
+fn chroot_tls_sender(test: &str, extra: &[&str]) -> Result<Option<Output>, TestError> {
+    if !HOST_BUNDLES
+        .iter()
+        .any(|b| std::path::Path::new(b).is_file())
+    {
+        announce_skip(test, "this host has no system CA bundle to find");
+        return Ok(None);
+    }
+    let jail = tempfile::tempdir()?;
+    let (_fixture_dir, fixture) = world_readable_fixture(test)?;
+    let out = Command::new("sudo")
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .env_remove("SSL_CERT_FILE")
+        .args([
+            "-N",
+            "-q",
+            "-I",
+            arg(&fixture)?,
+            "--user",
+            "nobody",
+            "--chroot",
+        ])
+        .arg(jail.path())
+        .args(["--hep-send", "127.0.0.1:9", "--hep-send-transport", "tls"])
+        .args(extra)
+        .output()?;
+    let _ = std::fs::remove_file(&fixture);
+    Ok(Some(out))
+}
+
+/// A `--chroot` run whose TLS HEP sender names no `--hep-tls-ca` trusts the
+/// host bundle it could see before the chroot.
+///
+/// The bundle used to be looked up after the chroot, inside the new root,
+/// which holds none: `Failed to create HEP sender: no system CA bundle found;
+/// name the collector's issuer with --hep-tls-ca`, exit 2. With the bundle
+/// found, the sender gets as far as the connection, which nothing on port 9
+/// accepts.
+#[cfg(feature = "hep")]
+#[test]
+fn a_chroot_run_trusts_the_host_bundle_it_found_before_the_chroot() -> Result<(), TestError> {
+    let test = "a_chroot_run_trusts_the_host_bundle_it_found_before_the_chroot";
+    if !sudo_available() {
+        announce_skip(
+            test,
+            "passwordless sudo is not available, so sipnab cannot be run as root here",
+        );
+        return Ok(());
+    }
+    let Some(out) = chroot_tls_sender(test, &[])? else {
+        return Ok(());
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("no system CA bundle found"),
+        "the bundle found before the chroot must be used inside it:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("Failed to establish a TLS session with '127.0.0.1:9'"),
+        "the sender must reach the connection:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// `--hep-tls-extra-ca` joins the host bundle, so a `--chroot` run that adds
+/// one needs the bundle found before the chroot just the same.
+#[cfg(feature = "hep")]
+#[test]
+fn a_chroot_run_with_an_extra_ca_still_joins_the_host_bundle() -> Result<(), TestError> {
+    let test = "a_chroot_run_with_an_extra_ca_still_joins_the_host_bundle";
+    if !sudo_available() {
+        announce_skip(
+            test,
+            "passwordless sudo is not available, so sipnab cannot be run as root here",
+        );
+        return Ok(());
+    }
+    let extra = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/vcon-jose/fake_ca_root.crt"
+    );
+    let Some(out) = chroot_tls_sender(test, &["--hep-tls-extra-ca", extra])? else {
+        return Ok(());
+    };
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("no system CA bundle found"), "{stderr}");
+    assert!(
+        stderr.contains("Failed to establish a TLS session with '127.0.0.1:9'"),
+        "{stderr}"
+    );
     Ok(())
 }
 

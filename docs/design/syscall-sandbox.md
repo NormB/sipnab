@@ -71,10 +71,10 @@ Every row below was read at the SHA in the header.
 
 | In place | Where | Stops | Does not stop |
 |---|---|---|---|
-| Privilege drop: `setgroups(0, NULL)` → `setgid` → `setuid`, then a `getuid`/`getgid` readback | [`src/privilege.rs:142-160`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L142-L160), verified by `verify_dropped` ([`src/privilege.rs:903`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L903)) | Reaching other users' files, signaling their processes, opening a new privileged socket | Anything this process does as itself — its own memory, its own descriptors, `execve` |
-| `PR_SET_NO_NEW_PRIVS` | `set_no_new_privs` ([`src/privilege.rs:841`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L841)) behind `block_privilege_escalation` ([`src/privilege.rs:811`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L811)), called unconditionally from [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b | Regaining privilege through a setuid or setgid binary, on every run mode whether or not the process is root | `execve` itself, of anything already runnable |
-| Core dumps off: `prctl(PR_SET_DUMPABLE, 0)`, or `setrlimit(RLIMIT_CORE, 0)` on macOS | `disable_core_dumps` ([`src/privilege.rs:501`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L501)), called from [`src/app/bootstrap.rs:940`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L940) | Key material landing in a core file after a crash | Any live read of that key material |
-| `chroot` + `chdir("/")`, opt-in via `--chroot` | `do_chroot` ([`src/privilege.rs:873`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L873)), called from [`src/app/bootstrap.rs:773`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L773) | Naming a path outside the new root | Everything inside the new root, and every already-open descriptor |
+| Privilege drop: `setgroups(0, NULL)` → `setgid` → `setuid`, then a `getuid`/`getgid` readback | [`src/privilege.rs:142-160`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L142-L160), verified by `verify_dropped` ([`src/privilege.rs:944`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L944)) | Reaching other users' files, signaling their processes, opening a new privileged socket | Anything this process does as itself — its own memory, its own descriptors, `execve` |
+| `PR_SET_NO_NEW_PRIVS` | `set_no_new_privs` ([`src/privilege.rs:841`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L841)) behind `block_privilege_escalation` ([`src/privilege.rs:852`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L852)), called unconditionally from [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b | Regaining privilege through a setuid or setgid binary, on every run mode whether or not the process is root | `execve` itself, of anything already runnable |
+| Core dumps off: `prctl(PR_SET_DUMPABLE, 0)`, or `setrlimit(RLIMIT_CORE, 0)` on macOS | `disable_core_dumps` ([`src/privilege.rs:542`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L542)), called from [`src/app/bootstrap.rs:940`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L940) | Key material landing in a core file after a crash | Any live read of that key material |
+| `chroot` + `chdir("/")`, opt-in via `--chroot` | `do_chroot` ([`src/privilege.rs:914`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L914)), called from [`src/app/bootstrap.rs:773`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L773) | Naming a path outside the new root | Everything inside the new root, and every already-open descriptor |
 | WASM plugin host: no imports registered at all, plus fuel, memory and output caps | [`src/plugin/mod.rs:238`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L238), caps at [`:57`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L57), [`:61`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L61), [`:81`](https://github.com/NormB/sipnab/blob/main/src/plugin/mod.rs#L81) | A third-party plugin doing anything but returning findings | Anything in the host process, libpcap included |
 
 The plugin row is the one most likely to be mistaken for this page's subject.
@@ -102,7 +102,7 @@ root at all — so on the recommended install the flag was never set, for the
 whole life of the run.
 
 It is now set from `block_privilege_escalation`
-([`src/privilege.rs:811`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L811)), called unconditionally at
+([`src/privilege.rs:852`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L852)), called unconditionally at
 [`src/main.rs`](https://github.com/NormB/sipnab/blob/main/src/main.rs) step 2b, before any input is read and after `--setup-caps` (which
 runs `sudo setcap`, and sudo is a setuid binary the flag would break). The
 placement is the whole point: the control has no precondition, so it does not
@@ -491,7 +491,7 @@ itself and report "no filter, because no-new-privs is not set" rather than
 silently failing to install one: it runs later, in a different function, and a
 control asserted at a distance is a control assumed. This is the readback
 discipline `verify_dropped`
-([`src/privilege.rs:903`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L903)) already applies to the uid and gid.
+([`src/privilege.rs:944`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L944)) already applies to the uid and gid.
 
 *Corrected 2026-08-14.* This paragraph used to continue: *"on a `--setup-caps`
 install the flag is never attempted... on the recommended install path it reads

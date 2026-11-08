@@ -219,7 +219,7 @@ impl AuthHeader {
     }
 
     /// Read the header from a secret file, refused when other users can read
-    /// it ([`crate::privilege::open_private_file`], the rule every secret file
+    /// it ([`crate::privilege::read_private_file`], the rule every secret file
     /// sipnab reads follows). The generic kind's rule, with the flag named.
     ///
     /// # Errors
@@ -240,11 +240,10 @@ impl AuthHeader {
     /// never the contents.
     pub fn read_file_for(path: &Path, from: &str, kind: StoreKind) -> Result<Self, String> {
         let shown = path.display();
-        let file = crate::privilege::open_private_file(path, from)?;
-        let mut buf = Vec::new();
-        file.take(MAX_AUTH_FILE as u64 + 1)
-            .read_to_end(&mut buf)
-            .map_err(|e| format!("{from} '{shown}': {e}"))?;
+        // Read before the privilege drop when this run drops; the private-file
+        // rule is applied as the user reading it now. See
+        // `crate::privilege::read_private_file`.
+        let buf = crate::privilege::read_private_file(path, from, MAX_AUTH_FILE as u64 + 1)?;
         if buf.len() > MAX_AUTH_FILE {
             return Err(format!(
                 "{from} '{shown}': larger than {MAX_AUTH_FILE} bytes; it holds one line"

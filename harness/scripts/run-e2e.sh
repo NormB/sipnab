@@ -20,7 +20,7 @@ PROXY_API="${PROXY_API:-http://127.0.0.1:8080}"
 # perfectly healthy rtpproxy run, which reads as a capture bug rather than as
 # a script talking to the wrong door.
 RUNNING_ANCHOR="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
-  opensips-1 2>/dev/null | sed -n 's/^MEDIA_ANCHOR=//p' | head -1)"
+  opensips-1 2>/dev/null | sed -n 's/^MEDIA_ANCHOR=//p' | sed -n 1p)"
 case "$RUNNING_ANCHOR" in
   rtpproxy) RELAY_PORT_DEFAULT=8082 ;;
   *)        RELAY_PORT_DEFAULT=8081 ;;
@@ -64,7 +64,7 @@ python3 "$HERE/../clients/python/mcp_probe.py" | tee "$HERE/results/.mcp.$$"
   echo
   echo "- UTC: \`$STAMP\`"
   echo "- Calls placed: \`$CALLS\` with \`$SCENARIO\`"
-  echo "- sipnab: \`$(docker exec sipnab-proxy sipnab --version 2>/dev/null | head -1)\`"
+  echo "- sipnab: \`$(docker exec sipnab-proxy sipnab --version 2>/dev/null | sed -n 1p)\`"
   echo
   echo "## Topology"
   echo

@@ -17051,6 +17051,25 @@ the file. Under the packaged unit that user is `sipnab`: make the file
 shows. For an MCP certificate or key the message is the path alone, such as
 `/etc/sipnab/mcp.key`.
 
+A root run reads the `[vcon_fetch]` store's files (`auth_file`,
+`decrypt_key`, `ca`, `extra_ca`, `signer_ca`) before the drop as well:
+`--api-allow-vcon-fetch` and `--mcp-allow-vcon-fetch` read them when the
+servers start. 0.5.238 and earlier read them after the drop and stopped with
+exit status 2:
+
+```text
+--api-allow-vcon-fetch: [vcon_fetch] auth_file '/etc/sipnab/fetch.auth': Permission denied (os error 13)
+```
+
+The credential's permission rule is the same as before, applied as the user
+sipnab runs as after the drop. sipnab refuses a credential that user owns
+when other users can read it, and accepts one that root or another account
+owns whatever its mode:
+
+```text
+--api-allow-vcon-fetch: [vcon_fetch] auth_file '/etc/sipnab/fetch.auth' can be read or written by other users (mode 0640); chmod 600 it
+```
+
 A revocation list is different, because sipnab reads it again whenever it
 changes, as the user it dropped to:
 
@@ -51958,6 +51977,14 @@ sipnab looks the user up before it changes root, so `DIR` needs no
 up inside `DIR` and stopped with `Failed to drop privileges: User 'nobody' not
 found` unless `DIR` held an `etc/passwd` naming the user.
 
+A TLS client that names no CA file of its own (a `--hep-send-transport tls`
+sender without `--hep-tls-ca`, an HTTPS `[vcon_fetch]` store without `ca`)
+trusts the host's CA bundle. A run with `--chroot` finds and reads that bundle
+before it changes root, so `DIR` needs no copy of it. 0.5.238 and earlier
+looked for it inside `DIR` and stopped with exit `2`: `Failed to create HEP
+sender: no system CA bundle found; name the collector's issuer with
+--hep-tls-ca`. If no bundle exists outside `DIR`, sipnab still looks inside it.
+
 A directory that does not exist stops the run with exit `1`: `Failed to
 chroot: chroot(/var/empty) failed: No such file or directory (os error 2)`.
 Debian and Ubuntu have no `/var/empty`. Make an empty directory for it:
@@ -77013,6 +77040,39 @@ This project enforces consistent style through tooling and convention:
 - **Rustdoc on public types.** Every `pub fn`, `pub struct`, and `pub enum` must have a `///` doc comment.
 - **No `unsafe` without justification.** Where code needs `unsafe`, add a `// SAFETY:` comment explaining the invariant.
 
+### Shell and `pipefail`
+
+Under `set -o pipefail` (also `set -euo pipefail`, and a workflow step with
+`shell: bash`), never pipe into a reader that can stop before the writer
+finishes: `grep -q`, `grep -m`, `grep -l`, `grep -L`, `head`, `awk` with `exit`,
+`sed` with `q`, `read`, or a `while read` loop that breaks.
+
+- **Why:** the reader exits at its match, the writer's next write gets SIGPIPE,
+  the writer dies with status 141, and `pipefail` fails the pipeline although
+  the reader found what it looked for. With a short output the script loses
+  the race rarely (one run in 2400, measured on a loaded host); with more
+  output than a pipe holds it loses every time.
+- **Safe forms:**
+  - a here-string: `grep -q pattern <<<"$out"`;
+  - a file operand: `grep -q pattern file`, `grep -m1 pattern file`;
+  - capture first, then search: `out=$(cmd) && grep -q pattern <<<"$out"`,
+    which also keeps `cmd`'s own failure;
+  - a reader that reads to the end: `sed -n 1p` for `head -1`,
+    `sed -n '1,20p'` for `head -20`, `awk '/re/ && !f { print; f = 1 }'` for
+    `awk '/re/ { print; exit }'`, and `grep` without `-q` or `-m` followed by
+    `${v%%$'\n'*}` for the first match.
+- **Do not** add `|| true`: it hides the writer's real failures as well.
+  Do not rely on `grep >/dev/null` or `grep -c`: GNU grep reads to the end for
+  both, but other greps do not.
+- **When stopping the writer is the point,** because it would otherwise print
+  millions of lines for a diagnostic, run that one pipeline without `pipefail`
+  and say why: `(set +o pipefail; cmp -l "$a" "$b" | head -10)`.
+- **The gate:** [`tests/pipefail_early_exit_test.rs`](tests/pipefail_early_exit_test.rs)
+  scans every tracked shell script, git hook and workflow `run:` block with
+  the matcher in [`tests/support/pipefail_scan.rs`](tests/support/pipefail_scan.rs)
+  and names the file and line of each site. A site that is provably safe goes
+  in its `ALLOWED` list with the reason; the list starts empty.
+
 ## Never publish a machine, an account, or a network
 
 This repository is public.
@@ -79692,6 +79752,7 @@ Each one exists because the thing it guards silently rotted at least once.
 | [`cookbook_recipes_test`](../../tests/cookbook_recipes_test.rs) | A command in [`docs/examples.md`](../../docs/examples.md) no longer runs or names a flag `--help` lacks; or a command it executes has no output golden in [`tests/cli/cookbook/`](../../tests/cli/cookbook) and no reason in the checker's `OUTPUT_UNPINNED` table; or a golden there is one no cookbook command produces. |
 | [`support_selftest`](../../tests/support_selftest.rs) | The shared normalization helper changes behavior under the tests that depend on it. |
 | [`released_port_scan_test`](../../tests/released_port_scan_test.rs) | A test under `tests/` binds a loopback port 0, reads the port, and releases the socket before using the number, which a test running alongside can take in between. |
+| [`pipefail_early_exit_test`](../../tests/pipefail_early_exit_test.rs) | A tracked shell script, git hook or workflow `run:` block pipes into a reader that can stop before its writer finishes (`grep -q`, `grep -m`, `grep -l`, `head`, `awk` with `exit`, `sed` with `q`, `read`, a `while read` loop that breaks) in a shell with `pipefail` on. The writer then dies of SIGPIPE and the pipeline fails although the reader matched. It names the file and line. The matcher, [`tests/support/pipefail_scan.rs`](../../tests/support/pipefail_scan.rs), reads quoting, comments, here-documents, `case` patterns, `[[ ]]` and GitHub's per-step shell, and fails on a `defaults:` block or a file that mentions `pipefail` in a format it does not scan. The safe forms are in [CONTRIBUTING.md](../../CONTRIBUTING.md#shell-and-pipefail). |
 
 The rule for all of them: **the gate is not the problem**.
 
@@ -80040,6 +80101,28 @@ Existing gates hold the field on every surface as well:
 [`tests/mcp_untrusted_fencing_test.rs`](../../tests/mcp_untrusted_fencing_test.rs),
 and the merge oracle's `observable`, which compares `latest_message_at` across
 every assignment of a call's legs to workers.
+
+## Test matrix: readers that stop early under `pipefail`
+
+Under `set -o pipefail`, a pipe into a reader that stops early fails the
+pipeline when the writer still has output: the writer dies of SIGPIPE (141).
+The 2026-11-08 sweep found 53 such sites in tracked scripts and workflows and
+changed every one. The gate and its matcher keep the pattern out.
+
+The tests, by what they check. SUCCESS: the gate accepts a safe form, or it
+runs correctly. FAILURE: the gate flags an unsafe form, or it loses the race. EDGE: text
+that only looks like a pipe, or a position that must stay exact.
+
+| Where | SUCCESS | FAILURE | EDGE |
+|---|---|---|---|
+| [`tests/pipefail_early_exit_test.rs`](../../tests/pipefail_early_exit_test.rs) (matcher, workflow shells, the repository gate) | 17 | 30 | 19 |
+| [`tests/pipefail_early_exit_test.rs`](../../tests/pipefail_early_exit_test.rs) (the race: each old form fails all 200 runs, each new form passes all 200) | 5 | 5 | 0 |
+| [`tests/tag_signature_gate_test.rs`](../../tests/tag_signature_gate_test.rs) (the release check with a `git` that prints 1 MiB after the signature) | 1 | 1 | 0 |
+| Total, 78 | 23 | 36 | 19 |
+
+The race tests use a writer that prints `MATCH` and then 1 MiB, sixteen times
+a pipe's capacity, so the outcome does not depend on timing. 256 KiB was not
+enough: `mawk` 1.3.4 reads that far ahead before it acts on `exit`.
 
 ---
 
