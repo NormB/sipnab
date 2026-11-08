@@ -13431,8 +13431,62 @@ mod secret_read_tests {
         let paths = advance_read_paths(Vec::new(), Some("/var/empty"), || None);
         assert!(
             paths.is_empty(),
-            "no secrets and no host bundle: nothing to read: {paths:?}"
+            "no secrets and no host bundle: nothing to read, got {} path(s)",
+            paths.len()
         );
+    }
+
+    /// Both server doors that may fetch read the same `[vcon_fetch]` store, so
+    /// each of its files is listed once however many doors opt in.
+    #[test]
+    fn both_fetch_doors_list_each_vcon_fetch_file_once() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.vcon_fetch.auth_file = Some("/c/fetch.auth".into());
+        config.vcon_fetch.decrypt_key = Some("/c/fetch.key".into());
+        let cli = parse_cli(&[
+            "--api",
+            "127.0.0.1:0",
+            "--api-allow-vcon-fetch",
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-allow-vcon-fetch",
+        ])?;
+        let paths = secret_file_paths(&cli, &config);
+        for want in ["/c/fetch.auth", "/c/fetch.key"] {
+            let n = paths
+                .iter()
+                .filter(|p| p == &std::path::Path::new(want))
+                .count();
+            assert_eq!(n, 1, "{want} is listed {n} times with both doors open");
+        }
+        Ok(())
+    }
+
+    /// Every `[vcon_fetch]` file is listed under the setting that named it, so
+    /// the fleet inventory can report its inode and time by that name.
+    #[test]
+    fn each_vcon_fetch_file_is_named_by_its_setting() -> Result<(), TestError> {
+        let mut config = Config::default();
+        config.vcon_fetch.auth_file = Some("/c/a".into());
+        config.vcon_fetch.decrypt_key = Some("/c/k".into());
+        config.vcon_fetch.ca = Some("/c/ca".into());
+        config.vcon_fetch.signer_ca = Some("/c/s".into());
+        let files = secret_files(&parse_cli(&[])?, &config);
+        for (setting, path) in [
+            ("--vcon-fetch-auth-file", "/c/a"),
+            ("--vcon-fetch-decrypt-key", "/c/k"),
+            ("--vcon-fetch-ca", "/c/ca"),
+            ("--vcon-fetch-signer-ca", "/c/s"),
+        ] {
+            let row = files
+                .iter()
+                .find(|f| f.setting == setting)
+                .ok_or_else(|| format!("{setting} is not listed"))?;
+            assert_eq!(row.path, std::path::Path::new(path), "{setting}");
+            assert!(row.read_before_drop, "{setting} is read before the drop");
+        }
+        Ok(())
     }
 
     /// A revocation list the dropped user cannot open stops the run; a

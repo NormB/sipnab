@@ -1253,6 +1253,7 @@ fn vcon_fetch_config(
 fn serve_vcon_fetch_door(
     config: &std::path::Path,
     test: &str,
+    extra: &[&str],
 ) -> Result<(Option<std::process::ExitStatus>, Output), TestError> {
     let (_fixture_dir, fixture) = world_readable_fixture(test)?;
     let run_dir = dir_nobody_can_write()?;
@@ -1263,6 +1264,7 @@ fn serve_vcon_fetch_door(
         .args(["-N", "-q", "-I", arg(&fixture)?, "--user", "nobody"])
         .args(["-f", arg(config)?])
         .args(["--api", "127.0.0.1:0", "--api-allow-vcon-fetch"])
+        .args(extra)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
@@ -1307,7 +1309,7 @@ fn a_root_run_reads_its_root_only_vcon_fetch_files_before_the_drop() -> Result<(
         return Err("expected four files".into());
     };
     let config = vcon_fetch_config(dir.path(), auth, key, ca, signer)?;
-    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-before-drop")?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-before-drop", &[])?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
         early.is_none(),
@@ -1370,7 +1372,7 @@ fn a_root_run_still_refuses_a_vcon_fetch_credential_its_drop_user_lets_others_re
         .status()?;
     assert!(installed.success(), "sudo install of the nobody-owned file");
     let config = vcon_fetch_config(dir.path(), &auth, key, ca, signer)?;
-    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-refusal-kept")?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-refusal-kept", &[])?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(
         early.and_then(|s| s.code()),
@@ -1380,6 +1382,221 @@ fn a_root_run_still_refuses_a_vcon_fetch_credential_its_drop_user_lets_others_re
     );
     assert!(
         stderr.contains("can be read or written by other users (mode 0640)"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// The four root-only `[vcon_fetch]` files, the store's CA doubling as the
+/// signer CA, in `dir`: (auth, key, ca, signer).
+#[cfg(all(feature = "api", feature = "vcon"))]
+fn root_only_fetch_files(dir: &std::path::Path) -> Result<[std::path::PathBuf; 4], TestError> {
+    let jose = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/vcon-jose");
+    let key = std::fs::read(format!("{jose}/fake_grp.key"))?;
+    let ca = std::fs::read(format!("{jose}/fake_ca_root.crt"))?;
+    let files = root_only_files(
+        dir,
+        &[
+            ("fetch.auth", b"Authorization: Bearer fetch-token-0123\n"),
+            ("decrypt.pem", &key),
+            ("store-ca.pem", &ca),
+            ("signer-ca.pem", &ca),
+        ],
+    )?;
+    let [a, k, c, g] = files.as_slice() else {
+        return Err("expected four files".into());
+    };
+    Ok([a.clone(), k.clone(), c.clone(), g.clone()])
+}
+
+/// The run stopped by itself with exit 2 within the wait, and its stderr.
+#[cfg(all(feature = "api", feature = "vcon"))]
+fn refused_with_2(early: Option<std::process::ExitStatus>, out: &Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert_eq!(
+        early.and_then(|s| s.code()),
+        Some(2),
+        "the run must stop with exit 2:\n{stderr}"
+    );
+    stderr
+}
+
+/// A `[vcon_fetch] auth_file` that does not exist stops a root run with exit
+/// 2, naming the door's flag, the setting and the path.
+#[cfg(all(feature = "api", feature = "vcon"))]
+#[test]
+fn a_root_run_names_a_missing_vcon_fetch_credential() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_names_a_missing_vcon_fetch_credential",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let [_, key, ca, signer] = root_only_fetch_files(dir.path())?;
+    let missing = dir.path().join("no-such.auth");
+    let config = vcon_fetch_config(dir.path(), &missing, &key, &ca, &signer)?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-missing-auth", &[])?;
+    let stderr = refused_with_2(early, &out);
+    assert!(
+        stderr.contains(&format!(
+            "--api-allow-vcon-fetch: [vcon_fetch] auth_file '{}': No such file or directory",
+            missing.display()
+        )),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// A root-owned decryption key other users can read is refused with exit 2:
+/// read before the drop, it is still judged by its mode.
+#[cfg(all(feature = "api", feature = "vcon"))]
+#[test]
+fn a_root_run_refuses_a_world_readable_decryption_key() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_refuses_a_world_readable_decryption_key",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let [auth, _, ca, signer] = root_only_fetch_files(dir.path())?;
+    let staged = dir.path().join("open.pem.staged");
+    let key = dir.path().join("open.pem");
+    std::fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/vcon-jose/fake_grp.key"
+        ),
+        &staged,
+    )?;
+    let ok = Command::new("sudo")
+        .args(["-n", "install", "-m", "0644", "-o", "0", "-g", "0"])
+        .arg(&staged)
+        .arg(&key)
+        .status()?;
+    assert!(ok.success(), "sudo install of the world-readable key");
+    let config = vcon_fetch_config(dir.path(), &auth, &key, &ca, &signer)?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-open-key", &[])?;
+    let stderr = refused_with_2(early, &out);
+    assert!(
+        stderr.contains("can be read by other users (mode 644): chmod 600 it"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// A credential named through a symbolic link to a root-only file is read
+/// through the link before the drop, and the run serves.
+#[cfg(all(feature = "api", feature = "vcon"))]
+#[test]
+fn a_root_run_reads_a_root_only_credential_through_a_symlink() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_reads_a_root_only_credential_through_a_symlink",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let [auth, key, ca, signer] = root_only_fetch_files(dir.path())?;
+    let link = dir.path().join("link.auth");
+    std::os::unix::fs::symlink(&auth, &link)?;
+    let config = vcon_fetch_config(dir.path(), &link, &key, &ca, &signer)?;
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-symlink", &[])?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(early.is_none(), "the run stopped by itself:\n{stderr}");
+    assert!(out.status.success(), "SIGTERM stops it cleanly:\n{stderr}");
+    Ok(())
+}
+
+/// Both doors that may fetch, REST and MCP over HTTP, serve from one
+/// root-only `[vcon_fetch]` store read before the drop.
+#[cfg(all(feature = "api", feature = "vcon", feature = "mcp-http"))]
+#[test]
+fn a_root_run_serves_both_fetch_doors_from_root_only_files() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_serves_both_fetch_doors_from_root_only_files",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let [auth, key, ca, signer] = root_only_fetch_files(dir.path())?;
+    let config = vcon_fetch_config(dir.path(), &auth, &key, &ca, &signer)?;
+    let mcp = [
+        "--mcp",
+        "--mcp-transport",
+        "http",
+        "--mcp-bind",
+        "127.0.0.1:0",
+        "--mcp-allow-vcon-fetch",
+    ];
+    let (early, out) = serve_vcon_fetch_door(&config, "vcon-fetch-both-doors", &mcp)?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(early.is_none(), "the run stopped by itself:\n{stderr}");
+    assert!(out.status.success(), "SIGTERM stops it cleanly:\n{stderr}");
+    assert!(!stderr.contains("Permission denied"), "{stderr}");
+    Ok(())
+}
+
+/// A drop user that does not exist stops a root run with exit 1 before any
+/// secret is used, naming the user; with `--chroot` as well, because the
+/// user is looked up before the chroot.
+#[test]
+fn a_root_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_root_run_with_a_missing_drop_user_stops_naming_it",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let (_fixture_dir, fixture) = world_readable_fixture("missing-drop-user")?;
+    let out = Command::new("sudo")
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-q", "-I"])
+        .arg(&fixture)
+        .args(["--user", "sipnab-no-such-user-ops2"])
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("Failed to drop privileges: User 'sipnab-no-such-user-ops2' not found"),
+        "{stderr}"
+    );
+    Ok(())
+}
+
+/// The same refusal under `--chroot`: the lookup runs before the new root,
+/// so the message names the missing user, not a missing password database.
+#[test]
+fn a_chroot_run_with_a_missing_drop_user_stops_naming_it() -> Result<(), TestError> {
+    if !sudo_available() {
+        announce_skip(
+            "a_chroot_run_with_a_missing_drop_user_stops_naming_it",
+            "no passwordless sudo",
+        );
+        return Ok(());
+    }
+    let jail = tempfile::tempdir()?;
+    let (_fixture_dir, fixture) = world_readable_fixture("missing-drop-user-chroot")?;
+    let out = Command::new("sudo")
+        .arg("-n")
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "-q", "-I"])
+        .arg(&fixture)
+        .args(["--user", "sipnab-no-such-user-ops2", "--chroot"])
+        .arg(jail.path())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("User 'sipnab-no-such-user-ops2' not found"),
         "{stderr}"
     );
     Ok(())

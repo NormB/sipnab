@@ -786,4 +786,342 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Read `path` into the store, as the advance read does, without
+    /// deleting it.
+    #[cfg(feature = "vcon")]
+    fn read_in_advance(path: &Path) {
+        install(SecretFiles::read_all([path.to_path_buf()]));
+    }
+
+    /// The fetch credential reader, as the server doors call it.
+    #[cfg(feature = "vcon")]
+    fn fetch_credential(path: &Path) -> Result<crate::app::vcon_forward::AuthHeader, String> {
+        crate::app::vcon_forward::AuthHeader::read_file_for(
+            path,
+            "[vcon_fetch] auth_file",
+            crate::app::vcon_forward::StoreKind::Generic,
+        )
+    }
+
+    /// A credential the advance read could not open (here mode 0000, which
+    /// a user other than root cannot read) reports the OS reason with the
+    /// setting and the path.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_unreadable_credential_reports_why_with_its_setting() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt;
+        if crate::privilege::current_uid() == 0 {
+            return Ok(()); // root reads a 0000 file; the case cannot arise.
+        }
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("locked.auth");
+        std::fs::write(&path, b"Authorization: Bearer t0ken\n")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000))?;
+        read_in_advance(&path);
+        let err = fetch_credential(&path)
+            .err()
+            .ok_or("an unreadable credential is an error")?;
+        assert_eq!(
+            err,
+            format!(
+                "[vcon_fetch] auth_file '{}': {}",
+                path.display(),
+                std::io::Error::from_raw_os_error(libc::EACCES)
+            ),
+            "the OS reason, with the setting and the path, as an unread file gives it"
+        );
+        Ok(())
+    }
+
+    /// A missing decryption key names its path, as the reader always did.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_missing_decryption_key_names_its_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("absent.pem");
+        read_in_advance(&path);
+        let err = crate::output::vcon_jose::Opener::load(&path)
+            .err()
+            .ok_or("a missing key is an error")?;
+        assert_eq!(
+            err,
+            format!(
+                "cannot read '{}': {}",
+                path.display(),
+                std::io::Error::from_raw_os_error(libc::ENOENT)
+            ),
+            "the key reader's own text for a missing file"
+        );
+        Ok(())
+    }
+
+    /// A missing signer CA names its setting and its path.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_missing_signer_ca_names_its_setting_and_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("absent-ca.pem");
+        read_in_advance(&path);
+        let ca = crate::app::vcon_fetch::signer_ca(
+            &path,
+            "[vcon_fetch] signer_ca",
+            crate::settings::Origin::ConfigFile,
+        );
+        let (_, err) = crate::app::vcon_fetch::signer_trust(Some(&ca), None)
+            .err()
+            .ok_or("a missing signer CA is an error")?;
+        assert!(
+            err.starts_with(&format!("[vcon_fetch] signer_ca '{}': ", path.display())),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    /// A signer CA that holds no certificate is refused, read in advance.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_signer_ca_with_no_certificate_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path =
+            installed_then_removed(dir.path(), "empty-ca.pem", b"not a certificate\n", 0o644)?;
+        let ca = crate::app::vcon_fetch::signer_ca(
+            &path,
+            "[vcon_fetch] signer_ca",
+            crate::settings::Origin::ConfigFile,
+        );
+        assert!(
+            crate::app::vcon_fetch::signer_trust(Some(&ca), None).is_err(),
+            "a CA file with no certificate cannot be trusted"
+        );
+        Ok(())
+    }
+
+    /// An empty credential file is refused, not sent as an empty header.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_empty_credential_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = installed_then_removed(dir.path(), "empty.auth", b"", 0o600)?;
+        let err = fetch_credential(&path)
+            .err()
+            .ok_or("an empty credential is refused")?;
+        assert!(
+            err.starts_with(&format!("[vcon_fetch] auth_file '{}' ", path.display())),
+            "the refusal names the setting and the path: {err}"
+        );
+        Ok(())
+    }
+
+    /// A credential that is not UTF-8 is refused by name, without its bytes.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_credential_that_is_not_utf8_is_refused_without_its_bytes() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path =
+            installed_then_removed(dir.path(), "bin.auth", b"Authorization: \xff\xfe\n", 0o600)?;
+        let err = fetch_credential(&path)
+            .err()
+            .ok_or("a credential that is not UTF-8 is refused")?;
+        assert_eq!(
+            err,
+            format!(
+                "[vcon_fetch] auth_file '{}': not UTF-8 text",
+                path.display()
+            ),
+            "the refusal names the file and never its bytes"
+        );
+        Ok(())
+    }
+
+    /// An empty decryption key is refused.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn an_empty_decryption_key_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = installed_then_removed(dir.path(), "empty.pem", b"", 0o600)?;
+        assert!(
+            crate::output::vcon_jose::Opener::load(&path).is_err(),
+            "an empty file holds no key"
+        );
+        Ok(())
+    }
+
+    /// A world-readable decryption key is refused with the exact text the
+    /// reader gives, naming the mode it had when it was read.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_world_readable_decryption_key_is_refused_with_its_mode() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let pem = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/vcon-jose/fake_grp.key"
+        ))?;
+        let path = installed_then_removed(dir.path(), "open.pem", &pem, 0o644)?;
+        let err = crate::output::vcon_jose::Opener::load(&path)
+            .err()
+            .ok_or("a world-readable key is refused")?;
+        assert_eq!(
+            err,
+            format!(
+                "the decryption key '{}' can be read by other users (mode 644): chmod 600 it",
+                path.display()
+            ),
+            "the mode recorded by the advance read, in the reader's words"
+        );
+        Ok(())
+    }
+
+    /// A credential of the reader's own that others can write, but not read,
+    /// is refused as well: the rule tests every group and other bit.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_credential_others_can_write_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = installed_then_removed(
+            dir.path(),
+            "w.auth",
+            b"Authorization: Bearer t0ken\n",
+            0o602,
+        )?;
+        let err = fetch_credential(&path)
+            .err()
+            .ok_or("an others-writable file of the reader's own is refused")?;
+        assert!(err.ends_with("(mode 0602); chmod 600 it"), "{err}");
+        Ok(())
+    }
+
+    /// A missing CA file for an HTTPS store is refused naming the file.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_missing_fetch_ca_names_its_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("absent-store-ca.pem");
+        read_in_advance(&path);
+        let err = crate::app::https_client::client_config(
+            Some(&path),
+            None,
+            &crate::tls_files::TrustNames {
+                ca: "[vcon_fetch] ca",
+                extra: "[vcon_fetch] extra_ca",
+                issuer: "the store's issuer",
+            },
+        )
+        .err()
+        .ok_or("a missing CA is refused")?;
+        assert!(err.contains(&path.display().to_string()), "{err}");
+        Ok(())
+    }
+
+    /// A credential named through a symbolic link is read through it: the
+    /// advance read follows the link, as the reader did.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_credential_named_by_a_symlink_is_read_through_it() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let target = dir.path().join("real.auth");
+        std::fs::write(&target, b"Authorization: Bearer t0ken\n")?;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600))?;
+        let link = dir.path().join("link.auth");
+        std::os::unix::fs::symlink(&target, &link)?;
+        read_in_advance(&link);
+        std::fs::remove_file(&target)?;
+        assert!(
+            fetch_credential(&link).is_ok(),
+            "the target's bytes were read in advance through the link"
+        );
+        Ok(())
+    }
+
+    /// A dangling symbolic link is kept as its error.
+    #[test]
+    fn a_dangling_symlink_is_kept_as_its_error() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let link = dir.path().join("dangling");
+        std::os::unix::fs::symlink(dir.path().join("gone"), &link)?;
+        let read = SecretFiles::read_all([link.clone()]);
+        let err = read
+            .read(&link)
+            .ok_or("the link was not kept")?
+            .err()
+            .ok_or("a dangling link is an error")?;
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}");
+        Ok(())
+    }
+
+    /// A file changed after the advance read is answered as it was read: a
+    /// secret is read once, at startup, and a later edit takes a restart.
+    #[test]
+    fn a_file_changed_after_the_advance_read_is_answered_as_read() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("rotated");
+        std::fs::write(&path, b"first")?;
+        install(SecretFiles::read_all([path.clone()]));
+        std::fs::write(&path, b"second")?;
+        assert_eq!(read(&path)?, b"first", "the advance read is the answer");
+        Ok(())
+    }
+
+    /// A file replaced after the advance read by one other users can read is
+    /// judged by the mode it had when it was read, because those are the
+    /// bytes the run uses.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_file_replaced_after_the_read_is_judged_by_the_read() -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("swapped.auth");
+        std::fs::write(&path, b"Authorization: Bearer t0ken\n")?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        read_in_advance(&path);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
+        assert!(
+            fetch_credential(&path).is_ok(),
+            "the bytes in use were private when they were read"
+        );
+        Ok(())
+    }
+
+    /// A path named twice is read once.
+    #[test]
+    fn a_path_named_twice_is_read_once() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("twice");
+        std::fs::write(&path, b"x")?;
+        let read = SecretFiles::read_all([path.clone(), path.clone()]);
+        assert_eq!(read.files.len(), 1, "one entry for one path");
+        Ok(())
+    }
+
+    /// A directory named as the credential is left to its reader, which
+    /// refuses it naming the setting and the path.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_directory_named_as_the_credential_is_refused_by_its_reader() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        read_in_advance(dir.path());
+        let err = fetch_credential(dir.path())
+            .err()
+            .ok_or("a directory is not a credential")?;
+        assert!(
+            err.starts_with(&format!(
+                "[vcon_fetch] auth_file '{}'",
+                dir.path().display()
+            )),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    /// The header the fetcher sends is the line the file holds.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn the_credential_read_in_advance_is_the_header_sent() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = installed_then_removed(dir.path(), "h.auth", b"X-Api-Key: k3y\n", 0o600)?;
+        let header = fetch_credential(&path)?;
+        assert_eq!(header.name(), "X-Api-Key", "the header name from the file");
+        Ok(())
+    }
 }

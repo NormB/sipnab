@@ -534,6 +534,19 @@ mod tests {
         );
     }
 
+    /// A chroot run on a host with no bundle, whose new root holds none
+    /// either, has no bundle: the TLS client then refuses and names its CA
+    /// setting, as it did before.
+    #[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
+    #[test]
+    fn with_no_bundle_outside_or_inside_the_root_there_is_none() {
+        assert_eq!(
+            super::bundle_from(None, Some(&None), |_| false),
+            None,
+            "no pinned bundle and no candidate in the root"
+        );
+    }
+
     /// Without a pin the rule is unchanged: `$SSL_CERT_FILE` when it names a
     /// file, else the first candidate that exists, else nothing.
     #[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
