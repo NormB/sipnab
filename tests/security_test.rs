@@ -805,6 +805,7 @@ fn fraud_detector_caps_call_pattern_entries() -> Result<(), TestError> {
         // The BYE ends the dialog; the span is then the call's duration.
         sipnab::sip::dialog::update_state(&mut dialog, &bye);
         dialog.updated_at = dialog.created_at + chrono::TimeDelta::seconds(1);
+        dialog.latest_message_at = dialog.updated_at;
         Ok(detector.check(&bye, &dialog))
     };
 

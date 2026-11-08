@@ -200,8 +200,24 @@ pub struct SipDialog {
     pub messages: Vec<SipMessage>,
     /// Timestamp when this dialog was first created.
     pub created_at: DateTime<Utc>,
-    /// Timestamp of the most recent message update.
+    /// Timestamp of the message processed last: the last one READ, which is
+    /// not always the newest.
+    ///
+    /// On an `-I` set whose files overlap in time, a file read later can hold
+    /// a message stamped earlier than one already read, and `updated_at` then
+    /// moves back to it. That is what it is for: it changes on every message,
+    /// whatever its timestamp, so the live vCon export (which records the
+    /// `updated_at` each container was written at) and anything else that
+    /// asks "has this dialog changed?" see every message. For how long the
+    /// dialog lasted or how long it has been quiet, read
+    /// [`Self::latest_message_at`].
     pub updated_at: DateTime<Utc>,
+    /// The newest timestamp among the dialog's messages, whatever order they
+    /// were read in. Never earlier than `created_at`, and never moves back.
+    ///
+    /// Durations ([`Self::duration`]), idle compaction, the active counts and
+    /// the newest-first sorts measure from it.
+    pub latest_message_at: DateTime<Utc>,
     /// User-supplied tags (from `--tag` CLI flag).
     pub tags: Vec<String>,
     /// Source IP address of the initial message.
@@ -341,6 +357,17 @@ impl FinalCodeFold {
 }
 
 impl SipDialog {
+    /// How long the dialog has lasted so far: from `created_at` to
+    /// [`Self::latest_message_at`].
+    ///
+    /// THE duration every surface reports (`duration_sec`, the dialog
+    /// table's Duration column, the call report, the TUI, the filter DSL's
+    /// `duration`, the short-call fraud check), so they cannot disagree.
+    #[must_use]
+    pub fn duration(&self) -> chrono::TimeDelta {
+        self.latest_message_at - self.created_at
+    }
+
     /// Returns a reference to the current dialog state.
     pub fn state(&self) -> &DialogState {
         &self.state
@@ -473,6 +500,7 @@ impl SipDialog {
             messages: vec![msg.clone()],
             created_at: msg.timestamp,
             updated_at: msg.timestamp,
+            latest_message_at: msg.timestamp,
             src_addr: msg.src_addr,
             dst_addr: msg.dst_addr,
             src_port: msg.src_port,

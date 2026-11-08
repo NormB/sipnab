@@ -332,10 +332,11 @@ fn a_stream_evicted_then_resumed_is_the_documented_difference() -> Result<(), Te
 
 // ── overlapping files ───────────────────────────────────────────────
 
-/// A call's last activity is the last message READ, which on a set of files
-/// that overlap in time is not its latest: the same at every core count.
+/// A call's duration runs to its newest message, which on a set of files
+/// that overlap in time is not the last one READ: the same at every core
+/// count.
 #[test]
-fn a_calls_last_activity_is_its_last_message_read_at_every_core_count() -> Result<(), TestError> {
+fn a_calls_duration_runs_to_its_newest_message_at_every_core_count() -> Result<(), TestError> {
     let first = leg(0);
     let other = Leg {
         caller: first.callee,
@@ -367,7 +368,7 @@ fn a_calls_last_activity_is_its_last_message_read_at_every_core_count() -> Resul
     ];
     let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&set, n, &[]))?;
     let v: serde_json::Value = serde_json::from_str(single.lines().next().ok_or("one dialog")?)?;
-    assert_eq!(v["duration_sec"].as_f64(), Some(0.9), "{single}");
+    assert_eq!(v["duration_sec"].as_f64(), Some(2.5), "{single}");
     Ok(())
 }
 
@@ -1034,6 +1035,93 @@ fn a_retry_after_other_proxies_fill_the_window_is_a_retry_at_every_core_count()
     assert!(
         lines.contains("1 of 4098 control commands were retried"),
         "the proxy's own resend is a retry: {lines}"
+    );
+    Ok(())
+}
+
+// ── idleness measured from the newest message ────────────────────────
+
+/// `idle-0` over two files: the first holds its 35 messages to
+/// [`idle_since`]`(15)`, the newest; the second, read after it because its
+/// first packet is later than the first file's, holds an INFO exchange of
+/// `idle-0` stamped 1 s and 1.5 s on the filler's host pair (so the call is
+/// split over workers), then the filler call at `filler_at`. The last message
+/// of `idle-0` read is therefore 14 s older than its newest.
+fn idle_with_an_older_message_read_last(
+    dir: &std::path::Path,
+    filler_at: u64,
+) -> Result<[std::path::PathBuf; 2], TestError> {
+    let (idle, filler) = idle_legs();
+    assert_spread(&[(idle.caller, idle.callee), (filler.caller, filler.callee)]);
+    let mut first = captures::answered_call(idle, "idle-0@example.com", 0);
+    first.extend(captures::infos(
+        idle,
+        "idle-0@example.com",
+        2,
+        15,
+        SECOND,
+        SECOND,
+    ));
+    let mut second = captures::infos(filler, "idle-0@example.com", 17, 1, SECOND, SECOND);
+    second.extend(captures::answered_call(
+        filler,
+        "filler-0@example.com",
+        filler_at,
+    ));
+    Ok([
+        write(dir, "first.pcap", &first)?,
+        write(dir, "second.pcap", &second)?,
+    ])
+}
+
+/// `idle-0`'s message count over `set`, the same at every core count.
+fn idle_messages_kept(set: &[std::path::PathBuf; 2]) -> Result<u64, TestError> {
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(set, n, &[]))?;
+    msg_count(idle_dialog(&single)?)
+}
+
+/// Quiet EXACTLY the idle limit since its newest message when a sweep runs,
+/// and longer since the last message read: not idle past the limit, so
+/// nothing is compacted at any core count.
+#[test]
+fn quiet_exactly_the_limit_since_the_newest_message_is_not_compacted() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let set = idle_with_an_older_message_read_last(dir.path(), idle_since(15) + 600 * SECOND)?;
+    assert_eq!(
+        idle_messages_kept(&set)?,
+        37,
+        "exactly 600 s from the newest message: all 37 messages kept"
+    );
+    Ok(())
+}
+
+/// One millisecond longer, and the sweep compacts it to the keep limit at
+/// every core count.
+#[test]
+fn quiet_a_millisecond_past_the_limit_since_the_newest_message_is_compacted()
+-> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let set =
+        idle_with_an_older_message_read_last(dir.path(), idle_since(15) + 600 * SECOND + 1_000)?;
+    assert_eq!(
+        idle_messages_kept(&set)?,
+        20,
+        "600.001 s from the newest message: compacted to the keep limit, 20"
+    );
+    Ok(())
+}
+
+/// Quiet 590 s since its newest message and 604 s since the last message
+/// read: not idle, because idleness is measured from the newest message.
+#[test]
+fn quiet_past_the_limit_only_since_the_last_message_read_is_not_compacted() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
+    let set = idle_with_an_older_message_read_last(dir.path(), idle_since(15) + 590 * SECOND)?;
+    assert_eq!(
+        idle_messages_kept(&set)?,
+        37,
+        "590 s from the newest message: all 37 messages kept"
     );
     Ok(())
 }

@@ -957,7 +957,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 763 -> 764 (SDP-ORIGIN-REUSE): docs/internals/domain-primer.md's
     // `SdpOrigin` row links src/sip/sdp_origin.rs (+1); every other developer
     // page unchanged.
-    const EXPECTED_CODE_LINKS: usize = 764;
+    // 764 -> 783 (LATEST-MESSAGE-AT): docs/internals/testing.md's dialog-times
+    // test matrix links the 19 source and test files it counts (+19); every
+    // other developer page unchanged.
+    const EXPECTED_CODE_LINKS: usize = 783;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

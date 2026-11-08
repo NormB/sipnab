@@ -591,6 +591,117 @@ The same document is what you get from:
 `--on-quality-exec` is separate. It passes the stream object on its own, under
 its own variable name: `SIPNAB_STREAM_JSON`, **not** `SIPNAB_JSON`.
 
+## Which dialog time to read: `updated_at` or `latest_message_at`
+
+A dialog summary carries three times. The REST rows (`GET /v1/dialogs`,
+`GET /v1/dialogs/tail` and the other routes that return a dialog summary), the
+MCP dialog summaries and the dialogs the TUI saves as JSON all carry them:
+
+| Field | What it holds | Read it to |
+|---|---|---|
+| `created_at` | The timestamp of the first message sipnab read for the dialog. | Find when sipnab first saw the call. |
+| `updated_at` | The timestamp of the message sipnab processed last. | Detect that a dialog changed. |
+| `latest_message_at` | The newest timestamp among the dialog's messages. | Measure how long the call lasted, or how long it has been quiet. |
+
+`duration_sec` is `latest_message_at` minus `created_at`, in seconds.
+`--json-dialogs` carries `duration_sec` but none of the three times.
+
+### When the two differ
+
+On a live capture, and on one file whose timestamps only go forward, sipnab
+reads a dialog's messages in timestamp order, and `updated_at` equals
+`latest_message_at`. They differ when sipnab reads an older-stamped message
+after a newer one:
+
+- **An `-I` set whose files overlap in time.** sipnab reads a set file by
+  file, in the order of each file's first packet. A file read second can hold
+  messages stamped before the last message of the file read first.
+- **A capture whose timestamps go backwards.** For example, one capture
+  merged from two hosts whose clocks differ.
+
+`updated_at` then moves back to the older stamp. `latest_message_at` does not
+move back.
+
+### Before you start
+
+- A sipnab binary with the `api` feature for the REST steps, or the `mcp`
+  feature for the MCP ones. [Check your binary has the API](rest-api.md#check-your-binary-has-the-api)
+  shows how to tell.
+- Nothing changes on any other system: sipnab derives both fields from the
+  captures it already reads.
+
+### Read the times
+
+1. Start sipnab on the capture or the set:
+
+   ```bash
+   sipnab -N -I edge.pcap -I core.pcap --api 127.0.0.1:8080
+   ```
+
+2. Read each dialog's three times and its duration:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs \
+     | jq -c '.dialogs[] | {call_id, created_at, updated_at, latest_message_at, duration_sec}'
+   ```
+
+3. For how long a call lasted, read `duration_sec`, or subtract `created_at`
+   from `latest_message_at`.
+4. For which calls changed since your last poll, poll
+   [`GET /v1/dialogs/tail`](rest-api.md#get-v1-dialogs-tail) or the MCP
+   [`tail_dialogs`](mcp-tools-signaling.md#tail_dialogs) tool. Both page on
+   `updated_at`.
+
+### Check the result
+
+- In every row, `latest_message_at` is never earlier than `created_at` or
+  `updated_at`.
+- `duration_sec` equals `latest_message_at` minus `created_at`.
+
+On a two-file set where the first file read holds a call from its INVITE to
+the 200 OK to its BYE 2.505 s later, and the second file holds the same
+call's messages up to 0.905 s, the row reads:
+
+```json
+{
+  "created_at": "2023-11-14T22:13:20+00:00",
+  "updated_at": "2023-11-14T22:13:20.905+00:00",
+  "latest_message_at": "2023-11-14T22:13:22.505+00:00",
+  "duration_sec": 2.505
+}
+```
+
+### What sipnab reads each one for
+
+- **`latest_message_at`:** `duration_sec` on every output, the dialog
+  table's Duration column, the call report's `Time` line, the TUI's Duration
+  column and its sort, `duration` in the filter DSL, the short-call check of
+  the fraud detector, idle compaction, the active dialog and call counts, a
+  call tree's `last_activity`, the newest-first order of `describe_endpoint`'s
+  recent dialogs, and the lifetime the `sdp_origin` correlation compares.
+- **`updated_at`:** the live vCon export, which records the `updated_at` it
+  wrote each container at and writes the container again when `updated_at`
+  changes, and measures an ended call's settle wait from it; the
+  `GET /v1/dialogs/tail` and `tail_dialogs` cursors; and the TUI's call-flow
+  cache. Each of these asks whether a dialog changed, and a message stamped
+  older than the newest is a change.
+
+### Troubleshooting
+
+- **`duration_sec` on an `-I` set changed after an upgrade.** Before
+  `latest_message_at` existed, `duration_sec` ran to the message read last.
+  On a set whose files overlap in time that was shorter than the call, and
+  below zero when the message read last was older than the first one read.
+  It now runs to the newest message.
+- **A tail poller did not see a dialog again.** The tail route and
+  `tail_dialogs` return dialogs whose `updated_at` is after the cursor. A
+  message stamped older than the cursor moves `updated_at` behind it, so
+  neither returns that dialog again. After sipnab has read the input, list
+  the dialogs once with `GET /v1/dialogs` or `list_dialogs`.
+- **`updated_at` is earlier than `latest_message_at`.** The capture holds a
+  message stamped older than one sipnab read before it. See
+  [When the two differ](#when-the-two-differ).
+
 ## STUN / TURN JSON (`--json-stun`)
 
 NDJSON, emitted after capture:

@@ -7215,14 +7215,22 @@ pub mod schema {
         /// Final response code of the dialog's INVITE, or of the request that
         /// opened a dialog without one. Absent — never zero — while it has none.
         pub final_status_code: Option<u16>,
-        /// First to last message, seconds. `0` for a single-message dialog.
+        /// First message to the newest one (`latest_message_at`), seconds.
+        /// `0` for a single-message dialog.
         pub duration_sec: f64,
         /// RFC 3339 timestamp of the first message.
         #[schema(format = DateTime)]
         pub created_at: String,
-        /// RFC 3339 timestamp of the most recent message.
+        /// RFC 3339 timestamp of the message processed last. On a set of
+        /// capture files that overlap in time that is not always the newest
+        /// message; it changes on every message, so it is the field to watch
+        /// for change.
         #[schema(format = DateTime)]
         pub updated_at: String,
+        /// RFC 3339 timestamp of the newest message, whatever order the
+        /// messages were read in. Never earlier than `created_at`.
+        #[schema(format = DateTime)]
+        pub latest_message_at: String,
         /// Transaction timing metrics.
         pub timing: TimingSummary,
         /// `<source>#<ordinal>` pointer to the frame this dialog opened in.
@@ -7840,7 +7848,7 @@ pub mod schema {
         pub method: String,
         /// SIP messages in the dialog.
         pub msg_count: usize,
-        /// First to last message, seconds.
+        /// First message to the newest one, seconds.
         pub duration_sec: f64,
         /// Labels the analysis attached to this dialog. Absent, not empty,
         /// when it attached none.

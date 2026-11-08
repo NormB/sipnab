@@ -849,6 +849,7 @@ console.log(`${dialogs.length} dialogs (${total} total)`);
       },
       "created_at": "2026-04-13T10:30:00Z",
       "updated_at": "2026-04-13T10:30:03Z",
+      "latest_message_at": "2026-04-13T10:30:03Z",
       "frame": "capture.pcap#41@6f3a1c02b8d4e795"
     }
   ],
@@ -934,6 +935,13 @@ Four list-row keys drop out rather than reading null:
     process captures from an interface and a HEP mirror at once.
 - `tags`: the labels `--tag` gave this run's dialogs, absent when the run set
   none.
+
+`updated_at` is the timestamp of the message processed last, and
+`latest_message_at` the newest timestamp among the dialog's messages.
+`duration_sec` runs from `created_at` to `latest_message_at`. They differ only
+when sipnab read an older-stamped message after a newer one, as on an `-I` set
+whose files overlap in time. [Which dialog time to read](@/docs/output-formats.md#which-dialog-time-to-read-updated-at-or-latest-message-at)
+says which to use for what.
 
 The list rows carry `from_user`/`to_user`. The single-dialog and report
 endpoints below carry `from`/`to` instead. A client that walks the list and

@@ -431,6 +431,15 @@ so the next page can skip or repeat dialogs that share the timestamp, with no
 error. `|` occurs in neither an RFC 3339 timestamp nor a valid Call-ID
 ([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) `word`).
 
+The cursor pages on `updated_at`, the timestamp of the message processed
+last, and not on `latest_message_at`, the newest: the tool reports change, and
+a message stamped older than the newest is a change. On an `-I` set whose
+files overlap in time, such a message can move a dialog's `updated_at` behind
+a cursor already returned, and the dialog is not returned again. Once
+`source_exhausted` is `true`, one [`list_dialogs`](@/docs/mcp-tools-core.md#list-dialogs)
+sweep reads every dialog as it ended. See
+[Which dialog time to read](@/docs/output-formats.md#which-dialog-time-to-read-updated-at-or-latest-message-at).
+
 `source_exhausted` is `false` while more dialog updates can still
 arrive and `true` once the capture source is fully drained — the end of
 an `-I` pcap replay, or a live capture that has hit its
@@ -453,6 +462,7 @@ has finished: stop when it turns `true` instead of polling forever.
       "duration_sec": 8.504,
       "created_at": "2016-11-26T14:52:59.666393+00:00",
       "updated_at": "2016-11-26T14:53:08.170676+00:00",
+      "latest_message_at": "2016-11-26T14:53:08.170676+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": 4,
@@ -555,6 +565,7 @@ which holds four failed calls:
       "frame": "tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b",
       "from_user": "⟦untrusted-capture-data⟧carol⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2023-11-14T22:13:24.810+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "Failed",
@@ -575,6 +586,7 @@ which holds four failed calls:
       "frame": "tests/pcap-samples/sip-problem-call.pcap#9@4201862d9613e2f2",
       "from_user": "⟦untrusted-capture-data⟧erin⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2023-11-14T22:13:27.810+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "Failed",
@@ -595,6 +607,7 @@ which holds four failed calls:
       "frame": "tests/pcap-samples/sip-problem-call.pcap#13@091b886751922950",
       "from_user": "⟦untrusted-capture-data⟧grace⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2023-11-14T22:13:30.810+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "Failed",
@@ -615,6 +628,7 @@ which holds four failed calls:
       "frame": "tests/pcap-samples/sip-problem-call.pcap#17@cc2aeb6bbdcb704c",
       "from_user": "⟦untrusted-capture-data⟧ivan⟦/untrusted-capture-data⟧",
       "input_origin": "wire",
+      "latest_message_at": "2023-11-14T22:13:33.810+00:00",
       "method": "INVITE",
       "msg_count": 4,
       "state": "Failed",

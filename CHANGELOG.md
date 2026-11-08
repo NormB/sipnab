@@ -8,6 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **A dialog summary carries `latest_message_at`, the newest timestamp among the dialog's messages.** The REST rows (`GET /v1/dialogs`, `GET /v1/dialogs/tail` and every route that returns a dialog summary), the MCP dialog summaries, the dialogs the TUI saves as JSON, `tests/schemas/dialog.schema.json` and the OpenAPI `DialogSummary` component carry it, as a required [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) date-time. `updated_at` is unchanged: it is the timestamp of the message processed last, which on an `-I` set whose files overlap in time can be older than the newest. The live vCon export and the tail cursors keep reading `updated_at`, because a message stamped older than the newest is still a change. [Which dialog time to read](docs/output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at) is the how-to.
+
+### Changed
+
+- **A dialog's duration runs to its newest message, not to the message read last.** On an `-I` set whose files overlap in time, `duration_sec` (on `--json-dialogs`, the JSON call report, REST and MCP) was measured to the last message read, which can be older than the call's end: in the two-file fixture `callid_across_files`, every call read 0.905 s where its messages run to 2.505 s, and a call whose message read last was older than its first read below zero. The dialog table's Duration column, the call report's `Time` line, the TUI's Duration column and its sort, the filter DSL's `duration`, and the fraud detector's short-call check now measure to `latest_message_at` too. So do idle compaction (10 minutes quiet), the active dialog and call counts, a call tree's `last_activity`, the newest-first order of `describe_endpoint`'s recent dialogs and the lifetime the `sdp_origin` correlation compares. On a live capture, and on one file whose timestamps only go forward, nothing changes: the newest message is the one read last. `--cores N` matches `--cores 1`.
+
 ## [0.5.238] - 2026-11-08
 
 ### Changed

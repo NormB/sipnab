@@ -407,8 +407,8 @@ impl FraudDetector {
         let now = msg.timestamp;
         let thresholds = self.thresholds;
 
-        // The call's own span, from its first message to its last.
-        let duration = dialog.updated_at.signed_duration_since(dialog.created_at);
+        // The call's own span, from its first message to its newest.
+        let duration = dialog.duration();
         if duration >= TimeDelta::seconds(thresholds.short_call_secs as i64) {
             return None;
         }
@@ -917,11 +917,13 @@ mod tests {
         let msg1 = make_invite("+18005551234", src, "normal-1@test")?;
         let mut dialog1 = make_dialog_from_msg(&msg1)?;
         dialog1.updated_at = dialog1.created_at + TimeDelta::seconds(120);
+        dialog1.latest_message_at = dialog1.updated_at;
         assert!(detector.check(&msg1, &dialog1).is_none());
 
         let msg2 = make_invite("+442071234567", src, "normal-2@test")?;
         let mut dialog2 = make_dialog_from_msg(&msg2)?;
         dialog2.updated_at = dialog2.created_at + TimeDelta::seconds(180);
+        dialog2.latest_message_at = dialog2.updated_at;
         assert!(
             detector.check(&msg2, &dialog2).is_none(),
             "normal calls should not trigger fraud detection"
@@ -1781,6 +1783,59 @@ mod tests {
             .find(|a| a.alert_type == FraudType::VolumeSpike)
             .ok_or("spike fires")?;
         assert_eq!(v.destination, None);
+        Ok(())
+    }
+}
+
+/// The short-call check on a call read out of timestamp order: see
+/// [`crate::test_utils::call_read_out_of_order`].
+#[cfg(test)]
+mod latest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Whether a detector whose short-call limit is `limit_secs` counts the
+    /// out-of-order call, which lasted 2.505 s to its newest message, as
+    /// short when its last message is read.
+    fn counted_short(limit_secs: u64) -> Result<bool, TestError> {
+        let src: IpAddr = [192, 0, 2, 1].into();
+        let (store, last) = crate::test_utils::call_read_out_of_order("fraud@example.com", src)?;
+        let dialog = store.get("fraud@example.com").ok_or("the call")?;
+        assert_eq!(dialog.state(), &DialogState::Completed, "the fixture");
+        let mut detector = FraudDetector::with_thresholds(
+            None,
+            FraudThresholds {
+                short_call_secs: limit_secs,
+                ..FraudThresholds::BUILT_IN
+            },
+        );
+        detector.record_if_short_call(&last, dialog);
+        Ok(detector
+            .call_patterns
+            .peek(&src)
+            .is_some_and(|p| p.short_calls.contains_key("fraud@example.com")))
+    }
+
+    /// Under a 2 s limit the call is not short: it ran 2.505 s to its newest
+    /// message, though its last message read is 0.905 s in.
+    #[test]
+    fn a_call_that_ran_past_the_limit_to_its_newest_message_is_not_short() -> Result<(), TestError>
+    {
+        assert!(
+            !counted_short(2)?,
+            "2.505 s to the newest message is not under a 2 s limit"
+        );
+        Ok(())
+    }
+
+    /// Under a 3 s limit the same call is short.
+    #[test]
+    fn a_call_whose_newest_message_is_inside_the_limit_is_short() -> Result<(), TestError> {
+        assert!(
+            counted_short(3)?,
+            "2.505 s is under a 3 s limit, so the call is short"
+        );
         Ok(())
     }
 }

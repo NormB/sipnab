@@ -1086,6 +1086,7 @@ fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() -> 
         duration_sec: 1.5,
         created_at: "2026-09-06T00:00:00Z".to_string(),
         updated_at: "2026-09-06T00:00:01Z".to_string(),
+        latest_message_at: "2026-09-06T00:00:01.5Z".to_string(),
         timing: sipnab::output::model::TimingSummary {
             pdd_ms: Some(180),
             setup_ms: Some(2134),
@@ -1120,6 +1121,25 @@ fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() -> 
          declared but never emitted: {phantom:?}\n  \
          emitted but not declared:   {undeclared:?}"
     );
+    Ok(())
+}
+
+/// The `DialogSummary` component requires `latest_message_at` and types it
+/// as a date-time, as `updated_at` and `created_at` are.
+#[test]
+fn the_dialog_summary_component_requires_latest_message_at() -> Result<(), TestError> {
+    let doc = document()?;
+    let component = doc
+        .pointer("/components/schemas/DialogSummary")
+        .ok_or("the document must carry a DialogSummary component")?;
+    let required = component["required"].as_array().ok_or("a required list")?;
+    assert!(
+        required.iter().any(|r| r == "latest_message_at"),
+        "{required:?}"
+    );
+    let field = &component["properties"]["latest_message_at"];
+    assert_eq!(field["type"], "string", "{field}");
+    assert_eq!(field["format"], "date-time", "{field}");
     Ok(())
 }
 

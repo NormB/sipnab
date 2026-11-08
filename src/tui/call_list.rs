@@ -1017,10 +1017,10 @@ pub fn render_call_list(
                             .map(|ms| format!("{}ms", ms))
                             .unwrap_or_default(),
                     )),
-                    // Dialog duration (first to last message) — distinct from
+                    // Dialog duration (first to newest message) — distinct from
                     // PDD, which is only INVITE→first 18x provisional.
                     10 => Cell::from(Span::raw(format_duration_ms(
-                        (dialog.updated_at - dialog.created_at).num_milliseconds(),
+                        dialog.duration().num_milliseconds(),
                     ))),
                     // gate: unreachable because `i` is drawn from
                     // `0..COLUMN_LABELS.len()` and each of those eleven indices
@@ -1328,9 +1328,7 @@ fn sort_dialogs(
                 .pdd_ms()
                 .unwrap_or(i64::MAX)
                 .cmp(&b.timing.pdd_ms().unwrap_or(i64::MAX)),
-            SortColumn::Duration => {
-                (a.updated_at - a.created_at).cmp(&(b.updated_at - b.created_at))
-            }
+            SortColumn::Duration => a.duration().cmp(&b.duration()),
         };
         if ascending { ord } else { ord.reverse() }
     });
@@ -2743,6 +2741,67 @@ mod tests {
                 "at {width} cols State is {state_w}, too narrow for FAILED plus the marker"
             );
         }
+        Ok(())
+    }
+}
+
+/// The Duration sort with one call read out of timestamp order: see
+/// [`crate::test_utils::call_read_out_of_order`].
+#[cfg(test)]
+mod latest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Shortest first by duration to the newest message: a call of 1.5 s,
+    /// read in order, sorts before the out-of-order call, which ran 2.505 s
+    /// although its last message read is 0.905 s in.
+    #[test]
+    fn the_duration_sort_measures_to_the_newest_message() -> Result<(), TestError> {
+        let (spanned, _) = crate::test_utils::call_read_out_of_order(
+            "spanned@example.com",
+            [192, 0, 2, 1].into(),
+        )?;
+        // A call read in order, opened at the same instant: its newest
+        // message, and the one read last, at 1.5 s.
+        let raw = crate::test_utils::build_sip_message(
+            "BYE sip:caller@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 198.51.100.7:5060;branch=z9hG4bK-back",
+                "From: <sip:+15550100@example.com>;tag=callee",
+                "To: <sip:caller@example.com>;tag=caller",
+                "Call-ID: short@example.com",
+                "CSeq: 9 BYE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let t0 = chrono::DateTime::from_timestamp(crate::test_utils::OUT_OF_ORDER_T0, 0)
+            .ok_or("the fixture's epoch")?;
+        let mut short = crate::sip::dialog::SipDialog::new(
+            &crate::sip::parser::parse_sip(
+                &raw,
+                t0,
+                [198, 51, 100, 7].into(),
+                [192, 0, 2, 2].into(),
+                5060,
+                5060,
+                crate::net::TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))?,
+        )
+        .ok_or("a dialog")?;
+        short.latest_message_at = t0 + chrono::TimeDelta::milliseconds(1500);
+        short.updated_at = short.latest_message_at;
+        let a = spanned.get("spanned@example.com").ok_or("the call")?;
+        let mut rows = vec![a, &short];
+        sort_dialogs(&mut rows, SortColumn::Duration, true);
+        let order: Vec<&str> = rows.iter().map(|d| d.call_id.as_str()).collect();
+        assert_eq!(
+            order,
+            ["short@example.com", "spanned@example.com"],
+            "1.5 s sorts before 2.505 s; by last message read, 0.905 s would sort first"
+        );
         Ok(())
     }
 }

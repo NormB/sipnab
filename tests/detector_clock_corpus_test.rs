@@ -460,7 +460,7 @@ fn every_wangiri_alert_is_backed_by_calls_that_really_ended_short() {
             );
             if dialog.method == sipnab::sip::SipMethod::Invite
                 && terminal
-                && dialog.updated_at.signed_duration_since(dialog.created_at) < short
+                && dialog.duration() < short
                 && counted.insert(call_id.clone())
             {
                 *ended_short.entry(dialog.src_addr).or_default() += 1;

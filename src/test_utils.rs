@@ -107,6 +107,107 @@ pub fn sdp_offer_and_answer(
     }
 }
 
+/// When [`call_read_out_of_order`]'s call opens: 2023-11-14T22:13:20Z.
+pub const OUT_OF_ORDER_T0: i64 = 1_700_000_000;
+
+/// A completed INVITE call from `src` for `call_id`, fed to a store in the
+/// order a reader takes an `-I` set whose files overlap in time: INVITE at
+/// [`OUT_OF_ORDER_T0`], 200 OK at +100 ms, ACK at +200 ms, BYE at +2,505 ms
+/// (the newest message), then the BYE's 200 OK stamped +905 ms, read last.
+///
+/// So the dialog's `created_at` is T0, its `latest_message_at` T0 + 2.505 s,
+/// and its `updated_at`, the last message read, T0 + 0.905 s. Returns the
+/// store and the message read last. RFC 5737 addresses, `example.com` hosts.
+///
+/// # Errors
+///
+/// A message failing to parse, which would be a defect in the parser.
+pub fn call_read_out_of_order(
+    call_id: &str,
+    src: std::net::IpAddr,
+) -> Result<
+    (
+        crate::sip::dialog_store::DialogStore,
+        crate::sip::SipMessage,
+    ),
+    String,
+> {
+    let messages = out_of_order_messages(call_id, src)?;
+    let last = messages.last().cloned().ok_or("the call has messages")?;
+    let mut store = crate::sip::dialog_store::DialogStore::new(100, false);
+    for msg in messages {
+        store.process_message(msg);
+    }
+    Ok((store, last))
+}
+
+/// The five messages of [`call_read_out_of_order`], in the order it reads
+/// them.
+///
+/// # Errors
+///
+/// A message failing to parse, which would be a defect in the parser.
+pub fn out_of_order_messages(
+    call_id: &str,
+    src: std::net::IpAddr,
+) -> Result<Vec<crate::sip::SipMessage>, String> {
+    let t0 = chrono::DateTime::from_timestamp(OUT_OF_ORDER_T0, 0).unwrap_or_default();
+    let dst: std::net::IpAddr = [198, 51, 100, 7].into();
+    let call = format!("Call-ID: {call_id}");
+    let parse = |first: &str, cseq: &str, branch: &str, to_tag: bool, ms: i64| {
+        let to = if to_tag {
+            "To: <sip:+15550100@example.com>;tag=callee"
+        } else {
+            "To: <sip:+15550100@example.com>"
+        };
+        let via = format!("Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-{branch}");
+        let raw = build_sip_message(
+            first,
+            &[
+                &via,
+                "From: <sip:caller@example.com>;tag=caller",
+                to,
+                &call,
+                &format!("CSeq: {cseq}"),
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let request = !first.starts_with("SIP/2.0");
+        let (from, to) = if request { (src, dst) } else { (dst, src) };
+        crate::sip::parser::parse_sip(
+            &raw,
+            t0 + chrono::TimeDelta::milliseconds(ms),
+            from,
+            to,
+            5060,
+            5060,
+            crate::net::TransportProto::Udp,
+        )
+        .map_err(|e| format!("{first} must parse: {e:?}"))
+    };
+    let invite = "INVITE sip:+15550100@example.com SIP/2.0";
+    Ok(vec![
+        parse(invite, "1 INVITE", "inv", false, 0)?,
+        parse("SIP/2.0 200 OK", "1 INVITE", "inv", true, 100)?,
+        parse(
+            "ACK sip:+15550100@example.com SIP/2.0",
+            "1 ACK",
+            "ack",
+            true,
+            200,
+        )?,
+        parse(
+            "BYE sip:+15550100@example.com SIP/2.0",
+            "2 BYE",
+            "bye",
+            true,
+            2505,
+        )?,
+        parse("SIP/2.0 200 OK", "2 BYE", "bye", true, 905)?,
+    ])
+}
+
 /// A classic little-endian Ethernet pcap holding one record that captured
 /// `caplen` of the `origlen` bytes that crossed the wire -- a snapped frame
 /// when `caplen` is the smaller -- filled with `0xAB`.

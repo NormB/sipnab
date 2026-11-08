@@ -2637,7 +2637,7 @@
             "description": "The media diagnosis: three booleans plus `hints`. There is no\n`summary` member."
           },
           "duration_sec": {
-            "description": "First to last message, seconds.",
+            "description": "First message to the newest one, seconds.",
             "format": "double",
             "type": "number"
           },
@@ -2836,7 +2836,7 @@
             "type": "string"
           },
           "duration_sec": {
-            "description": "First to last message, seconds. `0` for a single-message dialog.",
+            "description": "First message to the newest one (`latest_message_at`), seconds.\n`0` for a single-message dialog.",
             "format": "double",
             "type": "number"
           },
@@ -2869,6 +2869,11 @@
               "string",
               "null"
             ]
+          },
+          "latest_message_at": {
+            "description": "RFC 3339 timestamp of the newest message, whatever order the\nmessages were read in. Never earlier than `created_at`.",
+            "format": "date-time",
+            "type": "string"
           },
           "method": {
             "description": "SIP method that opened the dialog, canonical form.",
@@ -2905,7 +2910,7 @@
             ]
           },
           "updated_at": {
-            "description": "RFC 3339 timestamp of the most recent message.",
+            "description": "RFC 3339 timestamp of the message processed last. On a set of\ncapture files that overlap in time that is not always the newest\nmessage; it changes on every message, so it is the field to watch\nfor change.",
             "format": "date-time",
             "type": "string"
           }
@@ -2918,6 +2923,7 @@
           "duration_sec",
           "created_at",
           "updated_at",
+          "latest_message_at",
           "timing"
         ],
         "type": "object"

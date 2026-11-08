@@ -400,9 +400,11 @@ pub fn describe(
     }
 
     // Newest first: an operator chasing a complaint wants what just happened.
+    // By each dialog's newest message, which the last message read is not
+    // when the files of an `-I` set overlap in time.
     dialogs.sort_by(|a, b| {
-        b.updated_at
-            .cmp(&a.updated_at)
+        b.latest_message_at
+            .cmp(&a.latest_message_at)
             .then_with(|| a.call_id.cmp(&b.call_id))
     });
     let matched_call_ids: HashSet<&str> = dialogs.iter().map(|d| d.call_id.as_str()).collect();
@@ -616,6 +618,63 @@ mod tests {
         assert_eq!(r.dialogs, 1, "alice is the From user");
         assert_eq!(r.messages_sent, 0, "a user has no socket");
         assert_eq!(r.messages_received, 0);
+        Ok(())
+    }
+}
+
+/// The newest-first order of an endpoint's dialogs, with one call read out of
+/// timestamp order: see [`crate::test_utils::call_read_out_of_order`].
+#[cfg(test)]
+mod latest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The recent Call-IDs of 192.0.2.1 when it placed the out-of-order call
+    /// (newest message 2.505 s in, last read 0.905 s in) and a second call
+    /// whose one INVITE is stamped 1.5 s in.
+    fn recent() -> Result<Vec<String>, TestError> {
+        let src: IpAddr = [192, 0, 2, 1].into();
+        let (mut store, _) = crate::test_utils::call_read_out_of_order("spanned@example.com", src)?;
+        let raw = crate::test_utils::build_sip_message(
+            "INVITE sip:+15550199@example.com SIP/2.0",
+            &[
+                "Via: SIP/2.0/UDP 192.0.2.1:5060;branch=z9hG4bK-second",
+                "From: <sip:caller@example.com>;tag=second",
+                "To: <sip:+15550199@example.com>",
+                "Call-ID: between@example.com",
+                "CSeq: 1 INVITE",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let t0 = chrono::DateTime::from_timestamp(crate::test_utils::OUT_OF_ORDER_T0, 0)
+            .ok_or("the fixture's epoch")?;
+        store.process_message(
+            crate::sip::parser::parse_sip(
+                &raw,
+                t0 + chrono::TimeDelta::milliseconds(1500),
+                src,
+                [198, 51, 100, 7].into(),
+                5060,
+                5060,
+                crate::net::TransportProto::Udp,
+            )
+            .map_err(|e| format!("parse: {e:?}"))?,
+        );
+        let r = describe(&store, &StreamStore::new(10), &Selector::Ip(src), 50);
+        Ok(r.recent_call_ids)
+    }
+
+    /// Newest first by each call's newest message: the out-of-order call,
+    /// 2.505 s in, comes before the call at 1.5 s.
+    #[test]
+    fn an_endpoints_calls_are_newest_first_by_their_newest_message() -> Result<(), TestError> {
+        assert_eq!(
+            recent()?,
+            ["spanned@example.com", "between@example.com"],
+            "newest first by newest message: 2.505 s before 1.5 s"
+        );
         Ok(())
     }
 }

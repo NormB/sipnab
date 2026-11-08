@@ -4309,9 +4309,9 @@ mod tests {
             let d = store.get("call-pdd@test").ok_or("dialog exists")?;
             assert_eq!(d.timing.pdd_ms(), Some(1500), "PDD is INVITE→180");
             assert_eq!(
-                (d.updated_at - d.created_at).num_milliseconds(),
+                d.duration().num_milliseconds(),
                 61_500,
-                "call length is first→last message"
+                "call length is first→newest message"
             );
         }
 
@@ -4330,6 +4330,41 @@ mod tests {
             row.contains("1m1s"),
             "Duration column must show the call length, row: {row:?}"
         );
+        Ok(())
+    }
+
+    /// The Duration column runs to a call's newest message, not to the one
+    /// read last: the 200 OK to the BYE is read last with a stamp 1.5 s in,
+    /// while the BYE, 61 s in, is the newest.
+    #[test]
+    fn duration_column_runs_to_the_newest_message() -> Result<(), TestError> {
+        use controllers::test_support::{base_ts, make_invite, make_request, make_response};
+        let t0 = base_ts();
+        let mut app = App::with_processed_messages(vec![
+            make_invite("call-late@test", "1001", "1002", t0)?,
+            make_response(
+                "200 OK",
+                "call-late@test",
+                "INVITE",
+                t0 + chrono::TimeDelta::seconds(3),
+            )?,
+            make_request(
+                "BYE",
+                "call-late@test",
+                "1001",
+                "1002",
+                t0 + chrono::TimeDelta::seconds(61),
+            )?,
+            make_response(
+                "200 OK",
+                "call-late@test",
+                "BYE",
+                t0 + chrono::TimeDelta::milliseconds(1500),
+            )?,
+        ]);
+        app.sync_caches();
+        let row = rendered_row(&mut app, 160, 10, 4)?;
+        assert!(row.contains("1m1s"), "row: {row:?}");
         Ok(())
     }
 
