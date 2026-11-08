@@ -648,41 +648,62 @@ fn every_package_install_in_the_release_workflow_is_bounded() -> Result<(), Test
     Ok(())
 }
 
-/// Every direct download in the release workflow retries and is checksummed.
+/// Every direct download in the release workflow goes through the one
+/// fetch rule, and its failure is named for what it was.
 ///
-/// The bpf-linker tarball was already verified against a recorded sha256 --
-/// this holds that, and adds the retry it lacked. One dropped connection to
-/// `github.com` here fails a gnu build, and every gnu artifact plus both
-/// packages ship from that job.
+/// The bpf-linker tarball was verified against a recorded sha256 and fetched
+/// with `curl --retry 5 --retry-delay 5`: about 25 s of retries. On
+/// 2026-11-08 github.com answered release downloads with HTTP 504 for most of
+/// an hour, and one dropped connection here fails a gnu build, and every gnu
+/// artifact plus both packages ship from that job. It now runs
+/// `scripts/fetch-pinned.sh` (CI-TOOL-DOWNLOAD-RESILIENCE), which verifies
+/// the pin and retries for up to five minutes. No cache: a release runs on a
+/// tag, a cache entry a tag run saves is readable only by that tag, and
+/// nothing on `main` fetches bpf-linker, so a restore would always miss.
 #[test]
 fn every_direct_download_in_the_release_workflow_retries_and_is_checksummed()
 -> Result<(), TestError> {
     let text = read(".github/workflows/release.yml")?;
-    let mut curls = 0usize;
     let mut offenders = Vec::new();
     for (i, line) in text.lines().enumerate() {
-        if line.trim_start().starts_with('#') || is_annotation(line) || !line.contains("curl ") {
+        if line.trim_start().starts_with('#') || is_annotation(line) {
             continue;
         }
-        curls += 1;
-        if !line.contains("--retry") {
+        if line.contains("curl ") || line.contains("wget ") {
             offenders.push(format!("release.yml:{}: {}", i + 1, line.trim()));
         }
     }
     assert!(
-        curls > 0,
-        "no curl invocations were scanned; this gate is checking nothing"
-    );
-    assert!(
         offenders.is_empty(),
-        "these release downloads do not retry:\n{}",
+        "these release downloads bypass scripts/fetch-pinned.sh, so they get \
+         curl's own few seconds of retries instead of its five-minute \
+         budget:\n{}",
         offenders.join("\n")
     );
+    let fetches: Vec<&str> = text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#') && l.contains("scripts/fetch-pinned.sh"))
+        .collect();
     assert!(
-        text.contains("sha256sum -c"),
-        "a release download is no longer verified against a pinned checksum; \
-         an artifact built from bytes nobody checked is attested and \
-         published all the same"
+        !fetches.is_empty(),
+        "release.yml no longer fetches anything through scripts/fetch-pinned.sh; \
+         if bpf-linker is now installed some other way, its bytes may be unchecked"
+    );
+    let call = text
+        .find("bash scripts/fetch-pinned.sh")
+        .map(|at| &text[at..text[at..].find("|| rc=$?").map_or(text.len(), |e| at + e)])
+        .ok_or("release.yml runs no `bash scripts/fetch-pinned.sh ... || rc=$?`")?;
+    assert!(
+        call.contains("--sha256 \"${BPF_LINKER_SHA256}\""),
+        "release.yml's fetch is not checked against BPF_LINKER_SHA256:\n{call}"
+    );
+    // Exit 3 is "the bytes do not match the pin", which a re-run cannot fix;
+    // every other failure is the network's. The two messages must stay apart.
+    assert!(
+        text.contains("3) echo \"::error::FETCH corrupt, not a build failure")
+            && text.contains("*) echo \"::error::FETCH failure, not a build failure"),
+        "release.yml no longer tells a corrupt download (exit 3, do not re-run) \
+         from a failed one (re-run)"
     );
     Ok(())
 }

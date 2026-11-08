@@ -960,11 +960,19 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 764 -> 783 (LATEST-MESSAGE-AT): docs/internals/testing.md's dialog-times
     // test matrix links the 19 source and test files it counts (+19); every
     // other developer page unchanged.
-    // 783 -> 788 (PIPEFAIL-GREP-Q-SWEEP): docs/internals/testing.md's gate
+    // 783 -> 790 (CI-TOOL-DOWNLOAD-RESILIENCE): docs/internals/build-ci-release.md's
+    // "Pinned tool downloads" section links scripts/fetch-pinned.sh,
+    // .github/actions/pinned-download/action.yml,
+    // tests/workflow_supply_chain_test.rs, tests/ci_curl_retry_test.rs,
+    // scripts/tests/test_fetch_pinned.py, .github/actions/nextest/action.yml
+    // and .config/nextest.toml (+7). Measured: with origin/main's
+    // build-ci-release.md swapped back in the scan reads 783; CHANGELOG.md
+    // adds none.
+    // 790 -> 795 (PIPEFAIL-GREP-Q-SWEEP): docs/internals/testing.md's gate
     // roster row links tests/pipefail_early_exit_test.rs and
     // tests/support/pipefail_scan.rs (+2), and its early-exit reader test matrix links
     // the test files it counts (+3); every other developer page unchanged.
-    const EXPECTED_CODE_LINKS: usize = 788;
+    const EXPECTED_CODE_LINKS: usize = 795;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
