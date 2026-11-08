@@ -46,6 +46,14 @@ fn build_example() -> Result<PathBuf, TestError> {
     // build is still putting it there, which fails as "build reported success
     // but produced no artifact". It passed on Linux and failed on macOS, which
     // is what a race looks like when you only run it twice.
+    //
+    // The OnceLock shares the build between threads only. Under cargo-nextest,
+    // which the suite runs on since 2026-11-06, each test is a process of its
+    // own, so the five builds ran concurrently again: cargo re-links the
+    // uplifted `.wasm` on every build, fresh or not, by removing it and linking
+    // it anew, and a check or a read in another process can fall in that gap
+    // (PR #684's macOS run). `build_example_once` therefore builds under a
+    // lock file every process takes, and hands each test a copy of its own.
     // The cached value is the build's `Result`, so a failed build fails every
     // test that needs it, with the same message. The error is kept as a
     // `String` because a `static` must be `Sync`.
@@ -80,6 +88,16 @@ fn build_example_once() -> Result<PathBuf, TestError> {
         cmd.env_remove(var);
     }
 
+    // One build at a time across processes, and the copy taken before the
+    // lock is released, so no other build can be re-linking the artifact.
+    let target_root = std::env::var_os("CARGO_TARGET_DIR")
+        .or_else(|| std::env::var_os("CARGO_BUILD_TARGET_DIR"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(manifest).join("target"));
+    std::fs::create_dir_all(&target_root)?;
+    let lock = std::fs::File::create(target_root.join(".sipnab-plugin-example.lock"))?;
+    lock.lock()?;
+
     let out = cmd
         .args([
             "build",
@@ -106,10 +124,6 @@ fn build_example_once() -> Result<PathBuf, TestError> {
     // manifest. All five tests in this file then failed with a message claiming
     // the build produced nothing, which reads as a toolchain fault and sends the
     // reader hunting for a break that does not exist.
-    let target_root = std::env::var_os("CARGO_TARGET_DIR")
-        .or_else(|| std::env::var_os("CARGO_BUILD_TARGET_DIR"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(manifest).join("target"));
     let path = target_root.join("wasm32-unknown-unknown/release/sipnab_plugin_example.wasm");
     assert!(
         path.is_file(),
@@ -120,7 +134,37 @@ fn build_example_once() -> Result<PathBuf, TestError> {
         path.display(),
         std::env::var_os("CARGO_TARGET_DIR")
     );
-    Ok(path)
+    let copy = private_copy_path(&target_root)?;
+    std::fs::copy(&path, &copy)?;
+    drop(lock);
+    Ok(copy)
+}
+
+/// Where this test process keeps its own copy of the artifact: a directory
+/// in the target directory named by the process, under the artifact's own
+/// file name (the host names a plugin by it), so no build in another process
+/// can replace it while this one reads it.
+fn private_copy_path(target_root: &std::path::Path) -> std::io::Result<PathBuf> {
+    let dir = target_root
+        .join("sipnab-plugin-example-copies")
+        .join(std::process::id().to_string());
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir.join("sipnab_plugin_example.wasm"))
+}
+
+/// The artifact a test runs is its process's own copy, not the file cargo
+/// re-links on every build, and it is a complete copy of that file.
+#[test]
+fn wasm_plugin_artifact_is_a_private_copy_of_the_build() -> Result<(), TestError> {
+    let path = build_example()?;
+    assert!(
+        !path.ends_with("wasm32-unknown-unknown/release/sipnab_plugin_example.wasm"),
+        "a test must not read the file other builds re-link: {}",
+        path.display()
+    );
+    let bytes = std::fs::read(&path)?;
+    assert_eq!(&bytes[..4], b"\0asm", "a wasm module: {}", path.display());
+    Ok(())
 }
 
 /// One dialog in the shape `plugin_input_json` produces: answered, then a BYE
