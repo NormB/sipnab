@@ -76455,7 +76455,7 @@ Every key also covers:
 "Every file" means:
 
 - every tracked and untracked path, with its content;
-- the ignored files outside `target/`, by size and modification time;
+- the ignored files outside `target/`, by content;
 - the index tree, `HEAD` and the tags.
 
 The build inputs are the paths that can change what cargo compiles:
@@ -76478,6 +76478,32 @@ The build inputs are the paths that can change what cargo compiles:
 - To see how the rule classifies paths, run `python3 scripts/gate-cache.py
   classify`, followed by the paths. Without paths, it classifies the staged
   paths.
+
+**Tag-only pushes.** A push that updates tags and nothing else skips the tree
+gates when GitHub already proved the tagged commit:
+
+- every pushed ref is under `refs/tags/`;
+- every tagged commit is on `main`, by GitHub's compare API;
+- every check that `main` requires concluded `success` on that commit, or on
+  the head of the merged pull request it merges, when GitHub reports the same
+  tree for both. The PR-text check and `license/cla` run only on a pull
+  request's head.
+
+The hook then prints one line naming the commit, the number of required checks
+and `origin/main`, for example:
+
+```text
+tag-only push: b255c4f28 (merge of PR #694, head 8ae7313e2, same tree) is on origin/main and passed all 3 required checks (CI success, Commit messages and PR title name no private identity, license/cla) on GitHub; the tree gates are skipped
+```
+
+- Still run on a tag-only push: the signature and message gates, the
+  release-delivery test, the tag's signature, CI and code-scanning checks,
+  the commit test-count check, and the corpus gate, whose captures CI never
+  sees.
+- If `gh` is missing or offline, a call fails, or a check is missing, pending,
+  `neutral`, `skipped` or failed, the hook says why and runs every gate.
+- `SIPNAB_GATE_NO_CACHE=1` also runs every gate.
+- The rule is `decide` in `scripts/tag-push-proof.py`.
 
 **Never cached.**
 
@@ -76522,15 +76548,16 @@ For a push:
 SIPNAB_GATE_NO_CACHE=1 git push
 ```
 
-**Clear the stamps.** This removes the stamps of the current worktree:
+**Clear the stamps.** This removes the stamps of every worktree of the clone,
+because they share one directory:
 
 ```bash
 python3 scripts/gate-cache.py clear
 ```
 
 The command removes the directory `sipnab-gate-pass` under the path that
-`git rev-parse --git-dir` prints. Deleting that directory by hand does the
-same.
+`git rev-parse --git-common-dir` prints. Deleting that directory by hand does
+the same.
 
 **Verify.**
 
@@ -76542,12 +76569,25 @@ same.
 3. Edit any tracked file and run it again. That run is a full run.
 4. The tests of the mechanism: `cd scripts && python3 -m pytest
    tests/test_gate_cache.py tests/test_gate_cache_hooks.py
-   tests/test_parallel_tests_rerun.py`.
+   tests/test_parallel_tests_rerun.py tests/test_tag_push_proof.py`.
+5. For a tag, `python3 scripts/tag-push-proof.py` reads pre-push's input on
+   standard input and prints the decision without pushing anything. Give it
+   one line: `refs/tags/<tag> <tag object> refs/tags/<tag>`, then 40 zeros.
 
 **Where the stamps are, and how long they last.**
 
-- Stamps are in `<git dir>/sipnab-gate-pass/`, one directory for each
-  worktree. `git worktree remove` deletes them with the worktree.
+- Stamps are in `<common git dir>/sipnab-gate-pass/`, one directory that
+  every worktree of the clone shares. A new worktree, such as the one the
+  release flow makes for each release, reuses the stamps of a tree that
+  passed elsewhere. The key covers the whole tree, so the hook uses a stamp
+  from another worktree only for identical inputs.
+- Two worktrees can write at once: each stamp is a temporary file renamed
+  into place, so a reader sees a whole stamp or none.
+- The key identifies an ignored file by its content, so a copy of the G.729
+  vectors with other file times gives the same key. A cache of their hashes,
+  `sipnab-gate-hashes.json` in each worktree's own git directory, spares
+  reading a file whose size, times and inode have not changed.
+- The failed-test record stays in each worktree's own git directory.
 - A stamp older than seven days is not used.
 - Each write keeps the newest 256 stamps and removes the rest.
 

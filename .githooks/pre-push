@@ -149,6 +149,32 @@ if ! command -v cargo >/dev/null 2>&1; then
 	exit 1
 fi
 
+# -- A push of tags only, of a commit GitHub already proved ------------------
+# The 0.5.237 tag push took 1,269 s: this hook re-ran clippy, rustdoc, the fuzz
+# and BPF clippy runs, vale and codespell on b255c4f28, which had passed every
+# required GitHub check as PR #694 and was merged to main. The tree gates judge
+# a tree; a tag names one CI has judged. scripts/tag-push-proof.py is the rule:
+# when the push updates tags and nothing else, every tagged commit is on
+# origin/main (GitHub's compare API) and every check main requires concluded
+# `success` on it, the tree gates below are skipped and the one line it prints
+# names the proof. Anything it cannot establish -- gh missing or offline, an
+# API error, a check missing, pending or not `success` -- runs every gate.
+# Still run on a tag-only push: the release-delivery test, the tag signature,
+# the tag's CI and code-scanning checks, the commit test-count check, and the
+# corpus gate, which validates against captures CI never sees.
+TAG_ONLY=0
+TAG_PROOF="$(dirname "$0")/../scripts/tag-push-proof.py"
+case "$PUSH_REFS" in
+*refs/tags/*)
+	if [ -f "$TAG_PROOF" ]; then
+		if TAG_PROOF_LINE=$(printf '%s\n' "$PUSH_REFS" | python3 "$TAG_PROOF" 2>&1); then
+			TAG_ONLY=1
+		fi
+		printf '%s\n' "$TAG_PROOF_LINE"
+	fi
+	;;
+esac
+
 # -- Pass stamps: a step that passed on these exact inputs is not re-run -------
 # The same mechanism as .githooks/pre-commit, keyed by scripts/gate-cache.py.
 # Each build step's key (clippy, rustdoc, the fuzz and BPF clippy runs, the
@@ -166,7 +192,9 @@ fi
 # timing a key cannot hold. SIPNAB_GATE_NO_CACHE=1 runs every step.
 GATE_CACHE="$(dirname "$0")/../scripts/gate-cache.py"
 GATE_KEYS=""
-if [ ! -f "$GATE_CACHE" ]; then
+if [ "$TAG_ONLY" = 1 ]; then
+	: # no tree gate runs, so no key is needed
+elif [ ! -f "$GATE_CACHE" ]; then
 	printf '  Pass stamps... NOT USED -- scripts/gate-cache.py is not on this branch\n'
 elif ! GATE_KEYS=$(python3 "$GATE_CACHE" keys pre-push --hook-file "$0"); then
 	printf '  Pass stamps... %bNOT USED -- scripts/gate-cache.py could not read the inputs; every step runs%b\n' "$YELLOW" "$NC"
@@ -198,6 +226,8 @@ gate_flush() {
 }
 trap gate_flush EXIT
 
+# The tree gates, skipped on a proven tag-only push (above). Not re-indented.
+if [ "$TAG_ONLY" = 0 ]; then
 # -- Hard gate: rustfmt -------------------------------------------------------
 # scripts/check-rustfmt.sh: the dated nightly rustfmt in .rustfmt-toolchain
 # over every tracked `.rs` file, `fuzz/` and `bpf/` included, which are not
@@ -329,6 +359,8 @@ if [ -d bpf ]; then
 	fi
 fi
 
+fi # TAG_ONLY
+
 # -- Hard gate: the release-delivery tests ------------------------------------
 # These compare the TREE against the last tag -- whether code changed since it,
 # whether the changelog declares that, whether a security-relevant file moved
@@ -365,6 +397,7 @@ else
 	exit 1
 fi
 
+if [ "$TAG_ONLY" = 0 ]; then
 # -- Hard gate: reduced feature combinations ----------------------------------
 # Everything above this point builds with --all-features, and that is exactly
 # the blind spot: `#[cfg]`-gating rot is invisible to it. ci.yml's features job
@@ -728,6 +761,8 @@ else
 		exit 1
 	fi
 fi
+
+fi # TAG_ONLY
 
 # -- Hard gate: a test count in a commit message is derived, not typed --------
 # Messages here end with a sentence of the form "Seventeen tests,
@@ -1286,6 +1321,8 @@ run)
 esac
 # <<< END corpus-gate
 
+prose_fail=0
+if [ "$TAG_ONLY" = 0 ]; then
 # -- Hard gate: prose linters -------------------------------------------------
 # Vale and codespell are CI-blocking and BOTH broke main on 2026-08-03: 12
 # passive-voice errors, then two "pre-empt ==> preempt" hits, each caught only
@@ -1430,6 +1467,7 @@ elif [ -d website ]; then
 	printf '    `cargo install --git https://github.com/getzola/zola --tag v0.19.2`\n'
 	printf '    (there is no aarch64 Linux release binary), or set ZOLA_BIN.\n'
 fi
+fi # TAG_ONLY
 
 if [ "$prose_fail" -ne 0 ]; then
 	printf '\n'

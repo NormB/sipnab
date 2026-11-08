@@ -348,7 +348,7 @@ def test_a_run_killed_mid_way_leaves_no_stamp_for_what_it_did_not_finish(pc):
     assert rc == 0 and any(c.startswith("nextest run") for c in pc.cargo()), out
 
 
-def test_concurrent_runs_in_two_worktrees_keep_their_own_valid_stamps(pc):
+def test_concurrent_runs_in_two_worktrees_share_valid_stamps_in_the_common_dir(pc):
     second = pc.tree.parent / (pc.tree.name + "-wt2")
     git(pc.tree, "worktree", "add", "-q", str(second))
     try:
@@ -363,18 +363,96 @@ def test_concurrent_runs_in_two_worktrees_keep_their_own_valid_stamps(pc):
         assert all(p.returncode == 0 for p in procs), outs
         wt_git = pathlib.Path(git(second, "rev-parse", "--absolute-git-dir").strip())
         assert wt_git != pc.tree / ".git"
-        for gitdir in (pc.tree / ".git", wt_git):
-            assert pc.stamps(gitdir) == ["bpf-types", "clippy", "hook", "tests"], gitdir
+        assert pc.stamps(wt_git) == [], "a stamp landed in the worktree's own git dir"
+        assert pc.stamps() == ["bpf-types", "clippy", "hook", "tests"], pc.stamps()
+        for t in (pc.tree, second):
             listing = subprocess.run(
                 ["python3", str(REPO / "scripts/gate-cache.py"), "list"],
-                cwd=pc.tree if gitdir == pc.tree / ".git" else second,
-                env=pc.env(), capture_output=True, text=True, check=True,
+                cwd=t, env=pc.env(), capture_output=True, text=True, check=True,
             ).stdout
             assert "INVALID" not in listing and listing.count("\n") == 4, listing
         (pc.harness / "sleep-nextest").unlink()
         for t in (pc.tree, second):
             out = subprocess.run(["bash", str(PRE_COMMIT)], cwd=t, env=env, capture_output=True, text=True)
             assert "PASSED before on these exact inputs" in out.stdout, out.stdout
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def add_worktree(pc, name="wt2"):
+    second = pc.tree.parent / (pc.tree.name + "-" + name)
+    git(pc.tree, "worktree", "add", "-q", str(second))
+    return second
+
+
+def run_in(pc, tree, **extra):
+    (pc.harness / "cargo-invocations").write_text("")
+    out = subprocess.run(["bash", str(PRE_COMMIT)], cwd=tree, env=pc.env(SIPNAB_HOOK_ANY_TREE="1", **extra),
+                         capture_output=True, text=True)
+    return out.returncode, ANSI.sub("", out.stdout + out.stderr)
+
+
+def test_a_new_worktree_reuses_the_stamp_another_worktree_wrote(pc):
+    passed(pc)
+    second = add_worktree(pc)
+    try:
+        rc, out = run_in(pc, second)
+        assert rc == 0 and "PASSED before on these exact inputs" in out, out
+        assert pc.cargo() == [], pc.cargo()
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def test_another_worktree_with_an_edit_runs_fully(pc):
+    passed(pc)
+    second = add_worktree(pc)
+    try:
+        (second / "src/lib.rs").write_text("pub fn prod() -> u8 { 7 }\n")
+        rc, out = run_in(pc, second)
+        assert "PASSED before" not in out and any(c.startswith("clippy") for c in pc.cargo()), out
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def test_a_copied_ignored_input_with_new_file_times_still_matches(pc):
+    with open(pc.tree / ".git/info/exclude", "a") as f:
+        f.write("*.local.md\n")
+    (pc.tree / "vectors.local.md").write_text("pinned bytes\n")
+    passed(pc)
+    second = add_worktree(pc)
+    try:
+        (second / "vectors.local.md").write_text("pinned bytes\n")
+        os.utime(second / "vectors.local.md", (1_000_000_000, 1_000_000_000))
+        rc, out = run_in(pc, second)
+        assert rc == 0 and "PASSED before on these exact inputs" in out, out
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def test_other_ignored_content_in_another_worktree_runs_fully(pc):
+    with open(pc.tree / ".git/info/exclude", "a") as f:
+        f.write("*.local.md\n")
+    (pc.tree / "vectors.local.md").write_text("pinned bytes\n")
+    passed(pc)
+    second = add_worktree(pc)
+    try:
+        (second / "vectors.local.md").write_text("other bytes!\n")
+        rc, out = run_in(pc, second)
+        assert "PASSED before" not in out and any(c.startswith("nextest run") for c in pc.cargo()), out
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def test_the_failed_test_record_stays_with_its_worktree(pc):
+    (pc.harness / "canned-junit.xml").write_text(junit(("sipnab::bin1", "t1", False), ("sipnab::bin1", "t2", True)))
+    pc.run()
+    assert (pc.tree / ".git/sipnab-pre-commit-failed-tests.json").exists()
+    second = add_worktree(pc)
+    try:
+        (pc.harness / "canned-junit.xml").write_text(junit(("sipnab::bin1", "t1", True), ("sipnab::bin1", "t2", True)))
+        rc, out = run_in(pc, second)
+        assert rc == 0, out
+        assert "Tests that failed last run" not in out and not any(" -E " in c for c in pc.cargo()), out
     finally:
         git(pc.tree, "worktree", "remove", "--force", str(second))
 
@@ -463,7 +541,7 @@ def pp(tmp_path):
     (tree / "docs/a.md").write_text("# A\n")
     shutil.copy(PRE_PUSH, tree / ".githooks/pre-push")
     for name in ("gate-cache.py", "check-hook-prerequisites.py", "fetch-g729-vectors.py",
-                 "parallel-tests.py", "check-rustfmt.sh"):
+                 "parallel-tests.py", "check-rustfmt.sh", "tag-push-proof.py"):
         shutil.copy(REPO / "scripts" / name, tree / "scripts" / name)
     shutil.copy(REPO / ".rustfmt-toolchain", tree / ".rustfmt-toolchain")
     log = harness / "cargo-invocations"
@@ -473,6 +551,8 @@ def pp(tmp_path):
         "scripts/cross-arch-target.sh": "echo x86_64-unknown-linux-gnu\n",
         "scripts/check-non-linux.sh": f'echo "nonlinux" >> "{log}"; [ -f "{harness}/nonlinux-rc" ] && exit "$(cat "{harness}/nonlinux-rc")"; exit 0\n',
         "scripts/check-yang.py": "import sys\nprint('YANG: NOT CHECKED -- stub')\nsys.exit(2)\n",
+        "scripts/tag-signature-check.sh": f'echo "tagsig $1" >> "{log}"; echo "tag $1: signed (stub)"\n',
+        "scripts/code-scanning-clean.py": f"open('{log}', 'a').write('code-scanning\\n')\n",
         "scripts/prose-gates.sh": (
             "PROSE_PIN=0\nPROSE_REASON=stub\n"
             f'prose_vale_run() {{ PROSE_OUTPUT=$(mktemp); echo "vale" >> "{log}"; return 0; }}\n'
@@ -488,6 +568,26 @@ def pp(tmp_path):
         ),
         "rustfmt": "exit 0\n",
         "rustup": "printf 'wasm32-unknown-unknown\\nx86_64-unknown-linux-gnu\\n'\n",
+        # GitHub, as tag-push-proof.py and the tag CI gate read it. Switch files
+        # in the harness: gh-down (every call fails), gh-compare (the compare
+        # status, default behind), gh-ci (CI success's conclusion, default
+        # success). The jq filter (-q) is ignored: each answer is pre-filtered.
+        "gh": (
+            f'H="{harness}"\n'
+            'echo "gh $*" >> "$H/gh-calls"\n'
+            '[ -f "$H/gh-down" ] && exit 1\n'
+            'ci=$(cat "$H/gh-ci" 2>/dev/null || echo success)\n'
+            'case "$1 $2" in\n'
+            '"api repos/o/r/compare/"*) cat "$H/gh-compare" 2>/dev/null || echo behind ;;\n'
+            '"api repos/o/r/rules/branches/main") printf "CI success\\nlicense/cla\\n" ;;\n'
+            '"api repos/o/r/branches/main/protection") echo "gh: Branch not protected (HTTP 404)"; exit 1 ;;\n'
+            '"api repos/o/r/commits/"*"/check-runs"*) printf "CI success\\t2026-11-08T04:00:00Z\\t%s\\n" "$ci" ;;\n'
+            '"api repos/o/r/commits/"*"/status") printf "license/cla\\tsuccess\\n" ;;\n'
+            '"run list") sha=$(git rev-parse HEAD); '
+            'printf \'[{"databaseId":1,"headSha":"%s","status":"completed","conclusion":"success","name":"CI","event":"push"}]\' "$sha" ;;\n'
+            '*) exit 1 ;;\n'
+            'esac\n'
+        ),
     }
     for name, body in bins.items():
         (harness / "bin" / name).write_text("#!/bin/sh\n" + body)
@@ -497,10 +597,13 @@ def pp(tmp_path):
     git(tree, "config", "user.email", "t@example.com")
     git(tree, "config", "user.name", "t")
     git(tree, "config", "commit.gpgsign", "false")
+    git(tree, "config", "tag.gpgsign", "false")
+    git(tree, "remote", "add", "origin", "https://github.com/o/r.git")
     with open(tree / ".git/info/exclude", "a") as f:
         f.write("__pycache__/\n")
     git(tree, "add", "-A")
     git(tree, "commit", "-qm", "base")
+    git(tree, "tag", "v0.0.1")
     yield Sandbox(tree, harness, tree / ".githooks/pre-push")
 
 
@@ -658,3 +761,69 @@ def test_a_push_takes_one_snapshot_for_its_keys_and_one_for_its_stamps(pp):
     rc, out = push(pp)
     assert rc == 0, out
     assert snapshots(pp) == 2
+
+
+
+# ── pre-push: a push of tags only, of a commit GitHub already proved ─────────
+
+
+def push_tag(sb, tag="v0.0.1", also=None, **extra):
+    sha = git(sb.tree, "rev-parse", tag).strip()
+    lines = f"refs/tags/{tag} {sha} refs/tags/{tag} {'0' * 40}\n"
+    if also:
+        lines += also
+    return sb.run(stdin=lines, own=True, **extra)
+
+
+def test_a_tag_only_push_of_a_proven_commit_skips_the_tree_gates(pp):
+    rc, out = push_tag(pp)
+    assert rc == 0, out
+    assert "tag-only push:" in out and "is on origin/main and passed all 2 required checks" in out, out
+    assert cargo_steps(pp) == [], pp.cargo()
+    assert "scripts/check-rustfmt.sh ..." not in out
+
+
+def test_a_tag_only_push_still_runs_the_tag_gates(pp):
+    rc, out = push_tag(pp)
+    assert rc == 0, out
+    log = pp.cargo()
+    assert any(line.startswith("tagsig ") for line in log), log
+    assert "code-scanning" in log, log
+    assert any(line.startswith("crate test --features full --test release_delivery_test") for line in log), log
+
+
+def test_a_tag_only_push_without_github_runs_every_gate(pp):
+    pp.switch("gh-down")
+    rc, out = push_tag(pp)
+    assert "the full gates run" in out, out
+    assert "clippy" in cargo_steps(pp), pp.cargo()
+
+
+def test_a_tag_on_a_commit_not_on_main_runs_every_gate(pp):
+    (pp.harness / "gh-compare").write_text("diverged\n")
+    rc, out = push_tag(pp)
+    assert "is not on origin/main" in out and "clippy" in cargo_steps(pp), out
+
+
+def test_a_tag_whose_ci_failed_runs_every_gate(pp):
+    (pp.harness / "gh-ci").write_text("failure\n")
+    rc, out = push_tag(pp)
+    assert "CI success: failure" in out and "clippy" in cargo_steps(pp), out
+
+
+def test_a_tag_pushed_with_a_branch_runs_every_gate(pp):
+    head = git(pp.tree, "rev-parse", "HEAD").strip()
+    rc, out = push_tag(pp, also=f"refs/heads/main {head} refs/heads/main {'0' * 40}\n")
+    assert rc == 0, out
+    assert "the push also updates refs/heads/main" in out and "clippy" in cargo_steps(pp), out
+
+
+def test_no_cache_makes_a_tag_only_push_run_every_gate(pp):
+    rc, out = push_tag(pp, SIPNAB_GATE_NO_CACHE="1")
+    assert "clippy" in cargo_steps(pp), out
+
+
+def test_a_branch_push_never_asks_github_for_a_proof(pp):
+    push(pp)
+    calls = (pp.harness / "gh-calls").read_text() if (pp.harness / "gh-calls").exists() else ""
+    assert "compare" not in calls and "check-runs" not in calls, calls

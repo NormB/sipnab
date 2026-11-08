@@ -449,3 +449,167 @@ def test_a_tools_own_cache_directory_is_not_an_input(repo):
     (repo / "scripts/.pytest_cache/.gitignore").write_text("*\n", encoding="utf-8")
     (cache / "nodeids").write_text("[]\n", encoding="utf-8")
     assert not any(".pytest_cache" in p for p in gc.ignored_files(repo, {}))
+
+
+# ── Shared stamps: the common git dir, content ids for ignored files ────────
+#
+# Stamps lived in each worktree's own git dir, so every new worktree started
+# cold, and the release flow makes one per release. They now live in the
+# common git dir. The key already covers the tree, so a stamp from one
+# worktree is used in another only for identical inputs. For identical inputs
+# to give identical keys across worktrees, an ignored file (the G.729 vectors,
+# copied into each new worktree) is identified by its content, not its mtime.
+
+
+def test_a_linked_worktrees_stamps_live_in_the_common_git_dir(repo):
+    wt = repo.parent / "wt"
+    _git(repo, "worktree", "add", "-q", str(wt))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    assert gc.stamp_dir(wt, env) == (repo / ".git" / gc.STAMP_DIR).resolve()
+
+
+def test_the_main_checkouts_stamps_live_in_its_git_dir(repo):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    assert gc.stamp_dir(repo, env) == (repo / ".git" / gc.STAMP_DIR).resolve()
+
+
+def test_the_hash_cache_stays_in_the_worktrees_own_git_dir(repo):
+    wt = repo.parent / "wt"
+    _git(repo, "worktree", "add", "-q", str(wt))
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    own = pathlib.Path(_git(wt, "rev-parse", "--absolute-git-dir").strip())
+    assert gc.hash_cache_path(wt, env) == own / gc.HASH_CACHE
+    assert own != (repo / ".git").resolve()
+
+
+def test_an_ignored_file_copied_with_a_new_mtime_keeps_its_id(repo):
+    f = repo / "docs/vectors.local.md"
+    f.write_text("same bytes\n", encoding="utf-8")
+    before = gc.ignored_files(repo, {})["docs/vectors.local.md"]
+    os.utime(f, (NOW, NOW))
+    assert gc.ignored_files(repo, {})["docs/vectors.local.md"] == before
+
+
+def test_an_ignored_file_rewritten_with_its_old_size_and_mtime_gets_a_new_id(repo, monkeypatch):
+    # The racy rule would rehash this fresh file anyway; switched off here so
+    # the test isolates the stat check it names.
+    monkeypatch.setattr(gc, "RACY_NS", -10**12)
+    f = repo / "docs/vectors.local.md"
+    f.write_text("aaaa\n", encoding="utf-8")
+    cache = {}
+    before = gc.ignored_files(repo, {}, cache)["docs/vectors.local.md"]
+    st = f.stat()
+    # Past one tick of the kernel's coarse file clock, so ctime moves: within
+    # one tick only the racy rule can see the rewrite, and it is off here.
+    import time
+
+    time.sleep(0.05)
+    f.write_text("bbbb\n", encoding="utf-8")
+    os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns))
+    assert gc.ignored_files(repo, {}, cache)["docs/vectors.local.md"] != before
+
+
+def test_an_unchanged_ignored_file_is_not_read_again(repo, monkeypatch):
+    # A file written this instant is racy (see below); this one is trusted.
+    monkeypatch.setattr(gc, "RACY_NS", -10**12)
+    (repo / "docs/vectors.local.md").write_text("x\n", encoding="utf-8")
+    cache = {}
+    gc.ignored_files(repo, {}, cache)
+    reads = []
+    monkeypatch.setattr(gc, "_hash_file", lambda p: reads.append(p) or "never")
+    gc.ignored_files(repo, {}, cache)
+    assert reads == []
+
+
+def test_a_cache_entry_for_another_size_is_not_trusted(repo, monkeypatch):
+    # The racy rule would rehash this fresh file anyway; switched off here so
+    # the test isolates the stat check it names.
+    monkeypatch.setattr(gc, "RACY_NS", -10**12)
+    f = repo / "docs/vectors.local.md"
+    f.write_text("x\n", encoding="utf-8")
+    cache = {}
+    gc.ignored_files(repo, {}, cache)
+    entry = cache["docs/vectors.local.md"]
+    cache["docs/vectors.local.md"] = [entry[0] + 1, *entry[1:4], "sha256:" + "0" * 64, entry[5]]
+    assert gc.ignored_files(repo, {}, cache)["docs/vectors.local.md"] != "sha256:" + "0" * 64
+
+
+def test_a_corrupt_hash_cache_is_rebuilt(tmp_path):
+    path = tmp_path / gc.HASH_CACHE
+    path.write_text("{broken", encoding="utf-8")
+    assert gc.load_hash_cache(path) == {}
+    gc.save_hash_cache(path, {"a": [1, 2, 3, 4, "sha256:x"]})
+    assert gc.load_hash_cache(path) == {"a": [1, 2, 3, 4, "sha256:x"]}
+
+
+def _write_many(args):
+    """Write each stamp and prune after it, on the real clock: prune judges age
+    by file times, which a fixed clock would make look days old."""
+    import time
+
+    directory, hook, step, keys = args
+    for k in keys:
+        gc.write_stamp(directory, hook, step, k, time.time(), {"w": os.getpid()})
+        gc.prune(directory, time.time(), max_count=10_000)
+    return os.getpid()
+
+
+def test_two_processes_writing_stamps_into_one_directory_leave_every_stamp_valid(tmp_path):
+    import multiprocessing
+
+    a = [f"{i:064x}" for i in range(0, 60)]
+    b = [f"{i:064x}" for i in range(30, 90)]
+    with multiprocessing.get_context("fork").Pool(2) as pool:
+        pids = pool.map(_write_many, [(tmp_path, "pre-commit", "tests", a), (tmp_path, "pre-commit", "tests", b)])
+    assert len(set(pids)) == 2
+    import time
+
+    for k in set(a) | set(b):
+        assert gc.valid_stamp(tmp_path, "pre-commit", "tests", k, time.time()) is not None, k
+    assert not [p for p in tmp_path.iterdir() if ".tmp-" in p.name]
+
+
+def test_a_reader_never_sees_a_half_written_stamp_while_another_process_writes(tmp_path):
+    import multiprocessing
+
+    import time
+
+    k = "e" * 64
+    gc.write_stamp(tmp_path, "pre-push", "clippy", k, time.time(), {})
+    ctx = multiprocessing.get_context("fork")
+    writer = ctx.Process(target=_write_many, args=((tmp_path, "pre-push", "clippy", [k] * 300),))
+    writer.start()
+    seen = 0
+    while writer.is_alive():
+        assert gc.valid_stamp(tmp_path, "pre-push", "clippy", k, time.time()) is not None
+        seen += 1
+    writer.join()
+    assert writer.exitcode == 0 and seen > 0
+
+
+def test_a_writer_whose_temporary_file_vanished_writes_no_stamp_and_does_not_fail(tmp_path, monkeypatch):
+    real = os.replace
+
+    def vanish(src, dst):
+        os.unlink(src)
+        return real(src, dst)
+
+    monkeypatch.setattr(gc.os, "replace", vanish)
+    assert gc.write_stamp(tmp_path, "pre-commit", "tests", K, NOW, {}) is None
+    assert gc.valid_stamp(tmp_path, "pre-commit", "tests", K, NOW) is None
+
+
+def test_a_file_changed_too_close_to_its_hash_is_read_again(repo, monkeypatch):
+    """File times come from a coarse kernel clock: a rewrite in the same tick,
+    with the same size and the mtime set back, keeps the whole stat. Like git's
+    racily-clean rule, a hash is trusted only for a file whose times are older
+    than the hash by RACY_NS."""
+    f = repo / "docs/vectors.local.md"
+    f.write_text("aaaa\n", encoding="utf-8")
+    cache = {}
+    gc.ignored_files(repo, {}, cache)
+    reads = []
+    real = gc._hash_file
+    monkeypatch.setattr(gc, "_hash_file", lambda p: reads.append(p) or real(p))
+    gc.ignored_files(repo, {}, cache)
+    assert reads, "a hash taken in the same instant as the write was trusted"
