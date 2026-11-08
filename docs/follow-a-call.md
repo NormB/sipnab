@@ -87,13 +87,93 @@ that matched.
 | `th_callid_mapping` | `mapping` | 100 | Nothing: OpenSIPS sends sipnab the pair | An OpenSIPS event to sipnab's HEP listener |
 | `x_call_id` | `header` | 100 | A header, named in `[sip] xcid_headers`, holding the other leg's Call-ID | A header your server adds, and its name in sipnab's configuration |
 | `charging_vector_related_icid` | `header` | 95 | An [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `P-Charging-Vector` whose `related-icid` names the other leg's `icid-value` | An IMS or carrier B2BUA that sends it |
-| `sdp_origin` | `sdp` | 90 | The same SDP origin line | A server that passes SDP through unchanged |
+| `sdp_origin` | `sdp` | 90 | The same SDP origin line, while both legs were open, and an origin no two calls in the capture used on one hop at once | A server that passes SDP through unchanged, and endpoints that write a new origin for each call |
 | `charging_vector_icid` | `header` | 85 | The same `P-Charging-Vector` `icid-value` | An intermediary that copied it onto the second leg |
 | `via_branch` | `header` | 80 | A shared Via branch | A proxy hop, not a B2BUA |
 | `timing_heuristic` | `timing` | 50 | Nothing: the legs started close together and share an address | Nothing. A guess |
 
 [Run MCP across an estate](mcp-estate.md#choose-a-correlation-identifier)
 explains what each identifier proves and where it stops working.
+
+### Read `strategy`, `identifier_match` and the score
+
+Read the three fields of a leg in this order:
+
+1. `strategy` names the rule that tied the leg. It is the decisive field: two
+   strategies with one score are not the same claim.
+2. `identifier_match` is `true` when the two legs carry one identifier, and
+   `false` for `timing_heuristic`, which is a guess.
+3. The score orders the strategies. It is a rank, not a probability.
+
+### When an SDP origin counts
+
+[RFC 8866 section 5.2](https://www.rfc-editor.org/rfc/rfc8866.html#section-5.2)
+says the origin line's username, session ID, network type, address type and
+address are globally unique for a session. Not every endpoint follows that.
+SIPp's built-in `uac` scenario writes
+`o=user1 53655765 2353687637 IN IP4 <ip>` into every call, and some phones
+and gateways write the same session ID into every call. So sipnab reports
+`sdp_origin` only when both of these hold:
+
+- The two legs were open at one time. A B2BUA sends the second leg before the
+  first one's call setup ends, and both stay up for the call. Calls placed one
+  after the other are not open at one time. The time runs from a leg's first
+  message to its last, and a leg that starts at the instant the other ended
+  still counts.
+- No two calls in the capture used the origin on one hop at once. A hop is the
+  sending address and the receiving address and port of a leg's first
+  message. Each leg of a B2BUA call is a different hop. A load test that places
+  overlapping calls with one origin sends them all on one hop, and then the
+  origin ties no leg to any other.
+
+An origin line that does not have the six fields of RFC 8866, or whose session
+ID or version is not a number, ties nothing.
+
+When the rule refuses a pair, a weaker strategy such as `timing_heuristic` can
+still tie it, and sipnab reports it at that strategy's strength.
+
+The rule says less than the truth in three cases:
+
+- A B2BUA that forks one call to two contacts through one next hop.
+- A spiral that sends one offer over one hop twice.
+- Two capture points whose clocks differ by more than the call lasted.
+
+In each case, give the legs an identifier from
+[Make the match exact](#make-the-match-exact).
+
+### What changes for SIPp load tests
+
+A SIPp scenario that writes a constant origin, as the built-in `uac` scenario
+does, no longer ties its calls together by the origin:
+
+- Calls placed one after the other each keep their own B2BUA legs.
+- Calls that overlap on one hop tie nothing by the origin, not even a call's
+  own B2BUA leg. The timing heuristic may still list legs as guesses.
+
+To keep an identifier match in a load test, make the origin unique per call:
+write `o=caller [call_number] 1 IN IP[local_ip_type] [local_ip]` in the
+scenario, as [`harness/th-callid/uac.xml`](https://github.com/NormB/sipnab/blob/main/harness/th-callid/uac.xml) does,
+or send `Session-ID` or a correlation header.
+
+To check a capture, list the legs of one call:
+
+```sh
+sipnab -I tests/fixtures/th-callid/opensips-4.0-default.pcap --correlate 1-th-call@example.com --no-cli-print --quiet
+```
+
+```text
+Legs correlated with 1-th-call@example.com: 5 legs
+Leg                                 Strategy          Method  Score  Match       Gap ms  TH
+--------------------------------------------------------------------------------------------------
+DLGCH_fl0RBn4qMT8jMAAWMiQgPypeBgE+  sdp_origin        sdp     90     identifier  -       no_secret
+2-th-call@example.com               timing_heuristic  timing  50     guess       999     -
+DLGCH_fV0RBn4qMT8jMAAWMiQgPypeBgE+  timing_heuristic  timing  50     guess       1000    no_secret
+3-th-call@example.com               timing_heuristic  timing  50     guess       1999    -
+DLGCH_fF0RBn4qMT8jMAAWMiQgPypeBgE+  timing_heuristic  timing  50     guess       2000    no_secret
+```
+
+The call's own callee leg is the `sdp_origin` identifier match. The two later
+calls, one and two seconds after, are timing guesses.
 
 ## Make the match exact
 
@@ -286,5 +366,6 @@ sipnab -I tests/fixtures/session-id/opensips-4.0-th-session-id.pcap --correlate 
 | The legs tie with `timing_heuristic` although the server adds a header | `[sip] xcid_headers` does not name the header, or sipnab did not read the configuration file | Name the header. Pass `--config` with the file, and check that sipnab does not print that it ignores a configuration file |
 | The legs tie with `timing_heuristic` and a large `Gap ms`, or not at all | The B2BUA placed the second leg later than the window | Widen `--leg-correlation-window`, or add an identifier |
 | Unrelated calls appear as legs | Timing guesses on a busy server | Read `Match`. Add an identifier, so the guess is not needed |
+| Two legs that share an SDP origin are not tied by `sdp_origin` | The legs were not open at one time, or other calls in the capture used the origin on one hop at once | See [When an SDP origin counts](#when-an-sdp-origin-counts). Make the origin unique per call, or add an identifier |
 | Exit 1 and `no dialog with Call-ID` | The Call-ID is not in the capture, or is not exact | Copy it from `--report` |
 | A topology-hiding leg reports `th_callid` `undecodable` or `unmatched` | The secret or prefix is wrong, or the caller's leg is missing | See [Calls through topology hiding](opensips-sipnab.md#calls-through-topology-hiding) |

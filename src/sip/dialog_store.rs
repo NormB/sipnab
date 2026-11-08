@@ -62,6 +62,11 @@ pub enum CorrelationReason {
     /// Compares the whole uniqueness tuple the RFC defines, never `sess-id`
     /// alone: the RFC recommends deriving `sess-id` from a timestamp, so two
     /// unrelated calls from one user agent in the same second can share it.
+    ///
+    /// The tuple alone is not enough either: SIPp and some endpoints write one
+    /// origin into every call. A shared tuple counts only when the two legs
+    /// were open at one time and the store shows no reuse of the tuple, by the
+    /// rule in [`crate::sip::sdp_origin`].
     SdpOrigin,
     /// Matched via X-Call-ID header.
     XCallId,
@@ -159,7 +164,8 @@ impl CorrelationReason {
             Self::XCallId => ("x_call_id", true),
             // An identifier comparison, so `true` — but of the MEDIA SESSION
             // rather than the dialog. It is the whole RFC 8866 uniqueness
-            // tuple, never `sess-id` alone.
+            // tuple, never `sess-id` alone, and it is reported only when
+            // `crate::sip::sdp_origin` finds the tuple is not reused.
             Self::SdpOrigin => ("sdp_origin", true),
             // Both charging-vector strategies compare identifiers, so both are
             // `true` — and they are two names rather than one because they are
@@ -1934,7 +1940,9 @@ impl DialogStore {
     /// 3. **RFC 7315 `related-icid`** (95): one leg's `related-icid` names the
     ///    other's `icid-value` — an intermediary declaring the link.
     /// 4. **RFC 8866 SDP origin tuple** (90): the whole uniqueness tuple, never
-    ///    `sess-id` alone.
+    ///    `sess-id` alone, on two legs open at one time, and only when no two
+    ///    dialogs carrying it were open at one time on one hop. See
+    ///    [`crate::sip::sdp_origin`].
     /// 5. **RFC 7315 `icid-value`** (85): both legs carry the same charging
     ///    identifier.
     /// 6. **Via branch** (80): INVITE messages share a Via branch parameter.
@@ -2001,17 +2009,11 @@ impl DialogStore {
             .flat_map(crate::sip::charging_vector::message_related_icids)
             .collect();
 
-        // Strategy 1.5 data: RFC 8866 SDP origin tuples the source dialog
-        // carried, read from each message's SDP by `SipMessage::sdp`, so a
-        // multipart body's SDP part counts and a body of another type does not. Collected once; the candidate side is parsed per candidate
-        // because most candidates never reach this strategy.
-        let src_origins: std::collections::HashSet<crate::sip::sdp::SdpOriginKey> = dialog
-            .messages
-            .iter()
-            .filter_map(SipMessage::sdp)
-            .filter_map(|s| s.origin)
-            .filter_map(|o| crate::sip::sdp::SdpOriginKey::parse(&o))
-            .collect();
+        // Strategy 1.5 data: the candidates a shared RFC 8866 origin tuple ties
+        // to the source, by the rule in `crate::sip::sdp_origin`. Worked out
+        // before the loop because the rule reads every dialog that carries
+        // the tuple, not only the pair being compared.
+        let origin_joined = self.sdp_origin_joins(dialog);
 
         // Strategy 2 data: Via branches from INVITE messages in the source dialog
         let src_branches: std::collections::HashSet<&str> = dialog
@@ -2152,22 +2154,19 @@ impl DialogStore {
             // that the RFC defines as globally unique, but it names the media
             // session rather than the dialog, and an SBC that re-originates SDP
             // replaces it.
-            if !src_origins.is_empty() {
-                let origin_match = candidate
-                    .messages
-                    .iter()
-                    .filter_map(SipMessage::sdp)
-                    .filter_map(|s| s.origin)
-                    .filter_map(|o| crate::sip::sdp::SdpOriginKey::parse(&o))
-                    .any(|k| src_origins.contains(&k));
-                if origin_match {
-                    results.push(CorrelationResult {
-                        dialog: candidate,
-                        score: 90,
-                        reason: CorrelationReason::SdpOrigin,
-                    });
-                    continue;
-                }
+            //
+            // A shared tuple counts only when the two legs were open at one
+            // time and the tuple is not shown reused anywhere in the store:
+            // endpoints and SIPp reuse it, so the tuple alone is not the
+            // identifier RFC 8866 section 5.2 says it is. A pair the rule
+            // refuses falls through to the weaker strategies below.
+            if origin_joined.contains(candidate.call_id.as_str()) {
+                results.push(CorrelationResult {
+                    dialog: candidate,
+                    score: 90,
+                    reason: CorrelationReason::SdpOrigin,
+                });
+                continue;
             }
 
             // Strategy 1.7: plain RFC 7315 `icid-value` equality (score=85),
@@ -2235,6 +2234,49 @@ impl DialogStore {
         // Sort by score descending
         results.sort_by_key(|r| std::cmp::Reverse(r.score));
         results
+    }
+
+    /// The Call-IDs of the dialogs that `source` is one media session with by
+    /// a shared RFC 8866 origin tuple, by the rule in
+    /// [`crate::sip::sdp_origin`]: the two were open at one time, and no two
+    /// dialogs in the store carrying that tuple were open at one time on one
+    /// hop.
+    fn sdp_origin_joins<'a>(&'a self, source: &SipDialog) -> std::collections::HashSet<&'a str> {
+        use crate::sip::sdp_origin::{OriginCarrier, joins, origin_reused};
+        let mut joined = std::collections::HashSet::new();
+        let src_keys = dialog_origin_keys(source);
+        if src_keys.is_empty() {
+            return joined;
+        }
+        let src = OriginCarrier::of(source);
+        // Per source tuple: every other dialog that carries it.
+        let mut carriers: std::collections::HashMap<
+            &crate::sip::sdp::SdpOriginKey,
+            Vec<(&'a str, OriginCarrier)>,
+        > = std::collections::HashMap::new();
+        for candidate in self.dialogs.values() {
+            if candidate.call_id == source.call_id {
+                continue;
+            }
+            let keys = dialog_origin_keys(candidate);
+            for k in src_keys.iter().filter(|k| keys.contains(*k)) {
+                carriers
+                    .entry(k)
+                    .or_default()
+                    .push((candidate.call_id.as_str(), OriginCarrier::of(candidate)));
+            }
+        }
+        for list in carriers.values() {
+            let mut all: Vec<OriginCarrier> = list.iter().map(|(_, c)| *c).collect();
+            all.push(src);
+            let reused = origin_reused(&all);
+            for (call_id, c) in list {
+                if joins(&src, c, reused) {
+                    joined.insert(*call_id);
+                }
+            }
+        }
+        joined
     }
 
     /// Walk the correlation graph from `call_id`, breadth-first, following only
@@ -2761,6 +2803,21 @@ impl UnkeptTail {
     }
 }
 
+/// Every RFC 8866 origin tuple `dialog` carried, read from each message's SDP
+/// by `SipMessage::sdp`, so a multipart body's SDP part counts and a body of
+/// another type does not. A malformed origin line contributes nothing.
+fn dialog_origin_keys(
+    dialog: &SipDialog,
+) -> std::collections::HashSet<crate::sip::sdp::SdpOriginKey> {
+    dialog
+        .messages
+        .iter()
+        .filter_map(SipMessage::sdp)
+        .filter_map(|s| s.origin)
+        .filter_map(|o| crate::sip::sdp::SdpOriginKey::parse(&o))
+        .collect()
+}
+
 /// Extract the `branch=` parameter value from a Via header value
 /// `via_header`; returns `None` when no `branch=` parameter is present.
 fn extract_via_branch(via_header: &str) -> Option<&str> {
@@ -2878,6 +2935,9 @@ pub fn bucket_by_start(
         })
         .collect())
 }
+
+#[cfg(test)]
+mod sdp_origin_tests;
 
 // ── Tests ────────────────────────────────────────────────────────────
 
@@ -5455,8 +5515,22 @@ mod tests {
         Ok(())
     }
 
-    /// Build an INVITE message with an X-Call-ID header (for multi-leg correlation).
-    /// Build an INVITE carrying an SDP body with the given `o=` line.
+    /// The hop a test leg is sent on: an `@access` leg from the caller to the
+    /// SBC, any other leg from the SBC to the callee.
+    ///
+    /// A B2BUA's two legs are two hops. Two overlapping legs with one origin on
+    /// one hop are what reuse of the origin looks like, which
+    /// `crate::sip::sdp_origin` refuses to call one session.
+    fn origin_leg_hop(call_id: &str) -> (IpAddr, IpAddr) {
+        if call_id.ends_with("@access") {
+            (ip(192, 0, 2, 1), ip(192, 0, 2, 10))
+        } else {
+            (ip(192, 0, 2, 10), ip(198, 51, 100, 30))
+        }
+    }
+
+    /// Build an INVITE carrying an SDP body with the given `o=` line, sent on
+    /// [`origin_leg_hop`].
     fn make_invite_with_origin(
         call_id: &str,
         origin: &str,
@@ -5479,16 +5553,11 @@ mod tests {
             ],
             sdp.as_bytes(),
         );
-        Ok(parse_sip(
-            &raw,
-            ts,
-            localhost(),
-            localhost(),
-            5060,
-            5060,
-            TransportProto::Udp,
+        let (src, dst) = origin_leg_hop(call_id);
+        Ok(
+            parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("should parse INVITE: {e:?}"))?,
         )
-        .map_err(|e| format!("should parse INVITE: {e:?}"))?)
     }
 
     /// A passthrough SBC rewrote the Call-ID and the Via branch but forwarded
@@ -5518,7 +5587,8 @@ mod tests {
     }
 
     /// [`make_invite_with_origin`] with the SDP carried as `content_type` and
-    /// `body_of(sdp)`, for the multipart and the mistyped cases.
+    /// `body_of(sdp)`, for the multipart and the mistyped cases, sent on
+    /// [`origin_leg_hop`].
     fn make_invite_with_origin_as(
         call_id: &str,
         origin: &str,
@@ -5547,16 +5617,11 @@ mod tests {
         }
         headers.push(&len);
         let raw = build_sip("INVITE sip:bob@example.com SIP/2.0", &headers, &body);
-        Ok(parse_sip(
-            &raw,
-            ts,
-            localhost(),
-            localhost(),
-            5060,
-            5060,
-            TransportProto::Udp,
+        let (src, dst) = origin_leg_hop(call_id);
+        Ok(
+            parse_sip(&raw, ts, src, dst, 5060, 5060, TransportProto::Udp)
+                .map_err(|e| format!("should parse INVITE: {e:?}"))?,
         )
-        .map_err(|e| format!("should parse INVITE: {e:?}"))?)
     }
 
     /// A SIP-I body: the SDP, then a binary ISUP part

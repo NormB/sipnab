@@ -285,7 +285,7 @@ Each has a confidence score and its own reported reason:
 | `SessionId` — [RFC 7989](https://www.rfc-editor.org/rfc/rfc7989.html) `Session-ID` | 100 | **Yes, by design** |
 | `XCallId` — a configured header, none by default | 100 | Only if the SBC inserts it |
 | `ChargingVectorRelatedIcid` — [RFC 7315](https://www.rfc-editor.org/rfc/rfc7315.html) `related-icid` names the other leg's `icid-value` | 95 | Yes, when the B2BUA chose to emit it (`MAY`) |
-| `SdpOrigin` — the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) SDP origin tuple | 90 | Only if the SBC forwards SDP untouched |
+| `SdpOrigin` — the [RFC 8866](https://www.rfc-editor.org/rfc/rfc8866.html) SDP origin tuple, carried while both legs were open, and not used by two calls on one hop at once ([`src/sip/sdp_origin.rs`](https://github.com/NormB/sipnab/blob/main/src/sip/sdp_origin.rs)) | 90 | Only if the SBC forwards SDP untouched |
 | `ChargingVectorIcid` — both legs carry the same RFC 7315 `icid-value` | 85 | Not by design: an ICID identifies one dialog, and a B2BUA is two |
 | `ViaBranch` — a shared branch parameter | 80 | No: a new transaction gets a new branch |
 | `TimingHeuristic` — endpoint overlap plus timing | 50 | Not an identifier at all |

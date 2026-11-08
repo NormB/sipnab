@@ -800,25 +800,6 @@ on a server started with `--node-name capture-01` and without
       "party": 2,
       "purpose": "sipnab-capture-completeness",
       "start": "2016-11-26T14:52:59.666393+00:00"
-    },
-    {
-      "body": {
-        "legs": [
-          {
-            "identifier_match": true,
-            "method": "sdp",
-            "score": 90,
-            "strategy": "sdp_origin",
-            "uuid": "0158a120-253e-8c52-80ff-fb7de8c13332"
-          }
-        ]
-      },
-      "dialog": 0,
-      "encoding": "json",
-      "mediatype": "application/json",
-      "party": 2,
-      "purpose": "sipnab-related-legs",
-      "start": "2016-11-26T14:52:59.666393+00:00"
     }
   ],
   "created_at": "2026-10-26T04:02:15.972700292+00:00",

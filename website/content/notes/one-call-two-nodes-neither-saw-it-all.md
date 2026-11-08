@@ -107,49 +107,38 @@ call from one box to the next, either by hand or through an AI agent.
   - `heuristic_only: true` means every returned leg is a guess. So say so in
     anything you write about the call.
 
-   For contrast, `tests/pcap-samples/sip-rtp-g711.pcap` holds two calls that
-   share an SDP origin line. That is the line in the media description that
+   For contrast, `tests/fixtures/th-callid/opensips-4.0-default.pcap` holds
+   three calls through OpenSIPS topology hiding. OpenSIPS gives each call's
+   callee leg a new Call-ID and passes the SDP through, so both legs of a call
+   carry one SDP origin line. That is the line in the media description that
    names the session and its creator:
 
    ```bash
-   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cli","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_correlated","arguments":{"call_id":"1-1966@10.0.2.20"}}}' | sipnab --mcp -N --quiet --node-name sbc-edge-1 -I tests/pcap-samples/sip-rtp-g711.pcap | jq 'select(.id==2) | .result.structuredContent'
+   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"cli","version":"1"}}}' '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"find_correlated","arguments":{"call_id":"1-th-call@example.com"}}}' | sipnab --mcp -N --quiet --node-name sbc-edge-1 -I tests/fixtures/th-callid/opensips-4.0-default.pcap | jq -c 'select(.id==2) | .result.structuredContent.legs[] | {call_id, strategy, identifier_match, observed_gap_ms, score}'
    ```
 
    ```text
-   {
-     "capture_identity": {
-       "dialog_generation": 13,
-       "instance": "11a4c818df00195f1a1a56-2",
-       "node": "sbc-edge-1",
-       "stream_generation": 2
-     },
-     "heuristic_only": false,
-     "legs": [
-       {
-         "call_id": "1-1968@10.0.2.20",
-         "identifier_match": true,
-         "observed_gap_ms": null,
-         "score": 90,
-         "strategy": "sdp_origin"
-       }
-     ],
-     "schema_version": 1,
-     "source_call_id": "1-1966@10.0.2.20",
-     "source_exhausted": false,
-     "source_stopped_early": false,
-     "timing_clock": null,
-     "total_matched": 1
-   }
+   {"call_id":"DLGCH_fl0RBn4qMT8jMAAWMiQgPypeBgE+","strategy":"sdp_origin","identifier_match":true,"observed_gap_ms":null,"score":90}
+   {"call_id":"2-th-call@example.com","strategy":"timing_heuristic","identifier_match":false,"observed_gap_ms":999,"score":50}
+   {"call_id":"DLGCH_fV0RBn4qMT8jMAAWMiQgPypeBgE+","strategy":"timing_heuristic","identifier_match":false,"observed_gap_ms":1000,"score":50}
+   {"call_id":"3-th-call@example.com","strategy":"timing_heuristic","identifier_match":false,"observed_gap_ms":1999,"score":50}
+   {"call_id":"DLGCH_fF0RBn4qMT8jMAAWMiQgPypeBgE+","strategy":"timing_heuristic","identifier_match":false,"observed_gap_ms":2000,"score":50}
    ```
 
    Here:
 
-   - An identifier matched (`identifier_match: true`).
-   - `observed_gap_ms` is `null` because sipnab used no timing.
-   - `timing_clock` is `null` because no leg needed it.
-   - `source_exhausted` is `false`: the call arrived before sipnab finished
-     reading the file. The answer is a lower bound. More legs can match once
-     sipnab has read the whole capture.
+   - The first leg is the call's callee leg. An identifier matched
+     (`identifier_match: true`), and `observed_gap_ms` is `null` because
+     sipnab used no timing.
+   - The other four legs are the two later calls, one and two seconds after.
+     They share the proxy's address and started inside the two-second window,
+     so the timing heuristic lists them as guesses.
+   - An SDP origin counts only when the two legs were open at the same time
+     and no two calls in the capture used the origin on one hop at once.
+     [RFC 8866 section 5.2](https://www.rfc-editor.org/rfc/rfc8866.html#section-5.2) requires the origin to be globally unique, and
+     endpoints and SIPp still reuse one across calls. The
+     [`find_correlated` reference](@/docs/mcp-tools-signaling.md#find-correlated)
+     gives the rule.
 
    sipnab has seven strategies.
 

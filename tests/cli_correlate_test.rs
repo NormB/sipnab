@@ -194,45 +194,11 @@ fn the_flag_implies_no_tui_and_holds_under_cores() -> Result<(), TestError> {
     Ok(())
 }
 
-/// Two calls carrying one SDP origin are an identifier match: no gap, and
-/// no claim that the answer is only guesses.
-#[test]
-fn an_identifier_match_is_not_called_a_guess() -> Result<(), TestError> {
-    let pcap = "tests/pcap-samples/sip-rtp-g711.pcap";
-    let run = run_cli(
-        pcap,
-        &[
-            "--correlate",
-            "1-1966@10.0.2.20",
-            "--no-cli-print",
-            "--quiet",
-        ],
-    )?;
-    assert_eq!(run.code, Some(0), "stderr:\n{}", run.stderr);
-    let row: Vec<&str> = run
-        .stdout
-        .lines()
-        .find(|l| l.starts_with("1-1968@10.0.2.20"))
-        .ok_or("the leg row")?
-        .split_whitespace()
-        .collect();
-    assert_eq!(
-        row,
-        vec![
-            "1-1968@10.0.2.20",
-            "sdp_origin",
-            "sdp",
-            "90",
-            "identifier",
-            "-",
-            "-"
-        ],
-        "{}",
-        run.stdout
-    );
-    assert!(!run.stdout.contains("timing guess"), "{}", run.stdout);
-    Ok(())
-}
+// The table's identifier row is held by
+// `cli_correlate_sdp_origin_test::the_table_labels_an_origin_match_an_identifier`,
+// on a B2BUA capture. It was held here on `sip-rtp-g711.pcap`, whose two calls
+// are consecutive SIPp calls that reuse one origin, which is the defect that
+// test now guards against.
 
 /// The `description` of every property of `schema`, keyed by property name,
 /// with each description's whitespace runs collapsed to one space: rustdoc

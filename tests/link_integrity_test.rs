@@ -1714,7 +1714,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2461 -> 2465 (fleet member): fleet.md, errors.md, cli-reference.md and
     // config-reference.md +1 each, every one to "Make an instance a fleet
     // member". Counted per file against origin/main b5cb8b61c.
-    const EXPECTED_WIKI_LINKS: usize = 2465;
+    // 2465 -> 2471 (SDP-ORIGIN-REUSE): follow-a-call.md +2 (to "Make the match
+    // exact" and "When an SDP origin counts"), mcp-tools-signaling.md +2 (the
+    // sdp_origin row and the get_call_tree example's link to find_correlated),
+    // cli-reference.md +1 and mcp-estate.md +1 (each to "When an SDP origin
+    // counts"). Counted per file against origin/main 0c789238c.
+    const EXPECTED_WIKI_LINKS: usize = 2471;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

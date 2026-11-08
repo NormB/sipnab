@@ -164,12 +164,19 @@ impl SdpOriginKey {
     ///
     /// Returns `None` unless all six fields are present: a short origin line is
     /// malformed, and guessing which field is missing would be inventing one.
+    /// Also `None` when `sess-id` or `sess-version` is not `1*DIGIT`, the
+    /// grammar of [RFC 8866 section 9](https://www.rfc-editor.org/rfc/rfc8866.html#section-9):
+    /// a line that breaks the grammar is not the identifier the RFC defines.
     /// `sess-version` is parsed past and discarded by design.
     #[must_use]
     pub fn parse(origin_value: &str) -> Option<Self> {
         let f: Vec<&str> = origin_value.split_whitespace().collect();
         // username sess-id sess-version nettype addrtype unicast-address
         if f.len() != 6 {
+            return None;
+        }
+        let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        if !digits(f[1]) || !digits(f[2]) {
             return None;
         }
         Some(Self {
