@@ -17,6 +17,7 @@ entry that carries them.
 - eBPF capture backend: `aya` 0.15.0 → 0.16.0 (with `aya-obj` 0.5.0 → 0.6.0). The loader needs no change: none of the `aya` interfaces it calls changed. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes. From Dependabot #689.
 - Python clients: `pydantic` 2.14.1 → 2.14.2 with `pydantic-core` 2.50.1 → 2.50.2, `anyio` 4.15.1 → 4.16.0, `opentelemetry-api` 1.45.1 → 1.45.2, `python-multipart` 0.0.32 → 0.0.33 and `typing-inspection` 0.4.4 → 0.4.5 in `clients/python/requirements-mcp.txt` and `requirements-examples.txt`, each by hash. From Dependabot #690, which proposed `pydantic-core` 2.50.3; `pydantic` 2.14.2 requires exactly 2.50.2.
 - Site test tooling: `@lhci/cli` 0.15.1 → 0.16.0, with `@sentry/node` 11.10.0 → 11.11.0 so that `glob` is 14.0.4 and `minimatch` 11.0.5, past GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249. `@lhci/cli` 0.16 no longer depends on `tmp`, so the `tmp` override in `e2e/package.json` is removed. From Dependabot #685.
+- TypeScript MCP client: `@types/node` 22.20.4 → 26.6.6 (with `undici-types` 6.21.0 → 8.9.0). The client still runs on Node.js 22.18 or later: it uses only `process.argv`, `process.env` and `fetch` from Node.js. From Dependabot #686.
 
 ## [0.5.237] - 2026-11-08
 
