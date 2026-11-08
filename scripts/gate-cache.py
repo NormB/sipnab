@@ -22,8 +22,7 @@ THE KEY is a SHA-256 over every input the step reads:
 
 * the files: every tracked and untracked (not ignored) path with its content
   id, as git would store it (so an edit reverted before the run reads as no
-  edit), and the ignored files outside build directories by size and
-  modification time;
+  edit), and the ignored files outside build directories by content;
 * for a step that reads every file (the suite, the prose linters, the whole
   hook): also the index tree (`git write-tree`), HEAD, and the tags, because
   tests/release_delivery_test.rs and others read git history;
@@ -45,11 +44,16 @@ header of every tracked file. So no change to a tracked path, documentation
 included, can skip the suite: its key covers every file. A docs-only change
 skips the build-only steps, never the suite.
 
-THE STAMP DIRECTORY is the worktree's own git dir (`git rev-parse --git-dir`),
-not the common dir. The key covers the worktree's untracked and ignored files,
-which belong to that worktree alone, so a stamp from one worktree could not
-match another; a directory per worktree means two worktrees never write the
-same directory, and `git worktree remove` deletes the stamps with the worktree.
+THE STAMP DIRECTORY is the COMMON git dir (`git rev-parse --git-common-dir`),
+shared by every worktree of the clone. It was each worktree's own git dir at
+first, so every new worktree started cold, and the release flow makes one per
+release. Sharing is safe because the key covers the tree: a stamp is used in
+another worktree only for identical inputs. Ignored files enter the key by
+their content (a per-worktree cache in the worktree's own git dir spares
+re-reading unchanged ones), so a copy of the G.729 vectors with other file
+times gives the same key. Two worktrees writing at once is safe: each stamp is
+a temporary file renamed into place. The failed-test record stays in each
+worktree's own git dir.
 
 A stamp is written only after its step passed, to a temporary file renamed into
 place, and only when the step's key computed again at that moment equals the
@@ -348,19 +352,78 @@ def tree_files(root, env) -> dict[str, str]:
 _UNWALKED = {"target", "__pycache__", ".pytest_cache", ".git", "node_modules"}
 
 
-def _stat_id(path: str) -> str:
+HASH_CACHE = "sipnab-gate-hashes.json"
+# A cached hash is trusted only for a file whose mtime and ctime are this much
+# older than the moment it was hashed. File times come from a coarse kernel
+# clock, so a rewrite in the same tick that keeps the size and sets the mtime
+# back keeps the whole stat; git's index has the same problem and the same
+# answer ("racily clean"). Found when a test of exactly that rewrite failed
+# only under load.
+RACY_NS = 2_000_000_000
+
+
+def _hash_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
+
+
+def _content_id(path: str, rel: str, cache: dict) -> str:
+    """An ignored file's id: its content, so a copy in another worktree, with
+    other file times, has the same id. The hash is reused while size, mtime,
+    ctime and inode are all unchanged; ctime moves on any write and cannot be
+    set back, so a rewrite that restores the old mtime is still read."""
     st = os.lstat(path)
-    return f"{st.st_size}:{st.st_mtime_ns}"
+    if os.path.islink(path):
+        return "120000:" + os.readlink(path)
+    stat_key = [st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino]
+    entry = cache.get(rel)
+    if (
+        isinstance(entry, list)
+        and len(entry) == 6
+        and entry[:4] == stat_key
+        and isinstance(entry[5], int)
+        and max(st.st_mtime_ns, st.st_ctime_ns) + RACY_NS < entry[5]
+    ):
+        return entry[4]
+    hashed_at = time.time_ns()
+    digest = _hash_file(path)
+    cache[rel] = [*stat_key, digest, hashed_at]
+    return digest
 
 
-def ignored_files(root, env) -> dict[str, str]:
-    """The ignored files under `root` by size and modification time.
+def load_hash_cache(path) -> dict:
+    """The worktree's cache of ignored-file hashes; empty when absent or unreadable."""
+    try:
+        data = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_hash_cache(path, cache: dict) -> None:
+    path = pathlib.Path(path)
+    tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}-{os.urandom(4).hex()}")
+    try:
+        tmp.write_text(json.dumps(cache, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+
+
+def ignored_files(root, env, cache: dict | None = None) -> dict[str, str]:
+    """The ignored files under `root`, each by the SHA-256 of its content.
 
     Gitignored inputs change verdicts too: the G.729 test vectors, the Vale
     style packages, docs/design/backlog.local.md, website/data. Build
     directories, bytecode caches and installed node modules are not walked.
-    An outside $G729_VECTORS is read the same way.
+    An outside $G729_VECTORS is read the same way. `cache` (from
+    load_hash_cache) spares re-reading a file whose stat is unchanged; it is
+    updated in place, and paths no longer present are dropped from it.
     """
+    cache = {} if cache is None else cache
     found: dict[str, str] = {}
 
     def walk(top: str, name: str):
@@ -369,7 +432,7 @@ def ignored_files(root, env) -> dict[str, str]:
             for f in sorted(filenames):
                 full = os.path.join(dirpath, f)
                 rel = os.path.join(name, os.path.relpath(full, top)).replace(os.sep, "/")
-                found[rel] = _stat_id(full)
+                found[rel] = _content_id(full, rel, cache)
 
     listing = _git(root, ["ls-files", "-o", "-i", "--exclude-standard", "--directory", "-z"], env)
     for entry in _split0(listing):
@@ -380,10 +443,12 @@ def ignored_files(root, env) -> dict[str, str]:
         if entry.endswith("/"):
             walk(full, entry.rstrip("/"))
         elif os.path.lexists(full):
-            found[entry] = _stat_id(full)
+            found[entry] = _content_id(full, entry, cache)
     vectors = env.get("G729_VECTORS")
     if vectors and os.path.isdir(vectors):
         walk(vectors, "$G729_VECTORS")
+    for gone in set(cache) - set(found):
+        del cache[gone]
     return found
 
 
@@ -459,9 +524,15 @@ def snapshot(root, env, hook_file: str) -> Snapshot:
         except OSError:
             continue
     tags = _git(root, ["for-each-ref", "--format=%(objectname) %(refname)", "refs/tags"], env)
+    cache_path = hash_cache_path(root, env)
+    cache = load_hash_cache(cache_path)
+    before = json.dumps(cache, sort_keys=True)
+    ignored = ignored_files(root, env, cache)
+    if json.dumps(cache, sort_keys=True) != before:
+        save_hash_cache(cache_path, cache)
     return Snapshot(
         files=files,
-        ignored=ignored_files(root, env),
+        ignored=ignored,
         index_tree=_git(root, ["write-tree"], env, text=True).strip(),
         head=_git(root, ["rev-parse", "-q", "--verify", "HEAD"], env, check=False, text=True).strip() or "none",
         tags=hashlib.sha256(tags).hexdigest(),
@@ -524,8 +595,10 @@ def _check(record: dict) -> str:
     return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
 
 
-def write_stamp(directory, hook: str, step: str, key: str, now: float, summary: dict) -> pathlib.Path:
-    """Write the stamp atomically: a temporary file, renamed into place."""
+def write_stamp(directory, hook: str, step: str, key: str, now: float, summary: dict) -> pathlib.Path | None:
+    """Write the stamp atomically: a temporary file, renamed into place. Two
+    worktrees can write one directory at once; a reader sees the old stamp or
+    the new one, never part of either. None when no stamp was written."""
     directory = pathlib.Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     record = {
@@ -546,6 +619,9 @@ def write_stamp(directory, hook: str, step: str, key: str, now: float, summary: 
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, final)
+    except FileNotFoundError:
+        # Another process pruned the temporary file: no stamp, and no failure.
+        return None
     finally:
         if tmp.exists():
             tmp.unlink()
@@ -612,8 +688,21 @@ def _root(env) -> str:
     return _git(".", ["rev-parse", "--show-toplevel"], env, text=True).strip()
 
 
+def stamp_dir(root, env) -> pathlib.Path:
+    """The COMMON git dir's stamp directory, shared by every worktree of the
+    clone. The key covers the tree, so a stamp is used in another worktree only
+    for identical inputs, and a new worktree no longer starts cold."""
+    common = _git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"], env, text=True).strip()
+    return pathlib.Path(common, STAMP_DIR).resolve()
+
+
+def hash_cache_path(root, env) -> pathlib.Path:
+    """The worktree's OWN git dir: the hash cache describes its files only."""
+    return pathlib.Path(_git(root, ["rev-parse", "--absolute-git-dir"], env, text=True).strip(), HASH_CACHE)
+
+
 def _stamp_dir(env) -> pathlib.Path:
-    return pathlib.Path(_git(".", ["rev-parse", "--absolute-git-dir"], env, text=True).strip(), STAMP_DIR)
+    return stamp_dir(".", env)
 
 
 def _default_hook_file(hook: str) -> str:

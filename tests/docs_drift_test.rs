@@ -712,14 +712,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
     // cargo-nextest's `--fail-fast`, with which the pre-commit hook replays
-    // the tests that failed last run, and git's `rev-parse --git-dir`, which
-    // names the directory that holds the hooks' pass stamps.
+    // the tests that failed last run.
     (
         "fail-fast",
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
+    // git's `rev-parse --git-common-dir`, which names the directory every
+    // worktree's pass stamps share.
     (
-        "git-dir",
+        "git-common-dir",
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
     // `rustup toolchain install ... --component rustfmt`, the command that
