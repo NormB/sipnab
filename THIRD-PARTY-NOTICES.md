@@ -78,8 +78,8 @@ Files copied into the repository unmodified from another project's release. None
 | aws-lc-sys | 0.45.0 | ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0) |
 | axum | 0.8.9 | MIT |
 | axum-core | 0.5.6 | MIT |
-| aya | 0.15.0 | MIT OR Apache-2.0 |
-| aya-obj | 0.5.0 | MIT OR Apache-2.0 |
+| aya | 0.16.0 | MIT OR Apache-2.0 |
+| aya-obj | 0.6.0 | MIT OR Apache-2.0 |
 | base16ct | 1.0.0 | Apache-2.0 OR MIT |
 | base64 | 0.22.1 | MIT OR Apache-2.0 |
 | base64 | 0.23.1 | MIT OR Apache-2.0 |
