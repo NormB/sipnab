@@ -535,6 +535,51 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    ("fleet", "heartbeat_secs", KeyKind::Int { lo: 1, hi: 3600 }),
+    (
+        "fleet",
+        "report_ca_file",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "fleet",
+        "report_token_file",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "fleet",
+        "report_url",
+        KeyKind::Literal {
+            accept: &["\"http://127.0.0.1:8444\"", "\"http://localhost:8444\""],
+            reject: &["\"\"", "\"x\"", "\"http://192.0.2.10:8444\""],
+            ctx: "report_token_file = \"x\"\nspool_dir = \"y\"",
+        },
+    ),
+    (
+        "fleet",
+        "spool_dir",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "fleet",
+        "spool_max_files",
+        KeyKind::Int {
+            lo: 1,
+            hi: i64::MAX as i128,
+        },
+    ),
     ("g729", "auto_install", KeyKind::Bool),
     (
         "g729",
@@ -2680,23 +2725,26 @@ fn random_config_files_hold_the_invariants() -> Result<(), TestError> {
                 continue;
             };
             // The other half of a pair is written once, as context, and is
-            // then not drawn again.
-            let partner = match kind {
-                KeyKind::Literal { ctx, .. } if !ctx.is_empty() => {
-                    ctx.split(" =").next().map(|k| (*ctx, k))
-                }
-                _ => None,
+            // then not drawn again. A context can hold several lines (a
+            // client CA needs the certificate and the key): each line is
+            // written unless its key is already in the file, so no key is
+            // repeated, and each counts as written.
+            let ctx = match kind {
+                KeyKind::Literal { ctx, .. } => *ctx,
+                _ => "",
             };
             let lines = by_section.entry(section).or_default();
-            if let Some((ctx, partner_key)) = partner
-                && !written
-                    .iter()
-                    .any(|(s, k)| s == section && *k == partner_key)
-            {
-                lines.push(ctx.to_string());
+            for line in ctx.lines() {
+                let Some(partner) = line.split(" =").next() else {
+                    continue;
+                };
+                if written.iter().any(|(s, k)| s == section && *k == partner) {
+                    continue;
+                }
+                lines.push(line.to_string());
                 if let Some((_, k, _)) = KEY_SPECS
                     .iter()
-                    .find(|(s, k, _)| s == section && *k == partner_key)
+                    .find(|(s, k, _)| s == section && *k == partner)
                 {
                     written.push((section, k));
                 }

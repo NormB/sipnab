@@ -1195,6 +1195,38 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     (
+        "fleet-report-url",
+        Kind::Text {
+            accept: &["http://127.0.0.1:8444", "http://localhost:8444"],
+            reject: &[("http://192.0.2.10:8444", 2), ("x", 2), ("", 2)],
+        },
+        &["--fleet-report-token-file", "x", "--fleet-spool-dir", "y"],
+    ),
+    (
+        "fleet-report-token-file",
+        Kind::Text {
+            accept: &["x", " ", "0"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
+        "fleet-report-ca-file",
+        Kind::Text {
+            accept: &["x", " ", "0"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
+        "fleet-spool-dir",
+        Kind::Text {
+            accept: &["x", " ", "0"],
+            reject: &[("", 2)],
+        },
+        &[],
+    ),
+    (
         "g729-tables",
         Kind::Text {
             accept: &["x", " ", "0", "-1"],
@@ -4174,7 +4206,27 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
 /// resolver is in `fingerprint`, so a new row whose key startup cannot see
 /// fails until its resolver is added there (or it is listed here with the
 /// test that proves it).
-const PRECEDENCE_ELSEWHERE: &[(&str, &str)] = &[];
+const PRECEDENCE_ELSEWHERE: &[(&str, &str)] = &[
+    // The fleet member's settings resolve into the member's plan, which no
+    // startup output shows; `a_member_plan_is_resolved_and_checked` in
+    // src/app/fleet_member.rs proves each flag overrides its key.
+    (
+        "fleet-report-ca-file",
+        "src/app/fleet_member.rs a_member_plan_is_resolved_and_checked",
+    ),
+    (
+        "fleet-report-token-file",
+        "src/app/fleet_member.rs a_member_plan_is_resolved_and_checked",
+    ),
+    (
+        "fleet-report-url",
+        "src/app/fleet_member.rs a_member_plan_is_resolved_and_checked",
+    ),
+    (
+        "fleet-spool-dir",
+        "src/app/fleet_member.rs a_member_plan_is_resolved_and_checked",
+    ),
+];
 
 /// Two distinct accepted values for a flag row, as flag-value text (`None`
 /// for a switch's presence).

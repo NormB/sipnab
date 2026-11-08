@@ -59,6 +59,18 @@ fn package() -> Result<PathBuf, TestError> {
 }
 
 fn package_now() -> Result<PathBuf, TestError> {
+    // Cargo locks the target directory while it packages, and releases it when
+    // `cargo package` returns. Under cargo-nextest every test is a process of
+    // its own, so another test could repackage, rewriting a `.crate`, while
+    // this one reads it (`tar -tzf` failing on PR #684). The lock below is
+    // taken before packaging and kept until this process exits, so the
+    // packaging and every read of its output happen under it.
+    static HELD: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+    let lock = std::fs::File::create(
+        PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("crate-package.lock"),
+    )?;
+    lock.lock()?;
+    let _ = HELD.set(lock);
     let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("crate-package");
     let out = Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .args([

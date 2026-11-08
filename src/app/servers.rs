@@ -195,6 +195,11 @@ pub struct Selection {
     /// The filters of the rules with `live_audio = true`, which the REST
     /// API's `/v1/calls` routes serve.
     pub live_audio: Vec<crate::sip::dsl::FilterExpr>,
+    /// The fleet member this run is, when `[fleet] report_url` or
+    /// `--fleet-report-url` names a center. `bootstrap::plan` refused a bad
+    /// one already, by the same `MemberPlan::resolve`.
+    #[cfg(feature = "api")]
+    pub fleet_member: Option<crate::app::fleet_member::MemberPlan>,
 }
 
 /// Handles to the running servers thread.
@@ -588,6 +593,21 @@ pub fn start_servers(
     // read as dead; bind them to `_` so the build stays warning-free without a
     // blanket `#[allow(unused_variables)]` on the whole function.
     let _unused_without_server_features = (dialog_store, stream_store, alerts, &selection, cli);
+
+    // The fleet member, on a thread of its own: it reads the meter the doors
+    // below read, and nothing it does can make the capture wait.
+    #[cfg(feature = "api")]
+    if let Some(plan) = selection.fleet_member.clone() {
+        crate::app::fleet_member::spawn(
+            plan,
+            crate::app::fleet_member::Sources {
+                meter: capture_meter.clone(),
+                interfaces: cli.capture_args.device.clone().into_iter().collect(),
+                started: std::time::Instant::now(),
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("the fleet member did not start: {e}"))?;
+    }
 
     // The capture both doors describe, created HERE so neither server owns it.
     //
@@ -1277,6 +1297,8 @@ mod tests {
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         }

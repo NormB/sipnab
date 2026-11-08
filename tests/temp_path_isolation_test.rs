@@ -65,6 +65,13 @@ const DELIBERATELY_SHARED: &[(&str, &str)] = &[
          cache that keeps the test fast.",
     ),
     (
+        "crate-package.lock",
+        "tests/crate_package_test.rs: the lock every test process of that file \
+         takes before `cargo package` and holds until it exits, so no process \
+         rewrites a `.crate` another is reading. It must be one path for all of \
+         them to be one lock; it holds no data.",
+    ),
+    (
         "discarded-coverage",
         "tests/support/mod.rs: where child processes that are killed write their \
          coverage profiles, named by their own pid (%p). It has to outlive every \

@@ -163,13 +163,13 @@
     {
       "file": "src/app/bootstrap.rs",
       "call": "PlanError::refused(origin, message)",
-      "count": 1,
+      "count": 2,
       "carries": [
         "{from}: Unknown alert channel '{source}': expected one of {}, or a rule written name:threshold/window",
         "{from}: {e}",
         "{from}: Unknown alert rule '{}': expected one of {} (reg-flood is accepted for reg_flood)"
       ],
-      "why": "check_alert_rule in bootstrap.rs (three format! literals)."
+      "why": "check_alert_rule in bootstrap.rs (three format! literals), and MemberPlan::resolve in fleet_member.rs, whose format! literals are sites of that file (its other refusals are fixed strings, and a token file it cannot open is privilege::open_private_file's message)."
     },
     {
       "file": "src/app/bootstrap.rs",

@@ -120,7 +120,8 @@ pub(crate) fn trust_roots(
     );
     let mut store = rustls::RootCertStore::empty();
     if let Some(path) = ca {
-        for cert in pem_certificates(path)? {
+        // Named by the setting, so the refusal says which flag or key to fix.
+        for cert in pem_certificates(path).with_context(|| (*ca_name).to_string())? {
             store
                 .add(cert)
                 .with_context(|| format!("{}: rustls rejected a certificate", path.display()))?;
@@ -150,7 +151,7 @@ pub(crate) fn trust_roots(
         bundle.display()
     );
     if let Some(path) = extra {
-        for cert in pem_certificates(path)? {
+        for cert in pem_certificates(path).with_context(|| (*extra_name).to_string())? {
             store
                 .add(cert)
                 .with_context(|| format!("{}: rustls rejected a certificate", path.display()))?;
@@ -445,6 +446,35 @@ pub(crate) fn pem_private_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A CA file that cannot be read is refused naming the setting that
+    /// named it, for both the trust-only file and the extra one, so the
+    /// operator knows which flag or key to fix.
+    #[cfg(any(feature = "hep", feature = "vcon", feature = "g729", feature = "api"))]
+    #[test]
+    fn an_unreadable_ca_file_names_its_setting() {
+        let names = TrustNames {
+            ca: "--example-ca",
+            extra: "--example-extra-ca",
+            issuer: "the example issuer",
+        };
+        let missing = std::path::Path::new("/nonexistent/sipnab-test-ca.pem");
+        let got = trust_roots(Some(missing), None, None, &names).map(|_| ());
+        assert!(
+            got.as_ref()
+                .is_err_and(|e| format!("{e:#}").contains("--example-ca")),
+            "{got:?}"
+        );
+        let bundle = std::path::Path::new("/etc/ssl/certs/ca-certificates.crt");
+        if bundle.exists() {
+            let got = trust_roots(None, Some(missing), Some(bundle), &names).map(|_| ());
+            assert!(
+                got.as_ref()
+                    .is_err_and(|e| format!("{e:#}").contains("--example-extra-ca")),
+                "{got:?}"
+            );
+        }
+    }
 
     type TestError = Box<dyn std::error::Error>;
 

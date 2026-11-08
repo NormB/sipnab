@@ -22820,6 +22820,21 @@ each recording the container names by `url`, and captures nothing.
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-ca media-ca.pem` — decrypt the audio of an encrypted vCon from storage whose certificate only that CA issued
 - `sipnab --vcon-audio-fetch fetched/0158a120-0392-891a-9455-bc2e6fad94df.vcon.json --vcon-audio-fetch-out audio --vcon-key recipient.key --vcon-audio-fetch-extra-ca media-ca.pem --vcon-audio-fetch-max-size 1073741824` — the same, trusting the host's bundle too, for a recording up to 1 GiB
 
+## Fleet
+
+A capture run with `--fleet-report-url` is a fleet member: it reports a heartbeat, its inventory, to a fleet center (`sipnab fleet serve`). [Make an instance a fleet member](fleet.md#make-an-instance-a-fleet-member) is the how-to.
+
+| Flag | Value | Default | Since | Description |
+|------|-------|---------|-------|-------------|
+| `--fleet-report-url` | `<URL>` | -- | Unreleased | The fleet center to report to, `https://HOST:PORT`. `http://` only to loopback: sipnab refuses plain HTTP to another machine, exit 2. Every `[fleet] heartbeat_secs` (default 30) the run writes its inventory (`GET /v1/inventory`) as a heartbeat into `--fleet-spool-dir` and sends the spool to the center, oldest first. Feature: `api`. Config: `[fleet] report_url` |
+| `--fleet-report-token-file` | `<FILE>` | -- | Unreleased | The member's token, minted on the center with `--token-scope fleet-report` and the member's name as `--token-id`. Readable by this user only. Read once at start, before any privilege drop. Feature: `api`. Config: `[fleet] report_token_file` |
+| `--fleet-report-ca-file` | `<FILE>` | -- | Unreleased | A PEM CA file to trust for the center instead of the host's CA bundle. Feature: `api`. Config: `[fleet] report_ca_file` |
+| `--fleet-spool-dir` | `<DIR>` | -- | Unreleased | Where heartbeats wait until the center takes them, created when absent. It keeps at most `[fleet] spool_max_files` (default 2880), the oldest going first, and moves a heartbeat the center refuses for good to `failed/`. Feature: `api`. Config: `[fleet] spool_dir` |
+
+**Examples**
+- `sudo sipnab -N -d eth0 --fleet-report-url https://center.example.net:8444 --fleet-report-token-file /etc/sipnab/fleet/edge-a.report.token --fleet-report-ca-file /etc/sipnab/fleet/internal-ca.pem --fleet-spool-dir /var/lib/sipnab/fleet-spool` — capture on `eth0` and report a heartbeat to the fleet center every 30 seconds, trusting the center's certificate through your own CA
+- `sudo sipnab -N -d eth0 --api 127.0.0.1:8443 --fleet-report-url https://center.example.net:8444 --fleet-report-token-file /etc/sipnab/fleet/edge-a.report.token --fleet-report-ca-file /etc/sipnab/fleet/internal-ca.pem --fleet-spool-dir /var/lib/sipnab/fleet-spool` — the same, with the REST API up, so the controller can also read `GET /v1/inventory` from the instance
+
 ## Fleet inventory (`sipnab fleet`)
 
 `sipnab fleet inventory` asks every sipnab instance in a hosts file for its inventory (`GET /v1/inventory`) and prints one row per instance and the findings across them. It opens no capture. [Manage many sipnab instances](fleet.md) is the full how-to.
@@ -28176,6 +28191,116 @@ so the URL most likely names something that is not a sipnab REST API.
 **What to do:** Check the instance's `url` in the hosts file.
 
 **Exit code:** 1. The other instances are still in the report.
+
+## Fleet member (`--fleet-report-url`)
+
+A run with `--fleet-report-url` or `[fleet] report_url` reports its heartbeat
+to a fleet center. [Make an instance a fleet member](fleet.md#make-an-instance-a-fleet-member)
+describes it. A setting the run cannot use stops it before any capture, with
+exit code 2 for a flag and 1 for a config key. A problem after the start only
+stops the reporting: the capture goes on.
+
+### `{url_from} {url}: plain HTTP is refused except to loopback, because the member's token and inventory would cross the network unencrypted; use https://`
+
+The center's URL is `http://` to another machine. The message starts with the
+setting that named it, `--fleet-report-url` or `[fleet] report_url`.
+
+**What to do:** Serve the center over HTTPS (`sipnab fleet serve --tls-cert
+--tls-key`) and give an `https://` URL, with `report_ca_file` when the
+center's certificate is from your own CA.
+
+**Exit code:** 2 for the flag, 1 for the key.
+
+### `[fleet] heartbeat_secs {heartbeat_secs} is outside {} to {}`
+
+`[fleet] heartbeat_secs` is under 1 or over 3600.
+
+**What to do:** Give a number of seconds from 1 to 3600. The default is 30.
+
+**Exit code:** 1.
+
+### `--fleet-report-token-file '{shown}' does not hold one token on one line`
+
+The member's token file is empty, or holds more than one token. The message
+names the file, never the token. The member does not report, and the capture
+goes on.
+
+**What to do:** Put the one token that `sipnab --mint-token --token-scope
+fleet-report` printed on the center in the file, and restart the run.
+
+### `[fleet] {key} is empty; give a path`
+
+`[fleet] report_token_file`, `report_ca_file` or `spool_dir` is `""`. sipnab
+refuses it with or without `report_url`.
+
+**What to do:** Give the path, or remove the key.
+
+**Exit code:** 1.
+
+### `--fleet-report-token-file '{shown}' can be read or written by other users (mode {:04o}); chmod 600 it`
+
+The member's token file lets other users read it, by its mode when the run
+started. The member does not report, and the capture goes on. The line follows
+`fleet member: not reporting:`.
+
+**What to do:** Run `chmod 600` on the token file, and restart the run.
+
+### `fleet member: not reporting: {e}`
+
+The member could not start: it could not create or read its spool, load the
+center's CA, or read its token. The rest of the message says which. The
+capture goes on without reporting.
+
+**What to do:** Fix what the message names, and restart the run.
+
+### `the fleet member did not start: {e}`
+
+The run could not start the member's thread. The system is short of threads
+or memory, and the run stops.
+
+**What to do:** Check the user's process and memory limits.
+
+**Exit code:** 1.
+
+### `fleet member: heartbeats wait in the spool: {why}`
+
+A warning, logged once when the member stops being able to deliver and again
+when the reason changes. `{why}` is `the center did not answer: <reason>` for
+a center that is down, unreachable or not trusted, `the center refused this
+member's token (HTTP 401)` for a token the center does not accept, or `the
+center answered HTTP <status>`. The heartbeats stay in the spool, and the
+member tries again, at most one interval apart. A line
+`the center takes heartbeats again` follows when the spool drains.
+
+**What to do:** For a refused token, mint a new one on the center and restart
+the member. Otherwise, bring the center back or let the member reach it.
+
+### `fleet member: the center refused heartbeat {name} for good (HTTP {status}): {text}; it is moved to {FAILED_DIR}/`
+
+A warning. The center answered a `4xx` other than `401` and `403`, such as
+`400` for a record it does not read, so sending the file again cannot help.
+`{FAILED_DIR}` is `failed`, in the spool.
+
+**What to do:** Run the same sipnab version on the member and the center, or
+a newer one on the center.
+
+### `fleet member: a heartbeat was not written to the spool: {e}`
+
+A warning. The member could not write a heartbeat file, for the system's
+reason in the message, such as a full disk. It tries again at the next
+interval.
+
+**What to do:** Free space on the spool's file system, or fix its
+permissions.
+
+### `fleet member: the spool holds [fleet] spool_max_files {}; the oldest {dropped} heartbeat(s) were dropped`
+
+A warning. The center has been away long enough to fill the spool, and the
+member removed its oldest heartbeats to stay under the cap. A newer heartbeat
+carries everything an older one did.
+
+**What to do:** Bring the center back. Raise `[fleet] spool_max_files` to keep
+more of the history while it is away.
 
 ## Fleet center (`sipnab fleet serve`)
 
@@ -34567,6 +34692,30 @@ Under the unit the `.deb` and `.rpm` packages install, the default
 Read-only file system (os error 30)`. `/var/lib/sipnab`, the unit's state
 directory, is. See [Keep crash reports](run-as-a-service.md#keep-crash-reports).
 
+### `[fleet]`
+
+Makes the run a fleet member, which reports its heartbeat to a fleet center
+(`sipnab fleet serve`). [Make an instance a fleet member](fleet.md#make-an-instance-a-fleet-member)
+is the how-to. Unset `report_url`, the run reports nothing.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `report_url` | string | -- | The center, `https://HOST:PORT`; `http://` only to loopback. Flag: `--fleet-report-url` |
+| `report_token_file` | string | -- | The member's `fleet-report` token, readable by this user only. Flag: `--fleet-report-token-file` |
+| `report_ca_file` | string | -- | A PEM CA file to trust for the center. Flag: `--fleet-report-ca-file` |
+| `spool_dir` | string | -- | Where heartbeats wait until the center takes them. Flag: `--fleet-spool-dir` |
+| `heartbeat_secs` | integer | `30` (`DEFAULT_HEARTBEAT_SECS`) | Seconds between heartbeats, 1 to 3600. The center reports the member silent after `--silent-after-missed` of these |
+| `spool_max_files` | integer | `2880` | The most heartbeats the spool keeps while the center is away, at least 1; the oldest go first |
+
+```toml
+[fleet]
+report_url = "https://center.example.net:8444"
+report_token_file = "/etc/sipnab/fleet/edge-a.report.token"
+report_ca_file = "/etc/sipnab/fleet/internal-ca.pem"
+spool_dir = "/var/lib/sipnab/fleet-spool"
+heartbeat_secs = 30
+```
+
 ### `[g729]`
 
 Where the G.729 codebook tables are. sipnab ships no ITU-T table values, so a
@@ -39257,9 +39406,10 @@ silent" on `GET /v1/fleet/members`, without asking any member.
 
 Use it when the controller cannot reach every member, such as members behind
 NAT, or to learn that a member stopped without polling it. It is phase P1 of
-the fleet center: heartbeats only, no traffic. In this release a member does
-not push heartbeats by itself yet. This section sends one by hand, in the
-format a member sends.
+the fleet center: heartbeats only, no traffic. A capture run becomes a member
+with `--fleet-report-url` (or `[fleet] report_url`), as
+[Make an instance a fleet member](#make-an-instance-a-fleet-member) shows.
+Step 3 sends one heartbeat by hand, in the format a member sends.
 
 The output in this section comes from a run on 2026-11-07 on one host, with a
 development build of 0.5.236: the center on `127.0.0.1:8444` over HTTPS, and
@@ -39352,7 +39502,103 @@ used.
     --api-signing-key-file /etc/sipnab/center.signing --api-token-ttl 2592000
   ```
 
-### Step 3: send a heartbeat
+### Make an instance a fleet member
+
+A member writes its inventory as a heartbeat every `[fleet] heartbeat_secs`
+(default 30) into its spool directory, and sends the spool to the center,
+oldest first. While the center is away the heartbeats wait, and the capture
+goes on: the member runs on a thread of its own and the capture never waits
+on it. The spool keeps at most `[fleet] spool_max_files` (default 2880, a day
+at 30 s) and drops the oldest past that. A heartbeat the center refuses for
+good (`400`, `413`) moves to `failed/` in the spool.
+
+The output below comes from a second run on 2026-11-07 on one host: the
+center on `127.0.0.1:8444` over HTTPS, and `edge-a` reading a capture file
+with its REST API on `127.0.0.1:18080`, reporting every 5 seconds.
+
+- **Other systems.** The member opens TCP connections to the center's port:
+  open it outbound from each member. Nothing else changes.
+
+- **[member]** Put the token minted in step 2 in a file only the sipnab user
+  can read, then add a `[fleet]` section to the member's configuration:
+
+  ```toml
+  [fleet]
+  report_url = "https://127.0.0.1:8444"
+  report_token_file = "/etc/sipnab/fleet/edge-a.report.token"
+  report_ca_file = "/etc/sipnab/fleet/internal-ca.pem"
+  spool_dir = "/var/lib/sipnab/fleet-spool"
+  heartbeat_secs = 5
+  ```
+
+  The flags `--fleet-report-url`, `--fleet-report-token-file`,
+  `--fleet-report-ca-file` and `--fleet-spool-dir` set the same and override
+  the keys. `report_url` takes `http://` only to loopback: sipnab refuses
+  plain HTTP to another machine and does not start (exit `2` for a flag, `1`
+  for a key).
+
+- **[member]** Start the run as usual. It logs where it reports:
+
+  ```text
+  INFO sipnab::app::fleet_member: fleet member reporting to https://127.0.0.1:8444/ every 5 s, spool 'fleet-spool'
+  ```
+
+- **[controller]** The center lists the member, with the member's own
+  inventory under `self_reported`:
+
+  ```text
+  {"member":"edge-a","silent":false,"seconds_since_heartbeat":3,"verified":{"heartbeats":2,"peer":"127.0.0.1","received_at":"2026-11-07T18:31:28Z"},"node":"edge-a","interval":5,"seq":2}
+  ```
+
+  That line comes from the members list through
+  `jq -c '.members[] | {member, silent, seconds_since_heartbeat, verified, node: .self_reported.inventory.node_name, interval: .self_reported.heartbeat_secs, seq: .self_reported.seq}'`.
+
+**Verify the member:**
+
+- **The center goes away.** This run stopped the center for 12 seconds. The
+  member logged it once, its REST API still answered `200`, and two
+  heartbeats waited in the spool (`00000000000000000005.json` and
+  `00000000000000000006.json`):
+
+  ```text
+  WARN sipnab::app::fleet_member: fleet member: heartbeats wait in the spool: the center did not answer: 127.0.0.1:8444: Connection refused (os error 111)
+  ```
+
+- **The center returns.** The spool drained, and the center counted every
+  heartbeat once: `heartbeats` 8 for `seq` 8.
+
+  ```text
+  INFO sipnab::app::fleet_member: fleet member: the center takes heartbeats again (was: the center did not answer: 127.0.0.1:8444: Connection refused (os error 111))
+  ```
+
+  The returned center first reported `edge-a` silent, from the time of its last
+  heartbeat before the outage, then `heard again` once the spool drained.
+
+- **The member stops.** This run killed `edge-a`. The center reported it
+  silent three 5 s intervals later:
+
+  ```text
+  WARN sipnab::app::fleet_center: fleet member 'edge-a' is silent: no heartbeat for 15 s, more than 3 of its 5 s intervals
+  ```
+
+**Troubleshoot the member:**
+
+- **`the center refused this member's token (HTTP 401)`.** The token was not
+  minted with this center's key, it expired, or the center revoked its id.
+  The heartbeats wait in the spool. Mint a new token on the center (step 2),
+  put it in the token file, and restart the member: the member reads the
+  token once, at start.
+- **`the center did not answer`.** The center is down, or a firewall drops
+  the member's connections. The heartbeats wait; nothing needs doing on the
+  member once the center is back.
+- **`the center did not answer: sending: invalid peer certificate: UnknownIssuer`.**
+  The member does not trust the center's certificate. Set `report_ca_file` to
+  the certificate of the issuing CA.
+- **`the spool holds [fleet] spool_max_files`.** The center was away long
+  enough to fill the spool, and the member dropped the oldest heartbeats. A newer
+  heartbeat says everything an older one did.
+
+### Step 3: send a heartbeat by hand
 
 A heartbeat is one JSON record per line, `POST`ed to `/v1/fleet/ingest` with
 the member's token:

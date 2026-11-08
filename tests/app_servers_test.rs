@@ -87,6 +87,8 @@ fn nothing_enabled_spawns_nothing() -> Result<(), TestError> {
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -147,6 +149,8 @@ fn selection_gates_configured_servers() -> Result<(), TestError> {
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -208,6 +212,8 @@ fn invalid_api_addr_is_an_error() -> Result<(), TestError> {
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -267,6 +273,8 @@ fn api_on_ephemeral_port_starts_servers_thread() -> Result<(), TestError> {
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -335,6 +343,8 @@ fn api_port_in_use_is_a_startup_error() -> Result<(), TestError> {
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -402,6 +412,8 @@ fn api_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestError> {
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -475,6 +487,8 @@ fn an_unreadable_api_tls_file_is_a_startup_error_naming_it() -> Result<(), TestE
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -543,6 +557,8 @@ fn mcp_http_transport_without_feature_is_a_startup_error() -> Result<(), TestErr
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -610,6 +626,8 @@ fn invalid_mcp_bind_is_a_startup_error() -> Result<(), TestError> {
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -737,6 +755,8 @@ fn metrics_non_loopback_without_auth_is_a_startup_error() -> Result<(), TestErro
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -803,6 +823,8 @@ fn metrics_on_loopback_ephemeral_port_starts() -> Result<(), TestError> {
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },
@@ -866,6 +888,8 @@ fn start_mcp_http(bind: &str) -> anyhow::Result<Option<servers::ServerHandles>> 
             relay_engines: None,
             persists_content: false,
             vcon_spools: Vec::new(),
+            #[cfg(feature = "api")]
+            fleet_member: None,
             vcon_fetch: Default::default(),
             live_audio: Vec::new(),
         },

@@ -1124,6 +1124,12 @@ fn start_tui_servers(
             // writer this run lacks.
             persists_content: cli.writes_content_outside_vcon(),
             vcon_spools: crate::app::vcon_spool::spools(cli, config),
+            // Refused already by `bootstrap::plan`, so an error here cannot
+            // happen; were it to, the run reports nothing rather than stop.
+            #[cfg(feature = "api")]
+            fleet_member: crate::app::fleet_member::MemberPlan::resolve(cli, config)
+                .ok()
+                .flatten(),
             vcon_fetch: config.vcon_fetch.clone(),
             live_audio: crate::app::bootstrap::live_audio_filters(cli, config),
         },

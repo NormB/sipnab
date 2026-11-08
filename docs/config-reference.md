@@ -1278,6 +1278,30 @@ Under the unit the `.deb` and `.rpm` packages install, the default
 Read-only file system (os error 30)`. `/var/lib/sipnab`, the unit's state
 directory, is. See [Keep crash reports](run-as-a-service.md#keep-crash-reports).
 
+### `[fleet]`
+
+Makes the run a fleet member, which reports its heartbeat to a fleet center
+(`sipnab fleet serve`). [Make an instance a fleet member](fleet.md#make-an-instance-a-fleet-member)
+is the how-to. Unset `report_url`, the run reports nothing.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `report_url` | string | -- | The center, `https://HOST:PORT`; `http://` only to loopback. Flag: `--fleet-report-url` |
+| `report_token_file` | string | -- | The member's `fleet-report` token, readable by this user only. Flag: `--fleet-report-token-file` |
+| `report_ca_file` | string | -- | A PEM CA file to trust for the center. Flag: `--fleet-report-ca-file` |
+| `spool_dir` | string | -- | Where heartbeats wait until the center takes them. Flag: `--fleet-spool-dir` |
+| `heartbeat_secs` | integer | `30` (`DEFAULT_HEARTBEAT_SECS`) | Seconds between heartbeats, 1 to 3600. The center reports the member silent after `--silent-after-missed` of these |
+| `spool_max_files` | integer | `2880` | The most heartbeats the spool keeps while the center is away, at least 1; the oldest go first |
+
+```toml
+[fleet]
+report_url = "https://center.example.net:8444"
+report_token_file = "/etc/sipnab/fleet/edge-a.report.token"
+report_ca_file = "/etc/sipnab/fleet/internal-ca.pem"
+spool_dir = "/var/lib/sipnab/fleet-spool"
+heartbeat_secs = 30
+```
+
 ### `[g729]`
 
 Where the G.729 codebook tables are. sipnab ships no ITU-T table values, so a

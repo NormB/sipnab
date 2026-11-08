@@ -3195,6 +3195,33 @@ pub struct ListenerArgs {
     #[arg(help_heading = "Network listeners", long, value_name = "FILE")]
     pub metrics_auth_file: Option<std::path::PathBuf>,
 
+    /// Report this run's heartbeat to a fleet center (`sipnab fleet serve`)
+    /// at this URL: `https://HOST:PORT`, or `http://` to loopback only. Each
+    /// heartbeat carries this run's inventory (`GET /v1/inventory`) and
+    /// waits in --fleet-spool-dir until the center takes it. Overrides
+    /// `[fleet] report_url`. See docs/fleet.md.
+    #[arg(help_heading = "Fleet", long, value_name = "URL")]
+    pub fleet_report_url: Option<String>,
+
+    /// The file holding this member's `fleet-report` token, minted with the
+    /// center's key and the member's name as --token-id. Readable by this
+    /// user only; read again for every delivery, so a new token needs no
+    /// restart. Overrides `[fleet] report_token_file`.
+    #[arg(help_heading = "Fleet", long, value_name = "FILE")]
+    pub fleet_report_token_file: Option<std::path::PathBuf>,
+
+    /// A PEM CA file to trust for the center instead of the host's CA
+    /// bundle. Overrides `[fleet] report_ca_file`.
+    #[arg(help_heading = "Fleet", long, value_name = "FILE")]
+    pub fleet_report_ca_file: Option<std::path::PathBuf>,
+
+    /// The directory heartbeats wait in until the center takes them,
+    /// created when absent. It keeps at most `[fleet] spool_max_files` of
+    /// them (default 2880), the oldest going first. Overrides
+    /// `[fleet] spool_dir`.
+    #[arg(help_heading = "Fleet", long, value_name = "DIR")]
+    pub fleet_spool_dir: Option<std::path::PathBuf>,
+
     /// Serve the metrics endpoint over HTTPS with this certificate chain
     /// (PEM, leaf first). Needs --metrics-tls-key. TLS 1.2 and 1.3.
     #[arg(

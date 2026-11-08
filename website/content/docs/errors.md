@@ -5189,6 +5189,116 @@ so the URL most likely names something that is not a sipnab REST API.
 
 **Exit code:** 1. The other instances are still in the report.
 
+## Fleet member (`--fleet-report-url`)
+
+A run with `--fleet-report-url` or `[fleet] report_url` reports its heartbeat
+to a fleet center. [Make an instance a fleet member](@/docs/fleet.md#make-an-instance-a-fleet-member)
+describes it. A setting the run cannot use stops it before any capture, with
+exit code 2 for a flag and 1 for a config key. A problem after the start only
+stops the reporting: the capture goes on.
+
+### `{url_from} {url}: plain HTTP is refused except to loopback, because the member's token and inventory would cross the network unencrypted; use https://`
+
+The center's URL is `http://` to another machine. The message starts with the
+setting that named it, `--fleet-report-url` or `[fleet] report_url`.
+
+**What to do:** Serve the center over HTTPS (`sipnab fleet serve --tls-cert
+--tls-key`) and give an `https://` URL, with `report_ca_file` when the
+center's certificate is from your own CA.
+
+**Exit code:** 2 for the flag, 1 for the key.
+
+### `[fleet] heartbeat_secs {heartbeat_secs} is outside {} to {}`
+
+`[fleet] heartbeat_secs` is under 1 or over 3600.
+
+**What to do:** Give a number of seconds from 1 to 3600. The default is 30.
+
+**Exit code:** 1.
+
+### `--fleet-report-token-file '{shown}' does not hold one token on one line`
+
+The member's token file is empty, or holds more than one token. The message
+names the file, never the token. The member does not report, and the capture
+goes on.
+
+**What to do:** Put the one token that `sipnab --mint-token --token-scope
+fleet-report` printed on the center in the file, and restart the run.
+
+### `[fleet] {key} is empty; give a path`
+
+`[fleet] report_token_file`, `report_ca_file` or `spool_dir` is `""`. sipnab
+refuses it with or without `report_url`.
+
+**What to do:** Give the path, or remove the key.
+
+**Exit code:** 1.
+
+### `--fleet-report-token-file '{shown}' can be read or written by other users (mode {:04o}); chmod 600 it`
+
+The member's token file lets other users read it, by its mode when the run
+started. The member does not report, and the capture goes on. The line follows
+`fleet member: not reporting:`.
+
+**What to do:** Run `chmod 600` on the token file, and restart the run.
+
+### `fleet member: not reporting: {e}`
+
+The member could not start: it could not create or read its spool, load the
+center's CA, or read its token. The rest of the message says which. The
+capture goes on without reporting.
+
+**What to do:** Fix what the message names, and restart the run.
+
+### `the fleet member did not start: {e}`
+
+The run could not start the member's thread. The system is short of threads
+or memory, and the run stops.
+
+**What to do:** Check the user's process and memory limits.
+
+**Exit code:** 1.
+
+### `fleet member: heartbeats wait in the spool: {why}`
+
+A warning, logged once when the member stops being able to deliver and again
+when the reason changes. `{why}` is `the center did not answer: <reason>` for
+a center that is down, unreachable or not trusted, `the center refused this
+member's token (HTTP 401)` for a token the center does not accept, or `the
+center answered HTTP <status>`. The heartbeats stay in the spool, and the
+member tries again, at most one interval apart. A line
+`the center takes heartbeats again` follows when the spool drains.
+
+**What to do:** For a refused token, mint a new one on the center and restart
+the member. Otherwise, bring the center back or let the member reach it.
+
+### `fleet member: the center refused heartbeat {name} for good (HTTP {status}): {text}; it is moved to {FAILED_DIR}/`
+
+A warning. The center answered a `4xx` other than `401` and `403`, such as
+`400` for a record it does not read, so sending the file again cannot help.
+`{FAILED_DIR}` is `failed`, in the spool.
+
+**What to do:** Run the same sipnab version on the member and the center, or
+a newer one on the center.
+
+### `fleet member: a heartbeat was not written to the spool: {e}`
+
+A warning. The member could not write a heartbeat file, for the system's
+reason in the message, such as a full disk. It tries again at the next
+interval.
+
+**What to do:** Free space on the spool's file system, or fix its
+permissions.
+
+### `fleet member: the spool holds [fleet] spool_max_files {}; the oldest {dropped} heartbeat(s) were dropped`
+
+A warning. The center has been away long enough to fill the spool, and the
+member removed its oldest heartbeats to stay under the cap. A newer heartbeat
+carries everything an older one did.
+
+**What to do:** Bring the center back. Raise `[fleet] spool_max_files` to keep
+more of the history while it is away.
+
 ## Fleet center (`sipnab fleet serve`)
 
 `sipnab fleet serve` prints these messages, and answers a member with some of
