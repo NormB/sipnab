@@ -80,53 +80,284 @@ fn steps(body: &str) -> Vec<String> {
     chunks
 }
 
-/// Every step that downloads a release artifact must verify it before use.
+/// Every composite action under `.github/actions/`, as (path, text).
+fn composite_actions() -> Result<Vec<(String, String)>, TestError> {
+    let dir = repo().join(".github/actions");
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
+        let p = e
+            .map_err(|e| format!("dir entry: {e}"))?
+            .path()
+            .join("action.yml");
+        if !p.is_file() {
+            continue;
+        }
+        let rel = p.strip_prefix(repo()).unwrap_or(&p).display().to_string();
+        let body = std::fs::read_to_string(&p).map_err(|e| format!("read {rel}: {e}"))?;
+        out.push((rel, body));
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// The composite action every pinned release download goes through.
+const PINNED_DOWNLOAD: &str = "uses: ./.github/actions/pinned-download";
+
+/// The script that composite action runs, and release.yml runs directly.
+const FETCH_PINNED: &str = "scripts/fetch-pinned.sh";
+
+/// Why one step's release download breaks the one rule, or `None` when the
+/// step does not download a release asset or does it through the rule.
+///
+/// The rule (CI-TOOL-DOWNLOAD-RESILIENCE): a step that names a
+/// `releases/download/` URL either is a `pinned-download` step passing a
+/// `sha256:` input, or runs `scripts/fetch-pinned.sh` with `--sha256`. It
+/// never fetches with `curl` or `wget` itself: those were one live download
+/// with about 25 s of retries, and github.com answered 504 for most of an
+/// hour on 2026-11-08.
+fn release_download_violation(step: &str) -> Option<&'static str> {
+    if !step.contains("releases/download/") {
+        return None;
+    }
+    let code: String = step
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let fetches_itself = code
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ';' || c == '|' || c == '&')
+        .any(|w| w == "curl" || w == "wget" || w.ends_with("/curl") || w.ends_with("/wget"));
+    if fetches_itself {
+        return Some("fetches the release asset with curl or wget itself");
+    }
+    let through_action = code.contains(PINNED_DOWNLOAD)
+        && code.lines().any(|l| l.trim_start().starts_with("sha256:"));
+    let through_script = code.contains(FETCH_PINNED) && code.contains("--sha256");
+    if through_action || through_script {
+        None
+    } else {
+        Some("names a release asset without going through pinned-download or fetch-pinned.sh")
+    }
+}
+
+/// The classifier accepts the two forms of the rule and rejects the rest.
+#[test]
+fn the_release_download_classifier_accepts_only_the_one_rule() {
+    let url = "https://github.com/o/r/releases/download/v1/t.tgz";
+    let action =
+        format!("- name: Fetch\n  {PINNED_DOWNLOAD}\n  with:\n    sha256: abc\n    url: {url}\n");
+    let script = format!(
+        "- name: Fetch\n  run: |\n    bash {FETCH_PINNED} --url \"{url}\" --sha256 \"$S\" --dest t.tgz\n"
+    );
+    let bare_curl = format!("- name: Fetch\n  run: |\n    curl -fsSL -o t.tgz \"{url}\"\n");
+    let checked_curl = format!(
+        "- name: Fetch\n  run: |\n    curl --retry 5 -o t.tgz \"{url}\"\n    echo \"$S  t.tgz\" | sha256sum -c -\n"
+    );
+    let wget = format!("- name: Fetch\n  run: wget -q \"{url}\"\n");
+    let unchecked_action = format!("- name: Fetch\n  {PINNED_DOWNLOAD}\n  with:\n    url: {url}\n");
+    let script_and_curl = format!(
+        "- name: Fetch\n  run: |\n    bash {FETCH_PINNED} --url u --sha256 s --dest d\n    (curl -o x \"{url}\")\n"
+    );
+    let commented = format!(
+        "- name: Fetch\n  # once was: curl -o t.tgz {url}\n  {PINNED_DOWNLOAD}\n  with:\n    sha256: abc\n"
+    );
+    assert_eq!(release_download_violation(&action), None, "{action}");
+    assert_eq!(release_download_violation(&script), None, "{script}");
+    assert_eq!(
+        release_download_violation(&commented),
+        None,
+        "a comment naming curl is not a fetch: {commented}"
+    );
+    assert_eq!(
+        release_download_violation("- name: Build\n  run: cargo build\n"),
+        None,
+        "a step with no release URL is out of scope"
+    );
+    for bad in [
+        &bare_curl,
+        &checked_curl,
+        &wget,
+        &unchecked_action,
+        &script_and_curl,
+    ] {
+        assert!(
+            release_download_violation(bad).is_some(),
+            "a download outside the one rule was accepted:\n{bad}"
+        );
+    }
+}
+
+/// Every step that downloads a release artifact goes through the one rule:
+/// `.github/actions/pinned-download` (cache, then `scripts/fetch-pinned.sh`)
+/// or, where no cache can help, `scripts/fetch-pinned.sh` itself. Both verify
+/// the sha256 on every run, so this also proves no release asset is
+/// installed unchecked.
 #[test]
 fn no_workflow_installs_a_release_artifact_without_checking_its_bytes() -> Result<(), TestError> {
     let mut checked = 0usize;
-    let mut unchecked: Vec<String> = Vec::new();
+    let mut bad: Vec<String> = Vec::new();
 
-    for (name, body) in workflows()? {
+    let mut files = workflows()?;
+    files.extend(composite_actions()?);
+    for (name, body) in files {
         for step in steps(&body) {
             if !step.contains("releases/download/") {
                 continue;
             }
-            if step.contains("sha256sum -c") {
-                checked += 1;
-            } else {
+            checked += 1;
+            if let Some(why) = release_download_violation(&step) {
                 let label = step
                     .lines()
                     .find(|l| l.contains("name:"))
                     .map_or("<unnamed step>", str::trim)
                     .to_string();
-                unchecked.push(format!("{name}: {label}"));
+                bad.push(format!("{name}: {label}: {why}"));
             }
         }
     }
 
     assert!(
-        unchecked.is_empty(),
-        "these steps download a release artifact and install it without verifying the bytes.\n\
-         Pin the artifact by SHA-256 and check it before `install`:\n  {}",
-        unchecked.join("\n  ")
+        bad.is_empty(),
+        "these steps download a release artifact outside the one rule. Use \
+         {PINNED_DOWNLOAD} (or {FETCH_PINNED} where no cache can help), which \
+         verifies the pinned sha256 on every run and retries an outage for up \
+         to five minutes:\n  {}",
+        bad.join("\n  ")
     );
 
     // Without this the suite would pass by finding nothing to check -- exactly
     // what would happen if the URL shape changed or the splitter stopped working.
+    // The nine: Zola in pages.yml and three quality.yml jobs, Vale and its
+    // Google style, bpf-linker in release.yml, and the pagefind and nextest
+    // actions.
     assert!(
-        checked >= 4,
-        "expected at least the 4 known artifact downloads (2x Zola, Vale, Vale's Google \
-         style package), found {checked}. Fewer means the scan stopped seeing them, not \
-         that the risk went away"
+        checked >= 9,
+        "expected at least the 9 known release downloads, found {checked}. Fewer \
+         means the scan stopped seeing them, not that the risk went away"
+    );
+    Ok(())
+}
+
+/// A third-party action that downloads its own tool from a GitHub release,
+/// with no checksum and one live attempt, is the same fragility the one rule
+/// removes, one layer down where a `releases/download/` scan cannot see it.
+///
+/// lycheeverse/lychee-action v2.9.0 runs `curl -sfLO` of
+/// `lychee/releases/download/lychee-v0.24.2/...` with no retry. On
+/// 2026-11-08, after this pull request's own fetches recovered from 504s and a
+/// timeout, that download failed the Docs job's "Dead links" step with
+/// exit 22. lychee is now fetched through `pinned-download` and run directly.
+///
+/// Not yet covered, recorded rather than hidden: taiki-e/install-action
+/// (ci.yml, quality.yml, release.yml) and sigstore/cosign-installer
+/// (release.yml) also fetch their tools from GitHub releases themselves.
+const ACTIONS_THAT_FETCH_THEIR_OWN_TOOL: &[&str] = &["lycheeverse/lychee-action"];
+
+/// No workflow uses an action listed in `ACTIONS_THAT_FETCH_THEIR_OWN_TOOL`.
+#[test]
+fn no_workflow_uses_an_action_that_fetches_its_tool_unchecked() -> Result<(), TestError> {
+    let mut found = Vec::new();
+    for (name, body) in workflows()? {
+        for (i, line) in body.lines().enumerate() {
+            let t = line.trim_start().trim_start_matches("- ");
+            let Some(used) = t.strip_prefix("uses: ") else {
+                continue;
+            };
+            let action = used.split('@').next().unwrap_or(used);
+            if ACTIONS_THAT_FETCH_THEIR_OWN_TOOL.contains(&action) {
+                found.push(format!("{name}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "these steps use an action that downloads its own tool from a GitHub \
+         release with no checksum and no retry. Fetch the tool through \
+         {PINNED_DOWNLOAD} and run it directly:\n  {}",
+        found.join("\n  ")
+    );
+    Ok(())
+}
+
+/// `.github/actions/pinned-download` is one cached, verified rule.
+///
+/// It restores the archive from the actions cache under a key made of the
+/// tool's name, version and sha256, runs `scripts/fetch-pinned.sh` on every
+/// run (so a restored file is hashed before it is used, and fetched on a
+/// miss), and saves only after a miss and only from `main`, as
+/// tests/ci_cache_policy_test.rs requires of the cargo caches. The directory
+/// is the job's own `runner.temp`: the self-hosted runners share one home
+/// directory, and on run 42267347105 two jobs writing one file under it
+/// corrupted each other's check.
+#[test]
+fn pinned_download_is_one_cached_and_verified_rule() -> Result<(), TestError> {
+    const ACTION: &str = ".github/actions/pinned-download/action.yml";
+    const KEY: &str = "key: pinned-${{ inputs.name }}-${{ inputs.version }}-${{ inputs.sha256 }}";
+    const PATH: &str = "path: ${{ runner.temp }}/sipnab-pinned/${{ inputs.name }}";
+    let action =
+        std::fs::read_to_string(repo().join(ACTION)).map_err(|e| format!("read {ACTION}: {e}"))?;
+    let parts: Vec<&str> = action.split("\n    - name: ").skip(1).collect();
+    let find = |name: &str| -> Result<(usize, &str), TestError> {
+        Ok(parts
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.starts_with(name))
+            .map(|(i, s)| (i, *s))
+            .ok_or_else(|| format!("{ACTION} has no step named {name:?}"))?)
+    };
+    let (restore_at, restore) = find("Restore the pinned archive")?;
+    let (fetch_at, fetch) = find("Verify the restored archive, or fetch it")?;
+    let (save_at, save) = find("Save the pinned archive")?;
+    assert!(
+        restore.contains("uses: actions/cache/restore@")
+            && restore.contains(KEY)
+            && restore.contains(PATH),
+        "the restore does not read the job's own directory under the pin key:\n{restore}"
+    );
+    assert!(
+        save.contains("uses: actions/cache/save@") && save.contains(KEY) && save.contains(PATH),
+        "the save does not write the key and directory the restore reads:\n{save}"
+    );
+    assert_eq!(
+        action.matches("key: ").count(),
+        2,
+        "{ACTION} names a cache key other than the restore's and the save's"
+    );
+    assert!(
+        !action.contains("~/.cache") && !action.contains("$HOME/.cache"),
+        "{ACTION} keeps the archive under the shared home directory"
+    );
+    assert!(
+        fetch.contains(FETCH_PINNED)
+            && fetch.contains("--sha256 \"$SHA256\"")
+            && fetch.contains("SHA256: ${{ inputs.sha256 }}"),
+        "the fetch step does not run {FETCH_PINNED} against the pinned sha256:\n{fetch}"
+    );
+    assert!(
+        !fetch.lines().any(|l| l.trim_start().starts_with("if:")),
+        "the verify-or-fetch step is conditional, so a restored archive could \
+         be used without its sha256 being checked:\n{fetch}"
+    );
+    assert!(
+        save.contains(
+            "if: steps.cache.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'"
+        ),
+        "the save runs on a hit or off main:\n{save}"
+    );
+    assert!(
+        restore_at < fetch_at && fetch_at < save_at,
+        "{ACTION} runs restore, verify-or-fetch and save out of order; a save \
+         before the check stores bytes nobody checked"
     );
     Ok(())
 }
 
 /// The Google style package is named in two places: `Packages =` in `.vale.ini`,
-/// which is what a local `vale sync` follows, and `VALE_GOOGLE_URL` in the
-/// workflow, which is the copy that gets checksummed. If those drift, CI lints
-/// against a different rule set than a contributor's machine does, and the
-/// checksum guards a package nobody else is using.
+/// which is what a local `vale sync` follows, and the URL quality.yml's fetch
+/// step builds from `VALE_GOOGLE_VERSION`, which is the copy that gets
+/// checksummed. If those drift, CI lints against a different rule set than a
+/// contributor's machine does, and the checksum guards a package nobody else
+/// is using.
 #[test]
 fn the_vale_package_url_is_the_same_in_the_config_and_the_workflow() -> Result<(), TestError> {
     let ini = std::fs::read_to_string(repo().join(".vale.ini"))
@@ -139,11 +370,21 @@ fn the_vale_package_url_is_the_same_in_the_config_and_the_workflow() -> Result<(
 
     let quality = std::fs::read_to_string(repo().join(".github/workflows/quality.yml"))
         .map_err(|e| format!("read quality.yml: {e}"))?;
-    let from_workflow = quality
+    let version = quality
         .lines()
-        .find_map(|l| l.trim().strip_prefix("VALE_GOOGLE_URL:"))
+        .find_map(|l| l.trim().strip_prefix("VALE_GOOGLE_VERSION:"))
         .map(|v| v.trim().trim_matches(['\'', '"']).to_string())
-        .ok_or("VALE_GOOGLE_URL not found in quality.yml")?;
+        .ok_or("VALE_GOOGLE_VERSION not found in quality.yml")?;
+    let step = steps(&quality)
+        .into_iter()
+        .find(|s| s.contains("- name: Fetch the Vale Google style (pinned, cached)"))
+        .ok_or("quality.yml has no step `Fetch the Vale Google style (pinned, cached)`")?;
+    let url = step
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("url:"))
+        .map(str::trim)
+        .ok_or("the Vale Google style fetch passes no url")?;
+    let from_workflow = url.replace("${{ env.VALE_GOOGLE_VERSION }}", &version);
 
     assert_eq!(
         from_ini, from_workflow,
@@ -851,71 +1092,49 @@ fn nextest_is_installed_through_one_pinned_rule() -> Result<(), TestError> {
             "{ACTION}: `{h}` is not a full SHA-256"
         );
     }
-    let key = "key: nextest-${{ steps.pick.outputs.version }}-${{ steps.pick.outputs.target }}-${{ steps.pick.outputs.sha256 }}";
-    assert_eq!(
-        action.matches(key).count(),
-        2,
-        "{ACTION}: the restore and the save must use the one key of version, \
-         target and hash"
-    );
-    assert_eq!(
-        action.matches("key: ").count(),
-        2,
-        "{ACTION} names a cache key other than the restore's and the save's"
-    );
-    // A job-private directory: the self-hosted runners share one home, and
-    // on run 42267347105 one Features job verified the tarball while the
-    // other was still writing it to the shared ~/.cache path (FAILED).
+    // The tarball comes through the one cached, verified rule, which
+    // `pinned_download_is_one_cached_and_verified_rule` holds; this action
+    // only chooses the pin for the runner and installs the result.
     assert!(
-        !action.contains("~/.cache") && !action.contains("$HOME/.cache"),
-        "{ACTION} keeps the tarball under the home directory, which the \
-         self-hosted runners share; use the job's own ${{{{ runner.temp }}}}"
+        !action.contains("actions/cache"),
+        "{ACTION} uses actions/cache itself, beside {PINNED_DOWNLOAD}: a second \
+         cache rule to drift from the first"
     );
-    assert_eq!(
-        action
-            .matches("path: ${{ runner.temp }}/sipnab-nextest")
-            .count(),
-        2,
-        "{ACTION}: the restore and the save must use the job's own directory"
-    );
-    let step = |name: &str| -> Result<String, TestError> {
-        let at = action
-            .find(&format!("- name: {name}"))
-            .ok_or_else(|| format!("{ACTION} has no step {name:?}"))?;
-        let rest = &action[at..];
-        let end = rest[1..]
-            .find("\n    - name: ")
-            .map_or(rest.len(), |e| e + 1);
-        Ok(rest[..end].to_string())
+    let parts: Vec<&str> = action.split("\n    - name: ").skip(1).collect();
+    let find = |name: &str| -> Result<(usize, &str), TestError> {
+        Ok(parts
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.starts_with(name))
+            .map(|(i, s)| (i, *s))
+            .ok_or_else(|| format!("{ACTION} has no step named {name:?}"))?)
     };
-    let fetch = step("Fetch the cargo-nextest tarball")?;
-    let verify = step("Verify the cargo-nextest tarball")?;
-    let save = step("Save the cargo-nextest tarball")?;
+    let (pick_at, _) = find("Choose the cargo-nextest tarball")?;
+    let (fetch_at, fetch) = find("Fetch the cargo-nextest tarball (pinned, cached)")?;
+    let (install_at, install) = find("Install cargo-nextest")?;
+    for want in [
+        PINNED_DOWNLOAD,
+        "id: archive",
+        // The target is in the name, so it is in the cache key: an aarch64
+        // tarball is never restored for an x86_64 runner.
+        "name: cargo-nextest-${{ steps.pick.outputs.target }}",
+        "version: ${{ steps.pick.outputs.version }}",
+        "sha256: ${{ steps.pick.outputs.sha256 }}",
+        "url: https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-${{ steps.pick.outputs.version }}/${{ steps.pick.outputs.tarball }}",
+        "file: ${{ steps.pick.outputs.tarball }}",
+    ] {
+        assert!(
+            fetch.contains(want),
+            "{ACTION}'s fetch step lacks `{want}`:\n{fetch}"
+        );
+    }
     assert!(
-        fetch.contains("if: steps.cache.outputs.cache-hit != 'true'"),
-        "{ACTION} fetches on a cache hit too:\n{fetch}"
+        install.contains("${{ steps.archive.outputs.path }}"),
+        "{ACTION} installs something other than the verified archive:\n{install}"
     );
     assert!(
-        verify.contains("shasum -a 256 -c") && !verify.contains("if:"),
-        "{ACTION} does not check the tarball on every run:\n{verify}"
-    );
-    assert!(
-        save.contains("cache-hit != 'true'") && save.contains("github.ref == 'refs/heads/main'"),
-        "{ACTION} saves on a hit or off main:\n{save}"
-    );
-    let order: Vec<usize> = [
-        "Restore the cargo-nextest tarball",
-        "Fetch the cargo-nextest tarball",
-        "Verify the cargo-nextest tarball",
-        "Save the cargo-nextest tarball",
-        "Install cargo-nextest",
-    ]
-    .iter()
-    .map(|n| action.find(&format!("- name: {n}")).unwrap_or(usize::MAX))
-    .collect();
-    assert!(
-        order.windows(2).all(|w| w[0] < w[1]),
-        "{ACTION} runs restore, fetch, verify, save and install out of order: {order:?}"
+        pick_at < fetch_at && fetch_at < install_at,
+        "{ACTION} runs choose, fetch and install out of order"
     );
 
     // Every job that runs the suite installs nextest first; nothing else

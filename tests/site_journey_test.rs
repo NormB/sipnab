@@ -6641,7 +6641,16 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `scripts/parallel-tests.py` four times where the old comment named it
     // once (+3). Measurement: with HEAD's ci.yml swapped back in, the scan
     // reads 223.
-    const EXPECTED_REFERENCES: usize = 229;
+    // 229 -> 239: every pinned release download goes through
+    // `.github/actions/pinned-download` and `scripts/fetch-pinned.sh`
+    // (CI-TOOL-DOWNLOAD-RESILIENCE). release.yml +5 (the fetch-pinned.sh
+    // call, its comment and its error message, the comment naming
+    // .github/actions/pinned-download and tests/ci_local_fetch_gate_test.rs),
+    // quality.yml +4 and pages.yml +1 (the comments naming the action).
+    // Measurement: with origin/main's release.yml swapped back in, the scan
+    // reads 234; quality.yml, 235; pages.yml, 238. The composite actions and
+    // the new script are not in the scan.
+    const EXPECTED_REFERENCES: usize = 239;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
@@ -9850,7 +9859,6 @@ fn every_workflow_that_builds_the_site_also_indexes_it() -> Result<(), TestError
 #[test]
 fn pagefind_is_installed_through_one_cached_rule() -> Result<(), TestError> {
     const ACTION: &str = ".github/actions/pagefind/action.yml";
-    const KEY: &str = "key: pagefind-${{ inputs.version }}-${{ inputs.sha256 }}";
     let pin = |text: &str, name: &str| -> Result<Vec<String>, TestError> {
         let re = regex::Regex::new(&format!(r"(?m)^\s*{name}: '([^']+)'\s*$"))
             .map_err(|e| format!("regex: {e}"))?;
@@ -9908,7 +9916,18 @@ fn pagefind_is_installed_through_one_cached_rule() -> Result<(), TestError> {
          hashes {hashes:?}"
     );
 
+    // The tarball comes through .github/actions/pinned-download, the one
+    // cached and verified rule every pinned release download shares
+    // (CI-TOOL-DOWNLOAD-RESILIENCE); `pinned_download_is_one_cached_and_
+    // verified_rule` in tests/workflow_supply_chain_test.rs holds its key,
+    // its job-private directory, its check on every run and its main-only
+    // save. This action passes it the pins and installs the result.
     let action = read(ACTION)?;
+    assert!(
+        !action.contains("actions/cache"),
+        "{ACTION} uses actions/cache itself, beside pinned-download: a second \
+         cache rule to drift from the first"
+    );
     let steps: Vec<&str> = action.split("\n    - name: ").skip(1).collect();
     let find = |name: &str| -> Result<(usize, &str), TestError> {
         Ok(steps
@@ -9918,71 +9937,31 @@ fn pagefind_is_installed_through_one_cached_rule() -> Result<(), TestError> {
             .map(|(i, s)| (i, *s))
             .ok_or_else(|| format!("{ACTION} has no step named {name:?}"))?)
     };
-    // The same job-private directory as .github/actions/nextest: a path
-    // under the home directory is shared by every self-hosted runner on a
-    // host, and two jobs fetching into it at once corrupt each other's file.
-    assert!(
-        !action.contains("~/.cache") && !action.contains("$HOME/.cache"),
-        "{ACTION} keeps the tarball under the home directory; use ${{{{ runner.temp }}}}"
-    );
-    assert_eq!(
-        action
-            .matches("path: ${{ runner.temp }}/sipnab-pagefind")
-            .count(),
-        2,
-        "{ACTION}: the restore and the save must use the job's own directory"
-    );
-    let (restore_at, restore) = find("Restore the Pagefind tarball")?;
-    let (fetch_at, fetch) = find("Fetch the Pagefind tarball")?;
-    let (verify_at, verify) = find("Verify the Pagefind tarball")?;
-    let (save_at, save) = find("Save the Pagefind tarball")?;
+    let (fetch_at, fetch) = find("Fetch the Pagefind tarball (pinned, cached)")?;
     let (install_at, install) = find("Install Pagefind")?;
+    for want in [
+        "uses: ./.github/actions/pinned-download",
+        "id: archive",
+        "name: pagefind",
+        "version: ${{ inputs.version }}",
+        "sha256: ${{ inputs.sha256 }}",
+        "url: https://github.com/CloudCannon/pagefind/releases/download/v${{ inputs.version }}/pagefind-v${{ inputs.version }}-x86_64-unknown-linux-musl.tar.gz",
+    ] {
+        assert!(
+            fetch.contains(want),
+            "{ACTION}'s fetch step lacks `{want}`, so the key or the check could \
+             name another pin than the one the workflow passes:\n{fetch}"
+        );
+    }
     assert!(
-        restore.contains("uses: actions/cache/restore@") && restore.contains(KEY),
-        "the restore step does not read the cache under the pin key {KEY:?}:\n{restore}"
+        fetch_at < install_at,
+        "{ACTION} installs before it fetches and verifies"
     );
     assert!(
-        save.contains("uses: actions/cache/save@") && save.contains(KEY),
-        "the save step does not write the same key the restore reads, so every \
-         run misses:\n{save}"
-    );
-    assert_eq!(
-        action.matches("key: ").count(),
-        2,
-        "{ACTION} names a cache key other than the restore's and the save's"
-    );
-    assert!(
-        fetch.contains("if: steps.cache.outputs.cache-hit != 'true'")
-            && fetch.contains("CloudCannon/pagefind/releases/download/v${PAGEFIND_VERSION}/"),
-        "the fetch is not the miss path: it must run only on a miss and fetch \
-         the pinned version:\n{fetch}"
-    );
-    assert!(
-        verify.contains("sha256sum -c") && verify.contains("${PAGEFIND_SHA256}"),
-        "the tarball is not checked against PAGEFIND_SHA256:\n{verify}"
-    );
-    assert!(
-        !verify.contains("if:"),
-        "the sha256 check is conditional, so a restored tarball can be \
-         installed unchecked:\n{verify}"
-    );
-    assert!(
-        save.contains("cache-hit != 'true'") && save.contains("github.ref == 'refs/heads/main'"),
-        "the save runs on a hit or off main (tests/ci_cache_policy_test.rs \
-         explains why a pull request's entry is wasted space):\n{save}"
-    );
-    assert!(
-        restore_at < fetch_at
-            && fetch_at < verify_at
-            && verify_at < save_at
-            && save_at < install_at,
-        "{ACTION} runs its steps out of order: restore, fetch on a miss, \
-         verify, save, install. Saving or installing before the check \
-         stores or runs bytes nobody checked"
-    );
-    assert!(
-        install.contains("install -m 0755") && install.contains("pagefind --version"),
-        "the install step does not put Pagefind on PATH:\n{install}"
+        install.contains("${{ steps.archive.outputs.path }}")
+            && install.contains("install -m 0755")
+            && install.contains("pagefind --version"),
+        "the install step does not put the verified Pagefind on PATH:\n{install}"
     );
     Ok(())
 }

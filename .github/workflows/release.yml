@@ -411,18 +411,32 @@ jobs:
             fi
           fi
 
-          # The sha256 check below was already here and stays: it is what turns
-          # a substituted or truncated tarball into "this download is wrong"
-          # rather than a linker that misbehaves later. What it lacked was a
-          # retry — one dropped connection to github.com failed a job that
-          # produces every gnu artifact and both packages — and a bound, so a
-          # stalled transfer costs 5 minutes instead of the job's 45.
+          # Fetched and checked by scripts/fetch-pinned.sh, the one rule every
+          # pinned release download in CI goes through (CI-TOOL-DOWNLOAD-
+          # RESILIENCE). The sha256 check is what turns a substituted or
+          # truncated tarball into "this download is wrong" rather than a
+          # linker that misbehaves later. The retries are what this step
+          # lacked twice: first none, then `curl --retry 5 --retry-delay 5`,
+          # about 25 s, while on 2026-11-08 github.com answered release
+          # downloads with HTTP 504 for most of an hour. The script retries
+          # with exponential backoff for up to 300 s, each attempt bounded,
+          # and names the URL and the last status when it gives up.
+          #
+          # No actions cache here, unlike .github/actions/pinned-download: a
+          # release runs on a tag, an entry a tag run saves is readable only by
+          # that tag, and nothing on main fetches bpf-linker, so a restore
+          # would always miss. tests/ci_local_fetch_gate_test.rs holds the
+          # fetch and the two messages below.
           tarball="bpf-linker-x86_64-unknown-linux-musl.tar.zst"
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors --max-time 300 -o "$tarball" \
-            "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/${tarball}" \
-            || { echo "::error::FETCH failure, not a build failure: curl could not download $tarball from github.com after 5 attempts. No sipnab source was compiled — re-run the job."; exit 1; }
-          echo "${BPF_LINKER_SHA256}  ${tarball}" | sha256sum -c - \
-            || { echo "::error::FETCH corrupt, not a build failure: $tarball does not match BPF_LINKER_SHA256. Do NOT re-run — github.com served bytes other than the pinned ones."; exit 1; }
+          rc=0
+          bash scripts/fetch-pinned.sh \
+            --url "https://github.com/aya-rs/bpf-linker/releases/download/v${BPF_LINKER_VERSION}/${tarball}" \
+            --sha256 "${BPF_LINKER_SHA256}" --dest "$tarball" || rc=$?
+          case $rc in
+            0) ;;
+            3) echo "::error::FETCH corrupt, not a build failure: $tarball does not match BPF_LINKER_SHA256. Do NOT re-run — github.com served bytes other than the pinned ones."; exit 1 ;;
+            *) echo "::error::FETCH failure, not a build failure: $tarball could not be downloaded from github.com (scripts/fetch-pinned.sh exit $rc; its error above names the URL and the last status). No sipnab source was compiled — re-run the job."; exit 1 ;;
+          esac
           tar --zstd -xf "$tarball"
           install -m 0755 bpf-linker /usr/local/bin/bpf-linker \
             || sudo install -m 0755 bpf-linker /usr/local/bin/bpf-linker
