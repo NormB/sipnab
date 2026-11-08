@@ -152,9 +152,12 @@ cmd_compare() {
   sha256sum "$a" "$b"
   printf 'differing bytes: %s (first ones: offset, octal a, octal b)\n' \
     "$(cmp -l "$a" "$b" | wc -l | tr -d ' ')"
-  cmp -l "$a" "$b" | head -10 || true
+  # Both lists can run to millions of lines, and stopping the writer after the
+  # first ones is the point here, so these two pipelines run without pipefail:
+  # their status is head's, and the writer's SIGPIPE is not a failure.
+  (set +o pipefail; cmp -l "$a" "$b" | head -10)
   printf 'strings that differ (< a, > b):\n'
-  diff <(strings -n 6 "$a") <(strings -n 6 "$b") | head -40 || true
+  (set +o pipefail; diff <(strings -n 6 "$a") <(strings -n 6 "$b") | head -40)
   return 1
 }
 

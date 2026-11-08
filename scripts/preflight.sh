@@ -277,8 +277,8 @@ else
     rm -f "$GEN_OUT"
 fi
 # <<< END site-mirror-gate
-if git diff --name-only HEAD -- docs/benchmarks.md website/content/docs/benchmarks.md 2>/dev/null \
-    | grep -q . ; then
+if BENCH_DIFF=$(git diff --name-only HEAD -- docs/benchmarks.md website/content/docs/benchmarks.md 2>/dev/null) \
+    && [ -n "$BENCH_DIFF" ]; then
     CHANGED=$(git diff --name-only HEAD -- docs/benchmarks.md website/content/docs/benchmarks.md | wc -l)
     if [ "$CHANGED" = "1" ]; then
         step "benchmarks pages in step"
@@ -339,8 +339,8 @@ if cargo test --features full --test docs_drift_test --test link_integrity_test 
     ok
 else
     bad
-    grep -E "^test .* FAILED|panicked at|expected [0-9]+|left:|right:" \
-        /tmp/.sipnab-preflight-gates.$$ | head -12
+    grep -m 12 -E "^test .* FAILED|panicked at|expected [0-9]+|left:|right:" \
+        /tmp/.sipnab-preflight-gates.$$
     note "Ratchet numbers come from THIS run, not from arithmetic."
 fi
 rm -f /tmp/.sipnab-preflight-gates.$$

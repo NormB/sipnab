@@ -108,7 +108,7 @@ find_objcopy() {
 
 # Lowercase hex GNU build ID of an ELF file, empty when it has none.
 elf_build_id() {
-  readelf -n "$1" 2>/dev/null | sed -n 's/.*Build ID: *\([0-9a-fA-F]*\).*/\1/p' | head -1 \
+  readelf -n "$1" 2>/dev/null | sed -n 's/.*Build ID: *\([0-9a-fA-F]*\).*/\1/p' | sed -n 1p \
     | tr 'A-F' 'a-f'
 }
 
@@ -172,7 +172,7 @@ split_elf() {
 
 # Mach-O UUID as printed by dwarfdump, uppercase with dashes.
 macho_uuid() {
-  dwarfdump --uuid "$1" | awk '/^UUID:/ { print $2; exit }'
+  dwarfdump --uuid "$1" | awk '/^UUID:/ && !f { print $2; f = 1 }'
 }
 
 # Whether a Mach-O binary still carries a debug map (N_OSO stabs naming the

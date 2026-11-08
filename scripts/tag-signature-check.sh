@@ -27,7 +27,11 @@ commit)
 	;;
 esac
 
-if ! git cat-file -p "$sha" | grep -q -- '-----BEGIN SSH SIGNATURE-----'; then
+# The tag object is captured before it is searched: `git cat-file -p | grep -q`
+# under pipefail fails a signed tag whenever grep exits while git is still
+# writing (git dies of SIGPIPE, 141).
+if ! tag_object=$(git cat-file -p "$sha") \
+	|| ! grep -q -- '-----BEGIN SSH SIGNATURE-----' <<<"$tag_object"; then
 	echo "tag ${sha:0:7} is not signed. Set 'git config tag.gpgSign true' (SSH signing) and re-create it with 'git tag -s'."
 	exit 1
 fi
@@ -42,10 +46,10 @@ fi
 # check also requires the "Good ... signature for <principal>" line, so a
 # signature is accepted only when it names a listed signer.
 if ! out=$(git -c gpg.format=ssh -c "gpg.ssh.allowedSignersFile=$signers" verify-tag "$sha" 2>&1) \
-	|| ! printf '%s\n' "$out" | grep -q '^Good "git" signature for '; then
+	|| ! grep -q '^Good "git" signature for ' <<<"$out"; then
 	echo "tag ${sha:0:7} is signed, but its key is not a trusted signer in $signers:"
 	printf '  %s\n' "$out"
 	exit 1
 fi
 
-echo "tag ${sha:0:7}: $(printf '%s\n' "$out" | grep -m1 'Good')"
+echo "tag ${sha:0:7}: $(grep -m1 'Good' <<<"$out")"

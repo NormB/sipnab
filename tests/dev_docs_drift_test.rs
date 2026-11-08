@@ -968,7 +968,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // and .config/nextest.toml (+7). Measured: with origin/main's
     // build-ci-release.md swapped back in the scan reads 783; CHANGELOG.md
     // adds none.
-    const EXPECTED_CODE_LINKS: usize = 790;
+    // 790 -> 795 (PIPEFAIL-GREP-Q-SWEEP): docs/internals/testing.md's gate
+    // roster row links tests/pipefail_early_exit_test.rs and
+    // tests/support/pipefail_scan.rs (+2), and its early-exit reader test matrix links
+    // the test files it counts (+3); every other developer page unchanged.
+    const EXPECTED_CODE_LINKS: usize = 795;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

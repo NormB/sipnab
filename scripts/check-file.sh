@@ -199,7 +199,7 @@ for f in "$@"; do
 	case "$f" in
 		*.sh) _kind=sh ;;
 		*.py) _kind=py ;;
-		*) case "$(head -c 64 "$f" 2>/dev/null | head -1)" in
+		*) case "$(head -c 64 "$f" 2>/dev/null | sed -n 1p)" in
 			'#!'*sh) _kind=sh ;;
 			'#!'*python*) _kind=py ;;
 		esac ;;

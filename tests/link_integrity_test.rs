@@ -1725,7 +1725,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // rest-api.md, tuning-capture.md and internals/testing.md +1 each, to
     // "Which dialog time to read". Counted per file against origin/main
     // c736934f3.
-    const EXPECTED_WIKI_LINKS: usize = 2481;
+    // 2481 -> 2482 (PIPEFAIL-GREP-Q-SWEEP): testing.md's new gate roster row
+    // links CONTRIBUTING.md's new shell section (+1); no other wiki page changed.
+    const EXPECTED_WIKI_LINKS: usize = 2482;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
