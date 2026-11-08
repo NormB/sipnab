@@ -15,6 +15,7 @@ entry that carries them.
 - Fuzz targets: `log` 0.4.34 → 0.4.35, `aes` 0.9.3 → 0.9.4, `zip` 9.1.3 → 9.3.0, `sevenz-rust2` 0.24.1 → 0.24.2 and `js-sys` 0.3.106 → 0.3.107 (with `wasm-bindgen` 0.2.129 → 0.2.130). The `log`, `aes`, `zip` and `sevenz-rust2` versions are the ones the main crate takes. From Dependabot #687.
 - `log` 0.4.34 → 0.4.35, `aes` 0.9.3 → 0.9.4, `zip` 9.1.3 → 9.3.0, `sevenz-rust2` 0.24.1 → 0.24.2 and `wat` 1.262.0 → 1.263.0 (with the `wasm-tools` crates it depends on, at 0.263). `THIRD-PARTY-NOTICES.md` is regenerated for them; no license changes. From Dependabot #688.
 - eBPF capture backend: `aya` 0.15.0 → 0.16.0 (with `aya-obj` 0.5.0 → 0.6.0). The loader needs no change: none of the `aya` interfaces it calls changed. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes. From Dependabot #689.
+- Python clients: `pydantic` 2.14.1 → 2.14.2 with `pydantic-core` 2.50.1 → 2.50.2, `anyio` 4.15.1 → 4.16.0, `opentelemetry-api` 1.45.1 → 1.45.2, `python-multipart` 0.0.32 → 0.0.33 and `typing-inspection` 0.4.4 → 0.4.5 in `clients/python/requirements-mcp.txt` and `requirements-examples.txt`, each by hash. From Dependabot #690, which proposed `pydantic-core` 2.50.3; `pydantic` 2.14.2 requires exactly 2.50.2.
 
 ## [0.5.237] - 2026-11-08
 
