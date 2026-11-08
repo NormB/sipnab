@@ -584,14 +584,77 @@ static PAIRINGS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<std::net::SocketAddr, Pairing>>,
 > = std::sync::LazyLock::new(Default::default);
 
+thread_local! {
+    /// This thread's own pairing tables, while [`with_worker_pairings`] runs.
+    static WORKER_PAIRINGS: std::cell::RefCell<
+        Option<std::collections::HashMap<std::net::SocketAddr, Pairing>>,
+    > = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f` with pairing tables of this thread's own in place of the
+/// process-wide ones, empty at the start and dropped at the end.
+///
+/// For a `--cores` worker. Each worker reads every rtpproxy control datagram,
+/// the ones it owns and copies of the rest (see `crate::parallel`), so that
+/// the media a reply names reaches every worker at the same place in the
+/// capture. Pairing the copies against the process-wide table would pair
+/// each datagram once per worker, in whatever order the threads ran. With a
+/// table each, every worker pairs every datagram once, in read order, and
+/// names what `--cores 1` names from its one table.
+///
+/// Nested calls keep the outer tables.
+pub fn with_worker_pairings<R>(f: impl FnOnce() -> R) -> R {
+    /// Restores what the scope found, on every path out.
+    struct Restore(Option<Option<std::collections::HashMap<std::net::SocketAddr, Pairing>>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some(outer) = self.0.take() {
+                WORKER_PAIRINGS.with(|w| *w.borrow_mut() = outer);
+            }
+        }
+    }
+    let outer = WORKER_PAIRINGS.with(|w| {
+        let mut w = w.borrow_mut();
+        if w.is_some() {
+            None
+        } else {
+            Some(w.replace(std::collections::HashMap::new()))
+        }
+    });
+    let _restore = Restore(outer);
+    f()
+}
+
+/// Pair `decoded` against `control`'s table: this thread's own inside
+/// [`with_worker_pairings`], the process-wide one otherwise.
+fn pair_on(control: std::net::SocketAddr, decoded: RtpproxyControl) -> Option<RelayLink> {
+    let local = WORKER_PAIRINGS.with(|w| {
+        w.borrow_mut().as_mut().map(|tables| {
+            tables
+                .entry(control)
+                .or_insert_with(|| Pairing::new(PAIRING_CAPACITY))
+                .observe(decoded.clone())
+        })
+    });
+    if let Some(link) = local {
+        return link;
+    }
+    PAIRINGS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(control)
+        .or_insert_with(|| Pairing::new(PAIRING_CAPACITY))
+        .observe(decoded)
+}
+
 /// Decode a datagram to or from the relay control socket `control`, and pair
 /// it with what that socket has seen.
 ///
 /// `None` when the datagram neither goes to nor comes from `control`, or is
 /// not rtpproxy control at all. `Some` with no link when it is control that
-/// names nothing yet. The table is process-wide so every capture worker pairs
-/// against one definition; `--cores` also sends a command and its reply to
-/// the same worker, since both travel between the same two hosts.
+/// names nothing yet. The table is process-wide, except inside a `--cores`
+/// worker, which pairs every control datagram against a table of its own
+/// ([`with_worker_pairings`]).
 ///
 /// The cookie travels with the answer whether or not it names anything, so a
 /// retried command is countable even when it opens no media (RP4).
@@ -615,17 +678,12 @@ pub fn observe_on(
             cookie.clone()
         }
     };
-    let mut tables = PAIRINGS
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let link = tables
-        .entry(control)
-        .or_insert_with(|| Pairing::new(PAIRING_CAPACITY))
-        .observe(decoded);
+    let link = pair_on(control, decoded);
     Some((
         link,
         crate::relay_vocab::ControlCookie {
             relay: control,
+            peer: if to_relay { src } else { dst },
             implementation: crate::relay_vocab::RelayImplementation::Rtpproxy,
             cookie,
             command: to_relay,

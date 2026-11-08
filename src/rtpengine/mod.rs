@@ -255,7 +255,9 @@ fn port_gate(
     if sniffed_mirror_port_allowed(dst_port) {
         return PortGate::Believed;
     }
-    refused.fetch_add(1, Ordering::Relaxed);
+    // Through the capture tally, so a `--cores` worker reading another
+    // worker's copy does not count the refusal a second time.
+    crate::capture::tally(refused, 1);
     PortGate::Refused {
         warn: !warned.swap(true, Ordering::Relaxed),
     }

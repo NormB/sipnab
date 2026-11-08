@@ -62,6 +62,18 @@ use crate::capture::tls;
 /// global: the receive loop already sees every packet's timestamp, and a
 /// process-wide "current packet time" would be wrong the moment two captures
 /// are analyzed at once (the parallel `--cores` path, the API server).
+///
+/// # Offline sweeps fall on interval boundaries
+///
+/// Offline, a sweep is due when the newest timestamp read enters a new
+/// interval of capture time: a new multiple of the interval since the epoch
+/// ([`sweep_bucket`]). Not one interval after the last sweep. The two give
+/// the same cadence, and only the boundary form can be computed a file at a
+/// time: the `--cores` path reads the files of a set in threads of their
+/// own, and a file's sweeps then depend on the files before it only through
+/// the newest timestamp they held, not through when their last sweep fell.
+/// That is what lets `--cores N` compact idle dialogs at the instants
+/// `--cores 1` does (see `crate::parallel`).
 #[derive(Debug)]
 pub(crate) enum SweepClock {
     /// Live capture: wall time.
@@ -75,11 +87,52 @@ pub(crate) enum SweepClock {
         /// first packet arrives.
         latest_packet: Option<chrono::DateTime<chrono::Utc>>,
         /// Capture time at which the last sweep ran. Seeded from the first
-        /// packet, so the first sweep is one interval into the capture — the
-        /// same offset the live path gets from starting its timer at loop
-        /// entry.
+        /// packet, so the first sweep is at the first interval boundary the
+        /// capture crosses after it.
         last_sweep: Option<chrono::DateTime<chrono::Utc>>,
+        /// The interval [`SweepClock::take_due`] was last asked about, and the
+        /// boundary after `last_sweep` in it: where the next sweep becomes
+        /// due. Kept so the check run on every packet is one comparison, not
+        /// two divisions.
+        due: Option<(std::time::Duration, chrono::DateTime<chrono::Utc>)>,
     },
+}
+
+/// Which interval of capture time `ts` falls in: whole `interval`s since the
+/// epoch, rounded down (so a timestamp before the epoch falls in a negative
+/// one). An offline sweep is due when the newest timestamp read moves to a
+/// later interval than the last sweep's; see [`SweepClock`].
+///
+/// A zero interval puts every instant in an interval of its own, so every
+/// later timestamp is a new one.
+pub(crate) fn sweep_bucket(
+    ts: chrono::DateTime<chrono::Utc>,
+    interval: std::time::Duration,
+) -> i128 {
+    let nanos =
+        i128::from(ts.timestamp()) * 1_000_000_000 + i128::from(ts.timestamp_subsec_nanos());
+    let width = interval.as_nanos() as i128;
+    if width == 0 {
+        nanos
+    } else {
+        nanos.div_euclid(width)
+    }
+}
+
+/// The first instant of the interval after the one `ts` falls in: where the
+/// next offline sweep becomes due. See [`sweep_bucket`].
+pub(crate) fn next_sweep_boundary(
+    ts: chrono::DateTime<chrono::Utc>,
+    interval: std::time::Duration,
+) -> chrono::DateTime<chrono::Utc> {
+    let width = interval.as_nanos() as i128;
+    let start = (sweep_bucket(ts, interval) + 1) * width.max(1);
+    let secs = start.div_euclid(1_000_000_000);
+    let nanos = start.rem_euclid(1_000_000_000);
+    i64::try_from(secs)
+        .ok()
+        .and_then(|secs| chrono::DateTime::from_timestamp(secs, nanos as u32))
+        .unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC)
 }
 
 impl SweepClock {
@@ -89,6 +142,7 @@ impl SweepClock {
             Self::Capture {
                 latest_packet: None,
                 last_sweep: None,
+                due: None,
             }
         } else {
             Self::Live {
@@ -134,6 +188,7 @@ impl SweepClock {
             Self::Capture {
                 latest_packet,
                 last_sweep,
+                due,
             } => {
                 // Nothing has been read yet: there is no capture time to
                 // sweep against, and nothing in the stores to sweep.
@@ -141,43 +196,26 @@ impl SweepClock {
                 let Some(previous) = *last_sweep else {
                     // First packet: start the clock, do not sweep on it.
                     *last_sweep = Some(now);
+                    *due = Some((interval, next_sweep_boundary(now, interval)));
                     return None;
                 };
-                let elapsed = now.signed_duration_since(previous).to_std().ok()?;
-                if elapsed < interval {
+                // `now` is in a later interval than `previous` exactly when it
+                // has reached the boundary after `previous`.
+                let at = match *due {
+                    Some((asked, at)) if asked == interval => at,
+                    _ => {
+                        let at = next_sweep_boundary(previous, interval);
+                        *due = Some((interval, at));
+                        at
+                    }
+                };
+                if now < at {
                     return None;
                 }
                 *last_sweep = Some(now);
+                *due = Some((interval, next_sweep_boundary(now, interval)));
                 Some(CaptureNow(now))
             }
-        }
-    }
-
-    /// The "now" a FINAL, end-of-run sweep measures its cutoffs against: the
-    /// last packet's capture timestamp offline, wall time live.
-    ///
-    /// [`take_due`](Self::take_due) answers "is the next periodic sweep due
-    /// yet". This answers "the reading is over — what time is it". The
-    /// `--cores` path needs the second question and cannot ask the first: its
-    /// stores are thread-local until the workers join, so there is no merged
-    /// store to sweep until every packet has been read. It sweeps once, after
-    /// the merge, against this instant.
-    ///
-    /// Reading the clock rather than starting a new one is what keeps that
-    /// sweep a function of the capture's bytes instead of of the reader's
-    /// speed — the property this type exists to hold.
-    ///
-    /// # Returns
-    ///
-    /// `None` offline when no packet was ever read: there is no capture time
-    /// to measure against, and an empty store has nothing to sweep.
-    ///
-    /// Unlike `take_due` this records nothing, so calling it does not disturb
-    /// the periodic schedule.
-    pub(crate) fn final_now(&self) -> Option<CaptureNow> {
-        match self {
-            Self::Live { .. } => Some(CaptureNow(chrono::Utc::now())),
-            Self::Capture { latest_packet, .. } => latest_packet.map(CaptureNow),
         }
     }
 }
@@ -7516,7 +7554,7 @@ fn redact_map_failure(path: &std::path::Path, e: &std::io::Error, created: bool)
 /// only delay every container by whole sweeps. With the two equal, a matching
 /// call's container is written by the second sweep after its last message at
 /// the latest: about ten seconds.
-const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+pub(crate) const SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Which dialogs the live vCon export has already written, and at which
 /// `updated_at`.
@@ -19436,7 +19474,9 @@ mod tests {
         let fast = sweep(std::time::Duration::ZERO)?;
         let slow = sweep(std::time::Duration::from_millis(20))?;
         assert_eq!(fast, slow, "offline sweep schedule moved with wall time");
-        assert_eq!(fast, vec![cap_ts(6)?, cap_ts(12)?]);
+        // The first packet at each new five-second boundary: 6 enters
+        // [5, 10) and 10 enters [10, 15).
+        assert_eq!(fast, vec![cap_ts(6)?, cap_ts(10)?]);
         Ok(())
     }
 
@@ -19457,47 +19497,85 @@ mod tests {
         Ok(())
     }
 
-    /// The end-of-run sweep's "now" is the capture's LAST timestamp, whatever
-    /// the periodic schedule happened to land on. `--cores` reads this to
-    /// sweep its merged stores once, so a value short of the final packet
-    /// would leave the last stretch of the capture unswept.
+    /// Offline sweeps fall where the newest timestamp enters a new interval
+    /// since the epoch, not one interval after the last sweep: from a first
+    /// packet at 3 s, the first sweep is at 5 s and the next at 10 s.
     #[test]
-    fn final_now_is_the_captures_last_timestamp() -> Result<(), TestError> {
+    fn capture_clock_sweeps_at_interval_boundaries() -> Result<(), TestError> {
         let mut clock = SweepClock::new(true);
-        assert_eq!(clock.final_now(), None, "nothing read, nothing to sweep");
-        clock.observe(cap_ts(0)?);
-        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(0)?)));
+        let mut fired = Vec::new();
+        for s in [3, 4, 5, 7, 9, 10, 14] {
+            clock.observe(cap_ts(s)?);
+            if let Some(now) = clock.take_due(FIVE) {
+                fired.push(now.get());
+            }
+        }
         assert_eq!(
-            clock.take_due(FIVE),
-            None,
-            "the first packet only starts the periodic clock"
+            fired,
+            vec![cap_ts(5)?, cap_ts(10)?],
+            "one sweep per interval the newest timestamp enters, at the packet that enters it"
         );
-        clock.observe(cap_ts(900)?);
-        assert_eq!(
-            clock.final_now(),
-            Some(CaptureNow(cap_ts(900)?)),
-            "the final sweep must measure against the last packet"
-        );
-        // A periodic sweep in between must not move it, and reading it must
-        // not consume anything: the two questions are independent.
-        assert_eq!(clock.take_due(FIVE), Some(CaptureNow(cap_ts(900)?)));
-        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(900)?)));
-        assert_eq!(clock.final_now(), Some(CaptureNow(cap_ts(900)?)));
         Ok(())
     }
 
-    /// Live, the end-of-run sweep is wall time — the same split `take_due`
-    /// makes. A live run's packets carry arrival times, so the two clocks
-    /// agree there and only the offline path needs the capture's own.
+    /// A timestamp exactly on a boundary is in the new interval; one a
+    /// nanosecond short of it is not.
     #[test]
-    fn final_now_is_wall_time_on_a_live_run() -> Result<(), TestError> {
-        let mut clock = SweepClock::new(false);
-        clock.observe(cap_ts(0)?); // years in the past, must be ignored
-        let now = clock.final_now().ok_or("a live clock always has a now")?;
-        assert!(
-            chrono::Utc::now().signed_duration_since(now.get()) < chrono::TimeDelta::seconds(5),
-            "a live final sweep's now must be wall time, got {:?}",
-            now.get()
+    fn a_boundary_belongs_to_the_interval_it_starts() -> Result<(), TestError> {
+        let short = cap_ts(5)? - chrono::TimeDelta::nanoseconds(1);
+        assert_eq!(
+            sweep_bucket(short, FIVE),
+            sweep_bucket(cap_ts(0)?, FIVE),
+            "1 ns before 5 s is still in [0, 5)"
+        );
+        assert_eq!(
+            sweep_bucket(cap_ts(5)?, FIVE),
+            sweep_bucket(cap_ts(0)?, FIVE) + 1,
+            "5 s starts the next interval"
+        );
+        assert_eq!(
+            next_sweep_boundary(short, FIVE),
+            cap_ts(5)?,
+            "the interval after [0, 5) starts at 5 s"
+        );
+        assert_eq!(
+            next_sweep_boundary(cap_ts(5)?, FIVE),
+            cap_ts(10)?,
+            "a boundary's own next boundary is one interval on"
+        );
+        let mut clock = SweepClock::new(true);
+        clock.observe(cap_ts(0)?);
+        assert_eq!(
+            clock.take_due(FIVE),
+            None,
+            "the first packet only starts the clock"
+        );
+        clock.observe(short);
+        assert_eq!(clock.take_due(FIVE), None, "still in the first interval");
+        clock.observe(cap_ts(5)?);
+        assert_eq!(
+            clock.take_due(FIVE),
+            Some(CaptureNow(cap_ts(5)?)),
+            "the packet on the boundary makes the sweep due"
+        );
+        Ok(())
+    }
+
+    /// Before the epoch the intervals still count down by whole intervals:
+    /// -1 ns is in interval -1, not 0.
+    #[test]
+    fn intervals_before_the_epoch_round_down() -> Result<(), TestError> {
+        let epoch = chrono::DateTime::<chrono::Utc>::UNIX_EPOCH;
+        assert_eq!(sweep_bucket(epoch, FIVE), 0, "the epoch starts interval 0");
+        assert_eq!(
+            sweep_bucket(epoch - chrono::TimeDelta::nanoseconds(1), FIVE),
+            -1,
+            "1 ns before the epoch is in interval -1, rounded down"
+        );
+        assert_eq!(
+            next_sweep_boundary(epoch - chrono::TimeDelta::nanoseconds(1), FIVE),
+            epoch,
+            "the interval after -1 starts at the epoch"
         );
         Ok(())
     }

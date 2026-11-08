@@ -456,7 +456,17 @@ pub struct DialogStore {
     /// `idle_messages_evicted`. In rotate mode nothing is rejected (the
     /// oldest is evicted instead), so this stays zero there and
     /// `capacity_dialogs_evicted` moves instead.
+    ///
+    /// One per refused dialog, which is one per tracking key (Call-ID), not
+    /// one per message: a refused call's provisional responses, `200 OK`,
+    /// `ACK` and `BYE` are the same refused dialog (see [`Self::refused`]).
     capacity_dialogs_dropped: u64,
+    /// The keys refused at capacity, most recent last, so a refused dialog's
+    /// later messages are not counted as more refusals. Holds at most
+    /// `max_dialogs` keys, the oldest forgotten first: a key refused, then
+    /// forgotten behind that many newer refusals, then seen again counts
+    /// again. Bounded by the cap for the reason the dialogs are.
+    refused: indexmap::IndexSet<String, ahash::RandomState>,
     /// Lifetime count of dialogs DISCARDED by drop-oldest rotation — the
     /// default disposal policy, and until this field existed the only one
     /// that counted nothing.
@@ -991,6 +1001,7 @@ impl DialogStore {
             dialogs_opened_by_method: std::collections::BTreeMap::new(),
             idle_messages_evicted: 0,
             capacity_dialogs_dropped: 0,
+            refused: indexmap::IndexSet::default(),
             capacity_dialogs_evicted: 0,
             generation: 0,
             xcid_headers: Vec::new(),
@@ -1308,38 +1319,20 @@ impl DialogStore {
         self.generation += 1;
         let mut stats = CompactStats::default();
         for dialog in self.dialogs.values_mut() {
-            if now - dialog.updated_at <= idle_compact_after() {
-                continue;
-            }
-            let Some(keep) = retained_indices(
-                &dialog.messages,
-                &dialog.method,
-                keep_messages_per_idle_dialog(),
-            ) else {
-                continue;
-            };
-            let before = dialog.messages.len();
-            // Ascending indices, consumed in order: retain_mut walks the Vec
-            // once and moves survivors down in place, so a long dialog costs
-            // one pass rather than a removal per evicted message.
-            let mut next = keep.iter().copied().peekable();
-            let mut idx = 0usize;
-            dialog.messages.retain_mut(|_| {
-                let keep_this = next.peek() == Some(&idx);
-                if keep_this {
-                    next.next();
-                }
-                idx += 1;
-                keep_this
-            });
-            dialog.messages.shrink_to_fit();
-            let evicted = before - dialog.messages.len();
+            let evicted = compact_dialog(dialog, now);
             if evicted == 0 {
                 continue;
             }
             stats.dialogs_compacted += 1;
             stats.messages_evicted += evicted;
         }
+        self.note_compacted(stats);
+        stats
+    }
+
+    /// Count what idle compaction shed, and warn the first time it sheds
+    /// anything.
+    fn note_compacted(&mut self, stats: CompactStats) {
         self.idle_messages_evicted += stats.messages_evicted as u64;
         // Compaction discards messages sipnab successfully captured. Every
         // other limit in the store refuses to take something IN; this is the
@@ -1366,7 +1359,6 @@ impl DialogStore {
                 );
             }
         }
-        stats
     }
 
     /// Lifetime count of messages evicted by [`DialogStore::compact_idle`].
@@ -1496,38 +1488,61 @@ impl DialogStore {
                 MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed),
             );
         } else {
+            // A message that cannot open a dialog changes nothing, and in
+            // particular neither evicts a dialog nor counts a refusal: there
+            // was no new dialog to make room for.
+            let Some(dialog) = open_dialog(&msg) else {
+                return;
+            };
+            // Insert under the SAME key the lookup used, or the next
+            // message for this unit would miss and create a duplicate.
+            let key = match composed {
+                Some(k) => k,
+                None => match msg.call_id() {
+                    Some(id) => id.to_string(),
+                    None => return, // unreachable: checked at function entry
+                },
+            };
             // New dialog — check capacity
             if self.dialogs.len() >= self.max_dialogs {
                 if self.rotate {
                     self.evict_oldest();
                 } else {
                     // Full and not rotating: this new Call-ID is dropped.
-                    // Count it — the observability sibling of idle eviction.
-                    self.capacity_dialogs_dropped += 1;
+                    // Counted once per Call-ID, the observability sibling of
+                    // idle eviction.
+                    self.refuse(key);
                     return;
                 }
             }
-
-            if let Some(dialog) = open_dialog(&msg) {
-                // Insert under the SAME key the lookup used, or the next
-                // message for this unit would miss and create a duplicate.
-                let key = match composed {
-                    Some(k) => k,
-                    None => match msg.call_id() {
-                        Some(id) => id.to_string(),
-                        None => return, // unreachable: checked at function entry
-                    },
-                };
-                // Counted here, at the single site where a live message
-                // creates a dialog -- not per message, which would turn one
-                // call's own 200 OK into a second "call opened".
-                *self
-                    .dialogs_opened_by_method
-                    .entry(dialog.method.as_str().to_string())
-                    .or_insert(0) += 1;
-                self.dialogs.insert(key, dialog);
-            }
+            // Counted here, at the single site where a live message
+            // creates a dialog -- not per message, which would turn one
+            // call's own 200 OK into a second "call opened".
+            *self
+                .dialogs_opened_by_method
+                .entry(dialog.method.as_str().to_string())
+                .or_insert(0) += 1;
+            self.dialogs.insert(key, dialog);
         }
+    }
+
+    /// Count `key` as a dialog refused at capacity, unless it already was.
+    ///
+    /// # Side effects
+    ///
+    /// Remembers the key, forgetting the oldest ~1% of remembered keys in one
+    /// batch past `max_dialogs` (the batching `evict_oldest` uses), and adds
+    /// one to the lifetime refusal count when the key is new.
+    fn refuse(&mut self, key: String) {
+        if self.refused.contains(&key) {
+            return;
+        }
+        if self.refused.len() >= self.max_dialogs.max(1) {
+            let batch = (self.max_dialogs / 100).max(1).min(self.refused.len());
+            self.refused.drain(0..batch);
+        }
+        self.refused.insert(key);
+        self.capacity_dialogs_dropped += 1;
     }
 
     /// Keep only dialogs one of whose messages `matcher` admits: a message
@@ -1613,6 +1628,20 @@ impl DialogStore {
     }
 
     /// Fold other workers' dialogs into this store (multi-core merge,
+    /// `--cores N`): [`Self::merge_replaying`] with no idle-compaction sweeps
+    /// to replay.
+    pub fn merge<K: Ord>(
+        &mut self,
+        others: impl IntoIterator<Item = DialogStore>,
+        read_position: impl Fn(
+            Option<&crate::capture::packet::FrameRef>,
+            chrono::DateTime<chrono::Utc>,
+        ) -> K,
+    ) {
+        self.merge_replaying(others, read_position, &[]);
+    }
+
+    /// Fold other workers' dialogs into this store (multi-core merge,
     /// `--cores N`), giving the store `--cores 1` builds from the same
     /// packets.
     ///
@@ -1636,6 +1665,40 @@ impl DialogStore {
     /// ordered the fragments by timestamp and combined their state, and its
     /// result depended on which worker owned which host pair.
     ///
+    /// # Idle compaction
+    ///
+    /// `--cores 1` compacts idle dialogs at every sweep of the run
+    /// ([`Self::compact_idle`]), and a dialog compacted while idle and then
+    /// used again keeps the messages compaction left plus the later ones. The
+    /// workers do not compact. `sweeps` are the sweeps `--cores 1` makes, at
+    /// their places in the read order, and each dialog with more messages than
+    /// compaction keeps is replayed with them: before each message, the last
+    /// sweep since the previous message compacts it if it was idle then
+    /// (several sweeps with no message between compact as the last one does),
+    /// and after its last message, the run's last sweep does. A sweep's
+    /// position sorts after every message of the packet that made it due and
+    /// before the next packet's.
+    ///
+    /// # Capacity
+    ///
+    /// The cap is enforced here as `process_message` enforces it, because each
+    /// worker enforces `--limit` only on its own shard: an unconditional insert
+    /// let `--cores N` hold up to N × the cap. When the dialogs fit, each is
+    /// admitted in the read order of its first message. When they do not,
+    /// what the cap keeps depends on the order every message arrived in: under
+    /// rotation a dialog evicted and then seen again is opened again with the
+    /// messages after its return, and without rotation each refused Call-ID is
+    /// counted once. So then every message of every fragment is replayed in
+    /// read order through `process_message`, with the sweeps between them,
+    /// and the dialogs, the capacity counts and the dialogs-opened counts are
+    /// the ones that replay builds.
+    ///
+    /// That is the store `--cores 1` builds as long as no worker alone held
+    /// more than `--limit` dialogs: a worker that did evicted or refused
+    /// messages before the merge could see them. Its own evictions and
+    /// refusals are then added to the counts the replay makes, and the dialogs
+    /// can differ from `--cores 1`'s.
+    ///
     /// # Arguments
     ///
     /// * `others` — The worker stores to fold in (consumed). All of them at
@@ -1645,34 +1708,26 @@ impl DialogStore {
     ///   run's read order, from its frame and its timestamp; any total order
     ///   the caller read them in. `crate::parallel` gives (the file's place in
     ///   the set, the frame's ordinal in the file), then the timestamp.
+    /// * `sweeps` — The idle-compaction sweeps to replay: each one's position
+    ///   in the same order, and its capture-clock "now", in read order.
     ///
     /// # Side effects
     ///
     /// Replaces this store's dialogs with the union of its own and `others'`,
     /// one per key, inserted in the read order of each dialog's first message
-    /// and subject to `self`'s capacity (see below); accumulates `others'`
-    /// lifetime idle-eviction, capacity-rejection and capacity-eviction
-    /// counters, their dialogs-opened counts (a key two workers both opened
-    /// is counted once, as `process_message` counts it) and their engine
-    /// sightings; and bumps the generation counter.
-    ///
-    /// # Capacity
-    ///
-    /// The cap is enforced here as it is in `process_message`, because each
-    /// worker enforces `--limit` only on its own shard: an unconditional insert
-    /// let `--cores N` hold up to N × the cap, silently multiplying by the core
-    /// count the one number an operator sets to bound memory. The dialogs are
-    /// admitted in the read order of their first message, as `process_message`
-    /// admits them, so which ones the cap keeps does not depend on the
-    /// sharding. Rotating stores evict the oldest to make room, non-rotating
-    /// stores reject the incoming key, and either way the loss is counted.
-    pub fn merge<K: Ord>(
+    /// and subject to `self`'s capacity; accumulates `others'` lifetime
+    /// idle-eviction, capacity-rejection and capacity-eviction counters,
+    /// their dialogs-opened counts (a key two workers both opened is counted
+    /// once, as `process_message` counts it) and their engine sightings; adds
+    /// what the replayed sweeps compacted; and bumps the generation counter.
+    pub fn merge_replaying<K: Ord>(
         &mut self,
         others: impl IntoIterator<Item = DialogStore>,
         read_position: impl Fn(
             Option<&crate::capture::packet::FrameRef>,
             chrono::DateTime<chrono::Utc>,
         ) -> K,
+        sweeps: &[(K, chrono::DateTime<chrono::Utc>)],
     ) {
         self.generation += 1;
         let message_position = |m: &SipMessage| read_position(m.frame.as_ref(), m.timestamp);
@@ -1703,32 +1758,48 @@ impl DialogStore {
         }
         self.engine_sightings
             .merge(sightings, |s| read_position(s.frame.as_ref(), s.at));
+        if fragments.len() > self.max_dialogs {
+            self.replay_every_message(fragments, &message_position, sweeps);
+            return;
+        }
+        let cap = MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed);
+        let keep = keep_messages_per_idle_dialog();
+        let mut compacted = CompactStats::default();
         let mut dialogs: Vec<(Option<K>, String, SipDialog)> = fragments
             .into_iter()
             .filter_map(|(key, mut parts)| {
-                let dialog = if parts.len() == 1 {
+                let dialog = if parts.len() == 1
+                    && !compaction_due(&parts[0], &message_position, sweeps, keep)
+                {
                     parts.pop()?
                 } else {
                     // Each worker counted its fragment as a dialog opened;
                     // `process_message` opens the key once.
-                    for part in &parts {
-                        self.forget_opened(part.method.as_str());
+                    let split = parts.len() > 1;
+                    if split {
+                        for part in &parts {
+                            self.forget_opened(part.method.as_str());
+                        }
                     }
-                    let dialog = rebuild_in_read_order(
-                        parts,
-                        &message_position,
-                        MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed),
-                    );
-                    *self
-                        .dialogs_opened_by_method
-                        .entry(dialog.method.as_str().to_string())
-                        .or_insert(0) += 1;
+                    let (dialog, evicted) =
+                        rebuild_in_read_order(parts, &message_position, cap, sweeps);
+                    if evicted > 0 {
+                        compacted.dialogs_compacted += 1;
+                        compacted.messages_evicted += evicted;
+                    }
+                    if split {
+                        *self
+                            .dialogs_opened_by_method
+                            .entry(dialog.method.as_str().to_string())
+                            .or_insert(0) += 1;
+                    }
                     dialog
                 };
                 let first = dialog.messages.first().map(message_position);
                 Some((first, key, dialog))
             })
             .collect();
+        self.note_compacted(compacted);
         // Stable: a dialog with no message (none here; a store compacted to
         // nothing could hold one) keeps its place after every positioned one.
         dialogs.sort_by(|(a, ..), (b, ..)| match (a, b) {
@@ -1742,7 +1813,7 @@ impl DialogStore {
                 if self.rotate {
                     self.evict_oldest();
                 } else {
-                    self.capacity_dialogs_dropped += 1;
+                    self.refuse(key);
                     // Never opened, as `process_message` would never have
                     // opened it.
                     self.forget_opened(dialog.method.as_str());
@@ -1751,6 +1822,62 @@ impl DialogStore {
             }
             self.dialogs.insert(key, dialog);
         }
+    }
+
+    /// [`Self::merge_replaying`] when the fragments hold more keys than the
+    /// cap: every message of every fragment through `process_message`, in
+    /// read order, with `sweeps` compacting the store between them.
+    ///
+    /// The dialogs-opened and capacity counts are the replay's, plus the
+    /// capacity counts the stores had before (zero unless a worker alone
+    /// exceeded the cap; see [`Self::merge_replaying`]).
+    fn replay_every_message<K: Ord>(
+        &mut self,
+        fragments: IndexMap<String, Vec<SipDialog>, ahash::RandomState>,
+        message_position: &impl Fn(&SipMessage) -> K,
+        sweeps: &[(K, chrono::DateTime<chrono::Utc>)],
+    ) {
+        let (dropped_before, evicted_before) =
+            (self.capacity_dialogs_dropped, self.capacity_dialogs_evicted);
+        self.capacity_dialogs_dropped = 0;
+        self.capacity_dialogs_evicted = 0;
+        self.dialogs_opened_by_method.clear();
+        self.refused.clear();
+        let cap = MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed);
+        let mut tails: Vec<(String, UnkeptTail)> = Vec::new();
+        let lanes = fragments
+            .into_iter()
+            .flat_map(|(key, parts)| {
+                for part in parts.iter().filter(|p| p.messages.len() >= cap) {
+                    tails.push((key.clone(), UnkeptTail::of(part)));
+                }
+                parts.into_iter().map(|p| p.messages)
+            })
+            .collect::<Vec<_>>();
+        let mut next_sweep = 0usize;
+        for (position, msg) in in_read_order(lanes, message_position) {
+            let mut due = None;
+            while let Some((at, now)) = sweeps.get(next_sweep)
+                && *at < position
+            {
+                due = Some(*now);
+                next_sweep += 1;
+            }
+            if let Some(now) = due {
+                self.compact_idle(now);
+            }
+            self.process_message(msg);
+        }
+        if let Some((_, now)) = sweeps.get(next_sweep..).and_then(<[_]>::last) {
+            self.compact_idle(*now);
+        }
+        for (key, tail) in &tails {
+            if let Some(dialog) = self.dialogs.get_mut(key) {
+                UnkeptTail::fold_all(std::slice::from_ref(tail), dialog);
+            }
+        }
+        self.capacity_dialogs_dropped += dropped_before;
+        self.capacity_dialogs_evicted += evicted_before;
     }
 
     /// Take one dialog opened by `method` back out of the dialogs-opened
@@ -1805,6 +1932,7 @@ impl DialogStore {
     pub fn clear(&mut self) {
         self.generation += 1;
         self.dialogs.clear();
+        self.refused.clear();
         self.engine_sightings = crate::relay_vocab::EngineSightings::for_dialogs(self.max_dialogs);
     }
 
@@ -2458,6 +2586,42 @@ impl DialogStore {
     }
 }
 
+/// Compact one dialog as [`DialogStore::compact_idle`] does at `now`: when it
+/// has been idle longer than [`idle_compact_after`], down to the messages
+/// [`retained_indices`] keeps. Returns how many messages it dropped.
+///
+/// The one rule both the periodic sweep and a `--cores` merge apply, which
+/// replays the sweeps of `--cores 1` between a dialog's messages
+/// ([`DialogStore::merge_replaying`]).
+fn compact_dialog(dialog: &mut SipDialog, now: chrono::DateTime<chrono::Utc>) -> usize {
+    if now - dialog.updated_at <= idle_compact_after() {
+        return 0;
+    }
+    let Some(keep) = retained_indices(
+        &dialog.messages,
+        &dialog.method,
+        keep_messages_per_idle_dialog(),
+    ) else {
+        return 0;
+    };
+    let before = dialog.messages.len();
+    // Ascending indices, consumed in order: retain_mut walks the Vec once and
+    // moves survivors down in place, so a long dialog costs one pass rather
+    // than a removal per evicted message.
+    let mut next = keep.iter().copied().peekable();
+    let mut idx = 0usize;
+    dialog.messages.retain_mut(|_| {
+        let keep_this = next.peek() == Some(&idx);
+        if keep_this {
+            next.next();
+        }
+        idx += 1;
+        keep_this
+    });
+    dialog.messages.shrink_to_fit();
+    before - dialog.messages.len()
+}
+
 /// Open a dialog from the first message seen for its key: the rule both
 /// [`DialogStore::process_message`] and [`DialogStore::merge`] apply, so a
 /// merged dialog is opened exactly as the single-threaded path opens it.
@@ -2623,27 +2787,119 @@ fn rebuild_in_read_order<K: Ord>(
     mut fragments: Vec<SipDialog>,
     read_position: &impl Fn(&SipMessage) -> K,
     cap: usize,
-) -> SipDialog {
+    sweeps: &[(K, chrono::DateTime<chrono::Utc>)],
+) -> (SipDialog, usize) {
     let tails: Vec<UnkeptTail> = fragments
         .iter()
         .filter(|f| f.messages.len() >= cap)
         .map(UnkeptTail::of)
         .collect();
-    let mut lanes: Vec<std::collections::VecDeque<(K, SipMessage)>> = fragments
+    // A message its worker marked a retransmission is one here too: the
+    // worker saw the earlier copy, which comes earlier in read order. So the
+    // marks stand, and the replay adds the ones only the whole sequence shows.
+    let lanes: Vec<Vec<SipMessage>> = fragments
         .iter_mut()
-        .map(|f| {
-            std::mem::take(&mut f.messages)
-                .into_iter()
-                // A message its worker marked a retransmission is one here
-                // too: the worker saw the earlier copy, which comes earlier
-                // in read order. So the marks stand, and the replay adds the
-                // ones only the whole sequence shows.
-                .map(|m| (read_position(&m), m))
-                .collect()
-        })
+        .map(|f| std::mem::take(&mut f.messages))
+        .collect();
+    let mut messages = in_read_order(lanes, read_position).into_iter();
+    let Some((first_at, first)) = messages.next() else {
+        return (fragments.swap_remove(0), 0);
+    };
+    let Some(mut dialog) = open_dialog(&first) else {
+        // No fragment kept a message that opens a dialog. Nothing can be
+        // replayed, so the first fragment stands for the key.
+        return (fragments.swap_remove(0), 0);
+    };
+    let mut next_sweep = sweeps.partition_point(|(at, _)| *at < first_at);
+    let mut evicted = 0usize;
+    for (position, msg) in messages {
+        let mut due = None;
+        while let Some((at, now)) = sweeps.get(next_sweep)
+            && *at < position
+        {
+            due = Some(*now);
+            next_sweep += 1;
+        }
+        if let Some(now) = due {
+            evicted += compact_dialog(&mut dialog, now);
+        }
+        advance_dialog(&mut dialog, msg, cap);
+    }
+    if let Some((_, now)) = sweeps.get(next_sweep..).and_then(<[_]>::last) {
+        evicted += compact_dialog(&mut dialog, *now);
+    }
+    UnkeptTail::fold_all(&tails, &mut dialog);
+    (dialog, evicted)
+}
+
+/// Whether replaying `sweeps` between the messages of `dialog`, a single
+/// fragment, compacts it: some sweep falls after a message when the dialog has
+/// more than `keep` messages and has been idle past [`idle_compact_after`].
+/// When none does, the fragment already is the dialog one store builds, and
+/// the merge keeps it as it is rather than replaying it.
+///
+/// Answered first from the timestamps alone, which settles every dialog of a
+/// capture shorter than the idle limit: a sweep can only find the dialog idle
+/// when its "now" is past the earliest message by the limit.
+fn compaction_due<K: Ord>(
+    dialog: &SipDialog,
+    read_position: &impl Fn(&SipMessage) -> K,
+    sweeps: &[(K, chrono::DateTime<chrono::Utc>)],
+    keep: usize,
+) -> bool {
+    let Some((_, last_now)) = sweeps.last() else {
+        return false;
+    };
+    if dialog.messages.len() <= keep {
+        return false;
+    }
+    let idle = idle_compact_after();
+    let Some(earliest) = dialog.messages.iter().map(|m| m.timestamp).min() else {
+        return false;
+    };
+    if *last_now - earliest <= idle {
+        return false;
+    }
+    // Walk the messages as the replay would, without replaying them.
+    let mut next_sweep = 0usize;
+    let mut quiet_since: Option<chrono::DateTime<chrono::Utc>> = None;
+    for (held, msg) in dialog.messages.iter().enumerate() {
+        let position = read_position(msg);
+        let mut due = None;
+        while let Some((at, now)) = sweeps.get(next_sweep)
+            && *at < position
+        {
+            due = Some(*now);
+            next_sweep += 1;
+        }
+        if let (Some(now), Some(since)) = (due, quiet_since)
+            && held > keep
+            && now - since > idle
+        {
+            return true;
+        }
+        quiet_since = Some(msg.timestamp);
+    }
+    match (sweeps.get(next_sweep..).and_then(<[_]>::last), quiet_since) {
+        (Some((_, now)), Some(since)) => *now - since > idle,
+        _ => false,
+    }
+}
+
+/// Every message of `lanes`, each with its read position, in read order: a
+/// k-way merge that keeps each lane's own order, so a lane whose positions
+/// are not monotonic (a TCP message released after a later frame) is not
+/// reordered, and that breaks ties toward the earlier lane.
+fn in_read_order<K: Ord>(
+    lanes: Vec<Vec<SipMessage>>,
+    read_position: &impl Fn(&SipMessage) -> K,
+) -> Vec<(K, SipMessage)> {
+    let mut lanes: Vec<std::collections::VecDeque<(K, SipMessage)>> = lanes
+        .into_iter()
+        .map(|lane| lane.into_iter().map(|m| (read_position(&m), m)).collect())
         .filter(|lane: &std::collections::VecDeque<_>| !lane.is_empty())
         .collect();
-    // Stable, so fragments whose first messages tie keep their order.
+    // Stable, so lanes whose first messages tie keep their order.
     lanes.sort_by(|a, b| a.front().map(|(k, _)| k).cmp(&b.front().map(|(k, _)| k)));
     let mut ordered = Vec::with_capacity(lanes.iter().map(std::collections::VecDeque::len).sum());
     loop {
@@ -2660,22 +2916,12 @@ fn rebuild_in_read_order<K: Ord>(
                 next = Some(i);
             }
         }
-        let Some((_, msg)) = next.and_then(|n| lanes[n].pop_front()) else {
+        let Some(item) = next.and_then(|n| lanes[n].pop_front()) else {
             break;
         };
-        ordered.push(msg);
+        ordered.push(item);
     }
-    let mut messages = ordered.into_iter();
-    let Some(mut dialog) = messages.next().as_ref().and_then(open_dialog) else {
-        // No fragment kept a message that opens a dialog. Nothing can be
-        // replayed, so the first fragment stands for the key.
-        return fragments.swap_remove(0);
-    };
-    for msg in messages {
-        advance_dialog(&mut dialog, msg, cap);
-    }
-    UnkeptTail::fold_all(&tails, &mut dialog);
-    dialog
+    ordered
 }
 
 /// What a fragment that filled its message list counted about the messages it
@@ -3907,8 +4153,8 @@ mod tests {
                 .swap_remove("tail@h")
                 .ok_or("other fragment")?)
         };
-        let forward = rebuild_in_read_order(vec![full()?, other()?], &read_index, CAP);
-        let backward = rebuild_in_read_order(vec![other()?, full()?], &read_index, CAP);
+        let (forward, _) = rebuild_in_read_order(vec![full()?, other()?], &read_index, CAP, &[]);
+        let (backward, _) = rebuild_in_read_order(vec![other()?, full()?], &read_index, CAP, &[]);
         assert_eq!(
             observable(&forward),
             observable(&backward),
@@ -4024,6 +4270,388 @@ mod tests {
             "merge folds in the other store's capacity-drop count (2 + 1) and \
              counts the Call-ID its own capacity check rejected (+1)"
         );
+        Ok(())
+    }
+
+    // ── --cores parity under the store limits ────────────────────────
+
+    /// Message `n` of call `call`, `secs` into the capture, read as frame
+    /// `ordinal`: the INVITE for `n == 0`, an in-dialog OPTIONS with CSeq `n`
+    /// otherwise.
+    fn parity_msg(call: &str, n: u32, secs: i64, ordinal: u64) -> Result<SipMessage, TestError> {
+        let ts = base_ts()? + TimeDelta::seconds(secs);
+        let msg = if n == 0 {
+            make_invite_msg(call, ts)?
+        } else {
+            make_in_dialog_filler(call, n, ts)?
+        };
+        Ok(read_as(msg, ordinal))
+    }
+
+    /// One store with `max` dialogs fed `seq` in read order, compacting at
+    /// each sweep: (the ordinal it follows, its now). What `--cores 1` builds.
+    fn serial_with_sweeps(
+        seq: &[(usize, SipMessage)],
+        sweeps: &[(u64, DateTime<Utc>)],
+        max: usize,
+        rotate: bool,
+    ) -> DialogStore {
+        let mut store = DialogStore::new(max, rotate);
+        let mut next = 0;
+        for (_, msg) in seq {
+            let at = read_index(msg).unwrap_or(u64::MAX);
+            while let Some((after, now)) = sweeps.get(next)
+                && *after < at
+            {
+                store.compact_idle(*now);
+                next += 1;
+            }
+            store.process_message(msg.clone());
+        }
+        for (_, now) in &sweeps[next..] {
+            store.compact_idle(*now);
+        }
+        store
+    }
+
+    /// `seq` split over `workers` stores of `max` dialogs by `worker_of`
+    /// (leg to worker), merged with the sweeps replayed.
+    fn merged_with_sweeps(
+        seq: &[(usize, SipMessage)],
+        sweeps: &[(u64, DateTime<Utc>)],
+        workers: usize,
+        worker_of: impl Fn(usize) -> usize,
+        max: usize,
+        rotate: bool,
+    ) -> DialogStore {
+        let mut stores: Vec<DialogStore> = (0..workers)
+            .map(|_| DialogStore::new(max, rotate))
+            .collect();
+        for (leg, msg) in seq {
+            stores[worker_of(*leg)].process_message(msg.clone());
+        }
+        let positioned: Vec<_> = sweeps
+            .iter()
+            .map(|&(after, now)| ((Some(after), DateTime::<Utc>::MAX_UTC), now))
+            .collect();
+        let mut merged = DialogStore::new(max, rotate);
+        merged.merge_replaying(
+            stores,
+            |frame, at| (frame.map(|f| f.origin.ordinal), at),
+            &positioned,
+        );
+        merged
+    }
+
+    /// Everything a report reads from a store: its dialogs in order and its
+    /// lifetime counts.
+    fn store_observable(store: &DialogStore) -> String {
+        let dialogs: Vec<String> = store
+            .iter()
+            .map(|d| format!("{}={}", d.call_id, observable(d)))
+            .collect();
+        format!(
+            "{dialogs:?} opened={:?} refused={} rotated={} compacted={}",
+            store.dialogs_opened_by_method(),
+            store.total_capacity_dialogs_dropped(),
+            store.total_capacity_dialogs_evicted(),
+            store.total_idle_messages_evicted(),
+        )
+    }
+
+    /// Assert that every assignment of `legs` legs to one, two or three
+    /// workers merges to the serial store, with each worker capped at `max`.
+    fn assert_every_assignment_merges_to_serial(
+        seq: &[(usize, SipMessage)],
+        sweeps: &[(u64, DateTime<Utc>)],
+        legs: u32,
+        max: usize,
+        rotate: bool,
+    ) -> Result<DialogStore, TestError> {
+        let serial = serial_with_sweeps(seq, sweeps, max, rotate);
+        for workers in 1..=3usize {
+            for assignment in 0..workers.pow(legs) {
+                let worker_of = |leg: usize| (assignment / workers.pow(leg as u32)) % workers;
+                let merged = merged_with_sweeps(seq, sweeps, workers, worker_of, max, rotate);
+                assert_eq!(
+                    store_observable(&merged),
+                    store_observable(&serial),
+                    "{workers} workers, assignment {assignment}"
+                );
+            }
+        }
+        Ok(serial)
+    }
+
+    /// A dialog compacted while idle and then used again keeps, after the
+    /// merge, the messages one store keeps: the sweep is replayed between
+    /// its messages, whichever workers its legs were on.
+    #[test]
+    fn a_merge_replays_the_sweeps_between_a_dialogs_messages() -> Result<(), TestError> {
+        let mut seq = Vec::new();
+        let mut ordinal = 0u64;
+        let mut push = |leg: usize, call: &str, n: u32, secs: i64| -> Result<(), TestError> {
+            seq.push((leg, parity_msg(call, n, secs, ordinal)?));
+            ordinal += 1;
+            Ok(())
+        };
+        for n in 0..=30 {
+            push(0, "long@h", n, i64::from(n))?;
+        }
+        push(1, "other@h", 0, 700)?;
+        for n in 31..=33 {
+            push(usize::try_from(n % 2)?, "long@h", n, 670 + i64::from(n))?;
+        }
+        // A sweep after the other call's INVITE (ordinal 31), 670 s after
+        // long@h went quiet, and one at the end.
+        let sweeps = [
+            (31, base_ts()? + TimeDelta::seconds(700)),
+            (34, base_ts()? + TimeDelta::seconds(705)),
+        ];
+        let serial = assert_every_assignment_merges_to_serial(&seq, &sweeps, 2, 1000, true)?;
+        let long = serial.get("long@h").ok_or("long@h")?;
+        assert_eq!(
+            long.messages.len(),
+            keep_messages_per_idle_dialog() + 3,
+            "compacted while idle, then three more"
+        );
+        Ok(())
+    }
+
+    /// A sweep that follows a packet comes after that packet's message: the
+    /// dialog it would compact is not idle any more once the message lands.
+    #[test]
+    fn a_sweep_after_a_dialogs_own_message_does_not_compact_it() -> Result<(), TestError> {
+        let mut seq = Vec::new();
+        for n in 0..=30u32 {
+            seq.push((0, parity_msg("long@h", n, i64::from(n), u64::from(n))?));
+        }
+        seq.push((1, parity_msg("long@h", 31, 900, 31)?));
+        // Due after ordinal 31, the reuse's own packet, at its own time.
+        let sweeps = [(31, base_ts()? + TimeDelta::seconds(900))];
+        let serial = assert_every_assignment_merges_to_serial(&seq, &sweeps, 2, 1000, true)?;
+        assert_eq!(
+            serial.get("long@h").ok_or("long@h")?.messages.len(),
+            32,
+            "the reuse lands before the sweep, so nothing is idle"
+        );
+        assert_eq!(serial.total_idle_messages_evicted(), 0, "nothing compacted");
+        Ok(())
+    }
+
+    /// The calls of the capacity oracles: `a`, `b`, `c`, `d` opened one per
+    /// leg, then `a` seen again on its own leg.
+    fn calls_then_a_again() -> Result<Vec<(usize, SipMessage)>, TestError> {
+        let mut seq = Vec::new();
+        for (i, call) in ["a@h", "b@h", "c@h", "d@h"].into_iter().enumerate() {
+            seq.push((
+                i,
+                parity_msg(call, 0, i64::try_from(i)?, u64::try_from(i)?)?,
+            ));
+        }
+        seq.push((0, parity_msg("a@h", 5, 10, 4)?));
+        seq.push((0, parity_msg("a@h", 6, 11, 5)?));
+        Ok(seq)
+    }
+
+    /// Under rotation, a dialog evicted and then seen again is opened again
+    /// after the merge as it is in one store, whichever workers the calls
+    /// were on.
+    #[test]
+    fn a_rotating_merge_over_the_cap_equals_one_store() -> Result<(), TestError> {
+        let serial =
+            assert_every_assignment_merges_to_serial(&calls_then_a_again()?, &[], 4, 3, true)?;
+        let a = serial.get("a@h").ok_or("a@h was opened again")?;
+        assert_eq!(a.messages.len(), 2, "only the messages after its return");
+        assert_eq!(
+            serial.total_capacity_dialogs_evicted(),
+            2,
+            "a@h for d@h, then b@h for a@h's return"
+        );
+        Ok(())
+    }
+
+    /// Without rotation, the merge refuses and counts what one store
+    /// refuses: each refused Call-ID once.
+    #[test]
+    fn a_refusing_merge_over_the_cap_equals_one_store() -> Result<(), TestError> {
+        let serial =
+            assert_every_assignment_merges_to_serial(&calls_then_a_again()?, &[], 4, 3, false)?;
+        assert_eq!(serial.total_capacity_dialogs_dropped(), 1, "d@h, once");
+        assert_eq!(
+            serial.get("a@h").ok_or("a@h")?.messages.len(),
+            3,
+            "a@h kept, with its two later messages"
+        );
+        Ok(())
+    }
+
+    /// Several sweeps between two messages of a dialog compact it as the last
+    /// of them does: the merge replays one, one store makes them all.
+    #[test]
+    fn several_sweeps_between_two_messages_compact_as_the_last() -> Result<(), TestError> {
+        let mut seq = Vec::new();
+        for n in 0..=30u32 {
+            seq.push((0, parity_msg("long@h", n, i64::from(n), u64::from(n))?));
+        }
+        seq.push((1, parity_msg("long@h", 31, 1000, 31)?));
+        let at = |secs: i64| -> Result<DateTime<Utc>, TestError> {
+            Ok(base_ts()? + TimeDelta::seconds(secs))
+        };
+        // Not idle at the first, idle at the second and third.
+        let sweeps = [(30, at(600)?), (30, at(700)?), (30, at(800)?)];
+        let serial = assert_every_assignment_merges_to_serial(&seq, &sweeps, 2, 1000, true)?;
+        assert_eq!(
+            serial.get("long@h").ok_or("long@h")?.messages.len(),
+            keep_messages_per_idle_dialog() + 1,
+            "compacted once, then the reuse"
+        );
+        Ok(())
+    }
+
+    /// The documented limit of the capacity replay: a worker that alone held
+    /// more than the cap lost messages before the merge, and its own
+    /// refusals are added to the ones the replay makes.
+    #[test]
+    fn a_worker_over_the_cap_adds_its_own_refusals_to_the_replays() -> Result<(), TestError> {
+        let mut alone = DialogStore::new(2, false);
+        for call in ["a@h", "b@h", "c@h"] {
+            alone.process_message(make_invite_msg(call, base_ts()?)?);
+        }
+        assert_eq!(
+            alone.total_capacity_dialogs_dropped(),
+            1,
+            "the worker refused c@h"
+        );
+        let mut other = DialogStore::new(2, false);
+        other.process_message(make_invite_msg("d@h", base_ts()?)?);
+        let mut merged = DialogStore::new(2, false);
+        merged.merge([alone, other], |_, at| at);
+        assert_eq!(merged.len(), 2, "the cap holds after the merge");
+        assert_eq!(
+            merged.total_capacity_dialogs_dropped(),
+            2,
+            "d@h refused by the replay, plus the worker's own refusal of c@h"
+        );
+        Ok(())
+    }
+
+    /// Over the cap, where every message is replayed through one store, the
+    /// sweeps are replayed between them too.
+    #[test]
+    fn a_merge_over_the_cap_replays_the_sweeps_too() -> Result<(), TestError> {
+        let mut seq = Vec::new();
+        for n in 0..=30u32 {
+            seq.push((0, parity_msg("long@h", n, i64::from(n), u64::from(n))?));
+        }
+        for (i, call) in ["b@h", "c@h", "d@h"].into_iter().enumerate() {
+            let i = u32::try_from(i)?;
+            seq.push((
+                usize::try_from(i + 1)?,
+                parity_msg(call, 0, 700 + i64::from(i), u64::from(31 + i))?,
+            ));
+        }
+        for n in 31..=33u32 {
+            seq.push((
+                0,
+                parity_msg("long@h", n, 680 + i64::from(n), u64::from(n + 3))?,
+            ));
+        }
+        // After b@h's INVITE, 670 s after long@h went quiet.
+        let sweeps = [(31, base_ts()? + TimeDelta::seconds(700))];
+        let serial = assert_every_assignment_merges_to_serial(&seq, &sweeps, 4, 3, false)?;
+        assert_eq!(serial.total_capacity_dialogs_dropped(), 1, "d@h");
+        assert_eq!(
+            serial.get("long@h").ok_or("long@h")?.messages.len(),
+            keep_messages_per_idle_dialog() + 3,
+            "compacted at the sweep, then three more"
+        );
+        Ok(())
+    }
+
+    /// A refused Call-ID's later messages are the same refused dialog: the
+    /// count is one per Call-ID, not one per message.
+    #[test]
+    fn a_refused_call_id_is_counted_once_however_many_messages_it_sends() -> Result<(), TestError> {
+        let mut store = DialogStore::new(1, false);
+        store.process_message(make_invite_msg("kept@h", base_ts()?)?);
+        store.process_message(make_invite_msg("refused@h", base_ts()?)?);
+        store.process_message(make_200_ok("refused@h", base_ts()?)?);
+        store.process_message(make_bye_msg("refused@h", base_ts()?)?);
+        assert_eq!(
+            store.total_capacity_dialogs_dropped(),
+            1,
+            "refused@h's INVITE, 200 OK and BYE are one refusal"
+        );
+        store.process_message(make_invite_msg("second@h", base_ts()?)?);
+        assert_eq!(
+            store.total_capacity_dialogs_dropped(),
+            2,
+            "another Call-ID is another refusal"
+        );
+        Ok(())
+    }
+
+    /// The refused Call-IDs are remembered up to the cap, oldest forgotten
+    /// first: one forgotten behind that many newer refusals counts again.
+    #[test]
+    fn the_refused_call_ids_are_remembered_up_to_the_cap() -> Result<(), TestError> {
+        let mut store = DialogStore::new(2, false);
+        for call in ["a@h", "b@h", "c@h", "d@h"] {
+            store.process_message(make_invite_msg(call, base_ts()?)?);
+        }
+        store.process_message(make_invite_msg("c@h", base_ts()?)?);
+        assert_eq!(
+            store.total_capacity_dialogs_dropped(),
+            2,
+            "c@h is still remembered"
+        );
+        store.process_message(make_invite_msg("e@h", base_ts()?)?);
+        store.process_message(make_invite_msg("c@h", base_ts()?)?);
+        assert_eq!(
+            store.total_capacity_dialogs_dropped(),
+            4,
+            "e@h pushed c@h out, so c@h counts again"
+        );
+        Ok(())
+    }
+
+    /// A message that cannot open a dialog changes nothing at capacity: it
+    /// neither evicts a dialog under rotation nor counts as a refusal.
+    #[test]
+    fn a_message_that_opens_nothing_neither_evicts_nor_is_refused() -> Result<(), TestError> {
+        // A response with no CSeq names no method, so it opens no dialog.
+        let raw = build_sip(
+            "SIP/2.0 200 OK",
+            &[
+                "From: <sip:alice@example.com>;tag=t1",
+                "To: <sip:bob@example.com>;tag=t2",
+                "Call-ID: nothing@h",
+                "Content-Length: 0",
+            ],
+            b"",
+        );
+        let orphan = parse_sip(
+            &raw,
+            base_ts()?,
+            localhost(),
+            localhost(),
+            5060,
+            5060,
+            TransportProto::Udp,
+        )
+        .map_err(|e| format!("should parse: {e:?}"))?;
+        for rotate in [true, false] {
+            let mut store = DialogStore::new(1, rotate);
+            store.process_message(make_invite_msg("kept@h", base_ts()?)?);
+            store.process_message(orphan.clone());
+            assert!(
+                store.get("kept@h").is_some(),
+                "rotate {rotate}: nothing evicted"
+            );
+            assert_eq!(store.total_capacity_dialogs_evicted(), 0, "rotate {rotate}");
+            assert_eq!(store.total_capacity_dialogs_dropped(), 0, "rotate {rotate}");
+        }
         Ok(())
     }
 

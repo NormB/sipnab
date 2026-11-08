@@ -17,7 +17,7 @@ AssertWithoutMessage	src/annotate/copy.rs	1
 AssertWithoutMessage	src/annotate/mod.rs	27
 AssertWithoutMessage	src/annotate/pcapng.rs	4
 AssertWithoutMessage	src/annotate/tui.rs	5
-AssertWithoutMessage	src/app/batch.rs	270
+AssertWithoutMessage	src/app/batch.rs	266
 AssertWithoutMessage	src/app/bootstrap.rs	171
 AssertWithoutMessage	src/app/g729_install.rs	16
 AssertWithoutMessage	src/app/mod.rs	8

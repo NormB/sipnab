@@ -246,7 +246,8 @@ Call-ID                                                      Streams
 
 A SIP proxy that hears no answer from rtpproxy in time sends the same command
 again, with the same cookie. rtpproxy answers the repeat from its reply
-cache. sipnab counts the repeats, and at the end of the run logs one line per
+cache. sipnab counts the repeats, each proxy's own, so a cookie two proxies
+happen to share is not one, and at the end of the run logs one line per
 control socket that saw any:
 
 ```text

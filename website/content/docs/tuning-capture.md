@@ -705,6 +705,47 @@ The closing line names the worker count. On the reference corpus, throughput
 stops rising beyond four workers. Extra workers add memory without adding
 speed. [Benchmarks](@/docs/benchmarks.md) has the measured figures.
 
+### What `--cores N` keeps the same as `--cores 1`
+
+`--cores 1` reads every packet in order into one dialog store and one stream
+store. `--cores N` gives each host pair to one worker and merges the workers'
+stores at the end of the input. The merge rebuilds what the one store holds:
+
+- **`--limit` and `--max-streams` bound the whole run, not each worker.** The
+  merge admits the streams in the order sipnab read their first packets, and
+  evicts at the cap the streams `--cores 1` evicts. When the dialogs do not
+  fit under `--limit`, the merge replays every SIP message in read order:
+  under rotation it opens a Call-ID again that the cap evicted and that then
+  sent more, and with `--no-rotate` it counts each refused Call-ID once.
+- **Idle compaction happens at the same sweeps.** `--cores 1` sweeps each time
+  the capture's newest timestamp enters a new five-second interval. The
+  readers record where those sweeps fall, and the merge compacts each dialog
+  at them, between its messages. A dialog compacted while idle and then used
+  again keeps the same messages at every `--cores`.
+- **Every worker reads the relay control traffic.** The dispatcher copies to
+  every worker a HEP datagram to the HEP mirror port (9060), which can carry
+  rtpengine's `ng` SDP, and every UDP datagram to or from the
+  `--rtpproxy-control` socket. Each worker then binds the media they name to
+  its call at the same point in the capture, wherever that media's host pair
+  is.
+- **sipnab counts rtpproxy retries per proxy.** A retry is a proxy sending a
+  cookie it sent before. A cookie two proxies both use is two commands.
+
+Two differences remain:
+
+- **One worker over `--limit` on its own.** A worker whose host pairs alone
+  hold more than `--limit` dialogs evicts or refuses them before the merge,
+  and the merge never sees those messages. It adds that worker's own
+  evictions and refusals to its counts, and the dialogs can differ from those
+  of `--cores 1`.
+- **A stream evicted by `--max-streams` and then sent to again.** `--cores 1`
+  opens it again, holding the packets after its return. A worker that did not
+  evict it holds one stream of all its packets, and the merge evicts that
+  stream whole.
+
+[`tests/cores_parity_test.rs`](https://github.com/NormB/sipnab/blob/main/tests/cores_parity_test.rs) runs each case at `--cores 1`, 2, 4 and 8 and
+compares the outputs.
+
 ### On a live device it means capture sockets, not workers
 
 `--cores N` on `-d <device>` asks the kernel to spread that interface across N
