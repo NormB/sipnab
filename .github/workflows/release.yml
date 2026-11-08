@@ -953,7 +953,7 @@ jobs:
       # flag stops covering the union.
       # ---------------------------------------------------------------------
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2
+        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
         with:
           tool: cargo-cyclonedx
 
@@ -1079,7 +1079,7 @@ jobs:
       # The installer checks the cosign binary's digest against one pinned in
       # the action itself; v3.0.6 is the version that digest names.
       - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
         with:
           cosign-release: v3.0.6
 
