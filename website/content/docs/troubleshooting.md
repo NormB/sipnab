@@ -1707,6 +1707,25 @@ the file. Under the packaged unit that user is `sipnab`: make the file
 shows. For an MCP certificate or key the message is the path alone, such as
 `/etc/sipnab/mcp.key`.
 
+A root run reads the `[vcon_fetch]` store's files (`auth_file`,
+`decrypt_key`, `ca`, `extra_ca`, `signer_ca`) before the drop as well:
+`--api-allow-vcon-fetch` and `--mcp-allow-vcon-fetch` read them when the
+servers start. 0.5.238 and earlier read them after the drop and stopped with
+exit status 2:
+
+```text
+--api-allow-vcon-fetch: [vcon_fetch] auth_file '/etc/sipnab/fetch.auth': Permission denied (os error 13)
+```
+
+The credential's permission rule is the same as before, applied as the user
+sipnab runs as after the drop. sipnab refuses a credential that user owns
+when other users can read it, and accepts one that root or another account
+owns whatever its mode:
+
+```text
+--api-allow-vcon-fetch: [vcon_fetch] auth_file '/etc/sipnab/fetch.auth' can be read or written by other users (mode 0640); chmod 600 it
+```
+
 A revocation list is different, because sipnab reads it again whenever it
 changes, as the user it dropped to:
 
