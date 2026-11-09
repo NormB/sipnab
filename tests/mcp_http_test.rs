@@ -626,16 +626,19 @@ fn the_canonical_media_type_headers_through_the_same_helper_get_200() -> Result<
 // ── Teardown on every exit path ─────────────────────────────────────
 
 /// Whether `pid` names a process that is still running (not reaped and not
-/// a zombie), read from `/proc/<pid>/stat`.
+/// a zombie), read from `ps`, which Linux and macOS both have.
+///
+/// `ps` prints nothing for a process that is gone. A zombie's state starts
+/// with `Z`, and Linux's `X` is a process being torn down.
 fn is_running(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| {
-            // The state is the first field after the parenthesized command.
-            stat.rsplit_once(')')
-                .and_then(|(_, rest)| rest.split_whitespace().next().map(str::to_owned))
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|out| {
+            let stat = String::from_utf8_lossy(&out.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with(['Z', 'X'])
         })
-        .is_some_and(|state| state != "Z" && state != "X")
 }
 
 /// A server that `spawn_http` started is stopped when a panic unwinds out of
