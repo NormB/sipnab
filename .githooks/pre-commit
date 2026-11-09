@@ -114,6 +114,34 @@ printf '%s\n' "$GATE_KEYS" | sed -n 's/^info //p'
 
 echo -e "${YELLOW}Running pre-commit checks...${NC}"
 
+# ── A release-only commit runs the release gates, not the suite ────
+# The 0.5.238 release commit f151b38d8 spent 14 minutes here running the whole
+# suite on 24 changed lines: the version moving in 13 files and the CHANGELOG
+# heading `## [Unreleased]` becoming `## [0.5.238] - 2026-11-08`. The release
+# pull request's CI runs the whole suite on the same tree anyway, and that is
+# the run the tag gate accepts.
+#
+# scripts/release-only.py is the rule: a staged change is release-only when
+# the [package] version moves forward and every changed line is the old line
+# with the version moved, a Since cell of the CLI reference moving from
+# `Unreleased`, or that one CHANGELOG heading. Anything else, or anything it
+# cannot read, is an ordinary commit and every step runs.
+#
+# A release-only commit skips the failed-tests replay, clippy, the suite and
+# the sipnab-bpf-types tests, and runs the release test targets
+# (`release-only.py tests`: the version markers, the Since column, the site
+# copies, the CHANGELOG against the tags, the advertised release) in place of
+# the suite. Every other step below still runs. SIPNAB_GATE_NO_CACHE=1 runs
+# every step.
+RELEASE_ONLY=0
+if [ "${SIPNAB_GATE_NO_CACHE:-0}" = 0 ] && [ -f scripts/release-only.py ]; then
+	if RELEASE_ONLY_LINE=$(python3 scripts/release-only.py staged 2>&1); then
+		RELEASE_ONLY=1
+		echo "  $RELEASE_ONLY_LINE"
+		echo "  Release gates only: the suite, clippy and the replay run in the pull request's CI."
+	fi
+fi
+
 # ── Naming what failed ─────────────────────────────────────────────
 # Gates 1 and 2 must capture their tool's output rather than let it stream:
 # gate 5 reads the test run back for the homepage count, and streaming clippy
@@ -375,7 +403,7 @@ record_suite_failures() { # record_suite_failures <output-file>
 # suite included, so a pass still means the full suite passed on this tree.
 # scripts/parallel-tests.py --rerun builds the command; a test renamed since
 # selects nothing and is not a failure.
-if [ -s "$FAILED_RECORD" ] && ! gate_hit tests --quiet; then
+if [ "$RELEASE_ONLY" = 0 ] && [ -s "$FAILED_RECORD" ] && ! gate_hit tests --quiet; then
 	echo -n "  Tests that failed last run, first... "
 	REPLAY_LIVE="$LOG_DIR/sipnab-pre-commit-replay.live"
 	set +e
@@ -422,7 +450,9 @@ fi
 echo -n "  Clippy (CI's exact scope)... "
 # Its stamp's key covers the build inputs only (gate-cache.py's path_class), so
 # a change of documentation alone reuses it. The body is not re-indented.
-if ! gate_hit clippy; then
+if [ "$RELEASE_ONLY" = 1 ]; then
+    echo -e "${YELLOW}SKIPPED${NC} (release-only commit: a version string cannot change a lint; CI runs clippy)"
+elif ! gate_hit clippy; then
 set +e
 CLIPPY_OUTPUT=$(cargo clippy --workspace --all-features --all-targets --color never -- -D warnings 2>&1)
 CLIPPY_RC=$?
@@ -457,7 +487,26 @@ echo -n "  Tests... "
 # Its stamp's key covers every file: the suite reads every tracked file. The
 # body is not re-indented.
 TEST_CACHED=0
-if gate_hit tests; then
+if [ "$RELEASE_ONLY" = 1 ]; then
+    # The release test targets in place of the suite, without the corpus as
+    # the suite runs. Not stamped as the suite: they are not the suite.
+    RELEASE_TEST_LOG="$LOG_DIR/sipnab-pre-commit-release-tests.log"
+    set +e
+    # Word splitting is intended: `release-only.py tests` prints --test flags.
+    # shellcheck disable=SC2046
+    env -u SIPNAB_CORPUS -u SIPNAB_VCON_DATASETS cargo test --features full --color never \
+        $(python3 scripts/release-only.py tests) >"$RELEASE_TEST_LOG" 2>&1
+    RELEASE_TEST_RC=$?
+    set -e
+    if [ "$RELEASE_TEST_RC" -ne 0 ] || grep -q "FAILED\|error\[" "$RELEASE_TEST_LOG"; then
+        echo -e "${RED}FAIL${NC} (the release test targets)"
+        grep -E '^test .* FAILED|panicked at|^error' "$RELEASE_TEST_LOG" | head -n 20 | sed 's/^/    /' || true
+        echo "  Reproduce: cargo test --features full $(python3 scripts/release-only.py tests)"
+        echo "  Full output: $RELEASE_TEST_LOG"
+        exit 1
+    fi
+    echo -e "${GREEN}OK${NC} (the release test targets: $(python3 scripts/release-only.py tests | wc -w | awk '{print $1 / 2}'); the suite runs in CI)"
+elif gate_hit tests; then
 TEST_CACHED=1
 else
 set +e
@@ -665,7 +714,9 @@ fi
 echo -n "  sipnab-bpf-types tests and doctests... "
 # A build-only key: the crate reads nothing at run time outside crates/, and
 # its README, which its doctests come from, is an include_str! input.
-if gate_hit bpf-types; then
+if [ "$RELEASE_ONLY" = 1 ]; then
+    echo -e "${YELLOW}SKIPPED${NC} (release-only commit; CI runs them)"
+elif gate_hit bpf-types; then
     :
 elif BPF_TYPES_OUT=$(cargo test -p sipnab-bpf-types --no-fail-fast --color never 2>&1); then
     echo -e "${GREEN}OK${NC}"
@@ -873,7 +924,9 @@ if [ -f "website/templates/index.html" ]; then
     # COUNT_OUT and COUNT_RC are step 2's reading of its own run. A suite
     # skipped by its stamp was counted by the run that wrote the stamp: the
     # stamp is written only when that count succeeded.
-    if [ "$TEST_CACHED" = 1 ]; then
+    if [ "$RELEASE_ONLY" = 1 ]; then
+        COUNT_OUT="not counted: a release-only commit runs the release test targets, not the suite"
+    elif [ "$TEST_CACHED" = 1 ]; then
         COUNT_OUT="counted when stamp $(gate_key tests | cut -c1-12) was written"
     elif [ "$COUNT_RC" -ne 0 ]; then
         echo -e "${RED}FAIL${NC}"

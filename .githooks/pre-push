@@ -162,18 +162,40 @@ fi
 # Still run on a tag-only push: the release-delivery test, the tag signature,
 # the tag's CI and code-scanning checks, the commit test-count check, and the
 # corpus gate, which validates against captures CI never sees.
-TAG_ONLY=0
+TREE_PROVEN=0
 TAG_PROOF="$(dirname "$0")/../scripts/tag-push-proof.py"
 case "$PUSH_REFS" in
 *refs/tags/*)
 	if [ -f "$TAG_PROOF" ]; then
 		if TAG_PROOF_LINE=$(printf '%s\n' "$PUSH_REFS" | python3 "$TAG_PROOF" 2>&1); then
-			TAG_ONLY=1
+			TREE_PROVEN=1
 		fi
 		printf '%s\n' "$TAG_PROOF_LINE"
 	fi
 	;;
 esac
+
+# -- A push of release-only commits ------------------------------------------
+# The 0.5.238 release commit's push spent 15 minutes here re-running clippy,
+# rustdoc, the feature combinations and the prose linters on a version bump,
+# after the pre-commit hook had already judged it. scripts/release-only.py is
+# the rule: the push updates branches only, and every commit in each pushed
+# range (from the remote sha, or from the merge base with origin/main for a
+# new branch) is release-only against its parent, as the pre-commit hook
+# decides it. Then the tree gates are skipped, as for a proven tag push, and
+# the line it prints names the commits. Still run: the signature, message and
+# test-count gates and the release-delivery test. The corpus gate does not
+# run: no parser input changed. The pull request's CI runs every gate on the
+# same tree. SIPNAB_GATE_NO_CACHE=1 runs every gate.
+RELEASE_ONLY_PUSH=0
+RELEASE_ONLY_TOOL="$(dirname "$0")/../scripts/release-only.py"
+if [ "$TREE_PROVEN" = 0 ] && [ "${SIPNAB_GATE_NO_CACHE:-0}" = 0 ] && [ -f "$RELEASE_ONLY_TOOL" ]; then
+	if RELEASE_ONLY_LINE=$(printf '%s\n' "$PUSH_REFS" | python3 "$RELEASE_ONLY_TOOL" push 2>&1); then
+		RELEASE_ONLY_PUSH=1
+		TREE_PROVEN=1
+		printf '  %s; the tree gates are skipped\n' "$RELEASE_ONLY_LINE"
+	fi
+fi
 
 # -- Pass stamps: a step that passed on these exact inputs is not re-run -------
 # The same mechanism as .githooks/pre-commit, keyed by scripts/gate-cache.py.
@@ -192,7 +214,7 @@ esac
 # timing a key cannot hold. SIPNAB_GATE_NO_CACHE=1 runs every step.
 GATE_CACHE="$(dirname "$0")/../scripts/gate-cache.py"
 GATE_KEYS=""
-if [ "$TAG_ONLY" = 1 ]; then
+if [ "$TREE_PROVEN" = 1 ]; then
 	: # no tree gate runs, so no key is needed
 elif [ ! -f "$GATE_CACHE" ]; then
 	printf '  Pass stamps... NOT USED -- scripts/gate-cache.py is not on this branch\n'
@@ -227,7 +249,7 @@ gate_flush() {
 trap gate_flush EXIT
 
 # The tree gates, skipped on a proven tag-only push (above). Not re-indented.
-if [ "$TAG_ONLY" = 0 ]; then
+if [ "$TREE_PROVEN" = 0 ]; then
 # -- Hard gate: rustfmt -------------------------------------------------------
 # scripts/check-rustfmt.sh: the dated nightly rustfmt in .rustfmt-toolchain
 # over every tracked `.rs` file, `fuzz/` and `bpf/` included, which are not
@@ -359,7 +381,7 @@ if [ -d bpf ]; then
 	fi
 fi
 
-fi # TAG_ONLY
+fi # TREE_PROVEN
 
 # -- Hard gate: the release-delivery tests ------------------------------------
 # These compare the TREE against the last tag -- whether code changed since it,
@@ -397,7 +419,7 @@ else
 	exit 1
 fi
 
-if [ "$TAG_ONLY" = 0 ]; then
+if [ "$TREE_PROVEN" = 0 ]; then
 # -- Hard gate: reduced feature combinations ----------------------------------
 # Everything above this point builds with --all-features, and that is exactly
 # the blind spot: `#[cfg]`-gating rot is invisible to it. ci.yml's features job
@@ -762,7 +784,7 @@ else
 	fi
 fi
 
-fi # TAG_ONLY
+fi # TREE_PROVEN
 
 # -- Hard gate: a test count in a commit message is derived, not typed --------
 # Messages here end with a sentence of the form "Seventeen tests,
@@ -1166,6 +1188,10 @@ emit_capped() { # emit_capped <max-lines> <log-path>   (reads stdin)
 corpus_state=run
 if [ "${SKIP_CORPUS_HOOK:-0}" = "1" ]; then
 	corpus_state=bypassed
+elif [ "${RELEASE_ONLY_PUSH:-0}" = 1 ]; then
+	# Every pushed line is a version string, a Since cell or the CHANGELOG
+	# heading (scripts/release-only.py), so no parser input changed.
+	corpus_state=releaseonly
 elif [ -z "$CORPUS_TESTS" ]; then
 	# Skip rather than fail closed on a crate with no corpus targets -- the
 	# same courtesy the fuzz gate extends to a missing fuzz/ and the feature
@@ -1182,6 +1208,10 @@ elif [ ! -d "$SIPNAB_CORPUS" ] || [ ! -r "$SIPNAB_CORPUS" ] || [ ! -x "$SIPNAB_C
 fi
 
 case "$corpus_state" in
+releaseonly)
+	printf '%b  corpus: NOT RUN -- a release-only push changes no parser input; the next ordinary push validates%b\n' \
+		"$YELLOW" "$NC"
+	;;
 bypassed)
 	printf '%b  corpus: BYPASSED (SKIP_CORPUS_HOOK=1) -- real captures NOT validated%b\n' \
 		"$YELLOW" "$NC"
@@ -1313,7 +1343,7 @@ esac
 # <<< END corpus-gate
 
 prose_fail=0
-if [ "$TAG_ONLY" = 0 ]; then
+if [ "$TREE_PROVEN" = 0 ]; then
 # -- Hard gate: prose linters -------------------------------------------------
 # Vale and codespell are CI-blocking and BOTH broke main on 2026-08-03: 12
 # passive-voice errors, then two "pre-empt ==> preempt" hits, each caught only
@@ -1458,7 +1488,7 @@ elif [ -d website ]; then
 	printf '    `cargo install --git https://github.com/getzola/zola --tag v0.19.2`\n'
 	printf '    (there is no aarch64 Linux release binary), or set ZOLA_BIN.\n'
 fi
-fi # TAG_ONLY
+fi # TREE_PROVEN
 
 if [ "$prose_fail" -ne 0 ]; then
 	printf '\n'
