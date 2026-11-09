@@ -348,6 +348,31 @@ def test_a_run_killed_mid_way_leaves_no_stamp_for_what_it_did_not_finish(pc):
     assert rc == 0 and any(c.startswith("nextest run") for c in pc.cargo()), out
 
 
+def test_two_worktrees_get_target_directories_of_their_own(pc):
+    """The cargo stub names one workspace root and target directory per tree,
+    as two worktrees have. With one shared directory, one hook's parallel-tests.py
+    could delete the JUnit report the other hook's stub had just written,
+    before the other read it, and that hook failed with "wrote no report"."""
+    second = pc.tree.parent / (pc.tree.name + "-wt2")
+    git(pc.tree, "worktree", "add", "-q", str(second))
+    try:
+        dirs = []
+        for t in (pc.tree, second):
+            out = subprocess.run(
+                ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+                cwd=t, env=pc.env(), capture_output=True, text=True, check=True,
+            ).stdout
+            meta = json.loads(out)
+            dirs.append((meta["workspace_root"], meta["target_directory"]))
+        assert dirs[0][0] != dirs[1][0], f"both trees share one workspace root: {dirs}"
+        assert dirs[0][1] != dirs[1][1], f"both trees share one target directory: {dirs}"
+        assert all(d.startswith(str(pc.harness)) for pair in dirs for d in pair), (
+            f"the directories stay outside the trees: {dirs}"
+        )
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
 def test_concurrent_runs_in_two_worktrees_share_valid_stamps_in_the_common_dir(pc):
     second = pc.tree.parent / (pc.tree.name + "-wt2")
     git(pc.tree, "worktree", "add", "-q", str(second))
