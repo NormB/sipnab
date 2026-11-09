@@ -1740,7 +1740,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // row, relay-engines.md's sessions section, mcp-tools-relay.md's
     // max_calls text and rest-api.md's sessions route (+1 each). Counted per
     // file against origin/main 82472045e.
-    const EXPECTED_WIKI_LINKS: usize = 2494;
+    // 2494 -> 2498 (RELEASE-FAST C): internals/build-ci-release.md links its
+    // new "Advertising a release" section twice and uprobe-capture.md's
+    // ledger once, and internals/uprobe-capture.md links that section (+4).
+    const EXPECTED_WIKI_LINKS: usize = 2498;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

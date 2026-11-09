@@ -106,11 +106,25 @@ fn published_asset_count(tag: &str) -> Option<usize> {
     String::from_utf8_lossy(&out.stdout).trim().parse().ok()
 }
 
-/// 1. The newest tag's assets exist ⇒ the site must advertise that version.
+/// 1. The committed tree advertises the newest release below its own version.
 ///
-/// The gap this closes. `site_advertises_only_a_released_version` permits one
-/// release of lag unconditionally; this permits it only while the assets are
-/// still building, and asks rather than assumes.
+/// RELEASE-FAST C removed the phase-two pull request. The built site no longer
+/// waits for a commit: pages.yml runs `scripts/advertise-release.py site`,
+/// which advertises the newest complete GitHub release whatever the committed
+/// `published_version` says, and the release workflow runs it as soon as the
+/// assets exist. The committed tree catches up in the next release pull
+/// request, whose advertisement commit moves `published_version` to the
+/// release before it.
+///
+/// So the committed value is exactly one of two things:
+/// * the newest release tag strictly below the crate version (the state from
+///   one release pull request to the next); or
+/// * the crate version itself, when it is tagged (the state the old phase
+///   two left, and the one a release made the old way still leaves).
+///
+/// Anything older means a release pull request did not carry its
+/// advertisement commit, and the committed install instructions name a
+/// release two behind. The advertised release must also have assets.
 #[test]
 fn the_site_advertises_the_newest_release_whose_assets_exist() -> Result<(), TestError> {
     let releases = release_tags()?;
@@ -120,8 +134,35 @@ fn the_site_advertises_the_newest_release_whose_assets_exist() -> Result<(), Tes
          a pass would mean nothing",
         releases.len()
     );
-    let newest = *releases.last().ok_or("checked non-empty")?;
-    let tag = as_tag(newest);
+    let crate_version = release_tag(concat!("v", env!("CARGO_PKG_VERSION")))
+        .ok_or("the crate version is not x.y.z")?;
+    let below = releases
+        .iter()
+        .copied()
+        .filter(|v| *v < crate_version)
+        .max()
+        .ok_or("no release tag below the crate version")?;
+    let expected = if releases.contains(&crate_version)
+        && published_version()? == as_tag(crate_version)[1..]
+    {
+        crate_version
+    } else {
+        below
+    };
+    let tag = as_tag(expected);
+    assert_eq!(
+        published_version()?,
+        tag[1..].to_string(),
+        "website/config.toml advertises {}, but the newest release below the \
+         crate version {} is {}. The release pull request carries an \
+         advertisement commit made by `python3 scripts/release-records.py \
+         write <previous>` (docs/internals/build-ci-release.md, Releases); \
+         without it the committed install instructions name an older release \
+         than the site does.",
+        published_version()?,
+        env!("CARGO_PKG_VERSION"),
+        as_tag(below)
+    );
 
     let Some(assets) = published_asset_count(&tag) else {
         // Not a silent skip: prove `gh` genuinely cannot answer, so this arm
@@ -135,23 +176,10 @@ fn the_site_advertises_the_newest_release_whose_assets_exist() -> Result<(), Tes
         eprintln!("release-completeness: cannot verify assets for {tag} — {reason}");
         return Ok(());
     };
-
     assert!(
         assets > 0,
-        "{tag} exists as a release but publishes no assets; something failed \
-         after the tag went up"
-    );
-    assert_eq!(
-        published_version()?,
-        format!("{}.{}.{}", newest.0, newest.1, newest.2),
-        "{tag} has published {assets} assets, so the release is downloadable — \
-         but website/config.toml still advertises {}. Every /download link, the \
-         checksum column and SHA256SUMS.txt point at the previous build, and a \
-         visitor gets it silently.\n\n\
-         A release is finished when a visitor is offered it, not when its \
-         artifacts exist. Land the follow-up commit that moves \
-         published_version, release_date and the install.md download markers.",
-        published_version()?
+        "{tag} is advertised and publishes no assets; something failed after \
+         the tag went up"
     );
     Ok(())
 }

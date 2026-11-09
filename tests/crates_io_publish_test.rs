@@ -304,10 +304,11 @@ fn a_manual_run_releases_nothing() -> Result<(), TestError> {
     tag_gated.sort();
     assert_eq!(
         tag_gated,
-        ["crates-io", "release", "tap"],
+        ["advertise", "crates-io", "records", "release", "tap"],
         "the jobs that publish from a tag are the GitHub release, the crates.io \
-         upload and the Homebrew tap bump; a change here must be reviewed \
-         against this guard"
+         upload, the Homebrew tap bump, the site advertisement (pages.yml \
+         dispatched with expect) and the release-records artifact \
+         (RELEASE-FAST C); a change here must be reviewed against this guard"
     );
     Ok(())
 }

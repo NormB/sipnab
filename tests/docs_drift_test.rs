@@ -44,6 +44,36 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // The release how-to runs scripts/release-records.py (`--dest`,
+    // `--ceiling-line`, `--uprobe-row`) and `gh release edit --prerelease`.
+    (
+        "ceiling-line",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "uprobe-row",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "dest",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "prerelease",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // The mutual-TLS how-to shows curl presenting a client certificate:
     // curl's `--cacert`, `--cert`, `--key` and `--data-binary`.
     ("cacert", &["docs/mtls.md", "website/content/docs/mtls.md"]),
@@ -2802,96 +2832,32 @@ fn docs_current_version_markers_match_cargo() -> Result<(), TestError> {
         .captures(include_str!("../website/config.toml"))
         .ok_or("website/config.toml has no published_version")?[1]
         .to_string();
-    let download_markers: &[(&str, &str, &str)] = &[
-        (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"SIPNAB_VERSION=(\d+\.\d+\.\d+)",
-        ),
-        (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"e\.g\. (\d+\.\d+\.\d+)",
-        ),
-        // The download recipes read the release from a `VERSION=` line set on
-        // its own, so the pasted block never carries a `<version>` placeholder
-        // the shell would read as a redirection. That line names a release a
-        // reader fetches, so it tracks published_version like every marker
-        // here.
-        (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"(?m)^VERSION=(\d+\.\d+\.\d+)$",
-        ),
-        // Every rpm variant, not just the x86_64 standard one. The pattern was
-        // `-1\.x86_64\.rpm`, which pinned line one of three `rpm -i` recipes
-        // sitting in the same section -- the `-noaudio` and `aarch64` lines went
-        // ungated and were still naming 0.5.63 while the gated line moved. Same
-        // section, same copy-paste, same 404; the gate simply could not see two
-        // thirds of it. The arch and variant are alternations so a new package
-        // flavor is covered the day it is documented.
-        (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"sipnab-(\d+\.\d+\.\d+)-1\.(?:x86_64|aarch64)(?:-noaudio)?\.rpm",
-        ),
-        // The alternation above gates the version of whatever `rpm -i` recipes
-        // the page HAPPENS to carry. It says nothing about one that is missing,
-        // and one was: a release publishes four rpms, while install.md
-        // documented three commands -- x86_64, x86_64-noaudio, aarch64. The
-        // published `sipnab-<version>-1.aarch64-noaudio.rpm` had no line naming
-        // it anywhere on the page, so an arm64 headless reader had to guess the
-        // filename off the packaging table. Same section and same copy-paste as
-        // the drift the comment above records, one step further along: there the
-        // gate could not see two thirds of the recipes, here it could not see
-        // that a quarter of the packages had no recipe at all.
-        //
-        // Each entry below pins one exact variant, so the loop's "expected at
-        // least one" assertion fires the moment a recipe disappears -- and each
-        // still tracks published_version like every other download marker. Add
-        // one whenever the release workflow grows a package flavor, and add the
-        // `dnf install` line it gates. The recipes moved from `rpm -i` to
-        // `dnf install ./<file>`: `rpm -i` refuses the package on a host without
-        // libpcap ("Failed dependencies"), measured on Fedora 42.
-        //
-        // Only docs/install.md is listed: website/content/docs/install.md is
-        // generated from it, and site_pages_mirror_is_current compares the two
-        // byte-for-byte, so the mirror cannot carry a different set of recipes.
-        (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.x86_64\.rpm",
-        ),
-        (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.x86_64-noaudio\.rpm",
-        ),
-        (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.aarch64\.rpm",
-        ),
-        (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.aarch64-noaudio\.rpm",
-        ),
-        (
-            "website/content/docs/install.md",
-            include_str!("../website/content/docs/install.md"),
-            r"e\.g\. (\d+\.\d+\.\d+)",
-        ),
-        // The Docker recipes pin a release tag, because `latest` follows main,
-        // not releases. A pinned tag names a release a reader pulls, so it
-        // tracks published_version like the download markers above.
-        (
-            "docs/install.md",
-            include_str!("../docs/install.md"),
-            r"ghcr\.io/normb/sipnab:(\d+\.\d+\.\d+)",
-        ),
-    ];
-    for (path, text, pattern) in download_markers {
+    // The docs/install.md markers are scripts/download-markers.txt, the list
+    // scripts/advertise-release.py moves when the advertised release changes
+    // (pages.yml at deploy time, and the advertisement commit a release pull
+    // request carries). One list, so the writer cannot move a line this gate
+    // does not check, or miss one it does. The mirror's `e.g.` line stays
+    // here: site_pages_mirror_is_current already holds the rest of the mirror
+    // byte-for-byte to docs/install.md.
+    let install = include_str!("../docs/install.md");
+    let mut download_markers: Vec<(&str, &str, &str)> =
+        include_str!("../scripts/download-markers.txt")
+            .lines()
+            .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
+            .map(|pattern| ("docs/install.md", install, pattern))
+            .collect();
+    assert!(
+        download_markers.len() >= 12,
+        "scripts/download-markers.txt lists {} markers; install.md names the \
+         release to download on more lines than that",
+        download_markers.len()
+    );
+    download_markers.push((
+        "website/content/docs/install.md",
+        include_str!("../website/content/docs/install.md"),
+        r"e\.g\. (\d+\.\d+\.\d+)",
+    ));
+    for (path, text, pattern) in &download_markers {
         let re = regex::Regex::new(pattern)?;
         let mut matched = false;
         for cap in re.captures_iter(text) {

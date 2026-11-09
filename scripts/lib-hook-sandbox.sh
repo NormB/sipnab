@@ -179,7 +179,7 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	# two hooks run at once in two worktrees race on one JUnit report:
 	# parallel-tests.py deletes the report (at <workspace root>/target/nextest)
 	# before each run, so one hook could delete the report the other hook's
-	# stub had just written.
+	# stub had just written (FLAKY-GATE-CACHE-CONCURRENT).
 	cat > "$_h/bin/cargo" <<-EOF
 		#!/bin/sh
 		_w="$_h/ws/\$(git rev-parse --show-toplevel 2>/dev/null | cksum | cut -d' ' -f1)"

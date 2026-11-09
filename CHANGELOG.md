@@ -29,6 +29,13 @@ entry that carries them.
 - `scripts/derive-seccomp-allowlist.sh` reads the audit log (`log_file` in `auditd.conf`) on a host where an audit daemon runs, and refuses the run when the audit subsystem lost records. It read only the kernel log and reported `NO RECORDS` there (CAP-3).
 - The Landlock refusal names the cause: a kernel older than 5.13, a newer kernel built without `CONFIG_SECURITY_LANDLOCK`, or Landlock compiled in but not in `lsm=`. On a 6.8 kernel without Landlock it said "needs 5.13 or newer" (CAP-4).
 - `--strip-secrets` prints what it removed, by kind, and where it wrote, for example `Stripped 1 Decryption Secrets Block (1 TLS Key Log): in.pcapng -> out.pcapng`, with or without `-N` and under `--quiet`. The line was logged at `info`, which the TUI-mode log filter and `--quiet` hid, so the command printed nothing on success (CAP-5).
+### Changed
+
+- **A release no longer ends in a second pull request.** Once a release's assets are published, `release.yml` dispatches the site deploy itself, and every deploy now advertises the newest complete GitHub release: `scripts/advertise-release.py` moves `published_version`, `release_date` and the `docs/install.md` download markers in the deploy's checkout. A release is complete when it is neither a draft nor a prerelease, every asset is uploaded, and it carries every asset name the release before it had; marking a release as a prerelease withdraws it from the site. The release run fails when the site cannot advertise the release. The binary-ceiling measurement of the published x86_64-musl tarball is taken by the release run and kept as its `release-records` artifact, and the next release pull request carries both records and the advertised version in one advertisement commit (`scripts/release-records.py write`), which the hooks treat as release-only. The homepage test count of a merge commit comes from its merged pull request's head when the tree is the same. On 0.5.238 the second pull request, its hooks, its CI and the Pages wait took about 70 minutes. How-to: [Advertising a release](docs/internals/build-ci-release.md#advertising-a-release).
+
+### Fixed
+
+- **The Homebrew tap's release bump is a verified commit.** The release workflow committed the formula bump with `git` as `sipnab-release`, and every bump from 0.5.232 to 0.5.239 is unsigned on GitHub. `scripts/homebrew-tap-push.py` now creates it with the GitHub contents API on a branch of the tap, which GitHub signs, and moves the tap's `main` to it only when GitHub reports the commit verified, as a fast-forward; otherwise it deletes the branch and fails the job. The tap's history is unchanged.
 
 ## [0.5.240] - 2026-11-09
 

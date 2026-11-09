@@ -665,10 +665,11 @@ jobs:
           echo "published_test_count=$actual"
 
       # pages.yml waits for this artifact from CI's run of the commit it
-      # deploys (scripts/fetch-ci-suite-output.py). Pushes only: pull
-      # requests never deploy.
+      # deploys (scripts/fetch-ci-suite-output.py). Pull requests upload it
+      # too: a merge commit whose own push run has not finished takes the
+      # count from its merged pull request's head when GitHub reports the
+      # same tree (RELEASE-FAST C; the 0.5.238 deploy waited 39 minutes).
       - name: Hand the suite output to the site build
-        if: github.event_name == 'push'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: suite-output

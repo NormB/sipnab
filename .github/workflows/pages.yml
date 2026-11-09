@@ -48,7 +48,23 @@ on:
       # page (see the step before "Build site").
       - 'scripts/doc-history.py'
       - 'scripts/fetch-ci-suite-output.py'
+      # The "Advertise the newest complete release" step runs these, and
+      # build-site-pages.py regenerates the mirrors after the markers move.
+      - 'scripts/advertise-release.py'
+      - 'scripts/download-markers.txt'
+      - 'docs/install.md'
+      - 'CHANGELOG.md'
+      - 'scripts/build-site-pages.py'
+  # release.yml's `advertise` job dispatches this on main once a release's
+  # assets are published, with `expect` set to that release, and waits for
+  # the run (RELEASE-FAST C: no phase-two pull request).
   workflow_dispatch:
+    inputs:
+      expect:
+        description: 'The release this deploy must advertise (x.y.z); empty resolves the newest complete one'
+        required: false
+        default: ''
+        type: string
 
 # Read-only for every job. The write scopes live on the one job that deploys
 # (OpenSSF Baseline AC-04.02), and actions:read on the csp job that downloads
@@ -142,6 +158,33 @@ jobs:
           sed -i -E "s/^version = \".*\"/version = \"$V\"/" website/config.toml
           echo "Site version set to $V"
           grep -E '^version = ' website/config.toml
+
+      # The site advertises the newest COMPLETE GitHub release, whatever the
+      # committed `published_version` says: scripts/advertise-release.py
+      # (the rule is in its docstring) moves published_version, release_date
+      # and the download markers of docs/install.md in this checkout, then
+      # regenerates the site mirrors. Before RELEASE-FAST C a pull request
+      # ("phase two") did that after every release, and on 0.5.238 it cost
+      # about 70 minutes. The committed tree catches up in the next release
+      # pull request's advertisement commit, made by the same writer.
+      #
+      # Every deploy runs it, so a push to main after a release cannot put the
+      # site back on the previous one. With `expect` (release.yml's dispatch)
+      # the resolved release must be that one, or the deploy fails. A failed
+      # read of GitHub's releases fails the deploy: guessing would mean
+      # advertising either a release nobody can download or a stale one.
+      - name: Advertise the newest complete release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECT: ${{ inputs.expect }}
+        run: |
+          set -euo pipefail
+          if [ -n "${EXPECT:-}" ]; then
+            python3 scripts/advertise-release.py site --repo "$GITHUB_REPOSITORY" --expect "$EXPECT"
+          else
+            python3 scripts/advertise-release.py site --repo "$GITHUB_REPOSITORY"
+          fi
+          grep -E '^(published_version|release_date) = ' website/config.toml
 
       # THE COMMITTED BUNDLE IS NO LONGER WHAT SHIPS.
       #

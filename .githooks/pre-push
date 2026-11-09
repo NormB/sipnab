@@ -980,34 +980,33 @@ for commit in $tag_commits; do
 		exit 1
 	fi
 
-	# A tag starts phase ONE of a two-phase release. Phase two -- moving
-	# `published_version` so a visitor is offered the thing -- lands in a
-	# later commit, and until it does the site advertises the previous
-	# build.
+	# A tag starts phase ONE of a release: the assets build from it. Since
+	# RELEASE-FAST C there is no phase-two pull request. release.yml's
+	# `advertise` job dispatches pages.yml once the assets exist, and
+	# scripts/advertise-release.py moves `published_version` and the download
+	# markers in the deploy's own checkout; its `records` job measures the
+	# published binary. The committed tree catches up in the NEXT release pull
+	# request's advertisement commit (scripts/release-records.py write).
 	#
+	# Two records still need a person, and this prompt is where they are
+	# announced: the eBPF load runs on a privileged host, and a pending-growth
+	# line the new measurement includes is retired by hand.
 	# `release_completeness_test::the_site_advertises_the_newest_release_whose_assets_exist`
-	# already catches that state and says so well. It is a TEST, though, so it
-	# fires when a suite runs, and between a tag going up and the next commit
-	# nothing runs it. That window is exactly where 0.5.128 shipped to nobody
-	# and where 0.5.132 sat with 23 assets published and the site still on
-	# 0.5.131.
-	#
-	# So this is a prompt rather than a gate, and it is deliberately not a
-	# refusal: at tag time the site SHOULD still name the previous release,
-	# because the artifacts do not exist yet. Refusing here would block the
-	# correct state.
-	printf '%b  next: %s is phase ONE. Assets build from this tag; the release\n' "$YELLOW" "$short"
-	printf '  is not finished until published_version names it and a visitor is\n'
-	printf '  offered it. Watch the release, then land the follow-up commit:\n'
-	printf '    website/config.toml  published_version + release_date\n'
-	printf '    docs/install.md      the download markers\n'
-	printf '    website/config.toml  the binary-ceiling measurement, from the\n'
-	printf '                         PUBLISHED x86_64-musl tarball, and delete\n'
-	printf '                         any pending line it now includes\n'
-	printf '  And the one that needs a privileged host, before the site can\n'
-	printf '  advertise the release at all:\n'
+	# fails the next release pull request when its advertisement commit is
+	# missing.
+	printf '%b  next: %s is phase ONE. Assets build from this tag, then\n' "$YELLOW" "$short"
+	printf '  release.yml advertises it on the site itself (job advertise:\n'
+	printf '  pages.yml moves published_version and the docs/install.md download\n'
+	printf '  markers at deploy time) and measures the PUBLISHED x86_64-musl\n'
+	printf '  tarball (job records). No phase-two pull request.\n'
+	printf '  Once the assets exist, on the OpenSIPS VM (a privileged host with BTF):\n'
 	printf '    sudo scripts/verify-bpf-load.sh <version>\n'
-	printf '    docs/internals/uprobe-capture.md  the row it prints\n'
+	printf '  and keep the docs/internals/uprobe-capture.md row it describes for\n'
+	printf '  the next release pull request. Its advertisement commit is\n'
+	printf '    python3 scripts/release-records.py fetch --tag v<version> ...\n'
+	printf '    python3 scripts/release-records.py write <version> ...\n'
+	printf '  which refuses while a pending line the measurement includes is\n'
+	printf '  left in website/config.toml: retire it by hand.\n'
 	printf '  Four releases shipped an eBPF object the verifier rejected on\n'
 	printf '  every kernel, because building was the only half anything covered.\n'
 	printf '  Verify from the live page, not from a green deploy:\n'

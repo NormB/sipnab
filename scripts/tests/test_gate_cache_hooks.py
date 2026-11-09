@@ -404,6 +404,51 @@ def test_concurrent_runs_in_two_worktrees_share_valid_stamps_in_the_common_dir(p
         git(pc.tree, "worktree", "remove", "--force", str(second))
 
 
+def stub_cargo(pc, tree, *args):
+    return subprocess.run([str(pc.harness / "bin/cargo"), *args], cwd=tree, env=pc.env(),
+                          capture_output=True, text=True, check=True).stdout
+
+
+def stub_report(pc, tree):
+    """Where parallel-tests.py looks for the suite report, as the stub tells it."""
+    meta = json.loads(stub_cargo(pc, tree, "metadata", "--format-version", "1"))
+    return pathlib.Path(meta["workspace_root"]) / "target/nextest/suite/junit.xml"
+
+
+# FLAKY-GATE-CACHE-CONCURRENT. The concurrent test above failed on CI now and
+# then (main d73a692ea run 42527410714; #711 run 42570996667) with the second
+# worktree's tests step failing. The cause was the stub, not the hook: it gave
+# every tree one workspace_root, the shared harness, so both runs'
+# parallel-tests.py unlinked, wrote and read ONE junit.xml, and one run's
+# unlink could delete the report the other had just written. Real cargo gives
+# each worktree its own workspace root. These three hold the stub to that.
+
+def test_two_trees_sharing_one_harness_get_separate_suite_reports(pc):
+    second = add_worktree(pc)
+    try:
+        assert stub_report(pc, pc.tree) != stub_report(pc, second)
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def test_a_suite_run_in_one_tree_writes_no_report_where_another_tree_reads(pc):
+    second = add_worktree(pc)
+    try:
+        stub_report(pc, second).unlink(missing_ok=True)
+        stub_cargo(pc, pc.tree, "nextest", "run", "--profile", "suite")
+        assert stub_report(pc, pc.tree).is_file()
+        assert not stub_report(pc, second).exists()
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def test_one_tree_reads_the_report_its_own_run_wrote(pc):
+    assert stub_report(pc, pc.tree) == stub_report(pc, pc.tree)
+    stub_report(pc, pc.tree).unlink(missing_ok=True)
+    stub_cargo(pc, pc.tree, "nextest", "run", "--profile", "suite")
+    assert stub_report(pc, pc.tree).read_text().startswith("<")
+
+
 def add_worktree(pc, name="wt2"):
     second = pc.tree.parent / (pc.tree.name + "-" + name)
     git(pc.tree, "worktree", "add", "-q", str(second))

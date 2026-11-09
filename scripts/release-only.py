@@ -80,8 +80,10 @@ RELEASE_TESTS = (
     "dev_docs_drift_test",
     "docs_drift_test",
     "mcp_since_version_test",
+    "bpf_load_verification_test",
     "release_completeness_test",
     "release_delivery_test",
+    "release_gate_visibility_test",
     "release_surface_test",
     "site_journey_test",
 )
@@ -94,12 +96,14 @@ _HEADING = re.compile(r"## \[(?P<v>[^\]]+)\] - (?P<d>\d{4}-\d{2}-\d{2})")
 
 @dataclasses.dataclass(frozen=True)
 class FileChange:
-    """One file of a diff: `kind` is modify, add, delete, rename, mode or
-    binary; `pairs` are (removed line, added line), hunk by hunk."""
+    """One file of a diff: `kind` is modify, add, delete, rename, mode,
+    binary or reshape; `pairs` are (removed line, added line), hunk by hunk;
+    `adds` are the lines of hunks that only add."""
 
     path: str
     kind: str
     pairs: list
+    adds: list = dataclasses.field(default_factory=list)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -109,6 +113,8 @@ class Commit:
     changes: list | None
     old: str | None
     new: str | None
+    published_old: str | None = None
+    published_new: str | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -161,6 +167,8 @@ def classify(changes: list | None, old: str | None, new: str | None) -> Verdict:
             return Verdict(False, f"{full} {c.path} adds or removes lines")
         if c.kind != "modify":
             return Verdict(False, f"{full} {c.path} is a {c.kind}, not a modification in place")
+        if c.adds:
+            return Verdict(False, f"{full} {c.path} adds lines")
         if not _in_bump_set(c.path):
             return Verdict(False, f"{full} {c.path} is not a file a release bump changes")
         if c.path == "CHANGELOG.md":
@@ -192,8 +200,105 @@ def classify(changes: list | None, old: str | None, new: str | None) -> Verdict:
     )
 
 
+# ── The advertisement commit (RELEASE-FAST C) ───────────────────────────────
+#
+# The phase-two pull request is gone. Its changes ride in the next release
+# pull request as one commit, made by `scripts/release-records.py write
+# <previous>` before the bump: published_version, release_date and the
+# download markers move to the release before, the binary-ceiling line and the
+# eBPF ledger row for that release are added, and the mirrors follow.
+
+# The files scripts/release-records.py write changes.
+ADVERTISE_FILES = frozenset({
+    "website/config.toml",
+    "docs/install.md",
+    "website/content/docs/install.md",
+    "docs/internals/uprobe-capture.md",
+    "website/content/docs/internals/uprobe-capture.md",
+    "website/static/llms-full.txt",
+})
+# The eBPF ledger and its copies: each adds exactly the new release's row.
+LEDGER_FILES = frozenset({
+    "docs/internals/uprobe-capture.md",
+    "website/content/docs/internals/uprobe-capture.md",
+})
+_CEILING_LINE = re.compile(r"#   (\d+\.\d+\.\d+)  [0-9]{1,3}(?:,[0-9]{3})+ bytes   \((?:unchanged|[+-][0-9,]+), "
+                           r"leaving [0-9,]+ bytes of headroom under \d+ MB\)")
+_RELEASE_DATE = re.compile(r'release_date = "(\d{4}-\d{2}-\d{2})"')
+
+
+def _ledger_row(line: str, version: str) -> bool:
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    return (line.startswith("| ") and line.endswith(" |") and len(cells) == 6 and cells[0] == version
+            and cells[5].startswith("attached"))
+
+
+def _real_date(text: str) -> bool:
+    try:
+        datetime.date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def classify_advertise(changes: list | None, crate_old: str | None, crate_new: str | None,
+                       pub_old: str | None, pub_new: str | None) -> Verdict:
+    """Whether a commit is exactly an advertisement commit (see above)."""
+    full = "release-only: no --"
+    if changes is None:
+        return Verdict(False, f"{full} the diff could not be read")
+    if not changes:
+        return Verdict(False, f"{full} nothing changed")
+    if crate_old is None or crate_old != crate_new:
+        return Verdict(False, f"{full} an advertisement does not move the crate version ({crate_old} -> {crate_new})")
+    po, pn = _version(pub_old), _version(pub_new)
+    if po is None or pn is None or pn <= po:
+        return Verdict(False, f"{full} published_version does not move forward ({pub_old} -> {pub_new})")
+    if pub_new != crate_new:
+        return Verdict(False, f"{full} published_version moves to {pub_new}, not the crate version {crate_new}")
+    by_path = {c.path: c for c in changes}
+    # A whole token, or a tag name: install.md names `refs/tags/v<version>`.
+    tok = re.compile(r"(?:(?<=\bv)|(?<![0-9A-Za-z.]))" + re.escape(pub_old) + r"(?![0-9A-Za-z]|\.[0-9])")
+    for c in changes:
+        if c.kind != "modify":
+            return Verdict(False, f"{full} {c.path} is a {c.kind}, not a modification in place")
+        if c.path not in ADVERTISE_FILES:
+            return Verdict(False, f"{full} {c.path} is not a file an advertisement changes")
+        for removed, added in c.pairs:
+            if c.path == "website/config.toml" and removed.startswith("release_date = "):
+                m = _RELEASE_DATE.fullmatch(added)
+                if _RELEASE_DATE.fullmatch(removed) and m and _real_date(m.group(1)):
+                    continue
+            if not (tok.search(removed) and tok.sub(pub_new, removed) == added):
+                return Verdict(False, f"{full} {c.path} changes more than the advertised version: {added[:80]!r}")
+        if c.path == "website/config.toml":
+            ceilings = [a for a in c.adds if (m := _CEILING_LINE.fullmatch(a)) and m.group(1) == pub_new]
+            if len(c.adds) != 1 or len(ceilings) != 1:
+                return Verdict(False, f"{full} website/config.toml must add exactly the {pub_new} binary-ceiling "
+                                      f"line, and adds {len(c.adds)} line(s)")
+        elif c.path in LEDGER_FILES or c.path == "website/static/llms-full.txt":
+            if c.path in LEDGER_FILES and len(c.adds) != 1:
+                return Verdict(False, f"{full} {c.path} must add exactly the {pub_new} uprobe ledger row")
+            if len(c.adds) > 1 or not all(_ledger_row(a, pub_new) for a in c.adds):
+                return Verdict(False, f"{full} {c.path} adds a line that is not the {pub_new} ledger row, attached")
+        elif c.adds:
+            return Verdict(False, f"{full} {c.path} adds lines")
+    config = by_path.get("website/config.toml")
+    if config is None or (f'published_version = "{pub_old}"', f'published_version = "{pub_new}"') not in config.pairs:
+        return Verdict(False, f"{full} website/config.toml does not move published_version")
+    if "docs/internals/uprobe-capture.md" not in by_path:
+        return Verdict(False, f"{full} docs/internals/uprobe-capture.md does not record the {pub_new} uprobe load")
+    lines = sum(len(c.pairs) + len(c.adds) for c in changes)
+    return Verdict(
+        True,
+        f"release-only: advertises {pub_new} in place of {pub_old}, {lines} lines in {len(changes)} files, "
+        "every one the advertised version or a release record",
+    )
+
+
 def classify_range(commits: list) -> Verdict:
-    """Every commit release-only against its parent, none a merge, at least one."""
+    """Every commit release-only against its parent (a bump or an
+    advertisement), none a merge, at least one."""
     if not commits:
         return Verdict(False, "release-only: no -- no commits to judge")
     for c in commits:
@@ -201,6 +306,9 @@ def classify_range(commits: list) -> Verdict:
             return Verdict(False, f"release-only: no -- {c.sha[:9]} is a merge commit")
         v = classify(c.changes, c.old, c.new)
         if not v.ok:
+            a = classify_advertise(c.changes, c.old, c.new, c.published_old, c.published_new)
+            if a.ok:
+                continue
             return Verdict(False, f"{v.line} (in {c.sha[:9]})")
     names = ", ".join(c.sha[:9] for c in commits)
     return Verdict(True, f"release-only: {names}, each {commits[0].old} -> {commits[-1].new} and nothing else")
@@ -258,8 +366,12 @@ def parse_diff(text: str) -> list | None:
         nonlocal removed, added
         if (len(removed), len(added)) != want:
             return False
-        if len(removed) != len(added):
-            # A hunk that adds or removes lines is no version substitution.
+        if not removed and added:
+            # A hunk that only adds: the advertisement's release records.
+            files[-1].adds.extend(added)
+        elif len(removed) != len(added):
+            # A hunk that removes lines, or replaces a different number of
+            # them, is no version substitution.
             files[-1] = dataclasses.replace(files[-1], kind="reshape")
         else:
             files[-1].pairs.extend(zip(removed, added))
@@ -335,13 +447,22 @@ def _git(*args: str) -> str | None:
 _DIFF = ("-U0", "--no-color", "--no-ext-diff", "--no-renames", "--full-index")
 
 
+def published(toml_text: str | None) -> str | None:
+    """website/config.toml's `published_version`, None when it has none."""
+    m = re.search(r'(?m)^published_version = "([^"]*)"$', toml_text) if toml_text else None
+    return m.group(1) if m else None
+
+
 def staged() -> Verdict:
     diff = _git("diff", "--cached", *_DIFF)
-    return classify(
-        parse_diff(diff) if diff is not None else None,
-        package_version(_git("show", "HEAD:Cargo.toml")),
-        package_version(_git("show", ":Cargo.toml")),
-    )
+    changes = parse_diff(diff) if diff is not None else None
+    old, new = package_version(_git("show", "HEAD:Cargo.toml")), package_version(_git("show", ":Cargo.toml"))
+    v = classify(changes, old, new)
+    if v.ok:
+        return v
+    a = classify_advertise(changes, old, new, published(_git("show", "HEAD:website/config.toml")),
+                           published(_git("show", ":website/config.toml")))
+    return a if a.ok else v
 
 
 def commit_range(base: str, head: str) -> Verdict:
@@ -358,6 +479,8 @@ def commit_range(base: str, head: str) -> Verdict:
             parse_diff(diff) if diff is not None else None,
             package_version(_git("show", f"{sha}^:Cargo.toml")),
             package_version(_git("show", f"{sha}:Cargo.toml")),
+            published(_git("show", f"{sha}^:website/config.toml")),
+            published(_git("show", f"{sha}:website/config.toml")),
         ))
     return classify_range(commits)
 

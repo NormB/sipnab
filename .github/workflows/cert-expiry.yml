@@ -32,6 +32,8 @@ on:
       - 'scripts/check-cert-expiry.sh'
       - 'scripts/classify-origin-cert.sh'
       - 'scripts/verify-site-advertises.sh'
+      # The advertisement step resolves the release with it.
+      - 'scripts/advertise-release.py'
       - '.github/workflows/cert-expiry.yml'
       - 'website/static/CNAME'
       - 'website/config.toml'
@@ -124,16 +126,25 @@ jobs:
         # stale page are different problems with different fixes, and the check
         # this replaced scored both as `0`.
         #
-        # Not on a push. The push that moves published_version is the
-        # phase-two commit, and the live page cannot name that release until
-        # the commit is merged and Pages has deployed it, so asking on the
-        # push is red by construction. The schedule and a manual run ask once
-        # the deploy can have happened; the release flow runs
-        # scripts/verify-site-advertises.sh after the deploy.
+        # Not on a push. A push that moves published_version cannot have been
+        # deployed yet, so asking on the push is red by construction. The
+        # schedule and a manual run ask once the deploy can have happened; the
+        # release flow runs scripts/verify-site-advertises.sh after the deploy.
+        #
+        # The release to expect is the one pages.yml advertises, resolved by
+        # the same rule (scripts/advertise-release.py), not the committed
+        # published_version: since RELEASE-FAST C the committed value lags the
+        # site by one release until the next release pull request. A failed
+        # read of GitHub's releases fails the step rather than guess.
         if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          published=$(sed -n 's/^published_version = "\(.*\)"/\1/p' website/config.toml)
+          if ! published=$(python3 scripts/advertise-release.py resolve --repo "$GITHUB_REPOSITORY"); then
+            echo "::error::could not resolve the release the site should advertise"
+            exit 1
+          fi
           echo "site should advertise $published"
           sh scripts/verify-site-advertises.sh "$published" && rc=0 || rc=$?
           # 6 is BLOCKED: the edge refused this client, so the advertisement
