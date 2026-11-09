@@ -43,7 +43,7 @@ pub struct OneShot {
 }
 
 /// One flag that implies `-N`, from the one-shot registry or from the flags
-/// [`super::Cli::normalize`] handles outside it.
+/// `Cli::normalize` handles outside it.
 ///
 /// The one list both readers use: `normalize` sets `-N` when any entry is
 /// active, and [`listing`] writes every entry's name to
