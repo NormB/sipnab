@@ -864,72 +864,51 @@ for commit in $tag_commits; do
 			"$YELLOW" "$short" "$NC"
 		continue
 	fi
-	# ...and jq, for exactly the same reason, which it did NOT get until now.
+	# The verdict is scripts/tag-push-proof.py's `tag_ci`, the one rule; it
+	# used to be a jq pipeline here, and the PR-head proof below needs the same
+	# rule applied to a second commit. What it judges, and why:
 	#
-	# The paragraph above argues at length that a missing optional tool must
-	# skip rather than block. Twelve lines further down the gate pipes gh's
-	# JSON through `jq`, unguarded, into `mine`. With jq absent that pipeline
-	# yields the empty string, and the very next branch reads an empty `mine`
-	# as "no CI runs found for this commit" and BLOCKS the push with a message
-	# stating a fact it never established -- "Push the commit and let CI run
-	# before tagging it", about a commit whose CI may be perfectly green.
+	# Scoped by commit, NOT by recency: `gh run list --commit <full sha>`. A
+	# `--limit 30` window over the most recent runs lost an older commit and
+	# the gate reported "no CI runs found" for one that had plenty. The
+	# headSha filter refuses to judge one commit by another commit's runs.
 	#
-	# Worse than the case the gh guard prevents: gh missing produces a
-	# truthful "NOT verified", jq missing produced a confident wrong verdict,
-	# and the only way past it is SKIP_FMT_HOOK=1 -- which disables fmt,
-	# clippy, rustdoc, fuzz and the feature combinations as well.
+	# Only the NEWEST run of each workflow speaks for the commit (GATE-DUP1):
+	# a duplicated push event ran every workflow twice on 3d91991a, Quality's
+	# concurrency group canceled the older run, and judging every run refused
+	# v0.5.187 although the newer one passed.
 	#
-	# jq is preinstalled on GitHub's ubuntu-latest and macos-latest images and
-	# on this machine (/usr/bin/jq, 1.7.1-apple, macOS 26.5.2), which is why
-	# nothing has hit it. A minimal Debian container or a fresh Linux install
-	# has no jq at all, and the tag gate is the one gate whose false verdict
-	# costs a blocked release.
-	if ! command -v jq >/dev/null 2>&1; then
-		printf '%b  tag %s: jq not installed -- CI status NOT verified%b\n' \
-			"$YELLOW" "$short" "$NC"
-		printf '    gh returned the runs but nothing here can read them. Install jq\n'
-		printf '    to check tags locally; this is NOT a statement that CI is green.\n'
-		continue
-	fi
+	# A SCHEDULED run is set aside first (TAG-GATE-COUNTS-SCHEDULED-RUNS): a
+	# cron run judges whatever main pointed at when its clock fired, and a
+	# scheduled ClusterFuzzLite run held the v0.5.234 tag for about an hour on
+	# 2026-11-05. The filter comes before the newest-per-workflow pick.
+	#
+	# THE PR HEAD (TAG-GATE-WAITS-FOR-MERGE-CI). The v0.5.238 tag waited 37
+	# minutes for the runs on its merge commit 26bfa26a8, which re-proved the
+	# tree PR #701's head f151b38d8 had proved. When the commit's own runs are
+	# not all green, a merged pull request head proves it instead when: the
+	# commit is on origin/main; the head has the same tree (GitHub's
+	# git/commits API); every check main requires concluded `success` on the
+	# head; every workflow run on the head is green by the rule above, so the
+	# macOS leg that `CI success` leaves out still gates the release; and no
+	# run on the commit itself has concluded failure, timed_out,
+	# action_required or startup_failure. Anything it cannot read -- gh
+	# offline, an API error, a pending, neutral, skipped or missing check --
+	# means the commit's own runs decide, as before.
 	printf '  tag -> %s: checking CI ... ' "$short"
-	# Scoped by commit, NOT by recency. `--limit 30` was a window over the most
-	# recent runs, so an older commit fell out of it and the gate reported "no
-	# CI runs found" for one that had plenty -- the right verdict reached
-	# through a claim it had not checked, which is the defect this repository
-	# keeps finding. Note the FULL sha: `--commit` silently returns nothing for
-	# an abbreviated one.
-	runs=$(gh run list --commit "$commit" --limit 50 \
-		--json databaseId,headSha,status,conclusion,name,event 2>/dev/null || echo "")
-	if [ -z "$runs" ]; then
+	TAG_CI_RC=0
+	TAG_CI_OUT=$(python3 "$TAG_PROOF" --tag-ci "$commit" 2>&1) || TAG_CI_RC=$?
+	TAG_CI_VIA_HEAD=0
+	case "$TAG_CI_RC" in
+	0) ;;
+	10) TAG_CI_VIA_HEAD=1 ;;
+	5)
 		printf '%bSKIPPED (gh unavailable or unauthenticated)%b\n' "$YELLOW" "$NC"
 		continue
-	fi
-	# The headSha filter is redundant with --commit and kept deliberately: if a
-	# future gh ignores the flag, this still refuses to judge one commit by
-	# another commit's runs.
-	#
-	# Only the NEWEST run of each workflow speaks for the commit (GATE-DUP1).
-	# A workflow can run twice on one commit -- a duplicated push event did it
-	# to every workflow on 3d91991a -- and Quality's concurrency group then
-	# cancels the older run. Judging every run refused v0.5.187 over that
-	# canceled run although the newer one passed. `databaseId` grows with
-	# creation, so the largest per name is the latest; a re-run attempt keeps
-	# its id and replaces its own result. A canceled run with nothing newer,
-	# a newer failure and a newer run still going all still block.
-	#
-	# A SCHEDULED run is set aside first (TAG-GATE-COUNTS-SCHEDULED-RUNS). A
-	# cron workflow runs against whatever main points at when its clock fires,
-	# so its result is no verdict on the change, and waiting on it waits on
-	# the clock: a scheduled ClusterFuzzLite batch run on the release commit
-	# held the v0.5.234 tag for about an hour on 2026-11-05. Every run a push,
-	# a pull request or a dispatch started still gates. The filter runs BEFORE
-	# the newest-per-workflow pick, so a newer scheduled pass cannot hide an
-	# older failed push run of the same workflow, and a commit whose only runs
-	# are scheduled has "no CI runs" below.
-	mine=$(printf '%s' "$runs" | jq -r --arg c "$commit" \
-		'[.[] | select(.headSha == $c) | select(.event != "schedule")] | group_by(.name) | map(max_by(.databaseId // 0)) | .[] | "\(.status)/\(.conclusion // "-")/\(.name)"' 2>/dev/null || echo "")
-	if [ -z "$mine" ]; then
+		;;
+	3)
 		printf '%bFAIL%b\n' "$RED" "$NC"
+		printf '%s\n' "$TAG_CI_OUT" | sed 's/^/    /'
 		printf '\n'
 		printf '%bPush blocked: no CI runs found for %s.%b\n' "$RED" "$short" "$NC"
 		printf 'Push the commit and let CI run before tagging it. A tag starts a\n'
@@ -938,14 +917,12 @@ for commit in $tag_commits; do
 		printf '\n'
 		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
 		exit 1
-	fi
-	unfinished=$(printf '%s\n' "$mine" | grep -cv '^completed/' || true)
-	failed=$(printf '%s\n' "$mine" | grep -c '^completed/[^s]' || true)
-	if [ "$unfinished" -ne 0 ] || [ "$failed" -ne 0 ]; then
+		;;
+	*)
 		printf '%bFAIL%b\n' "$RED" "$NC"
 		printf '\n'
 		printf '%bPush blocked: CI on %s is not green.%b\n' "$RED" "$short" "$NC"
-		printf '%s\n' "$mine" | sed 's/^/    /'
+		printf '%s\n' "$TAG_CI_OUT" | sed 's/^/    /'
 		printf '\n'
 		printf 'Wait for it to finish, or fix it, then tag the commit that passed.\n'
 		printf 'Tagging a red commit publishes a broken release -- it happened on\n'
@@ -953,13 +930,27 @@ for commit in $tag_commits; do
 		printf '\n'
 		printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
 		exit 1
-	fi
+		;;
+	esac
 	printf '%bOK%b\n' "$GREEN" "$NC"
+	printf '    %s\n' "$TAG_CI_OUT"
 	# CI green is not the whole story: CodeQL is a separate workflow whose
 	# findings never blocked anything, and nine alerts rode through three tags.
 	printf '  tag -> %s: code scanning ... ' "$short"
-	if cs_out=$(python3 scripts/code-scanning-clean.py --sha "$commit" 2>&1); then
+	CS_RC=0
+	cs_out=$(python3 scripts/code-scanning-clean.py --sha "$commit" 2>&1) || CS_RC=$?
+	if [ "$CS_RC" = 0 ]; then
 		printf '%bOK%b\n' "$GREEN" "$NC"
+	elif [ "$CS_RC" = 2 ] && [ "$TAG_CI_VIA_HEAD" = 1 ]; then
+		# Exit 2 is "no analysis of this commit yet" (or unreadable). Under a
+		# PR-head proof that is not a gap: `CI success`, required and green on
+		# the head, needs the job `code-scanning-clean`, which ran this script
+		# on the same tree. Exit 1, open alerts, still blocks.
+		# ci_success_needs_the_code_scanning_job_the_head_proof_relies_on in
+		# scripts/tests/test_tag_ci_proof.py holds that dependency.
+		printf '%bOK (proven on the PR head)%b\n' "$GREEN" "$NC"
+		printf '%s\n' "$cs_out" | sed 's/^/    /'
+		printf '    the head'"'"'s CI success, which needs code-scanning-clean, judged the same tree\n'
 	else
 		printf '%bFAIL%b\n' "$RED" "$NC"
 		printf '%s\n' "$cs_out" | sed 's/^/    /'
