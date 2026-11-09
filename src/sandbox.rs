@@ -550,11 +550,13 @@ fn running_release() -> Option<String> {
 }
 
 /// The first Linux release with Landlock, as `(major, minor)`.
+#[cfg(target_os = "linux")]
 const FIRST_LANDLOCK_RELEASE: (u32, u32) = (5, 13);
 
 /// `(major, minor)` from a kernel release string such as `6.8.12-rt-tegra`.
 ///
 /// `None` when the string does not start with two dot-separated numbers.
+#[cfg(target_os = "linux")]
 fn release_version(release: &str) -> Option<(u32, u32)> {
     let mut parts = release.split('.');
     let major = parts.next()?.parse().ok()?;
