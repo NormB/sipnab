@@ -1293,9 +1293,13 @@ optional parameters.
 
 Every exchange carries `direction` (`offer` or `answer`), `codecs`,
 `media_addr`, `media_port`, `mode` (`sendrecv`, `sendonly`, `recvonly` or
-`inactive`), `timestamp`, and `event` — `null` unless sipnab classified the
-exchange, as with the `MediaAnchorChange` below. A call carrying no SDP answers
-with an empty `exchanges` array rather than an error.
+`inactive`), `timestamp`, and `event`. `event` is `null` unless the exchange
+changed something relative to the same party's previous SDP (`Hold`, `Resume`,
+`CodecChange`, `T38Switch` or `MediaAnchorChange`), or is a REFER (`Transfer`).
+sipnab compares an answer with the answering party's own earlier SDP, not with
+the offer, so the answer below records no event although its address differs from the
+offer's. A call carrying no SDP answers with an empty `exchanges` array rather
+than an error.
 
 ```jsonc
 // get_sdp_timeline { "call_id": "1-1966@10.0.2.20" }
@@ -1321,7 +1325,7 @@ with an empty `exchanges` array rather than an error.
         "telephone-event"
       ],
       "direction": "answer",
-      "event": "MediaAnchorChange",
+      "event": null,
       "media_addr": "10.0.2.15",
       "media_port": 27942,
       "mode": "sendonly",

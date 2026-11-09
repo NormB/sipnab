@@ -983,7 +983,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 812 -> 814 (RELEASE-FAST B): build-ci-release.md's release-only
     // paragraph links scripts/release-only.py and
     // scripts/tests/test_release_only.py (+2).
-    const EXPECTED_CODE_LINKS: usize = 814;
+    // 814 -> 816 (ANA-3): docs/internals/testing.md's row for
+    // .config/implies-no-tui.txt links that file and
+    // scripts/check-cookbook.py (+2); every other developer page unchanged.
+    const EXPECTED_CODE_LINKS: usize = 816;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -1933,7 +1936,7 @@ fn workflow_inventory_heading_counts_the_workflows() -> Result<(), TestError> {
 /// artifact count 2026-07-29. Both were wrong on the day they were typed, by
 /// counting matrix rows and calling the result artifacts.
 ///
-/// Eight is the matrix. It stopped equalling the tarball count the moment a build
+/// Eight is the matrix. It stopped equaling the tarball count the moment a build
 /// existed that produces packages and no tarball, and nothing connected the two
 /// facts, so the prose was free to be confidently wrong. Derive them instead:
 ///

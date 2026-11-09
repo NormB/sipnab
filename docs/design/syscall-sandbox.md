@@ -385,7 +385,13 @@ says `SETTLED`, never `COMPLETE`, for exactly that reason.
 [`scripts/derive-seccomp-allowlist.sh`](https://github.com/NormB/sipnab/blob/main/scripts/derive-seccomp-allowlist.sh) performs it. `--classify` is the
 half that judges a streamed log and is driven by
 [`seccomp_derivation_test`](https://github.com/NormB/sipnab/blob/main/tests/seccomp_derivation_test.rs); the other half needs root, an
-interface and a kernel log.
+interface and the log the records go to. It chooses that log the way the fork
+above describes: `--source` reads `auditctl -s`, and a connected daemon's
+non-zero pid sends the collector to the audit log (`tail -F`, the `log_file`
+auditd.conf names) instead of `dmesg --follow`. The one parser reads both the
+kernel's `audit: type=1326` lines and the audit log's `type=SECCOMP` lines, and
+on the audit path a rise in the `lost` counter is the loss signal the kernel
+log gives as `callbacks suppressed`.
 
 It refuses more often than it answers, and that is the point. It refuses a log
 the kernel suppressed records in, a log with no records at all, and — the one

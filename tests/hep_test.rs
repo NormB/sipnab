@@ -408,7 +408,25 @@ fn a_duration_stop_reports_every_message_delivered_before_it() -> Result<(), Tes
         srv.wait_for_stdout(CALL_ID, test_timeout(5)).is_some(),
         "control: the listener serves the connection before the burst"
     );
-    for n in 0..SENT {
+    write_cap2_burst(&mut peer, SENT)?;
+    signal(&srv, libc::SIGSTOP)?;
+    thread::sleep(Duration::from_secs(4));
+    signal(&srv, libc::SIGCONT)?;
+
+    let reported = cap2_reported_until_exit(&srv);
+    drop(peer);
+    assert_eq!(
+        reported.len(),
+        SENT,
+        "every message delivered before the deadline is reported"
+    );
+    Ok(())
+}
+
+/// Write `count` HEP frames, OPTIONS numbered from 0, to `peer`; each one's
+/// Call-ID is `cap2-<n>@127.0.0.1`.
+fn write_cap2_burst(peer: &mut std::net::TcpStream, count: usize) -> Result<(), TestError> {
+    for n in 0..count {
         let msg = format!(
             "OPTIONS sip:bob@example.com SIP/2.0\r\n\
              Via: SIP/2.0/UDP 127.0.0.1:5060;branch=z9hG4bKcap2{n}\r\n\
@@ -418,18 +436,25 @@ fn a_duration_stop_reports_every_message_delivered_before_it() -> Result<(), Tes
              CSeq: 1 OPTIONS\r\n\
              Content-Length: 0\r\n\r\n"
         );
-        std::io::Write::write_all(&mut peer, &hep3_sip(msg.as_bytes())?)?;
+        std::io::Write::write_all(peer, &hep3_sip(msg.as_bytes())?)?;
     }
-    let pid = libc::pid_t::try_from(srv.child.id())?;
-    // SAFETY: kill(2) on the child this test spawned and has not reaped, so
-    // the pid cannot have been reused.
-    let frozen = unsafe { libc::kill(pid, libc::SIGSTOP) };
-    assert_eq!(frozen, 0, "freeze the run");
-    thread::sleep(Duration::from_secs(4));
-    // SAFETY: as above: the child is stopped, not reaped.
-    let resumed = unsafe { libc::kill(pid, libc::SIGCONT) };
-    assert_eq!(resumed, 0, "resume the run");
+    Ok(())
+}
 
+/// Send `sig` to the run under test.
+fn signal(srv: &HepListener, sig: libc::c_int) -> Result<(), TestError> {
+    let pid = libc::pid_t::try_from(srv.child.id())?;
+    // SAFETY: kill(2) on the child this test spawned and has not reaped (the
+    // listener reaps it only when dropped), so the pid cannot have been
+    // reused; touches no memory.
+    let sent = unsafe { libc::kill(pid, sig) };
+    assert_eq!(sent, 0, "send signal {sig} to the run");
+    Ok(())
+}
+
+/// The numbers of the `cap2-` messages the run reports on stdout, read until
+/// its stdout closes or 15 s pass.
+fn cap2_reported_until_exit(srv: &HepListener) -> std::collections::BTreeSet<String> {
     let mut reported = std::collections::BTreeSet::new();
     let deadline = Instant::now() + test_timeout(15);
     while Instant::now() < deadline {
@@ -445,11 +470,83 @@ fn a_duration_stop_reports_every_message_delivered_before_it() -> Result<(), Tes
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
     }
+    reported
+}
+
+/// A TCP listener stopped by `--duration` reports what a peer sent before
+/// the deadline on a connection the kernel had completed and sipnab had not
+/// yet accepted (CAP-2).
+///
+/// The run is frozen with SIGSTOP before the peer connects, so the kernel
+/// completes the connection and queues the frames while sipnab can accept
+/// nothing; it is resumed after its deadline. The accept loop used to stop
+/// at the deadline and close such a connection unread.
+///
+/// The freeze can land in the instant between the accept loop's stop check
+/// and its accept, which would accept the connection before the stop. That
+/// passes this test without the fix; it cannot fail it.
+#[test]
+fn a_duration_stop_reports_a_connection_it_had_not_yet_accepted() -> Result<(), TestError> {
+    const SENT: usize = 300;
+    let srv = HepListener::spawn(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-listen-transport",
+        "tcp",
+        "--duration",
+        "3",
+    ])?;
+    signal(&srv, libc::SIGSTOP)?;
+    let mut peer = std::net::TcpStream::connect(("127.0.0.1", srv.port))?;
+    write_cap2_burst(&mut peer, SENT)?;
+    thread::sleep(Duration::from_secs(4));
+    signal(&srv, libc::SIGCONT)?;
+
+    let reported = cap2_reported_until_exit(&srv);
     drop(peer);
     assert_eq!(
         reported.len(),
         SENT,
-        "every message delivered before the deadline is reported"
+        "every message on the connection waiting at the deadline is reported"
+    );
+    Ok(())
+}
+
+/// A signal stops a TCP listener with a connection still waiting in its
+/// backlog, and the run exits cleanly: the waiting connection does not hold
+/// the exit.
+///
+/// A signal ends the receive loop at once, without reading what the
+/// listener still delivers, so the listener takes nothing from its backlog
+/// at a signal. The SIGTERM is sent while the run is frozen, so it is seen
+/// before the connection can be accepted.
+#[test]
+fn a_signal_stop_with_a_connection_waiting_exits_cleanly() -> Result<(), TestError> {
+    const SENT: usize = 300;
+    let mut srv = HepListener::spawn(&[
+        "--hep-allow",
+        "127.0.0.1/32",
+        "--hep-listen-transport",
+        "tcp",
+    ])?;
+    signal(&srv, libc::SIGSTOP)?;
+    let mut peer = std::net::TcpStream::connect(("127.0.0.1", srv.port))?;
+    write_cap2_burst(&mut peer, SENT)?;
+    signal(&srv, libc::SIGTERM)?;
+    signal(&srv, libc::SIGCONT)?;
+
+    let reported = cap2_reported_until_exit(&srv);
+    let status = terminate(&mut srv.child)?;
+    drop(peer);
+    assert!(
+        reported.len() <= SENT,
+        "nothing is reported twice: {}",
+        reported.len()
+    );
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a signal stop with a connection waiting exits cleanly: {status}"
     );
     Ok(())
 }

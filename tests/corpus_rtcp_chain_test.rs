@@ -380,7 +380,7 @@ fn the_dtls_length_rules_refuse_nothing_the_corpus_holds() {
 fn the_rule_under_measurement_is_the_one_rfc_3550_states() {
     // One packet filling the datagram: chains.
     assert!(lengths_chain_to_the_end(&[0x80, 201, 0, 1, 0, 0, 0, 1]));
-    // Two packets totalling the datagram: chains.
+    // Two packets totaling the datagram: chains.
     let mut compound = vec![0x80u8, 201, 0, 1, 0, 0, 0, 1];
     compound.extend_from_slice(&[0x80, 203, 0, 1, 0, 0, 0, 2]);
     assert!(lengths_chain_to_the_end(&compound));

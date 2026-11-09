@@ -234,7 +234,7 @@ links to its section on the bundle's page.
 | [`tfps_unban`](@/docs/mcp-tools-tfps.md#tfps-unban) | [tfps](@/docs/mcp-tools-tfps.md) | **Write, off by default.** Releases a source sipnab banned |
 | [`th_mappings`](@/docs/mcp-tools-signaling.md#th-mappings) | [signaling](@/docs/mcp-tools-signaling.md) | The OpenSIPS topology-hiding mappings held, one row each with its state and which legs sipnab captured, beside the event counts |
 | [`timeline`](@/docs/mcp-tools-signaling.md#timeline) | [signaling](@/docs/mcp-tools-signaling.md) | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
-| [`top_talkers`](@/docs/mcp-tools-security.md#top-talkers) | [security](@/docs/mcp-tools-security.md) | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
+| [`top_talkers`](@/docs/mcp-tools-security.md#top-talkers) | [security](@/docs/mcp-tools-security.md) | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`triage_call`](@/docs/mcp-tools-core.md#triage-call) | [core](@/docs/mcp-tools-core.md) | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
 | [`validate_filter`](@/docs/mcp-tools-signaling.md#validate-filter) | [signaling](@/docs/mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`validate_message`](@/docs/mcp-tools-signaling.md#validate-message) | [signaling](@/docs/mcp-tools-signaling.md) | Conformance findings for one message, read alone |

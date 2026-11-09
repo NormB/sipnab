@@ -1065,7 +1065,7 @@ mod tests {
     /// One call in a scenario: destination, start offset in seconds from the
     /// base timestamp, and how many seconds it lasted.
     struct Call<'a> {
-        /// Dialled number, which decides the wangiri prefix.
+        /// Dialed number, which decides the wangiri prefix.
         dest: &'a str,
         /// Seconds after the base timestamp at which the INVITE was sent.
         start: i64,

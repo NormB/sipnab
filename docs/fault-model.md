@@ -181,9 +181,9 @@ Both dialog policies keep memory bounded.
 ## Memory-safety boundary
 
 sipnab is a Rust program. Rust marks code that the compiler cannot check for
-memory safety as `unsafe`. The tree holds 113 blocks outside `#[cfg(test)]`, across 33 files, the
+memory safety as `unsafe`. The tree holds 115 blocks outside `#[cfg(test)]`, across 33 files, the
 largest groups in [`src/privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs) (15), [`src/rtp/playback.rs`](https://github.com/NormB/sipnab/blob/main/src/rtp/playback.rs) (10) and
-[`src/capture/uprobe/perf.rs`](https://github.com/NormB/sipnab/blob/main/src/capture/uprobe/perf.rs) (9).
+[`src/sandbox.rs`](https://github.com/NormB/sipnab/blob/main/src/sandbox.rs) (10).
 
 - Every block is a call into the operating system or another foreign library.
 - Every block carries a `// SAFETY:` comment stating why it is sound, and the

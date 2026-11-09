@@ -524,16 +524,84 @@ pub fn kernel_abi() -> Result<u32, LandlockStatus> {
     }
     let err = std::io::Error::last_os_error();
     Err(LandlockStatus::Unsupported {
-        reason: match err.raw_os_error() {
-            Some(libc::ENOSYS) => "this kernel has no Landlock (needs 5.13 or newer)".to_string(),
-            Some(libc::EOPNOTSUPP) => {
-                "Landlock is compiled in but disabled; add it to the kernel's \
-                 lsm= list to enable it"
-                    .to_string()
-            }
-            _ => format!("the kernel refused a Landlock version query: {err}"),
-        },
+        reason: unsupported_reason(&err, running_release().as_deref()),
     })
+}
+
+/// The release string of the running kernel, as `uname -r` prints it.
+///
+/// `None` when `uname` fails or the field is not UTF-8.
+#[cfg(target_os = "linux")]
+fn running_release() -> Option<String> {
+    // SAFETY: `utsname` is plain C data with no invalid bit patterns, so a
+    // zeroed value is valid; `uname` fills it and returns 0, or -1 on error.
+    let mut uts: libc::utsname = unsafe { std::mem::zeroed() };
+    // SAFETY: `uts` is a valid, writable `utsname` for the whole call.
+    if unsafe { libc::uname(&raw mut uts) } != 0 {
+        return None;
+    }
+    let bytes: Vec<u8> = uts
+        .release
+        .iter()
+        .take_while(|c| **c != 0)
+        .map(|c| c.to_ne_bytes()[0])
+        .collect();
+    String::from_utf8(bytes).ok()
+}
+
+/// The first Linux release with Landlock, as `(major, minor)`.
+const FIRST_LANDLOCK_RELEASE: (u32, u32) = (5, 13);
+
+/// `(major, minor)` from a kernel release string such as `6.8.12-rt-tegra`.
+///
+/// `None` when the string does not start with two dot-separated numbers.
+fn release_version(release: &str) -> Option<(u32, u32)> {
+    let mut parts = release.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor_part = parts.next()?;
+    let digits = minor_part
+        .find(|c: char| !c.is_ascii_digit())
+        .map_or(minor_part, |end| &minor_part[..end]);
+    Some((major, digits.parse().ok()?))
+}
+
+/// Why the Landlock version query failed, worded for an operator.
+///
+/// ENOSYS means the kernel has no Landlock system calls. A kernel older than
+/// 5.13 cannot have them; a newer one was built without
+/// `CONFIG_SECURITY_LANDLOCK`, and an upgrade would not help. `release` (the
+/// running kernel's, from `uname`) decides which; when it cannot be read both
+/// causes are named.
+///
+/// # Arguments
+///
+/// * `err` - the error the version query returned.
+/// * `release` - the running kernel's release string, if it could be read.
+#[cfg(target_os = "linux")]
+pub(crate) fn unsupported_reason(err: &std::io::Error, release: Option<&str>) -> String {
+    match err.raw_os_error() {
+        Some(libc::ENOSYS) => {
+            let name = release.unwrap_or("unknown");
+            match release.and_then(release_version) {
+                Some(version) if version < FIRST_LANDLOCK_RELEASE => {
+                    format!("this kernel ({name}) has no Landlock (needs 5.13 or newer)")
+                }
+                Some(_) => format!(
+                    "this kernel ({name}) has no Landlock: it was built without Landlock \
+                     support (CONFIG_SECURITY_LANDLOCK)"
+                ),
+                None => format!(
+                    "this kernel has no Landlock: it is older than 5.13 or was built \
+                     without Landlock support (CONFIG_SECURITY_LANDLOCK); its release \
+                     ({name}) could not be read"
+                ),
+            }
+        }
+        Some(libc::EOPNOTSUPP) => "Landlock is compiled in but disabled; add it to the kernel's \
+             lsm= list to enable it"
+            .to_string(),
+        _ => format!("the kernel refused a Landlock version query: {err}"),
+    }
 }
 
 /// Without Linux there is no Landlock, and saying so is the whole contract.
@@ -1463,9 +1531,24 @@ mod reporting_tests {
 
     type TestError = Box<dyn std::error::Error>;
 
+    /// The status an older kernel reports, worded by the one function that
+    /// words it.
+    #[cfg(target_os = "linux")]
     fn unsupported() -> LandlockStatus {
         LandlockStatus::Unsupported {
-            reason: "this kernel has no Landlock (needs 5.13 or newer)".to_string(),
+            reason: unsupported_reason(
+                &std::io::Error::from_raw_os_error(libc::ENOSYS),
+                Some("5.10.0-23-amd64"),
+            ),
+        }
+    }
+
+    /// Off Linux the only unsupported status is the one `kernel_abi` returns.
+    #[cfg(not(target_os = "linux"))]
+    fn unsupported() -> LandlockStatus {
+        match kernel_abi() {
+            Err(status) => status,
+            Ok(abi) => LandlockStatus::Enforced { abi, rules: 0 },
         }
     }
 
@@ -1525,9 +1608,154 @@ mod reporting_tests {
     /// An unsupported kernel is reported with the reason, not as silence.
     #[test]
     fn the_startup_line_says_why_when_the_kernel_cannot() -> Result<(), TestError> {
-        let line = startup_line(&unsupported());
+        let status = unsupported();
+        let line = startup_line(&status);
         assert!(line.contains("NOT active"), "{line}");
-        assert!(line.contains("5.13"), "the reason is missing: {line}");
+        let LandlockStatus::Unsupported { reason } = &status else {
+            return Err(format!("the fixture is not an unsupported status: {status:?}").into());
+        };
+        assert!(
+            line.contains(reason.as_str()),
+            "the reason is missing: {line}"
+        );
+        Ok(())
+    }
+
+    // ── Owed for a refusal that blamed the kernel's age on any ENOSYS ───────
+    //
+    // ENOSYS from the version query means the kernel has no Landlock syscalls.
+    // That is true of every kernel older than 5.13 and of every newer one built
+    // without CONFIG_SECURITY_LANDLOCK. The text said "needs 5.13 or newer" for
+    // both, which on a 6.8 kernel sends the operator to upgrade a kernel that
+    // is already new enough.
+
+    /// ENOSYS, as the version query reports it.
+    #[cfg(target_os = "linux")]
+    fn enosys() -> std::io::Error {
+        std::io::Error::from_raw_os_error(libc::ENOSYS)
+    }
+
+    /// A kernel older than 5.13 is told it needs 5.13.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn enosys_on_a_kernel_older_than_5_13_says_it_needs_5_13() {
+        let why = unsupported_reason(&enosys(), Some("5.10.0-23-amd64"));
+        assert!(why.contains("needs 5.13 or newer"), "{why}");
+        assert!(
+            why.contains("5.10.0-23-amd64"),
+            "the release is not named: {why}"
+        );
+        assert!(!why.contains("CONFIG_SECURITY_LANDLOCK"), "{why}");
+    }
+
+    /// A kernel at or past 5.13 is told it was built without Landlock.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn enosys_on_a_new_enough_kernel_says_it_was_built_without_landlock() {
+        let why = unsupported_reason(&enosys(), Some("6.8.12-rt-tegra"));
+        assert!(
+            why.contains("built without Landlock support (CONFIG_SECURITY_LANDLOCK)"),
+            "{why}"
+        );
+        assert!(
+            why.contains("6.8.12-rt-tegra"),
+            "the release is not named: {why}"
+        );
+        assert!(
+            !why.contains("needs 5.13"),
+            "a 6.8 kernel was told to upgrade: {why}"
+        );
+    }
+
+    /// The boundary: 5.13 itself is new enough, 5.12 is not, and a minor
+    /// number is compared as a number (5.9 is older than 5.13).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_5_13_boundary_is_compared_numerically() {
+        for new_enough in ["5.13", "5.13.0", "5.14.21-150500", "10.0.1"] {
+            let why = unsupported_reason(&enosys(), Some(new_enough));
+            assert!(
+                why.contains("CONFIG_SECURITY_LANDLOCK") && !why.contains("needs 5.13"),
+                "{new_enough}: {why}"
+            );
+        }
+        for older in ["5.12.19", "5.9.0", "4.19.0-27-amd64"] {
+            let why = unsupported_reason(&enosys(), Some(older));
+            assert!(why.contains("needs 5.13 or newer"), "{older}: {why}");
+        }
+    }
+
+    /// A release that cannot be read names both causes rather than guessing.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn enosys_with_an_unreadable_release_names_both_causes() {
+        for release in [Some("linux-rolling"), Some(""), Some("6"), None] {
+            let why = unsupported_reason(&enosys(), release);
+            assert!(
+                why.contains("older than 5.13") && why.contains("CONFIG_SECURITY_LANDLOCK"),
+                "{release:?}: {why}"
+            );
+            assert!(!why.contains("needs 5.13 or newer"), "{release:?}: {why}");
+        }
+    }
+
+    /// EOPNOTSUPP is a kernel with Landlock built in and not enabled, whatever
+    /// its release.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn eopnotsupp_says_landlock_is_built_in_but_disabled() {
+        let err = std::io::Error::from_raw_os_error(libc::EOPNOTSUPP);
+        for release in [Some("6.8.12-rt-tegra"), Some("5.10.0"), None] {
+            let why = unsupported_reason(&err, release);
+            assert!(why.contains("compiled in but disabled"), "{why}");
+            assert!(why.contains("lsm="), "the fix is not named: {why}");
+            assert!(!why.contains("5.13"), "{release:?}: {why}");
+        }
+    }
+
+    /// Any other errno is reported as the kernel's own error.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn another_errno_is_reported_as_the_kernel_said_it() {
+        let err = std::io::Error::from_raw_os_error(libc::EPERM);
+        let why = unsupported_reason(&err, Some("6.8.12"));
+        assert!(
+            why.starts_with("the kernel refused a Landlock version query"),
+            "{why}"
+        );
+        assert!(!why.contains("5.13"), "{why}");
+    }
+
+    /// The running release is read from the kernel, and this host's is
+    /// non-empty and parses as a version.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_running_release_is_read_from_the_kernel() -> Result<(), TestError> {
+        let release = running_release().ok_or("uname returned no release")?;
+        let expected = std::fs::read_to_string("/proc/sys/kernel/osrelease")
+            .map_err(|e| format!("read osrelease: {e}"))?;
+        assert_eq!(
+            release,
+            expected.trim(),
+            "the release sipnab reads is the kernel's own"
+        );
+        Ok(())
+    }
+
+    /// The refusal text exists in one place: no literal copy of the old
+    /// sentence remains outside the function that words it.
+    #[test]
+    fn the_landlock_refusal_text_has_one_source() -> Result<(), TestError> {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/sandbox.rs"))
+            .map_err(|e| format!("read sandbox.rs: {e}"))?;
+        // The code, not the tests: the tests quote the sentence to assert it.
+        let code = src.split("#[cfg(test)]").next().unwrap_or_default();
+        let needle = ["needs 5.13", " or newer"].concat();
+        assert_eq!(
+            code.matches(needle.as_str()).count(),
+            1,
+            "the 5.13 sentence is written more than once (or not at all)"
+        );
         Ok(())
     }
 

@@ -3607,7 +3607,7 @@ Capture analysis: 2 finding(s) across 5 dialog(s), 0 stream(s), 23 frame(s) read
      - Call-ID unavail-4e5f60@192.0.2.50 | 192.0.2.50:5060 -> 192.0.2.60 | 2023-11-14 22:13:32.000 UTC | status_code=503 | Service Unavailable
 
 2. [MINOR] Call failed 4xx — 2 call(s)
-   The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy Here, 404 for a misdialled number, 480 for a phone that is off — so this is listed to be ruled out rather than acted on. The codes are named below; a run of 403 or 408 is not an ordinary outcome.
+   The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy Here, 404 for a misdialed number, 480 for a phone that is off — so this is listed to be ruled out rather than acted on. The codes are named below; a run of 403 or 408 is not an ordinary outcome.
    Evidence:
      - Call-ID busy-3a2b1c@192.0.2.30 | 192.0.2.30:5060 -> 192.0.2.40 | 2023-11-14 22:13:23.000 UTC | status_code=486 | Busy Here
      - Call-ID notfound-1b2c3d@203.0.113.30 | 203.0.113.30:5060 -> 203.0.113.40 | 2023-11-14 22:13:29.000 UTC | status_code=404 | Not Found
@@ -9919,7 +9919,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json
 ```
 
 It is the same analysis in a different encoding. The YANG section of
@@ -18714,6 +18714,10 @@ The row of a mid-call change names it:
 - media anchor moved,
 - or a transfer.
 
+Each change is relative to the same party's previous SDP. An answer that
+differs from its offer is not a change: the two parties' SDP describe two
+different endpoints.
+
 Open with `o` from the Call List.
 
 | Key | Action |
@@ -20020,7 +20024,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--bpf-file` | `<FILE>` | -- | 0.3.0 | Read the BPF capture filter from a file. It takes precedence over the positional filter and replaces `[capture] bpf_filter`, and like them it applies to `-I` capture files as well as live capture. Config: `[capture] bpf_filter` |
 | `--capture-tunnels` | `[<PORTS>]` | off | 0.5.80 | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default: it takes every packet on those ports, which on a mobile core is the entire user plane, because a BPF filter cannot reach the inner port behind a GTP-U extension-header chain. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | 0.3.0 | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth). At least 1: sipnab refuses `0` |
-| `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2`. At the deadline sipnab stops capturing and still reports what had already arrived: a TCP or TLS `--hep-listen` reads what its open connections hold, for up to 1 second, and the run reads on for up to 3 seconds for the capture to deliver it. 0.5.233 and earlier dropped it |
+| `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2`. At the deadline sipnab stops capturing and still reports what had already arrived: a TCP or TLS `--hep-listen` reads what its open connections hold, for up to 1 second, and accepts the connections still waiting in its backlog, completing a TLS handshake under way, for up to 1 second more, and the run reads on for up to 3 seconds for the capture to deliver it. 0.5.233 and earlier dropped it, and 0.5.240 and earlier also lost every packet on a connection not yet accepted at the deadline |
 | `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
@@ -20678,7 +20682,7 @@ See the [Name Resolution](keybindings.md#name-resolution) keys for in-TUI naming
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `--strip-secrets` | `<OUTPUT>` | -- | 0.4.3 | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. sipnab never touches the input and writes the output atomically. Steps: [Share a capture without its keys](tls-capture.md#share-a-capture-without-its-keys). |
+| `--strip-secrets` | `<OUTPUT>` | -- | 0.4.3 | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. sipnab never touches the input and writes the output atomically. On success it prints one line on stderr, at any log level: the blocks it removed, counted by kind (`TLS Key Log`, `SSH Key Log`, `WireGuard Key Log` and the other Secrets Types the pcapng specification lists), and the path it wrote. Steps: [Share a capture without its keys](tls-capture.md#share-a-capture-without-its-keys). |
 | `--show-frame` | `<POINTER>` | -- | 0.5.77 | Resolve a frame pointer from a previous run, print that frame, then exit. Takes `<source>#<ordinal>` or `<source>#<ordinal>@<digest>` — the form the `frame` field of `--json-dialogs`, `--report`, the REST API and MCP carries. With a digest, sipnab checks the bytes against it and refuses a capture that changed after sipnab minted the pointer, writing nothing to stdout. Without one, sipnab prints the frame and marks it `UNVERIFIED`. |
 
 Note: with resolution active, sipnab saves name mappings into a pcapng Name
@@ -20822,9 +20826,9 @@ Multiple diagnostic flags combine with OR.
 - `sipnab -N -I capture.pcap --analyze --filter "state == 'Failed'" --no-cli-print` — narrow the DIALOG findings to failed calls. The capture-level evidence (undecodable frames, discarded ports, dropped records) is deliberately not narrowed, because it bounds every count in the report
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.findings[] | select(.severity == "critical")'` — the critical findings only, for a pipeline
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'` — whether the capture decoded fully. `false` means every count in the analysis is a floor, so do not trust a clean-looking verdict
-- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document. `yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json` validates it
+- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document. `yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json` validates it
 - `sipnab -N -I capture.pcap --json-analyze --yang-analyze --no-cli-print` — both encodings of ONE analysis, one line each: the same findings, the same counts, the same `rank` order
-- `sipnab --print-yang-module > sipnab-diagnosis@2026-10-09.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950.html) gives it, for `yanglint` or `pyang`
+- `sipnab --print-yang-module > sipnab-diagnosis@2026-11-08.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950.html) gives it, for `yanglint` or `pyang`
 - `sipnab --print-yang-module | pyang -f tree` — the shape of the capture analysis as a YANG tree: every node, its type, and which are lists
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --line-buffer > calls.ndjson` — record one summary object per call from live traffic, flushed per line for a downstream collector
@@ -33489,16 +33493,16 @@ To check it, save the module this sipnab writes against. Then hand both to
 `yanglint`:
 
 ```bash
-sipnab --print-yang-module > sipnab-diagnosis@2026-10-09.yang
+sipnab --print-yang-module > sipnab-diagnosis@2026-11-08.yang
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json
 ```
 
 `--print-yang-module` prints the module this sipnab validates against. The
 repository commits the same file at
-[`yang/sipnab-diagnosis@2026-10-09.yang`](../yang/sipnab-diagnosis@2026-10-09.yang).
+[`yang/sipnab-diagnosis@2026-11-08.yang`](../yang/sipnab-diagnosis@2026-11-08.yang).
 
 The document has one member, `sipnab-diagnosis:capture-analysis`. It differs
 from the `--json-analyze` object only in how it writes the same facts:
@@ -40303,7 +40307,7 @@ links to its section on the bundle's page.
 | [`tfps_unban`](mcp-tools-tfps.md#tfps_unban) | [tfps](mcp-tools-tfps.md) | **Write, off by default.** Releases a source sipnab banned |
 | [`th_mappings`](mcp-tools-signaling.md#th_mappings) | [signaling](mcp-tools-signaling.md) | The OpenSIPS topology-hiding mappings held, one row each with its state and which legs sipnab captured, beside the event counts |
 | [`timeline`](mcp-tools-signaling.md#timeline) | [signaling](mcp-tools-signaling.md) | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
-| [`top_talkers`](mcp-tools-security.md#top_talkers) | [security](mcp-tools-security.md) | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
+| [`top_talkers`](mcp-tools-security.md#top_talkers) | [security](mcp-tools-security.md) | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`triage_call`](mcp-tools-core.md#triage_call) | [core](mcp-tools-core.md) | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
 | [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`validate_message`](mcp-tools-signaling.md#validate_message) | [signaling](mcp-tools-signaling.md) | Conformance findings for one message, read alone |
@@ -43580,9 +43584,13 @@ optional parameters.
 
 Every exchange carries `direction` (`offer` or `answer`), `codecs`,
 `media_addr`, `media_port`, `mode` (`sendrecv`, `sendonly`, `recvonly` or
-`inactive`), `timestamp`, and `event` — `null` unless sipnab classified the
-exchange, as with the `MediaAnchorChange` below. A call carrying no SDP answers
-with an empty `exchanges` array rather than an error.
+`inactive`), `timestamp`, and `event`. `event` is `null` unless the exchange
+changed something relative to the same party's previous SDP (`Hold`, `Resume`,
+`CodecChange`, `T38Switch` or `MediaAnchorChange`), or is a REFER (`Transfer`).
+sipnab compares an answer with the answering party's own earlier SDP, not with
+the offer, so the answer below records no event although its address differs from the
+offer's. A call carrying no SDP answers with an empty `exchanges` array rather
+than an error.
 
 ```jsonc
 // get_sdp_timeline { "call_id": "1-1966@10.0.2.20" }
@@ -43608,7 +43616,7 @@ with an empty `exchanges` array rather than an error.
         "telephone-event"
       ],
       "direction": "answer",
-      "event": "MediaAnchorChange",
+      "event": null,
       "media_addr": "10.0.2.15",
       "media_port": 27942,
       "mode": "sendonly",
@@ -45339,7 +45347,7 @@ the other bundles and finds any tool by name.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`top_talkers`](#top_talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
+| [`top_talkers`](#top_talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`describe_endpoint`](#describe_endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
 | [`diagnose_registration`](#diagnose_registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | [`evaluate_expectations`](#evaluate_expectations) | `rules?`, `rules_toml?`, `suppression_file?` | A pass/fail verdict per rule plus an exit code for a build. A rule whose population is empty fails rather than passing quietly |
@@ -45353,7 +45361,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 
 ### `top_talkers`
 
-Ranks the busiest participants: IPs, user agents, or dialled prefixes.
+Ranks the busiest participants: IPs, user agents, or dialed prefixes.
 
 Use it to answer "who is busiest". `aggregate_dialogs` and `group_dialogs`
 group DIALOGS, which have two ends. `top_talkers` counts PARTICIPANTS, so it
@@ -45419,7 +45427,7 @@ in it, so a two-ended call adds to two rows — here both ends took part in all
 1334 dialogs and both read 100%. `total_matched` is the number that partitions:
 compare a row's `dialogs` against it rather than against the other rows.
 `by: "prefix"` is the exception and does partition, because sipnab credits one
-bucket per dialog and a call has one dialled number.
+bucket per dialog and a call has one dialed number.
 
 sipnab orders rows by `dialogs`, then by `messages`, then by `key`, so the
 order is the same on every run over one capture. `key` arrives fenced for
@@ -49050,7 +49058,6 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
               "telephone-event"
             ],
             "direction": "answer",
-            "event": "MediaAnchorChange",
             "media_addr": "10.0.2.15",
             "media_port": 27942,
             "mode": "sendonly",
@@ -52098,11 +52105,22 @@ sipnab -N -I sample-call.pcap --sandbox required --report --no-cli-print
 ```
 
 ```text
-WARN sipnab::app::bootstrap: path sandbox NOT active: this kernel has no Landlock (needs 5.13 or newer). The capture is running unsandboxed; `--sandbox required` refuses instead of continuing.
-`--sandbox required` was given and no path sandbox is in force: this kernel has no Landlock (needs 5.13 or newer). Refusing to capture. Use `--sandbox best-effort` to capture without one.
+WARN sipnab::app::bootstrap: path sandbox NOT active: this kernel (6.8.12-rt-tegra) has no Landlock: it was built without Landlock support (CONFIG_SECURITY_LANDLOCK). The capture is running unsandboxed; `--sandbox required` refuses instead of continuing.
+`--sandbox required` was given and no path sandbox is in force: this kernel (6.8.12-rt-tegra) has no Landlock: it was built without Landlock support (CONFIG_SECURITY_LANDLOCK). Refusing to capture. Use `--sandbox best-effort` to capture without one.
 ```
 
-That kernel was 6.8 built without `CONFIG_SECURITY_LANDLOCK`. Check yours:
+Rerun on 2026-11-08 on the same host (Linux 6.8.12-rt-tegra). The reason
+depends on the running kernel's release, from `uname`:
+
+| The version query returns | Release | The reason says |
+|---|---|---|
+| `ENOSYS` | older than 5.13 | `this kernel (<release>) has no Landlock (needs 5.13 or newer)` |
+| `ENOSYS` | 5.13 or newer | `this kernel (<release>) has no Landlock: it was built without Landlock support (CONFIG_SECURITY_LANDLOCK)`: a kernel upgrade does not help; a kernel built with that option does |
+| `ENOSYS` | unreadable | both causes, and that sipnab could not read the release |
+| `EOPNOTSUPP` | any | `Landlock is compiled in but disabled; add it to the kernel's lsm= list to enable it` |
+
+Before that change the text said `needs 5.13 or newer` for every `ENOSYS`,
+which on this 6.8 kernel was wrong. Check yours:
 
 ```bash
 cat /sys/kernel/security/lsm
@@ -52129,32 +52147,50 @@ Without a list, `enforce` refuses to start, with exit `1`:
 ```
 
 `scripts/derive-seccomp-allowlist.sh <sipnab> <interface>`, run as root, runs
-sipnab in sixteen shapes under `--seccomp log`, streams the kernel log, and
-says whether the set of calls stopped growing. It reads the records from the
-kernel log, so it needs a host where no audit daemon takes them.
+sipnab in sixteen shapes under `--seccomp log`, streams the log the records go
+to, and says whether the set of calls stopped growing.
 
-On this host an audit daemon was running, and the script found nothing:
-
-```text
-NO RECORDS: nothing in this log is a seccomp audit record.
-  Either the filter never installed, or the log was collected
-  after the run rather than streamed during it.
-```
-
-The records were in the audit log instead, where `--seccomp log` says to look:
+Where the records go depends on the host, and the script finds out the same way
+you would:
 
 ```bash
 sudo auditctl -s
 ```
 
+- A non-zero `pid` means an audit daemon holds the audit socket. The kernel hands it the
+  records, and they land in its log (`log_file` in `/etc/audit/auditd.conf`,
+  `/var/log/audit/audit.log` by default) as `type=SECCOMP` lines. The script
+  follows that file with `tail -F` and prints
+  `Records go to the audit daemon; following /var/log/audit/audit.log.`
+- A `pid` of 0, or no `auditctl`, means no daemon. The records are in the
+  kernel log as `audit: type=1326` lines, and the script follows
+  `dmesg --follow`, with `kernel.printk_ratelimit` set to 0 for the run and
+  restored after it.
+
+Set `SIPNAB_DERIVE_AUDIT_LOG` to read another file on the audit path.
+
+To look at the records yourself on a host with a daemon:
+
 ```bash
 sudo ausearch -m SECCOMP -ts recent
 ```
 
-A non-zero `pid` from `auditctl -s` means a daemon takes the records. A
-single `--report` run over the sample capture left 5,896 records there, naming
-13 distinct system calls. Not run for this page: an enforcing filter, because
-the script derived no allowlist here.
+A single `--report` run over the sample capture on 2026-11-03 left 5,896
+records there, naming 13 distinct system calls. Not run for this page: the
+collector as root on this host after the change on 2026-11-08 that made it
+read the audit log, nor an enforcing filter. `seccomp_derivation_test` drives
+the source choice and the parsing of audit-log records with synthetic input.
+
+The script refuses a run that lost records. On the kernel log that is a
+`callbacks suppressed` line. On the audit path it is a rise in the `lost`
+counter of `auditctl -s`, which the script reads before and after each shape:
+
+```text
+LOST: the audit subsystem lost 12 record(s) during the run.
+  A derivation that misses a call yields an allowlist that kills
+  the process it was built for. Raise the backlog (auditctl -b
+  65536), check that auditctl -r is 0, and run it again.
+```
 
 ## When something does not work
 
@@ -52164,8 +52200,11 @@ the script derived no allowlist here.
 | `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | The user does not exist on this host. With `--chroot`, 0.5.233 and earlier also printed this when the directory held no `etc/passwd` naming the user | Create the user, or name another with `--user`. On 0.5.233 or earlier, upgrade, or add the user's entries to the directory |
 | `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
 | A root run reading files stops before it reads any with exit `2`, and the message names the hard open-file limit ([quoted in full](#read-capture-files-only-root-can-read)) | The set needs one descriptor per file plus 64, more than the hard open-file limit allows | Raise `ulimit -Hn` or `LimitNOFILE=`, or read fewer files per run |
-| `--sandbox required` refuses | No Landlock in this kernel | `best-effort`, or a kernel with Landlock |
+| `--sandbox required` refuses, `needs 5.13 or newer` | The kernel predates Landlock | `best-effort`, or a 5.13 or newer kernel with Landlock |
+| `--sandbox required` refuses, `built without Landlock support (CONFIG_SECURITY_LANDLOCK)` | The kernel is new enough, and its build left Landlock out | `best-effort`, or a kernel built with `CONFIG_SECURITY_LANDLOCK=y` and `landlock` in `lsm=` |
 | `--seccomp enforce` refuses | No `SIPNAB_SECCOMP_ALLOWLIST`, or one it cannot read | Derive a list on this host |
+| `derive-seccomp-allowlist.sh` prints `NO RECORDS` | The filter never installed, or the records went to a log the script did not follow | Check `sudo auditctl -s`: with a non-zero `pid`, the records are in the audit log, which the script follows; name another file with `SIPNAB_DERIVE_AUDIT_LOG` |
+| `derive-seccomp-allowlist.sh` exits 66, `cannot be read` | An audit daemon holds the audit socket and its log is not at the path auditd.conf names | Set `SIPNAB_DERIVE_AUDIT_LOG` to the log's path |
 
 [Privilege](cli-reference.md#privilege) and [`[privilege]`](config-reference.md#privilege)
 list every flag and key. The [threat model](threat-model.md) says what each
@@ -52467,6 +52506,36 @@ The start of the run names the transport, as in `HEP listener started on
   they work over UDP only.
 - TLS proves the path is private, not who the sender is: sipnab asks senders
   for no certificate. Keep `--hep-allow`, a key, or both.
+
+### What a TCP or TLS listener keeps when the run stops
+
+A stream listener stops at `--duration`, at `--count`, or on a signal. Each
+keeps a different share of what senders had sent:
+
+- **`--duration`** keeps what reached sipnab before the deadline. The listener
+  reads what its open connections hold, for up to 1 second each. It also
+  accepts the connections still waiting in its backlog, for up to 1 second, and completes a TLS handshake under way, for up to 1 second, so a
+  sender that connected just before the deadline is not lost. The run then
+  reads on for up to 3 seconds for the listener to deliver it. A sender that
+  goes on sending cannot hold the stop open past these limits.
+- **`--count N`** keeps exactly N packets, however many connections send at
+  once. When the run reaches the count, the listener closes every connection
+  still open and delivers nothing more from it.
+- **SIGTERM or SIGINT** stops at once. What is still in a socket, or in a
+  connection not yet accepted, is not reported.
+
+To check a `--duration` run, compare the count the sender reports with the
+listener's last line, `HEP listener on 198.51.100.1:9062 finished: N packets
+received`, and with `--report`. If the numbers differ:
+
+- A sender that keeps sending after the deadline: what it sends after it is
+  not part of the run.
+- A run stopped by a signal: use `--duration` or `--count` for a run whose
+  count you compare.
+- 0.5.240 and earlier lost every packet on a connection not yet accepted at
+  the deadline, and a listener in a `--count` run over several connections
+  could take one packet more than N for each further connection, which its
+  `finished` line counted.
 
 ### OpenSIPS over TCP and TLS
 
@@ -59984,7 +60053,8 @@ figure to read carefully.
 - Receiving everything and reporting 99% loss means the sequence space jumped.
   It does not mean audio vanished.
 
-The SDP timeline for the same call says what jumped it:
+The SDP timeline for the same call, as a sipnab release with an SDP timeline
+defect printed it:
 
 ```bash
 sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
@@ -60002,11 +60072,24 @@ sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
 {"timestamp":"2026-07-31T15:44:34.406111+00:00","direction":"answer","event":"MediaAnchorChange","media_addr":"198.51.100.12","media_port":34450}
 ```
 
-Four `MediaAnchorChange` events inside four seconds. The stream's first packet
-lands 20 ms after the third of them.
+These events are not evidence that the relay moved the media. That reading
+appeared here before and is withdrawn.
 
-- The relay re-anchored the media while the call was answering.
-- The sequence discontinuity belongs to that hand-off, not to the network.
+- The four `MediaAnchorChange` lines on answers alternate between the same two
+  addresses, 203.0.113.148:26408 and 198.51.100.12:34450. They came from a
+  timeline defect, since fixed: the timeline compared each answer with the
+  exchange before it, which was another party's SDP or another leg's copy,
+  instead of with the same party's previous SDP.
+- The `MediaAnchorChange` on the second offer came from the same comparison:
+  the timeline compared the second offer (192.0.2.20) with the first
+  (198.51.100.27),
+  whichever party or leg each came from.
+- The timeline now compares each exchange with the previous SDP from the same
+  party (dialog tag and signaling address).
+- The command was not run again against this capture after the fix. The output
+  above is the output from before the fix, and this page does not say what the
+  fixed timeline prints for this call.
+- The cause of the sequence discontinuity is not established on this page.
 
 Jitter behaves the same way. Ask the ring for every stream whose aggregate
 jitter passes three seconds. Print the worst interval beside it:
@@ -75690,7 +75773,7 @@ inside five seconds. Such a call means one of:
 
 - a bad route,
 - a codec the far end rejected,
-- wangiri-style fraud dialling.
+- wangiri-style fraud dialing.
 
 It is deliberately not a built-in.
 
@@ -76490,7 +76573,16 @@ them, and leaves the original as it was:
 sipnab --strip-secrets shareable.pcapng -I with-keys.pcapng
 ```
 
-It prints nothing and exits `0`. Check the copy by reading both:
+It exits `0` and prints one line on stderr, at any log level and with
+`--quiet`: how many Decryption Secrets Blocks it removed, counted by the kind of
+secret each held, and the path it wrote.
+
+```text
+Stripped 1 Decryption Secrets Block (1 TLS Key Log): with-keys.pcapng -> shareable.pcapng
+```
+
+A capture with no secrets says `0 Decryption Secrets Blocks (the input had
+none)` and still writes the copy. Check the copy by reading both:
 
 ```bash
 sipnab -N -I with-keys.pcapng --portrange 1-65535 --report --no-cli-print
@@ -79772,6 +79864,7 @@ Every command below ran against the current tree and left it unchanged.
 | [`tests/snapshots/`](../../tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
 | [`tests/cli/`](../../tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
 | [`tests/cli/cookbook/`](../../tests/cli/cookbook) — cookbook output goldens | `python3 scripts/check-cookbook.py --bless` writes a command-only case for each executed cookbook command that has none and deletes each case no command produces; then `TRYCMD=overwrite cargo test --features full --test cli_goldens` records the output. A case's file name is a hash of its command, and it is also the directory the command's output files go to. |
+| [`.config/implies-no-tui.txt`](../../.config/implies-no-tui.txt) — flags that imply `-N` | `SIPNAB_BLESS_IMPLIES_NO_TUI=1 cargo test --features full --lib -- the_implies_no_tui_file`. Generated from `Cli::implying_no_tui`, the table `Cli::normalize` reads; [`check-cookbook.py`](../../scripts/check-cookbook.py) reads it to tell a command that raises the TUI (exit-only, no golden) from a headless one such as `--count-by` without `-N` (pinned by a golden). |
 | [`tests/schemas/`](../../tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
 | [`tests/pcap-samples/`](../../tests/pcap-samples) — capture fixtures | Thirteen are synthetic: `python3 tests/gen-pcap-samples.py` writes ten and `python3 tests/gen-link-type-samples.py` writes the three link-layer framings (DLT_LOOP, PPPoE inside Linux cooked capture v1 and v2); each script in check mode reports any of its own that have drifted from it. Nothing regenerates the rest; they stay as checked in. New ones arrive through [`harness/scripts/capture.sh`](../../harness/scripts/capture.sh) then `promote.sh`, which record the run in `PROVENANCE.md` beside them — `every_committed_capture_fixture_says_where_it_came_from` refuses a fixture with no entry, and the 36 that predate that rule sit on an enumerated list which only shrinks. |
 | [`tests/install-sh/`](../../tests/install-sh) — installer cases | Hand-maintained; exercised by the `install-sh` CI job. |
@@ -80916,7 +81009,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 149 `unsafe` blocks are libc FFI.
+- Most of this crate's 151 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.

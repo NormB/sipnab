@@ -13,10 +13,24 @@
 #
 #   derive-seccomp-allowlist.sh <sipnab> [iface]   run the shapes, print the set
 #   derive-seccomp-allowlist.sh --classify         judge a log on stdin
+#   derive-seccomp-allowlist.sh --source           `auditctl -s` on stdin: which
+#                                                  log holds the records
+#   derive-seccomp-allowlist.sh --audit-log-file   auditd.conf on stdin: where
+#                                                  the audit log is
 #
-# The `--classify` half takes a streamed kernel log and answers two questions:
-# did anything get LOST, and has the set CONVERGED. It touches no hardware, so
+# The `--classify` half takes a streamed log and answers two questions: did
+# anything get LOST, and has the set CONVERGED. It touches no hardware, so
 # `seccomp_derivation_test` drives it with logs this host could never produce.
+#
+# ── Which log holds the records ─────────────────────────────────────────────
+#
+# The kernel sends each seccomp record to the audit daemon when one is
+# connected, and to the kernel ring buffer only when none is. So on a host
+# running auditd the records are in its log (`/var/log/audit/audit.log` by
+# default, the file `ausearch -m SECCOMP` reads), as `type=SECCOMP` lines, and
+# `dmesg` holds none of them. `auditctl -s` prints the connected daemon's
+# `pid`, 0 when there is none; `choose_source` reads that and the collector
+# follows the log it names. The one parser reads both line formats.
 #
 # ── Why the log has to be streamed ──────────────────────────────────────────
 #
@@ -65,6 +79,17 @@ QUIET_SHAPES_FOR_CONVERGENCE=2
 classify() {
 	log=$(cat)
 
+	# The audit path reports loss as a rising `lost` counter, which the
+	# collector writes after each shape as `== LOST <n>`.
+	lost=$(printf '%s\n' "$log" | awk '$1 == "==" && $2 == "LOST" && $3 + 0 > 0 {n += $3} END {print n + 0}')
+	if [ "$lost" -gt 0 ]; then
+		printf 'LOST: the audit subsystem lost %s record(s) during the run.\n' "$lost"
+		printf '  A derivation that misses a call yields an allowlist that kills\n'
+		printf '  the process it was built for. Raise the backlog (auditctl -b\n'
+		printf '  65536), check that auditctl -r is 0, and run it again.\n'
+		return 1
+	fi
+
 	if printf '%s' "$log" | grep -q 'callbacks suppressed'; then
 		dropped=$(printf '%s' "$log" | grep -o 'callbacks suppressed' | wc -l | tr -d ' ')
 		printf 'LOST: the kernel suppressed records in %s window(s).\n' "$dropped"
@@ -74,7 +99,7 @@ classify() {
 		return 1
 	fi
 
-	records=$(printf '%s' "$log" | grep -c 'type=1326' || true)
+	records=$(printf '%s\n' "$log" | grep -c -e 'type=1326' -e 'type=SECCOMP' || true)
 	if [ "$records" -eq 0 ]; then
 		printf 'NO RECORDS: nothing in this log is a seccomp audit record.\n'
 		printf '  Either the filter never installed, or the log was collected\n'
@@ -90,7 +115,7 @@ classify() {
 	current=""
 	name=""
 	report=""
-	printf '%s\n' "$log" | {
+	table=$(printf '%s\n' "$log" | {
 		while IFS= read -r line; do
 			case "$line" in
 			"== SHAPE "*)
@@ -100,16 +125,28 @@ classify() {
 				name=${line#== SHAPE }
 				current=""
 				;;
-			*type=1326*)
+			# The kernel log's `audit: type=1326` and the audit log's
+			# `type=SECCOMP` are the same record. `syscall=` is the number;
+			# the audit log's enriched `SYSCALL=` (the name) is capitalized,
+			# and sed matches case.
+			*type=1326* | *type=SECCOMP*)
 				nr=$(printf '%s' "$line" | sed -n 's/.*syscall=\([0-9]*\).*/\1/p')
 				[ -n "$nr" ] && current="$current $nr"
 				;;
 			esac
 		done
-		[ -n "$name" ] && printf '%s\t%s\n' "$name" "$current"
-	} > /tmp/.seccomp-derive-shapes.$$
+		if [ -n "$name" ]; then
+			printf '%s\t%s\n' "$name" "$current"
+		fi
+	})
 
+	# Read from a here-document rather than a file: no path to clean up,
+	# and none under /tmp for another user to plant a link at while this
+	# runs as root.
 	while IFS="$(printf '\t')" read -r shape nrs; do
+		if [ -z "$shape" ] && [ -z "$nrs" ]; then
+			continue
+		fi
 		shapes=$((shapes + 1))
 		added=""
 		for nr in $nrs; do
@@ -128,8 +165,9 @@ classify() {
 		fi
 		report="$report$(printf '  %-16s added:%s\n' "$shape" "${added:- nothing}")
 "
-	done < /tmp/.seccomp-derive-shapes.$$
-	rm -f /tmp/.seccomp-derive-shapes.$$
+	done <<EOF
+$table
+EOF
 
 	sorted=$(printf '%s' "$union" | tr ' ' '\n' | grep -v '^$' | sort -n -u | tr '\n' ' ')
 	count=$(printf '%s' "$sorted" | wc -w | tr -d ' ')
@@ -155,10 +193,41 @@ classify() {
 	return 0
 }
 
-if [ "${1:-}" = "--classify" ]; then
+# `auditctl -s` on stdin; prints `audit` when a daemon is connected (a
+# non-zero `pid`), else `kernel`. No input, as when auditctl is missing or
+# refuses, is no daemon.
+choose_source() {
+	awk '$1 == "pid" && $2 ~ /^[0-9]+$/ && $2 != 0 {found = 1}
+		END {print (found ? "audit" : "kernel")}'
+}
+
+# auditd.conf on stdin; prints its `log_file`, or auditd's default.
+audit_log_file() {
+	awk -F= '/^[[:space:]]*log_file[[:space:]]*=/ {
+			v = $2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); path = v
+		}
+		END {print (path != "" ? path : "/var/log/audit/audit.log")}'
+}
+
+# The audit subsystem's `lost` counter, 0 when auditctl cannot say.
+audit_lost() {
+	auditctl -s 2>/dev/null | awk '$1 == "lost" {n = $2} END {print n + 0}'
+}
+
+case "${1:-}" in
+--classify)
 	classify
 	exit $?
-fi
+	;;
+--source)
+	choose_source
+	exit $?
+	;;
+--audit-log-file)
+	audit_log_file
+	exit $?
+	;;
+esac
 
 # ── The collector, which needs root and real hardware ───────────────────────
 
@@ -167,14 +236,30 @@ IFACE=${2:-}
 if [ -z "$BIN" ] || [ ! -x "$BIN" ]; then
 	printf 'usage: %s <path-to-sipnab> [iface]\n' "$0" >&2
 	printf '   or: %s --classify   (judge a streamed log on stdin)\n' "$0" >&2
+	printf '   or: %s --source     (auditctl -s on stdin: which log)\n' "$0" >&2
+	printf '   or: %s --audit-log-file  (auditd.conf on stdin: its log)\n' "$0" >&2
 	exit 64
 fi
 if [ "$(id -u)" -ne 0 ]; then
-	printf 'This half needs root: it reads the kernel log and captures.\n' >&2
+	printf 'This half needs root: it reads the kernel or audit log and captures.\n' >&2
 	exit 77
 fi
 if [ -z "$IFACE" ]; then
 	IFACE=$(ip -o link show 2>/dev/null | awk -F': ' '$2 !~ /lo/ {print $2; exit}')
+fi
+
+SOURCE=$(auditctl -s 2>/dev/null | choose_source)
+AUDIT_LOG=""
+if [ "$SOURCE" = audit ]; then
+	AUDIT_LOG=${SIPNAB_DERIVE_AUDIT_LOG:-$({ cat /etc/audit/auditd.conf 2>/dev/null || true; } | audit_log_file)}
+	if [ ! -r "$AUDIT_LOG" ]; then
+		printf 'An audit daemon is connected, so the records go to its log,\n' >&2
+		printf 'and %s cannot be read. Name it with SIPNAB_DERIVE_AUDIT_LOG.\n' "$AUDIT_LOG" >&2
+		exit 66
+	fi
+	printf 'Records go to the audit daemon; following %s.\n' "$AUDIT_LOG" >&2
+else
+	printf 'No audit daemon is connected; following the kernel log.\n' >&2
 fi
 
 OLD_RATELIMIT=$(cat /proc/sys/kernel/printk_ratelimit 2>/dev/null || echo 5)
@@ -185,7 +270,11 @@ WORK=$(mktemp -d)
 # of this script introduced and `the_collector_restores_the_rate_limit_it_changed`
 # caught within the minute.
 trap 'sysctl -q kernel.printk_ratelimit="$OLD_RATELIMIT" 2>/dev/null || true; rm -rf "$WORK"' EXIT INT TERM
-sysctl -q kernel.printk_ratelimit=0
+# Only the kernel log rate limits seccomp records; the audit path has its own
+# loss counter, read per shape below.
+if [ "$SOURCE" = kernel ]; then
+	sysctl -q kernel.printk_ratelimit=0
+fi
 
 # One stream per shape, concatenated with markers afterwards.
 #
@@ -194,11 +283,21 @@ sysctl -q kernel.printk_ratelimit=0
 # the moment the next record arrives. The first version did exactly that and
 # every shape's calls landed in the first shape, which made a still-growing set
 # look settled — the one verdict this script exists to refuse.
+#
+# On the audit path `tail -F` follows the log by name, so a rotation during a
+# shape is followed rather than lost, and `-n 0` starts at the end so earlier
+# records are not read. The rise in the `lost` counter is appended after the
+# follower has stopped, when nothing else writes the file.
 shape() {
 	name=$1
 	shift
-	dmesg -C
-	dmesg --follow > "$WORK/$name.log" 2>/dev/null &
+	if [ "$SOURCE" = audit ]; then
+		lost_before=$(audit_lost)
+		tail -F -n 0 "$AUDIT_LOG" > "$WORK/$name.log" 2>/dev/null &
+	else
+		dmesg -C
+		dmesg --follow > "$WORK/$name.log" 2>/dev/null &
+	fi
 	follow=$!
 	sleep 1
 	# A shape that fails is still a shape: what it managed before failing is
@@ -207,6 +306,9 @@ shape() {
 	sleep 2
 	kill "$follow" 2>/dev/null || true
 	wait "$follow" 2>/dev/null || true
+	if [ "$SOURCE" = audit ]; then
+		printf '== LOST %s\n' "$(($(audit_lost) - lost_before))" >> "$WORK/$name.log"
+	fi
 	printf '%s\n' "$name" >> "$WORK/order"
 }
 

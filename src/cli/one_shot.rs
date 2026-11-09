@@ -42,6 +42,50 @@ pub struct OneShot {
     pub owns_stdout: bool,
 }
 
+/// One flag that implies `-N`, from the one-shot registry or from the flags
+/// [`super::Cli::normalize`] handles outside it.
+///
+/// The one list both readers use: `normalize` sets `-N` when any entry is
+/// active, and [`listing`] writes every entry's name to
+/// `.config/implies-no-tui.txt`, which `scripts/check-cookbook.py` reads to
+/// tell a headless command from one that raises the TUI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImpliesNoTui {
+    /// The flag as an operator types it, `--count-by`.
+    pub name: &'static str,
+    /// Whether this command line set it, in the form that implies `-N`.
+    pub active: bool,
+    /// An option and value that cancel the implication when given beside the
+    /// flag: `--mcp` implies `-N` unless `--mcp-transport http`.
+    pub unless: Option<(&'static str, &'static str)>,
+}
+
+/// The text of `.config/implies-no-tui.txt` for `flags`: a header, then one
+/// line per flag, `--flag` or `--flag unless --option value`.
+#[must_use]
+pub fn listing(flags: &[ImpliesNoTui]) -> String {
+    let mut out = String::from(
+        "# The flags that imply -N, one per line: `--flag`, or\n\
+         # `--flag unless --option value` when that option and value cancel it.\n\
+         #\n\
+         # GENERATED from the table Cli::normalize reads (Cli::implying_no_tui\n\
+         # in src/cli.rs); do not edit. scripts/check-cookbook.py reads it to\n\
+         # tell a headless command from one that raises the TUI. Regenerate:\n\
+         #   SIPNAB_BLESS_IMPLIES_NO_TUI=1 cargo test --features full --lib -- the_implies_no_tui_file\n",
+    );
+    for flag in flags {
+        out.push_str(flag.name);
+        if let Some((option, value)) = flag.unless {
+            out.push_str(" unless ");
+            out.push_str(option);
+            out.push(' ');
+            out.push_str(value);
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Whether any active one-shot implies `-N`.
 ///
 /// # Arguments

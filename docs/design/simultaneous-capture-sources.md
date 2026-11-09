@@ -97,7 +97,7 @@ decisions downstream read the source as a scalar:
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:587`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L587)), `capture_hep` ([`src/capture/hep.rs:3292`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3292)), the
+([`src/capture/file.rs:587`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L587)), `capture_hep` ([`src/capture/hep.rs:3446`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3446)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -433,7 +433,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:685`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L685)), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:7553`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7553)) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:7764`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7764)) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -497,7 +497,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:627-653`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L627-L653)), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:7553`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7553)), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:7764`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7764)), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:315`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L315)). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

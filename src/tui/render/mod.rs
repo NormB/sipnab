@@ -3003,7 +3003,7 @@ mod tests {
     /// direction labels, the codec and anchor columns, and the event marker.
     #[test]
     fn sdp_timeline_text_shows_offers_answers_and_mid_call_events() -> Result<(), TestError> {
-        use crate::sip::sdp_timeline::{OfferAnswer, SdpEvent, SdpExchange};
+        use crate::sip::sdp_timeline::{OfferAnswer, SdpEvent, SdpExchange, SdpSender};
         use chrono::TimeZone;
 
         let t = |s: u32| {
@@ -3017,6 +3017,10 @@ mod tests {
                 timestamp: t(0)?,
                 direction: OfferAnswer::Offer,
                 from_request: true,
+                sender: SdpSender {
+                    tag: None,
+                    addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+                },
                 codecs: vec!["PCMU".to_string(), "PCMA".to_string()],
                 media_addr: Some("10.0.0.1".to_string()),
                 media_port: Some(5004),
@@ -3028,6 +3032,10 @@ mod tests {
                 timestamp: t(1)?,
                 direction: OfferAnswer::Answer,
                 from_request: false,
+                sender: SdpSender {
+                    tag: None,
+                    addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+                },
                 codecs: vec!["PCMU".to_string()],
                 media_addr: Some("10.0.0.9".to_string()),
                 media_port: Some(6000),
@@ -3039,6 +3047,10 @@ mod tests {
                 timestamp: t(30)?,
                 direction: OfferAnswer::Offer,
                 from_request: true,
+                sender: SdpSender {
+                    tag: None,
+                    addr: std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+                },
                 codecs: vec!["PCMU".to_string()],
                 media_addr: Some("10.0.0.1".to_string()),
                 media_port: Some(5004),

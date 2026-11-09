@@ -278,7 +278,7 @@ Capture analysis: 2 finding(s) across 5 dialog(s), 0 stream(s), 23 frame(s) read
      - Call-ID unavail-4e5f60@192.0.2.50 | 192.0.2.50:5060 -> 192.0.2.60 | 2023-11-14 22:13:32.000 UTC | status_code=503 | Service Unavailable
 
 2. [MINOR] Call failed 4xx — 2 call(s)
-   The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy Here, 404 for a misdialled number, 480 for a phone that is off — so this is listed to be ruled out rather than acted on. The codes are named below; a run of 403 or 408 is not an ordinary outcome.
+   The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy Here, 404 for a misdialed number, 480 for a phone that is off — so this is listed to be ruled out rather than acted on. The codes are named below; a run of 403 or 408 is not an ordinary outcome.
    Evidence:
      - Call-ID busy-3a2b1c@192.0.2.30 | 192.0.2.30:5060 -> 192.0.2.40 | 2023-11-14 22:13:23.000 UTC | status_code=486 | Busy Here
      - Call-ID notfound-1b2c3d@203.0.113.30 | 203.0.113.30:5060 -> 203.0.113.40 | 2023-11-14 22:13:29.000 UTC | status_code=404 | Not Found

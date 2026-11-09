@@ -706,7 +706,8 @@ figure to read carefully.
 - Receiving everything and reporting 99% loss means the sequence space jumped.
   It does not mean audio vanished.
 
-The SDP timeline for the same call says what jumped it:
+The SDP timeline for the same call, as a sipnab release with an SDP timeline
+defect printed it:
 
 ```bash
 sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
@@ -724,11 +725,24 @@ sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
 {"timestamp":"2026-07-31T15:44:34.406111+00:00","direction":"answer","event":"MediaAnchorChange","media_addr":"198.51.100.12","media_port":34450}
 ```
 
-Four `MediaAnchorChange` events inside four seconds. The stream's first packet
-lands 20 ms after the third of them.
+These events are not evidence that the relay moved the media. That reading
+appeared here before and is withdrawn.
 
-- The relay re-anchored the media while the call was answering.
-- The sequence discontinuity belongs to that hand-off, not to the network.
+- The four `MediaAnchorChange` lines on answers alternate between the same two
+  addresses, 203.0.113.148:26408 and 198.51.100.12:34450. They came from a
+  timeline defect, since fixed: the timeline compared each answer with the
+  exchange before it, which was another party's SDP or another leg's copy,
+  instead of with the same party's previous SDP.
+- The `MediaAnchorChange` on the second offer came from the same comparison:
+  the timeline compared the second offer (192.0.2.20) with the first
+  (198.51.100.27),
+  whichever party or leg each came from.
+- The timeline now compares each exchange with the previous SDP from the same
+  party (dialog tag and signaling address).
+- The command was not run again against this capture after the fix. The output
+  above is the output from before the fix, and this page does not say what the
+  fixed timeline prints for this call.
+- The cause of the sequence discontinuity is not established on this page.
 
 Jitter behaves the same way. Ask the ring for every stream whose aggregate
 jitter passes three seconds. Print the worst interval beside it:
