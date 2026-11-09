@@ -85,7 +85,7 @@ wrong at once, and one of them is a test that pins the *complement*:
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:9424`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L9424)), which asserts the warning
+  ([`bootstrap.rs:9611`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L9611)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -143,7 +143,7 @@ capture is not getting.
 
 **`buffer_mb` is per handle.** `capture_live_group` applies
 `config.buffer_mb` to each socket it opens, and the default is 64 MiB since CT2
-(`DEFAULT_BUFFER_MB`, [`native.rs:349`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L349)). So
+(`DEFAULT_BUFFER_MB`, [`native.rs:369`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L369)). So
 `--cores 8` on a live interface asks the kernel for **512 MiB of ring**, from a
 flag that yesterday allocated nothing.
 
@@ -161,7 +161,7 @@ experiment in [section 5](#5-the-experiment-and-the-result-that-means-do-not-shi
 
 ### 2.2 `--multi-device` composes badly and should stay refused
 
-`start_multi_capture` ([`native.rs:673`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L673)) already
+`start_multi_capture` ([`native.rs:693`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L693)) already
 spawns one capture thread per interface into one shared channel, with a
 coordinator thread and an aggregated readiness signal. That is the same topology
 `capture_live_fanout` builds — which is a good sign for the design and a problem
@@ -581,6 +581,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:6943`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L6943)) returns true only for the
+  ([`bootstrap.rs:7130`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7130)) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

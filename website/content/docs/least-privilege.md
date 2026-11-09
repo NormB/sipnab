@@ -17,6 +17,7 @@ process can reach after that.
 |---|---|---|
 | [Grant capture rights to the binary](#grant-capture-rights-to-the-binary) | Running as root at all | Linux, `setcap` |
 | [Let sipnab drop root](#let-sipnab-drop-root-after-opening-the-interface) | Root after the interface opens | Started as root |
+| [Read capture files only root can read](#read-capture-files-only-root-can-read) | Root while it reads the files | Started as root, one open file per input |
 | [Confine it to a directory](#confine-it-to-a-directory) | The rest of the file system | Started as root |
 | [Bound the files it can open](#bound-the-files-it-can-open-landlock) | Files outside the paths the run names | A kernel with Landlock |
 | [Bound the system calls it makes](#bound-the-system-calls-it-makes-seccomp) | System calls outside a derived list | A kernel with seccomp, a list derived on that host |
@@ -95,6 +96,65 @@ INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=6553
   `--priv-drop` turns the drop back on for one run when the file turns it off.
   The scanner-kill worker does not need either: sipnab opens its raw socket
   before the drop.
+
+## Read capture files only root can read
+
+Purpose: read a set of captures, or an archive of them, that only root may
+open (mode `0600`, owner root), while the run still drops to `nobody` or
+chroots before it parses a packet.
+
+Prerequisites: started as root, as in the previous section. The open-file
+limit must hold one descriptor per input file plus 64 for the run itself.
+
+Steps: name the files, a directory or an archive with `-I`, as an ordinary run
+does.
+
+```bash
+sudo sipnab -N -I /var/lib/captures/ring/ --user nobody
+```
+
+A root run that drops privileges or chroots opens every file of the set
+before it does either, and reads each one through the descriptor it opened
+then. A run that keeps its credentials (not root, or `--no-priv-drop` without
+`--chroot`) opens each file when it reaches it, as before.
+
+- The run raises its open-file soft limit as far as the hard limit when the
+  set needs it. Above the hard limit the run stops before it reads anything, with
+  exit `2`.
+- The run unpacks an archive (`.tar.gz`, `.zip`, a `.pcap.gz`) before the
+  drop, as root, into a directory only its owner may enter (`0700`) holding
+  files only its owner may read (`0600`). Before the drop it gives that
+  directory to the user the run drops to, so the run can remove it when it
+  ends. A `--chroot` run removes it before the chroot instead, because no
+  path reaches it afterwards. So does a run whose drop user could not reach
+  it to remove it: a `TMPDIR` inside a directory only another user may
+  enter, such as root's per-user temporary folder on macOS
+  (under `/var/folders`, mode `0700`). Every member is open by then.
+- The run reads the TLS secrets a pcapng carries in a Decryption Secrets
+  Block before the drop too, so a root-only capture still decrypts.
+
+Verify: with `SIPNAB_LOG=info`, the closing line counts every file as read in
+full, and no line says `Skipping`. On 2026-11-08 with sipnab built from source after
+0.5.237, three root-only copies of one capture under a soft limit of 66:
+
+```text
+INFO sipnab::app::bootstrap: Raised the open-file limit from 66 to 67: the 3 input file(s) are opened before the run confines itself
+INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+INFO sipnab::capture::file: Read 21 packets: 3 of 3 file(s) read in full
+```
+
+Troubleshooting: under a hard limit of 66 the same run stopped with exit `2`:
+
+```text
+sipnab opens all 3 input file(s) before it drops root privileges or chroots, beside 64 descriptors of its own, and this process may hold at most 66 open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read.
+```
+
+Raise the hard limit (`ulimit -Hn`, or `LimitNOFILE=` in a systemd unit), or
+split the set across runs. 0.5.239 and earlier opened every file after the
+first by path after the drop, and skipped a root-only one with
+`Permission denied` (`No such file or directory` under `--chroot`), the run
+ending with exit `1` and a line such as `Read 2 packets: 1 of 2 file(s) read in
+full, 1 skipped`.
 
 ## Confine it to a directory
 
@@ -215,6 +275,7 @@ the script derived no allowlist here.
 | `Permission denied on 'eth0'. Grant capture capabilities once`, exit 1 | The binary has no capabilities, or something replaced it since | `sipnab --setup-caps` again |
 | `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | The user does not exist on this host. With `--chroot`, 0.5.233 and earlier also printed this when the directory held no `etc/passwd` naming the user | Create the user, or name another with `--user`. On 0.5.233 or earlier, upgrade, or add the user's entries to the directory |
 | `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
+| A root run reading files stops before it reads any with exit `2`, and the message names the hard open-file limit ([quoted in full](#read-capture-files-only-root-can-read)) | The set needs one descriptor per file plus 64, more than the hard open-file limit allows | Raise `ulimit -Hn` or `LimitNOFILE=`, or read fewer files per run |
 | `--sandbox required` refuses | No Landlock in this kernel | `best-effort`, or a kernel with Landlock |
 | `--seccomp enforce` refuses | No `SIPNAB_SECCOMP_ALLOWLIST`, or one it cannot read | Derive a list on this host |
 

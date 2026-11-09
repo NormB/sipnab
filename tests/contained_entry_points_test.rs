@@ -56,6 +56,10 @@ struct Entry {
     /// another function of the same name first.
     within: Option<&'static str>,
     entry: &'static str,
+    /// The functions between the entry point and the seam, in call order:
+    /// the entry point calls the first, each calls the next, and the last
+    /// calls `calls`. Empty when the entry point calls the seam itself.
+    via: &'static [&'static str],
     calls: &'static str,
     seam: &'static str,
     opens: &'static str,
@@ -66,6 +70,7 @@ const ENTRIES: &[Entry] = &[
         within: None,
         file: "src/capture/mod.rs",
         entry: "decode_captured_frame",
+        via: &[],
         calls: "decode_frame_with(",
         seam: "decode_frame_with",
         opens: "contained_parse(\"captured frame\"",
@@ -74,6 +79,7 @@ const ENTRIES: &[Entry] = &[
         within: None,
         file: "src/capture/frames.rs",
         entry: "next",
+        via: &[],
         calls: "contained_record(",
         seam: "contained_record",
         opens: "crate::capture::contained(\"capture record\"",
@@ -82,14 +88,27 @@ const ENTRIES: &[Entry] = &[
         within: None,
         file: "src/capture/archive/mod.rs",
         entry: "walk",
+        via: &[],
         calls: "crate::capture::contained(\"archive member\"",
         seam: "walk",
         opens: "crate::capture::contained(\"archive member\"",
     },
+    // Both ways in, by path and by a descriptor opened before a privilege
+    // drop, read the bytes in one function, which hands them to the seam.
     Entry {
-        within: None,
+        within: Some("mod reader {"),
         file: "src/capture/vcon_input.rs",
         entry: "read_file_reporting",
+        via: &["read_opened_reporting_as"],
+        calls: "rebuild_bytes_with(",
+        seam: "rebuild_bytes_with",
+        opens: "crate::capture::contained(\"vCon container\"",
+    },
+    Entry {
+        within: Some("mod reader {"),
+        file: "src/capture/vcon_input.rs",
+        entry: "read_opened",
+        via: &["read_opened_reporting", "read_opened_reporting_as"],
         calls: "rebuild_bytes_with(",
         seam: "rebuild_bytes_with",
         opens: "crate::capture::contained(\"vCon container\"",
@@ -98,6 +117,7 @@ const ENTRIES: &[Entry] = &[
         within: None,
         file: "src/capture/hep.rs",
         entry: "admit",
+        via: &[],
         calls: "parse_admitted(",
         seam: "parse_admitted",
         opens: "crate::capture::contained(\"HEP datagram\"",
@@ -106,6 +126,7 @@ const ENTRIES: &[Entry] = &[
         within: None,
         file: "src/pipeline.rs",
         entry: "parse_sip_action",
+        via: &[],
         calls: "contained_sip_action(",
         seam: "contained_sip_action",
         opens: "crate::capture::contained(\"SIP message\"",
@@ -114,6 +135,7 @@ const ENTRIES: &[Entry] = &[
         within: Some("impl FrameDecoder {"),
         file: "src/rtp/audio_export.rs",
         entry: "decode",
+        via: &[],
         calls: "contained_frame(",
         seam: "contained_frame",
         opens: "crate::capture::contained(\"RTP frame\"",
@@ -133,15 +155,25 @@ fn every_contained_reader_reaches_its_containment_scope() -> Result<(), TestErro
             }
             None => src.as_str(),
         };
-        let entry =
-            body_of(scope, e.entry).ok_or_else(|| format!("{}: no `fn {}(`", e.file, e.entry))?;
-        assert!(
-            entry.contains(e.calls),
-            "{}: `{}` no longer calls `{}`, so a panic in it ends the process",
-            e.file,
-            e.entry,
-            e.calls
-        );
+        let mut caller = e.entry;
+        for next in e.via.iter().copied().chain(std::iter::once(e.calls)) {
+            let body =
+                body_of(scope, caller).ok_or_else(|| format!("{}: no `fn {caller}(`", e.file))?;
+            let call = if next == e.calls {
+                next.to_string()
+            } else {
+                format!("{next}(")
+            };
+            assert!(
+                body.contains(&call),
+                "{}: `{caller}` no longer calls `{call}`, so `{}` may not reach `{}` and a \
+                 panic in it ends the process",
+                e.file,
+                e.entry,
+                e.calls
+            );
+            caller = next;
+        }
         let seam =
             body_of(&src, e.seam).ok_or_else(|| format!("{}: no `fn {}(`", e.file, e.seam))?;
         assert!(

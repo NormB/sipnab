@@ -10,6 +10,12 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- A root run that drops privileges or chroots opens every file of its `-I` set before the drop and reads each one through that descriptor. Files it reached after the drop used to be skipped with `Permission denied` (`No such file or directory` under `--chroot`), because only the first file was opened as root.
+- Archive members a root run extracts are given to the user it drops to, or removed before a `--chroot`, so they are read and then removed at exit instead of left on disk. They were extracted as root-only files that the dropped run could neither read nor remove. When the drop user could not reach the extraction to remove it (a `TMPDIR` inside another user's `0700` directory, as root's is on macOS), the run removes it before the drop.
+- TLS secrets embedded in a root-only pcapng input (a Decryption Secrets Block) are read before the privilege drop. They were read by path after the drop, the read failed, and nothing said so (EMBEDDED-SECRETS-AFTER-DROP).
+- A `-I` set larger than the open-file soft limit raises it up to the hard limit, for `--cores` too, and is refused with exit 2, naming the set and the limit, only above the hard limit.
 ### Changed
 
 - **A release-only commit runs the release gates in the git hooks, not the whole suite.** The 0.5.238 release commit, a 24-line version bump, spent 14 minutes in the pre-commit hook and 15 in the pre-push hook. `scripts/release-only.py` decides whether a change is exactly a release bump: the crate version moves forward, and every changed line is the old line with the version moved, a Since cell of the CLI reference moving from `Unreleased`, or the CHANGELOG heading `## [Unreleased]` becoming `## [<version>] - <date>`. Such a commit runs the release test targets in place of the suite and skips clippy; such a push skips the tree gates and the corpus gate. Anything else runs every gate, and the release pull request's CI still runs every gate. `SIPNAB_GATE_NO_CACHE=1` runs every gate.

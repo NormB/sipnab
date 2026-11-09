@@ -215,13 +215,27 @@ You gave `--lint` with a suppression file (`{name}`, from `--lint-suppress-file`
 
 **Exit code:** 2.
 
-### `--cores opens all {files} input file(s) before dropping root privileges, and this process may hold {soft_limit} open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read.`
+### `sipnab opens all {files} input file(s) before it drops root privileges or chroots, beside {SET_FD_RESERVE} descriptors of its own, and this process may hold at most {hard} open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read.`
 
-A `--cores` run started as root opens every input file before it drops to `--user` (or `nobody`), so it can still read files only root may read. That holds one open file per input, and `{files}` inputs do not fit under the process limit `{soft_limit}` with room for the run's own files.
+A run started as root that drops to `--user` (or `nobody`) or chroots opens every `-I` input file before it does either, so it can still read files only root may read. That holds one open file per input. `{files}` inputs, plus the `{SET_FD_RESERVE}` (64) descriptors the run keeps for itself, do not fit under the process's hard limit `{hard}`. Below the hard limit sipnab raises the soft limit itself. sipnab refuses before it reads anything.
 
-**What to do:** Raise the limit for the shell that starts sipnab (`ulimit -n 65536`), split the set across runs, or run as an ordinary user: then sipnab opens each file when it reads it.
+**What to do:** Raise the hard limit for the shell or unit that starts sipnab (`ulimit -Hn 65536`, or `LimitNOFILE=` in a systemd unit), split the set across runs, or run as an ordinary user: then sipnab opens each file when it reads it.
 
 **Exit code:** 2.
+
+### `Failed to raise the open-file limit from {soft} to {raised} for {files} input file(s): {e}`
+
+The `-I` set needs more open files than the soft limit `{soft}` allows, the hard limit has room for `{raised}`, and the system refused the change (`{e}` is the reason from `setrlimit`). sipnab stops before it reads anything.
+
+**What to do:** Raise the soft limit before starting sipnab (`ulimit -n {raised}`), or split the set across runs.
+
+**Exit code:** 1.
+
+### `Could not hand the extracted archive members over before confining the run ({e}); they stay on disk until a later run removes them`
+
+A root run unpacked an archive named with `-I`, and before dropping privileges it could not give the extraction directory to the drop user, or could not remove it before a `--chroot`. `{e}` is the reason. This is a warning: the run goes on and reads every member, which it opened before. The directory, named `sipnab-archive-*` under `$TMPDIR` (or `/tmp`), stays until a later sipnab run sweeps it.
+
+**What to do:** Nothing for this run. To remove the directory now, delete it as root once no sipnab run uses it.
 
 ### `Expected format 'duration:N' or 'filesize:N', got '{s}'`
 
