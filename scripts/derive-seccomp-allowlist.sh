@@ -70,6 +70,38 @@ set -eu
 # distinguishes "still climbing" from "flat", and the verdict text says so.
 QUIET_SHAPES_FOR_CONVERGENCE=2
 
+# The syscall numbers each shape made, one `<shape>TAB<numbers>` line per shape,
+# from a streamed log on stdin. This is a function, and not a pipeline inside
+# classify's command substitution, because bash 3.2 (the /bin/bash on macOS)
+# refuses a `case` pattern's unmatched `)` inside `$(...)`: "syntax error near
+# unexpected token `;;'", which stopped the script from parsing at all there.
+shape_table() {
+	current=""
+	name=""
+	while IFS= read -r line; do
+		case "$line" in
+		"== SHAPE "*)
+			if [ -n "$name" ]; then
+				printf '%s\t%s\n' "$name" "$current"
+			fi
+			name=${line#== SHAPE }
+			current=""
+			;;
+		# The kernel log's `audit: type=1326` and the audit log's
+		# `type=SECCOMP` are the same record. `syscall=` is the number;
+		# the audit log's enriched `SYSCALL=` (the name) is capitalized,
+		# and sed matches case.
+		*type=1326* | *type=SECCOMP*)
+			nr=$(printf '%s' "$line" | sed -n 's/.*syscall=\([0-9]*\).*/\1/p')
+			[ -n "$nr" ] && current="$current $nr"
+			;;
+		esac
+	done
+	if [ -n "$name" ]; then
+		printf '%s\t%s\n' "$name" "$current"
+	fi
+}
+
 # ── The judge, which is the testable half ───────────────────────────────────
 #
 # Reads a streamed log on stdin. Exit 0 for a usable derivation, 1 for one that
@@ -112,33 +144,8 @@ classify() {
 	union=""
 	quiet=0
 	shapes=0
-	current=""
-	name=""
 	report=""
-	table=$(printf '%s\n' "$log" | {
-		while IFS= read -r line; do
-			case "$line" in
-			"== SHAPE "*)
-				if [ -n "$name" ]; then
-					printf '%s\t%s\n' "$name" "$current"
-				fi
-				name=${line#== SHAPE }
-				current=""
-				;;
-			# The kernel log's `audit: type=1326` and the audit log's
-			# `type=SECCOMP` are the same record. `syscall=` is the number;
-			# the audit log's enriched `SYSCALL=` (the name) is capitalized,
-			# and sed matches case.
-			*type=1326* | *type=SECCOMP*)
-				nr=$(printf '%s' "$line" | sed -n 's/.*syscall=\([0-9]*\).*/\1/p')
-				[ -n "$nr" ] && current="$current $nr"
-				;;
-			esac
-		done
-		if [ -n "$name" ]; then
-			printf '%s\t%s\n' "$name" "$current"
-		fi
-	})
+	table=$(printf '%s\n' "$log" | shape_table)
 
 	# Read from a here-document rather than a file: no path to clean up,
 	# and none under /tmp for another user to plant a link at while this
@@ -251,7 +258,12 @@ fi
 SOURCE=$(auditctl -s 2>/dev/null | choose_source)
 AUDIT_LOG=""
 if [ "$SOURCE" = audit ]; then
-	AUDIT_LOG=${SIPNAB_DERIVE_AUDIT_LOG:-$({ cat /etc/audit/auditd.conf 2>/dev/null || true; } | audit_log_file)}
+	# Two steps, because bash 3.2 (the /bin/bash on macOS) cannot parse a command
+	# substitution with a brace group nested in a `${VAR:-...}` default.
+	AUDIT_LOG=${SIPNAB_DERIVE_AUDIT_LOG:-}
+	if [ -z "$AUDIT_LOG" ]; then
+		AUDIT_LOG=$({ cat /etc/audit/auditd.conf 2>/dev/null || true; } | audit_log_file)
+	fi
 	if [ ! -r "$AUDIT_LOG" ]; then
 		printf 'An audit daemon is connected, so the records go to its log,\n' >&2
 		printf 'and %s cannot be read. Name it with SIPNAB_DERIVE_AUDIT_LOG.\n' "$AUDIT_LOG" >&2
