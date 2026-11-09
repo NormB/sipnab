@@ -1838,7 +1838,7 @@ fn b7_the_hardware_label_rule_refuses_a_bare_or_named_runner() {
 
 /// B8. The exception is recognized by shape, not by the hostname it carries.
 ///
-/// So relabelling the runner does not silently widen the exception to whatever
+/// So relabeling the runner does not silently widen the exception to whatever
 /// the new label is called somewhere else.
 #[test]
 fn b8_the_exception_is_recognized_by_shape() -> Result<(), TestError> {

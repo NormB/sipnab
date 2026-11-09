@@ -194,3 +194,76 @@ def test_exit_zero_is_not_how_a_tui_command_passes_any_more():
     # Before the fix the TUI exited 0 having drawn nothing; the checker read
     # that as success. Only the explicit refusal counts now.
     assert not cc.reached_the_tui("sipnab -I capture.pcap", 0, "")
+
+
+# ── Flags that imply -N (the CLI's own list) ─────────────────────────────
+#
+# Owed: the checker took any command without -N for a TUI command, so a
+# recipe such as `sipnab -I capture.pcap --count-by method` -- headless,
+# because --count-by implies -N -- would have been excused from its golden
+# and its refusal to start a TUI accepted as a pass. The rule now reads the
+# CLI's list of implying flags from .config/implies-no-tui.txt.
+
+
+def test_a_query_flag_without_n_does_not_open_the_tui():
+    assert not cc.opens_the_tui(["-I", "capture.pcap", "--count-by", "method"])
+
+
+def test_every_listed_implying_flag_is_headless_without_n():
+    assert cc.IMPLIES_NO_TUI, "the implies-N list is empty"
+    for flag, unless in cc.IMPLIES_NO_TUI:
+        assert not cc.opens_the_tui(["-I", "capture.pcap", flag, "x"]), flag
+
+
+def test_a_bare_capture_or_a_non_implying_flag_opens_the_tui():
+    assert cc.opens_the_tui(["-I", "capture.pcap"])
+    assert cc.opens_the_tui(["-I", "encrypted.pcap", "--keylog", "k.log"])
+
+
+def test_n_or_no_tui_never_opens_the_tui():
+    assert not cc.opens_the_tui(["-N", "-I", "capture.pcap"])
+    assert not cc.opens_the_tui(["--no-tui", "-I", "capture.pcap"])
+
+
+def test_an_implying_flag_given_with_equals_is_headless():
+    assert not cc.opens_the_tui(["-I", "capture.pcap", "--count-by=method"])
+
+
+def test_mcp_over_http_is_the_listed_exception():
+    implies = cc.read_implies_no_tui("--mcp unless --mcp-transport http\n")
+    assert implies == [("--mcp", ("--mcp-transport", "http"))]
+    assert not cc.opens_the_tui(["-I", "c.pcap", "--mcp"], implies)
+    assert not cc.opens_the_tui(["--mcp", "--mcp-transport", "stdio"], implies)
+    assert cc.opens_the_tui(["--mcp", "--mcp-transport", "http"], implies)
+    assert cc.opens_the_tui(["--mcp", "--mcp-transport=http"], implies)
+
+
+def test_the_listing_parser_skips_comments_and_blanks():
+    text = "# header\n\n--count-by\n  --talkers  \n# --not-a-flag\n"
+    assert cc.read_implies_no_tui(text) == [("--count-by", None), ("--talkers", None)]
+
+
+def test_the_cli_list_names_the_query_family():
+    names = {flag for flag, _ in cc.IMPLIES_NO_TUI}
+    for flag in ("--count-by", "--timeline", "--talkers", "--call-report", "--export-vcon"):
+        assert flag in names, flag
+
+
+def test_a_headless_query_refused_by_a_tui_is_not_excused():
+    # A command that implies -N and still printed the TUI refusal is a defect.
+    assert not cc.reached_the_tui("sipnab -I capture.pcap --count-by method", 1, REFUSAL)
+
+
+def test_a_headless_query_without_a_golden_is_missing_not_exempt():
+    runs = [ex("sipnab -I capture.pcap --count-by method",
+               ["-I", cc.GOLDEN_FIXTURE, "--count-by", "method"])]
+    gaps = cc.golden_gaps(runs, goldens={}, unpinned=cc.OUTPUT_UNPINNED)
+    assert [e.inv for e in gaps.missing] == ["sipnab -I capture.pcap --count-by method"]
+    assert gaps.exempt == []
+
+
+def test_a_tui_command_is_exempt_by_the_rule_not_by_a_table_entry():
+    runs = [ex("sipnab -I capture.pcap", ["-I", cc.GOLDEN_FIXTURE])]
+    gaps = cc.golden_gaps(runs, goldens={}, unpinned={})
+    assert gaps.missing == []
+    assert [e.inv for e, _ in gaps.exempt] == ["sipnab -I capture.pcap"]

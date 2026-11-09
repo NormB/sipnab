@@ -156,6 +156,19 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/build-ci-release.md",
             "website/content/docs/internals/build-ci-release.md",
+            // The regeneration command for .config/implies-no-tui.txt,
+            // `cargo test --features full --lib -- the_implies_no_tui_file`.
+            "docs/internals/testing.md",
+            "website/content/docs/internals/testing.md",
+        ],
+    ),
+    // `dmesg --follow`, which derive-seccomp-allowlist.sh streams the kernel
+    // log with when no audit daemon is connected.
+    (
+        "follow",
+        &[
+            "docs/least-privilege.md",
+            "website/content/docs/least-privilege.md",
         ],
     ),
     // The feature-matrix entry: `scripts/check-feature-matrix.py --group I
@@ -6125,7 +6138,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // calls one ask covers" in docs/relay-statistics.md (+1) and its site
     // mirror (+1). Counted per file against origin/main 14f97d93c: no other
     // page this branch changed gained or lost a table.
-    const EXPECTED_TABLES: usize = 1441;
+    // 1441 -> 1443 (CAP-4): the table of Landlock refusal reasons in
+    // docs/least-privilege.md and its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1443;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

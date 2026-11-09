@@ -167,19 +167,28 @@ OUTPUT_FLAGS = frozenset({
 # exempts nothing is refused, and an entry for a command that HAS a golden is
 # refused too -- one of the two is wrong, and a reader cannot tell which.
 # These commands stay exit-status-only.
-OUTPUT_UNPINNED: dict[str, str] = {
-    # Recipes "Triage a pcap fast", "Diagnose a one-way audio complaint", "Decrypt SIP over TLS when you can restart the phone or server — key log file (SSLKEYLOGFILE)" and "Export RTP audio as WAV" open the TUI (no -N). A trycmd case has no
-    # terminal, so the TUI refuses to start and sipnab exits 1 with
-    # TUI_REFUSAL; a golden would pin that refusal as the expected output, and
-    # reached_the_tui counts the refusal as the run succeeding this far. What the TUI draws is pinned where a terminal exists:
-    # tests/tui_snapshot_test.rs and tests/tui_e2e_test.rs.
-    "sipnab -I capture.pcap": "opens the TUI, which needs a terminal a trycmd "
-        "case does not have; TUI output is pinned by tui_snapshot_test and "
-        "tui_e2e_test instead",
-    "sipnab -I encrypted.pcap": "opens the TUI, which needs a terminal a "
-        "trycmd case does not have; TUI output is pinned by tui_snapshot_test "
-        "and tui_e2e_test instead",
-}
+#
+# Commands that open the TUI are not listed here: `opens_the_tui` decides that
+# from the CLI's own implies-N list, and `golden_gaps` exempts them with
+# TUI_UNPINNED. The table used to name them by the substring
+# `sipnab -I capture.pcap`, which also matched a headless query such as
+# `sipnab -I capture.pcap --count-by method` and excused it from its golden.
+OUTPUT_UNPINNED: dict[str, str] = {}
+
+# Why a command that opens the TUI has no golden. Recipes "Triage a pcap fast",
+# "Diagnose a one-way audio complaint", "Decrypt SIP over TLS ..." and "Export
+# RTP audio as WAV" open it (no -N). A trycmd case has no terminal, so the TUI
+# refuses to start and sipnab exits 1 with TUI_REFUSAL; a golden would pin
+# that refusal as the expected output, and reached_the_tui counts the refusal
+# as the run succeeding this far. What the TUI draws is pinned where a
+# terminal exists: tests/tui_snapshot_test.rs and tests/tui_e2e_test.rs.
+TUI_UNPINNED = (
+    "opens the TUI, which needs a terminal a trycmd case does not have; TUI "
+    "output is pinned by tui_snapshot_test and tui_e2e_test instead"
+)
+
+# The key `golden_gaps` reports a TUI command beside a golden under.
+TUI_KEY = "a command that opens the TUI"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -205,6 +214,67 @@ class GoldenGaps:
     pinned: int
 
 
+# The flags that imply -N, as the CLI declares them. Generated from
+# `Cli::normalize`'s own table (src/cli.rs, `implies_no_tui_listing`) and held
+# equal to it by `the_implies_no_tui_file_is_what_the_cli_declares`, so this
+# script reads the CLI's rule rather than restating it.
+IMPLIES_NO_TUI_FILE = REPO / ".config" / "implies-no-tui.txt"
+
+
+def read_implies_no_tui(text: str) -> list[tuple[str, tuple[str, str] | None]]:
+    """Parse the implies-N listing: `--flag` or `--flag unless --opt value`.
+
+    Blank lines and `#` comments are skipped. A line in neither form raises,
+    because a line this parser misread would change which commands count as
+    opening the TUI without anyone seeing it.
+    """
+    out: list[tuple[str, tuple[str, str] | None]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        words = line.split()
+        if len(words) == 1 and words[0].startswith("--"):
+            out.append((words[0], None))
+        elif len(words) == 4 and words[1] == "unless" and words[0].startswith("--"):
+            out.append((words[0], (words[2], words[3])))
+        else:
+            raise ValueError(f"{IMPLIES_NO_TUI_FILE.name}: cannot read {raw!r}")
+    return out
+
+
+IMPLIES_NO_TUI = read_implies_no_tui(IMPLIES_NO_TUI_FILE.read_text())
+
+
+def opens_the_tui(
+    argv: list[str],
+    implies: list[tuple[str, tuple[str, str] | None]] | None = None,
+) -> bool:
+    """Whether sipnab run with `argv` (without `sipnab`) raises the TUI.
+
+    Not when `-N`/`--no-tui` is given, and not when a flag the CLI lists as
+    implying -N is (`--count-by` and the rest of the query family,
+    `--call-report`, `--export-vcon`), unless the listed exception is given
+    beside it (`--mcp` with `--mcp-transport http` serves beside the TUI).
+    """
+    if implies is None:
+        implies = IMPLIES_NO_TUI
+    if "-N" in argv or "--no-tui" in argv:
+        return False
+
+    def given(flag: str) -> bool:
+        return any(a == flag or a.startswith(flag + "=") for a in argv)
+
+    def given_with(flag: str, value: str) -> bool:
+        pairs = zip(argv, argv[1:] + [""])
+        return any(a == f"{flag}={value}" or (a == flag and v == value) for a, v in pairs)
+
+    for flag, unless in implies:
+        if given(flag) and not (unless and given_with(*unless)):
+            return False
+    return True
+
+
 # What sipnab prints when a TUI cannot start (src/app/tui_mode.rs). With no
 # terminal, which this checker never has, it exits 1 with this line.
 TUI_REFUSAL = "the terminal UI could not start"
@@ -213,14 +283,17 @@ TUI_REFUSAL = "the terminal UI could not start"
 def reached_the_tui(inv: str, returncode: int, stderr: str) -> bool:
     """Whether a failed run is a TUI command stopping at the missing terminal.
 
-    Only for commands OUTPUT_UNPINNED names as opening the TUI, and only on
-    exit 1 with sipnab's own refusal: that proves the arguments parsed and the
+    Only for commands `opens_the_tui` says raise the TUI, and only on exit 1
+    with sipnab's own refusal: that proves the arguments parsed and the
     capture opened, which is everything this checker can see without a
     terminal. Up to 0.5.191 the TUI exited 0 having drawn nothing, and this
-    checker counted that as a pass (TTY-EXIT-1).
+    checker counted that as a pass (TTY-EXIT-1). A command that implies -N
+    and still printed the refusal is a defect, not a pass.
     """
-    names_a_tui_command = any(p in inv for p in OUTPUT_UNPINNED)
-    return names_a_tui_command and returncode == 1 and TUI_REFUSAL in stderr
+    words = shlex.split(inv)
+    while words and words[0] in ("sudo", "sipnab"):
+        words = words[1:]
+    return opens_the_tui(words) and returncode == 1 and TUI_REFUSAL in stderr
 
 
 def substitute(
@@ -340,6 +413,13 @@ def golden_gaps(
     covered: set[tuple[str, ...]] = set()
     seen_missing: set[tuple[str, ...]] = set()
     for e in executed:
+        if opens_the_tui(list(e.argv)):
+            if e.argv in goldens:
+                contradictory.add(TUI_KEY)
+                covered.add(e.argv)
+            else:
+                exempt.append((e, TUI_UNPINNED))
+            continue
         reason_key = next((p for p in unpinned if p in e.inv), None)
         if reason_key is not None:
             used.add(reason_key)

@@ -1,0 +1,27 @@
+# The flags that imply -N, one per line: `--flag`, or
+# `--flag unless --option value` when that option and value cancel it.
+#
+# GENERATED from the table Cli::normalize reads (Cli::implying_no_tui
+# in src/cli.rs); do not edit. scripts/check-cookbook.py reads it to
+# tell a headless command from one that raises the TUI. Regenerate:
+#   SIPNAB_BLESS_IMPLIES_NO_TUI=1 cargo test --features full --lib -- the_implies_no_tui_file
+--call-report
+--export-vcon
+--export-vcon-when
+--mcp unless --mcp-transport http
+--timeline
+--count-by
+--rates-by
+--talkers
+--call-tree
+--correlate
+--compare-dialogs
+--endpoint-ip
+--endpoint-user
+--export-audio
+--vcon-validate
+--compare-captures
+--find-in-files
+--expect
+--relay-holdings
+--relay-sessions

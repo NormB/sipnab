@@ -1961,7 +1961,7 @@ Content-Length: 0\r\n\
     #[serial_test::serial(oversize_headers)]
     fn header_folding_capped_at_8kb() -> Result<(), TestError> {
         // Construct a Via header followed by 500 continuation lines of ~100
-        // bytes each, totalling ~50KB of folded content. The parser must not
+        // bytes each, totaling ~50KB of folded content. The parser must not
         // allocate an unbounded string — the MAX_HEADER_LINE_LEN (8KB) cap
         // should kick in and set parse_error.
         let padding: String = "x".repeat(97); // 97 chars + " " prefix + CRLF overhead ≈ 100 bytes

@@ -189,7 +189,7 @@ fn udp(sport: u16, dport: u16, payload: &[u8]) -> Vec<u8> {
 /// slice, so a parser that gets this one right gets GRE, MPLS-in-IP, VXLAN,
 /// GTP-U and the rest right for the same reason.
 #[test]
-fn a_tunnelled_packet_reports_the_inner_marking_not_the_carriers() -> Result<(), TestError> {
+fn a_tunneled_packet_reports_the_inner_marking_not_the_carriers() -> Result<(), TestError> {
     const OUTER_EF: u8 = 46;
     const INNER_CS3: u8 = 24;
 

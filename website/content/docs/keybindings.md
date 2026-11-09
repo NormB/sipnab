@@ -513,6 +513,10 @@ The row of a mid-call change names it:
 - media anchor moved,
 - or a transfer.
 
+Each change is relative to the same party's previous SDP. An answer that
+differs from its offer is not a change: the two parties' SDP describe two
+different endpoints.
+
 Open with `o` from the Call List.
 
 | Key | Action |

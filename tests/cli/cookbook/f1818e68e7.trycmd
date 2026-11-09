@@ -39,8 +39,7 @@ $ sipnab -N -I tests/pcap-samples/sip-rtp-g711.pcap --call-report 1-1966@10.0.2.
       ],
       "media_addr": "10.0.2.15",
       "media_port": 27942,
-      "mode": "sendonly",
-      "event": "MediaAnchorChange"
+      "mode": "sendonly"
     }
   ],
   "diagnosis": {

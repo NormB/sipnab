@@ -22,7 +22,7 @@ the other bundles and finds any tool by name.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`top_talkers`](#top-talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
+| [`top_talkers`](#top-talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`describe_endpoint`](#describe-endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
 | [`diagnose_registration`](#diagnose-registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | [`evaluate_expectations`](#evaluate-expectations) | `rules?`, `rules_toml?`, `suppression_file?` | A pass/fail verdict per rule plus an exit code for a build. A rule whose population is empty fails rather than passing quietly |
@@ -36,7 +36,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 
 ### `top_talkers`
 
-Ranks the busiest participants: IPs, user agents, or dialled prefixes.
+Ranks the busiest participants: IPs, user agents, or dialed prefixes.
 
 Use it to answer "who is busiest". `aggregate_dialogs` and `group_dialogs`
 group DIALOGS, which have two ends. `top_talkers` counts PARTICIPANTS, so it
@@ -102,7 +102,7 @@ in it, so a two-ended call adds to two rows — here both ends took part in all
 1334 dialogs and both read 100%. `total_matched` is the number that partitions:
 compare a row's `dialogs` against it rather than against the other rows.
 `by: "prefix"` is the exception and does partition, because sipnab credits one
-bucket per dialog and a call has one dialled number.
+bucket per dialog and a call has one dialed number.
 
 sipnab orders rows by `dialogs`, then by `messages`, then by `key`, so the
 order is the same on every run over one capture. `key` arrives fenced for

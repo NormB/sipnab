@@ -103,7 +103,7 @@ inside five seconds. Such a call means one of:
 
 - a bad route,
 - a codec the far end rejected,
-- wangiri-style fraud dialling.
+- wangiri-style fraud dialing.
 
 It is deliberately not a built-in.
 

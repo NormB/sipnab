@@ -618,8 +618,12 @@ def test_edge_no_temporary_file_is_left_after_a_success(server, tmp_path):
 
 
 def test_edge_no_temporary_file_is_left_after_an_exhausted_outage(server, tmp_path):
+    # The script retries only while the time spent so far plus the next
+    # delay fits the budget, so the budget must leave room for the first
+    # attempt's own run time: with 0.03 s, a first attempt slower than
+    # 20 ms on a loaded host left no retry, and the test saw 1 hit.
     url = server.plan("/a.tgz", {"status": 504, "body": b"x"})
-    r = run("--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"), "--first-delay", "0.01", "--budget", "0.03")
+    r = run("--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"), "--first-delay", "0.01", "--budget", "1")
     assert r.returncode == 1, r.stderr
     assert server.hits("/a.tgz") >= 2
     assert leftovers(tmp_path, "a.tgz") == []

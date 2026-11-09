@@ -13,7 +13,7 @@
 //! `core::slice::sort::stable::quicksort` alone appeared **66 times for
 //! 153,248 bytes**, and 39 of those instantiations named a sipnab type. With
 //! the helpers it calls -- `drift::sort`, `median3_rec`, `sort4_stable` and
-//! the unstable variant -- the sort machinery totalled roughly 322 KB. The
+//! the unstable variant -- the sort machinery totaled roughly 322 KB. The
 //! release gate that measures the published binary is what turned this from
 //! trivia into a number worth acting on.
 //!

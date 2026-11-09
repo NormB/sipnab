@@ -52,7 +52,7 @@ AssertWithoutMessage	src/capture/device.rs	14
 AssertWithoutMessage	src/capture/dtls.rs	21
 AssertWithoutMessage	src/capture/fanout.rs	1
 AssertWithoutMessage	src/capture/file.rs	30
-AssertWithoutMessage	src/capture/hep.rs	274
+AssertWithoutMessage	src/capture/hep.rs	271
 AssertWithoutMessage	src/capture/hep_delivery.rs	15
 AssertWithoutMessage	src/capture/hep_export.rs	5
 AssertWithoutMessage	src/capture/hep_roster.rs	59
@@ -70,7 +70,7 @@ AssertWithoutMessage	src/capture/output_guard.rs	21
 AssertWithoutMessage	src/capture/packet.rs	7
 AssertWithoutMessage	src/capture/parse.rs	269
 AssertWithoutMessage	src/capture/pcap_reader.rs	22
-AssertWithoutMessage	src/capture/pcapng_meta.rs	15
+AssertWithoutMessage	src/capture/pcapng_meta.rs	14
 AssertWithoutMessage	src/capture/reassembly.rs	105
 AssertWithoutMessage	src/capture/reconfigure.rs	7
 AssertWithoutMessage	src/capture/replay.rs	7
@@ -262,7 +262,7 @@ AssertWithoutMessage	src/sip/named_filters.rs	14
 AssertWithoutMessage	src/sip/parser.rs	81
 AssertWithoutMessage	src/sip/response_codes.rs	21
 AssertWithoutMessage	src/sip/sdp.rs	86
-AssertWithoutMessage	src/sip/sdp_timeline.rs	32
+AssertWithoutMessage	src/sip/sdp_timeline.rs	31
 AssertWithoutMessage	src/sip/session_id.rs	15
 AssertWithoutMessage	src/sip/siprec.rs	44
 AssertWithoutMessage	src/sip/stack_fingerprint.rs	24

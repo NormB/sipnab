@@ -352,11 +352,81 @@ fn parse_dsb_tls_secret(value: &[u8]) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
+/// The Decryption Secrets Blocks one [`strip_secrets`] removed, counted by the
+/// kind of secret each carried.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StrippedSecrets {
+    /// Blocks removed, keyed by [`secrets_kind_name`] of their Secrets Type.
+    by_kind: std::collections::BTreeMap<String, usize>,
+}
+
+impl StrippedSecrets {
+    /// Count one removed block whose Secrets Type field is `secrets_type`, or
+    /// `None` for a block too short to carry one.
+    pub fn record(&mut self, secrets_type: Option<u32>) {
+        *self
+            .by_kind
+            .entry(secrets_kind_name(secrets_type))
+            .or_insert(0) += 1;
+    }
+
+    /// Every block removed, of every kind.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.by_kind.values().sum()
+    }
+
+    /// How many blocks of the kind named `kind` were removed.
+    #[must_use]
+    pub fn count(&self, kind: &str) -> usize {
+        self.by_kind.get(kind).copied().unwrap_or(0)
+    }
+
+    /// The removal in words, for the line `--strip-secrets` prints.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let total = self.total();
+        let noun = if total == 1 {
+            "Decryption Secrets Block"
+        } else {
+            "Decryption Secrets Blocks"
+        };
+        if total == 0 {
+            return format!("0 {noun} (the input had none)");
+        }
+        let kinds = self
+            .by_kind
+            .iter()
+            .map(|(kind, n)| format!("{n} {kind}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{total} {noun} ({kinds})")
+    }
+}
+
+/// The name of a Decryption Secrets Block's Secrets Type, as the pcapng
+/// specification lists it; a type it does not list is named by its value.
+#[must_use]
+pub fn secrets_kind_name(secrets_type: Option<u32>) -> String {
+    let name = match secrets_type {
+        None => "no Secrets Type",
+        Some(0x5353_484b) => "SSH Key Log",
+        Some(0x544c_534b) => "TLS Key Log",
+        Some(0x5541_4b4c) => "OPC UA Key Log",
+        Some(0x5747_4b4c) => "WireGuard Key Log",
+        Some(0x5a4e_574b) => "ZigBee NWK Key",
+        Some(0x5a41_5053) => "ZigBee APS Key",
+        Some(0x4553_5053) => "ESP Security Association keys",
+        Some(other) => return format!("Secrets Type {other:#010x}"),
+    };
+    name.to_string()
+}
+
 /// Write a copy of the pcapng at `src` to `dst` with every Decryption Secrets
 /// Block removed (the `editcap --discard-all-secrets` analog). All other blocks
 /// are copied byte-for-byte. Written atomically (temp+rename) so a failure never
-/// corrupts `dst`, and `src` is never modified. Returns the number of DSBs
-/// stripped. Gzip-compressed input (`.pcapng.gz`) is inflated first, like every
+/// corrupts `dst`, and `src` is never modified. Returns the DSBs stripped,
+/// counted by kind. Gzip-compressed input (`.pcapng.gz`) is inflated first, like every
 /// other read path; the sanitized output is always written uncompressed.
 ///
 /// # Arguments
@@ -369,7 +439,7 @@ fn parse_dsb_tls_secret(value: &[u8]) -> Option<String> {
 /// Fails when `src` cannot be read, exceeds the size cap (on disk or after
 /// inflation), is not pcapng (missing/invalid SHB), contains a truncated or
 /// invalid block length, or when writing `dst` fails.
-pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
+pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<StrippedSecrets> {
     use std::io::{Error, ErrorKind};
     ensure_within_size_cap(std::fs::metadata(src)?.len(), max_metadata_file_bytes())?;
     let raw = std::fs::read(src)?;
@@ -381,7 +451,7 @@ pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
     let frames = BlockFrames::new(&bytes).map_err(|why| Error::new(ErrorKind::InvalidData, why))?;
 
     let mut kept: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut stripped = 0usize;
+    let mut stripped = StrippedSecrets::default();
     for frame in frames {
         let frame = frame.map_err(|_| {
             Error::new(
@@ -390,7 +460,16 @@ pub fn strip_secrets(src: &Path, dst: &Path) -> std::io::Result<usize> {
             )
         })?;
         if frame.kind == DSB_TYPE {
-            stripped += 1; // drop this Decryption Secrets Block
+            // Drop this Decryption Secrets Block, counting what it carried:
+            // the Secrets Type is the body's first field, in the section's
+            // byte order.
+            stripped.record(
+                frame
+                    .bytes
+                    .get(8..12)
+                    .filter(|_| frame.bytes.len() >= 16)
+                    .map(|b| rd_u32(b, frame.big_endian)),
+            );
         } else {
             kept.extend_from_slice(frame.bytes);
         }
@@ -416,6 +495,8 @@ struct BlockFrame<'a> {
     kind: u32,
     /// The whole block, header and trailer included.
     bytes: &'a [u8],
+    /// The byte order of the section the block is in.
+    big_endian: bool,
 }
 
 /// The blocks of a pcapng, framed by their lengths, following each section's
@@ -483,6 +564,7 @@ impl<'a> Iterator for BlockFrames<'a> {
         Some(Ok(BlockFrame {
             kind,
             bytes: &b[off..off + len],
+            big_endian: self.big_endian,
         }))
     }
 }
@@ -778,7 +860,8 @@ mod tests {
         let dst = dir.path().join("clean.pcapng");
 
         let n = strip_secrets(&src, &dst)?;
-        assert_eq!(n, 1, "one DSB stripped");
+        assert_eq!(n.total(), 1, "one DSB stripped");
+        assert_eq!(n.count("TLS Key Log"), 1, "it was a TLS key log");
 
         // Output: no secrets, names preserved.
         let after = read_pcapng_metadata(&dst)?;
@@ -804,11 +887,159 @@ mod tests {
         let dir = tempfile::tempdir()?;
         let src = write_pcapng_with(dir.path(), "nodsb.pcapng", false)?;
         let dst = dir.path().join("copy.pcapng");
-        assert_eq!(strip_secrets(&src, &dst)?, 0);
+        assert_eq!(
+            strip_secrets(&src, &dst)?.total(),
+            0,
+            "an input without a DSB strips nothing"
+        );
         // Faithful copy: names still present.
         let after = read_pcapng_metadata(&dst)?;
         assert!(after.names.iter().any(|(_, name)| name == "sbc-edge"));
         Ok(())
+    }
+
+    // ── Owed for a --strip-secrets that reported nothing it removed ─────────
+
+    /// A pcapng of one Section Header Block and one DSB per entry of `dsbs`,
+    /// in the byte order `big_endian` names. An entry of `None` is a DSB too
+    /// short to carry a Secrets Type (12 bytes, header and trailer only).
+    fn pcapng_with_dsbs(big_endian: bool, dsbs: &[Option<u32>]) -> Vec<u8> {
+        let w = |v: u32| {
+            if big_endian {
+                v.to_be_bytes()
+            } else {
+                v.to_le_bytes()
+            }
+        };
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(&SHB_BYTES);
+        b.extend_from_slice(&w(28));
+        b.extend_from_slice(&w(0x1A2B_3C4D));
+        b.extend_from_slice(&[0, 1, 0, 0]); // version 1.0 in either order
+        b.extend_from_slice(&[0xFF; 8]); // section length unknown
+        b.extend_from_slice(&w(28));
+        for dsb in dsbs {
+            let body: Vec<u8> = match dsb {
+                Some(kind) => [w(*kind), w(4), *b"k=1\n"].concat(),
+                None => Vec::new(),
+            };
+            let len = u32::try_from(12 + body.len()).unwrap_or(u32::MAX);
+            b.extend_from_slice(&w(DSB_TYPE));
+            b.extend_from_slice(&w(len));
+            b.extend_from_slice(&body);
+            b.extend_from_slice(&w(len));
+        }
+        b
+    }
+
+    /// Strip `bytes` (written to a temp file) and return what was removed.
+    fn strip_bytes(bytes: &[u8]) -> Result<StrippedSecrets, TestError> {
+        let dir = tempfile::tempdir()?;
+        let src = dir.path().join("in.pcapng");
+        std::fs::write(&src, bytes)?;
+        let dst = dir.path().join("out.pcapng");
+        let stripped = strip_secrets(&src, &dst)?;
+        let left = std::fs::read(&dst)?;
+        assert_eq!(left.len(), 28, "only the SHB is left: {} bytes", left.len());
+        Ok(stripped)
+    }
+
+    /// Each kind the specification lists is counted under its own name.
+    #[test]
+    fn stripped_blocks_are_counted_by_kind() -> Result<(), TestError> {
+        let tls = Some(0x544c_534b);
+        let wireguard = Some(0x5747_4b4c);
+        let n = strip_bytes(&pcapng_with_dsbs(false, &[tls, wireguard, tls]))?;
+        assert_eq!(n.total(), 3, "three blocks were removed");
+        assert_eq!(n.count("TLS Key Log"), 2, "two blocks were TLS key logs");
+        assert_eq!(
+            n.count("WireGuard Key Log"),
+            1,
+            "one block was a WireGuard key log"
+        );
+        Ok(())
+    }
+
+    /// The Secrets Type is read in the section's byte order.
+    #[test]
+    fn a_big_endian_section_names_its_kinds_too() -> Result<(), TestError> {
+        let n = strip_bytes(&pcapng_with_dsbs(
+            true,
+            &[Some(0x5353_484b), Some(0x5a41_5053)],
+        ))?;
+        assert_eq!(
+            n.count("SSH Key Log"),
+            1,
+            "the big-endian SSH type is named"
+        );
+        assert_eq!(
+            n.count("ZigBee APS Key"),
+            1,
+            "the big-endian ZigBee APS type is named"
+        );
+        Ok(())
+    }
+
+    /// A type the specification does not list is named by its value, and a
+    /// block with no body is still removed and still counted.
+    #[test]
+    fn an_unlisted_type_and_a_bodiless_block_are_counted() -> Result<(), TestError> {
+        let n = strip_bytes(&pcapng_with_dsbs(false, &[Some(0x1234_5678), None]))?;
+        assert_eq!(n.total(), 2, "both blocks were removed");
+        assert_eq!(
+            n.count("Secrets Type 0x12345678"),
+            1,
+            "an unlisted type is named by its value"
+        );
+        assert_eq!(n.count("no Secrets Type"), 1, "a bodiless block is counted");
+        Ok(())
+    }
+
+    /// Every Secrets Type the pcapng specification lists has its name.
+    #[test]
+    fn every_listed_secrets_type_has_its_specification_name() {
+        for (code, name) in [
+            (0x5353_484b, "SSH Key Log"),
+            (0x544c_534b, "TLS Key Log"),
+            (0x5541_4b4c, "OPC UA Key Log"),
+            (0x5747_4b4c, "WireGuard Key Log"),
+            (0x5a4e_574b, "ZigBee NWK Key"),
+            (0x5a41_5053, "ZigBee APS Key"),
+            (0x4553_5053, "ESP Security Association keys"),
+        ] {
+            assert_eq!(secrets_kind_name(Some(code)), name, "{code:#x}");
+        }
+    }
+
+    /// The description names the total and each kind with its count.
+    #[test]
+    fn the_description_names_each_kind_and_its_count() {
+        let mut n = StrippedSecrets::default();
+        n.record(Some(0x544c_534b));
+        n.record(Some(0x544c_534b));
+        n.record(Some(0x5747_4b4c));
+        assert_eq!(
+            n.describe(),
+            "3 Decryption Secrets Blocks (2 TLS Key Log, 1 WireGuard Key Log)",
+            "plural, with each kind and its count"
+        );
+    }
+
+    /// One block is singular; none says the input had none.
+    #[test]
+    fn the_description_of_one_block_and_of_none() {
+        let mut one = StrippedSecrets::default();
+        one.record(Some(0x544c_534b));
+        assert_eq!(
+            one.describe(),
+            "1 Decryption Secrets Block (1 TLS Key Log)",
+            "one block is singular"
+        );
+        assert_eq!(
+            StrippedSecrets::default().describe(),
+            "0 Decryption Secrets Blocks (the input had none)",
+            "none says the input had none"
+        );
     }
 
     /// Stripping a non-pcapng file is an error (unlike metadata reading).
@@ -847,7 +1078,7 @@ mod tests {
         let dst = dir.path().join("clean.pcapng");
 
         let n = strip_secrets(&gz, &dst)?;
-        assert_eq!(n, 1, "one DSB stripped from gzip input");
+        assert_eq!(n.total(), 1, "one DSB stripped from gzip input");
 
         // Output is a plain (uncompressed) sanitized pcapng.
         let after = read_pcapng_metadata(&dst)?;

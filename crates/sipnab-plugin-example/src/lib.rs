@@ -5,7 +5,7 @@
 //!
 //! A call that is answered and then torn down within a few seconds is a classic
 //! operational signal — a bad route, a codec the far end hangs up on, or
-//! wangiri-style fraud dialling. sipnab's seven built-in detections do not
+//! wangiri-style fraud dialing. sipnab's seven built-in detections do not
 //! cover it, because whether a short call is a problem depends entirely on the
 //! traffic: on a click-to-call service three seconds is normal, on a wholesale
 //! trunk it is a red flag. That is exactly the shape a plugin exists for — a

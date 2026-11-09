@@ -811,6 +811,97 @@ fn strip_secrets_removes_the_dsb_and_preserves_the_input() -> Result<(), TestErr
     Ok(())
 }
 
+/// What one `--strip-secrets` run over a one-DSB fixture left: its output
+/// streams, its exit code, the paths as typed, and the directory that holds
+/// them (kept alive for as long as the caller holds this).
+struct StripRun {
+    stdout: String,
+    stderr: String,
+    code: Option<i32>,
+    input: String,
+    output: String,
+    _dir: tempfile::TempDir,
+}
+
+/// Run `--strip-secrets` over a one-DSB fixture with `extra` flags and the
+/// given `SIPNAB_LOG`.
+fn strip_one_dsb(extra: &[&str], log: Option<&str>) -> Result<StripRun, TestError> {
+    let dir = tempfile::tempdir()?;
+    let input = dir.path().join("with-secrets.pcapng");
+    let output = dir.path().join("stripped.pcapng");
+    let frame = pcap_build::udp_frame(
+        [192, 0, 2, 1],
+        [198, 51, 100, 1],
+        5060,
+        5060,
+        b"OPTIONS sip:a@example.com SIP/2.0\r\nCall-ID: strip-line\r\nCSeq: 1 OPTIONS\r\nContent-Length: 0\r\n\r\n",
+    );
+    pcap_build::write_pcapng_with_dsb(&input, "CLIENT_RANDOM 0011 22334455\n", &frame)?;
+    let out_s = output.to_str().ok_or("output is not UTF-8")?.to_string();
+    let in_s = input.to_str().ok_or("input is not UTF-8")?.to_string();
+    let mut args = vec!["-I", in_s.as_str(), "--strip-secrets", out_s.as_str()];
+    args.extend_from_slice(extra);
+    let (stdout, stderr, code) = run_support::run(&args, log)?;
+    Ok(StripRun {
+        stdout,
+        stderr,
+        code,
+        input: in_s,
+        output: out_s,
+        _dir: dir,
+    })
+}
+
+/// On success `--strip-secrets` says what it removed and where it wrote, on
+/// stderr, even with logging turned off.
+///
+/// Owed: the line went through `tracing::info!`, which the default filter
+/// for a run without `-N` (`error`) and `SIPNAB_LOG=off` both drop, so the
+/// command printed nothing and the operator had no record of what was removed.
+#[test]
+fn strip_secrets_reports_what_it_removed_and_where() -> Result<(), TestError> {
+    let run = strip_one_dsb(&["-N"], Some("off"))?;
+    let (out, err, code, in_s, out_s) = (run.stdout, run.stderr, run.code, run.input, run.output);
+    assert_eq!(code, Some(0), "{err}");
+    let want = format!("Stripped 1 Decryption Secrets Block (1 TLS Key Log): {in_s} -> {out_s}");
+    assert!(
+        err.lines().any(|l| l == want),
+        "stderr lacks {want:?}:\n{err}"
+    );
+    assert!(
+        !out.contains("Stripped"),
+        "the line belongs on stderr, not stdout:\n{out}"
+    );
+    Ok(())
+}
+
+/// The neighbor: without `-N`, where the default log level is `error`.
+#[test]
+fn strip_secrets_reports_without_no_tui_too() -> Result<(), TestError> {
+    let run = strip_one_dsb(&[], None)?;
+    let (err, code, out_s) = (run.stderr, run.code, run.output);
+    assert_eq!(code, Some(0), "{err}");
+    assert!(
+        err.contains("Stripped 1 Decryption Secrets Block (1 TLS Key Log)") && err.contains(&out_s),
+        "{err}"
+    );
+    Ok(())
+}
+
+/// `--quiet` keeps results; the removal is the command's result.
+#[test]
+fn strip_secrets_reports_under_quiet() -> Result<(), TestError> {
+    let run = strip_one_dsb(&["-N", "--quiet"], None)?;
+    let (err, code) = (run.stderr, run.code);
+    assert_eq!(code, Some(0), "{err}");
+    assert_eq!(
+        err.matches("Stripped 1 Decryption Secrets Block").count(),
+        1,
+        "the line is missing or printed twice:\n{err}"
+    );
+    Ok(())
+}
+
 /// `-E`/`--hep-parse` must decode HEP-encapsulated SIP out of a capture.
 ///
 /// No checked-in sample carries HEP traffic, so the fixture is built with the

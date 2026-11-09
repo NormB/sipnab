@@ -885,16 +885,16 @@ To check it, save the module this sipnab writes against. Then hand both to
 `yanglint`:
 
 ```bash
-sipnab --print-yang-module > sipnab-diagnosis@2026-10-09.yang
+sipnab --print-yang-module > sipnab-diagnosis@2026-11-08.yang
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json
 ```
 
 `--print-yang-module` prints the module this sipnab validates against. The
 repository commits the same file at
-[`yang/sipnab-diagnosis@2026-10-09.yang`](../yang/sipnab-diagnosis@2026-10-09.yang).
+[`yang/sipnab-diagnosis@2026-11-08.yang`](../yang/sipnab-diagnosis@2026-11-08.yang).
 
 The document has one member, `sipnab-diagnosis:capture-analysis`. It differs
 from the `--json-analyze` object only in how it writes the same facts:
