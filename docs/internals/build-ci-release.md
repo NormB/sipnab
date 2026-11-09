@@ -1602,24 +1602,26 @@ It publishes immediately and irreversibly, whatever that commit contains:
 
 That is thirty-three release assets in all.
 **Release timeline.** 0.5.238 took 4 h 44 min from start (12:08Z) to the site
-advertising it (16:52Z). The second column holds those measurements. Fill in
-the third at the next release, from the same sources: the heavy-run log for the
+advertising it (16:52Z). The second column holds those measurements. The third
+holds 0.5.240's, in UTC on 2026-11-09, up to the phase-two commit. The rows
+marked "after this table" ran after the commit that carries it. Fill in a
+fourth at the next release, from the same sources: the heavy-run log for the
 hook steps, the workflow runs for the CI steps, and the tag and Pages times.
 
-| Step | 0.5.238 | Next release |
+| Step | 0.5.238 | 0.5.240 |
 |---|---|---|
-| Waiting for an unrelated pull request | 42 min | |
-| Release commit: pre-commit hook | 14 min | |
-| Release commit: pre-push hook | 15 min | |
-| Release pull request CI | 33 min | |
-| Waiting for CI on the merge commit before the tag | 37 min | |
-| Tag push | 161 s | |
-| Release workflow | 26 min | |
-| Phase two: pre-commit and pre-push hooks | 16 min and 21 min, 10 min of it queued | |
-| Phase two: pull request CI | 31 min | |
-| Pages waiting for main CI's test count | 39 min | |
-| `.deb` steps queued for the heavy-run main slot | 10 min | |
-| Merge to site | about 3 h | |
+| Waiting for an unrelated pull request | 42 min | none |
+| Release commit: pre-commit hook | 14 min | 387 s (07:53:07 to 07:59:34), release-only |
+| Release commit: pre-push hook | 15 min | 30 s (07:59:54 to 08:00:24), release-only |
+| Release pull request CI | 33 min | 37 min (08:00:43 to 08:37:53), CodeQL re-run once after a GitHub 504 at about 08:10 |
+| Waiting for CI on the merge commit before the tag | 37 min | none: merged 08:38:21, tag push queued 08:38:35 |
+| Tag push | 161 s | 37 s, after 434 s queued (08:38:35 to 08:46:26) behind an ordinary commit hook |
+| Release workflow | 26 min | 39 min (08:46:28 to 09:25:09), GitHub release 09:20:01 |
+| Phase two: pre-commit and pre-push hooks | 16 min and 21 min, 10 min of it queued | after this table |
+| Phase two: pull request CI | 31 min | after this table |
+| Pages waiting for main CI's test count | 39 min | after this table |
+| `.deb` steps queued for the heavy-run main slot | 10 min | none: 09:27:23 to 09:27:51 over SSH, outside heavy-run |
+| Merge to site | about 3 h | after this table |
 
 On this host, open the heavy-run release window before the release pull request merges,
 and close it once the site advertises the release. To open it:
