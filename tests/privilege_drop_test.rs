@@ -1014,7 +1014,8 @@ fn root_only_files(
 /// Error: Failed to write file ...: Permission denied` on stderr. That line is
 /// the profiler's, not sipnab's, and it would fail every assertion that no
 /// secret read was refused. sipnab changes its working directory only when it
-/// chroots, which these runs do not.
+/// chroots: it then works in the new root, so a `--chroot` run whose stderr is
+/// checked for `Permission denied` chroots into one of these directories too.
 fn dir_nobody_can_write() -> Result<tempfile::TempDir, TestError> {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir()?;
@@ -2061,7 +2062,7 @@ fn a_chrooted_root_run_reads_every_root_only_member() -> Result<(), TestError> {
             ("b.pcap", &later(&scratch, 0)?),
         ],
     )?;
-    let jail = tempfile::tempdir()?;
+    let jail = dir_nobody_can_write()?;
     let (tmpdir, _cleanup) = scratch_tmpdir()?;
     let out = root_sipnab(
         tmpdir.path(),
@@ -2403,7 +2404,7 @@ fn a_chrooted_root_run_reads_an_archive_and_removes_its_extraction() -> Result<(
     }
     let dir = tempfile::tempdir()?;
     let archive = root_only_archive(dir.path())?;
-    let jail = tempfile::tempdir()?;
+    let jail = dir_nobody_can_write()?;
     let (tmpdir, _cleanup) = scratch_tmpdir()?;
     let out = root_sipnab(
         tmpdir.path(),
@@ -2554,7 +2555,7 @@ fn a_chrooted_root_run_loads_tls_secrets_embedded_in_its_input() -> Result<(), T
     let dir = tempfile::tempdir()?;
     let bytes = pcapng_with_dsb(&dir.path().join("scratch.pcapng"))?;
     let files = root_only_files(dir.path(), &[("dsb.pcapng", &bytes)])?;
-    let jail = tempfile::tempdir()?;
+    let jail = dir_nobody_can_write()?;
     let (tmpdir, _cleanup) = scratch_tmpdir()?;
     let out = root_sipnab(
         tmpdir.path(),
@@ -2588,7 +2589,7 @@ fn a_chrooted_root_run_loads_tls_secrets_embedded_in_an_archive_member() -> Resu
         &bytes,
     )]))?;
     let files = root_only_files(dir.path(), &[("set.tar.gz", &archive)])?;
-    let jail = tempfile::tempdir()?;
+    let jail = dir_nobody_can_write()?;
     let (tmpdir, _cleanup) = scratch_tmpdir()?;
     let out = root_sipnab(
         tmpdir.path(),
