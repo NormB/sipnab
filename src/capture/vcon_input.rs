@@ -117,18 +117,30 @@ pub const GZIP_MAGIC: [u8; 2] = [0x1f, 0x8b];
 #[cfg(feature = "native")]
 #[must_use]
 pub fn is_container_file(path: &std::path::Path) -> bool {
+    std::fs::File::open(path).is_ok_and(is_container_in)
+}
+
+/// [`is_container_file`] for a file already open, read from its start.
+///
+/// The `-I` reader of a run that drops privileges opens each file before
+/// the drop, and asks this of the descriptor: the path may no longer open as
+/// the user the run dropped to. The read position is left wherever the sniff
+/// stopped.
+#[cfg(feature = "native")]
+#[must_use]
+pub fn is_container_in<R: std::io::Read + std::io::Seek>(mut file: R) -> bool {
     use std::io::Read;
-    let Ok(file) = std::fs::File::open(path) else {
+    if file.seek(std::io::SeekFrom::Start(0)).is_err() {
         return false;
-    };
+    }
     let mut prefix = Vec::with_capacity(64);
-    if file.take(64).read_to_end(&mut prefix).is_err() {
+    if (&mut file).take(64).read_to_end(&mut prefix).is_err() {
         return false;
     }
     if prefix.starts_with(&GZIP_MAGIC) {
-        let Ok(file) = std::fs::File::open(path) else {
+        if file.seek(std::io::SeekFrom::Start(0)).is_err() {
             return false;
-        };
+        }
         let mut inflated = Vec::with_capacity(64);
         // A short or damaged member keeps what inflated before the error,
         // and the reader then reports the damage.
@@ -386,11 +398,12 @@ pub fn reset_read_report() {
 #[cfg(feature = "vcon")]
 pub use reader::{
     ContainerError, ReaderKeys, Rebuilt, RebuiltMessage, Refused, form_of_bytes, into_stores,
-    open_bytes, opener, packets, read_file, read_file_reporting, rebuild, set_reader_keys,
+    open_bytes, opener, packets, read_file, read_file_reporting, read_opened, rebuild,
+    set_reader_keys,
 };
 
 #[cfg(all(feature = "native", not(feature = "vcon")))]
-pub use unbuilt::{NoVconReader, Rebuilt, packets, read_file};
+pub use unbuilt::{NoVconReader, Rebuilt, packets, read_file, read_opened};
 
 /// The reader's shape in a build without the `vcon` feature: every container
 /// is refused with the reason, so `-I` names the missing feature instead of
@@ -427,6 +440,18 @@ mod unbuilt {
     ///
     /// Always.
     pub fn read_file(_path: &std::path::Path) -> Result<Rebuilt, NoVconReader> {
+        Err(NoVconReader)
+    }
+
+    /// Refuse: this build has no reader.
+    ///
+    /// # Errors
+    ///
+    /// Always.
+    pub fn read_opened(
+        _file: std::fs::File,
+        _path: &std::path::Path,
+    ) -> Result<Rebuilt, NoVconReader> {
         Err(NoVconReader)
     }
 
@@ -608,6 +633,22 @@ mod reader {
         read_file_reporting(path).map_err(|refused| refused.error)
     }
 
+    /// [`read_file`] for the container in `file`, already open, which goes
+    /// by `path`.
+    ///
+    /// The `-I` reader of a run that drops privileges opens each file before
+    /// the drop and reads it through the descriptor it opened then.
+    ///
+    /// # Errors
+    ///
+    /// As [`read_file`].
+    pub fn read_opened(
+        file: std::fs::File,
+        path: &std::path::Path,
+    ) -> Result<Rebuilt, ContainerError> {
+        read_opened_reporting(file, path).map_err(|refused| refused.error)
+    }
+
     /// [`read_file`], and on a refusal the skipped row of the vCon container
     /// report, taken from the same read: the file is read, opened and
     /// schema-checked once whichever way it goes.
@@ -622,48 +663,56 @@ mod reader {
     /// it carries the whole skipped row, and the read path returns it rarely.
     pub fn read_file_reporting(path: &std::path::Path) -> Result<Rebuilt, Box<Refused>> {
         let source = crate::capture::archive::source_name(path);
-        let refuse = |error: ContainerError,
-                      form: super::ContainerForm,
-                      uuid: Option<String>,
-                      validation_findings: Option<usize>| {
-            Box::new(Refused {
-                skip: super::VconSkip {
-                    source: source.clone(),
-                    uuid,
-                    form,
-                    reason: error.kind().to_string(),
-                    detail: error.to_string(),
-                    validation_findings,
-                },
-                error,
-            })
-        };
-        let unknown = super::ContainerForm::Unknown;
-        let len = std::fs::metadata(path)
-            .map_err(|e| {
-                refuse(
-                    ContainerError::Unreadable(e.to_string()),
-                    unknown,
-                    None,
-                    None,
-                )
-            })?
-            .len();
+        let file = std::fs::File::open(path)
+            .map_err(|e| unread(&source, ContainerError::Unreadable(e.to_string())))?;
+        read_opened_reporting_as(file, &source)
+    }
+
+    /// [`read_file_reporting`] for the container in `file`, already open,
+    /// which goes by `path`.
+    fn read_opened_reporting(
+        file: std::fs::File,
+        path: &std::path::Path,
+    ) -> Result<Rebuilt, Box<Refused>> {
+        read_opened_reporting_as(file, &crate::capture::archive::source_name(path))
+    }
+
+    /// The refusal of a container from `source` that could not be read at
+    /// all, so nothing is known of its form, its uuid or its findings.
+    fn unread(source: &str, error: ContainerError) -> Box<Refused> {
+        Box::new(Refused {
+            skip: super::VconSkip {
+                source: source.to_string(),
+                uuid: None,
+                form: super::ContainerForm::Unknown,
+                reason: error.kind().to_string(),
+                detail: error.to_string(),
+                validation_findings: None,
+            },
+            error,
+        })
+    }
+
+    /// Read the container in `file`, from its start, under the name
+    /// `source`, refusing one over [`MAX_CONTAINER_BYTES`].
+    fn read_opened_reporting_as(
+        mut file: std::fs::File,
+        source: &str,
+    ) -> Result<Rebuilt, Box<Refused>> {
+        use std::io::{Read as _, Seek as _};
+        let unreadable =
+            |e: std::io::Error| unread(source, ContainerError::Unreadable(e.to_string()));
+        let len = file.metadata().map_err(unreadable)?.len();
         if len > MAX_CONTAINER_BYTES {
             let why = format!(
                 "{len} bytes is over the {MAX_CONTAINER_BYTES}-byte limit for one container"
             );
-            return Err(refuse(ContainerError::Unreadable(why), unknown, None, None));
+            return Err(unread(source, ContainerError::Unreadable(why)));
         }
-        let bytes = std::fs::read(path).map_err(|e| {
-            refuse(
-                ContainerError::Unreadable(e.to_string()),
-                unknown,
-                None,
-                None,
-            )
-        })?;
-        rebuild_bytes_with(&bytes, &source, open_bytes)
+        file.seek(std::io::SeekFrom::Start(0)).map_err(unreadable)?;
+        let mut bytes = Vec::with_capacity(usize::try_from(len).unwrap_or(0));
+        file.read_to_end(&mut bytes).map_err(unreadable)?;
+        rebuild_bytes_with(&bytes, source, open_bytes)
     }
 
     /// Open and rebuild the container in `bytes`, the half of

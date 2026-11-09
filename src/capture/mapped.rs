@@ -154,7 +154,18 @@ impl MappedPcap {
         if mapping_disabled() {
             return Ok(None);
         }
-        let file = std::fs::File::open(path)?;
+        Self::from_file(&std::fs::File::open(path)?)
+    }
+
+    /// [`Self::open`] for a file already open. The mapping covers the whole
+    /// file whatever its read position, and outlives `file`.
+    ///
+    /// The `-I` reader of a run that drops privileges opens each file before
+    /// the drop and maps it through that descriptor.
+    pub fn from_file(file: &std::fs::File) -> std::io::Result<Option<Self>> {
+        if mapping_disabled() {
+            return Ok(None);
+        }
         let meta = file.metadata()?;
         // Only regular files. A pipe or device has no stable length to map,
         // and mapping one either fails or invites the SIGBUS above.
@@ -170,7 +181,7 @@ impl MappedPcap {
         // that another process could change underneath it. The hazard and the
         // reason it is accepted are documented at module level; `file` being a
         // regular file is checked above.
-        let mmap = unsafe { memmap2::Mmap::map(&file)? };
+        let mmap = unsafe { memmap2::Mmap::map(file)? };
         // The read is strictly front-to-back, and the reader thread is the
         // stage the whole `--cores` design queues behind, so it must not stop
         // to fault a page in per 4 KiB of capture.

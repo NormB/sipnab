@@ -644,9 +644,17 @@ pub fn unwraps(format: Format) -> bool {
 ///
 /// When the file cannot be opened or read.
 pub fn container_format(path: &Path) -> io::Result<Option<Format>> {
+    container_format_in(&mut std::fs::File::open(path)?)
+}
+
+/// [`container_format`] for a file already open, read from where it stands.
+///
+/// # Errors
+///
+/// When the file cannot be read.
+pub fn container_format_in(file: &mut dyn Read) -> io::Result<Option<Format>> {
     let mut head = [0u8; tar::BLOCK];
-    let mut file = std::fs::File::open(path)?;
-    let n = read_head(&mut file, &mut head)?;
+    let n = read_head(file, &mut head)?;
     Ok(match sniff(&head[..n]) {
         f @ (Format::Gzip
         | Format::Tar
@@ -861,6 +869,53 @@ fn expand_filtered_inner(
     let label = path.display().to_string();
     let mut walker = Walker::new(limits, None, path, &label);
     walker.keep = keep;
+    let _ = walker.walk(&mut file, &label, &[], 0);
+    if let Some(e) = walker.fatal.take() {
+        return Err(e);
+    }
+    Ok(walker.out)
+}
+
+/// [`expand`] for a file already open, read from where it stands, which goes
+/// by `path`.
+///
+/// The `-I` reader of a run that drops privileges opens each file before the
+/// drop and reads it through that descriptor, so `path` is never opened
+/// again here: a ZIP or 7z at the top level, which [`expand`] reopens by path
+/// to seek in, is copied into the extraction directory first instead.
+///
+/// # Errors
+///
+/// As [`expand`].
+pub fn expand_opened(file: std::fs::File, path: &Path, limits: &Limits) -> io::Result<Expansion> {
+    #[cfg(feature = "archive")]
+    {
+        password::keyring_in_use(|keyring| walk_opened(file, path, limits, keyring))
+    }
+    #[cfg(not(feature = "archive"))]
+    {
+        walk_opened(file, path, limits, ())
+    }
+}
+
+/// [`expand_opened`], with the keyring given.
+fn walk_opened(
+    file: std::fs::File,
+    path: &Path,
+    limits: &Limits,
+    keyring: KeyringArg<'_>,
+) -> io::Result<Expansion> {
+    let mut file = io::BufReader::new(file);
+    let label = path.display().to_string();
+    let mut walker = Walker::new(limits, None, path, &label);
+    // Nothing reopens `path`: see `expand_opened`.
+    walker.root = None;
+    #[cfg(feature = "archive")]
+    {
+        walker.keyring = keyring;
+    }
+    #[cfg(not(feature = "archive"))]
+    let () = keyring;
     let _ = walker.walk(&mut file, &label, &[], 0);
     if let Some(e) = walker.fatal.take() {
         return Err(e);
@@ -1763,6 +1818,176 @@ fn same_owner(_a: &std::fs::Metadata, _b: &std::fs::Metadata) -> bool {
     true
 }
 
+/// What a run does with the directories it extracted archive members into,
+/// before it chroots or drops privileges.
+///
+/// The extraction is made while the run still holds the credentials and the
+/// root it started with: as root, a directory only root may enter (0700)
+/// holding files only root may read (0600). The run then has to remove it
+/// when it ends, as whoever it has become.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtractionHandover {
+    /// Nothing changes: the run keeps its credentials and its root.
+    Keep,
+    /// Give every directory, and everything in it, to this user and group,
+    /// which the run drops to: it can then still read the members by path
+    /// and remove them at exit. The modes stay, so no other user can. A
+    /// directory that user could not reach to remove (its `TMPDIR` lies
+    /// inside a directory only another user may enter) is removed now
+    /// instead, as for [`Self::Remove`].
+    GiveTo {
+        /// The user the run drops to.
+        uid: u32,
+        /// That user's primary group.
+        gid: u32,
+    },
+    /// Remove every directory now. After a chroot no path reaches it, to read
+    /// it or to remove it, so it goes while the run can still remove it. The
+    /// run opens every member before it confines itself, and reads them
+    /// through the descriptors it opened then.
+    Remove,
+}
+
+/// What a run that `chroots`, and drops to the user and group `drop_to`
+/// (`None` when it keeps its credentials), does with its extractions. Pure.
+///
+/// The chroot decides first: once it is made no path reaches the extraction,
+/// whoever the run is.
+#[must_use]
+pub fn extraction_handover(chroots: bool, drop_to: Option<(u32, u32)>) -> ExtractionHandover {
+    match (chroots, drop_to) {
+        (true, _) => ExtractionHandover::Remove,
+        (false, Some((uid, gid))) => ExtractionHandover::GiveTo { uid, gid },
+        (false, None) => ExtractionHandover::Keep,
+    }
+}
+
+/// Apply `handover` to every extraction this run holds
+/// ([`keep_for_run`]). Call it while the run still has its credentials and
+/// its root.
+///
+/// # Errors
+///
+/// The first change of owner that failed. Every extraction is still handed
+/// over as far as it can be.
+///
+/// # Side effects
+///
+/// Changes the owner of, or removes, the run's extraction directories and
+/// everything in them.
+pub fn hand_over_run_extractions(handover: ExtractionHandover) -> io::Result<()> {
+    let mut held = RUN.lock();
+    match handover {
+        ExtractionHandover::Keep => Ok(()),
+        ExtractionHandover::Remove => {
+            for kept in held.iter_mut() {
+                kept.remove_from_disk();
+            }
+            Ok(())
+        }
+        ExtractionHandover::GiveTo { uid, gid } => {
+            let mut first = None;
+            for kept in held.iter_mut() {
+                let Some(dir) = kept.dir().map(Path::to_path_buf) else {
+                    continue;
+                };
+                if removable_as(&dir, uid, gid) {
+                    if let Err(e) = give_tree_to(&dir, uid, gid, &mut change_owner) {
+                        first.get_or_insert(e);
+                    }
+                } else {
+                    kept.remove_from_disk();
+                }
+            }
+            first.map_or(Ok(()), Err)
+        }
+    }
+}
+
+/// One directory on the path to an extraction: its permission bits and its
+/// owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DirAccess {
+    /// The mode, of which the low nine permission bits are read.
+    mode: u32,
+    /// The owning user.
+    uid: u32,
+    /// The owning group.
+    gid: u32,
+}
+
+/// Whether a process running as `uid`, with primary group `gid`, can remove
+/// an entry it owns from the last directory of `chain`, where `chain` lists
+/// every directory from the root down. It needs search permission on each,
+/// and write permission on the last. The class is the Unix one: the owner
+/// bits when it owns the directory, else the group bits when its group does,
+/// else the other bits. Pure.
+///
+/// Supplementary groups are not consulted, so this can answer `false` where
+/// the process could remove the entry; the extraction is then removed before
+/// the drop, as for a chroot. An empty chain answers `false`.
+fn can_remove_entry_in(chain: &[DirAccess], uid: u32, gid: u32) -> bool {
+    let bits = |d: &DirAccess| {
+        let shift = if d.uid == uid {
+            6
+        } else if d.gid == gid {
+            3
+        } else {
+            0
+        };
+        (d.mode >> shift) & 0o7
+    };
+    let Some(last) = chain.last() else {
+        return false;
+    };
+    chain.iter().all(|d| bits(d) & 0o1 != 0) && bits(last) & 0o2 != 0
+}
+
+/// Whether the user and group a run drops to can remove the extraction
+/// directory `dir` at exit once it owns it ([`can_remove_entry_in`] over the
+/// directories that lead to it). `false` when they cannot be read.
+#[cfg(unix)]
+fn removable_as(dir: &Path, uid: u32, gid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let Some(parent) = dir.parent() else {
+        return false;
+    };
+    let Ok(parent) = std::fs::canonicalize(parent) else {
+        return false;
+    };
+    let mut chain = Vec::new();
+    for ancestor in parent.ancestors() {
+        let Ok(meta) = std::fs::metadata(ancestor) else {
+            return false;
+        };
+        chain.push(DirAccess {
+            mode: meta.mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
+        });
+    }
+    chain.reverse();
+    can_remove_entry_in(&chain, uid, gid)
+}
+
+/// No owners to check where there are no uids.
+#[cfg(not(unix))]
+fn removable_as(_dir: &Path, _uid: u32, _gid: u32) -> bool {
+    true
+}
+
+/// Change the owner of `path` itself, a link included, to `uid` and `gid`.
+#[cfg(unix)]
+fn change_owner(path: &Path, uid: u32, gid: u32) -> io::Result<()> {
+    std::os::unix::fs::lchown(path, Some(uid), Some(gid))
+}
+
+/// No owners to change where there are no uids.
+#[cfg(not(unix))]
+fn change_owner(_path: &Path, _uid: u32, _gid: u32) -> io::Result<()> {
+    Ok(())
+}
+
 /// An extraction directory held so its members can be read, with their
 /// labels registered for the readers that stamp a source name.
 #[derive(Debug)]
@@ -1772,8 +1997,9 @@ pub struct KeptExtraction {
     /// Of those, the ones decrypted with a password, registered in
     /// [`DECRYPTED`] for as long as this extraction lives.
     decrypted: Vec<PathBuf>,
-    /// The directory itself. Dropped after the labels are withdrawn.
-    _dir: ExtractDir,
+    /// The directory itself. Dropped after the labels are withdrawn, or
+    /// earlier by [`Self::remove_from_disk`].
+    dir: Option<ExtractDir>,
 }
 
 impl KeptExtraction {
@@ -1790,7 +2016,7 @@ impl KeptExtraction {
         Self {
             paths,
             decrypted: Vec::new(),
-            _dir: dir,
+            dir: Some(dir),
         }
     }
 
@@ -1808,11 +2034,39 @@ impl KeptExtraction {
         self
     }
 
-    /// The directory the members were extracted into.
+    /// The directory the members were extracted into, while it is on disk.
     #[must_use]
-    pub fn dir(&self) -> &Path {
-        self._dir.path()
+    pub fn dir(&self) -> Option<&Path> {
+        self.dir.as_ref().map(ExtractDir::path)
     }
+
+    /// Remove the directory and its members from disk now. The labels stay
+    /// registered until this value drops, for the packets read from those
+    /// members through descriptors opened before.
+    pub fn remove_from_disk(&mut self) {
+        drop(self.dir.take());
+    }
+}
+
+/// Give `path`, and when it is a directory every entry under it, to `uid`
+/// and `gid` through `chown`. A link is changed itself and never followed.
+///
+/// # Errors
+///
+/// The first `chown` that failed, or a directory that could not be listed.
+fn give_tree_to(
+    path: &Path,
+    uid: u32,
+    gid: u32,
+    chown: &mut dyn FnMut(&Path, u32, u32) -> io::Result<()>,
+) -> io::Result<()> {
+    chown(path, uid, gid)?;
+    if std::fs::symlink_metadata(path)?.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            give_tree_to(&entry?.path(), uid, gid, chown)?;
+        }
+    }
+    Ok(())
 }
 
 impl Drop for KeptExtraction {
@@ -1926,7 +2180,9 @@ pub fn release_run_on_panic() {
         return;
     };
     for kept in std::mem::take(&mut *held) {
-        let _ = std::fs::remove_dir_all(kept.dir());
+        if let Some(dir) = kept.dir() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
         // Its Drop would take the label lock; the directory is already gone,
         // and the process is about to be.
         std::mem::forget(kept);
@@ -1937,7 +2193,10 @@ pub fn release_run_on_panic() {
 /// which must let the capture thread read them and let the run delete them.
 #[must_use]
 pub fn run_extraction_dirs() -> Vec<PathBuf> {
-    RUN.lock().iter().map(|k| k.dir().to_path_buf()).collect()
+    RUN.lock()
+        .iter()
+        .filter_map(|k| k.dir().map(Path::to_path_buf))
+        .collect()
 }
 
 /// The name a capture file goes by: its archive label when it is an extracted
@@ -1971,6 +2230,246 @@ mod tests {
     use super::tar::testutil::{Spec, build};
     use super::*;
     use std::io::Write;
+
+    /// A run that chroots removes its extractions, whatever else it does; a
+    /// run that only drops gives them to its user; a run that does neither
+    /// keeps them.
+    #[test]
+    fn the_extraction_handover_follows_the_chroot_then_the_drop() {
+        assert_eq!(
+            extraction_handover(false, Some((65534, 65533))),
+            ExtractionHandover::GiveTo {
+                uid: 65534,
+                gid: 65533
+            },
+            "a run that only drops gives its extractions to its user"
+        );
+        assert_eq!(
+            extraction_handover(true, Some((65534, 65533))),
+            ExtractionHandover::Remove,
+            "a run that chroots and drops removes them"
+        );
+        assert_eq!(
+            extraction_handover(true, None),
+            ExtractionHandover::Remove,
+            "a run that only chroots removes them"
+        );
+        assert_eq!(
+            extraction_handover(false, None),
+            ExtractionHandover::Keep,
+            "a run that neither chroots nor drops keeps them"
+        );
+    }
+
+    /// Giving an extraction away reaches the directory and every entry under
+    /// it, and changes a link itself without following it.
+    #[cfg(unix)]
+    #[test]
+    fn giving_an_extraction_away_reaches_every_entry_and_follows_no_link() -> Result<(), TestError>
+    {
+        let root = tempfile::tempdir()?;
+        let dir = root.path().join("x");
+        std::fs::create_dir_all(dir.join("sub"))?;
+        std::fs::write(dir.join("m00000.pcap"), b"a")?;
+        std::fs::write(dir.join("sub").join("z00001.zip"), b"b")?;
+        let elsewhere = tempfile::tempdir()?;
+        std::fs::write(elsewhere.path().join("not-ours"), b"c")?;
+        std::os::unix::fs::symlink(elsewhere.path(), dir.join("link"))?;
+
+        let mut seen = Vec::new();
+        give_tree_to(&dir, 7, 8, &mut |p, uid, gid| {
+            seen.push((p.to_path_buf(), uid, gid));
+            Ok(())
+        })?;
+        seen.sort();
+        let mut want: Vec<_> = [
+            dir.clone(),
+            dir.join("link"),
+            dir.join("m00000.pcap"),
+            dir.join("sub"),
+            dir.join("sub").join("z00001.zip"),
+        ]
+        .into_iter()
+        .map(|p| (p, 7, 8))
+        .collect();
+        want.sort();
+        assert_eq!(
+            seen, want,
+            "every entry once, the link itself and not its target"
+        );
+        Ok(())
+    }
+
+    /// A change of owner that fails stops the handover with that error, so
+    /// the run does not go on to drop with members it cannot remove.
+    #[cfg(unix)]
+    #[test]
+    fn giving_an_extraction_away_stops_at_the_first_refused_entry() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
+        let dir = root.path().join("x");
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("m00000.pcap"), b"a")?;
+        let mut calls = 0usize;
+        let err = give_tree_to(&dir, 7, 8, &mut |p, _, _| {
+            calls += 1;
+            if p.ends_with("m00000.pcap") {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            } else {
+                Ok(())
+            }
+        })
+        .err()
+        .ok_or("a refused change of owner must fail the handover")?;
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+        assert_eq!(calls, 2, "the directory, then the member that failed");
+        Ok(())
+    }
+
+    /// Giving away a path that is not there fails with `NotFound` after the
+    /// change of owner, and asks for no other entry.
+    #[cfg(unix)]
+    #[test]
+    fn giving_away_a_missing_extraction_fails() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
+        let gone = root.path().join("gone");
+        let mut calls = 0usize;
+        let err = give_tree_to(&gone, 7, 8, &mut |_, _, _| {
+            calls += 1;
+            Ok(())
+        })
+        .err()
+        .ok_or("a missing extraction must fail the handover")?;
+        assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
+        assert_eq!(calls, 1, "{err}");
+        Ok(())
+    }
+
+    /// The directory chain to an extraction, from the root down, for
+    /// [`can_remove_entry_in`]: `(mode, owner uid, owner gid)` each.
+    fn chain(dirs: &[(u32, u32, u32)]) -> Vec<DirAccess> {
+        dirs.iter()
+            .map(|&(mode, uid, gid)| DirAccess { mode, uid, gid })
+            .collect()
+    }
+
+    /// `/` and `/tmp` as Linux has them: anyone may search both and write
+    /// `/tmp`, so the drop user can remove what it owns there.
+    #[test]
+    fn a_drop_user_can_remove_its_extraction_from_tmp() {
+        let tmp = chain(&[(0o755, 0, 0), (0o1777, 0, 0)]);
+        assert!(can_remove_entry_in(&tmp, 65534, 65534), "/tmp is reachable");
+    }
+
+    /// A directory the drop user owns is judged by its owner bits.
+    #[test]
+    fn the_owner_bits_decide_for_a_directory_the_drop_user_owns() {
+        let own = chain(&[(0o755, 0, 0), (0o700, 65534, 0)]);
+        assert!(
+            can_remove_entry_in(&own, 65534, 65534),
+            "its own 0700 directory"
+        );
+    }
+
+    /// A `TMPDIR` inside another user's 0700 directory, as root's macOS
+    /// directory under `/var/folders` is, cannot be reached, however open the
+    /// `TMPDIR` itself is.
+    #[test]
+    fn a_tmpdir_inside_another_users_private_directory_is_out_of_reach() {
+        let macos = chain(&[(0o755, 0, 0), (0o700, 501, 20), (0o1777, 501, 20)]);
+        assert!(
+            !can_remove_entry_in(&macos, 65534, 65534),
+            "nobody cannot search the 0700 directory on the way"
+        );
+    }
+
+    /// A directory the drop user may search but not write keeps the entry.
+    #[test]
+    fn a_parent_the_drop_user_cannot_write_is_out_of_reach() {
+        let read_only = chain(&[(0o755, 0, 0), (0o755, 0, 0)]);
+        assert!(
+            !can_remove_entry_in(&read_only, 65534, 65534),
+            "no write permission on the parent"
+        );
+    }
+
+    /// The group class applies when the group matches, even where the other
+    /// bits would allow more: Unix asks one class, not the best one.
+    #[test]
+    fn the_group_class_is_asked_before_the_other_bits() {
+        let group_ok = chain(&[(0o755, 0, 0), (0o070, 0, 65534)]);
+        assert!(can_remove_entry_in(&group_ok, 65534, 65534), "group rwx");
+        let group_shut = chain(&[(0o755, 0, 0), (0o707, 0, 65534)]);
+        assert!(
+            !can_remove_entry_in(&group_shut, 65534, 65534),
+            "the group bits are empty, so the other bits do not count"
+        );
+    }
+
+    /// No directories means nothing to reach.
+    #[test]
+    fn an_empty_chain_is_out_of_reach() {
+        assert!(
+            !can_remove_entry_in(&[], 65534, 65534),
+            "no chain, no answer"
+        );
+    }
+
+    /// A descriptor whose read fails is answered with that error, not taken
+    /// for a file that is not an archive.
+    #[test]
+    fn the_format_of_an_unreadable_descriptor_is_an_error() {
+        struct Broken;
+        impl Read for Broken {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::from(io::ErrorKind::BrokenPipe))
+            }
+        }
+        let err = container_format_in(&mut Broken).err();
+        assert_eq!(
+            err.map(|e| e.kind()),
+            Some(io::ErrorKind::BrokenPipe),
+            "the read error must be the answer"
+        );
+    }
+
+    /// An empty descriptor is no archive.
+    #[test]
+    fn an_empty_descriptor_is_no_archive() -> Result<(), TestError> {
+        assert_eq!(
+            container_format_in(&mut io::empty())?,
+            None,
+            "no bytes, no archive format"
+        );
+        Ok(())
+    }
+
+    /// Removing an extraction from disk removes its directory and keeps its
+    /// labels, which name the packets already read from its members.
+    #[test]
+    fn removing_an_extraction_from_disk_keeps_its_labels() -> Result<(), TestError> {
+        let root = tempfile::tempdir()?;
+        let dir = ExtractDir::create_in(root.path())?;
+        let on_disk = dir.path().to_path_buf();
+        let member = on_disk.join("m00000.pcap");
+        std::fs::write(&member, b"a")?;
+        let mut kept =
+            KeptExtraction::new(dir, vec![(member.clone(), "set.tar/a.pcap".to_string())]);
+        kept.remove_from_disk();
+        assert!(!on_disk.exists(), "the directory is gone");
+        assert_eq!(kept.dir(), None, "nothing is on disk to report");
+        assert_eq!(
+            source_name(&member),
+            "set.tar/a.pcap",
+            "the label outlives the directory"
+        );
+        drop(kept);
+        assert_eq!(
+            source_name(&member),
+            member.display().to_string(),
+            "the label goes when the extraction drops"
+        );
+        Ok(())
+    }
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;

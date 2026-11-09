@@ -78,7 +78,7 @@ together and one of them evaporates.
 
 ### 2.2 What `launch` does with the answer
 
-`launch` ([`src/app/bootstrap.rs:3136`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3136)) takes the same singular `Option`. Four
+`launch` ([`src/app/bootstrap.rs:3292`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L3292)) takes the same singular `Option`. Four
 decisions downstream read the source as a scalar:
 
 - **Auto-detection.** [`src/app/bootstrap.rs:878`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L878) substitutes a default interface
@@ -91,13 +91,13 @@ decisions downstream read the source as a scalar:
   from the source *variant*: `Live` and `Hep` yes, `File` and `Uprobe` no.
 - **Thread spawn.** [`src/app/bootstrap.rs:934`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L934) branches to
   `start_multi_capture` for `--multi-device`, otherwise `start_capture`
-  ([`src/capture/native.rs:471`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L471)), which matches the variant and spawns one named
+  ([`src/capture/native.rs:496`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L496)), which matches the variant and spawns one named
   thread per arm.
 
 ### 2.3 How a packet reaches the pipeline
 
 Every reader — `capture_live_fanout` ([`src/capture/live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)), `capture_files`
-([`src/capture/file.rs:513`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L513)), `capture_hep` ([`src/capture/hep.rs:3292`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3292)), the
+([`src/capture/file.rs:587`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L587)), `capture_hep` ([`src/capture/hep.rs:3292`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L3292)), the
 uprobe reader — builds a `Packet` ([`src/capture/packet.rs:864`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L864)) and calls
 `tx.send(..)`. `PacketTx` derives `Clone` ([`src/capture/channel.rs:142`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L142)), and the
 channel is an unbounded crossbeam queue guarded by a bounded slot semaphore
@@ -122,13 +122,13 @@ parser already tells the two kinds of packet apart:
 ### 2.4 The fan-in that already exists
 
 `--multi-device` is the precedent, and it is close to the shape this feature
-needs. `start_multi_capture` ([`src/capture/native.rs:673`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L673)) validates the device
+needs. `start_multi_capture` ([`src/capture/native.rs:693`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L693)) validates the device
 list, then `run_multi_capture` ([`src/capture/native.rs:753`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L753)) spawns one thread
 per device, hands each a `tx.clone()`, drops its own clone so the channel closes
 when the last reader exits, aggregates a per-device readiness signal, tears every
 sibling down when any one fails to open, and joins them all from a coordinator
 thread whose `JoinHandle` becomes the single `CaptureHandle`
-([`src/capture/native.rs:402`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L402)).
+([`src/capture/native.rs:427`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L427)).
 
 Every structural question a composite source raises — readiness aggregation,
 one-fails-all teardown, a single join handle, channel close on last producer —

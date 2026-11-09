@@ -941,14 +941,18 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // src/app/servers.rs +1 (the member's thread did not start), then +2 in
 // src/app/fleet_member.rs (an empty [fleet] path key, and a token file other
 // users can read). Nothing removed.
-// 596 -> 597 (RELAY-S0, one cap rule): src/app/queries/b4.rs,
+// 596 -> 598 (OPS2, the -I set opened before the drop): src/app/bootstrap.rs
+// +3 (set_fd_budget's refusal, the failed soft-limit raise, and the warning
+// when the archive extraction cannot be handed over) and -1 (the --cores
+// refusal set_fd_budget replaces).
+// 598 -> 599 (RELAY-S0, one cap rule): src/app/queries/b4.rs,
 // `--relay-holdings-max: {e}` (a cap of 0 that bypassed the flag's parser,
 // +1); src/cli.rs, `--relay-holdings-max bounds --relay-holdings or
 // --relay-sessions and needs one of them` reworded to `--relay-holdings-max
 // sets how many held calls a relay ask covers and needs
 // --rtpengine-control`, since the flag now sets the TUI's, REST's and MCP's
 // default too (one removed, one added).
-const EXPECTED_TEMPLATES: usize = 597;
+const EXPECTED_TEMPLATES: usize = 599;
 
 // ---------------------------------------------------------------------------
 // The page gates
