@@ -199,10 +199,11 @@ def test_a_new_untracked_test_file_is_a_full_run(pc):
 
 
 def test_a_cargo_lock_change_is_a_full_run(pc):
-    (pc.tree / "Cargo.lock").write_text("version = 4\n")
-    git(pc.tree, "add", "Cargo.lock")
+    # The sandbox's Cargo.lock is one scripts/check-lockfile-drift.py accepts
+    # (gate 3c); the change keeps every package and adds a line.
+    lock = (pc.tree / "Cargo.lock").read_text()
     passed(pc)
-    (pc.tree / "Cargo.lock").write_text("version = 4\n# another resolution\n")
+    (pc.tree / "Cargo.lock").write_text(lock + "# another resolution\n")
     git(pc.tree, "add", "Cargo.lock")
     rc, out = pc.run()
     assert "PASSED before" not in out and any(c.startswith("clippy") for c in pc.cargo()), out

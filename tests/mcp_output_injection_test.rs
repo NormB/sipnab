@@ -235,6 +235,7 @@ impl Server {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .tied_to_test()
             .spawn()?;
         let stdout = child.stdout.take().ok_or("stdout")?;
         let mut s = Self {
@@ -920,3 +921,5 @@ fn the_oversized_header_fixture_actually_reaches_the_response() -> Result<(), Te
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

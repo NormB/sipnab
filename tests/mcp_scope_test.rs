@@ -97,6 +97,7 @@ fn spawn_with_stderr_and(
         .env("SIPNAB_LOG", "info")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     // Owned by the guard from here on, so every exit below, an error return
     // or a panic in the test, stops and reaps the server.
@@ -530,3 +531,5 @@ fn an_action_over_http_is_journaled_under_the_tokens_id() -> Result<(), TestErro
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

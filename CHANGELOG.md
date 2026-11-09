@@ -8,6 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A `git push` that only deletes refs no longer runs the pre-push gates (PRE-PUSH-ON-DELETE).** Every gate judged the commits being sent or the working tree, and a deletion sends neither, so `git push origin --delete` ran them for about 25 minutes and deleted nothing when one failed. A push that also sends a ref still runs every gate.
+- **The tag gate's phase-one note ends with its color reset (PRE-PUSH-958-PERCENT-B).** It printed a literal `%b` and left the color on. CI now runs `shellcheck` over the git hooks.
+- **`fuzz/Cargo.lock` builds the dependency versions that ship (LOCKFILE-DRIFT-ROOT-VS-FUZZ).** It held a different version than `Cargo.lock` for 39 of the 214 crates the two share. `scripts/check-lockfile-drift.py` now fails the commit hook and CI's Security audit job when a shared crate's fuzz version is not one `Cargo.lock` has.
+- **A process a test starts ends with the test (TEST-CHILD-ORPHAN).** The test helpers stopped their child only in `Drop`, which does not run when the test process is killed, and left servers running under PID 1. On Linux every child a test spawns is now tied to the spawning thread with `PR_SET_PDEATHSIG`.
+- **Two tests no longer depend on host speed (FLAKY-TUI-SIGTERM, rate-limiter burst).** The TUI stop tests read the terminal to its end before checking the restore, and the REST rate limiter's budget tests use a clock the test moves.
+
 ## [0.5.241] - 2026-11-09
 
 ### Fixed

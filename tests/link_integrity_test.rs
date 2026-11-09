@@ -1743,7 +1743,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2494 -> 2498 (RELEASE-FAST C): internals/build-ci-release.md links its
     // new "Advertising a release" section twice and uprobe-capture.md's
     // ledger once, and internals/uprobe-capture.md links that section (+4).
-    const EXPECTED_WIKI_LINKS: usize = 2498;
+    // 2498 -> 2499 (TEST-CHILD-ORPHAN): internals/testing.md +1, the support
+    // table's link to "Children end with their test".
+    const EXPECTED_WIKI_LINKS: usize = 2499;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1890,7 +1892,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 145 -> 146 (ci/gate-speed): CONTRIBUTING.md's link from the pre-commit
     // paragraph to its new "Pass stamps: what the hooks skip" section (+1).
     // Counted per file against origin/main b5cb8b61c.
-    const EXPECTED_COMMUNITY_LINKS: usize = 146;
+    // 146 -> 147: CONTRIBUTING.md's Dependabot bullet links its new "Keeping
+    // fuzz/Cargo.lock aligned with Cargo.lock" section (+1). Counted against
+    // origin/main db378a415.
+    const EXPECTED_COMMUNITY_LINKS: usize = 147;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

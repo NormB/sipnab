@@ -242,6 +242,7 @@ fn run_worker_directly(args: &[&str]) -> Result<Child, TestError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?)
 }
 
@@ -514,7 +515,7 @@ fn a_promised_descriptor_of_the_wrong_kind_stops_the_worker() -> Result<(), Test
             Ok(())
         });
     }
-    let mut worker = Reaped(command.spawn()?);
+    let mut worker = Reaped(command.tied_to_test().spawn()?);
     drop(stream);
     let status = within(test_timeout(10), || worker.0.try_wait().ok().flatten())
         .ok_or("the worker must refuse to start, not wait for requests")?;
@@ -916,6 +917,7 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() -> Result<(), 
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
+            .tied_to_test()
             .spawn()?,
     );
     drop(null);
@@ -1136,3 +1138,5 @@ fn a_real_run_answers_through_its_worker_and_survives_losing_it() -> Result<(), 
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

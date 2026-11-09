@@ -1115,44 +1115,57 @@ fn auth_accepts_correct_bearer_and_rejects_everything_else() -> Result<(), TestE
     Ok(())
 }
 
-/// The per-IP rate limiter rejects once a source IP exceeds its request budget:
-/// an initial burst of same-IP requests to a guarded endpoint is served (200),
-/// and past the 100 rps cap further requests are rejected (503). This assertion
-/// FAILS if the limiter is broken — with it removed every request would 200 and
-/// no rejection would ever appear.
+/// The per-IP rate limiter of the real binary, on the real clock, rejects a
+/// source IP over its budget with 503 (not 429), on a route its guard runs
+/// for even without auth.
+///
+/// `--api-rate-limit-per-peer 1` and three requests, timed from before the
+/// first to after the last. The limiter's windows are fixed and one second
+/// long (`sipnab::rate_limit::WINDOW`), so a span shorter than a window
+/// touches at most two windows, and three requests in two windows put two in
+/// one: one of them must be refused. The premise is measured, and a host that
+/// took a whole window for three local requests fails with the time it took.
+///
+/// This replaced a burst of up to 250 requests at the shipped cap of 100,
+/// which needed 101 of them inside one second. On a loaded runner a request
+/// took longer than 10 ms, the window ended mid-burst, the budget came back,
+/// and no request was refused. The shipped cap itself is checked with the
+/// limiter's clock held still, in `output::api`'s unit tests
+/// (`the_default_cap_refuses_the_request_after_it`).
 #[test]
 fn rate_limiter_rejects_when_per_ip_budget_exhausted() -> Result<(), TestError> {
-    // `/v1/dialogs` runs the auth+rate-limit guard even when auth is
-    // unconfigured, so a same-IP burst is charged against the per-IP budget
-    // (RateLimiter::new(100), a one-second window). Fire a tight burst and stop
-    // at the first rejection — which lands just past the cap (~request 101),
-    // well inside the one-second window, keeping the test deterministic. The
-    // limiter rejects with 503 SERVICE_UNAVAILABLE (not 429).
-    let srv = ApiServer::spawn(&[])?;
-    let mut served = false;
-    let mut rejected = false;
-    for _ in 0..250 {
-        match srv.get("/v1/dialogs")?.status {
-            200 => served = true,
-            503 => {
-                rejected = true;
-                break;
-            }
-            other => {
-                return Err(format!(
-                    "unexpected status {other} from /v1/dialogs during rate-limit burst"
-                )
-                .into());
-            }
-        }
+    // Unsettled: the readiness poll is itself charged against the cap of 1.
+    let srv = ApiServer::spawn_unsettled(&["--api-rate-limit-per-peer", "1"])?;
+    let started = std::time::Instant::now();
+    let mut statuses = Vec::new();
+    for _ in 0..3 {
+        statuses.push(srv.get("/v1/dialogs")?.status);
     }
+    let span = started.elapsed();
     assert!(
-        served,
-        "requests under the per-IP budget must be served (200)"
+        span < sipnab::rate_limit::WINDOW,
+        "three requests took {span:?}, a whole window: the premise does not hold ({statuses:?})"
     );
     assert!(
-        rejected,
-        "the per-IP rate limiter must reject with 503 once the 100 rps budget is exhausted"
+        statuses.iter().all(|s| *s == 200 || *s == 503),
+        "only 200 and 503 come from the guard: {statuses:?}"
+    );
+    assert!(
+        statuses.contains(&503),
+        "three requests within {span:?} at a cap of 1 must include a 503: {statuses:?}"
+    );
+    Ok(())
+}
+
+/// The same server serves an address under its cap: the first request a
+/// fresh limiter sees with `--api-rate-limit-per-peer 1` is answered 200.
+#[test]
+fn rate_limiter_serves_the_first_request_under_the_cap() -> Result<(), TestError> {
+    let srv = ApiServer::spawn_unsettled(&["--api-rate-limit-per-peer", "1"])?;
+    assert_eq!(
+        srv.get("/v1/dialogs")?.status,
+        200,
+        "the first request a fresh limiter sees is under the cap"
     );
     Ok(())
 }

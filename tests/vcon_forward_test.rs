@@ -994,6 +994,7 @@ fn polling_exits_3_when_the_store_refuses_the_credentials() -> Result<(), TestEr
         .args(&args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .tied_to_test()
         .spawn()?;
     let started = Instant::now();
     let status = loop {
@@ -1156,6 +1157,7 @@ fn sigterm_stops_the_forwarder_without_sending_more() -> Result<(), TestError> {
         .env("SIPNAB_LOG", "info")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let mut stderr = child.stderr.take().ok_or("no stderr")?;
     // Wait for the forwarder to say it is watching the spool.
@@ -2418,3 +2420,5 @@ fn the_binary_sends_the_content_type_flag_and_refuses_others() -> Result<(), Tes
     assert!(err.contains("--vcon-forward-content-type"), "{err}");
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

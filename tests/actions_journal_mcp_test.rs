@@ -197,6 +197,7 @@ fn without_a_usable_journal_an_mcp_server_refuses_to_start() -> Result<(), TestE
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while std::time::Instant::now() < deadline && child.try_wait()?.is_none() {
@@ -292,3 +293,5 @@ fn with_actions_off_an_agent_cannot_revert() -> Result<(), TestError> {
     assert_eq!(fake.count("unban"), 0);
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

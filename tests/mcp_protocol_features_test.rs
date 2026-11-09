@@ -83,6 +83,7 @@ impl Wire {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .tied_to_test()
             .spawn()
             .map_err(|e| format!("spawn sipnab --mcp: {e:?}"))?;
 
@@ -1445,3 +1446,5 @@ fn every_excused_tool_refuses_on_a_stock_server() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

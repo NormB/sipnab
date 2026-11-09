@@ -158,6 +158,27 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	} > "$_d/website/static/wasm/sipnab.js"
 	printf '\0asm' > "$_d/website/static/wasm/sipnab_bg.wasm"
 
+	# A lockfile pair, so gate 3c (the fuzz lockfile matches Cargo.lock) is
+	# reachable. check-lockfile-drift.py refuses a lockfile with no packages
+	# and a pair with no crate in common -- a comparison of nothing must not
+	# pass -- so both list the path crate and one registry crate, aligned.
+	mkdir -p "$_d/fuzz"
+	for _lock in "$_d/Cargo.lock" "$_d/fuzz/Cargo.lock"; do
+		cat > "$_lock" <<-'EOF'
+			version = 4
+
+			[[package]]
+			name = "sipnab"
+			version = "9.9.9"
+
+			[[package]]
+			name = "regcrate"
+			version = "1.0.0"
+			source = "registry+https://github.com/rust-lang/crates.io-index"
+			checksum = "0000000000000000000000000000000000000000000000000000000000000000"
+		EOF
+	done
+
 	# The cargo stub. Every invocation is logged except `nextest --version`,
 	# which scripts/check-hook-prerequisites.py and scripts/parallel-tests.py
 	# ask before anything runs: it prints the version in $_h/nextest-version,

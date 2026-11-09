@@ -30,6 +30,7 @@ pub fn write_executable(path: &Path, contents: &str) -> std::io::Result<()> {
         .arg("sh")
         .arg(path)
         .stdin(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     writer
         .stdin
@@ -46,3 +47,5 @@ pub fn write_executable(path: &Path, contents: &str) -> std::io::Result<()> {
         )))
     }
 }
+
+include!("child_lifetime.rs");

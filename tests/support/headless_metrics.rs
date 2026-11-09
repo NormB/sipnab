@@ -80,6 +80,7 @@ impl HeadlessMetrics {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
+            .tied_to_test()
             .spawn()
             .map_err(|e| format!("spawn {}: {e}", bin.display()))?;
         let stderr = child
@@ -142,3 +143,5 @@ impl HeadlessMetrics {
         self.seen.join("\n")
     }
 }
+
+include!("child_lifetime.rs");

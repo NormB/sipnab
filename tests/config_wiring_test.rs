@@ -1408,6 +1408,7 @@ fn the_capture_source_limit_reaches_the_table_it_governs() -> Result<(), TestErr
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
+            .tied_to_test()
             .spawn()?;
         let mut stdin = child.stdin.take().ok_or("stdin")?;
         let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
@@ -1499,6 +1500,7 @@ fn probe_mcp_max_rows() -> Result<(String, String), TestError> {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
+            .tied_to_test()
             .spawn()?;
         let mut stdin = child.stdin.take().ok_or("stdin")?;
         let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
@@ -1627,6 +1629,7 @@ fn probe_mcp_max_findings() -> Result<(String, String), TestError> {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
+            .tied_to_test()
             .spawn()?;
         let mut stdin = child.stdin.take().ok_or("stdin")?;
         let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
@@ -2036,6 +2039,7 @@ fn probe_mcp_max_body_bytes() -> Result<(String, String), TestError> {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
+            .tied_to_test()
             .spawn()?;
         let mut stdin = child.stdin.take().ok_or("stdin")?;
         let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
@@ -2153,6 +2157,7 @@ fn probe_mcp_max_response_bytes() -> Result<(String, String), TestError> {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
+            .tied_to_test()
             .spawn()?;
         let mut stdin = child.stdin.take().ok_or("stdin")?;
         let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
@@ -2262,6 +2267,7 @@ fn probe_mcp_max_wait_seconds() -> Result<(String, String), TestError> {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
+            .tied_to_test()
             .spawn()?;
         let mut stdin = child.stdin.take().ok_or("stdin")?;
         let mut out = BufReader::new(child.stdout.take().ok_or("stdout")?);
@@ -2374,6 +2380,7 @@ impl McpSession {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
+            .tied_to_test()
             .spawn()?;
         let stdin = child.stdin.take().ok_or("stdin")?;
         let out = std::io::BufReader::new(child.stdout.take().ok_or("stdout")?);
@@ -3445,7 +3452,7 @@ impl HepProbeListener {
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
 
-        let mut child = cmd.spawn()?;
+        let mut child = cmd.tied_to_test().spawn()?;
         let stderr = child.stderr.take().ok_or("stderr pipe")?;
         let (tx, lines) = mpsc::channel();
         std::thread::spawn(move || {
@@ -4404,3 +4411,5 @@ fn run_ignores_each_user_config_location_alone() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

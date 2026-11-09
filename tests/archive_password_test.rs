@@ -117,7 +117,7 @@ fn run(
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.tied_to_test().spawn()?;
     if let Some(input) = stdin {
         child
             .stdin
@@ -528,7 +528,7 @@ fn api_server(
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.tied_to_test().spawn()?;
     let stderr = child.stderr.take().ok_or("stderr")?;
     // Drained for the child's whole life: a closed stderr would fail the
     // server's next log write.
@@ -670,3 +670,5 @@ fn a_password_7z_opens_from_a_password_file_and_fails_named_without_one() -> Res
     assert!(r.stderr.contains("encrypted_no_password"), "{}", r.stderr);
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

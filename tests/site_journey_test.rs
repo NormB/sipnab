@@ -6665,7 +6665,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // advertisement step names scripts/advertise-release.py (+2).
     // Measurement: with origin/main's release.yml swapped back in the scan
     // reads 248, with its pages.yml 248, with its cert-expiry.yml 253.
-    const EXPECTED_REFERENCES: usize = 255;
+    // 255 -> 260: ci.yml's new hook-shellcheck job names .githooks/pre-push in
+    // its comment and all three hooks in its run line (+4), and the Security
+    // audit job's new step runs scripts/check-lockfile-drift.py (+1).
+    const EXPECTED_REFERENCES: usize = 260;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

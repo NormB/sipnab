@@ -78,6 +78,7 @@ impl Wire {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .tied_to_test()
             .spawn()?;
 
         {
@@ -582,6 +583,7 @@ fn the_capture_file_template_is_withheld_without_a_file_root() -> Result<(), Tes
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
     {
         let stdin = child.stdin.as_mut().ok_or("stdin")?;
@@ -853,3 +855,5 @@ fn server_capabilities_describes_what_this_server_loaded() -> Result<(), TestErr
     assert_eq!(caps["resource_templates"], json!(template_uris), "{caps}");
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

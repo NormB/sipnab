@@ -25,6 +25,21 @@ updates:
   # These are the fuzz targets that validate the parsers against hostile input.
   # Running them on a stale, unaudited tree is not a shipping vulnerability, but
   # it is the security tooling itself going unmaintained.
+  #
+  # This entry and the root one update their lockfiles in SEPARATE pull
+  # requests, and on 2026-11-08 fuzz/Cargo.lock held a different version than
+  # Cargo.lock for 39 of the 214 crates the two share: the fuzz targets fuzzed
+  # dependency code the binary does not ship. scripts/check-lockfile-drift.py
+  # (pre-commit hook, CI Security audit job) now fails a tree where a shared
+  # crate's fuzz version is not one Cargo.lock has, so a pull request from
+  # either entry that moves a shared crate fails it on its own. Combine the
+  # root and fuzz pull requests in one branch, take the root's versions, and
+  # align fuzz/Cargo.lock with the `cargo update --precise` lines the script
+  # prints; CONTRIBUTING.md, "Keeping fuzz/Cargo.lock aligned with
+  # Cargo.lock". One entry for both directories with `group-by:
+  # dependency-name` would open one pull request per dependency for both
+  # files, more pull requests on the one self-hosted runner than the two
+  # groups open, and it is not used for that reason.
   - package-ecosystem: "cargo"
     directory: "/fuzz"
     schedule:

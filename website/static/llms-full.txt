@@ -77227,6 +77227,11 @@ the release-delivery test. The corpus gate does not run on such a push, since
 no parser input changed. Anything else, or anything the rule cannot read, runs
 every gate. `SIPNAB_GATE_NO_CACHE=1` runs every gate too.
 
+**Delete-only pushes.** A push that only deletes refs, such as
+`git push origin --delete <branch>`, sends no commit, so the pre-push hook
+runs no gate and prints the refs it deletes. A push that deletes one ref and
+sends another runs every gate.
+
 **Tag-only pushes.** A push that updates tags and nothing else skips the tree
 gates when GitHub already proved the tagged commit:
 
@@ -77773,7 +77778,9 @@ The reviewer checks the rest:
   also committed.
 - **Dependabot opens update pull requests weekly** for both lock files.
   [`.github/dependabot.yml`](.github/dependabot.yml) sets this up. It groups
-  minor and patch updates into one pull request.
+  minor and patch updates into one pull request per lock file. The two lock
+  files must agree on the crates they share; see
+  [Keeping fuzz/Cargo.lock aligned with Cargo.lock](#keeping-fuzzcargolock-aligned-with-cargolock).
 - **CI scans every pull request to `main`.**
   - The `Security audit` job in
     [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `cargo audit`
@@ -77798,7 +77805,94 @@ push. Install the tools once with `cargo install cargo-audit cargo-deny`.
 cargo audit --ignore RUSTSEC-2023-0071
 cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
 cargo deny check
+python3 scripts/check-lockfile-drift.py
 ```
+
+### Keeping fuzz/Cargo.lock aligned with Cargo.lock
+
+**Purpose.** The fuzz targets build the sipnab crate as a path dependency,
+against their own [`fuzz/Cargo.lock`](fuzz/Cargo.lock). Every crate sipnab
+uses is therefore resolved twice. When the two lock files pick different
+versions, the fuzz targets test dependency code that the binary does not
+ship. On 2026-11-08, 39 of the 214 crates in both files differed, among them
+`clap` 4.6.7 against 4.6.3 and `cc` 1.4.0 against 1.2.59.
+
+**The rule.** [`scripts/check-lockfile-drift.py`](scripts/check-lockfile-drift.py)
+holds it. The pre-commit hook and the `Security audit` job in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) run it.
+
+- For each crate that both lock files list, every version in
+  `fuzz/Cargo.lock` must also be in `Cargo.lock`.
+- `Cargo.lock` may hold more versions of a crate than the fuzz tree. The main
+  crate has more dependents, so it can need several semver-incompatible
+  versions of one crate, such as `hashbrown` 0.15, 0.16 and 0.17.
+- A crate that only one file lists passes, such as `libfuzzer-sys`.
+- A version that both files list must come from the same source with the
+  same checksum.
+- An exception goes in `EXCEPTIONS` in the script. It names the crate, the
+  exact `fuzz/Cargo.lock` versions it allows, and the reason. The script
+  reports an exception that no longer matches any drift as stale.
+
+**Prerequisites.** Python 3.11 or later, for `tomllib`. To align the files you
+also need `cargo`.
+
+**Steps.** Dependabot updates the two lock files in separate pull requests,
+the `cargo-minor-patch` group for `/` and the `fuzz-minor-patch` group for
+`/fuzz`. Each pull request moves only its own file, so it fails this check
+whenever it moves a crate that both files share.
+
+1. Combine the root and fuzz updates in one branch.
+   - Take the root update first. That is the version that ships.
+   - If you regenerate `THIRD-PARTY-NOTICES.md`, do it after the root
+     update: `python3 scripts/build-third-party-notices.py`.
+2. Run `python3 scripts/check-lockfile-drift.py`. Each line names the crate,
+   both version sets, and the command that aligns it, for example:
+
+   ```bash
+   cargo update --manifest-path fuzz/Cargo.toml -p clap@4.6.7 --precise 4.6.3
+   ```
+
+3. Run the commands it names, then run the check again. Moving one crate can
+   move the crates that depend on it, so repeat until it reports no lines.
+4. If a dependency that only the fuzz tree has needs a version that
+   `Cargo.lock` lacks, there are two choices:
+   - move `Cargo.lock` to that version with `cargo update -p <crate>`, and
+     regenerate `THIRD-PARTY-NOTICES.md`;
+   - or add an exception to `EXCEPTIONS` that gives the reason.
+
+**Verify.**
+
+1. Run the check. It exits 0 and prints one `ok:` line.
+
+   ```bash
+   python3 scripts/check-lockfile-drift.py
+   # ok: 210 crates in both lockfiles, every fuzz/Cargo.lock version is one Cargo.lock has (0 exceptions)
+   ```
+
+2. Build the fuzz targets with the aligned versions. This is the pre-push
+   hook's fuzz gate.
+
+   ```bash
+   (cd fuzz && cargo clippy --all-targets -- -D warnings)
+   ```
+
+**Troubleshooting.**
+
+- **A line says `Cargo.lock has no N.x line`.** No `--precise` target exists
+  on that semver-compatible line. A crate in the fuzz tree pulls in a
+  release line that the main crate does not use. One example is `shlex` 2,
+  which `cc` 1.4 pulls in. Align the crate that pulls it in, which is `cc`
+  here. The line for that crate is in the same output. Then run the check
+  again.
+- **`NOT CHECKED` and exit status 2.** A lock file is missing, does not parse,
+  or lists no packages, or an exception lacks a crate, versions or a
+  reason. The message names which one. A check that did not run is not a pass.
+- **A line says `stale exception`.** The drift that the exception allowed is
+  gone. Remove the exception from `EXCEPTIONS`.
+- **`cargo update --precise` refuses the version.** Another crate in the fuzz
+  tree requires a newer release. Run
+  `cargo tree --manifest-path fuzz/Cargo.toml -i <crate>@<version>` to find
+  it, and align that crate first.
 
 ### Updating vendored files
 
@@ -79940,8 +80034,66 @@ with no `mod.rs` chain. Each test binary compiles its own copy.
 | [`schema.rs`](../../tests/support/schema.rs) | JSON-Schema validation against [`tests/schemas/`](../../tests/schemas). |
 | [`tui_fixtures.rs`](../../tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
 | [`executable.rs`](../../tests/support/executable.rs) | `write_executable()`, the one way a test writes a file it then runs: a child process writes it, so this process never holds it open for writing and an `exec` cannot fail with `ETXTBSY` ("Text file busy") while another test thread forks. `executable_stub_test` refuses a file written in-process and then made executable. |
+| [`child_lifetime.rs`](../../tests/support/child_lifetime.rs) | `tied_to_test()`, the one way a test starts a process: call it on the `Command` before `.spawn()`. On Linux it sets `PR_SET_PDEATHSIG` to SIGKILL, so the child ends when the spawning thread ends, even when a signal ends the test process and no `Drop` runs. See [Children end with their test](#children-end-with-their-test). Pulled in with `include!`. |
 | [`fuzz.rs`](../../tests/support/fuzz.rs) | A deterministic xorshift PRNG shared by the stable-toolchain fuzzers, so a failure reproduces from its seed. |
 | [`ports.rs`](../../tests/support/ports.rs) | `refused_tcp_port()`, the one way a test gets a loopback TCP port where a connect fails with `ConnectionRefused`: a socket bound and not listening, held until the guard drops, so no test running alongside can bind the number. Binding `:0`, reading the port, and closing the socket leaves the number free for another test to listen on; `released_port_scan_test` refuses that pattern under `tests/`. |
+
+### Children end with their test
+
+A process a test starts ends when that test ends, however the test ends
+(TEST-CHILD-ORPHAN).
+
+**Why.** The helpers stop their child in `Drop`. `Drop` does not run when
+something kills the test process: SIGKILL, the kernel's OOM killer, or a
+harness that signals the test's pid and not its process group. A serving
+sipnab left that way keeps running, with init as its parent, until someone
+stops it.
+
+**Prerequisites.** Linux, for the guarantee. Other systems have no
+equivalent of `PR_SET_PDEATHSIG`, so `tied_to_test()` does nothing there and
+`Drop` is the only stop.
+
+**How to start a child.**
+
+```rust
+include!("support/child_lifetime.rs"); // once per file, at module level
+
+let child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+    .args(["-N", "-I", "capture.pcap", "--api", "127.0.0.1:0"])
+    .tied_to_test()
+    .spawn()?;
+```
+
+- Spawn the child on the thread that holds it. The kernel sends the signal
+  when the spawning THREAD ends, so a child started on a helper thread dies
+  as soon as that thread returns.
+- The child of a parent that died between the fork and the `prctl` sees a
+  different parent, and its spawn fails with `ESRCH` instead of running
+  untied.
+- The kernel clears the setting when the child executes a set-user-ID
+  program (`sudo`) or changes its user or group id (`--user`). Such runs are
+  not tied; `privilege_drop_test.rs` stops its `sudo` runs itself.
+- The child's own children are not tied: a fork clears the setting.
+
+**How to verify.** `cargo test --features full --test child_lifetime_test`.
+
+- `an_api_server_ends_when_its_test_process_is_killed`, and the same for the
+  HTTP MCP server and the fleet center, run a child role that holds the
+  server, SIGKILL the role's process, and require that the server has ended
+  within 10 s.
+- `every_child_a_sipnab_test_spawns_is_tied_to_it` reads `tests/`: every
+  `.spawn()` in a file that starts the sipnab binary, and every `.spawn()` in
+  `tests/support/`, must have `.tied_to_test()` before it. The exceptions are
+  a `Command::new("sudo")` and the race test that ties its child by hand.
+
+**Troubleshooting.**
+
+- `these spawns are not tied to their test`: add `.tied_to_test()` before
+  the `.spawn()` it names, and `include!("support/child_lifetime.rs")` to
+  the file (`include!("child_lifetime.rs")` in a file under `support/`). In
+  a nested module, add `use super::TiedToTest as _;`.
+- A child that ends early with signal 9 while its test still runs was
+  started on a thread that has since ended. Start it on the test's thread.
 
 ## Fixtures and corpora
 
@@ -80228,6 +80380,27 @@ What the script does that a reader of the user page does not need to:
   `cargo install cargo-nextest --locked --version 0.9.148`.
 - CI installs it through [`.github/actions/nextest`](../../.github/actions/nextest/action.yml): the release tarball, checked against its SHA-256, from the actions cache or, on a miss, from GitHub.
 - Measured on 2026-11-06, on one tree, in the host's heavy-run slot, against the pool it replaced, which ran `cargo test`'s binaries side by side: the test step took 202 s and 158 s under nextest against 164 s and 129 s, plus 11 s of doctests.
+
+**Rate limits in tests.** A test of a fixed-window rate limiter does not
+count on the wall clock to keep a burst inside one window.
+
+- The REST limiter's windows are one second long. A burst of 101 requests at
+  the shipped cap of 100 fits in one window only if the host sends it in under
+  a second.
+  - Measured on 2026-11-08 against `sipnab --api`, at a load average of 50 to
+    88 on 14 cores: in 5 of 20 bursts the window ended mid-burst and the first
+    `503` came at request 122 to 200 instead of 101. Unloaded, the limiter
+    refused 5 of 5 bursts at request 101.
+  - `rate_limiter_rejects_when_per_ip_budget_exhausted` sent such a burst and
+    failed once in CI that way.
+- Unit tests build the limiter with
+  [`RateLimiter::with_clock`](../../src/output/api.rs) and move the clock
+  themselves, so only the test decides when a window ends.
+- A test of the real clock, in-process or against the binary, sends at most
+  three requests at a cap of 1 and times them. A span shorter than one window
+  touches at most two windows, so three requests in it put two in one window,
+  and the limiter must refuse one of them. The test fails with the measured span if
+  the host took a whole window for them.
 
 **The docker lab.** [`harness/`](../../harness) is a docker-compose stack
 for generating real traffic.
@@ -84001,6 +84174,61 @@ cargo test --features tui --test tui_e2e_test -- --ignored
 ```
 
 These tests are slower (~2s each). They may be flaky in CI.
+
+## Bare-PTY stop tests (tests/tui_lost_terminal_test.rs)
+
+These tests check how the TUI stops: on SIGTERM, SIGINT and SIGHUP, and when
+its terminal goes away. They run the real binary on a pseudo-terminal the test
+owns, without tmux, because a hang-up is something the test does to that
+terminal.
+
+### Prerequisites
+- Linux. The pty set-up uses Linux's `openpty` and `TIOCSCTTY` behavior.
+- A build with the `tui` feature. The tests are not `#[ignore]`d, so the
+  suite runs them.
+
+### Running the stop tests
+```bash
+cargo test --features tui --test tui_lost_terminal_test
+```
+
+### How a test reads the terminal
+- A reader thread plays the terminal. It collects what sipnab writes and
+  answers the cursor-position query (`ESC[6n`) that crossterm sends at startup.
+- `wait_until_drawn` waits for the call list (`INVITE`) on the terminal. Only
+  then does a test send a signal or hang the terminal up, so sipnab has
+  installed its signal handlers and drawn the first frame.
+- `wait_for_exit` returns the exit status once the child has ended AND the
+  reader has read everything the child wrote. The reader ends when a read of
+  the pty's master side fails with `EIO`, which Linux returns once no process
+  holds the slave side open and no written byte remains.
+  - Before this, `wait_for_exit` returned at the exit alone. The reader runs
+    on its own schedule, so on a loaded host the terminal restore
+    (`ESC[?1049l`) could still be unread when the test asked for it, and
+    `sigterm_stops_a_tui_and_restores_the_terminal` could fail although
+    sipnab had written the restore.
+- `stall_reader` stops the reader for a set time and returns once it has
+  stopped. The `*_when_the_reader_lags_the_exit` tests use it to put the exit
+  before the reader's next read, which is the order a loaded host can produce.
+- `spawn_command` runs any program on the same kind of pty, for the tests of
+  the reader itself (`the_last_bytes_before_an_exit_are_read` and the two
+  after it).
+
+### How to verify
+All tests pass, and the run takes a few seconds:
+`input_crossterm_leaves_unread_does_not_make_the_tui_spin` measures CPU over
+4 s, and the stalled-reader tests each wait out a 3 s stall.
+
+### Troubleshooting
+- `the terminal was still open after sipnab exited`: a process other than
+  the child still holds the pty's slave side, so the reader never reads
+  `EIO`. A test that spawns its own processes must not hand them the pty.
+- `sipnab did not draw the call list within 60 s`: the TUI did not start.
+  Run `sipnab -I sip_call.pcap` in `tests/fixtures` in a terminal to see
+  what it shows instead.
+- `the pty reader thread did not stall within 10 s`: the reader thread is
+  blocked outside its loop. It holds no lock across a read, so this points
+  at a change to `serve_terminal`.
 
 ---
 

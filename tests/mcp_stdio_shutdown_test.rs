@@ -57,6 +57,7 @@ fn spawn_replaying_server() -> Result<std::process::Child, TestError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?)
 }
 
@@ -164,3 +165,5 @@ fn a_server_with_a_live_client_keeps_running() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

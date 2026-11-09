@@ -131,6 +131,7 @@ fn run_export_at_log_level(
         .env("NO_COLOR", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     // Read stderr line by line and keep the sequence: the order in which the
@@ -428,3 +429,5 @@ fn hep_send_on_a_file_source_still_forwards_the_capture() -> Result<(), TestErro
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");
