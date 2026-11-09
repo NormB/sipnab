@@ -12907,9 +12907,11 @@ mod decision_tests {
     /// batch run that opened its set up front.
     #[test]
     fn input_metadata_is_read_in_advance_only_by_a_confined_batch_run() {
-        assert!(
+        assert_eq!(
             reads_input_metadata_before_confinement(true, &RunMode::Batch),
-            "a batch run that confines itself reads the embedded secrets after"
+            cfg!(feature = "tls"),
+            "a batch run that confines itself reads the embedded secrets first, \
+             in a build that decrypts TLS; a build without `tls` has no use for them"
         );
         assert!(
             !reads_input_metadata_before_confinement(false, &RunMode::Batch),

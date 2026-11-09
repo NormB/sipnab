@@ -3185,6 +3185,9 @@ mod tests {
     }
 
     /// A stored vCon container opened up front is read from its descriptor.
+    /// Reading one needs the `vcon` feature; without it the refusal below
+    /// holds.
+    #[cfg(feature = "vcon")]
     #[test]
     fn a_vcon_container_opened_up_front_is_read_after_its_path_is_gone() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
@@ -3203,6 +3206,37 @@ mod tests {
         result.map_err(|e| format!("the container must read: {e:#}"))?;
         assert_eq!(tally.complete, 1, "{tally:?}");
         assert!(count > 0, "the container's SIP messages are sent");
+        Ok(())
+    }
+
+    /// In a build without the `vcon` feature a vCon container opened up
+    /// front is refused by its descriptor, naming the feature, as one opened
+    /// by path is: it is still recognized after its path is gone.
+    #[cfg(not(feature = "vcon"))]
+    #[test]
+    fn a_vcon_container_opened_up_front_without_vcon_is_refused_naming_the_feature()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("call.vcon.json");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json"
+            ),
+            &path,
+        )?;
+        let paths = vec![path];
+        let up_front = open_set_up_front(&paths);
+        remove_all(&paths)?;
+        let (result, _, count, _) = read_up_front(&paths, up_front, &CaptureConfig::default());
+        let err = result
+            .err()
+            .ok_or("a vCon container must be refused without the vcon feature")?;
+        assert!(
+            format!("{err:#}").contains("compiled without the `vcon` feature"),
+            "{err:#}"
+        );
+        assert_eq!(count, 0, "nothing is sent from a refused container");
         Ok(())
     }
 
