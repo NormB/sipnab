@@ -485,6 +485,11 @@ pub struct DialogStore {
     capacity_dialogs_evicted: u64,
     /// Mutation counter for cache invalidation — see [`Self::generation`].
     generation: u64,
+    /// The change sequence: the number of the last change stamped on a
+    /// dialog (see [`SipDialog::change_seq`]). Only rises, across `clear`
+    /// too, so a tail cursor from before a clear still names a point before
+    /// every later change.
+    changes: u64,
     /// Header names used for B2BUA leg correlation (`sip.xcid`). A
     /// candidate dialog whose message carries one of these headers pointing at
     /// another dialog's Call-ID (or vice versa) is correlated at score 100.
@@ -1010,6 +1015,7 @@ impl DialogStore {
             refused: indexmap::IndexSet::default(),
             capacity_dialogs_evicted: 0,
             generation: 0,
+            changes: 0,
             xcid_headers: Vec::new(),
             #[cfg(feature = "native")]
             admission: None,
@@ -1494,6 +1500,8 @@ impl DialogStore {
                 msg,
                 MAX_MESSAGES_PER_DIALOG.load(std::sync::atomic::Ordering::Relaxed),
             );
+            self.changes += 1;
+            dialog.change_seq = self.changes;
         } else {
             // A message that cannot open a dialog changes nothing, and in
             // particular neither evicts a dialog nor counts a refusal: there
@@ -1529,6 +1537,9 @@ impl DialogStore {
                 .dialogs_opened_by_method
                 .entry(dialog.method.as_str().to_string())
                 .or_insert(0) += 1;
+            let mut dialog = dialog;
+            self.changes += 1;
+            dialog.change_seq = self.changes;
             self.dialogs.insert(key, dialog);
         }
     }
@@ -1827,6 +1838,12 @@ impl DialogStore {
                     continue;
                 }
             }
+            // The workers numbered their own changes; the merged store
+            // numbers each dialog once, in the merged order. A `--cores` run
+            // serves no tail, so no cursor spans the merge.
+            let mut dialog = dialog;
+            self.changes += 1;
+            dialog.change_seq = self.changes;
             self.dialogs.insert(key, dialog);
         }
     }
@@ -2432,7 +2449,7 @@ impl DialogStore {
             th_callid: None,
         }];
         let mut total_messages = root.messages.len();
-        let mut first_activity = root.created_at;
+        let mut first_activity = root.earliest_message_at;
         let mut last_activity = root.latest_message_at;
 
         // Seeded with the root so a leg correlating back to it -- which most
@@ -2474,7 +2491,7 @@ impl DialogStore {
                 let child_depth = depth + 1;
                 max_depth = max_depth.max(child_depth);
                 total_messages += r.dialog.messages.len();
-                first_activity = first_activity.min(r.dialog.created_at);
+                first_activity = first_activity.min(r.dialog.earliest_message_at);
                 last_activity = last_activity.max(r.dialog.latest_message_at);
                 legs.push(TreeLeg {
                     call_id: r.dialog.call_id.clone(),
@@ -2548,10 +2565,19 @@ impl DialogStore {
         bucket_by_start(self.iter().map(|d| d.created_at), width_seconds)
     }
 
-    /// A page of dialogs for change-tracking pollers: those updated strictly
-    /// after `cursor` (all of them when `cursor` is `None`), oldest update
-    /// first with the Call-ID breaking ties, truncated to `limit`, plus the
-    /// cursor to resume from.
+    /// A page of dialogs for change-tracking pollers: those changed after
+    /// `cursor` (all of them when `cursor` is `None`), in the order they last
+    /// changed, truncated to `limit`, plus the cursor to resume from.
+    ///
+    /// A change is a message processed for the dialog, numbered by the
+    /// store's change sequence ([`SipDialog::change_seq`]), which only rises.
+    /// The cursor names a change, so a dialog that changes after a cursor was
+    /// handed out comes back after it whatever the message's timestamp. It
+    /// used to name a position on `updated_at`, which moves back when sipnab
+    /// reads a message stamped older than one it already read; the dialog
+    /// then fell behind a cursor already returned and never came back. A
+    /// version-1 cursor (`<RFC 3339>[|<Call-ID>]`) is still read, with its old
+    /// `updated_at` meaning, and the page hands back a version-2 one.
     ///
     /// The order and the truncation are one rule, shared by the MCP
     /// `tail_dialogs` tool and the REST `/v1/dialogs/tail` route. Sorting
@@ -2561,23 +2587,30 @@ impl DialogStore {
     /// `next_cursor` is `None` when nothing matched.
     pub fn tail_page(
         &self,
-        cursor: Option<&crate::cursor::Cursor>,
+        cursor: Option<&crate::cursor::TailCursor>,
         limit: usize,
     ) -> (Vec<&SipDialog>, Option<String>) {
+        use crate::cursor::TailCursor;
         let mut changed: Vec<&SipDialog> = self
             .iter()
-            .filter(|d| cursor.is_none_or(|c| c.precedes(d.updated_at, &d.call_id)))
+            .filter(|d| match cursor {
+                None => true,
+                Some(TailCursor::Change(after)) => d.change_seq > *after,
+                Some(TailCursor::Legacy(c)) => c.precedes(d.updated_at, &d.call_id),
+            })
             .collect();
-        crate::sort::sort_by_dyn(&mut changed, &mut |a, b| {
-            a.updated_at
-                .cmp(&b.updated_at)
-                .then_with(|| a.call_id.cmp(&b.call_id))
-        });
+        // Change order: unique per dialog, so there is no tie to break.
+        crate::sort::sort_by_dyn(&mut changed, &mut |a, b| a.change_seq.cmp(&b.change_seq));
         changed.truncate(limit);
-        let next_cursor = changed
-            .last()
-            .map(|d| crate::cursor::format_cursor(d.updated_at, &d.call_id));
+        let next_cursor = changed.last().map(|d| Self::tail_cursor_of(d));
         (changed, next_cursor)
+    }
+
+    /// The tail cursor that resumes after `dialog`: the one rule for
+    /// `next_cursor` and for the cursor after each row of a page.
+    #[must_use]
+    pub fn tail_cursor_of(dialog: &SipDialog) -> String {
+        crate::cursor::format_tail_cursor(dialog.change_seq)
     }
 
     /// Find dialogs correlated to the given Call-ID, discarding the reason.
@@ -2739,6 +2772,7 @@ fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
         // keeps the dialog out of compact_idle.
         dialog.updated_at = ts;
         dialog.latest_message_at = dialog.latest_message_at.max(ts);
+        dialog.earliest_message_at = dialog.earliest_message_at.min(ts);
         return;
     }
 
@@ -2758,6 +2792,7 @@ fn advance_dialog(dialog: &mut SipDialog, mut msg: SipMessage, cap: usize) {
     }
     dialog.updated_at = ts;
     dialog.latest_message_at = dialog.latest_message_at.max(ts);
+    dialog.earliest_message_at = dialog.earliest_message_at.min(ts);
 }
 
 /// The derived state one message contributes to the dialog it belongs to.
@@ -2992,6 +3027,8 @@ struct UnkeptTail {
     updated_at: chrono::DateTime<chrono::Utc>,
     /// The fragment's newest message, which can be a tail message.
     latest_message_at: chrono::DateTime<chrono::Utc>,
+    /// The fragment's oldest message, which can be a tail message.
+    earliest_message_at: chrono::DateTime<chrono::Utc>,
     /// The CSeq identities the fragment saw, kept or not.
     seen_cseq: std::collections::HashSet<String>,
 }
@@ -3011,6 +3048,7 @@ impl UnkeptTail {
             timing: fragment.timing.clone(),
             updated_at: fragment.updated_at,
             latest_message_at: fragment.latest_message_at,
+            earliest_message_at: fragment.earliest_message_at,
             seen_cseq: fragment.seen_cseq.clone(),
         }
     }
@@ -3030,6 +3068,7 @@ impl UnkeptTail {
             }
             dialog.updated_at = dialog.updated_at.max(tail.updated_at);
             dialog.latest_message_at = dialog.latest_message_at.max(tail.latest_message_at);
+            dialog.earliest_message_at = dialog.earliest_message_at.min(tail.earliest_message_at);
             for key in &tail.seen_cseq {
                 if dialog.seen_cseq.len() >= crate::sip::dialog::MAX_SEEN_CSEQ_PER_DIALOG {
                     break;
@@ -3630,6 +3669,7 @@ mod tests {
                     d.created_at,
                     d.updated_at,
                     d.latest_message_at,
+                    d.earliest_message_at,
                     d.first_frame.as_ref().map(|f| f.origin.ordinal)
                 ),
                 (d.src_addr, d.dst_addr, messages, seen, retransmits),
@@ -7911,21 +7951,23 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         Ok(store)
     }
 
-    /// With no cursor, every dialog comes back oldest-update first and the
-    /// next_cursor names the newest — the position a poller resumes from.
+    /// With no cursor, every dialog comes back in the order it changed and
+    /// the next_cursor names the last change — the position a poller resumes
+    /// from.
     #[test]
-    fn tail_page_orders_by_update_time_and_names_the_newest() -> Result<(), TestError> {
+    fn tail_page_orders_by_change_and_names_the_last() -> Result<(), TestError> {
         let store = store_of_three_updates()?;
         let (page, next) = store.tail_page(None, 10);
         let ids: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
-        assert_eq!(ids, vec!["old@h", "mid@h", "new@h"], "oldest update first");
+        assert_eq!(
+            ids,
+            vec!["mid@h", "new@h", "old@h"],
+            "the order they changed in"
+        );
         assert_eq!(
             next,
-            Some(crate::cursor::format_cursor(
-                base_ts()? + TimeDelta::seconds(2),
-                "new@h"
-            )),
-            "the cursor names the newest row, so the next poll resumes after it"
+            Some(crate::cursor::format_tail_cursor(3)),
+            "the cursor names the last change, so the next poll resumes after it"
         );
         Ok(())
     }
@@ -7940,25 +7982,24 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             "mid@h",
         ))
         .map_err(|e| format!("cursor parses: {e:?}"))?;
-        let (page, _next) = store.tail_page(Some(&cursor), 10);
+        let (page, _next) = store.tail_page(Some(&crate::cursor::TailCursor::Legacy(cursor)), 10);
         let ids: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
         assert_eq!(ids, vec!["new@h"], "only rows updated after the cursor");
         Ok(())
     }
 
-    /// The limit is applied AFTER the update-time sort, so next_cursor names the
-    /// last row actually returned — never a newer row the page skipped. Trunc-
-    /// ating before the sort would let the cursor jump past `mid` and `new`.
+    /// The limit is applied AFTER the change sort, so next_cursor names the
+    /// last row actually returned — never a later row the page skipped.
     #[test]
     fn tail_page_truncates_after_sorting_not_before() -> Result<(), TestError> {
         let store = store_of_three_updates()?;
         let (page, next) = store.tail_page(None, 1);
         let ids: Vec<&str> = page.iter().map(|d| d.call_id.as_str()).collect();
-        assert_eq!(ids, vec!["old@h"], "the single oldest-update row");
+        assert_eq!(ids, vec!["mid@h"], "the single first-changed row");
         assert_eq!(
             next,
-            Some(crate::cursor::format_cursor(base_ts()?, "old@h")),
-            "the cursor names the row returned, so the next page starts at mid"
+            Some(crate::cursor::format_tail_cursor(1)),
+            "the cursor names the row returned, so the next page starts at new"
         );
         Ok(())
     }
@@ -8738,12 +8779,18 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
     }
 
     /// A dialog whose last message read is older than the one that opened it
-    /// does not report a negative duration.
+    /// does not report a negative duration: it lasted from that older
+    /// message to the newest.
     #[test]
     fn the_duration_is_never_negative() -> Result<(), TestError> {
         let store = store_read_in_order("neg@h", 2000, &[1000])?;
         let d = held(&store, "neg@h")?;
-        assert_eq!(d.duration(), TimeDelta::zero(), "{:?}", d.duration());
+        assert_eq!(
+            d.duration(),
+            TimeDelta::seconds(1),
+            "1 s to 2 s, oldest to newest: {:?}",
+            d.duration()
+        );
         Ok(())
     }
 
@@ -8900,9 +8947,8 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         Ok(())
     }
 
-    /// The change-tracking page keeps paging on `updated_at`, the last
-    /// message read: it exists to report change, and a message with an older
-    /// stamp is a change.
+    /// The change-tracking page orders by change: a message with an older
+    /// stamp read later is a later change.
     #[test]
     fn the_tail_page_orders_by_the_last_message_read() -> Result<(), TestError> {
         let mut store = store_read_in_order("moved@h", 0, &[10_000, 2_000])?;
@@ -8912,7 +8958,7 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
         assert_eq!(
             order,
             ["moved@h", "still@h"],
-            "the tail page orders by updated_at: moved@h was read last at 2 s, before still@h at 5 s"
+            "the tail page orders by change: moved@h last changed at change 3, still@h at change 4"
         );
         Ok(())
     }
@@ -8988,6 +9034,419 @@ Content-Type: application/rs-metadata+xml\r\n\r\n\
             keep_messages_per_idle_dialog(),
         );
         assert!(!due, "629 s is 599 s after the newest message");
+        Ok(())
+    }
+
+    // ── 3c: the tail cursor follows the change sequence ──────────────────
+
+    use crate::cursor::{format_tail_cursor, parse_tail_cursor};
+
+    /// The page after `cursor` (from the start without one), as Call-IDs,
+    /// and its next cursor.
+    fn tail_ids(
+        store: &DialogStore,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<(Vec<String>, Option<String>), TestError> {
+        let parsed = cursor.map(parse_tail_cursor).transpose()?;
+        let (page, next) = store.tail_page(parsed.as_ref(), limit);
+        Ok((page.iter().map(|d| d.call_id.clone()).collect(), next))
+    }
+
+    /// A message stamped OLDER than every row of a page already handed out
+    /// still brings its dialog back after that page's cursor: the cursor
+    /// names a change, not a time.
+    #[test]
+    fn a_dialog_whose_new_message_is_older_comes_back_after_the_cursor() -> Result<(), TestError> {
+        let mut store = store_read_in_order("late@h", 10_000, &[])?;
+        store.process_message(make_invite_msg("other@h", at_ms(20_000)?)?);
+        let (first, cursor) = tail_ids(&store, None, 10)?;
+        assert_eq!(first, ["late@h", "other@h"], "the first page holds both");
+        store.process_message(make_in_dialog_filler("late@h", 10, at_ms(1_000)?)?);
+        let (again, _) = tail_ids(&store, cursor.as_deref(), 10)?;
+        assert_eq!(
+            again,
+            ["late@h"],
+            "late@h changed after the cursor, at 1 s, older than every row the cursor saw"
+        );
+        Ok(())
+    }
+
+    /// The page orders by change: the dialog changed last comes last,
+    /// whatever its timestamps.
+    #[test]
+    fn the_tail_page_orders_by_change() -> Result<(), TestError> {
+        let store = store_of_three_updates()?;
+        let (ids, _) = tail_ids(&store, None, 10)?;
+        assert_eq!(
+            ids,
+            ["mid@h", "new@h", "old@h"],
+            "mid, new and old were read in that order"
+        );
+        Ok(())
+    }
+
+    /// The next cursor is a version-2 cursor naming the last row's change.
+    #[test]
+    fn the_next_cursor_names_the_last_rows_change() -> Result<(), TestError> {
+        let store = store_of_three_updates()?;
+        let (page, next) = store.tail_page(None, 2);
+        let last = page.last().ok_or("a row")?;
+        assert_eq!(
+            next,
+            Some(format_tail_cursor(last.change_seq)),
+            "next_cursor resumes after the last row returned"
+        );
+        assert_eq!(
+            next.as_deref(),
+            Some("v2:2"),
+            "the second change of a fresh store is change 2"
+        );
+        Ok(())
+    }
+
+    /// Paging one row at a time visits every dialog once and then stops.
+    #[test]
+    fn paging_by_change_visits_every_dialog_once() -> Result<(), TestError> {
+        let store = store_of_three_updates()?;
+        let mut cursor: Option<String> = None;
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            let (ids, next) = tail_ids(&store, cursor.as_deref(), 1)?;
+            if ids.is_empty() {
+                break;
+            }
+            seen.extend(ids);
+            cursor = next;
+        }
+        assert_eq!(
+            seen,
+            ["mid@h", "new@h", "old@h"],
+            "each dialog once, in change order"
+        );
+        Ok(())
+    }
+
+    /// A dialog changed twice after the cursor comes back once, at its later
+    /// change.
+    #[test]
+    fn a_dialog_changed_twice_comes_back_once() -> Result<(), TestError> {
+        let mut store = store_read_in_order("twice@h", 0, &[])?;
+        let (_, cursor) = tail_ids(&store, None, 10)?;
+        store.process_message(make_in_dialog_filler("twice@h", 10, at_ms(500)?)?);
+        store.process_message(make_in_dialog_filler("twice@h", 11, at_ms(400)?)?);
+        let (ids, next) = tail_ids(&store, cursor.as_deref(), 10)?;
+        assert_eq!(ids, ["twice@h"], "one row for one dialog");
+        assert_eq!(next.as_deref(), Some("v2:3"), "its last change is change 3");
+        Ok(())
+    }
+
+    /// Every processed message is a change, numbered one above the last,
+    /// whichever dialog it lands in.
+    #[test]
+    fn every_message_is_the_next_change() -> Result<(), TestError> {
+        let mut store = store_read_in_order("a@h", 0, &[100])?;
+        store.process_message(make_invite_msg("b@h", at_ms(50)?)?);
+        assert_eq!(
+            held(&store, "a@h")?.change_seq,
+            2,
+            "a@h: two messages, changes 1 and 2"
+        );
+        assert_eq!(held(&store, "b@h")?.change_seq, 3, "b@h: the third message");
+        Ok(())
+    }
+
+    /// A cursor past the last change returns nothing and no cursor.
+    #[test]
+    fn a_cursor_past_the_last_change_returns_nothing() -> Result<(), TestError> {
+        let store = store_of_three_updates()?;
+        let (ids, next) = tail_ids(&store, Some("v2:99"), 10)?;
+        assert!(ids.is_empty(), "nothing changed after change 99: {ids:?}");
+        assert_eq!(next, None, "no row, no cursor");
+        Ok(())
+    }
+
+    /// The cursor of the last row returns nothing more until something
+    /// changes.
+    #[test]
+    fn the_last_rows_cursor_returns_nothing_more() -> Result<(), TestError> {
+        let store = store_of_three_updates()?;
+        let (_, next) = tail_ids(&store, None, 10)?;
+        let (ids, _) = tail_ids(&store, next.as_deref(), 10)?;
+        assert!(ids.is_empty(), "nothing after the last change: {ids:?}");
+        Ok(())
+    }
+
+    /// A message that opens no dialog is no change: the next change keeps
+    /// the next number.
+    #[test]
+    fn a_message_that_opens_nothing_is_no_change() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        let mut orphan = make_invite_msg("x@h", at_ms(0)?)?;
+        orphan
+            .headers
+            .retain(|h| !h.name.eq_ignore_ascii_case("Call-ID"));
+        assert!(orphan.call_id().is_none(), "the message carries no Call-ID");
+        store.process_message(orphan);
+        store.process_message(make_invite_msg("y@h", at_ms(1)?)?);
+        assert_eq!(
+            held(&store, "y@h")?.change_seq,
+            1,
+            "the first change is y@h's"
+        );
+        Ok(())
+    }
+
+    /// A dialog refused at capacity is no change and never appears.
+    #[test]
+    fn a_dialog_refused_at_capacity_is_no_change() -> Result<(), TestError> {
+        let mut store = DialogStore::new(1, false);
+        store.process_message(make_invite_msg("kept@h", at_ms(0)?)?);
+        store.process_message(make_invite_msg("refused@h", at_ms(1)?)?);
+        let (ids, next) = tail_ids(&store, None, 10)?;
+        assert_eq!(ids, ["kept@h"], "the refused dialog is not held");
+        assert_eq!(next.as_deref(), Some("v2:1"), "the refusal took no number");
+        Ok(())
+    }
+
+    /// The sequence does not restart at `clear`, so a cursor from before it
+    /// still names a point before every later change.
+    #[test]
+    fn the_change_sequence_survives_a_clear() -> Result<(), TestError> {
+        let mut store = store_of_three_updates()?;
+        let (_, cursor) = tail_ids(&store, None, 10)?;
+        store.clear();
+        store.process_message(make_invite_msg("after@h", at_ms(0)?)?);
+        let (ids, _) = tail_ids(&store, cursor.as_deref(), 10)?;
+        assert_eq!(
+            ids,
+            ["after@h"],
+            "the dialog after the clear is after the cursor"
+        );
+        Ok(())
+    }
+
+    /// A retransmission is a change, even stamped before every message the
+    /// cursor saw: the retransmission arm stamps the dialog as the other arm
+    /// does.
+    #[test]
+    fn a_retransmission_is_a_change() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        let invite = make_invite_msg("rt@h", at_ms(0)?)?;
+        store.process_message(invite.clone());
+        let (_, cursor) = tail_ids(&store, None, 10)?;
+        let mut copy = invite;
+        copy.timestamp = at_ms(-10)?;
+        store.process_message(copy);
+        assert!(
+            store
+                .get("rt@h")
+                .is_some_and(|d| d.messages.iter().any(|m| m.is_retransmission)),
+            "the copy was read as a retransmission"
+        );
+        let (ids, _) = tail_ids(&store, cursor.as_deref(), 10)?;
+        assert_eq!(ids, ["rt@h"], "the retransmission changed the dialog");
+        Ok(())
+    }
+
+    /// Two dialogs whose messages share one timestamp keep the order they
+    /// changed in.
+    #[test]
+    fn one_instant_two_dialogs_keep_their_change_order() -> Result<(), TestError> {
+        let mut store = DialogStore::new(100, false);
+        store.process_message(make_invite_msg("z@h", at_ms(0)?)?);
+        store.process_message(make_invite_msg("a@h", at_ms(0)?)?);
+        let (ids, _) = tail_ids(&store, None, 10)?;
+        assert_eq!(ids, ["z@h", "a@h"], "change order, not Call-ID order");
+        Ok(())
+    }
+
+    /// A version-1 cursor still pages on `updated_at`, and hands back a
+    /// version-2 cursor.
+    #[test]
+    fn a_version_1_cursor_still_works_and_hands_back_version_2() -> Result<(), TestError> {
+        let store = store_of_three_updates()?;
+        let v1 = crate::cursor::format_cursor(base_ts()? + TimeDelta::seconds(1), "mid@h");
+        let (ids, next) = tail_ids(&store, Some(&v1), 10)?;
+        assert_eq!(
+            ids,
+            ["new@h"],
+            "only rows updated after the version-1 cursor"
+        );
+        assert_eq!(next.as_deref(), Some("v2:2"), "new@h was the second change");
+        Ok(())
+    }
+
+    /// A merge of worker stores numbers the merged dialogs' changes afresh,
+    /// one each, in the merged order.
+    #[test]
+    fn a_merge_numbers_every_dialog_once() -> Result<(), TestError> {
+        let mut a = DialogStore::new(100, false);
+        a.process_message(make_invite_msg("m1@h", at_ms(0)?)?);
+        a.process_message(make_in_dialog_filler("m1@h", 10, at_ms(5)?)?);
+        let mut b = DialogStore::new(100, false);
+        b.process_message(make_invite_msg("m2@h", at_ms(1)?)?);
+        a.merge_replaying([b], |_, ts| ts, &[]);
+        let mut seqs: Vec<u64> = a.iter().map(|d| d.change_seq).collect();
+        seqs.sort_unstable();
+        seqs.dedup();
+        assert_eq!(seqs.len(), 2, "two dialogs, two numbers: {seqs:?}");
+        let (ids, _) = tail_ids(&a, None, 10)?;
+        assert_eq!(ids, ["m1@h", "m2@h"], "the merged order, m1 first");
+        Ok(())
+    }
+
+    // ── 3c: earliest_message_at, the oldest message ─────────────────────
+
+    /// A message older than the first one read moves `earliest_message_at`
+    /// back to it, and `created_at` stays on the first one read.
+    #[test]
+    fn an_older_message_read_later_moves_earliest_back() -> Result<(), TestError> {
+        let store = store_read_in_order("back@h", 5_000, &[1_000])?;
+        let d = held(&store, "back@h")?;
+        assert_eq!(
+            d.earliest_message_at,
+            at_ms(1_000)?,
+            "the oldest message, at 1 s"
+        );
+        assert_eq!(
+            d.created_at,
+            at_ms(5_000)?,
+            "created_at stays on the first read, 5 s"
+        );
+        Ok(())
+    }
+
+    /// The duration runs from the oldest message to the newest.
+    #[test]
+    fn the_duration_runs_from_the_oldest_message() -> Result<(), TestError> {
+        let store = store_read_in_order("span@h", 5_000, &[1_000, 7_000])?;
+        assert_eq!(
+            held(&store, "span@h")?.duration(),
+            TimeDelta::seconds(6),
+            "1 s to 7 s; from the first read, 5 s, it would be 2 s"
+        );
+        Ok(())
+    }
+
+    /// A newer message does not move `earliest_message_at`.
+    #[test]
+    fn a_newer_message_leaves_earliest_alone() -> Result<(), TestError> {
+        let store = store_read_in_order("fwd@h", 1_000, &[2_000, 3_000])?;
+        assert_eq!(
+            held(&store, "fwd@h")?.earliest_message_at,
+            at_ms(1_000)?,
+            "the INVITE at 1 s stays the oldest"
+        );
+        Ok(())
+    }
+
+    /// Messages at one instant keep `earliest_message_at` on it.
+    #[test]
+    fn messages_at_one_instant_keep_earliest_on_it() -> Result<(), TestError> {
+        let store = store_read_in_order("same@h", 2_000, &[2_000, 2_000])?;
+        let d = held(&store, "same@h")?;
+        assert_eq!(
+            d.earliest_message_at,
+            at_ms(2_000)?,
+            "every message is at 2 s"
+        );
+        assert_eq!(d.duration(), TimeDelta::zero(), "they last no time");
+        Ok(())
+    }
+
+    /// A retransmission dropped at the message cap still moves
+    /// `earliest_message_at` back: it is a message of the dialog.
+    #[test]
+    fn a_retransmission_dropped_at_the_cap_moves_earliest_back() -> Result<(), TestError> {
+        let mut store = store_read_in_order("rtx@h", 3_000, &[])?;
+        let dialog = store.get_mut("rtx@h").ok_or("held")?;
+        let mut copy = dialog.messages.first().ok_or("the INVITE")?.clone();
+        copy.timestamp = at_ms(500)?;
+        advance_dialog(dialog, copy, 1);
+        assert_eq!(
+            dialog.messages.len(),
+            1,
+            "the copy was dropped at the cap of 1"
+        );
+        assert_eq!(
+            dialog.earliest_message_at,
+            at_ms(500)?,
+            "the dropped copy at 0.5 s is the oldest message"
+        );
+        Ok(())
+    }
+
+    /// One call read out of timestamp order merges, under every assignment of
+    /// its legs to workers, to the dialog one store builds: the oldest
+    /// message is the oldest of either leg.
+    #[test]
+    fn a_merge_keeps_the_oldest_message_of_a_call_read_out_of_order() -> Result<(), TestError> {
+        let mut seq = Vec::new();
+        for n in 0..=4u32 {
+            seq.push((
+                0,
+                parity_msg("old@h", n, 20 + 10 * i64::from(n), u64::from(n))?,
+            ));
+        }
+        seq.push((1, parity_msg("old@h", 5, 5, 5)?));
+        let serial = assert_every_assignment_merges_to_serial(&seq, &[], 2, 1000, true)?;
+        assert_eq!(
+            held(&serial, "old@h")?.earliest_message_at,
+            base_ts()? + TimeDelta::seconds(5),
+            "the oldest message is 5 s, from leg 1, whichever worker held it"
+        );
+        Ok(())
+    }
+
+    /// A call tree's first activity is the root's oldest message.
+    #[test]
+    fn a_call_trees_first_activity_is_the_oldest_message() -> Result<(), TestError> {
+        let store = store_read_in_order("tree0@h", 4_000, &[1_500])?;
+        let tree = store
+            .correlation_tree("tree0@h", 10)
+            .ok_or("a tree for the root")?;
+        assert_eq!(
+            tree.first_activity,
+            Some(at_ms(1_500)?),
+            "the root's oldest message, 1.5 s, not its first read, 4 s"
+        );
+        Ok(())
+    }
+
+    /// A full fragment whose oldest message is one it counted but could not
+    /// keep folds that message's timestamp into the merged dialog's
+    /// `earliest_message_at`: the replay never sees the message itself.
+    #[test]
+    fn a_full_fragment_folds_its_unkept_oldest_message() -> Result<(), TestError> {
+        const CAP: usize = 2;
+        let mut store = DialogStore::new(100, false);
+        store.process_message(read_as(make_invite_msg("fold@h", at_ms(5_000)?)?, 0));
+        store.process_message(read_as(
+            make_in_dialog_filler("fold@h", 10, at_ms(6_000)?)?,
+            1,
+        ));
+        store.process_message(read_as(
+            make_in_dialog_filler("fold@h", 11, at_ms(1_000)?)?,
+            2,
+        ));
+        let mut full = store.dialogs.swap_remove("fold@h").ok_or("full fragment")?;
+        full.messages.truncate(CAP);
+        let mut other_store = DialogStore::new(100, false);
+        other_store.process_message(read_as(
+            make_in_dialog_filler("fold@h", 12, at_ms(7_000)?)?,
+            3,
+        ));
+        let other = other_store
+            .dialogs
+            .swap_remove("fold@h")
+            .ok_or("other fragment")?;
+        let (merged, _) = rebuild_in_read_order(vec![full, other], &read_index, CAP, &[]);
+        assert_eq!(
+            merged.earliest_message_at,
+            at_ms(1_000)?,
+            "the unkept message at 1 s is the oldest; the kept ones start at 5 s"
+        );
         Ok(())
     }
 }

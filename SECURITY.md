@@ -100,7 +100,6 @@ secret. Each one is:
 
 | Secret | Used by | What it can do |
 |---|---|---|
-| `HOMEBREW_TAP_TOKEN` | `release.yml`, the `tap` job | Push the formula bump to the Homebrew tap repository |
 | `CODECOV_TOKEN` | `quality.yml`, the coverage upload | Upload coverage reports to Codecov |
 | `CLOUDFLARE_API_TOKEN` | `pages.yml`, the `csp` job | Update the site's Content-Security-Policy hashes at Cloudflare |
 

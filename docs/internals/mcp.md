@@ -612,8 +612,9 @@ a timestamp (a burst of registrations lands on one millisecond), and a bare
 timestamp forces a choice between dropping the rest of that group and serving
 it twice. `list_dialogs` pages on `created_at` because it never moves: in an
 `updated_at` ordering, a dialog that gained a message mid-sweep would jump past
-a cursor already gone by and vanish. `tail_dialogs` pages on `updated_at`
-because reporting change is its job.
+a cursor already gone by and vanish. `tail_dialogs` pages on the store's
+change sequence because reporting change is its job: a message stamped older
+than one already read is still a later change.
 
 `sipp-branch-scenario.pcapng` is the example fixture because its `by_method`
 shows all 1334 dialogs are REGISTER, which the two rows on the page cannot.
@@ -772,10 +773,10 @@ the store and reports the population beside it.
   `list_dialogs` rejects.
 - `tail_dialogs` has no `returned` or `total_matched` because "how many are
   there" is not a question a tail can answer while the store changes. The
-  compound cursor exists because dialogs share `updated_at`. A bare timestamp
-  falls back to the pre-compound strictly after filter, which the tool still
-  accepts, so a client that rebuilds one loses or repeats tied dialogs
-  silently.
+  `v2:<N>` cursor names one change, so no two dialogs share a position. A
+  version-1 cursor falls back to the strictly after filter on `updated_at`,
+  which the tool still accepts, so a client that keeps one can lose or repeat
+  dialogs until its next page hands back a `v2:` cursor.
 - `await_condition` returns a passed deadline as a successful call because
   "the fault has not reproduced" and "the tool broke" are different findings.
   Constants: `DEFAULT_TIMEOUT_SECONDS` (30), `DEFAULT_MCP_MAX_WAIT_SECONDS`

@@ -1935,10 +1935,10 @@ fn ascii_contains_ci_bytes(haystack: &[u8], needle: &[u8]) -> bool {
 #[schemars(crate = "rmcp::schemars")]
 pub struct TailDialogsParams {
     /// Cursor: pass back the previous response's `next_cursor` verbatim
-    /// (`<RFC 3339>|<Call-ID>`); only dialogs updated after that position
-    /// are returned. A bare RFC 3339 timestamp (the pre-compound format)
-    /// is also accepted and filters strictly after it. Omit on the first
-    /// call to start from the beginning.
+    /// (`v2:<N>`); only dialogs changed after it are returned. A version-1
+    /// cursor (`<RFC 3339>[|<Call-ID>]`) is also read, as dialogs updated
+    /// after that instant. Omit on the first call to start from the
+    /// beginning.
     pub cursor: Option<String>,
     /// Maximum dialogs to return (default 50, max 1000).
     pub limit: Option<u32>,
@@ -4969,7 +4969,7 @@ impl SipnabMcp {
     /// counting is the part that has to be right.
     ///
     /// Order is `(created_at, Call-ID)`. Creation time is used rather than the
-    /// `updated_at` that `tail_dialogs` pages on, and the difference matters:
+    /// change order `tail_dialogs` pages on, and the difference matters:
     /// `tail_dialogs` exists to report change, so it must follow records as
     /// they move, while a full listing must not. A dialog that receives one
     /// more message mid-pagination would jump forward in an `updated_at`
@@ -6499,28 +6499,26 @@ impl SipnabMcp {
         ]))
     }
 
-    /// Incremental dialog fetch — returns dialogs updated strictly after the
-    /// supplied cursor.
+    /// Incremental dialog fetch — returns dialogs changed after the supplied
+    /// cursor.
     ///
     /// # Returns
     ///
-    /// A `TailDialogsResponse`: matching dialogs sorted oldest-first
-    /// (ties broken by Call-ID), a `next_cursor` derived from the last
-    /// dialog returned (null when no dialogs matched), and the
-    /// `source_exhausted` flag.
+    /// A `TailDialogsResponse`: matching dialogs in the order they changed,
+    /// a `next_cursor` naming the last dialog's change (null when no dialogs
+    /// matched), and the `source_exhausted` flag.
     ///
     /// # Errors
     ///
-    /// `invalid_params` (-32602) when `cursor`'s timestamp half is not
-    /// RFC 3339.
+    /// `invalid_params` (-32602) when `cursor` does not parse.
     #[tool(
         name = "tail_dialogs",
-        description = "Returns dialogs updated strictly after `cursor` \
-                       (omit for first call, then pass back next_cursor \
-                       verbatim; a bare RFC 3339 timestamp is also \
-                       accepted). Used for polling-based change tracking. \
-                       The response carries source_exhausted=true after a \
-                       pcap source has been fully consumed.",
+        description = "Returns dialogs changed after `cursor`, in the \
+                       order they changed (omit for first call, then pass \
+                       back next_cursor verbatim). Used for polling-based \
+                       change tracking. The response carries \
+                       source_exhausted=true after a pcap source has been \
+                       fully consumed.",
         output_schema = crate::mcp::schema::projectable_rows(
             schema_for_output::<TailDialogsResponse>(),
             "dialogs",
@@ -6533,13 +6531,12 @@ impl SipnabMcp {
         Parameters(params): Parameters<TailDialogsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let limit = resolve_limit_with_cap(params.limit, self.row_cap);
-        // The cursor is `<RFC 3339>` (legacy) or `<RFC 3339>|<Call-ID>`
-        // (compound, what next_cursor emits) — parsed by the shared helper in
-        // `shape`, which the paged list tools use too. One implementation of
-        // the tie-break, because it is the part that goes silently wrong.
+        // The cursor is `v2:<N>` (what next_cursor emits), or a version-1
+        // `<RFC 3339>[|<Call-ID>]` a client stored before; the one parser the
+        // REST tail route uses too.
         let cursor = match params.cursor.as_deref() {
             Some(raw) => Some(
-                super::shape::parse_cursor(raw)
+                crate::cursor::parse_tail_cursor(raw)
                     .map_err(|e| errors::refuse_param(Reason::InvalidValue, "cursor", e))?,
             ),
             None => None,
@@ -6551,17 +6548,17 @@ impl SipnabMcp {
             let ds = self.dialog_store.read();
             // The order + truncation + next_cursor rule is shared with the
             // REST `/v1/dialogs/tail` route: collect every dialog past the
-            // cursor, sort by (updated_at, Call-ID tie-break), and only then
+            // cursor, sort by change, and only then
             // truncate — truncating store (insertion) order first would let
             // next_cursor jump past dialogs never returned. This surface adds
             // its own fencing, source_exhausted, capture identity and field
             // projection on top.
             let (changed, next_cursor) = ds.tail_page(cursor.as_ref(), limit);
             // The cursor `tail_page` would hand on after each row: the same
-            // `(updated_at, Call-ID)` key it pages on.
+            // change number it pages on.
             let row_cursors: Vec<String> = changed
                 .iter()
-                .map(|d| super::shape::format_cursor(d.updated_at, &d.call_id))
+                .map(|d| DialogStore::tail_cursor_of(d))
                 .collect();
             let summaries: Vec<DialogSummary> = changed
                 .into_iter()
@@ -15332,6 +15329,141 @@ mod tests {
                 .ok_or("v[\"dialogs\"].as_array() is None")?
                 .is_empty(),
             "bare timestamp cursor keeps strictly-after semantics"
+        );
+        Ok(())
+    }
+
+    /// One `tail_dialogs` page after `cursor`, as JSON.
+    async fn tail_once(
+        server: &SipnabMcp,
+        cursor: Option<String>,
+        max_response_bytes: Option<u64>,
+    ) -> Result<serde_json::Value, TestError> {
+        let result = server
+            .tail_dialogs(Parameters(TailDialogsParams {
+                max_response_bytes,
+                cursor,
+                limit: None,
+                fields: None,
+            }))
+            .await
+            .map_err(|e| format!("tail should succeed: {e:?}"))?;
+        Ok(serde_json::from_str(&text_of(&result)?)?)
+    }
+
+    /// 3c TAIL-CURSOR-READ-ORDER on MCP: a message stamped older than the
+    /// newest, read after the agent took its cursor, brings the dialog back.
+    #[tokio::test]
+    async fn tail_dialogs_returns_a_dialog_whose_new_message_is_older() -> Result<(), TestError> {
+        let mut messages =
+            crate::test_utils::out_of_order_messages("ooo@example.com", [192, 0, 2, 1].into())?;
+        let last = messages.pop().ok_or("five messages")?;
+        let mut ds = DialogStore::new(100, false);
+        for m in messages {
+            ds.process_message(m);
+        }
+        let ds = Arc::new(RwLock::new(ds));
+        let server = SipnabMcp::new(
+            Arc::clone(&ds),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let first = tail_once(&server, None, None).await?;
+        let cursor = first["next_cursor"].as_str().map(str::to_string);
+        ds.write().process_message(last);
+        let again = tail_once(&server, cursor, None).await?;
+        assert_eq!(
+            again["dialogs"][0]["call_id"], "ooo@example.com",
+            "the 200 OK at +0.905 s, older than the BYE the cursor saw, is a change: {again}"
+        );
+        Ok(())
+    }
+
+    /// `tail_dialogs` hands out version-2 cursors.
+    #[tokio::test]
+    async fn tail_dialogs_hands_out_version_2_cursors() -> Result<(), TestError> {
+        let server = server_with_dialog("v2@x")?;
+        let v = tail_once(&server, None, None).await?;
+        assert_eq!(
+            v["next_cursor"], "v2:2",
+            "the dialog's two messages are the store's changes 1 and 2: {v}"
+        );
+        Ok(())
+    }
+
+    /// A version-2 cursor without a number is invalid_params (-32602) naming
+    /// the cursor.
+    #[tokio::test]
+    async fn tail_dialogs_refuses_a_version_2_cursor_without_a_number() -> Result<(), TestError> {
+        let err = empty_server()
+            .tail_dialogs(Parameters(TailDialogsParams {
+                max_response_bytes: None,
+                cursor: Some("v2:abc".to_string()),
+                limit: None,
+                fields: None,
+            }))
+            .await
+            .err()
+            .ok_or("v2:abc must be refused")?;
+        let json = serde_json::to_value(err)?;
+        assert_eq!(json["code"], -32602, "invalid_params: {json}");
+        assert_eq!(
+            json["data"]["param"], "cursor",
+            "the refusal names the cursor: {json}"
+        );
+        assert!(
+            json["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("whole number")),
+            "the refusal says the number is missing: {json}"
+        );
+        Ok(())
+    }
+
+    /// A page the byte budget cuts hands back the version-2 cursor of the
+    /// last row it kept, so the next page starts at the first row cut.
+    #[tokio::test]
+    async fn a_page_cut_by_the_byte_budget_resumes_by_change() -> Result<(), TestError> {
+        let mut ds = DialogStore::new(100, false);
+        for i in 0..20u32 {
+            ds.process_message(invite(
+                &format!("budget{i:02}@x"),
+                base_ts() + chrono::Duration::seconds(i64::from(20 - i)),
+            )?);
+        }
+        let server = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let v = tail_once(&server, None, Some(4096)).await?;
+        let kept = v["dialogs"].as_array().ok_or("dialogs")?.len();
+        assert!(
+            kept > 0 && kept < 20,
+            "the budget kept some rows and cut the rest: {kept}"
+        );
+        assert_eq!(
+            v["next_cursor"].as_str(),
+            Some(format!("v2:{kept}").as_str()),
+            "the cursor names the last row kept, change {kept}: {v}"
+        );
+        Ok(())
+    }
+
+    /// `earliest_message_at` is a verbatim (unfenced) field of an MCP dialog
+    /// summary, beside the other times.
+    #[tokio::test]
+    async fn an_mcp_dialog_summary_carries_the_oldest_message() -> Result<(), TestError> {
+        let mut ds = DialogStore::new(100, false);
+        for m in crate::test_utils::late_start_messages("early@example.com")? {
+            ds.process_message(m);
+        }
+        let server = SipnabMcp::new(
+            Arc::new(RwLock::new(ds)),
+            Arc::new(RwLock::new(StreamStore::new(100))),
+        );
+        let v = tail_once(&server, None, None).await?;
+        assert_eq!(
+            v["dialogs"][0]["earliest_message_at"], "2023-11-14T22:13:19.500+00:00",
+            "the INVITE copy 0.5 s before the first read: {v}"
         );
         Ok(())
     }

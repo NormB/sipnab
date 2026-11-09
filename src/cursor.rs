@@ -122,6 +122,71 @@ pub fn format_cursor(at: chrono::DateTime<chrono::Utc>, id: &str) -> String {
     )
 }
 
+/// The prefix of a change-sequence tail cursor: version 2 of the
+/// `tail_dialogs` / `GET /v1/dialogs/tail` cursor.
+///
+/// Version 1 was `<RFC 3339>|<Call-ID>`, a position on `updated_at`, which
+/// moves back when sipnab reads a message stamped older than one it already
+/// read; a dialog could then fall behind a cursor already handed out and
+/// never be returned again. Version 2 names a position in the store's own
+/// change sequence, which only rises.
+pub const TAIL_CURSOR_V2: &str = "v2:";
+
+/// A parsed `tail_dialogs` / `GET /v1/dialogs/tail` cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TailCursor {
+    /// `v2:<N>`: every dialog whose last change is after change `N`.
+    Change(u64),
+    /// A version-1 cursor, `<RFC 3339>` or `<RFC 3339>|<Call-ID>`, from a
+    /// client that stored one: dialogs whose `updated_at` is after it, as
+    /// before. The page it returns hands back a version-2 cursor.
+    Legacy(Cursor),
+}
+
+/// Parse a tail cursor: `v2:<N>`, or a version-1 cursor.
+///
+/// # Errors
+///
+/// A message naming the problem: a `v2:` cursor whose number is not a whole
+/// number from 0 up, a version this sipnab does not read (`v3:...`), or a
+/// version-1 cursor whose timestamp is not RFC 3339.
+pub fn parse_tail_cursor(raw: &str) -> Result<TailCursor, String> {
+    if let Some(number) = raw.strip_prefix(TAIL_CURSOR_V2) {
+        // Digits only: `u64::from_str` would also take a leading `+`.
+        return if !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()) {
+            number.parse().map(TailCursor::Change).map_err(|_| {
+                format!(
+                    "cursor '{raw}': the v2 change number is not a whole number up to {}",
+                    u64::MAX
+                )
+            })
+        } else {
+            Err(format!(
+                "cursor '{raw}': a v2 cursor is `v2:` and a whole number from 0 up"
+            ))
+        };
+    }
+    // `v<digits>:` is a versioned cursor, never an RFC 3339 instant, which
+    // starts with a year.
+    if let Some((version, _)) = raw.split_once(':')
+        && version.len() > 1
+        && version.starts_with('v')
+        && version[1..].bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err(format!(
+            "cursor '{raw}': cursor version {version} is not one this sipnab reads; \
+             pass back a next_cursor it returned, or start without a cursor"
+        ));
+    }
+    parse_cursor(raw).map(TailCursor::Legacy)
+}
+
+/// The cursor a client passes back to resume after change `seq`.
+#[must_use]
+pub fn format_tail_cursor(seq: u64) -> String {
+    format!("{TAIL_CURSOR_V2}{seq}")
+}
+
 /// Unit tests for the compound cursor: round-trip, the tie-break that is the
 /// reason it carries an identity, and the two ways it can be malformed.
 #[cfg(test)]
@@ -282,5 +347,99 @@ mod tests {
         let err = parse_cursor("yesterday|abc").err().ok_or("must reject")?;
         assert!(err.contains("RFC 3339"), "got {err:?}");
         Ok(())
+    }
+
+    // ── the version-2 tail cursor ──────────────────────────────────────
+
+    /// `v2:<N>` parses to change `N`.
+    #[test]
+    fn a_version_2_cursor_parses_to_its_change() -> Result<(), TestError> {
+        assert_eq!(
+            parse_tail_cursor("v2:42")?,
+            TailCursor::Change(42),
+            "v2:42 is change 42"
+        );
+        assert_eq!(
+            parse_tail_cursor("v2:0")?,
+            TailCursor::Change(0),
+            "v2:0 is before every change"
+        );
+        Ok(())
+    }
+
+    /// The largest change number round-trips.
+    #[test]
+    fn the_largest_change_round_trips() -> Result<(), TestError> {
+        assert_eq!(
+            parse_tail_cursor(&format_tail_cursor(u64::MAX))?,
+            TailCursor::Change(u64::MAX),
+            "u64::MAX formats and parses back"
+        );
+        Ok(())
+    }
+
+    /// A version-1 cursor, compound or bare, still parses.
+    #[test]
+    fn a_version_1_cursor_still_parses() -> Result<(), TestError> {
+        let t = at("2026-10-09T12:00:00Z")?;
+        assert_eq!(
+            parse_tail_cursor("2026-10-09T12:00:00Z|c@h")?,
+            TailCursor::Legacy(Cursor {
+                at: t,
+                id: Some("c@h".to_string())
+            }),
+            "a compound version-1 cursor"
+        );
+        assert_eq!(
+            parse_tail_cursor("2026-10-09T12:00:00Z")?,
+            TailCursor::Legacy(Cursor { at: t, id: None }),
+            "a bare version-1 cursor"
+        );
+        Ok(())
+    }
+
+    /// A `v2:` cursor whose number is not a whole number is refused, naming
+    /// the version.
+    #[test]
+    fn a_version_2_cursor_without_a_number_is_refused() {
+        for bad in [
+            "v2:",
+            "v2:abc",
+            "v2:-1",
+            "v2:+5",
+            "v2:1.5",
+            "v2: 7",
+            "v2:18446744073709551616",
+        ] {
+            let e = parse_tail_cursor(bad).err().unwrap_or_default();
+            assert!(
+                e.contains("v2") && e.contains("whole number"),
+                "{bad:?} is refused as a v2 cursor without a whole number: {e:?}"
+            );
+        }
+    }
+
+    /// A version this sipnab does not read is refused as such, not as a bad
+    /// timestamp.
+    #[test]
+    fn an_unknown_cursor_version_is_refused_as_one() {
+        for bad in ["v3:5", "v10:1"] {
+            let e = parse_tail_cursor(bad).err().unwrap_or_default();
+            assert!(
+                e.contains("version") && !e.contains("RFC 3339"),
+                "{bad:?} is refused as an unknown version: {e:?}"
+            );
+        }
+    }
+
+    /// A version-2 cursor is safe in a URL query: no `+`, no space, no `|`.
+    #[test]
+    fn a_version_2_cursor_is_url_safe() {
+        let c = format_tail_cursor(1_234_567);
+        assert_eq!(c, "v2:1234567", "the prefix and the number");
+        assert!(
+            !c.contains(['+', ' ', '|', '&', '#']),
+            "{c} carries nothing a query string changes"
+        );
     }
 }

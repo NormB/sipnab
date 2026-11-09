@@ -208,6 +208,25 @@ pub fn out_of_order_messages(
     ])
 }
 
+/// [`out_of_order_messages`], then a copy of its INVITE stamped 500 ms
+/// before the INVITE, read last: the call as one store reads two captures of
+/// it whose second one began earlier, at another hop.
+///
+/// So the dialog's `created_at` is [`OUT_OF_ORDER_T0`], its
+/// `earliest_message_at` T0 - 0.5 s, its `latest_message_at` T0 + 2.505 s
+/// (3.005 s apart), and its `updated_at`, the copy read last, T0 - 0.5 s.
+///
+/// # Errors
+///
+/// A message failing to parse, which would be a defect in the parser.
+pub fn late_start_messages(call_id: &str) -> Result<Vec<crate::sip::SipMessage>, String> {
+    let mut messages = out_of_order_messages(call_id, [192, 0, 2, 1].into())?;
+    let mut copy = messages.first().cloned().ok_or("the call has an INVITE")?;
+    copy.timestamp -= chrono::TimeDelta::milliseconds(500);
+    messages.push(copy);
+    Ok(messages)
+}
+
 /// A classic little-endian Ethernet pcap holding one record that captured
 /// `caplen` of the `origlen` bytes that crossed the wire -- a snapped frame
 /// when `caplen` is the smaller -- filled with `0xAB`.

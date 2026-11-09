@@ -534,7 +534,7 @@ The rules:
   `data.valid_values` list the fields the row carries:
 
   ```json
-  {"code":-32602,"message":"unknown field 'stat'; this row carries: call_id, created_at, duration_sec, final_status_code, frame, from_user, input_origin, latest_message_at, method, msg_count, state, timing, to_user, updated_at","data":{"param":"fields","reason":"invalid_choice","valid_values":["call_id","created_at","duration_sec","final_status_code","frame","from_user","input_origin","latest_message_at","method","msg_count","state","timing","to_user","updated_at"]}}
+  {"code":-32602,"message":"unknown field 'stat'; this row carries: call_id, created_at, duration_sec, earliest_message_at, final_status_code, frame, from_user, input_origin, latest_message_at, method, msg_count, state, timing, to_user, updated_at","data":{"param":"fields","reason":"invalid_choice","valid_values":["call_id","created_at","duration_sec","final_status_code","frame","from_user","input_origin","latest_message_at","method","msg_count","state","timing","to_user","updated_at"]}}
   ```
 
 - **The page fields are always kept.** `total_matched`, `truncated`,

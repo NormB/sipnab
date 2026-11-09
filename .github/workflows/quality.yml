@@ -229,7 +229,7 @@ jobs:
       # tests/ci_cache_policy_test.rs keeps it out.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
+        uses: ./.github/actions/pinned-tool
         with:
           tool: cargo-llvm-cov
 
@@ -353,7 +353,7 @@ jobs:
       # directory nothing to reuse.
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
+        uses: ./.github/actions/pinned-tool
         with:
           tool: cargo-llvm-cov
 
@@ -447,10 +447,15 @@ jobs:
           restore-keys: |
             cargo-clippy-sarif-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cachekey }}-
 
-      - name: Install clippy-sarif tooling
-        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
+      - name: Install clippy-sarif
+        uses: ./.github/actions/pinned-tool
         with:
-          tool: clippy-sarif,sarif-fmt
+          tool: clippy-sarif
+
+      - name: Install sarif-fmt
+        uses: ./.github/actions/pinned-tool
+        with:
+          tool: sarif-fmt
 
       - name: Run Clippy (SARIF)
         # Report-only: collect lints as JSON->SARIF without -Dwarnings so a lint

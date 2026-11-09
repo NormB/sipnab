@@ -61,8 +61,10 @@ fn workflow_secrets() -> Result<BTreeSet<String>, TestError> {
 #[test]
 fn security_md_names_every_secret_a_workflow_reads() -> Result<(), TestError> {
     let secrets = workflow_secrets()?;
+    // 3 -> 2 (HOMEBREW-TAP-API-COMMIT-UNSIGNED): no workflow reads
+    // HOMEBREW_TAP_TOKEN any more.
     assert!(
-        secrets.len() >= 3,
+        secrets.len() >= 2,
         "found only {secrets:?}; the workflow reader broke"
     );
     let doc = read("SECURITY.md")?;

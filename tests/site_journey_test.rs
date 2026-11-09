@@ -6665,10 +6665,18 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // advertisement step names scripts/advertise-release.py (+2).
     // Measurement: with origin/main's release.yml swapped back in the scan
     // reads 248, with its pages.yml 248, with its cert-expiry.yml 253.
-    // 255 -> 260: ci.yml's new hook-shellcheck job names .githooks/pre-push in
+    // 255 -> 257 (RELEASE-FAST D): ci.yml's comment above the cargo-audit
+    // step and release.yml's comment above the cosign step name
+    // .github/actions/pinned-tool (+1 each). Measurement: with
+    // origin/ci/release-fast-c's ci.yml swapped back in the scan reads 256,
+    // with its release.yml 256, with its quality.yml 257.
+    // 257 -> 254 (HOMEBREW-TAP-API-COMMIT-UNSIGNED): the deleted `tap` job of
+    // release.yml named packaging/homebrew/update-formula.sh once and
+    // homebrew-tap-push.py twice (-3).
+    // 254 -> 259: ci.yml's new hook-shellcheck job names .githooks/pre-push in
     // its comment and all three hooks in its run line (+4), and the Security
     // audit job's new step runs scripts/check-lockfile-drift.py (+1).
-    const EXPECTED_REFERENCES: usize = 260;
+    const EXPECTED_REFERENCES: usize = 259;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \
