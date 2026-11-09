@@ -82272,9 +82272,10 @@ They are different facts, and conflating them broke the download page in product
 - On 0.5.61 the release commit went red in CI.
   The v0.5.61 tag went on the commit that fixed it, 31 minutes after the release commit.
 
-So `published_version` moves **after** a release finishes publishing, in its
-own commit.
-It never moves while cutting one.
+So the site advertises a release only **after** it finishes publishing,
+and never while cutting one.
+Since RELEASE-FAST C no commit has to land for that to happen.
+See [Advertising a release](#advertising-a-release) below.
 
 The same split applies to the docs.
 
@@ -82543,18 +82544,120 @@ It exists because the manual version failed once already.
 - The 0.5.61 release commit went red in `Features (tls)`.
 - The only thing between that and a published broken release was somebody happening to look.
 
-Once that gate passes, the hook prints the phase-two step.
+Once that gate passes, the hook prints what happens next and what still needs a person.
 
 - A tag is phase one: it builds the artifacts.
-- The release is not finished until `published_version` names it and a visitor is actually offered it.
-- Between the tag going up and the next commit, no suite runs.
-  So nothing is watching that window.
+- The release is not finished until a visitor is actually offered it.
+  `release.yml` now does that itself ([Advertising a release](#advertising-a-release)).
+- The eBPF load verification still needs a privileged host, and the prompt names it.
 
 It stayed a prompt rather than becoming an eleventh gate.
 
 - At tag time the site *should* still advertise the previous release.
   The new artifacts do not exist yet.
 - A refusal there would block the correct state.
+
+### Advertising a release
+
+Until 0.5.239 a release finished in a second pull request, "phase two".
+It moved `published_version`, `release_date` and the `docs/install.md` download markers,
+added the binary-ceiling line and the eBPF load row, and regenerated the mirrors.
+On 0.5.238 its hooks, its CI and the Pages wait cost about 70 of the 284 minutes.
+RELEASE-FAST C removes that pull request.
+
+**The site resolves the advertised release at deploy time.**
+
+- [`scripts/advertise-release.py`](../../scripts/advertise-release.py) holds the rule, in `newest_to_advertise`.
+  The site advertises the newest GitHub release that:
+  - has the tag `vX.Y.Z`, with `X.Y.Z` no newer than the crate version of the tree the deploy builds;
+  - is neither a draft nor a prerelease;
+  - is complete: GitHub lists every asset as uploaded, and its asset names, with the version written as `<v>`,
+    include every name of the newest older complete release.
+- `pages.yml` runs `advertise-release.py site` before `zola build`, on every deploy.
+  It moves `published_version`, `release_date` and the markers in its own checkout, then
+  regenerates the mirrors with `build-site-pages.py`.
+  So a push to `main` after a release cannot put the site back on the previous one.
+- A failed read of GitHub's releases fails the deploy rather than guessing.
+- A release that drops an asset is not advertised until the rule changes with it.
+- To withdraw a release from the site, mark it as a prerelease
+  (`gh release edit v<version> --prerelease`) and run `pages.yml` again.
+- The markers are [`scripts/download-markers.txt`](../../scripts/download-markers.txt).
+  The writer moves those lines, and `docs_current_version_markers_match_cargo` reads the same file,
+  so the two cannot disagree about which lines name the release to download.
+
+**`release.yml` advertises the release once its assets exist.**
+
+- The `advertise` job, after `release`, dispatches `pages.yml` on `main` with `expect` set to the tag's
+  version and waits for that run.
+  With `expect`, the deploy fails unless the resolved release is that one.
+  So an incomplete release fails the release run instead of leaving the site on the previous version.
+- It dispatches on `main` because the `github-pages` environment takes deployments from `main` only.
+- The `pages` concurrency group keeps one pending run.
+  A push to `main` while the dispatched run waits can supersede it, and the job then fails.
+  Re-run the job; the superseding deploy advertises the release too.
+- The homepage test count comes from the suite of the release commit itself.
+  `ci.yml` uploads `suite-output` on pull requests as well as pushes, and
+  [`fetch-ci-suite-output.py`](../../scripts/fetch-ci-suite-output.py) takes it from a merged pull
+  request's head when GitHub reports the same tree for the head and the deployed commit
+  (`read_pr_heads` in `tag-push-proof.py`, the tag gate's rule).
+  The run of the deployed commit still decides once it has finished:
+  finished without the artifact means its suite failed, and no head stands in for it.
+  On 0.5.238 this wait was 39 minutes.
+
+**The records are artifacts, and the next release pull request commits them.**
+
+- The `records` job downloads the published x86_64-musl tarball and `SHA256SUMS.txt`, and
+  [`scripts/release-records.py`](../../scripts/release-records.py) `ceiling` checks the sha256 of the
+  tarball and measures the `sipnab` file in it.
+  It writes the binary-ceiling line, and the job uploads it as the run's `release-records` artifact.
+- The eBPF load verification stays a manual release step on the OpenSIPS VM (a privileged host with BTF),
+  run once the assets exist:
+
+  ```sh
+  sudo scripts/verify-bpf-load.sh <version>
+  ```
+
+  Write the ledger row it describes, in the format of the rows in
+  [`uprobe-capture.md`](uprobe-capture.md#testing-it), to a file for the next step.
+  The site no longer waits for it.
+  Without the row, the hooks refuse the next release pull request, because
+  `the_load_verification_record_names_the_published_release` requires a row for the
+  `published_version` its advertisement commit sets.
+  If the verifier rejects the object, withdraw the release from the site as above.
+- The next release pull request carries an **advertisement commit** before the version bump.
+  From a checkout of `main` with the tags fetched, for the previous release `<prev>`:
+
+  - Download the `release-records` artifact of the previous release's run:
+
+    ```sh
+    python3 scripts/release-records.py fetch --tag v<prev> --repo NormB/sipnab --dest .git/release-records
+    ```
+
+  - Write the records and the advertisement:
+
+    ```sh
+    python3 scripts/release-records.py write <prev> --ceiling-line .git/release-records/ceiling-line.txt --uprobe-row <row file>
+    ```
+
+  `write` adds both records, regenerates the internals mirror, and runs the same writer as `pages.yml`.
+  It refuses a version already recorded, a binary over the ceiling, a row that did not attach, and a
+  pending-growth line the new measurement includes.
+  Retire that line by hand, since it may wrap.
+- [`scripts/release-only.py`](../../scripts/release-only.py) `classify_advertise` recognizes that commit,
+  so the release pull request's hooks still run only the release gates.
+  The 0.5.239 phase-two commit 83bcb1083 is its fixture.
+- `the_site_advertises_the_newest_release_whose_assets_exist` holds the committed tree to it:
+  `published_version` is the newest release tag below the crate version, or the crate version
+  itself once a tag names it.
+
+**The release bumps the Homebrew tap through the GitHub API.**
+
+- The `tap` job runs [`scripts/homebrew-tap-push.py`](../../scripts/homebrew-tap-push.py)
+  with the `HOMEBREW_TAP_TOKEN` secret.
+- It creates the formula commit with the contents API on a branch of the tap, so GitHub signs it,
+  and moves the tap's `main` to it only when GitHub reports the commit verified, as a fast-forward.
+- Every bump made with `git push` before 0.5.240 carries no signature (HOMEBREW-TAP-UNSIGNED).
+  This change leaves the history of the tap as it is.
 
 A release is a pushed `v*` tag. `release.yml` then runs a matrix of eight builds:
 
@@ -85485,9 +85588,13 @@ Each successful run gets a row here.
 | 0.5.238 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-08 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.239 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-09 | attached, 2 libraries plus `tcp_sendmsg` |
 
-That requirement makes this file part of every phase-two release commit.
+That requirement makes this file part of every advertisement commit, the commit
+a release pull request carries for the release before it
+(see [Advertising a release](build-ci-release.md#advertising-a-release)).
 
-- The classifier deciding what a phase-two commit looks like has to agree with that.
+- The classifiers deciding what an advertisement commit looks like have to agree with that.
+  `classify_advertise` in [`release-only.py`](../../scripts/release-only.py) requires exactly one new row,
+  for the advertised release, and one that attached.
 - It did not, on 0.5.164:
   - the verification had run;
   - the row sat in the commit;

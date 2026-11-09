@@ -1213,6 +1213,96 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: python3 scripts/publish-crates.py --tag "${GITHUB_REF_NAME}"
 
+  # RELEASE-FAST C: no phase-two pull request. Once the assets are published,
+  # this dispatches pages.yml on main with `expect` set to this release and
+  # waits for that run. pages.yml's "Advertise the newest complete release"
+  # step (scripts/advertise-release.py) moves the advertised version and the
+  # download markers in its own checkout, so the site offers the release
+  # without a commit. The run fails when the site cannot advertise this
+  # release: an incomplete asset set, a failed build, or a later dispatch or
+  # push that superseded the pending run (the `pages` group keeps one pending
+  # run). Re-run the job; any later deploy advertises the release too.
+  #
+  # Dispatched on main rather than called from the tag: the github-pages
+  # environment takes deployments from `main` only, and that stays.
+  advertise:
+    # The dispatched deploy is bounded at 90 + 25 + 20 minutes by its own
+    # jobs; it usually takes the build's few minutes plus the Pages deploy.
+    timeout-minutes: 150
+    name: Advertise the release on the site
+    needs: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # actions:write dispatches pages.yml and reads its run; nothing else.
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Dispatch the site deploy and wait for it
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          gh workflow run pages.yml --repo "$GITHUB_REPOSITORY" --ref main -f expect="$version"
+          run=""
+          for _ in $(seq 1 30); do
+            # The oldest dispatch created since ours went out is ours.
+            run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pages.yml --event workflow_dispatch \
+              -L 20 --json databaseId,createdAt \
+              --jq "[.[] | select(.createdAt >= \"$since\")] | last | .databaseId // empty")
+            [ -n "$run" ] && break
+            sleep 10
+          done
+          if [ -z "$run" ]; then
+            echo "::error::pages.yml has no workflow_dispatch run created since $since; the site does not advertise $version"
+            exit 1
+          fi
+          echo "Waiting for pages.yml run $run (expect=$version)"
+          gh run watch "$run" --repo "$GITHUB_REPOSITORY" --exit-status --interval 30
+
+  # The binary-ceiling record, measured from the PUBLISHED x86_64-musl
+  # tarball once SHA256SUMS.txt vouches for it, the way phase two measured it
+  # by hand. The line goes up as this run's `release-records` artifact; the
+  # next release pull request's advertisement commit writes it into
+  # website/config.toml (`scripts/release-records.py fetch` and `write`).
+  records:
+    # Two downloads and a tar listing.
+    timeout-minutes: 15
+    name: Record the binary size
+    needs: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Do not leave GITHUB_TOKEN in .git/config for later steps or
+          # third-party actions to read. Nothing here pushes with it.
+          persist-credentials: false
+      - name: Measure the published x86_64-musl binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          tarball="sipnab-${version}-x86_64-unknown-linux-musl.tar.gz"
+          mkdir -p release-records
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern "$tarball" --pattern SHA256SUMS.txt --dir .
+          python3 scripts/release-records.py ceiling --version "$version" \
+            --tarball "$tarball" --sums SHA256SUMS.txt --config website/config.toml \
+            > release-records/ceiling-line.txt
+          cat release-records/ceiling-line.txt
+      - name: Upload the release records
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-records
+          path: release-records/
+          if-no-files-found: error
+          # The next release reads it; releases are days apart, not months.
+          retention-days: 90
+
   tap:
     # Bounds a wedged job: an unbounded one holds its
     # concurrency group indefinitely. Observed: 16.7 min slowest (aarch64-apple-darwin build).
@@ -1242,31 +1332,25 @@ jobs:
           echo "----- generated Formula/sipnab.rb -----"
           cat sipnab.rb
 
-      # Push the rendered formula to NormB/homebrew-tap so that
+      # Commit the rendered formula to NormB/homebrew-tap so that
       # `brew reinstall normb/tap/sipnab` serves the just-released version.
+      # Through the GitHub API, not a local commit: GitHub signs a commit the
+      # contents API creates, and scripts/homebrew-tap-push.py moves the
+      # tap's main to it only when GitHub reports it verified, as a
+      # fast-forward. Every bump pushed with git before 0.5.240 is unsigned
+      # (HOMEBREW-TAP-UNSIGNED); the tap's history is left as it is.
       # Requires a HOMEBREW_TAP_TOKEN secret: a PAT (classic: `repo`, or
       # fine-grained: Contents read+write on NormB/homebrew-tap) — the default
-      # GITHUB_TOKEN cannot push to a different repository. If the secret is
+      # GITHUB_TOKEN cannot write to a different repository. If the secret is
       # absent the release still succeeds; only the auto-bump is skipped.
-      - name: Push to homebrew-tap
+      - name: Commit to homebrew-tap through the API
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          set -euo pipefail
           if [ -z "${TAP_TOKEN:-}" ]; then
             echo "::warning title=Homebrew tap not bumped::HOMEBREW_TAP_TOKEN secret is not set; skipping auto-bump. Set a PAT with contents:write on NormB/homebrew-tap to enable it."
             exit 0
           fi
-          version="${GITHUB_REF_NAME#v}"
-          git clone --depth 1 "https://x-access-token:${TAP_TOKEN}@github.com/NormB/homebrew-tap.git" tap
-          install -m 0644 sipnab.rb tap/Formula/sipnab.rb
-          cd tap
-          if git diff --quiet -- Formula/sipnab.rb; then
-            echo "homebrew-tap already at ${version}; nothing to push."
-            exit 0
-          fi
-          git config user.name  "sipnab-release"
-          git config user.email "n.brandinger@gmail.com"
-          git add Formula/sipnab.rb
-          git commit -m "sipnab: bump to ${version}"
-          git push origin HEAD:main
-          echo "homebrew-tap bumped to ${version}."
+          GH_TOKEN="$TAP_TOKEN" python3 scripts/homebrew-tap-push.py \
+            --repo NormB/homebrew-tap --version "${GITHUB_REF_NAME#v}" --formula sipnab.rb

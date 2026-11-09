@@ -983,7 +983,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 812 -> 814 (RELEASE-FAST B): build-ci-release.md's release-only
     // paragraph links scripts/release-only.py and
     // scripts/tests/test_release_only.py (+2).
-    const EXPECTED_CODE_LINKS: usize = 814;
+    // 814 -> 821 (RELEASE-FAST C): build-ci-release.md's "Advertising a
+    // release" links scripts/advertise-release.py, download-markers.txt,
+    // fetch-ci-suite-output.py, release-records.py, release-only.py and
+    // homebrew-tap-push.py, and uprobe-capture.md links release-only.py (+7).
+    const EXPECTED_CODE_LINKS: usize = 821;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

@@ -169,6 +169,12 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	# parallel-tests.py renders it as libtest text. The doctests run as
 	# `cargo test ... --doc` and report none.
 	#
+	# Each tree gets its own workspace root under the harness, $_h/ws/<cksum
+	# of the tree's path>, as real cargo gives each worktree its own. With one
+	# root for every tree, two worktrees running the hook at once shared one
+	# junit.xml, and one run's parallel-tests.py could unlink the report the
+	# other had just written (FLAKY-GATE-CACHE-CONCURRENT).
+	#
 	# The suite's own invocation also writes the SIPNAB_* variables it can see
 	# to pool-env: nextest and every test process inherit exactly that
 	# environment, so Scenario 1c reads from it what the suite was given.
@@ -179,14 +185,15 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		  echo "cargo-nextest \$(cat "$_h/nextest-version") (stub)"; exit 0
 		fi
 		echo "\$*" >> "$_h/cargo-invocations"
+		_ws="$_h/ws/\$(pwd -P | cksum | cut -d' ' -f1)"
 		[ -f "$_h/sleep-\$1" ] && sleep "\$(cat "$_h/sleep-\$1")"
 		case "\$1" in
 		  nextest)
 		    env | grep '^SIPNAB_' | sort > "$_h/pool-env"
-		    mkdir -p "$_h/target/nextest/suite"
+		    mkdir -p "\$_ws/target/nextest/suite"
 		    _junit="$_h/canned-junit.xml"
 		    case " \$* " in *" -E "*) [ -f "$_h/canned-replay-junit.xml" ] && _junit="$_h/canned-replay-junit.xml" ;; esac
-		    cp "\$_junit" "$_h/target/nextest/suite/junit.xml"
+		    cp "\$_junit" "\$_ws/target/nextest/suite/junit.xml"
 		    exit 0 ;;
 		  test)
 		    if [ -f "$_h/fail-test" ]; then
@@ -199,7 +206,7 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		[ -f "$_h/fail-\$1" ] && exit 1
 		for _a in "\$@"; do
 		  case "\$_a" in
-		    metadata) echo '{"target_directory": "$_h/target", "workspace_root": "$_h"}'; exit 0 ;;
+		    metadata) echo "{\"target_directory\": \"$_h/target\", \"workspace_root\": \"\$_ws\"}"; exit 0 ;;
 		  esac
 		done
 		exit 0

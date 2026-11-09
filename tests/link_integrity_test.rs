@@ -1731,7 +1731,10 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // new sections from the startup section (+2), rtpengine.md links the
     // budget section (+1), and internals/testing.md links both (+2). Counted
     // against origin/main 5dc6e5f5b.
-    const EXPECTED_WIKI_LINKS: usize = 2487;
+    // 2487 -> 2491 (RELEASE-FAST C): internals/build-ci-release.md links its
+    // new "Advertising a release" section twice and uprobe-capture.md's
+    // ledger once, and internals/uprobe-capture.md links that section (+4).
+    const EXPECTED_WIKI_LINKS: usize = 2491;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

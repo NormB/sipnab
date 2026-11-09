@@ -475,9 +475,13 @@ Each successful run gets a row here.
 | 0.5.238 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-08 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.239 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-09 | attached, 2 libraries plus `tcp_sendmsg` |
 
-That requirement makes this file part of every phase-two release commit.
+That requirement makes this file part of every advertisement commit, the commit
+a release pull request carries for the release before it
+(see [Advertising a release](build-ci-release.md#advertising-a-release)).
 
-- The classifier deciding what a phase-two commit looks like has to agree with that.
+- The classifiers deciding what an advertisement commit looks like have to agree with that.
+  `classify_advertise` in [`release-only.py`](../../scripts/release-only.py) requires exactly one new row,
+  for the advertised release, and one that attached.
 - It did not, on 0.5.164:
   - the verification had run;
   - the row sat in the commit;
