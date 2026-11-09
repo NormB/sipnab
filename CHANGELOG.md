@@ -10,6 +10,10 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **The published binary size ceiling is 25 MB, up from 24 MB.** The x86_64-musl binary measured 24,905,920 bytes at 0.5.241, 259,904 bytes under 24 MB: less than the 262,144-byte margin the release gates keep. Of its 135,168-byte growth over 0.5.240, the rmcp 3.9.0 security bump is the largest named part at 43,694 bytes. The homepage, [Install](docs/install.md) and the build page name the new figure.
+
 ### Fixed
 
 - **A `git push` that only deletes refs no longer runs the pre-push gates (PRE-PUSH-ON-DELETE).** Every gate judged the commits being sent or the working tree, and a deletion sends neither, so `git push origin --delete` ran them for about 25 minutes and deleted nothing when one failed. A push that also sends a ref still runs every gate.

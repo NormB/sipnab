@@ -316,7 +316,19 @@ macos_floor_intel = "10.12"
 # seven releases. 24 MB leaves 1,284,736 bytes over that 23,881,088-byte
 # figure.
 #
-binary_size_ceiling_mb = "24"
+# 24 -> 25 after 0.5.241, before 0.5.242. 0.5.241 measured 24,905,920 bytes,
+# 259,904 under 24 MB, under the 262,144-byte THIN_MARGIN. It grew 135,168
+# bytes over 0.5.240. The published symbol files attribute 115,693 of them:
+# rmcp 43,694 (the 3.8.0 to 3.9.0 security bump, RUSTSEC-2026-0462, whose new
+# model types are monomorphized into the binary), sipnab::mcp 24,780, and core
+# 15,863. rmcp already builds with default-features off, and the profile
+# already sets lto, codegen-units = 1 and strip; panic = "unwind" is what
+# crash::contain needs (#534), and a lower opt-level would trade away packet
+# throughput. So nothing reasonable shrinks it. From 0.5.235 to 0.5.241 the
+# binary grew 1,094,464 bytes over six releases. 25 MB is 26,214,400 bytes and
+# leaves 1,308,480 over the 0.5.241 measurement.
+#
+binary_size_ceiling_mb = "25"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were
