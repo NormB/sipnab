@@ -945,6 +945,162 @@ else
 	sed 's/^/    /' "$TMP/out.log"
 fi
 
+# -- The tag gate accepts the merged PR head on the same tree ----------------
+# SCENARIO: TAG-GATE-WAITS-FOR-MERGE-CI
+#   Given a tagged merge commit whose own CI is still running, and a merged
+#     pull request head with the same tree whose required checks and workflow
+#     runs all succeeded, then the push is ALLOWED and the output names the
+#     pull request; the runs on the merge commit are not awaited.
+#   Given a red run on the merge commit, a head on another tree, a red run on
+#     the head, or an origin that is not GitHub, then the commit's own runs
+#     decide and the push is BLOCKED while they run.
+#   Code scanning: under a head proof "no analysis of the merge commit yet"
+#     (exit 2) passes and says why; open alerts (exit 1) still block; without
+#     a head proof exit 2 still blocks.
+#
+# A fuller gh stub than make_gh: it answers the API paths tag-push-proof.py
+# asks, per commit. The head is a sha nothing resolves locally; the gate asks
+# GitHub about it, never git.
+PRHEAD=8888888888888888888888888888888888888888
+make_gh_world() { # $1 own runs json, $2 head runs json, $3 head tree
+	printf '%s' "$1" >"$TMP/gh-own.json"
+	printf '%s' "$2" >"$TMP/gh-head.json"
+	printf '%s\n' "$3" >"$TMP/gh-head-tree"
+	cat >"$STUB_BIN/gh" <<EOF_GH_WORLD
+#!/bin/sh
+if [ "\$1" = run ]; then
+	c=""; prev=""
+	for a in "\$@"; do [ "\$prev" = --commit ] && c=\$a; prev=\$a; done
+	if [ "\$c" = "$TAGGED" ]; then cat "$TMP/gh-own.json"; else cat "$TMP/gh-head.json"; fi
+	exit 0
+fi
+[ "\$1" = api ] || exit 1
+case "\$2" in
+repos/*/rules/branches/main) printf 'CI success\nlicense/cla\n' ;;
+repos/*/branches/main/protection) echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
+repos/*/compare/*) echo behind ;;
+repos/*/commits/$TAGGED/pulls) printf '701\t%s\n' "$PRHEAD" ;;
+repos/*/git/commits/$TAGGED) echo 6644a32b9 ;;
+repos/*/git/commits/$PRHEAD) cat "$TMP/gh-head-tree" ;;
+repos/*/commits/$PRHEAD/check-runs*) printf 'CI success\t2026-11-08T13:50:00Z\tsuccess\n' ;;
+repos/*/commits/$PRHEAD/status) printf 'license/cla\tsuccess\n' ;;
+repos/*/commits/$TAGGED/check-runs*) printf 'CI success\t~\tin_progress\n' ;;
+repos/*/commits/$TAGGED/status) : ;;
+*) exit 1 ;;
+esac
+EOF_GH_WORLD
+	chmod +x "$STUB_BIN/gh"
+}
+head_run() { # $1 = id, $2 = name, $3 = status, $4 = conclusion (json literal)
+	printf '{"databaseId":%s,"headSha":"%s","status":"%s","conclusion":%s,"name":"%s","event":"pull_request"}' \
+		"$1" "$PRHEAD" "$3" "$4" "$2"
+}
+code_scanning_says() { # $1 = the exit status the crate's code-scanning-clean.py gives
+	printf 'import sys\nprint("code scanning: stub")\nsys.exit(%s)\n' "$1" >"$CRATE/scripts/code-scanning-clean.py"
+}
+OWN_PENDING="[$(run_json 1 CI in_progress null),$(run_json 2 Quality queued null)]"
+HEAD_GREEN="[$(head_run 11 CI completed '"success"'),$(head_run 12 Quality completed '"success"')]"
+( cd "$CRATE" && git remote add origin https://github.com/example/sipnab.git )
+
+# PROVEN BY THE HEAD: merge commit CI still running -> allowed, names PR #701.
+make_gh_world "$OWN_PENDING" "$HEAD_GREEN" 6644a32b9
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	if blocked_for "merge of PR #701, whose head 888888888" && blocked_for "not awaited"; then
+		ok "tag gate accepts the merged PR head on the same tree while the merge commit's CI runs"
+	else
+		bad "tag gate allowed the tag but did not name the PR head proof"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+else
+	bad "tag gate BLOCKED a merge commit its same-tree PR head had proved"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# NO ANALYSIS OF THE MERGE COMMIT YET, under a head proof -> allowed, says why.
+code_scanning_says 2
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE" && blocked_for "OK (proven on the PR head)"; then
+	ok "code scanning's no-analysis-yet passes under a head proof and says the head judged the tree"
+else
+	bad "code scanning's no-analysis-yet did not pass under a head proof"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# OPEN ALERTS, under a head proof -> still blocked.
+code_scanning_says 1
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED open code-scanning alerts because a PR head was green"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Fix the code, wait for CodeQL"; then
+	bad "open alerts under a head proof: blocked, but not by the code-scanning gate"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "open code-scanning alerts still block under a head proof"
+fi
+
+# NO ANALYSIS YET, and no head proof (the commit's own runs are green) -> blocked.
+code_scanning_says 2
+make_gh_world "[$(run_json 1 CI completed '"success"')]" "$HEAD_GREEN" 6644a32b9
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a tag with no code-scanning analysis and no head proof"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Fix the code, wait for CodeQL"; then
+	bad "no analysis and no head proof: blocked, but not by the code-scanning gate"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "code scanning's no-analysis-yet still blocks without a head proof"
+fi
+code_scanning_says 0
+
+# RED ON THE MERGE COMMIT ITSELF -> the head does not override it.
+make_gh_world "[$(run_json 1 CI completed '"failure"')]" "$HEAD_GREEN" 6644a32b9
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a merge commit with a failed run because its PR head was green"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on" || ! blocked_for "red on"; then
+	bad "red merge commit with a green head: blocked, but not by the CI gate's red verdict"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a failed run on the merge commit refuses the PR head proof"
+fi
+
+# THE HEAD IS ON ANOTHER TREE -> the merge commit's pending runs decide.
+make_gh_world "$OWN_PENDING" "$HEAD_GREEN" 0000aaaa1
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a pending merge commit on a head with another tree"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on" || ! blocked_for "no merged pull request head has the tree"; then
+	bad "head on another tree: blocked, but not saying why the head was not used"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a PR head on another tree proves nothing and the pending merge commit blocks"
+fi
+
+# THE HEAD'S CI RUN FAILED (the macOS leg, which CI success leaves out).
+make_gh_world "$OWN_PENDING" "[$(head_run 11 CI completed '"failure"'),$(head_run 12 Quality completed '"success"')]" 6644a32b9
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a head whose CI run failed although its required checks passed"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "Push blocked: CI on" || ! blocked_for "workflow runs not_green"; then
+	bad "head with a failed CI run: blocked, but not naming the head's runs"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a failed workflow run on the PR head refuses its proof"
+fi
+
+# ORIGIN IS NOT GITHUB -> no head is looked for; the pending runs decide.
+( cd "$CRATE" && git remote set-url origin https://gitlab.example.com/example/sipnab.git )
+make_gh_world "$OWN_PENDING" "$HEAD_GREEN" 6644a32b9
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "tag gate ALLOWED a pending commit whose origin is not GitHub"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "PR head proof not used: origin is not a GitHub repository"; then
+	bad "origin not GitHub: blocked, but not saying why the head was not used"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "an origin that is not GitHub gets no head proof"
+fi
+( cd "$CRATE" && git remote remove origin )
+
 # -- Corpus gate --------------------------------------------------------------
 # SCENARIO: the conditional corpus gate
 #   Given a crate with corpus test targets and a readable SIPNAB_CORPUS,

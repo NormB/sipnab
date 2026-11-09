@@ -17,6 +17,7 @@ entry that carries them.
 
 ### Fixed
 
+- **A release tag no longer waits for CI's run of the merge commit.** The pre-push tag gate refused the v0.5.238 tag for 37 minutes, until every workflow run on the merge commit 26bfa26a8 finished, although release PR #701's head had passed every check on the same tree. The gate now also accepts a merged pull request's head when GitHub reports the same tree for it and the tagged commit, the tagged commit is on `main`, every required check and every workflow run on the head succeeded, and no run on the tagged commit concluded red. It prints the pull request and head it used. Anything it cannot read means the tagged commit's own runs decide, as before. `scripts/tag-push-proof.py --tag-ci <commit>` prints the verdict.
 - **A signal no longer cuts an rtpengine control question short.** A read on a control socket with a receive timeout fails with `EINTR` when a handled signal reaches its thread, even with `SA_RESTART`, and sipnab handles `SIGUSR1` and `SIGHUP`. The control client treated that as no answer, so an engine that was about to answer read as one that `did not answer`, after any part of its timeout. Under the library test suite, 1.5 s waits ended after 0.7 s with `Interrupted system call (os error 4)`. The client now reads again with what is left of the timeout, over UDP and over a stream.
 
 ## [0.5.239] - 2026-11-08
