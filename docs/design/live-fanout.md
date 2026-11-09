@@ -79,13 +79,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:7553`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7553)),
+- `cores_ignored_warning` ([`bootstrap.rs:7764`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7764)),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:9611`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L9611)), which asserts the warning
+  ([`bootstrap.rs:9635`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L9635)), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -240,7 +240,7 @@ from a headless run — `start_servers` is called with `metrics: true` and the
 real meter from [`batch.rs:1899-1917`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1899-L1917).
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
-`capture_health` MCP response ([`server.rs:9390`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9390)),
+`capture_health` MCP response ([`server.rs:9428`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9428)),
 carries `packets`, `kernel_dropped`, `interface_dropped`, `invalid_timestamps`
 and `undecodable_frames` — and **no queue depth and no backpressure count**. So
 the surface built for production field reports

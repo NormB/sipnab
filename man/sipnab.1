@@ -1344,7 +1344,7 @@ Judge the capture against the expectations in a suite file (\fBsipnab.expect.tom
 Ask the relay named by \fB\-\-rtpengine\-control\fR which calls it is holding right now, print their Call\-IDs, and exit.
 .TP
 \fB\-\-relay\-holdings\-max\fR \fICALLS\fR
-The most Call\-IDs \fB\-\-relay\-holdings\fR asks the relay for (default 32). When the relay returns that many it may hold more, and the answer says so (\fBtruncated\fR under \fB\-\-json\fR).
+The most held calls one relay ask covers (default 32): the Call\-IDs \fB\-\-relay\-holdings\fR asks for, the held calls \fB\-\-relay\-sessions\fR queries, and the default for the TUI sessions view and for REST and MCP asks that name no \fBmax_calls\fR.
 .TP
 \fB\-\-relay\-sessions\fR
 Ask the relay named by \fB\-\-rtpengine\-control\fR which calls it holds and, for each, whether media reaches it each way; print the answer and exit.

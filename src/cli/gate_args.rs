@@ -55,18 +55,21 @@ pub struct GateArgs {
     #[arg(help_heading = "Queries", long, requires = "rtpengine_control")]
     pub relay_holdings: bool,
 
-    /// The most Call-IDs `--relay-holdings` asks the relay for (default 32).
-    /// When the relay returns that many it may hold more, and the answer
-    /// says so (`truncated` under `--json`).
+    /// The most held calls one relay ask covers (default 32): the Call-IDs
+    /// `--relay-holdings` asks for, the held calls `--relay-sessions`
+    /// queries, and the default for the TUI sessions view and for REST and
+    /// MCP asks that name no `max_calls`.
     ///
-    /// The relay's own `list` limit, REST's `max_calls`. rtpengine answers
-    /// over UDP, and a large limit may not fit in one datagram. Also the
-    /// most held calls `--relay-sessions` queries.
+    /// The relay's own `list` limit. When the relay returns that many it may
+    /// hold more, and the answer says so (`truncated` under `--json`).
+    /// Above 1024 it is lowered to 1024 on every surface, and the answer
+    /// says so; 0 exits 2. rtpengine answers a `list` above 32 over its
+    /// stream transport. Needs `--rtpengine-control`.
     #[arg(
         help_heading = "Queries",
         long,
         value_name = "CALLS",
-        value_parser = clap::value_parser!(u32).range(1..),
+        value_parser = crate::relay::scan_cap::parse_cap_flag,
     )]
     pub relay_holdings_max: Option<u32>,
 
@@ -106,15 +109,15 @@ fn parse_expect(s: &str) -> Result<crate::output::query::expectations::SuiteFile
 }
 
 impl GateArgs {
-    /// Whether `--relay-holdings-max` was given with neither flag it bounds.
+    /// Whether `--relay-holdings-max` was given on a run that names no relay
+    /// to ask.
     ///
-    /// Checked by `Cli::validate` rather than by clap: a clap group of
-    /// `--relay-holdings` and `--relay-sessions` counts a boolean flag as
-    /// present through its implicit `false` default, so `requires` on such a
-    /// group never fires.
+    /// The cap sets every surface's default (the one-shot flags, the TUI
+    /// sessions view, REST and MCP), so a relay is all it needs. Checked by
+    /// `Cli::validate`, which knows whether `--rtpengine-control` was given.
     #[must_use]
-    pub const fn listing_cap_without_a_listing(&self) -> bool {
-        self.relay_holdings_max.is_some() && !self.relay_holdings && !self.relay_sessions
+    pub const fn listing_cap_without_a_relay(&self, relay_named: bool) -> bool {
+        self.relay_holdings_max.is_some() && !relay_named
     }
 
     /// The one-shot declarations of this group's flags, active or not.
@@ -150,10 +153,11 @@ impl GateArgs {
 mod tests {
     use super::*;
 
-    /// The cap needs a flag it bounds: alone it is refused, beside either
-    /// flag it is not, and absent it asks for nothing.
+    /// The cap needs a relay to ask: without one it is refused, with one it
+    /// is not, whatever else is on the command line, and absent it asks for
+    /// nothing.
     #[test]
-    fn the_listing_cap_needs_a_flag_it_bounds() {
+    fn the_listing_cap_needs_a_relay_to_ask() {
         let with = |holdings: bool, sessions: bool, max: Option<u32>| GateArgs {
             relay_holdings: holdings,
             relay_sessions: sessions,
@@ -161,19 +165,19 @@ mod tests {
             ..GateArgs::default()
         };
         assert!(
-            with(false, false, Some(2)).listing_cap_without_a_listing(),
-            "a cap with nothing to bound is refused"
+            with(false, false, Some(2)).listing_cap_without_a_relay(false),
+            "a cap with no relay to ask is refused"
         );
         assert!(
-            !with(true, false, Some(2)).listing_cap_without_a_listing(),
-            "--relay-holdings takes the cap"
+            with(true, true, Some(2)).listing_cap_without_a_relay(false),
+            "a one-shot flag does not stand in for the relay"
         );
         assert!(
-            !with(false, true, Some(2)).listing_cap_without_a_listing(),
-            "--relay-sessions takes the cap"
+            !with(false, false, Some(2)).listing_cap_without_a_relay(true),
+            "with a relay, the cap is every surface's default"
         );
         assert!(
-            !with(false, false, None).listing_cap_without_a_listing(),
+            !with(false, false, None).listing_cap_without_a_relay(false),
             "no cap, nothing to refuse"
         );
     }

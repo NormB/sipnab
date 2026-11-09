@@ -504,6 +504,12 @@ asks each call of the first engine whose list names it. `held by several
 engines` marks a Call-ID that two engines list. A run that sees the SIP asks
 each call of the engine its SDP names, as below.
 
+The cap bounds the scan across every engine together. Each engine gets one
+`list` that asks for the cap, and the scan sends at most the cap of `query`
+in all. The cap is `--relay-holdings-max`, or `max_calls` on REST and MCP,
+32 by default and at most 1024. See
+[Choose how many held calls one ask covers](relay-statistics.md#choose-how-many-held-calls-one-ask-covers).
+
 ## Find a session left on the old engine
 
 After a re-INVITE moves a call, the new engine holds it, and the old engine

@@ -66,7 +66,7 @@ is now half true.** "Counted in `active_dialog_count`
 forever" was accurate at `3267b08` and is not at HEAD: `ACTIVE_IDLE_WINDOW`
 bounds that gauge to an hour since the dialog was last touched, so a stuck
 dialog ages out rather than growing with uptime. The other half stands — the
-call is still invisible to `active_call_count`, still mislabelled in every
+call is still invisible to `active_call_count`, still mislabeled in every
 report and filter, and still outside both fraud detectors.
 
 **What shipped.** A total transition table keyed on
@@ -189,7 +189,7 @@ them, at [`:438`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L4
 [`:485`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L485) and [`:494`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L494). A
 BYE-seeded dialog's responses carry `CSeq: n BYE`. So routing a BYE-seeded dialog
 into the INVITE machine gains the two request arms and **loses every response
-arm**. That is the backlog's *"leaves cells unmodelled rather than filled"*,
+arm**. That is the backlog's *"leaves cells unmodeled rather than filled"*,
 stated mechanically.
 
 The last narrowing's failing cell reproduces by construction rather than by
@@ -272,8 +272,8 @@ un-answer it.
 Three consequences, all of which make the change smaller than it looks:
 
 **`dialog.method` stays exactly as it is.** It remains the user-visible label and
-is not relabelled. The backlog records that the first narrowing already had this
-instinct — *"dispatch-only rather than relabelling the user-visible
+is not relabeled. The backlog records that the first narrowing already had this
+instinct — *"dispatch-only rather than relabeling the user-visible
 `dialog.method`"* — and it was right. What that narrowing was missing was moving
 the guards at the same time.
 
@@ -393,7 +393,7 @@ enum Arrival<'a> {
 fn transition(family: Family, arrival: &Arrival, state: &DialogState) -> Cell;
 ```
 
-A wildcard is exactly how a cell goes unmodelled — it is what `_ =>` at
+A wildcard is exactly how a cell goes unmodeled — it is what `_ =>` at
 [`dialog.rs:358`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L358) did, and what the `_ =>` family arm in
 `expected()` ([`:967`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L967)) does. Remove the wildcards and
 adding a `DialogState` variant or a `ResponseClass` variant becomes a compile
@@ -589,7 +589,7 @@ question is left standing rather than deleted so the reasoning survives.
   third bullet of [section 6, "What this does not fix"](#6-what-this-does-not-fix)
   turns this from a presentation choice into a correctness one: two
   fraud detectors gate on it, and leaving it alone leaves them off for the
-  population this change exists to fix. Relabelling is what the first of the five
+  population this change exists to fix. Relabeling is what the first of the five
   narrowings deliberately avoided, and the record does not say what it was
   avoiding — the diff was never committed. **Whoever picks this up has to decide
   this without that evidence.** A separate `family` field on `SipDialog` sidesteps

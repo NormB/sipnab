@@ -172,8 +172,17 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 	# The suite's own invocation also writes the SIPNAB_* variables it can see
 	# to pool-env: nextest and every test process inherit exactly that
 	# environment, so Scenario 1c reads from it what the suite was given.
+	#
+	# The workspace root the stub reports, and the target directory and JUnit
+	# report under it, are one per tree, under the harness and keyed on the
+	# tree's top level, as two worktrees have one each. One shared root let
+	# two hooks run at once in two worktrees race on one JUnit report:
+	# parallel-tests.py deletes the report (at <workspace root>/target/nextest)
+	# before each run, so one hook could delete the report the other hook's
+	# stub had just written (FLAKY-GATE-CACHE-CONCURRENT).
 	cat > "$_h/bin/cargo" <<-EOF
 		#!/bin/sh
+		_w="$_h/ws/\$(git rev-parse --show-toplevel 2>/dev/null | cksum | cut -d' ' -f1)"
 		if [ "\$1 \$2" = "nextest --version" ]; then
 		  [ -f "$_h/nextest-version" ] || exit 101
 		  echo "cargo-nextest \$(cat "$_h/nextest-version") (stub)"; exit 0
@@ -183,10 +192,10 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		case "\$1" in
 		  nextest)
 		    env | grep '^SIPNAB_' | sort > "$_h/pool-env"
-		    mkdir -p "$_h/target/nextest/suite"
+		    mkdir -p "\$_w/target/nextest/suite"
 		    _junit="$_h/canned-junit.xml"
 		    case " \$* " in *" -E "*) [ -f "$_h/canned-replay-junit.xml" ] && _junit="$_h/canned-replay-junit.xml" ;; esac
-		    cp "\$_junit" "$_h/target/nextest/suite/junit.xml"
+		    cp "\$_junit" "\$_w/target/nextest/suite/junit.xml"
 		    exit 0 ;;
 		  test)
 		    if [ -f "$_h/fail-test" ]; then
@@ -199,7 +208,7 @@ sandbox() { # sandbox <passed-per-binary...> ; echoes the sandbox dir
 		[ -f "$_h/fail-\$1" ] && exit 1
 		for _a in "\$@"; do
 		  case "\$_a" in
-		    metadata) echo '{"target_directory": "$_h/target", "workspace_root": "$_h"}'; exit 0 ;;
+		    metadata) echo "{\"target_directory\": \"\$_w/target\", \"workspace_root\": \"\$_w\"}"; exit 0 ;;
 		  esac
 		done
 		exit 0

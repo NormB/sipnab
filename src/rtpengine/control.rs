@@ -15,7 +15,8 @@
 //! media, tears a call down, fills a disk. sipnab has no business sending any
 //! of them, and RE7 says so in as many words.
 //!
-//! That is enforced by [`ReadOnlyCommand`] having only two variants rather
+//! That is enforced by [`ReadOnlyCommand`] having only three variants,
+//! `List`, `Statistics` and `Query`, none of which changes the relay, rather
 //! than by a rule somebody has to remember. There is no code path from this
 //! module that can express `delete`, because there is no value that means it.
 //! A reviewer checking "does sipnab ever tell a relay to do something" reads
@@ -1036,8 +1037,8 @@ mod tests {
 
     /// NOTHING this module can build changes the relay.
     ///
-    /// The guarantee is structural: `ReadOnlyCommand` has two variants and
-    /// neither is destructive, so there is no value meaning `delete`. This
+    /// The guarantee is structural: `ReadOnlyCommand` has three variants and
+    /// none is destructive, so there is no value meaning `delete`. This
     /// test is the tripwire for a future edit that adds one -- the match is
     /// exhaustive, so a new variant fails to compile here until somebody
     /// states what it is, which is a visible act in a diff rather than an
@@ -2819,6 +2820,7 @@ mod session_fixture_tests {
             scan: false,
             cap: 32,
             list_limit,
+            clamped: None,
         };
         let full = Recorded {
             list: "v-40calls-list-32",
@@ -2866,6 +2868,7 @@ mod session_fixture_tests {
             scan: false,
             cap: 32,
             list_limit: 1000,
+            clamped: None,
         };
         let seen = relay_sessions(&relay, &permit()?, &ask, &|_| true, &at);
         assert_eq!(

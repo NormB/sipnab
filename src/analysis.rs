@@ -539,7 +539,7 @@ impl FindingKind {
                 "Call failed 4xx",
                 "call",
                 "The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are \
-                 ordinary call outcomes — 486 Busy Here, 404 for a misdialled number, 480 for a \
+                 ordinary call outcomes — 486 Busy Here, 404 for a misdialed number, 480 for a \
                  phone that is off — so this is listed to be ruled out rather than acted on. The \
                  codes are named below; a run of 403 or 408 is not an ordinary outcome.",
             ),

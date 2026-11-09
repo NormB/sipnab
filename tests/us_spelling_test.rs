@@ -154,6 +154,22 @@ const NOT_SCANNED: &[(&str, &str)] = &[
          them; a gate cannot be its own violation. This file avoids needing \
          the same exemption by building its British fixtures at runtime",
     ),
+    // Published YANG revisions. A published revision is never edited
+    // (tests/yang_module_test.rs, RFC 7950 section 11): the spelling fix went
+    // into a new revision, 2026-11-08, which this scan reads. Named one by one
+    // so the next revision is scanned.
+    (
+        "yang/sipnab-diagnosis@2026-09-21.yang",
+        "a published YANG revision, never edited; its successors carry the fix",
+    ),
+    (
+        "yang/sipnab-diagnosis@2026-09-22.yang",
+        "a published YANG revision, never edited; its successors carry the fix",
+    ),
+    (
+        "yang/sipnab-diagnosis@2026-10-09.yang",
+        "a published YANG revision, never edited; its successors carry the fix",
+    ),
     (
         "tests/schemas/vcon-store-openapi.json",
         "vendored from vcon.store, kept byte-for-byte so the divergence tests \
@@ -202,6 +218,49 @@ const SUFFIXES: &[(&str, &str)] = &[
     ("yse", "yze"),
 ];
 
+/// Verbs ending in one `l` whose inflections US English writes with one `l`
+/// (`dialed`, `dialing`, `dialer`) and British English with two.
+///
+/// A stem table, not a word list: every prefixed and suffixed form of a stem
+/// is caught, which is the gap a prefixed doubled-l form of `dial` came through. Only verbs whose US
+/// form is single-l are here; `control`, `compel`, `excel`, `enroll` and
+/// `patrol` double in US English too and are deliberately absent.
+const SINGLE_L_STEMS: &[&str] = &[
+    "cancel", "channel", "dial", "equal", "fuel", "funnel", "initial", "jewel", "label", "level",
+    "marshal", "marvel", "model", "panel", "pedal", "quarrel", "rival", "shovel", "signal",
+    "spiral", "swivel", "total", "towel", "travel", "tunnel", "unravel",
+];
+
+/// The inflections that double the `l` in British English.
+const DOUBLED_L_SUFFIXES: &[&str] = &["ed", "ing", "ers", "er"];
+
+/// The doubled-l British form a word ends in, as `(stem, suffix)`.
+fn doubled_l(word: &str) -> Option<(&'static str, &'static str)> {
+    for stem in SINGLE_L_STEMS {
+        for suffix in DOUBLED_L_SUFFIXES {
+            if word
+                .strip_suffix(suffix)
+                .and_then(|rest| rest.strip_suffix('l'))
+                .is_some_and(|base| base.ends_with(stem))
+            {
+                return Some((stem, suffix));
+            }
+        }
+    }
+    None
+}
+
+/// Quoted values other systems define, removed before tokenizing.
+///
+/// GitHub Actions' `conclusion` is the doubled-l form of `cancel`, and the
+/// stubbed `gh run list` output in scripts/test-pre-push.sh and the cases in
+/// scripts/tests/test_tag_push_proof.py have to reproduce it verbatim. Quoted,
+/// so it matches the JSON value and not the word in a sentence. Built at
+/// runtime, like the fixtures.
+fn wire_contexts() -> Vec<String> {
+    vec![format!("\"{}\"", british_form("cance", "lled"))]
+}
+
 fn repo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -213,6 +272,9 @@ fn repo() -> PathBuf {
 fn british_words(text: &str) -> BTreeSet<String> {
     let exceptions: BTreeSet<&str> = NOT_A_SUFFIX.iter().copied().collect();
     let wire = wire_identifiers();
+    let text = wire_contexts().iter().fold(text.to_string(), |t, context| {
+        t.replace(context.as_str(), " ")
+    });
     let mut out = BTreeSet::new();
     // Tokens first, then words. A British spelling hides inside a snake_case
     // identifier -- a published key, a test name -- where a word-boundary match never fires, because `_` is a
@@ -237,6 +299,7 @@ fn british_words(text: &str) -> BTreeSet<String> {
                 if SUFFIXES
                     .iter()
                     .any(|(brit, _)| word.ends_with(brit) && word.len() >= brit.len() + 3)
+                    || doubled_l(&word).is_some()
                 {
                     out.insert(word);
                 }
@@ -275,6 +338,11 @@ fn us_form(word: &str) -> String {
         if let Some(stem) = word.strip_suffix(brit) {
             return format!("{stem}{us}");
         }
+    }
+    if let Some((_, suffix)) = doubled_l(word) {
+        // Drop the second `l`: the one just before the suffix.
+        let cut = word.len() - suffix.len() - 1;
+        return format!("{}{suffix}", &word[..cut]);
     }
     word.to_string()
 }
@@ -1104,4 +1172,93 @@ fn every_suffix_pair_actually_fires() -> Result<(), TestError> {
         );
     }
     Ok(())
+}
+
+// ── 4. the doubled-l class, by stem rather than by word ─────────────────
+//
+// Owed for `mis-` + `dial` + a doubled `l` + `ed` in `--analyze` output
+// (src/analysis.rs). The doubled-l class was covered only by the fixed list
+// in `docs_drift_test.rs`, which names a handful of whole words (the doubled
+// forms of `cancel`, `label`, `model`, `signal`, `travel`, `fuel`). A prefixed
+// or unlisted inflection matched no entry, and the morphology rule in this
+// file covered `-ise/-yse` only. The rule now also knows the stems whose
+// inflections US English writes with one `l`.
+
+/// A doubled-l inflection of a known stem is caught, prefixes included.
+#[test]
+fn a_doubled_l_inflection_is_caught_with_or_without_a_prefix() {
+    for (stem, suffix) in [
+        ("misdia", "lled"),
+        ("dia", "lling"),
+        ("redia", "lled"),
+        ("trave", "ller"),
+        ("mode", "llers"),
+        ("lev", "elled"),
+        ("tota", "lling"),
+        ("refue", "lled"),
+    ] {
+        let word = british_form(stem, suffix);
+        let found = british_words(&format!("a {word} number"));
+        assert!(found.contains(&word), "{word} was not caught: {found:?}");
+    }
+}
+
+/// The US single-l forms pass, and so do words whose double l is US too.
+#[test]
+fn single_l_forms_and_us_double_l_words_pass() {
+    let text = "a misdialed number was redialed; the traveler canceled the \
+                labeling, modeling and totaling; we called, installed, \
+                controlled, compelled, excelled, enrolled and filled it; a \
+                dialog for the dialer; cancellation is US English";
+    let found = british_words(text);
+    assert!(found.is_empty(), "US English was flagged: {found:?}");
+}
+
+/// The correction for the doubled-l class drops one `l`.
+#[test]
+fn the_doubled_l_correction_drops_one_l() {
+    for (stem, suffix, want) in [
+        ("misdia", "lled", "misdialed"),
+        ("cance", "lling", "canceling"),
+        ("trave", "llers", "travelers"),
+    ] {
+        assert_eq!(
+            us_form(&british_form(stem, suffix)),
+            want,
+            "the correction drops one l from {stem}{suffix}"
+        );
+    }
+}
+
+/// The stem table holds only US base forms ending in one `l`, so it adds no
+/// British spelling to this file and every stem can fire.
+#[test]
+fn every_single_l_stem_ends_in_one_l_and_fires() {
+    for stem in SINGLE_L_STEMS {
+        assert!(
+            stem.ends_with('l') && !stem.ends_with("ll"),
+            "{stem} is not a single-l stem"
+        );
+        let word = british_form(stem, "led");
+        assert!(
+            british_words(&word).contains(&word),
+            "the stem {stem} never fires"
+        );
+    }
+}
+
+/// GitHub's quoted `conclusion` value is exempt; the bare word is not.
+#[test]
+fn the_quoted_github_conclusion_is_exempt_and_the_bare_word_is_not() {
+    let word = british_form("cance", "lled");
+    let json = format!("{{\"conclusion\": \"{word}\"}}");
+    assert!(
+        british_words(&json).is_empty(),
+        "the wire value was flagged"
+    );
+    let prose = format!("the run was {word} by the operator");
+    assert!(
+        british_words(&prose).contains(&word),
+        "the bare word passed: the exemption is wider than the contract"
+    );
 }

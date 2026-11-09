@@ -348,6 +348,31 @@ def test_a_run_killed_mid_way_leaves_no_stamp_for_what_it_did_not_finish(pc):
     assert rc == 0 and any(c.startswith("nextest run") for c in pc.cargo()), out
 
 
+def test_two_worktrees_get_target_directories_of_their_own(pc):
+    """The cargo stub names one workspace root and target directory per tree,
+    as two worktrees have. With one shared directory, one hook's parallel-tests.py
+    could delete the JUnit report the other hook's stub had just written,
+    before the other read it, and that hook failed with "wrote no report"."""
+    second = pc.tree.parent / (pc.tree.name + "-wt2")
+    git(pc.tree, "worktree", "add", "-q", str(second))
+    try:
+        dirs = []
+        for t in (pc.tree, second):
+            out = subprocess.run(
+                ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+                cwd=t, env=pc.env(), capture_output=True, text=True, check=True,
+            ).stdout
+            meta = json.loads(out)
+            dirs.append((meta["workspace_root"], meta["target_directory"]))
+        assert dirs[0][0] != dirs[1][0], f"both trees share one workspace root: {dirs}"
+        assert dirs[0][1] != dirs[1][1], f"both trees share one target directory: {dirs}"
+        assert all(d.startswith(str(pc.harness)) for pair in dirs for d in pair), (
+            f"the directories stay outside the trees: {dirs}"
+        )
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
 def test_concurrent_runs_in_two_worktrees_share_valid_stamps_in_the_common_dir(pc):
     second = pc.tree.parent / (pc.tree.name + "-wt2")
     git(pc.tree, "worktree", "add", "-q", str(second))
@@ -377,6 +402,51 @@ def test_concurrent_runs_in_two_worktrees_share_valid_stamps_in_the_common_dir(p
             assert "PASSED before on these exact inputs" in out.stdout, out.stdout
     finally:
         git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def stub_cargo(pc, tree, *args):
+    return subprocess.run([str(pc.harness / "bin/cargo"), *args], cwd=tree, env=pc.env(),
+                          capture_output=True, text=True, check=True).stdout
+
+
+def stub_report(pc, tree):
+    """Where parallel-tests.py looks for the suite report, as the stub tells it."""
+    meta = json.loads(stub_cargo(pc, tree, "metadata", "--format-version", "1"))
+    return pathlib.Path(meta["workspace_root"]) / "target/nextest/suite/junit.xml"
+
+
+# FLAKY-GATE-CACHE-CONCURRENT. The concurrent test above failed on CI now and
+# then (main d73a692ea run 42527410714; #711 run 42570996667) with the second
+# worktree's tests step failing. The cause was the stub, not the hook: it gave
+# every tree one workspace_root, the shared harness, so both runs'
+# parallel-tests.py unlinked, wrote and read ONE junit.xml, and one run's
+# unlink could delete the report the other had just written. Real cargo gives
+# each worktree its own workspace root. These three hold the stub to that.
+
+def test_two_trees_sharing_one_harness_get_separate_suite_reports(pc):
+    second = add_worktree(pc)
+    try:
+        assert stub_report(pc, pc.tree) != stub_report(pc, second)
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def test_a_suite_run_in_one_tree_writes_no_report_where_another_tree_reads(pc):
+    second = add_worktree(pc)
+    try:
+        stub_report(pc, second).unlink(missing_ok=True)
+        stub_cargo(pc, pc.tree, "nextest", "run", "--profile", "suite")
+        assert stub_report(pc, pc.tree).is_file()
+        assert not stub_report(pc, second).exists()
+    finally:
+        git(pc.tree, "worktree", "remove", "--force", str(second))
+
+
+def test_one_tree_reads_the_report_its_own_run_wrote(pc):
+    assert stub_report(pc, pc.tree) == stub_report(pc, pc.tree)
+    stub_report(pc, pc.tree).unlink(missing_ok=True)
+    stub_cargo(pc, pc.tree, "nextest", "run", "--profile", "suite")
+    assert stub_report(pc, pc.tree).read_text().startswith("<")
 
 
 def add_worktree(pc, name="wt2"):

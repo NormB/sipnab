@@ -1112,7 +1112,6 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
               "telephone-event"
             ],
             "direction": "answer",
-            "event": "MediaAnchorChange",
             "media_addr": "10.0.2.15",
             "media_port": 27942,
             "mode": "sendonly",

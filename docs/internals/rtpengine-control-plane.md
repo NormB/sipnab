@@ -645,7 +645,7 @@ Reaching further also moves the binding constraint from the enumeration to the t
   - `offer`, `answer`, `delete` and `start recording` are the other half of the `ng` protocol.
   - Every one of them changes a production box: it moves media, tears a call down, or fills a disk.
   - None of them is reachable.
-    - `ReadOnlyCommand` has two variants and `ReadOnlyRelay` has two methods.
+    - `ReadOnlyCommand` has three variants (`List`, `Statistics`, `Query`), and every method of `ReadOnlyRelay` sends one of them or none.
     - So no value in this codebase means `delete`.
   - A reviewer asking "does sipnab ever tell a relay to do something" reads one enum instead of auditing every call site.
   - An edit that wants to send one has to add a variant.

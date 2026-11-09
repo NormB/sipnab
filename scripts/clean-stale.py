@@ -6,7 +6,7 @@
 
 CLAUDE.md has said "delete every temp file in the SAME turn" for months. On
 2026-09-01 this checkout held 21 stray `.git/*.log` files written across
-sessions, three abandoned worktrees totalling 136 GB, and a 1.6 TB `target/`
+sessions, three abandoned worktrees totaling 136 GB, and a 1.6 TB `target/`
 -- 44% of a disk that genuinely fills up. The instruction was right and
 nothing enforced it, so it was followed exactly as well as an unenforced
 instruction ever is.

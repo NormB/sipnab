@@ -107,7 +107,7 @@ pub fn spawn_snapshot(
     access: TuiRelayAccess,
     selected: Option<String>,
     scan: bool,
-    cap: u32,
+    cap: crate::relay::scan_cap::ScanCap,
     sip_ended: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 ) -> Receiver<RelaySessions> {
     spawn_snapshot_for(
@@ -128,7 +128,7 @@ pub fn spawn_snapshot_for(
     access: TuiRelayAccess,
     selected: Option<String>,
     scan: bool,
-    cap: u32,
+    cap: crate::relay::scan_cap::ScanCap,
     sip_ended: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     sdp_of: crate::relay::engines::SdpLookup,
 ) -> Receiver<RelaySessions> {
@@ -136,12 +136,7 @@ pub fn spawn_snapshot_for(
     let spawned = std::thread::Builder::new()
         .name("relay-sessions".to_owned())
         .spawn(move || {
-            let ask = SessionsAsk {
-                selected: selected.as_deref(),
-                scan,
-                cap,
-                list_limit: cap,
-            };
+            let ask = SessionsAsk::capped(selected.as_deref(), scan, cap);
             let sdp = |c: &str| sdp_of(c);
             let routed = access.routing.as_deref().map(|routing| Routed {
                 routing,
@@ -215,23 +210,18 @@ pub fn compose_call(cache: &SessionsCache, call_id: &str) -> String {
     }
 }
 
-/// Which way across a relay socket a capture count is for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Way {
-    /// Packets the capture saw sent TO the relay socket.
-    ToRelay,
-    /// Packets the capture saw sent FROM it.
-    FromRelay,
-}
+pub use crate::output::query::relay_capture::{SocketCapture, Way};
 
 /// The per-socket comparison: what the relay counted on each socket beside
 /// what this capture saw sent to and from it. Two tiers side by side, never
-/// subtracted. `captured` answers for a socket and a way, `None` when the
-/// capture holds no stream there.
+/// subtracted. `captured` answers for a socket and a way, scoped to this
+/// call by [`crate::output::query::relay_capture::captured_on`]: `linked` is
+/// `None` when the capture holds no stream of this call there, and an
+/// `unlinked` count is shown apart, labeled, never added to it.
 #[must_use]
 pub fn compose_socket_compare(
     call: &SessionCall,
-    captured: &dyn Fn(&str, u16, Way) -> Option<u64>,
+    captured: &dyn Fn(&str, u16, Way) -> SocketCapture,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
@@ -246,6 +236,15 @@ pub fn compose_socket_compare(
     );
     let shown =
         |v: Option<u64>, absent: &str| v.map_or_else(|| absent.to_string(), |n| n.to_string());
+    // The capture's count for this call, and apart from it what streams
+    // linked to no dialog carried on the socket: never added together.
+    let measured = |c: SocketCapture| {
+        let mut text = format!("sipnab_measured {}", shown(c.linked, "not captured"));
+        if let Some(n) = c.unlinked {
+            let _ = write!(text, "  not linked to a dialog {n}");
+        }
+        text
+    };
     for tag in &call.tags {
         for s in &tag.sockets {
             let _ = writeln!(
@@ -255,21 +254,15 @@ pub fn compose_socket_compare(
             );
             let _ = writeln!(
                 out,
-                "  in:  relay_reported {}  sipnab_measured {}",
+                "  in:  relay_reported {}  {}",
                 shown(s.ingress.packets, "not reported"),
-                shown(
-                    captured(&s.local_address, s.local_port, Way::ToRelay),
-                    "not captured"
-                ),
+                measured(captured(&s.local_address, s.local_port, Way::ToRelay)),
             );
             let _ = writeln!(
                 out,
-                "  out: relay_reported {}  sipnab_measured {}",
+                "  out: relay_reported {}  {}",
                 shown(s.egress.packets, "not reported"),
-                shown(
-                    captured(&s.local_address, s.local_port, Way::FromRelay),
-                    "not captured"
-                ),
+                measured(captured(&s.local_address, s.local_port, Way::FromRelay)),
             );
         }
     }
@@ -335,6 +328,7 @@ mod tests {
             permit: TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?,
             addr: "192.0.2.10:22222".parse()?,
             routing: None,
+            holdings_max: None,
         })
     }
 
@@ -378,7 +372,7 @@ mod tests {
             access(Arc::clone(&relay))?,
             None,
             false,
-            32,
+            crate::relay::scan_cap::scan_cap(None, None)?,
             Arc::new(|_: &str| false),
         );
         assert!(
@@ -414,6 +408,7 @@ mod tests {
             truncated: (reach == "ok").then_some(false),
             scan: false,
             cap: 32,
+            cap_clamped: None,
             calls: Vec::new(),
             not_queried: ids
                 .iter()
@@ -518,8 +513,11 @@ mod tests {
             engine: None,
         };
         let captured = |_: &str, port: u16, way: Way| match (port, way) {
-            (30000, Way::ToRelay) => Some(2249),
-            _ => None,
+            (30000, Way::ToRelay) => SocketCapture {
+                linked: Some(2249),
+                unlinked: None,
+            },
+            _ => SocketCapture::default(),
         };
         let text = compose_socket_compare(&call, &captured);
         assert!(
@@ -588,6 +586,7 @@ mod tests {
                 false,
                 connect,
             ))),
+            holdings_max: None,
         };
         let sdp_of: crate::relay::engines::SdpLookup = Arc::new(|_: &str| {
             vec![SdpSighting {
@@ -602,7 +601,7 @@ mod tests {
             access,
             Some("m-1@example.invalid".to_string()),
             false,
-            32,
+            crate::relay::scan_cap::scan_cap(None, None)?,
             Arc::new(|_: &str| false),
             sdp_of,
         );

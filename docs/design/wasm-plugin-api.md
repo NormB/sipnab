@@ -237,7 +237,7 @@ Each step is independently useful; the sequence stops cleanly after any of them.
 
 The worked example lives at [`crates/sipnab-plugin-example`](https://github.com/NormB/sipnab/tree/main/crates/sipnab-plugin-example) and detects **short
 answered calls** — a call picked up and torn down within five seconds, which is
-a bad route, a codec the far end rejects, or wangiri-style fraud dialling. It is
+a bad route, a codec the far end rejects, or wangiri-style fraud dialing. It is
 deliberately not a built-in: whether a three-second call is a problem depends
 entirely on the traffic, which is the shape a plugin is for.
 

@@ -3607,7 +3607,7 @@ Capture analysis: 2 finding(s) across 5 dialog(s), 0 stream(s), 23 frame(s) read
      - Call-ID unavail-4e5f60@192.0.2.50 | 192.0.2.50:5060 -> 192.0.2.60 | 2023-11-14 22:13:32.000 UTC | status_code=503 | Service Unavailable
 
 2. [MINOR] Call failed 4xx — 2 call(s)
-   The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy Here, 404 for a misdialled number, 480 for a phone that is off — so this is listed to be ruled out rather than acted on. The codes are named below; a run of 403 or 408 is not an ordinary outcome.
+   The call ended on a request failure (RFC 3261 §21.4). Many 4xx codes are ordinary call outcomes — 486 Busy Here, 404 for a misdialed number, 480 for a phone that is off — so this is listed to be ruled out rather than acted on. The codes are named below; a run of 403 or 408 is not an ordinary outcome.
    Evidence:
      - Call-ID busy-3a2b1c@192.0.2.30 | 192.0.2.30:5060 -> 192.0.2.40 | 2023-11-14 22:13:23.000 UTC | status_code=486 | Busy Here
      - Call-ID notfound-1b2c3d@203.0.113.30 | 203.0.113.30:5060 -> 203.0.113.40 | 2023-11-14 22:13:29.000 UTC | status_code=404 | Not Found
@@ -9919,7 +9919,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" \
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json
 ```
 
 It is the same analysis in a different encoding. The YANG section of
@@ -12311,7 +12311,10 @@ It closes the gap a passive decoder cannot.
   response.
 
 These are the same holdings the MCP `query_relay` tool lists. `?max_calls=<N>`
-caps the list, and the relay marks the rest `truncated`.
+caps the list, and the relay marks the rest `truncated`. Without it the cap is
+`--relay-holdings-max`, or 32. Above 1024, sipnab asks for 1024 and the body
+carries `cap_clamped` with the number asked for and the ceiling.
+`max_calls=0` is a 400 problem and sends nothing.
 
 ```bash
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/relay/holdings?max_calls=500" | jq .
@@ -12350,7 +12353,11 @@ values a program keys on.
 What the live relay holds, and whether media reaches it each way.
 
 - It sends one `list`, then one `query` for `?call_id=<CALL-ID>` and, with
-  `?scan=true`, one per held call, up to 32 in all.
+  `?scan=true`, one per held call, up to the cap in all: `?max_calls=<N>`,
+  or `--relay-holdings-max`, or 32. Above 1024, sipnab asks for 1024 and
+  the body carries `cap_clamped`. `max_calls=0` is a 400 problem and sends
+  nothing. See
+  [Choose how many held calls one ask covers](relay-statistics.md#choose-how-many-held-calls-one-ask-covers).
 - It TRANSMITS, so it sits behind `--api-allow-relay-query` on a live source,
   and reads `not_permitted`/`not_configured` otherwise.
 - Each party's RTP socket gets a `verdict` from the relay's own counters and
@@ -18714,6 +18721,10 @@ The row of a mid-call change names it:
 - media anchor moved,
 - or a transfer.
 
+Each change is relative to the same party's previous SDP. An answer that
+differs from its offer is not a change: the two parties' SDP describe two
+different endpoints.
+
 Open with `o` from the Call List.
 
 | Key | Action |
@@ -18835,10 +18846,10 @@ shows the view against a live relay.
 |-----|--------|
 | ? | Show the names the relay knows (what you can ask for) |
 | K | Compare the relay's per-call count against this capture's (per-call view only); in one call of the sessions view, set each relay socket's counts beside what this capture saw on it (press again to return) |
-| H | Open the relay sessions: each held call (up to 32) and whether media reaches the relay each way (press again to return to the counters) |
+| H | Open the relay sessions: each held call (up to `--relay-holdings-max`, 32 by default) and whether media reaches the relay each way (press again to return to the counters) |
 | Up / k, Down / j | Scroll; in the sessions list, move the cursor |
 | Enter | In the sessions list, open the call under the cursor: its directions and the relay's counters per socket |
-| a | In the sessions views, ask the relay about every held call once (up to 32) |
+| a | In the sessions views, ask the relay about every held call once (up to `--relay-holdings-max`, 32 by default) |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | Esc / S | Close; from one call of the sessions view, Esc returns to the list |
@@ -20020,7 +20031,7 @@ sipnab -d eth0,eth1 --multi-device --delta-time
 | `--bpf-file` | `<FILE>` | -- | 0.3.0 | Read the BPF capture filter from a file. It takes precedence over the positional filter and replaces `[capture] bpf_filter`, and like them it applies to `-I` capture files as well as live capture. Config: `[capture] bpf_filter` |
 | `--capture-tunnels` | `[<PORTS>]` | off | 0.5.80 | Also capture **all** traffic on the UDP tunnel ports, so SIP inside GTP-U, VXLAN or GENEVE reaches sipnab. Bare flag means `2152,4789,6081`; pass a list for non-standard ports (`--capture-tunnels=8472`). Off by default: it takes every packet on those ports, which on a mobile core is the entire user plane, because a BPF filter cannot reach the inner port behind a GTP-U extension-header chain. Ignored when you supply your own filter |
 | `-n`, `--count` | `<N>` | -- | 0.3.0 | Stop after receiving N packets (counts every packet received, including any a HEP listener later drops by allowlist, rate limit, or auth). At least 1: sipnab refuses `0` |
-| `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2`. At the deadline sipnab stops capturing and still reports what had already arrived: a TCP or TLS `--hep-listen` reads what its open connections hold, for up to 1 second, and the run reads on for up to 3 seconds for the capture to deliver it. 0.5.233 and earlier dropped it |
+| `--duration` | `<DURATION>` | -- | 0.3.0 | Stop after duration (e.g., `30s`, `5m`, `1h`). A bare number is seconds. Must be greater than zero: sipnab refuses `0`, `0s`, `0m` and `0h` with exit `2`. At the deadline sipnab stops capturing and still reports what had already arrived: a TCP or TLS `--hep-listen` reads what its open connections hold, for up to 1 second, and accepts the connections still waiting in its backlog, completing a TLS handshake under way, for up to 1 second more, and the run reads on for up to 3 seconds for the capture to deliver it. 0.5.233 and earlier dropped it, and 0.5.240 and earlier also lost every packet on a connection not yet accepted at the deadline |
 | `--autostop` | `<CONDITION>` | -- | 0.3.0 | Autostop condition: `filesize:N` stops after N MiB of output, `duration:N` after N seconds. `filesize` counts MiB, the unit `--split filesize` and `-B/--buffer` also use |
 | `--split` | `<CONDITION>` | -- | 0.3.0 | Split output files (e.g., `filesize:50` for 50 MiB chunks) |
 | `--split-keep` | `<N>` | -- | 0.5.100 | Keep only the newest N split files: sipnab **deletes** the older ones as `--split` rotates, turning `-O` into a ring buffer. Off unless you pass it, and off at `0`. sipnab deletes only the files the running process created and named, so a file left by an earlier run, another tool, or you survives however closely its name resembles a rotation. See [the warning above](#bound-split-and-multi-interface-captures) |
@@ -20678,7 +20689,7 @@ See the [Name Resolution](keybindings.md#name-resolution) keys for in-TUI naming
 
 | Flag | Value | Default | Since | Description |
 |------|-------|---------|-------|-------------|
-| `--strip-secrets` | `<OUTPUT>` | -- | 0.4.3 | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. sipnab never touches the input and writes the output atomically. Steps: [Share a capture without its keys](tls-capture.md#share-a-capture-without-its-keys). |
+| `--strip-secrets` | `<OUTPUT>` | -- | 0.4.3 | With `-I <input>`, write a copy of the input pcapng to `<OUTPUT>` with all Decryption Secrets Blocks removed (the `editcap --discard-all-secrets` analog), then exit. sipnab never touches the input and writes the output atomically. On success it prints one line on stderr, at any log level: the blocks it removed, counted by kind (`TLS Key Log`, `SSH Key Log`, `WireGuard Key Log` and the other Secrets Types the pcapng specification lists), and the path it wrote. Steps: [Share a capture without its keys](tls-capture.md#share-a-capture-without-its-keys). |
 | `--show-frame` | `<POINTER>` | -- | 0.5.77 | Resolve a frame pointer from a previous run, print that frame, then exit. Takes `<source>#<ordinal>` or `<source>#<ordinal>@<digest>` — the form the `frame` field of `--json-dialogs`, `--report`, the REST API and MCP carries. With a digest, sipnab checks the bytes against it and refuses a capture that changed after sipnab minted the pointer, writing nothing to stdout. Without one, sipnab prints the frame and marks it `UNVERIFIED`. |
 
 Note: with resolution active, sipnab saves name mappings into a pcapng Name
@@ -20822,9 +20833,9 @@ Multiple diagnostic flags combine with OR.
 - `sipnab -N -I capture.pcap --analyze --filter "state == 'Failed'" --no-cli-print` — narrow the DIALOG findings to failed calls. The capture-level evidence (undecodable frames, discarded ports, dropped records) is deliberately not narrowed, because it bounds every count in the report
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.findings[] | select(.severity == "critical")'` — the critical findings only, for a pipeline
 - `sipnab -N -I capture.pcap --json-analyze --no-cli-print | jq '.complete'` — whether the capture decoded fully. `false` means every count in the analysis is a floor, so do not trust a clean-looking verdict
-- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document. `yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json` validates it
+- `sipnab -N -I capture.pcap --yang-analyze --no-cli-print > analysis.json` — the capture analysis as a YANG instance document. `yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json` validates it
 - `sipnab -N -I capture.pcap --json-analyze --yang-analyze --no-cli-print` — both encodings of ONE analysis, one line each: the same findings, the same counts, the same `rank` order
-- `sipnab --print-yang-module > sipnab-diagnosis@2026-10-09.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950.html) gives it, for `yanglint` or `pyang`
+- `sipnab --print-yang-module > sipnab-diagnosis@2026-11-08.yang` — save the YANG module this build's RFC 7951 export validates against, under the file name [RFC 7950](https://www.rfc-editor.org/rfc/rfc7950.html) gives it, for `yanglint` or `pyang`
 - `sipnab --print-yang-module | pyang -f tree` — the shape of the capture analysis as a YANG tree: every node, its type, and which are lists
 - `sipnab -N -I capture.pcap --json-dialogs --no-cli-print --quiet | jq -c 'select(.state == "Failed")'` — one line per failed call, each carrying the code that failed it, instead of every message of every failed dialog
 - `sudo sipnab -d eth0 -N --json-dialogs --no-cli-print --line-buffer > calls.ndjson` — record one summary object per call from live traffic, flushed per line for a downstream collector
@@ -20897,7 +20908,7 @@ out the end-of-run summary on stderr.
 | `--find-in-files` | `<PATH>...` | | 0.5.231 | Find which capture files hold the dialogs the run's filter selects (`--filter`, a diagnostic alias, `--since`/`--until`). A directory stands for the capture files directly in it. Exits 0 when it read every file and 1 when it could not; with no filter it exits 2. `--json` prints the `sweep` the MCP tool `find_in_captures` reports |
 | `--expect` | `<FILE>` | | 0.5.231 | Judge the capture against the rules of an expectation suite (`sipnab.expect.toml`), print each rule's verdict, and exit with the suite's: `0` every rule that ran passed, `3` a rule failed, `2` no rule ran. A suite sipnab cannot read, or one holding a rule the evaluator refuses, exits 2 before sipnab reads the capture. `--json` prints the report the MCP tool `evaluate_expectations` returns. See [Fail a build on what a capture shows](expectations.md) |
 | `--relay-holdings` | -- | | 0.5.231 | Ask the relay named by `--rtpengine-control` which calls it holds right now, print their Call-IDs, and exit. Asking transmits one `list` request, so it needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. It runs before the capture opens and answers nothing else. Exits 0 with the list, and 1 when the relay did not answer (`unreachable`), declined (`refused`) or sent a reply sipnab cannot trust (`suspect`). `--json` prints the body of `GET /v1/relay/holdings`, those classifications included. See [Ask the relay which calls it holds](#ask-the-relay-which-calls-it-holds). Feature: `native`. How-to: [Ask a media relay about itself](relay-statistics.md#list-the-calls-the-relay-holds) |
-| `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most Call-IDs `--relay-holdings` asks the relay for, REST's `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Also the most held calls `--relay-sessions` queries. Needs `--relay-holdings` or `--relay-sessions`; `0` exits 2 |
+| `--relay-holdings-max` | `<CALLS>` | `32` | 0.5.231 | The most held calls one relay ask covers: the Call-IDs `--relay-holdings` asks for, the held calls `--relay-sessions` and the TUI sessions view query, and the default of REST and MCP asks that name no `max_calls`. When the relay returns that many it may hold more, and the answer says so (`truncated` under `--json`). Above 1024 every surface asks for 1024 instead, and the answer says so (`cap_clamped`). A `list` above 32 travels over TCP and needs rtpengine's `listen-tcp-ng`. Needs `--rtpengine-control`; `0` exits 2. How-to: [Choose how many held calls one ask covers](relay-statistics.md#choose-how-many-held-calls-one-ask-covers) |
 | `--relay-sessions` | -- | | 0.5.234 | Ask the relay named by `--rtpengine-control` which calls it holds and, for each, whether media reaches it each way; print the answer and exit. Sends one `list`, then one `query` per held call up to `--relay-holdings-max`. Each party's RTP socket gets a verdict from the relay's own counters and clock: `never_received`, `stalled` (no packet for more than 2 s while another socket of the call received one), `flowing` or `not_reported`. A call with an early media branch shows its counters with no verdict. Every value is `relay_reported`. Needs a live source (`-d` or `-L`): on `-I` it asks nothing and exits 2. Exits 0 with the answer and 1 when the relay did not answer its `list`. `--json` prints the body of `GET /v1/relay/sessions?scan=true`. See [Ask the relay whether media reaches it](#ask-the-relay-whether-media-reaches-it). Feature: `native`. How-to: [See whether media reaches the relay](relay-statistics.md#see-whether-media-reaches-the-relay) |
 | `--relay-sessions-call` | `<CALL-ID>` | | 0.5.234 | With `--relay-sessions`, ask about this Call-ID only: one `list` and one `query`, without querying the other held calls. REST's `call_id`. Needs `--relay-sessions` |
 | `--top` | `<N>` | `50` | 0.5.230 | How many rows `--count-by`, `--rates-by` or `--talkers` keeps, or `--compare-captures` keeps per dimension, or how many recent dialogs `--endpoint-ip` or `--endpoint-user` lists. One line sums or counts the rest, as `other_count` or `truncated` does under `--json`. Needs one of those flags; `0` exits 2 |
@@ -27219,13 +27230,21 @@ The forwarder's replace URL holds no `{uuid}`.
 
 **Exit code:** 2.
 
-### `--relay-holdings-max bounds --relay-holdings or --relay-sessions and needs one of them`
+### `--relay-holdings-max sets how many held calls a relay ask covers and needs --rtpengine-control`
 
-You gave `--relay-holdings-max` without either flag it bounds. It caps the Call-IDs `--relay-holdings` asks for and the held calls `--relay-sessions` queries, so alone it does nothing. sipnab asked the relay nothing.
+You gave `--relay-holdings-max` without `--rtpengine-control`. It sets how many held calls each relay ask covers: the Call-IDs `--relay-holdings` asks for, the calls `--relay-sessions` and the TUI sessions view query, and the default for REST and MCP asks. Without a relay to ask it does nothing. sipnab asked the relay nothing.
 
-**What to do:** Add `--relay-holdings` or `--relay-sessions`, or remove `--relay-holdings-max`.
+**What to do:** Add `--rtpengine-control <listen-ng address>`, or remove `--relay-holdings-max`.
 
 **Exit code:** 2.
+
+### `--relay-holdings-max: {e}`
+
+A `--relay-holdings` or `--relay-sessions` run received a cap of 0 that did not pass through the flag's parser, which refuses 0. `{e}` says the number of calls must be at least 1. sipnab asked the relay nothing and exits 1.
+
+**What to do:** Give `--relay-holdings-max` a number from 1 up. For a number above 1024, sipnab asks for 1024.
+
+**Exit code:** 1.
 
 ### `{uuid:?} is not a uuid`
 
@@ -33489,16 +33508,16 @@ To check it, save the module this sipnab writes against. Then hand both to
 `yanglint`:
 
 ```bash
-sipnab --print-yang-module > sipnab-diagnosis@2026-10-09.yang
+sipnab --print-yang-module > sipnab-diagnosis@2026-11-08.yang
 ```
 
 ```bash
-yanglint -t data sipnab-diagnosis@2026-10-09.yang analysis.json
+yanglint -t data sipnab-diagnosis@2026-11-08.yang analysis.json
 ```
 
 `--print-yang-module` prints the module this sipnab validates against. The
 repository commits the same file at
-[`yang/sipnab-diagnosis@2026-10-09.yang`](../yang/sipnab-diagnosis@2026-10-09.yang).
+[`yang/sipnab-diagnosis@2026-11-08.yang`](../yang/sipnab-diagnosis@2026-11-08.yang).
 
 The document has one member, `sipnab-diagnosis:capture-analysis`. It differs
 from the `--json-analyze` object only in how it writes the same facts:
@@ -40303,7 +40322,7 @@ links to its section on the bundle's page.
 | [`tfps_unban`](mcp-tools-tfps.md#tfps_unban) | [tfps](mcp-tools-tfps.md) | **Write, off by default.** Releases a source sipnab banned |
 | [`th_mappings`](mcp-tools-signaling.md#th_mappings) | [signaling](mcp-tools-signaling.md) | The OpenSIPS topology-hiding mappings held, one row each with its state and which legs sipnab captured, beside the event counts |
 | [`timeline`](mcp-tools-signaling.md#timeline) | [signaling](mcp-tools-signaling.md) | Call volume per fixed-width interval, so a gap or a spike is visible without reading every dialog |
-| [`top_talkers`](mcp-tools-security.md#top_talkers) | [security](mcp-tools-security.md) | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
+| [`top_talkers`](mcp-tools-security.md#top_talkers) | [security](mcp-tools-security.md) | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`triage_call`](mcp-tools-core.md#triage_call) | [core](mcp-tools-core.md) | First-pass verdict: signaling problem, media problem, both, or none, with evidence |
 | [`validate_filter`](mcp-tools-signaling.md#validate_filter) | [signaling](mcp-tools-signaling.md) | Whether a filter DSL expression parses, the parser's message when it does not, and how many dialogs it selects — with no rows |
 | [`validate_message`](mcp-tools-signaling.md#validate_message) | [signaling](mcp-tools-signaling.md) | Conformance findings for one message, read alone |
@@ -43580,9 +43599,13 @@ optional parameters.
 
 Every exchange carries `direction` (`offer` or `answer`), `codecs`,
 `media_addr`, `media_port`, `mode` (`sendrecv`, `sendonly`, `recvonly` or
-`inactive`), `timestamp`, and `event` — `null` unless sipnab classified the
-exchange, as with the `MediaAnchorChange` below. A call carrying no SDP answers
-with an empty `exchanges` array rather than an error.
+`inactive`), `timestamp`, and `event`. `event` is `null` unless the exchange
+changed something relative to the same party's previous SDP (`Hold`, `Resume`,
+`CodecChange`, `T38Switch` or `MediaAnchorChange`), or is a REFER (`Transfer`).
+sipnab compares an answer with the answering party's own earlier SDP, not with
+the offer, so the answer below records no event although its address differs from the
+offer's. A call carrying no SDP answers with an empty `exchanges` array rather
+than an error.
 
 ```jsonc
 // get_sdp_timeline { "call_id": "1-1966@10.0.2.20" }
@@ -43608,7 +43631,7 @@ with an empty `exchanges` array rather than an error.
         "telephone-event"
       ],
       "direction": "answer",
-      "event": "MediaAnchorChange",
+      "event": null,
       "media_addr": "10.0.2.15",
       "media_port": 27942,
       "mode": "sendonly",
@@ -45339,7 +45362,7 @@ the other bundles and finds any tool by name.
 
 | Tool | Parameters | Returns |
 |---|---|---|
-| [`top_talkers`](#top_talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialled prefixes, ranked, each share stated against the population behind it |
+| [`top_talkers`](#top_talkers) | `by`, `limit?`, `filter?`, `prefix_digits?` | The busiest IPs, user agents or dialed prefixes, ranked, each share stated against the population behind it |
 | [`describe_endpoint`](#describe_endpoint) | `ip?`, `user?`, `limit?` | Everything one participant did: dialogs by method and state, INVITE outcomes, REGISTER state, banners, streams, findings |
 | [`diagnose_registration`](#diagnose_registration) | `call_id` | Whether an endpoint registered, hit a rejection, is looping on auth, or got a short expiry |
 | [`evaluate_expectations`](#evaluate_expectations) | `rules?`, `rules_toml?`, `suppression_file?` | A pass/fail verdict per rule plus an exit code for a build. A rule whose population is empty fails rather than passing quietly |
@@ -45353,7 +45376,7 @@ Start here when you have a capture and no particular suspect. These answer "what
 
 ### `top_talkers`
 
-Ranks the busiest participants: IPs, user agents, or dialled prefixes.
+Ranks the busiest participants: IPs, user agents, or dialed prefixes.
 
 Use it to answer "who is busiest". `aggregate_dialogs` and `group_dialogs`
 group DIALOGS, which have two ends. `top_talkers` counts PARTICIPANTS, so it
@@ -45419,7 +45442,7 @@ in it, so a two-ended call adds to two rows — here both ends took part in all
 1334 dialogs and both read 100%. `total_matched` is the number that partitions:
 compare a row's `dialogs` against it rather than against the other rows.
 `by: "prefix"` is the exception and does partition, because sipnab credits one
-bucket per dialog and a call has one dialled number.
+bucket per dialog and a call has one dialed number.
 
 sipnab orders rows by `dialogs`, then by `messages`, then by `key`, so the
 order is the same on every run over one capture. `key` arrives fenced for
@@ -46660,7 +46683,7 @@ may be somebody's laptop now.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id?` | string? | One Call-ID to ask the relay about. | **Switches modes** — the tool enumerates what the relay holds. |
-| `max_calls?` | u32? | Enumeration and sessions. A cap on the Call-IDs the relay returns, and on the calls a sessions scan queries. | The relay's own default; 32 for sessions. |
+| `max_calls?` | u32? | Enumeration and sessions. A cap on the Call-IDs the relay returns, and on the calls a sessions scan queries, the selected `call_id` included. 1 to 1024. Above 1024, sipnab asks for 1024 and the answer carries `cap_clamped`. sipnab refuses 0 with `invalid_params`. A query about one `call_id` ignores it. | The operator's `--relay-holdings-max`, or 32. |
 | `sessions?` | bool? | `true` returns the sessions snapshot: `list`, then `query` for `call_id` and, with `scan`, for the held calls, each direction with a verdict. | The tool answers as before. |
 | `scan?` | bool? | With `sessions`, `true` queries every held call too, up to `max_calls`. | The tool asks about `call_id` alone. |
 
@@ -46672,6 +46695,12 @@ one UDP datagram, and sipnab reports a truncated answer rather than padding it.
 Omit `call_id` to enumerate. `truncated` reports that the relay held more than
 it returned, because "the relay holds these 32 calls" and "the relay returned
 the first 32 of an unknown number" are different statements.
+
+`max_calls` follows the rule every surface follows, in
+[Choose how many held calls one ask covers](relay-statistics.md#choose-how-many-held-calls-one-ask-covers).
+sipnab answers a request above 1024 for 1024, never refuses it, and says so:
+`"cap_clamped": {"requested": 100000, "ceiling": 1024}` beside the
+enumeration's `call_ids`, or inside `sessions` for a sessions answer.
 
 When the relay gives no usable answer, the tool reports one of three classes,
 the same ones `--relay-holdings` and `GET /v1/relay/holdings` report:
@@ -49050,7 +49079,6 @@ writes from [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/si
               "telephone-event"
             ],
             "direction": "answer",
-            "event": "MediaAnchorChange",
             "media_addr": "10.0.2.15",
             "media_port": 27942,
             "mode": "sendonly",
@@ -52098,11 +52126,22 @@ sipnab -N -I sample-call.pcap --sandbox required --report --no-cli-print
 ```
 
 ```text
-WARN sipnab::app::bootstrap: path sandbox NOT active: this kernel has no Landlock (needs 5.13 or newer). The capture is running unsandboxed; `--sandbox required` refuses instead of continuing.
-`--sandbox required` was given and no path sandbox is in force: this kernel has no Landlock (needs 5.13 or newer). Refusing to capture. Use `--sandbox best-effort` to capture without one.
+WARN sipnab::app::bootstrap: path sandbox NOT active: this kernel (6.8.12-rt-tegra) has no Landlock: it was built without Landlock support (CONFIG_SECURITY_LANDLOCK). The capture is running unsandboxed; `--sandbox required` refuses instead of continuing.
+`--sandbox required` was given and no path sandbox is in force: this kernel (6.8.12-rt-tegra) has no Landlock: it was built without Landlock support (CONFIG_SECURITY_LANDLOCK). Refusing to capture. Use `--sandbox best-effort` to capture without one.
 ```
 
-That kernel was 6.8 built without `CONFIG_SECURITY_LANDLOCK`. Check yours:
+Rerun on 2026-11-08 on the same host (Linux 6.8.12-rt-tegra). The reason
+depends on the running kernel's release, from `uname`:
+
+| The version query returns | Release | The reason says |
+|---|---|---|
+| `ENOSYS` | older than 5.13 | `this kernel (<release>) has no Landlock (needs 5.13 or newer)` |
+| `ENOSYS` | 5.13 or newer | `this kernel (<release>) has no Landlock: it was built without Landlock support (CONFIG_SECURITY_LANDLOCK)`: a kernel upgrade does not help; a kernel built with that option does |
+| `ENOSYS` | unreadable | both causes, and that sipnab could not read the release |
+| `EOPNOTSUPP` | any | `Landlock is compiled in but disabled; add it to the kernel's lsm= list to enable it` |
+
+Before that change the text said `needs 5.13 or newer` for every `ENOSYS`,
+which on this 6.8 kernel was wrong. Check yours:
 
 ```bash
 cat /sys/kernel/security/lsm
@@ -52129,32 +52168,50 @@ Without a list, `enforce` refuses to start, with exit `1`:
 ```
 
 `scripts/derive-seccomp-allowlist.sh <sipnab> <interface>`, run as root, runs
-sipnab in sixteen shapes under `--seccomp log`, streams the kernel log, and
-says whether the set of calls stopped growing. It reads the records from the
-kernel log, so it needs a host where no audit daemon takes them.
+sipnab in sixteen shapes under `--seccomp log`, streams the log the records go
+to, and says whether the set of calls stopped growing.
 
-On this host an audit daemon was running, and the script found nothing:
-
-```text
-NO RECORDS: nothing in this log is a seccomp audit record.
-  Either the filter never installed, or the log was collected
-  after the run rather than streamed during it.
-```
-
-The records were in the audit log instead, where `--seccomp log` says to look:
+Where the records go depends on the host, and the script finds out the same way
+you would:
 
 ```bash
 sudo auditctl -s
 ```
 
+- A non-zero `pid` means an audit daemon holds the audit socket. The kernel hands it the
+  records, and they land in its log (`log_file` in `/etc/audit/auditd.conf`,
+  `/var/log/audit/audit.log` by default) as `type=SECCOMP` lines. The script
+  follows that file with `tail -F` and prints
+  `Records go to the audit daemon; following /var/log/audit/audit.log.`
+- A `pid` of 0, or no `auditctl`, means no daemon. The records are in the
+  kernel log as `audit: type=1326` lines, and the script follows
+  `dmesg --follow`, with `kernel.printk_ratelimit` set to 0 for the run and
+  restored after it.
+
+Set `SIPNAB_DERIVE_AUDIT_LOG` to read another file on the audit path.
+
+To look at the records yourself on a host with a daemon:
+
 ```bash
 sudo ausearch -m SECCOMP -ts recent
 ```
 
-A non-zero `pid` from `auditctl -s` means a daemon takes the records. A
-single `--report` run over the sample capture left 5,896 records there, naming
-13 distinct system calls. Not run for this page: an enforcing filter, because
-the script derived no allowlist here.
+A single `--report` run over the sample capture on 2026-11-03 left 5,896
+records there, naming 13 distinct system calls. Not run for this page: the
+collector as root on this host after the change on 2026-11-08 that made it
+read the audit log, nor an enforcing filter. `seccomp_derivation_test` drives
+the source choice and the parsing of audit-log records with synthetic input.
+
+The script refuses a run that lost records. On the kernel log that is a
+`callbacks suppressed` line. On the audit path it is a rise in the `lost`
+counter of `auditctl -s`, which the script reads before and after each shape:
+
+```text
+LOST: the audit subsystem lost 12 record(s) during the run.
+  A derivation that misses a call yields an allowlist that kills
+  the process it was built for. Raise the backlog (auditctl -b
+  65536), check that auditctl -r is 0, and run it again.
+```
 
 ## When something does not work
 
@@ -52164,8 +52221,11 @@ the script derived no allowlist here.
 | `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | The user does not exist on this host. With `--chroot`, 0.5.233 and earlier also printed this when the directory held no `etc/passwd` naming the user | Create the user, or name another with `--user`. On 0.5.233 or earlier, upgrade, or add the user's entries to the directory |
 | `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
 | A root run reading files stops before it reads any with exit `2`, and the message names the hard open-file limit ([quoted in full](#read-capture-files-only-root-can-read)) | The set needs one descriptor per file plus 64, more than the hard open-file limit allows | Raise `ulimit -Hn` or `LimitNOFILE=`, or read fewer files per run |
-| `--sandbox required` refuses | No Landlock in this kernel | `best-effort`, or a kernel with Landlock |
+| `--sandbox required` refuses, `needs 5.13 or newer` | The kernel predates Landlock | `best-effort`, or a 5.13 or newer kernel with Landlock |
+| `--sandbox required` refuses, `built without Landlock support (CONFIG_SECURITY_LANDLOCK)` | The kernel is new enough, and its build left Landlock out | `best-effort`, or a kernel built with `CONFIG_SECURITY_LANDLOCK=y` and `landlock` in `lsm=` |
 | `--seccomp enforce` refuses | No `SIPNAB_SECCOMP_ALLOWLIST`, or one it cannot read | Derive a list on this host |
+| `derive-seccomp-allowlist.sh` prints `NO RECORDS` | The filter never installed, or the records went to a log the script did not follow | Check `sudo auditctl -s`: with a non-zero `pid`, the records are in the audit log, which the script follows; name another file with `SIPNAB_DERIVE_AUDIT_LOG` |
+| `derive-seccomp-allowlist.sh` exits 66, `cannot be read` | An audit daemon holds the audit socket and its log is not at the path auditd.conf names | Set `SIPNAB_DERIVE_AUDIT_LOG` to the log's path |
 
 [Privilege](cli-reference.md#privilege) and [`[privilege]`](config-reference.md#privilege)
 list every flag and key. The [threat model](threat-model.md) says what each
@@ -52467,6 +52527,36 @@ The start of the run names the transport, as in `HEP listener started on
   they work over UDP only.
 - TLS proves the path is private, not who the sender is: sipnab asks senders
   for no certificate. Keep `--hep-allow`, a key, or both.
+
+### What a TCP or TLS listener keeps when the run stops
+
+A stream listener stops at `--duration`, at `--count`, or on a signal. Each
+keeps a different share of what senders had sent:
+
+- **`--duration`** keeps what reached sipnab before the deadline. The listener
+  reads what its open connections hold, for up to 1 second each. It also
+  accepts the connections still waiting in its backlog, for up to 1 second, and completes a TLS handshake under way, for up to 1 second, so a
+  sender that connected just before the deadline is not lost. The run then
+  reads on for up to 3 seconds for the listener to deliver it. A sender that
+  goes on sending cannot hold the stop open past these limits.
+- **`--count N`** keeps exactly N packets, however many connections send at
+  once. When the run reaches the count, the listener closes every connection
+  still open and delivers nothing more from it.
+- **SIGTERM or SIGINT** stops at once. What is still in a socket, or in a
+  connection not yet accepted, is not reported.
+
+To check a `--duration` run, compare the count the sender reports with the
+listener's last line, `HEP listener on 198.51.100.1:9062 finished: N packets
+received`, and with `--report`. If the numbers differ:
+
+- A sender that keeps sending after the deadline: what it sends after it is
+  not part of the run.
+- A run stopped by a signal: use `--duration` or `--count` for a run whose
+  count you compare.
+- 0.5.240 and earlier lost every packet on a connection not yet accepted at
+  the deadline, and a listener in a `--count` run over several connections
+  could take one packet more than N for each further connection, which its
+  `finished` line counted.
 
 ### OpenSIPS over TCP and TLS
 
@@ -59984,7 +60074,8 @@ figure to read carefully.
 - Receiving everything and reporting 99% loss means the sequence space jumped.
   It does not mean audio vanished.
 
-The SDP timeline for the same call says what jumped it:
+The SDP timeline for the same call, as a sipnab release with an SDP timeline
+defect printed it:
 
 ```bash
 sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
@@ -60002,11 +60093,24 @@ sipnab -N -I /var/captures --input-name 'trunk.pcap[0-9]' --portrange 1-65535 \
 {"timestamp":"2026-07-31T15:44:34.406111+00:00","direction":"answer","event":"MediaAnchorChange","media_addr":"198.51.100.12","media_port":34450}
 ```
 
-Four `MediaAnchorChange` events inside four seconds. The stream's first packet
-lands 20 ms after the third of them.
+These events are not evidence that the relay moved the media. That reading
+appeared here before and is withdrawn.
 
-- The relay re-anchored the media while the call was answering.
-- The sequence discontinuity belongs to that hand-off, not to the network.
+- The four `MediaAnchorChange` lines on answers alternate between the same two
+  addresses, 203.0.113.148:26408 and 198.51.100.12:34450. They came from a
+  timeline defect, since fixed: the timeline compared each answer with the
+  exchange before it, which was another party's SDP or another leg's copy,
+  instead of with the same party's previous SDP.
+- The `MediaAnchorChange` on the second offer came from the same comparison:
+  the timeline compared the second offer (192.0.2.20) with the first
+  (198.51.100.27),
+  whichever party or leg each came from.
+- The timeline now compares each exchange with the previous SDP from the same
+  party (dialog tag and signaling address).
+- The command was not run again against this capture after the fix. The output
+  above is the output from before the fix, and this page does not say what the
+  fixed timeline prints for this call.
+- The cause of the sequence discontinuity is not established on this page.
 
 Jitter behaves the same way. Ask the ring for every stream whose aggregate
 jitter passes three seconds. Print the worst interval beside it:
@@ -67633,8 +67737,9 @@ Call-ID
 - sipnab sends one `list` request, prints the answer and exits 0. It reads no
   packet.
 - The relay returns at most 32 Call-IDs unless you raise the limit with
-  `--relay-holdings-max <CALLS>`. When it returns as many as you asked for,
-  the answer says the relay may hold more.
+  `--relay-holdings-max <CALLS>`, up to 1024. When it returns as many as you
+  asked for, the answer says the relay may hold more. See
+  [Choose how many held calls one ask covers](#choose-how-many-held-calls-one-ask-covers).
 - `--json` prints the body `GET /v1/relay/holdings` returns, with
   `"truncated"` true or false.
 
@@ -67679,8 +67784,8 @@ sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions 2
 
 `-L 127.0.0.1:0` is a HEP listener that receives nothing. It is enough to
 make the run live, so it needs no privileges. sipnab sends one `list`, then
-one `query` per held call, up to `--relay-holdings-max` (32 by default),
-prints the answer and exits 0:
+one `query` per held call, up to `--relay-holdings-max` (32 by default, at
+most 1024), prints the answer and exits 0:
 
 ```text
 Sessions of relay (rtpengine at 192.0.2.11:22222), asked 2026-11-04T16:01:54.067925771+00:00 (relay_reported)
@@ -67831,8 +67936,9 @@ sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 \
   --mcp --mcp-transport http --mcp-bind 127.0.0.1:18732 --mcp-allow-relay-query
 ```
 
-`GET /v1/relay/sessions` takes `call_id` (one call to query) and `scan=true`
-(every held call, up to 32). Without `scan`, sipnab asks only `list` and
+`GET /v1/relay/sessions` takes `call_id` (one call to query), `scan=true`
+(every held call, up to the cap) and `max_calls` (the cap, or without it
+`--relay-holdings-max`, or 32). Without `scan`, sipnab asks only `list` and
 `call_id`:
 
 ```bash
@@ -67944,11 +68050,12 @@ Open the relay view with `S`, then press `H`:
   every `--relay-stats-interval` seconds, or every 2 s without it
   (`DEFAULT_REFRESH_SECS` (2) in [`src/tui/relay_sessions.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/relay_sessions.rs)). It asks
   nothing once you close it.
-- `a` asks about every held call once, up to 32. Up and Down move the
-  cursor, and Enter opens that call's directions and socket table.
+- `a` asks about every held call once, up to `--relay-holdings-max` (32 by
+  default). Up and Down move the cursor, and Enter opens that call's
+  directions and socket table.
 - In one call's view, `K` sets each relay socket's counts beside what this
-  capture saw on it, two tiers named and never subtracted. Captured on the
-  harness bridge, starting partway through the call:
+  capture saw on it for that call, two tiers named and never subtracted.
+  Captured on the harness bridge, starting partway through the call:
 
 ```text
 Call sg2-tui-1-121@192.0.2.21: relay sockets beside this capture
@@ -67963,8 +68070,16 @@ relay_reported is what the relay counted; sipnab_measured is what this capture s
 
 The relay counts from the start of the call and the capture from when it
 started, so the two differ. `not captured` means this capture has no
-stream to or from that socket. On a run that captures no media, such as
-`-L`, every socket reads `not captured`.
+stream of this call to or from that socket. On a run that captures no
+media, such as `-L`, every socket reads `not captured`.
+
+`sipnab_measured` counts only the streams sipnab linked to this Call-ID.
+rtpengine gives a port to a new call once an old call has released it, so
+in a long capture one relay socket can have carried several calls. The count
+leaves out streams linked to another Call-ID. `K` shows streams on the socket
+that sipnab linked to no dialog after the count, apart from it and never
+added to it, as `not linked to a dialog N`: nothing ties them to this call, and
+they can belong to an earlier call on the same port.
 
 ### Check that it worked
 
@@ -67999,8 +68114,62 @@ stream to or from that socket. On a run that captures no media, such as
   verdict.
 - **A held call reads `not queried`.** The scan stops at the cap, 32 by
   default, the selected call included. Raise it with
-  `--relay-holdings-max`, or ask about that call with
+  `--relay-holdings-max` or `max_calls`, or ask about that call with
   `--relay-sessions-call`.
+- **`Asked for 5000 calls; the ceiling is 1024, so at most 1024 were asked
+  for.`** (`cap_clamped` under `--json`, REST and MCP.) The cap you named
+  is above the ceiling. sipnab asked for 1024 and answered. Ask about the
+  calls you need by Call-ID.
+- **`max_calls: the number of calls must be at least 1`.** A REST 400 or an
+  MCP `invalid_params` error for `max_calls=0`. sipnab sent nothing.
+- **`K` shows `not linked to a dialog N` after the count.** The capture
+  holds streams on that relay socket that sipnab linked to no dialog. They
+  are not counted for this call. A stream links to a dialog when sipnab sees
+  the SDP that names its address, or asks the relay about the stream.
+
+### Choose how many held calls one ask covers
+
+One number bounds every relay ask about the held calls: the Call-IDs a
+`list` asks for, and the calls a sessions scan queries, the selected call
+included. A scan costs the relay one `list` and one `query` per call it
+covers, so this number is what one ask costs it. The same rule applies to
+`--relay-holdings`, `--relay-sessions`, the TUI sessions view, `GET
+/v1/relay/holdings`, `GET /v1/relay/sessions` and the MCP `query_relay`
+tool:
+
+| You give | The cap |
+|---|---|
+| nothing | 32 |
+| `--relay-holdings-max N` | `N`, for every surface of the run |
+| `max_calls=N` on REST or MCP | `N`, for that ask |
+| a number above 1024, either way | 1024, and the answer says so |
+| `0`, either way | refused, and sipnab sends nothing |
+
+Prerequisites: `--rtpengine-control` on the command line, as for every ask on
+this page. sipnab refuses `--relay-holdings-max` without it. sipnab sends a
+`list` above 32 over TCP to the same address, because the answer may not fit
+in one UDP datagram, so a cap above 32 needs rtpengine's `listen-tcp-ng` on
+that address. Without it the `list` fails and the answer reads
+`unreachable`.
+
+To raise the TUI's and the servers' default to 200:
+
+```bash
+sudo sipnab -d eth0 --rtpengine-control 192.0.2.11:22222 \
+  --api 127.0.0.1:18731 --api-allow-relay-query --relay-holdings-max 200
+```
+
+To ask for more than that in one REST request:
+
+```bash
+curl -s "http://127.0.0.1:18731/v1/relay/sessions?scan=true&max_calls=500" | jq '{cap, cap_clamped}'
+```
+
+Check that it worked: the answer's `cap` is the number you gave, and its
+first status line says `queried N of M`, with `N` at most the cap. A cap
+of 5000 reads `"cap": 1024` with `"cap_clamped": {"requested": 5000,
+"ceiling": 1024}`, and the text answer says `the ceiling is 1024`. The
+troubleshooting list above covers the refusals.
 
 ## Compare the relay's count with your capture
 
@@ -68778,6 +68947,12 @@ That is the start of the answer. Each call's socket table follows.
 asks each call of the first engine whose list names it. `held by several
 engines` marks a Call-ID that two engines list. A run that sees the SIP asks
 each call of the engine its SDP names, as below.
+
+The cap bounds the scan across every engine together. Each engine gets one
+`list` that asks for the cap, and the scan sends at most the cap of `query`
+in all. The cap is `--relay-holdings-max`, or `max_calls` on REST and MCP,
+32 by default and at most 1024. See
+[Choose how many held calls one ask covers](relay-statistics.md#choose-how-many-held-calls-one-ask-covers).
 
 ## Find a session left on the old engine
 
@@ -75690,7 +75865,7 @@ inside five seconds. Such a call means one of:
 
 - a bad route,
 - a codec the far end rejected,
-- wangiri-style fraud dialling.
+- wangiri-style fraud dialing.
 
 It is deliberately not a built-in.
 
@@ -76490,7 +76665,16 @@ them, and leaves the original as it was:
 sipnab --strip-secrets shareable.pcapng -I with-keys.pcapng
 ```
 
-It prints nothing and exits `0`. Check the copy by reading both:
+It exits `0` and prints one line on stderr, at any log level and with
+`--quiet`: how many Decryption Secrets Blocks it removed, counted by the kind of
+secret each held, and the path it wrote.
+
+```text
+Stripped 1 Decryption Secrets Block (1 TLS Key Log): with-keys.pcapng -> shareable.pcapng
+```
+
+A capture with no secrets says `0 Decryption Secrets Blocks (the input had
+none)` and still writes the copy. Check the copy by reading both:
 
 ```bash
 sipnab -N -I with-keys.pcapng --portrange 1-65535 --report --no-cli-print
@@ -79772,6 +79956,7 @@ Every command below ran against the current tree and left it unchanged.
 | [`tests/snapshots/`](../../tests/snapshots) — TUI buffers | `cargo insta test --features tui --accept` (needs `cargo install cargo-insta`) |
 | [`tests/cli/`](../../tests/cli) — trycmd goldens | `TRYCMD=overwrite cargo test --features full --test cli_goldens` |
 | [`tests/cli/cookbook/`](../../tests/cli/cookbook) — cookbook output goldens | `python3 scripts/check-cookbook.py --bless` writes a command-only case for each executed cookbook command that has none and deletes each case no command produces; then `TRYCMD=overwrite cargo test --features full --test cli_goldens` records the output. A case's file name is a hash of its command, and it is also the directory the command's output files go to. |
+| [`.config/implies-no-tui.txt`](../../.config/implies-no-tui.txt) — flags that imply `-N` | `SIPNAB_BLESS_IMPLIES_NO_TUI=1 cargo test --features full --lib -- the_implies_no_tui_file`. Generated from `Cli::implying_no_tui`, the table `Cli::normalize` reads; [`check-cookbook.py`](../../scripts/check-cookbook.py) reads it to tell a command that raises the TUI (exit-only, no golden) from a headless one such as `--count-by` without `-N` (pinned by a golden). |
 | [`tests/schemas/`](../../tests/schemas) — JSON Schemas | Hand-maintained; `json_schema_test` validates output against them. |
 | [`tests/pcap-samples/`](../../tests/pcap-samples) — capture fixtures | Thirteen are synthetic: `python3 tests/gen-pcap-samples.py` writes ten and `python3 tests/gen-link-type-samples.py` writes the three link-layer framings (DLT_LOOP, PPPoE inside Linux cooked capture v1 and v2); each script in check mode reports any of its own that have drifted from it. Nothing regenerates the rest; they stay as checked in. New ones arrive through [`harness/scripts/capture.sh`](../../harness/scripts/capture.sh) then `promote.sh`, which record the run in `PROVENANCE.md` beside them — `every_committed_capture_fixture_says_where_it_came_from` refuses a fixture with no entry, and the 36 that predate that rule sit on an enumerated list which only shrinks. |
 | [`tests/install-sh/`](../../tests/install-sh) — installer cases | Hand-maintained; exercised by the `install-sh` CI job. |
@@ -80916,7 +81101,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 149 `unsafe` blocks are libc FFI.
+- Most of this crate's 151 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -82347,9 +82532,10 @@ They are different facts, and conflating them broke the download page in product
 - On 0.5.61 the release commit went red in CI.
   The v0.5.61 tag went on the commit that fixed it, 31 minutes after the release commit.
 
-So `published_version` moves **after** a release finishes publishing, in its
-own commit.
-It never moves while cutting one.
+So the site advertises a release only **after** it finishes publishing,
+and never while cutting one.
+Since RELEASE-FAST C no commit has to land for that to happen.
+See [Advertising a release](#advertising-a-release) below.
 
 The same split applies to the docs.
 
@@ -82620,18 +82806,120 @@ It exists because the manual version failed once already.
 - The 0.5.61 release commit went red in `Features (tls)`.
 - The only thing between that and a published broken release was somebody happening to look.
 
-Once that gate passes, the hook prints the phase-two step.
+Once that gate passes, the hook prints what happens next and what still needs a person.
 
 - A tag is phase one: it builds the artifacts.
-- The release is not finished until `published_version` names it and a visitor is actually offered it.
-- Between the tag going up and the next commit, no suite runs.
-  So nothing is watching that window.
+- The release is not finished until a visitor is actually offered it.
+  `release.yml` now does that itself ([Advertising a release](#advertising-a-release)).
+- The eBPF load verification still needs a privileged host, and the prompt names it.
 
 It stayed a prompt rather than becoming an eleventh gate.
 
 - At tag time the site *should* still advertise the previous release.
   The new artifacts do not exist yet.
 - A refusal there would block the correct state.
+
+### Advertising a release
+
+Until 0.5.239 a release finished in a second pull request, "phase two".
+It moved `published_version`, `release_date` and the `docs/install.md` download markers,
+added the binary-ceiling line and the eBPF load row, and regenerated the mirrors.
+On 0.5.238 its hooks, its CI and the Pages wait cost about 70 of the 284 minutes.
+RELEASE-FAST C removes that pull request.
+
+**The site resolves the advertised release at deploy time.**
+
+- [`scripts/advertise-release.py`](../../scripts/advertise-release.py) holds the rule, in `newest_to_advertise`.
+  The site advertises the newest GitHub release that:
+  - has the tag `vX.Y.Z`, with `X.Y.Z` no newer than the crate version of the tree the deploy builds;
+  - is neither a draft nor a prerelease;
+  - is complete: GitHub lists every asset as uploaded, and its asset names, with the version written as `<v>`,
+    include every name of the newest older complete release.
+- `pages.yml` runs `advertise-release.py site` before `zola build`, on every deploy.
+  It moves `published_version`, `release_date` and the markers in its own checkout, then
+  regenerates the mirrors with `build-site-pages.py`.
+  So a push to `main` after a release cannot put the site back on the previous one.
+- A failed read of GitHub's releases fails the deploy rather than guessing.
+- A release that drops an asset is not advertised until the rule changes with it.
+- To withdraw a release from the site, mark it as a prerelease
+  (`gh release edit v<version> --prerelease`) and run `pages.yml` again.
+- The markers are [`scripts/download-markers.txt`](../../scripts/download-markers.txt).
+  The writer moves those lines, and `docs_current_version_markers_match_cargo` reads the same file,
+  so the two cannot disagree about which lines name the release to download.
+
+**`release.yml` advertises the release once its assets exist.**
+
+- The `advertise` job, after `release`, dispatches `pages.yml` on `main` with `expect` set to the tag's
+  version and waits for that run.
+  With `expect`, the deploy fails unless the resolved release is that one.
+  So an incomplete release fails the release run instead of leaving the site on the previous version.
+- It dispatches on `main` because the `github-pages` environment takes deployments from `main` only.
+- The `pages` concurrency group keeps one pending run.
+  A push to `main` while the dispatched run waits can supersede it, and the job then fails.
+  Re-run the job; the superseding deploy advertises the release too.
+- The homepage test count comes from the suite of the release commit itself.
+  `ci.yml` uploads `suite-output` on pull requests as well as pushes, and
+  [`fetch-ci-suite-output.py`](../../scripts/fetch-ci-suite-output.py) takes it from a merged pull
+  request's head when GitHub reports the same tree for the head and the deployed commit
+  (`read_pr_heads` in `tag-push-proof.py`, the tag gate's rule).
+  The run of the deployed commit still decides once it has finished:
+  finished without the artifact means its suite failed, and no head stands in for it.
+  On 0.5.238 this wait was 39 minutes.
+
+**The records are artifacts, and the next release pull request commits them.**
+
+- The `records` job downloads the published x86_64-musl tarball and `SHA256SUMS.txt`, and
+  [`scripts/release-records.py`](../../scripts/release-records.py) `ceiling` checks the sha256 of the
+  tarball and measures the `sipnab` file in it.
+  It writes the binary-ceiling line, and the job uploads it as the run's `release-records` artifact.
+- The eBPF load verification stays a manual release step on the OpenSIPS VM (a privileged host with BTF),
+  run once the assets exist:
+
+  ```sh
+  sudo scripts/verify-bpf-load.sh <version>
+  ```
+
+  Write the ledger row it describes, in the format of the rows in
+  [`uprobe-capture.md`](uprobe-capture.md#testing-it), to a file for the next step.
+  The site no longer waits for it.
+  Without the row, the hooks refuse the next release pull request, because
+  `the_load_verification_record_names_the_published_release` requires a row for the
+  `published_version` its advertisement commit sets.
+  If the verifier rejects the object, withdraw the release from the site as above.
+- The next release pull request carries an **advertisement commit** before the version bump.
+  From a checkout of `main` with the tags fetched, for the previous release `<prev>`:
+
+  - Download the `release-records` artifact of the previous release's run:
+
+    ```sh
+    python3 scripts/release-records.py fetch --tag v<prev> --repo NormB/sipnab --dest .git/release-records
+    ```
+
+  - Write the records and the advertisement:
+
+    ```sh
+    python3 scripts/release-records.py write <prev> --ceiling-line .git/release-records/ceiling-line.txt --uprobe-row <row file>
+    ```
+
+  `write` adds both records, regenerates the internals mirror, and runs the same writer as `pages.yml`.
+  It refuses a version already recorded, a binary over the ceiling, a row that did not attach, and a
+  pending-growth line the new measurement includes.
+  Retire that line by hand, since it may wrap.
+- [`scripts/release-only.py`](../../scripts/release-only.py) `classify_advertise` recognizes that commit,
+  so the release pull request's hooks still run only the release gates.
+  The 0.5.239 phase-two commit 83bcb1083 is its fixture.
+- `the_site_advertises_the_newest_release_whose_assets_exist` holds the committed tree to it:
+  `published_version` is the newest release tag below the crate version, or the crate version
+  itself once a tag names it.
+
+**The release bumps the Homebrew tap through the GitHub API.**
+
+- The `tap` job runs [`scripts/homebrew-tap-push.py`](../../scripts/homebrew-tap-push.py)
+  with the `HOMEBREW_TAP_TOKEN` secret.
+- It creates the formula commit with the contents API on a branch of the tap, so GitHub signs it,
+  and moves the tap's `main` to it only when GitHub reports the commit verified, as a fast-forward.
+- Every bump made with `git push` before 0.5.241 carries no signature (HOMEBREW-TAP-UNSIGNED).
+  This change leaves the history of the tap as it is.
 
 A release is a pushed `v*` tag. `release.yml` then runs a matrix of eight builds:
 
@@ -84926,7 +85214,7 @@ Reaching further also moves the binding constraint from the enumeration to the t
   - `offer`, `answer`, `delete` and `start recording` are the other half of the `ng` protocol.
   - Every one of them changes a production box: it moves media, tears a call down, or fills a disk.
   - None of them is reachable.
-    - `ReadOnlyCommand` has two variants and `ReadOnlyRelay` has two methods.
+    - `ReadOnlyCommand` has three variants (`List`, `Statistics`, `Query`), and every method of `ReadOnlyRelay` sends one of them or none.
     - So no value in this codebase means `delete`.
   - A reviewer asking "does sipnab ever tell a relay to do something" reads one enum instead of auditing every call site.
   - An edit that wants to send one has to add a variant.
@@ -85563,9 +85851,13 @@ Each successful run gets a row here.
 | 0.5.239 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-09 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.240 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-09 | attached, 2 libraries plus `tcp_sendmsg` |
 
-That requirement makes this file part of every phase-two release commit.
+That requirement makes this file part of every advertisement commit, the commit
+a release pull request carries for the release before it
+(see [Advertising a release](build-ci-release.md#advertising-a-release)).
 
-- The classifier deciding what a phase-two commit looks like has to agree with that.
+- The classifiers deciding what an advertisement commit looks like have to agree with that.
+  `classify_advertise` in [`release-only.py`](../../scripts/release-only.py) requires exactly one new row,
+  for the advertised release, and one that attached.
 - It did not, on 0.5.164:
   - the verification had run;
   - the row sat in the commit;

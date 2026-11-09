@@ -945,7 +945,14 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // +3 (set_fd_budget's refusal, the failed soft-limit raise, and the warning
 // when the archive extraction cannot be handed over) and -1 (the --cores
 // refusal set_fd_budget replaces).
-const EXPECTED_TEMPLATES: usize = 598;
+// 598 -> 599 (RELAY-S0, one cap rule): src/app/queries/b4.rs,
+// `--relay-holdings-max: {e}` (a cap of 0 that bypassed the flag's parser,
+// +1); src/cli.rs, `--relay-holdings-max bounds --relay-holdings or
+// --relay-sessions and needs one of them` reworded to `--relay-holdings-max
+// sets how many held calls a relay ask covers and needs
+// --rtpengine-control`, since the flag now sets the TUI's, REST's and MCP's
+// default too (one removed, one added).
+const EXPECTED_TEMPLATES: usize = 599;
 
 // ---------------------------------------------------------------------------
 // The page gates

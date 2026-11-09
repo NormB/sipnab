@@ -5075,9 +5075,21 @@ fn resolve_one_capture(
 /// Report how a startup command ended and return its exit code: `0` and the
 /// success line, or the failure's message and code.
 fn finish_startup_command(result: Result<String, PlanError>) -> i32 {
+    finish_startup_command_to(result, &mut std::io::stderr())
+}
+
+/// [`finish_startup_command`], writing the success line to `out`.
+fn finish_startup_command_to(
+    result: Result<String, PlanError>,
+    out: &mut impl std::io::Write,
+) -> i32 {
     match result {
         Ok(done) => {
-            tracing::info!("{done}");
+            // Written directly, not logged: these commands draw no TUI, and
+            // the line is their result, so neither the TUI-mode log filter
+            // (`error`), `--quiet` nor `SIPNAB_LOG=off` may hide it. A
+            // closed stderr loses the line and changes nothing else.
+            let _ = writeln!(out, "{done}");
             0
         }
         Err(e) => {
@@ -5160,10 +5172,12 @@ fn strip_secrets_copy(cli: &Cli, out: &str) -> Result<String, PlanError> {
     };
     let capture = resolve_one_capture(cli, &command, out)?;
     let input = capture.name().to_string();
-    let n = crate::capture::pcapng_meta::strip_secrets(&capture.path, std::path::Path::new(out))
-        .map_err(|e| PlanError::new(1, format!("--strip-secrets failed: {e}")))?;
+    let stripped =
+        crate::capture::pcapng_meta::strip_secrets(&capture.path, std::path::Path::new(out))
+            .map_err(|e| PlanError::new(1, format!("--strip-secrets failed: {e}")))?;
     Ok(format!(
-        "Stripped {n} decryption secret(s): {input} -> {out}"
+        "Stripped {}: {input} -> {out}",
+        stripped.describe()
     ))
 }
 
@@ -12401,6 +12415,56 @@ mod startup_refusal_tests {
         ]);
         assert_eq!(run_startup_commands(&cli), Some(0));
         assert!(out.exists(), "the sanitized copy is written");
+        Ok(())
+    }
+
+    /// A startup command's success line reaches its writer whatever the log
+    /// filter is: the commands draw no TUI, and the line is their result.
+    #[test]
+    fn a_startup_command_prints_its_success_line() -> Result<(), TestError> {
+        let mut out = Vec::new();
+        let code = finish_startup_command_to(Ok("Stripped 1 thing: a -> b".to_string()), &mut out);
+        assert_eq!(code, 0, "a successful startup command exits 0");
+        assert_eq!(
+            String::from_utf8(out)?,
+            "Stripped 1 thing: a -> b\n",
+            "the success line, once, with its newline"
+        );
+        Ok(())
+    }
+
+    /// A failure keeps its exit code and writes no success line.
+    #[test]
+    fn a_failed_startup_command_writes_no_success_line() -> Result<(), TestError> {
+        let mut out = Vec::new();
+        let code =
+            finish_startup_command_to(Err(PlanError::new(2, "refused".to_string())), &mut out);
+        assert_eq!(code, 2, "the failure's own exit code");
+        assert!(out.is_empty(), "{:?}", String::from_utf8_lossy(&out));
+        Ok(())
+    }
+
+    /// The `--strip-secrets` line names what it removed and where it wrote.
+    #[test]
+    fn the_strip_secrets_line_names_the_count_and_the_output() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let input = dir.path().join("in.pcapng");
+        empty_pcapng(&input)?;
+        let out = dir.path().join("clean.pcapng");
+        let out_s = out.to_str().ok_or("utf-8 path")?;
+        let cli = cli_from(&[
+            "--no-config",
+            "-I",
+            input.to_str().ok_or("utf-8 path")?,
+            "--strip-secrets",
+            out_s,
+        ]);
+        let line = strip_secrets_copy(&cli, out_s).map_err(|e| e.message)?;
+        assert!(
+            line.starts_with("Stripped 0 Decryption Secrets Blocks (the input had none): "),
+            "{line}"
+        );
+        assert!(line.ends_with(&format!(" -> {out_s}")), "{line}");
         Ok(())
     }
 

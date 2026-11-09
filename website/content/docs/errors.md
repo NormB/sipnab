@@ -4176,13 +4176,21 @@ The forwarder's replace URL holds no `{uuid}`.
 
 **Exit code:** 2.
 
-### `--relay-holdings-max bounds --relay-holdings or --relay-sessions and needs one of them`
+### `--relay-holdings-max sets how many held calls a relay ask covers and needs --rtpengine-control`
 
-You gave `--relay-holdings-max` without either flag it bounds. It caps the Call-IDs `--relay-holdings` asks for and the held calls `--relay-sessions` queries, so alone it does nothing. sipnab asked the relay nothing.
+You gave `--relay-holdings-max` without `--rtpengine-control`. It sets how many held calls each relay ask covers: the Call-IDs `--relay-holdings` asks for, the calls `--relay-sessions` and the TUI sessions view query, and the default for REST and MCP asks. Without a relay to ask it does nothing. sipnab asked the relay nothing.
 
-**What to do:** Add `--relay-holdings` or `--relay-sessions`, or remove `--relay-holdings-max`.
+**What to do:** Add `--rtpengine-control <listen-ng address>`, or remove `--relay-holdings-max`.
 
 **Exit code:** 2.
+
+### `--relay-holdings-max: {e}`
+
+A `--relay-holdings` or `--relay-sessions` run received a cap of 0 that did not pass through the flag's parser, which refuses 0. `{e}` says the number of calls must be at least 1. sipnab asked the relay nothing and exits 1.
+
+**What to do:** Give `--relay-holdings-max` a number from 1 up. For a number above 1024, sipnab asks for 1024.
+
+**Exit code:** 1.
 
 ### `{uuid:?} is not a uuid`
 

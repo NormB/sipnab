@@ -80,13 +80,15 @@ pub fn fixture(path: &str) -> std::path::PathBuf {
 /// `spawn_http_loopback` for the common `127.0.0.1:0` case).
 ///
 /// # Returns
-/// `Some((child, addr))` once the "listening on" line appears; `None` if the
-/// server refuses to start or times out after 5s (child is reaped).
+/// `Some((server, addr))` once the "listening on" line appears; `None` if the
+/// server refuses to start or times out after 5s (child is reaped). The
+/// server is stopped when the returned [`HttpServer`] is dropped, on every
+/// path out of the test, a panic included.
 ///
 /// # Side effects
 /// Spawns the sipnab binary (binding an ephemeral HTTP port) plus a stderr
 /// reader thread; on failure paths the child is stopped with `terminate`.
-pub fn spawn_http(extra_args: &[&str]) -> Result<Option<(Child, String)>, TestError> {
+pub fn spawn_http(extra_args: &[&str]) -> Result<Option<(HttpServer, String)>, TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
@@ -123,7 +125,7 @@ pub fn spawn_http(extra_args: &[&str]) -> Result<Option<(Child, String)>, TestEr
     while Instant::now() < deadline {
         if let Ok(line) = rx.recv_timeout(Duration::from_millis(200)) {
             if let Some(addr) = line.split("listening on ").nth(1) {
-                return Ok(Some((child, addr.trim().to_string())));
+                return Ok(Some((HttpServer::new(child), addr.trim().to_string())));
             }
             if line.contains("refuses to start") {
                 let _ = terminate(&mut child);
@@ -139,19 +141,57 @@ pub fn spawn_http(extra_args: &[&str]) -> Result<Option<(Child, String)>, TestEr
 
 /// `spawn_http` bound to loopback: prepends `--mcp-bind 127.0.0.1:0` to
 /// `extra_args`. The common case for tests that don't vary the bind address.
-pub fn spawn_http_loopback(extra_args: &[&str]) -> Result<Option<(Child, String)>, TestError> {
+pub fn spawn_http_loopback(extra_args: &[&str]) -> Result<Option<(HttpServer, String)>, TestError> {
     let mut args: Vec<&str> = vec!["--mcp-bind", "127.0.0.1:0"];
     args.extend_from_slice(extra_args);
     spawn_http(&args)
 }
 
-/// SIGTERMs a spawned sipnab child and waits for it to exit.
+/// A spawned sipnab HTTP server, stopped and reaped when this is dropped.
+///
+/// A test that holds a bare `Child` stops it only if it reaches its
+/// `shutdown` call. A failing assertion unwinds past that call, and the
+/// server kept running, reparented to PID 1, with every file descriptor the
+/// test binary had inherited. On 2026-11-09 five leaked servers held the
+/// host's shared test-queue lock that way after their run had ended. `Drop`
+/// runs on every path out of the test, the unwind included.
+pub struct HttpServer {
+    child: Child,
+}
+
+impl HttpServer {
+    /// Take ownership of a spawned server so it is stopped on drop.
+    pub fn new(child: Child) -> Self {
+        Self { child }
+    }
+
+    /// The server's process id.
+    pub fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Take the server's stderr pipe, for a test that reads what it logs.
+    pub fn take_stderr(&mut self) -> Option<std::process::ChildStderr> {
+        self.child.stderr.take()
+    }
+}
+
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        let _ = terminate(&mut self.child);
+    }
+}
+
+/// Stops a spawned sipnab server now and waits for it to exit.
+///
+/// Dropping the [`HttpServer`] does the same; this names the point in a test
+/// where the server stops.
 ///
 /// # Side effects
 /// Sends SIGTERM to the child process and reaps it, SIGKILLing it only if it
 /// is still running once the grace period ends (see `terminate`).
-pub fn shutdown(mut child: Child) {
-    let _ = terminate(&mut child);
+pub fn shutdown(server: HttpServer) {
+    drop(server);
 }
 
 /// The canonical JSON-RPC `initialize` request body.
@@ -237,9 +277,6 @@ fn send(
         .ok_or_else(|| format!("no host:port in {url}"))?;
     let port: u16 = port_str.parse()?;
 
-    let mut stream = TcpStream::connect((host, port))?;
-    stream.set_read_timeout(Some(test_timeout(5)))?;
-
     let mut req = format!(
         "{method} /{path} HTTP/1.1\r\n\
          Host: {host}:{port}\r\n\
@@ -262,6 +299,56 @@ fn send(
     if let Some(b) = body {
         req.push_str(b);
     }
+    exchange(host, port, &req)
+}
+
+/// POST the canonical `initialize` to `http://{addr}/mcp` with the media-type
+/// headers given here and no others: one `Accept` line per entry of `accept`
+/// (none when it is empty) and `content_type` as the `Content-Type`.
+///
+/// [`post_json`] always sends the canonical pair, so it cannot reach the
+/// server's `Accept` and `Content-Type` checks; this helper exists to drive
+/// them.
+///
+/// # Side effects
+/// Opens a TCP connection with a 5s read timeout and closes it.
+pub fn post_initialize_with_media_types(
+    addr: &str,
+    accept: &[&str],
+    content_type: &str,
+) -> Result<HttpResponse, TestError> {
+    let (host, port_str) = addr
+        .rsplit_once(':')
+        .ok_or_else(|| format!("no host:port in {addr}"))?;
+    let port: u16 = port_str.parse()?;
+    let body = serde_json::to_string(&initialize_payload())?;
+    let mut req = format!(
+        "POST /mcp HTTP/1.1\r\n\
+         Host: {host}:{port}\r\n\
+         Connection: close\r\n\
+         Content-Type: {content_type}\r\n\
+         Content-Length: {}\r\n",
+        body.len()
+    );
+    for value in accept {
+        req.push_str(&format!("Accept: {value}\r\n"));
+    }
+    req.push_str("\r\n");
+    req.push_str(&body);
+    exchange(host, port, &req)
+}
+
+/// Write the complete HTTP/1.1 request `req` to `host:port` over a fresh
+/// connection and parse the reply.
+///
+/// `Connection: close` in `req` plus `read_to_end` is what makes the
+/// response bounded without parsing `Content-Length` or chunked framing.
+///
+/// # Side effects
+/// Opens a TCP connection with a 5s read timeout and closes it.
+fn exchange(host: &str, port: u16, req: &str) -> Result<HttpResponse, TestError> {
+    let mut stream = TcpStream::connect((host, port))?;
+    stream.set_read_timeout(Some(test_timeout(5)))?;
     stream.write_all(req.as_bytes())?;
 
     let mut resp = Vec::new();

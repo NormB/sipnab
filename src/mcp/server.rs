@@ -1064,7 +1064,19 @@ impl SipnabMcp {
             relay,
             permit,
             routing: None,
+            holdings_max: None,
         });
+        self
+    }
+
+    /// Set the operator's default for how many held calls one `query_relay`
+    /// ask covers (`--relay-holdings-max`). Has no effect without
+    /// [`Self::with_relay_query`].
+    #[must_use]
+    pub fn with_relay_holdings_max(mut self, holdings_max: Option<u32>) -> Self {
+        if let Some(access) = self.relay_query.as_mut() {
+            access.holdings_max = holdings_max;
+        }
         self
     }
 
@@ -20409,6 +20421,10 @@ pub(crate) struct RelayQueryAccess {
     /// The run's engine rule, when one is configured: which engine to ask
     /// about one call, chosen from its SDP.
     pub routing: Option<std::sync::Arc<crate::relay::engines::EngineRouting>>,
+    /// `--relay-holdings-max`: the operator's default for the held calls one
+    /// ask covers when the agent names no `max_calls`. See
+    /// [`crate::relay::scan_cap::scan_cap`].
+    pub holdings_max: Option<u32>,
 }
 
 /// Tool handlers and protocol methods that no in-process test called.

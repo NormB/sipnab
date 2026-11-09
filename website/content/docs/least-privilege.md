@@ -210,11 +210,22 @@ sipnab -N -I sample-call.pcap --sandbox required --report --no-cli-print
 ```
 
 ```text
-WARN sipnab::app::bootstrap: path sandbox NOT active: this kernel has no Landlock (needs 5.13 or newer). The capture is running unsandboxed; `--sandbox required` refuses instead of continuing.
-`--sandbox required` was given and no path sandbox is in force: this kernel has no Landlock (needs 5.13 or newer). Refusing to capture. Use `--sandbox best-effort` to capture without one.
+WARN sipnab::app::bootstrap: path sandbox NOT active: this kernel (6.8.12-rt-tegra) has no Landlock: it was built without Landlock support (CONFIG_SECURITY_LANDLOCK). The capture is running unsandboxed; `--sandbox required` refuses instead of continuing.
+`--sandbox required` was given and no path sandbox is in force: this kernel (6.8.12-rt-tegra) has no Landlock: it was built without Landlock support (CONFIG_SECURITY_LANDLOCK). Refusing to capture. Use `--sandbox best-effort` to capture without one.
 ```
 
-That kernel was 6.8 built without `CONFIG_SECURITY_LANDLOCK`. Check yours:
+Rerun on 2026-11-08 on the same host (Linux 6.8.12-rt-tegra). The reason
+depends on the running kernel's release, from `uname`:
+
+| The version query returns | Release | The reason says |
+|---|---|---|
+| `ENOSYS` | older than 5.13 | `this kernel (<release>) has no Landlock (needs 5.13 or newer)` |
+| `ENOSYS` | 5.13 or newer | `this kernel (<release>) has no Landlock: it was built without Landlock support (CONFIG_SECURITY_LANDLOCK)`: a kernel upgrade does not help; a kernel built with that option does |
+| `ENOSYS` | unreadable | both causes, and that sipnab could not read the release |
+| `EOPNOTSUPP` | any | `Landlock is compiled in but disabled; add it to the kernel's lsm= list to enable it` |
+
+Before that change the text said `needs 5.13 or newer` for every `ENOSYS`,
+which on this 6.8 kernel was wrong. Check yours:
 
 ```bash
 cat /sys/kernel/security/lsm
@@ -241,32 +252,50 @@ Without a list, `enforce` refuses to start, with exit `1`:
 ```
 
 `scripts/derive-seccomp-allowlist.sh <sipnab> <interface>`, run as root, runs
-sipnab in sixteen shapes under `--seccomp log`, streams the kernel log, and
-says whether the set of calls stopped growing. It reads the records from the
-kernel log, so it needs a host where no audit daemon takes them.
+sipnab in sixteen shapes under `--seccomp log`, streams the log the records go
+to, and says whether the set of calls stopped growing.
 
-On this host an audit daemon was running, and the script found nothing:
-
-```text
-NO RECORDS: nothing in this log is a seccomp audit record.
-  Either the filter never installed, or the log was collected
-  after the run rather than streamed during it.
-```
-
-The records were in the audit log instead, where `--seccomp log` says to look:
+Where the records go depends on the host, and the script finds out the same way
+you would:
 
 ```bash
 sudo auditctl -s
 ```
 
+- A non-zero `pid` means an audit daemon holds the audit socket. The kernel hands it the
+  records, and they land in its log (`log_file` in `/etc/audit/auditd.conf`,
+  `/var/log/audit/audit.log` by default) as `type=SECCOMP` lines. The script
+  follows that file with `tail -F` and prints
+  `Records go to the audit daemon; following /var/log/audit/audit.log.`
+- A `pid` of 0, or no `auditctl`, means no daemon. The records are in the
+  kernel log as `audit: type=1326` lines, and the script follows
+  `dmesg --follow`, with `kernel.printk_ratelimit` set to 0 for the run and
+  restored after it.
+
+Set `SIPNAB_DERIVE_AUDIT_LOG` to read another file on the audit path.
+
+To look at the records yourself on a host with a daemon:
+
 ```bash
 sudo ausearch -m SECCOMP -ts recent
 ```
 
-A non-zero `pid` from `auditctl -s` means a daemon takes the records. A
-single `--report` run over the sample capture left 5,896 records there, naming
-13 distinct system calls. Not run for this page: an enforcing filter, because
-the script derived no allowlist here.
+A single `--report` run over the sample capture on 2026-11-03 left 5,896
+records there, naming 13 distinct system calls. Not run for this page: the
+collector as root on this host after the change on 2026-11-08 that made it
+read the audit log, nor an enforcing filter. `seccomp_derivation_test` drives
+the source choice and the parsing of audit-log records with synthetic input.
+
+The script refuses a run that lost records. On the kernel log that is a
+`callbacks suppressed` line. On the audit path it is a rise in the `lost`
+counter of `auditctl -s`, which the script reads before and after each shape:
+
+```text
+LOST: the audit subsystem lost 12 record(s) during the run.
+  A derivation that misses a call yields an allowlist that kills
+  the process it was built for. Raise the backlog (auditctl -b
+  65536), check that auditctl -r is 0, and run it again.
+```
 
 ## When something does not work
 
@@ -276,8 +305,11 @@ the script derived no allowlist here.
 | `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | The user does not exist on this host. With `--chroot`, 0.5.233 and earlier also printed this when the directory held no `etc/passwd` naming the user | Create the user, or name another with `--user`. On 0.5.233 or earlier, upgrade, or add the user's entries to the directory |
 | `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
 | A root run reading files stops before it reads any with exit `2`, and the message names the hard open-file limit ([quoted in full](#read-capture-files-only-root-can-read)) | The set needs one descriptor per file plus 64, more than the hard open-file limit allows | Raise `ulimit -Hn` or `LimitNOFILE=`, or read fewer files per run |
-| `--sandbox required` refuses | No Landlock in this kernel | `best-effort`, or a kernel with Landlock |
+| `--sandbox required` refuses, `needs 5.13 or newer` | The kernel predates Landlock | `best-effort`, or a 5.13 or newer kernel with Landlock |
+| `--sandbox required` refuses, `built without Landlock support (CONFIG_SECURITY_LANDLOCK)` | The kernel is new enough, and its build left Landlock out | `best-effort`, or a kernel built with `CONFIG_SECURITY_LANDLOCK=y` and `landlock` in `lsm=` |
 | `--seccomp enforce` refuses | No `SIPNAB_SECCOMP_ALLOWLIST`, or one it cannot read | Derive a list on this host |
+| `derive-seccomp-allowlist.sh` prints `NO RECORDS` | The filter never installed, or the records went to a log the script did not follow | Check `sudo auditctl -s`: with a non-zero `pid`, the records are in the audit log, which the script follows; name another file with `SIPNAB_DERIVE_AUDIT_LOG` |
+| `derive-seccomp-allowlist.sh` exits 66, `cannot be read` | An audit daemon holds the audit socket and its log is not at the path auditd.conf names | Set `SIPNAB_DERIVE_AUDIT_LOG` to the log's path |
 
 [Privilege](@/docs/cli.md#privilege) and [`[privilege]`](@/docs/config.md#privilege)
 list every flag and key. The [threat model](https://github.com/NormB/sipnab/blob/main/docs/threat-model.md) says what each

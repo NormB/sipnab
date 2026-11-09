@@ -78,6 +78,28 @@ pub struct SessionsAsk<'a> {
     pub cap: u32,
     /// The `limit` the `list` asks for.
     pub list_limit: u32,
+    /// Set when the cap asked for was above the ceiling and was lowered to it.
+    pub clamped: Option<crate::relay::scan_cap::CapClamp>,
+}
+
+impl<'a> SessionsAsk<'a> {
+    /// An ask whose scan and `list` both take `cap`, the answer of
+    /// [`crate::relay::scan_cap::scan_cap`], so every surface bounds its
+    /// scan by the one rule and states a clamp the same way.
+    #[must_use]
+    pub const fn capped(
+        selected: Option<&'a str>,
+        scan: bool,
+        cap: crate::relay::scan_cap::ScanCap,
+    ) -> Self {
+        Self {
+            selected,
+            scan,
+            cap: cap.cap,
+            list_limit: cap.cap,
+            clamped: cap.clamped,
+        }
+    }
 }
 
 /// Whether media is reaching the relay on one socket.
@@ -414,6 +436,10 @@ pub struct RelaySessions {
     pub scan: bool,
     /// The most held calls a scan queries.
     pub cap: u32,
+    /// Present when the cap asked for was above the ceiling of 1024 and was
+    /// lowered to it: the number asked for and the ceiling.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap_clamped: Option<crate::relay::scan_cap::CapClamp>,
     /// The calls queried, in the order asked.
     pub calls: Vec<SessionCall>,
     /// The calls listed and not queried.
@@ -683,6 +709,7 @@ pub fn relay_sessions(
         truncated: None,
         scan: ask.scan,
         cap: ask.cap,
+        cap_clamped: ask.clamped,
         calls: Vec::new(),
         not_queried: Vec::new(),
         stall_seconds: STALL_SECONDS,
@@ -858,6 +885,7 @@ pub fn relay_sessions_routed(
         truncated: None,
         scan: ask.scan,
         cap: ask.cap,
+        cap_clamped: ask.clamped,
         calls: Vec::new(),
         not_queried: Vec::new(),
         stall_seconds: STALL_SECONDS,
@@ -1166,6 +1194,10 @@ impl RelaySessions {
             super::plural(held as u64, "call"),
             if self.scan { " (scan)" } else { "" }
         ));
+        if let Some(clamp) = &self.cap_clamped {
+            out.push_str(&clamp.sentence());
+            out.push('\n');
+        }
         out.push_str(&self.render_engines());
         for note in &self.notes {
             out.push_str(&format!("Note: {note}.\n"));
@@ -1894,6 +1926,7 @@ mod tests {
             scan,
             cap,
             list_limit: 32,
+            clamped: None,
         }
     }
 
@@ -3351,6 +3384,49 @@ mod tests {
             got,
             vec!["ok", "suspect", "ok"],
             "the cut listing is suspect between two that answered"
+        );
+        Ok(())
+    }
+
+    /// A snapshot asked with a clamped cap carries the clamp and states it
+    /// in its status line; one asked without states nothing.
+    #[test]
+    fn a_clamped_scan_states_the_clamp() -> Result<(), TestError> {
+        let cap = crate::relay::scan_cap::ScanCap {
+            cap: 1024,
+            clamped: Some(crate::relay::scan_cap::CapClamp {
+                requested: 9000,
+                ceiling: 1024,
+            }),
+        };
+        let s = relay_sessions(
+            &holding_three(),
+            &permit()?,
+            &SessionsAsk::capped(None, true, cap),
+            &never,
+            &at,
+        );
+        assert_eq!(
+            (s.cap, s.list_limit),
+            (1024, 1024),
+            "A snapshot asked with a clamped cap carries the clamp and states it in its status line; one asked without states nothing"
+        );
+        let status = s.render_status();
+        assert!(
+            status.contains("Asked for 9000 calls; the ceiling is 1024"),
+            "{status}"
+        );
+        let plain = relay_sessions(
+            &holding_three(),
+            &permit()?,
+            &ask(None, true, 32),
+            &never,
+            &at,
+        );
+        assert!(
+            !plain.render_status().contains("ceiling"),
+            "{}",
+            plain.render_status()
         );
         Ok(())
     }

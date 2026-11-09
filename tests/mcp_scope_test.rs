@@ -30,7 +30,7 @@ mod mcp;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -66,19 +66,19 @@ fn mint(scope: &str) -> String {
 /// test can read the audit trail after the calls. The shared helper drops its
 /// receiver once the listen line appears, which is fine for status-code
 /// probes and useless for asserting what was audited.
-fn spawn_with_stderr() -> Result<(Child, String, mpsc::Receiver<String>), TestError> {
+fn spawn_with_stderr() -> Result<(mcp::HttpServer, String, mpsc::Receiver<String>), TestError> {
     spawn_with_stderr_and(&[])
 }
 
 /// [`spawn_with_stderr`], with `extra` flags after the fixed ones.
 fn spawn_with_stderr_and(
     extra: &[&str],
-) -> Result<(Child, String, mpsc::Receiver<String>), TestError> {
+) -> Result<(mcp::HttpServer, String, mpsc::Receiver<String>), TestError> {
     let binary = env!("CARGO_BIN_EXE_sipnab");
     let pcap = mcp::fixture("sip_call.pcap");
     let pcap_str = pcap.to_string_lossy().to_string();
 
-    let mut child = Command::new(binary)
+    let child = Command::new(binary)
         .args([
             "-N",
             "-I",
@@ -98,8 +98,11 @@ fn spawn_with_stderr_and(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    // Owned by the guard from here on, so every exit below, an error return
+    // or a panic in the test, stops and reaps the server.
+    let mut server = mcp::HttpServer::new(child);
 
-    let stderr = child.stderr.take().ok_or("stderr")?;
+    let stderr = server.take_stderr().ok_or("stderr")?;
     let (tx, rx) = mpsc::channel::<String>();
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
@@ -125,14 +128,10 @@ fn spawn_with_stderr_and(
         }
     }
     let Some(addr) = addr else {
-        // SAFETY: kill(2) with the PID of a child we spawned; touches no memory.
-        unsafe {
-            libc::kill(child.id() as i32, libc::SIGTERM);
-        }
-        let _ = child.wait();
+        // Dropping `server` on this return stops and reaps it.
         return Err("server never reported a listening address".into());
     };
-    Ok((child, addr, rx))
+    Ok((server, addr, rx))
 }
 
 /// One parsed HTTP reply: status, headers (lower-cased names), decoded body.

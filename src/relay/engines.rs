@@ -1982,7 +1982,7 @@ mod tests {
 
     #[test]
     fn sightings_skip_exchanges_with_no_media_endpoint() -> Result<(), TestError> {
-        use crate::sip::sdp_timeline::OfferAnswer;
+        use crate::sip::sdp_timeline::{OfferAnswer, SdpSender};
         let exchange = |addr: Option<&str>,
                         port: Option<u16>,
                         from_request|
@@ -1991,6 +1991,10 @@ mod tests {
                 timestamp: at(0)?,
                 direction: OfferAnswer::Offer,
                 from_request,
+                sender: SdpSender {
+                    tag: None,
+                    addr: IpAddr::V4(std::net::Ipv4Addr::new(192, 0, 2, 1)),
+                },
                 codecs: Vec::new(),
                 media_addr: addr.map(str::to_string),
                 media_port: port,

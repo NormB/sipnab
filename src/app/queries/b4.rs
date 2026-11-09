@@ -81,22 +81,27 @@ pub(super) fn relay_holdings(
 ) -> i32 {
     use crate::output::query::relay_holdings::ask_engines;
 
-    let max_calls = cli
-        .gate_args
-        .relay_holdings_max
-        .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
-    let answer = ask_engines(relay, routing, permit, max_calls, chrono::Utc::now());
+    let Some(cap) = cli_cap(cli) else {
+        return FAILED;
+    };
+    let answer = ask_engines(relay, routing, permit, cap.cap, chrono::Utc::now());
+    let clamp = cap.clamped.as_ref();
     let json = !matches!(super::answer_form(cli), super::AnswerForm::Table(_));
     if !answer.answered() && !json {
         stderr_line!(
             "--relay-holdings: {}",
-            answer.render(crate::output::ReportFormat::Text).trim_end()
+            answer
+                .render_capped(crate::output::ReportFormat::Text, clamp)
+                .trim_end()
         );
         return FAILED;
     }
-    let written = super::write_answer(cli, "--relay-holdings", &answer.body(), |format| {
-        answer.render(format)
-    });
+    let written = super::write_answer(
+        cli,
+        "--relay-holdings",
+        &answer.body_capped(clamp),
+        |format| answer.render_capped(format, clamp),
+    );
     if written && answer.answered() {
         0
     } else {
@@ -125,17 +130,11 @@ pub(super) fn relay_sessions(
 ) -> i32 {
     use crate::output::query::relay_sessions::{Routed, SessionsAsk, relay_sessions_routed};
 
-    let cap = cli
-        .gate_args
-        .relay_holdings_max
-        .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
-    let selected = cli.gate_args.relay_sessions_call.as_deref();
-    let ask = SessionsAsk {
-        selected,
-        scan: selected.is_none(),
-        cap,
-        list_limit: cap,
+    let Some(cap) = cli_cap(cli) else {
+        return FAILED;
     };
+    let selected = cli.gate_args.relay_sessions_call.as_deref();
+    let ask = SessionsAsk::capped(selected, selected.is_none(), cap);
     // No traffic has been read yet, so no call's SDP or ng offer is known:
     // with an engine rule each call is asked of the default engine, and the
     // answer says so.
@@ -173,3 +172,180 @@ pub(super) fn relay_sessions(
 
 /// The exit status of a relay ask that brought back no call list.
 const FAILED: i32 = 1;
+
+/// The cap a CLI relay ask applies: `--relay-holdings-max` by the one rule
+/// ([`crate::relay::scan_cap::scan_cap`]). The flag's parser already refuses
+/// 0, so `None` (said on stderr) is only reachable from a `Cli` built by
+/// hand.
+fn cli_cap(cli: &crate::cli::Cli) -> Option<crate::relay::scan_cap::ScanCap> {
+    match crate::relay::scan_cap::scan_cap(None, cli.gate_args.relay_holdings_max) {
+        Ok(cap) => Some(cap),
+        Err(e) => {
+            stderr_line!("--relay-holdings-max: {e}");
+            None
+        }
+    }
+}
+
+/// `--relay-holdings` and `--relay-sessions` take their cap from
+/// `--relay-holdings-max` by the one rule, against a relay that answers in
+/// memory. Nothing is sent.
+#[cfg(test)]
+mod tests {
+    use crate::relay::reconcile::ReadOnlyRelay;
+    use crate::relay::types::{ControlReply, Enumeration};
+    use crate::security::transmit_guard::TransmitPermit;
+    use std::sync::Mutex;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// Lists `held` Call-IDs whatever the limit; records each ask.
+    struct Listing {
+        held: usize,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl ReadOnlyRelay for Listing {
+        fn list(&self, _: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
+            self.asked
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .push(format!("list {limit}"));
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: (0..self.held)
+                    .map(|n| format!("held-{n:04}@example.invalid"))
+                    .collect(),
+                truncated: false,
+            }))
+        }
+        fn query(&self, _: &TransmitPermit, c: &str) -> anyhow::Result<ControlReply> {
+            self.asked
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .push(format!("query {c}"));
+            anyhow::bail!("no such call")
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("never asked")
+        }
+        fn describe(&self) -> String {
+            "listing at 192.0.2.10:22222".to_string()
+        }
+    }
+
+    impl Listing {
+        fn new(held: usize) -> Self {
+            Self {
+                held,
+                asked: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn lists_and_queries(&self) -> Result<(Vec<String>, usize), TestError> {
+            let asked = self.asked.lock().map_err(|e| e.to_string())?.clone();
+            let lists = asked
+                .iter()
+                .filter(|a| a.starts_with("list"))
+                .cloned()
+                .collect();
+            let queries = asked.iter().filter(|a| a.starts_with("query")).count();
+            Ok((lists, queries))
+        }
+    }
+
+    fn permit() -> Result<TransmitPermit, TestError> {
+        Ok(
+            TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
+                device: "eth0".to_string(),
+            })
+            .ok_or("a live source grants a permit")?,
+        )
+    }
+
+    fn cli(extra: &[&str]) -> Result<crate::cli::Cli, TestError> {
+        let mut argv = vec![
+            "sipnab",
+            "-L",
+            "127.0.0.1:0",
+            "--rtpengine-control",
+            "192.0.2.10:22222",
+            "--json",
+        ];
+        argv.extend_from_slice(extra);
+        Ok(crate::cli::Cli::try_parse_from_args(argv)?)
+    }
+
+    /// `--relay-sessions` scans up to `--relay-holdings-max`.
+    #[test]
+    fn cli_sessions_scan_takes_the_flag() -> Result<(), TestError> {
+        let relay = Listing::new(5);
+        let cli = cli(&["--relay-sessions", "--relay-holdings-max", "3"])?;
+        assert_eq!(
+            super::relay_sessions(&cli, &relay, None, &permit()?),
+            0,
+            "`--relay-sessions` scans up to `--relay-holdings-max`"
+        );
+        assert_eq!(
+            relay.lists_and_queries()?,
+            (vec!["list 3".to_string()], 3),
+            "`--relay-sessions` scans up to `--relay-holdings-max`"
+        );
+        Ok(())
+    }
+
+    /// `--relay-sessions` with a flag above the ceiling asks for 1024 and
+    /// queries at most 1024.
+    #[test]
+    fn cli_sessions_flag_above_the_ceiling_is_clamped() -> Result<(), TestError> {
+        let relay = Listing::new(1100);
+        let cli = cli(&["--relay-sessions", "--relay-holdings-max", "5000"])?;
+        assert_eq!(
+            super::relay_sessions(&cli, &relay, None, &permit()?),
+            0,
+            "`--relay-sessions` with a flag above the ceiling asks for 1024 and queries at most 1024"
+        );
+        assert_eq!(
+            relay.lists_and_queries()?,
+            (vec!["list 1024".to_string()], 1024),
+            "`--relay-sessions` with a flag above the ceiling asks for 1024 and queries at most 1024"
+        );
+        Ok(())
+    }
+
+    /// `--relay-holdings` with a flag above the ceiling asks for 1024.
+    #[test]
+    fn cli_holdings_flag_above_the_ceiling_is_clamped() -> Result<(), TestError> {
+        let relay = Listing::new(1);
+        let cli = cli(&["--relay-holdings", "--relay-holdings-max", "4096"])?;
+        assert_eq!(
+            super::relay_holdings(&cli, &relay, None, &permit()?),
+            0,
+            "`--relay-holdings` with a flag above the ceiling asks for 1024"
+        );
+        assert_eq!(
+            relay.lists_and_queries()?,
+            (vec!["list 1024".to_string()], 0),
+            "`--relay-holdings` with a flag above the ceiling asks for 1024"
+        );
+        Ok(())
+    }
+
+    /// A cap of 0 that bypassed the flag's parser (a `Cli` built by hand)
+    /// fails the run and asks the relay nothing, on both flags.
+    #[test]
+    fn cli_cap_of_zero_asks_nothing() -> Result<(), TestError> {
+        for flag in ["--relay-sessions", "--relay-holdings"] {
+            let relay = Listing::new(3);
+            let mut cli = cli(&[flag])?;
+            cli.gate_args.relay_holdings_max = Some(0);
+            let code = if flag == "--relay-sessions" {
+                super::relay_sessions(&cli, &relay, None, &permit()?)
+            } else {
+                super::relay_holdings(&cli, &relay, None, &permit()?)
+            };
+            assert_eq!(code, 1, "{flag}");
+            assert_eq!(relay.lists_and_queries()?, (Vec::new(), 0), "{flag}");
+        }
+        Ok(())
+    }
+}

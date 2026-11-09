@@ -299,6 +299,36 @@ The start of the run names the transport, as in `HEP listener started on
 - TLS proves the path is private, not who the sender is: sipnab asks senders
   for no certificate. Keep `--hep-allow`, a key, or both.
 
+### What a TCP or TLS listener keeps when the run stops
+
+A stream listener stops at `--duration`, at `--count`, or on a signal. Each
+keeps a different share of what senders had sent:
+
+- **`--duration`** keeps what reached sipnab before the deadline. The listener
+  reads what its open connections hold, for up to 1 second each. It also
+  accepts the connections still waiting in its backlog, for up to 1 second, and completes a TLS handshake under way, for up to 1 second, so a
+  sender that connected just before the deadline is not lost. The run then
+  reads on for up to 3 seconds for the listener to deliver it. A sender that
+  goes on sending cannot hold the stop open past these limits.
+- **`--count N`** keeps exactly N packets, however many connections send at
+  once. When the run reaches the count, the listener closes every connection
+  still open and delivers nothing more from it.
+- **SIGTERM or SIGINT** stops at once. What is still in a socket, or in a
+  connection not yet accepted, is not reported.
+
+To check a `--duration` run, compare the count the sender reports with the
+listener's last line, `HEP listener on 198.51.100.1:9062 finished: N packets
+received`, and with `--report`. If the numbers differ:
+
+- A sender that keeps sending after the deadline: what it sends after it is
+  not part of the run.
+- A run stopped by a signal: use `--duration` or `--count` for a run whose
+  count you compare.
+- 0.5.240 and earlier lost every packet on a connection not yet accepted at
+  the deadline, and a listener in a `--count` run over several connections
+  could take one packet more than N for each further connection, which its
+  `finished` line counted.
+
 ### OpenSIPS over TCP and TLS
 
 Each transport needs its own socket and `transport=` key. For TCP:

@@ -221,6 +221,10 @@ pub struct RelayRestConfig {
     /// about one call, chosen from its SDP. `None` asks `relay` everything,
     /// as before engine selection existed.
     pub routing: Option<std::sync::Arc<crate::relay::engines::EngineRouting>>,
+    /// `--relay-holdings-max`: the operator's default for the held calls one
+    /// ask covers when the request names no `max_calls`. See
+    /// [`crate::relay::scan_cap::scan_cap`].
+    pub holdings_max: Option<u32>,
 }
 
 /// Shared state passed to every axum handler via `State(...)`.
@@ -5270,7 +5274,7 @@ async fn get_stream(
     params(CaptureReportParams),
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-10-09.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
+        (status = 200, description = "The whole-capture analysis. `application/json` is sipnab's own encoding. `application/yang-data+json`, answered for `format=yang-json`, is the same analysis RFC 7951-encoded against the YANG module `sipnab-diagnosis` (https://sipnab.com/yang/sipnab-diagnosis@2026-11-08.yang, or `sipnab --print-yang-module`); the module is its schema.", content(
             (schema::CaptureReport = "application/json"),
             ("application/yang-data+json"),
         )),
@@ -5852,8 +5856,8 @@ enum RelayAsk {
     /// Every Call-ID it is holding right now (query_relay list).
     Holdings {
         /// The most Call-IDs to return before the relay marks the rest
-        /// truncated.
-        max_calls: u32,
+        /// truncated, from [`relay_cap`].
+        cap: crate::relay::scan_cap::ScanCap,
     },
     /// The ports and tags it holds for one call (query_relay per-call).
     Holding(String),
@@ -5866,7 +5870,24 @@ enum RelayAsk {
         scan: bool,
         /// The dialog store, to say which calls sipnab saw end in SIP.
         dialogs: Arc<RwLock<DialogStore>>,
+        /// The most held calls the ask covers, from [`relay_cap`].
+        cap: crate::relay::scan_cap::ScanCap,
     },
+}
+
+/// The cap a REST relay ask applies: the request's `max_calls`, else the
+/// operator's `--relay-holdings-max`, by the one rule
+/// ([`crate::relay::scan_cap::scan_cap`]).
+///
+/// # Errors
+///
+/// A 400 problem when `max_calls` is 0, before anything is sent.
+fn relay_cap(
+    requested: Option<u32>,
+    rq: &RelayRestConfig,
+) -> Result<crate::relay::scan_cap::ScanCap, Problem> {
+    crate::relay::scan_cap::scan_cap(requested, rq.holdings_max)
+        .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("`max_calls`: {e}")))
 }
 
 /// Build the JSON body for a relay-statistics REST route (ST5).
@@ -6159,17 +6180,12 @@ fn relay_rest_answer_with(
             call_id,
             scan,
             dialogs,
+            cap,
         } => {
             use crate::output::query::relay_sessions::{
                 Routed, SessionsAsk, relay_sessions_routed,
             };
-            let cap = crate::relay::reconcile::DEFAULT_LIST_LIMIT;
-            let ask = SessionsAsk {
-                selected: call_id.as_deref(),
-                scan: *scan,
-                cap,
-                list_limit: cap,
-            };
+            let ask = SessionsAsk::capped(call_id.as_deref(), *scan, *cap);
             let ended =
                 |c: &str| crate::output::query::relay_sessions::sip_saw_end(&dialogs.read(), c);
             let sdp_of = |c: &str| crate::relay::engines::call_sightings(&dialogs.read(), c);
@@ -6188,14 +6204,14 @@ fn relay_rest_answer_with(
             .body()
         }
         // The answer `--relay-holdings` prints too.
-        RelayAsk::Holdings { max_calls } => crate::output::query::relay_holdings::ask_engines(
+        RelayAsk::Holdings { cap } => crate::output::query::relay_holdings::ask_engines(
             relay.as_ref(),
             rq.routing.as_deref(),
             &permit,
-            *max_calls,
+            cap.cap,
             now,
         )
-        .body(),
+        .body_capped(cap.clamped.as_ref()),
         RelayAsk::Holding(call_id) => match relay.query(&permit, call_id) {
             Ok(ControlReply::Call(view)) => to_value(fmt::relay_rest_ok(
                 &json!({
@@ -6426,7 +6442,8 @@ async fn get_relay_compare(
 #[into_params(parameter_in = Query)]
 pub struct RelayHoldingsParams {
     /// The most Call-IDs to ask for; the relay marks the rest `truncated`.
-    /// Omitted takes the shared default.
+    /// Omitted takes `--relay-holdings-max`, or 32. Above 1024 it is lowered
+    /// to 1024 and the answer says so in `cap_clamped`; 0 is a 400.
     pub max_calls: Option<u32>,
 }
 
@@ -6442,9 +6459,9 @@ pub struct RelayHoldingsParams {
 ///
 /// # Returns
 ///
-/// 200 in every case — `outcome: ok` with the Call-IDs, or an ST-S4
-/// classification (`not_configured` / `not_permitted` / `unreachable` /
-/// `refused` / `suspect`); 401/503 from the guard.
+/// 200 with `outcome: ok` and the Call-IDs, or an ST-S4 classification
+/// (`not_configured` / `not_permitted` / `unreachable` / `refused` /
+/// `suspect`); 400 for `max_calls=0`; 401/503 from the guard.
 ///
 /// # Side effects
 ///
@@ -6455,11 +6472,12 @@ pub struct RelayHoldingsParams {
     path = "/v1/relay/holdings",
     tag = "relay",
     summary = "What the relay is holding now",
-    description = "Asks the configured relay for every Call-ID it is holding right now. This TRANSMITS: it puts one control request on the network per call, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. It closes the gap a passive decoder cannot — a call already in progress when sipnab started has no control exchange left to read — which is exactly the case during incident response. The same holdings the MCP `query_relay` tool lists. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
+    description = "Asks the configured relay for every Call-ID it is holding right now, up to `max_calls` (omitted: `--relay-holdings-max`, or 32; above 1024 it is lowered to 1024 and `cap_clamped` names the number asked for and the ceiling). This TRANSMITS: it puts one control request on the network, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. It closes the gap a passive decoder cannot — a call already in progress when sipnab started has no control exchange left to read — which is exactly the case during incident response. The same holdings the MCP `query_relay` tool lists. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx. `max_calls=0` is a 400.",
     params(RelayHoldingsParams),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "outcome=ok with the held Call-IDs, or a classification.", body = schema::RelayStatsResponse),
+        (status = 400, description = "`max_calls` is 0. Nothing was sent.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
@@ -6473,11 +6491,9 @@ async fn get_relay_holdings(
     guard(&state, &headers, addr.ip())?;
     let rq = state.relay_query.clone();
     let ss = Arc::clone(&state.stream_store);
-    let max_calls = params
-        .max_calls
-        .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+    let cap = relay_cap(params.max_calls, &rq)?;
     let body = tokio::task::spawn_blocking(move || {
-        relay_rest_answer(&rq, &RelayAsk::Holdings { max_calls }, &ss)
+        relay_rest_answer(&rq, &RelayAsk::Holdings { cap }, &ss)
     })
     .await
     .unwrap_or_else(|_| json!({ "outcome": "suspect" }));
@@ -6543,8 +6559,14 @@ async fn get_relay_holdings_call(
 pub struct RelaySessionsParams {
     /// A Call-ID to query on this ask, listed or not.
     pub call_id: Option<String>,
-    /// `true` to query every held call too, up to 32 including `call_id`.
+    /// `true` to query every held call too, up to the cap including
+    /// `call_id`.
     pub scan: Option<bool>,
+    /// The most held calls to cover: the `list` limit and the most calls a
+    /// scan queries. Omitted takes `--relay-holdings-max`, or 32. Above 1024
+    /// it is lowered to 1024 and the answer says so in `cap_clamped`; 0 is a
+    /// 400.
+    pub max_calls: Option<u32>,
 }
 
 /// `GET /v1/relay/sessions` — what the live relay holds and whether media
@@ -6560,23 +6582,24 @@ pub struct RelaySessionsParams {
 ///
 /// # Returns
 ///
-/// 200 in every case — `outcome: ok` with the snapshot, or an ST-S4
-/// classification; 401/503 from the guard.
+/// 200 with `outcome: ok` and the snapshot, or an ST-S4 classification; 400
+/// for `max_calls=0`; 401/503 from the guard.
 ///
 /// # Side effects
 ///
-/// Transmits one `list` and up to 32 `query` requests to the relay on a
-/// blocking task; mutates the rate limiter.
+/// Transmits one `list` and up to the cap of `query` requests (at most
+/// 1024) to the relay on a blocking task; mutates the rate limiter.
 #[utoipa::path(
     get,
     path = "/v1/relay/sessions",
     tag = "relay",
     summary = "What the relay holds, and whether media reaches it",
-    description = "Asks the configured relay for its held calls (`list`), then `query` for `call_id` and, with `scan=true`, for every held call up to 32. For each party's RTP socket it returns a verdict from the relay's own counters and clock: `never_received` (0 packets in and the socket never `confirmed`), `stalled` (its `last packet` more than 2 s behind the newest in the same reply), `flowing`, or `not_reported`. A call with an early media branch has its sockets shown and no verdict. Calls listed and not queried are named in `not_queried`; `truncated` is true when `list` returned as many as asked for. Every value is `relay_reported`, and an absent value is absent, never 0. This TRANSMITS, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. The same snapshot `--relay-sessions --json` prints and the MCP `query_relay` tool returns with `sessions: true`. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
+    description = "Asks the configured relay for its held calls (`list`), then `query` for `call_id` and, with `scan=true`, for every held call up to the cap, `call_id` included: `max_calls`, or `--relay-holdings-max`, or 32. A cap above 1024 is lowered to 1024 and `cap_clamped` names the number asked for and the ceiling; `max_calls=0` is a 400 and sends nothing. For each party's RTP socket it returns a verdict from the relay's own counters and clock: `never_received` (0 packets in and the socket never `confirmed`), `stalled` (its `last packet` more than 2 s behind the newest in the same reply), `flowing`, or `not_reported`. A call with an early media branch has its sockets shown and no verdict. Calls listed and not queried are named in `not_queried`; `truncated` is true when `list` returned as many as asked for. Every value is `relay_reported`, and an absent value is absent, never 0. This TRANSMITS, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. The same snapshot `--relay-sessions --json` prints and the MCP `query_relay` tool returns with `sessions: true`. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
     params(RelaySessionsParams),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "outcome=ok with the snapshot, or a classification.", body = schema::RelaySessionsResponse),
+        (status = 400, description = "`max_calls` is 0. Nothing was sent.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
@@ -6590,10 +6613,12 @@ async fn get_relay_sessions(
     guard(&state, &headers, addr.ip())?;
     let rq = state.relay_query.clone();
     let ss = Arc::clone(&state.stream_store);
+    let cap = relay_cap(params.max_calls, &rq)?;
     let ask = RelayAsk::Sessions {
         call_id: params.call_id,
         scan: params.scan.unwrap_or(false),
         dialogs: Arc::clone(&state.dialog_store),
+        cap,
     };
     let body = tokio::task::spawn_blocking(move || relay_rest_answer(&rq, &ask, &ss))
         .await
@@ -7700,6 +7725,9 @@ pub mod schema {
         pub scan: Option<bool>,
         /// The most held calls a scan queries.
         pub cap: Option<u32>,
+        /// Present when the cap asked for was above 1024 and was lowered to
+        /// it: the number asked for and the ceiling.
+        pub cap_clamped: Option<crate::relay::scan_cap::CapClamp>,
         /// The calls queried, each with its directions and sockets.
         pub calls: Option<Vec<crate::output::query::relay_sessions::SessionCall>>,
         /// The calls listed and not queried.
@@ -7729,6 +7757,9 @@ pub mod schema {
         pub call_ids: Option<Vec<String>>,
         /// Whether the relay held more Call-IDs than it returned (holdings list).
         pub truncated: Option<bool>,
+        /// Present when `max_calls` was above 1024 and the relay was asked
+        /// for 1024 (holdings list): the number asked for and the ceiling.
+        pub cap_clamped: Option<crate::relay::scan_cap::CapClamp>,
         /// The Call-ID asked about (holdings per-call route).
         pub call_id: Option<String>,
         /// The tags, ports and streams the relay holds for one call (per-call).
@@ -10374,7 +10405,9 @@ mod tests {
             RelayAsk::Names,
             RelayAsk::Call("c".into()),
             RelayAsk::Compare("c".into()),
-            RelayAsk::Holdings { max_calls: 10 },
+            RelayAsk::Holdings {
+                cap: crate::relay::scan_cap::scan_cap(Some(10), None)?,
+            },
             RelayAsk::Holding("c".into()),
         ] {
             let v = relay_rest_answer(&rq, &ask, &ss);
@@ -10402,6 +10435,7 @@ mod tests {
             permit: None,
             polled: None,
             routing: None,
+            holdings_max: None,
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
         assert_eq!(v["outcome"], "not_permitted");
@@ -10468,8 +10502,15 @@ mod tests {
             permit: Some(live_permit()?),
             polled: None,
             routing: None,
+            holdings_max: None,
         };
-        let v = relay_rest_answer(&rq, &RelayAsk::Holdings { max_calls: 10 }, &empty_streams());
+        let v = relay_rest_answer(
+            &rq,
+            &RelayAsk::Holdings {
+                cap: crate::relay::scan_cap::scan_cap(Some(10), None)?,
+            },
+            &empty_streams(),
+        );
         assert_eq!(v["outcome"], "ok");
         assert_eq!(v["call_ids"][0], "call-a");
         assert_eq!(v["call_ids"][1], "call-b");
@@ -10486,6 +10527,7 @@ mod tests {
             permit: Some(live_permit()?),
             polled: None,
             routing: None,
+            holdings_max: None,
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Holding("call-x".into()), &empty_streams());
         assert_eq!(v["outcome"], "ok");
@@ -10639,6 +10681,7 @@ mod tests {
             permit: Some(live_permit()?),
             polled: None,
             routing: None,
+            holdings_max: None,
         })
     }
 
@@ -11057,6 +11100,7 @@ mod tests {
                 previous,
                 connect,
             ))),
+            holdings_max: None,
         })
     }
 
@@ -11124,6 +11168,7 @@ mod tests {
                 false,
                 connect,
             ))),
+            holdings_max: None,
         };
         let none = Arc::new(RwLock::new(DialogStore::new(16, false)));
         // Engine-a times out on every question, so engine-b's 77 is the
@@ -11194,6 +11239,7 @@ mod tests {
                 false,
                 connect,
             ))),
+            holdings_max: None,
         };
         let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
         assert_eq!(v["outcome"], "ok", "{v}");
@@ -11242,6 +11288,7 @@ mod tests {
             permit: Some(live_permit()?),
             polled: None,
             routing: Some(Arc::new(r)),
+            holdings_max: None,
         };
         let started = std::time::Instant::now();
         let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
@@ -11296,7 +11343,9 @@ mod tests {
         );
         let v = relay_rest_answer_with(
             &rq,
-            &RelayAsk::Holdings { max_calls: 32 },
+            &RelayAsk::Holdings {
+                cap: crate::relay::scan_cap::scan_cap(None, None)?,
+            },
             &empty_streams(),
             Some(&moved_dialogs()?),
         );
@@ -11319,6 +11368,7 @@ mod tests {
                 call_id: Some("m-1@example.invalid".into()),
                 scan: false,
                 dialogs: Arc::clone(&dialogs),
+                cap: crate::relay::scan_cap::scan_cap(None, None)?,
             },
             &empty_streams(),
             Some(&dialogs),
@@ -16685,6 +16735,267 @@ mod tests {
                 "{bad:?}: {problem:?}"
             );
         }
+    }
+
+    // ── RELAY-S0: one cap rule on REST ──────────────────────────────────
+
+    /// A relay that lists `held` Call-IDs whatever the limit and records
+    /// every `list` limit and query.
+    struct CapRelay {
+        held: usize,
+        asked: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl CapRelay {
+        fn new(held: usize) -> Arc<Self> {
+            Arc::new(Self {
+                held,
+                asked: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+
+        fn asked(&self) -> Result<Vec<String>, TestError> {
+            Ok(self.asked.lock().map_err(|e| e.to_string())?.clone())
+        }
+
+        fn lists_and_queries(&self) -> Result<(Vec<String>, usize), TestError> {
+            let asked = self.asked()?;
+            let lists = asked
+                .iter()
+                .filter(|a| a.starts_with("list"))
+                .cloned()
+                .collect();
+            let queries = asked.iter().filter(|a| a.starts_with("query")).count();
+            Ok((lists, queries))
+        }
+    }
+
+    impl crate::relay::reconcile::ReadOnlyRelay for CapRelay {
+        fn list(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            limit: u32,
+        ) -> anyhow::Result<ControlReply> {
+            self.asked
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .push(format!("list {limit}"));
+            Ok(ControlReply::Calls(crate::relay::types::Enumeration {
+                call_ids: (0..self.held)
+                    .map(|n| format!("held-{n:04}@example.invalid"))
+                    .collect(),
+                truncated: false,
+            }))
+        }
+        fn query(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            call_id: &str,
+        ) -> anyhow::Result<ControlReply> {
+            self.asked
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .push(format!("query {call_id}"));
+            anyhow::bail!("no such call")
+        }
+        fn statistics(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("never asked")
+        }
+        fn describe(&self) -> String {
+            "cap relay at 192.0.2.10:22222".to_string()
+        }
+    }
+
+    /// A router whose relay is `relay`, with `--relay-holdings-max` at
+    /// `holdings_max`.
+    fn cap_router(
+        relay: &Arc<CapRelay>,
+        holdings_max: Option<u32>,
+    ) -> Result<axum::Router, TestError> {
+        let mut state = make_state();
+        state.relay_query = RelayRestConfig {
+            relay: Some(
+                Arc::clone(relay) as Arc<dyn crate::relay::reconcile::ReadOnlyRelay + Send + Sync>
+            ),
+            permit: Some(live_permit()?),
+            polled: None,
+            routing: None,
+            holdings_max,
+        };
+        Ok(build_router(state))
+    }
+
+    /// GET `uri` and return the status and the JSON body.
+    async fn cap_get(
+        app: axum::Router,
+        uri: &str,
+    ) -> Result<(StatusCode, serde_json::Value), TestError> {
+        let resp = app
+            .oneshot(test_request(uri)?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let status = resp.status();
+        let body = body_to_string(resp.into_body()).await?;
+        Ok((status, serde_json::from_str(&body)?))
+    }
+
+    /// A sessions scan with no `max_calls` takes `--relay-holdings-max`.
+    #[tokio::test]
+    async fn rest_sessions_scan_takes_the_operators_default() -> Result<(), TestError> {
+        let relay = CapRelay::new(10);
+        let (status, v) =
+            cap_get(cap_router(&relay, Some(4))?, "/v1/relay/sessions?scan=true").await?;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(
+            relay.lists_and_queries()?,
+            (vec!["list 4".to_string()], 4),
+            "A sessions scan with no `max_calls` takes `--relay-holdings-max`"
+        );
+        assert_eq!(v["cap"], 4, "{v}");
+        Ok(())
+    }
+
+    /// Without the flag or `max_calls`, a REST scan takes 32.
+    #[tokio::test]
+    async fn rest_sessions_scan_without_either_takes_32() -> Result<(), TestError> {
+        let relay = CapRelay::new(40);
+        cap_get(cap_router(&relay, None)?, "/v1/relay/sessions?scan=true").await?;
+        assert_eq!(
+            relay.lists_and_queries()?,
+            (vec!["list 32".to_string()], 32),
+            "Without the flag or `max_calls`, a REST scan takes 32"
+        );
+        Ok(())
+    }
+
+    /// A sessions `max_calls` applies over the operator's default.
+    #[tokio::test]
+    async fn rest_sessions_max_calls_applies_over_the_default() -> Result<(), TestError> {
+        let relay = CapRelay::new(10);
+        let (_, v) = cap_get(
+            cap_router(&relay, Some(4))?,
+            "/v1/relay/sessions?scan=true&max_calls=7",
+        )
+        .await?;
+        assert_eq!(
+            relay.lists_and_queries()?,
+            (vec!["list 7".to_string()], 7),
+            "A sessions `max_calls` applies over the operator's default"
+        );
+        assert!(v.get("cap_clamped").is_none(), "{v}");
+        Ok(())
+    }
+
+    /// A sessions `max_calls` above 1024 is clamped, not refused, and the
+    /// answer says so.
+    #[tokio::test]
+    async fn rest_sessions_max_calls_above_the_ceiling_is_clamped() -> Result<(), TestError> {
+        let relay = CapRelay::new(1030);
+        let (status, v) = cap_get(
+            cap_router(&relay, None)?,
+            "/v1/relay/sessions?scan=true&max_calls=2000",
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(
+            relay.lists_and_queries()?,
+            (vec!["list 1024".to_string()], 1024),
+            "A sessions `max_calls` above 1024 is clamped, not refused, and the answer says so"
+        );
+        assert_eq!(
+            v["cap_clamped"],
+            json!({ "requested": 2000, "ceiling": 1024 }),
+            "{v}"
+        );
+        Ok(())
+    }
+
+    /// A sessions `max_calls` of 0 is a 400 problem and nothing is sent.
+    #[tokio::test]
+    async fn rest_sessions_max_calls_of_zero_is_a_400() -> Result<(), TestError> {
+        let relay = CapRelay::new(3);
+        let (status, v) = cap_get(
+            cap_router(&relay, None)?,
+            "/v1/relay/sessions?scan=true&max_calls=0",
+        )
+        .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert!(
+            v["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("at least 1")),
+            "{v}"
+        );
+        assert!(relay.asked()?.is_empty(), "nothing was sent");
+        Ok(())
+    }
+
+    /// A holdings ask with no `max_calls` takes `--relay-holdings-max`.
+    #[tokio::test]
+    async fn rest_holdings_take_the_operators_default() -> Result<(), TestError> {
+        let relay = CapRelay::new(1);
+        cap_get(cap_router(&relay, Some(9))?, "/v1/relay/holdings").await?;
+        assert_eq!(
+            relay.asked()?,
+            vec!["list 9".to_string()],
+            "A holdings ask with no `max_calls` takes `--relay-holdings-max`"
+        );
+        Ok(())
+    }
+
+    /// A holdings `max_calls` above 1024 asks for 1024 and says so.
+    #[tokio::test]
+    async fn rest_holdings_above_the_ceiling_are_clamped() -> Result<(), TestError> {
+        let relay = CapRelay::new(1);
+        let (status, v) = cap_get(
+            cap_router(&relay, None)?,
+            "/v1/relay/holdings?max_calls=4294967295",
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert_eq!(
+            relay.asked()?,
+            vec!["list 1024".to_string()],
+            "A holdings `max_calls` above 1024 asks for 1024 and says so"
+        );
+        assert_eq!(
+            v["cap_clamped"],
+            json!({ "requested": 4_294_967_295_u32, "ceiling": 1024 }),
+            "{v}"
+        );
+        Ok(())
+    }
+
+    /// A holdings `max_calls` of 0 is a 400 problem and nothing is sent.
+    #[tokio::test]
+    async fn rest_holdings_max_calls_of_zero_is_a_400() -> Result<(), TestError> {
+        let relay = CapRelay::new(1);
+        let (status, v) =
+            cap_get(cap_router(&relay, None)?, "/v1/relay/holdings?max_calls=0").await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert!(relay.asked()?.is_empty(), "nothing was sent");
+        Ok(())
+    }
+
+    /// An unclamped holdings answer carries no `cap_clamped`.
+    #[tokio::test]
+    async fn rest_holdings_unclamped_carry_no_clamp() -> Result<(), TestError> {
+        let relay = CapRelay::new(1);
+        let (_, v) = cap_get(
+            cap_router(&relay, None)?,
+            "/v1/relay/holdings?max_calls=1024",
+        )
+        .await?;
+        assert_eq!(
+            relay.asked()?,
+            vec!["list 1024".to_string()],
+            "An unclamped holdings answer carries no `cap_clamped`"
+        );
+        assert!(v.get("cap_clamped").is_none(), "{v}");
+        Ok(())
     }
 }
 

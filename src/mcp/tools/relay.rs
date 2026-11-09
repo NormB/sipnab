@@ -770,9 +770,16 @@ impl SipnabMcp {
         } else {
             "list"
         };
-        let max_calls = params
-            .max_calls
-            .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+        // The one cap rule: only an enumeration takes `max_calls`, so a
+        // query about one call is not refused for it.
+        let cap = match params.call_id.as_deref() {
+            None => mcp_cap(params.max_calls, &access)?,
+            Some(_) => crate::relay::scan_cap::ScanCap {
+                cap: crate::relay::reconcile::DEFAULT_LIST_LIMIT,
+                clamped: None,
+            },
+        };
+        let max_calls = cap.cap;
         if params.call_id.is_none()
             && let Some(routing) = access.routing.as_deref()
         {
@@ -784,7 +791,10 @@ impl SipnabMcp {
                 max_calls,
                 chrono::Utc::now(),
             );
-            return answer_json(&RelayAnswer::from_holdings(access.addr, &holdings)?);
+            return answer_json(&RelayAnswer {
+                cap_clamped: cap.clamped,
+                ..RelayAnswer::from_holdings(access.addr, &holdings)?
+            });
         }
         let reply = match params.call_id.as_deref() {
             Some(call_id) => client.query(&access.permit, call_id),
@@ -793,6 +803,7 @@ impl SipnabMcp {
         let payload = match reply {
             Ok(reply) => RelayAnswer {
                 engine,
+                cap_clamped: cap.clamped,
                 ..RelayAnswer::from_reply(asked, relay_addr, &reply)
             },
             Err(e) => {
@@ -1483,12 +1494,13 @@ fn decode_ng_one(server: &SipnabMcp, pointer: &str) -> NgDecode {
 pub struct QueryRelayParams {
     /// One Call-ID to ask about. Omit it to enumerate what the relay holds.
     pub call_id: Option<String>,
-    /// Cap on the Call-IDs an enumeration returns.
-    ///
-    /// Named for what it bounds rather than `limit`: this is the relay's own
-    /// `list` argument, traveling to another process, not a page over data
-    /// sipnab already holds. rtpengine warns that raising it may exceed a UDP
-    /// datagram, and a truncated answer is reported rather than padded.
+    // Named for what it bounds rather than `limit`: this is the relay's own
+    // `list` argument, traveling to another process, not a page over data
+    // sipnab already holds. Kept out of the doc comment, which is the schema
+    // description every agent reads.
+    /// Cap on the Call-IDs an enumeration returns and the held calls a
+    /// sessions scan queries. Omitted: the operator's default, or 32. Above
+    /// 1024 it is lowered to 1024 and `cap_clamped` says so; 0 is refused.
     pub max_calls: Option<u32>,
     /// Return the sessions snapshot: each queried call's media verdict per
     /// direction.
@@ -1611,6 +1623,12 @@ pub struct RelayAnswer {
     /// returned the first 32 of an unknown number" are different statements.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+    /// Present when `max_calls` (or the operator's `--relay-holdings-max`)
+    /// was above the ceiling of 1024 and the enumeration asked for 1024: the
+    /// number asked for and the ceiling. A sessions answer carries its own
+    /// under `sessions`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cap_clamped: Option<crate::relay::scan_cap::CapClamp>,
     /// The Call-ID a `query` asked about, carried from the REQUEST.
     ///
     /// rtpengine's `query` answer does not echo the Call-ID it was asked about,
@@ -1720,6 +1738,27 @@ impl SipnabMcp {
     }
 }
 
+/// The cap a `query_relay` enumeration or sessions ask applies: the agent's
+/// `max_calls`, else the operator's `--relay-holdings-max`, by the one rule
+/// ([`crate::relay::scan_cap::scan_cap`]). Above 1024 it is lowered to 1024
+/// and the answer says so.
+///
+/// # Errors
+///
+/// `invalid_params` (-32602) when `max_calls` is 0, before anything is sent.
+fn mcp_cap(
+    requested: Option<u32>,
+    access: &crate::mcp::server::RelayQueryAccess,
+) -> Result<crate::relay::scan_cap::ScanCap, rmcp::ErrorData> {
+    crate::relay::scan_cap::scan_cap(requested, access.holdings_max).map_err(|e| {
+        crate::mcp::errors::refuse_param(
+            crate::mcp::errors::Reason::InvalidValue,
+            "max_calls",
+            format!("max_calls: {e}"),
+        )
+    })
+}
+
 impl SipnabMcp {
     /// The `sessions: true` answer of `query_relay`: one snapshot from the
     /// function every surface uses, with this server's dialog store saying
@@ -1732,15 +1771,8 @@ impl SipnabMcp {
         use crate::output::query::relay_sessions::{
             Routed, SessionsAsk, relay_sessions_routed, sip_saw_end,
         };
-        let cap = params
-            .max_calls
-            .unwrap_or(crate::relay::reconcile::DEFAULT_LIST_LIMIT);
-        let ask = SessionsAsk {
-            selected: params.call_id.as_deref(),
-            scan: params.scan == Some(true),
-            cap,
-            list_limit: cap,
-        };
+        let cap = mcp_cap(params.max_calls, access)?;
+        let ask = SessionsAsk::capped(params.call_id.as_deref(), params.scan == Some(true), cap);
         let dialogs = std::sync::Arc::clone(&self.dialog_store);
         let ended = move |c: &str| sip_saw_end(&dialogs.read(), c);
         let sdp_dialogs = std::sync::Arc::clone(&self.dialog_store);
@@ -1934,6 +1966,7 @@ impl RelayAnswer {
             detail: None,
             call_ids: None,
             truncated: None,
+            cap_clamped: None,
             call_id: None,
             tags: None,
             refusal: None,
@@ -3833,7 +3866,7 @@ mod relay_handler_tests {
             .await
             .err()
             .ok_or("a malformed cursor must be refused")?;
-        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS, "{err:?}");
+        assert_eq!(err.code.0, -32602, "{err:?}");
         Ok(())
     }
 
@@ -4386,6 +4419,292 @@ mod relay_handler_tests {
             .await
             .map_err(|e| format!("the relay answered: {e:?}"))?;
         assert_eq!(relay.asked(), vec!["list 7".to_string()]);
+        Ok(())
+    }
+
+    /// A relay double that lists `held` Call-IDs, whatever the limit.
+    fn listing(held: usize) -> Arc<RelayDouble> {
+        Arc::new(RelayDouble {
+            list: Some(ControlReply::Calls(Enumeration {
+                call_ids: (0..held)
+                    .map(|n| format!("held-{n:04}@example.invalid"))
+                    .collect(),
+                truncated: false,
+            })),
+            ..Default::default()
+        })
+    }
+
+    /// Ask `query_relay` with `params` of a server whose operator set
+    /// `--relay-holdings-max` to `holdings_max`.
+    async fn ask_relay(
+        relay: &Arc<RelayDouble>,
+        holdings_max: Option<u32>,
+        params: QueryRelayParams,
+    ) -> Result<Result<CallToolResult, rmcp::ErrorData>, TestError> {
+        Ok(asking(empty(), relay)?
+            .with_relay_holdings_max(holdings_max)
+            .query_relay(Parameters(params))
+            .await)
+    }
+
+    /// The `list` limits and the number of queries a relay double was asked.
+    fn lists_and_queries(relay: &RelayDouble) -> (Vec<String>, usize) {
+        let asked = relay.asked();
+        let lists = asked
+            .iter()
+            .filter(|a| a.starts_with("list"))
+            .cloned()
+            .collect();
+        let queries = asked.iter().filter(|a| a.starts_with("query")).count();
+        (lists, queries)
+    }
+
+    /// A sessions scan with no `max_calls` takes the operator's
+    /// `--relay-holdings-max`.
+    #[tokio::test]
+    async fn a_sessions_scan_takes_the_operators_default() -> Result<(), TestError> {
+        let relay = listing(10);
+        let params = QueryRelayParams {
+            sessions: Some(true),
+            scan: Some(true),
+            ..QueryRelayParams::default()
+        };
+        let answer = ask_relay(&relay, Some(5), params)
+            .await?
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            lists_and_queries(&relay),
+            (vec!["list 5".to_string()], 5),
+            "A sessions scan with no `max_calls` takes the operator's `--relay-holdings-max`"
+        );
+        assert_eq!(
+            payload(&answer)?["sessions"]["cap"],
+            5,
+            "A sessions scan with no `max_calls` takes the operator's `--relay-holdings-max`"
+        );
+        Ok(())
+    }
+
+    /// A sessions scan with no `max_calls` and no flag takes 32.
+    #[tokio::test]
+    async fn a_sessions_scan_without_either_takes_32() -> Result<(), TestError> {
+        let relay = listing(40);
+        let params = QueryRelayParams {
+            sessions: Some(true),
+            scan: Some(true),
+            ..QueryRelayParams::default()
+        };
+        ask_relay(&relay, None, params)
+            .await?
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            lists_and_queries(&relay),
+            (vec!["list 32".to_string()], 32),
+            "A sessions scan with no `max_calls` and no flag takes 32"
+        );
+        Ok(())
+    }
+
+    /// An agent's `max_calls` applies over the operator's default, up to the
+    /// ceiling, and is not a clamp.
+    #[tokio::test]
+    async fn an_agents_max_calls_applies_over_the_default() -> Result<(), TestError> {
+        let relay = listing(3);
+        let params = QueryRelayParams {
+            sessions: Some(true),
+            scan: Some(true),
+            max_calls: Some(500),
+            ..QueryRelayParams::default()
+        };
+        let answer = ask_relay(&relay, Some(5), params)
+            .await?
+            .map_err(|e| format!("{e:?}"))?;
+        let v = payload(&answer)?;
+        assert_eq!(
+            lists_and_queries(&relay),
+            (vec!["list 500".to_string()], 3),
+            "An agent's `max_calls` applies over the operator's default, up to the ceiling, and is not a clamp"
+        );
+        assert!(v["sessions"].get("cap_clamped").is_none(), "{v}");
+        Ok(())
+    }
+
+    /// A sessions `max_calls` above the ceiling is clamped to 1024, not
+    /// refused, and the answer says so.
+    #[tokio::test]
+    async fn a_sessions_max_calls_above_the_ceiling_is_clamped_and_says_so() -> Result<(), TestError>
+    {
+        let relay = listing(1100);
+        let params = QueryRelayParams {
+            sessions: Some(true),
+            scan: Some(true),
+            max_calls: Some(100_000),
+            ..QueryRelayParams::default()
+        };
+        let answer = ask_relay(&relay, None, params)
+            .await?
+            .map_err(|e| format!("{e:?}"))?;
+        let v = payload(&answer)?;
+        assert_eq!(
+            lists_and_queries(&relay),
+            (vec!["list 1024".to_string()], 1024),
+            "one list and at most 1024 queries"
+        );
+        assert_eq!(v["sessions"]["cap"], 1024, "{v}");
+        assert_eq!(
+            v["sessions"]["cap_clamped"],
+            serde_json::json!({ "requested": 100_000, "ceiling": 1024 }),
+            "A sessions `max_calls` above the ceiling is clamped to 1024, not refused, and the answer says so"
+        );
+        Ok(())
+    }
+
+    /// `max_calls` of exactly 1024 is not a clamp.
+    #[tokio::test]
+    async fn a_sessions_max_calls_at_the_ceiling_is_not_a_clamp() -> Result<(), TestError> {
+        let relay = listing(2);
+        let params = QueryRelayParams {
+            sessions: Some(true),
+            max_calls: Some(1024),
+            ..QueryRelayParams::default()
+        };
+        let answer = ask_relay(&relay, None, params)
+            .await?
+            .map_err(|e| format!("{e:?}"))?;
+        let v = payload(&answer)?;
+        assert_eq!(
+            lists_and_queries(&relay).0,
+            vec!["list 1024".to_string()],
+            "`max_calls` of exactly 1024 is not a clamp"
+        );
+        assert!(v["sessions"].get("cap_clamped").is_none(), "{v}");
+        Ok(())
+    }
+
+    /// A sessions `max_calls` of 0 is refused before anything is sent.
+    #[tokio::test]
+    async fn a_sessions_max_calls_of_zero_is_refused_unsent() -> Result<(), TestError> {
+        let relay = listing(3);
+        let params = QueryRelayParams {
+            sessions: Some(true),
+            scan: Some(true),
+            max_calls: Some(0),
+            ..QueryRelayParams::default()
+        };
+        let err = ask_relay(&relay, None, params)
+            .await?
+            .err()
+            .ok_or("max_calls 0 must be refused")?;
+        assert_eq!(err.code.0, -32602, "{err:?}");
+        assert!(err.message.contains("at least 1"), "{err:?}");
+        assert_eq!(
+            err.data.as_ref().and_then(|d| d.get("param")),
+            Some(&serde_json::json!("max_calls")),
+            "{err:?}"
+        );
+        assert!(
+            relay.asked().is_empty(),
+            "nothing was sent: {:?}",
+            relay.asked()
+        );
+        Ok(())
+    }
+
+    /// The selected call counts inside the cap: `max_calls` 2 with a selected
+    /// call queries it and one other.
+    #[tokio::test]
+    async fn the_selected_call_counts_inside_the_cap() -> Result<(), TestError> {
+        let relay = listing(6);
+        let params = QueryRelayParams {
+            sessions: Some(true),
+            scan: Some(true),
+            call_id: Some("held-0003@example.invalid".to_string()),
+            max_calls: Some(2),
+        };
+        ask_relay(&relay, None, params)
+            .await?
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            lists_and_queries(&relay),
+            (vec!["list 2".to_string()], 2),
+            "The selected call counts inside the cap: `max_calls` 2 with a selected call queries it and one other"
+        );
+        Ok(())
+    }
+
+    /// A listing with no `max_calls` takes the operator's default.
+    #[tokio::test]
+    async fn a_listing_takes_the_operators_default() -> Result<(), TestError> {
+        let relay = listing(1);
+        ask_relay(&relay, Some(9), QueryRelayParams::default())
+            .await?
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            relay.asked(),
+            vec!["list 9".to_string()],
+            "A listing with no `max_calls` takes the operator's default"
+        );
+        Ok(())
+    }
+
+    /// A listing `max_calls` above the ceiling asks for 1024 and says so.
+    #[tokio::test]
+    async fn a_listing_above_the_ceiling_is_clamped_and_says_so() -> Result<(), TestError> {
+        let relay = listing(1);
+        let params = QueryRelayParams {
+            max_calls: Some(5000),
+            ..QueryRelayParams::default()
+        };
+        let answer = ask_relay(&relay, None, params)
+            .await?
+            .map_err(|e| format!("{e:?}"))?;
+        assert_eq!(
+            relay.asked(),
+            vec!["list 1024".to_string()],
+            "A listing `max_calls` above the ceiling asks for 1024 and says so"
+        );
+        assert_eq!(
+            payload(&answer)?["cap_clamped"],
+            serde_json::json!({ "requested": 5000, "ceiling": 1024 }),
+            "A listing `max_calls` above the ceiling asks for 1024 and says so"
+        );
+        Ok(())
+    }
+
+    /// A listing `max_calls` of 0 is refused before anything is sent.
+    #[tokio::test]
+    async fn a_listing_max_calls_of_zero_is_refused_unsent() -> Result<(), TestError> {
+        let relay = listing(1);
+        let params = QueryRelayParams {
+            max_calls: Some(0),
+            ..QueryRelayParams::default()
+        };
+        let err = ask_relay(&relay, None, params)
+            .await?
+            .err()
+            .ok_or("max_calls 0 must be refused")?;
+        assert_eq!(err.code.0, -32602, "{err:?}");
+        assert!(relay.asked().is_empty(), "nothing was sent");
+        Ok(())
+    }
+
+    /// A query about one call does not take `max_calls`, so 0 there is not a
+    /// refusal: nothing it bounds is asked.
+    #[tokio::test]
+    async fn a_query_ignores_max_calls_even_zero() -> Result<(), TestError> {
+        let relay = listing(1);
+        let params = QueryRelayParams {
+            call_id: Some("c1@example.invalid".to_string()),
+            max_calls: Some(0),
+            ..QueryRelayParams::default()
+        };
+        let _ = ask_relay(&relay, None, params).await?;
+        assert_eq!(
+            relay.asked(),
+            vec!["query c1@example.invalid".to_string()],
+            "A query about one call does not take `max_calls`, so 0 there is not a refusal: nothing it bounds is asked"
+        );
         Ok(())
     }
 
@@ -5602,6 +5921,7 @@ mod sessions_answer_tests {
             truncated: (reach == "ok").then_some(false),
             scan: true,
             cap: 32,
+            cap_clamped: None,
             calls: Vec::new(),
             not_queried: Vec::new(),
             stall_seconds: 2,

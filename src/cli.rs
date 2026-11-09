@@ -1217,6 +1217,10 @@ pub struct NameResolutionArgs {
     /// single file is fine; a set is refused, because this flag names one
     /// output path and a set has nowhere to go. Stripping only the first would
     /// hand over the rest with their keys intact while reporting success.
+    ///
+    /// On success it prints one line on stderr, whatever the log level: how
+    /// many Decryption Secrets Blocks it removed, counted by kind, and the
+    /// path it wrote.
     #[arg(
         help_heading = "Name resolution",
         long = "strip-secrets",
@@ -8521,12 +8525,7 @@ impl Cli {
         // Only the stdio transport, though. Its JSON-RPC wire is stdout, which
         // the TUI draws on; over HTTP the wire is a socket, and the operator
         // can watch the capture in the TUI while an agent queries it.
-        if self.output_args.call_report.is_some()
-            || self.output_args.export_vcon.is_some()
-            || self.output_args.export_vcon_when.is_some()
-            || self.mcp_owns_stdout()
-            || one_shot::any_implies_no_tui(&self.one_shots())
-        {
+        if self.implying_no_tui().iter().any(|flag| flag.active) {
             self.mode_args.no_tui = true;
         }
         if self.output_args.export_vcon.is_some() && self.output_args.vcon_out.is_none() {
@@ -8645,6 +8644,40 @@ impl Cli {
         #[cfg(test)]
         shots.extend(self.test_one_shots.iter().copied());
         shots
+    }
+
+    /// Every flag that implies `-N`, with whether this command line set it.
+    ///
+    /// The flags [`Self::normalize`] handles by name, then every one-shot that
+    /// declares `implies_no_tui`. [`one_shot::listing`] writes the names to
+    /// `.config/implies-no-tui.txt` for `scripts/check-cookbook.py`.
+    #[must_use]
+    pub fn implying_no_tui(&self) -> Vec<one_shot::ImpliesNoTui> {
+        let named = |name, active| one_shot::ImpliesNoTui {
+            name,
+            active,
+            unless: None,
+        };
+        let mut flags = vec![
+            named("--call-report", self.output_args.call_report.is_some()),
+            named("--export-vcon", self.output_args.export_vcon.is_some()),
+            named(
+                "--export-vcon-when",
+                self.output_args.export_vcon_when.is_some(),
+            ),
+            one_shot::ImpliesNoTui {
+                name: "--mcp",
+                active: self.mcp_owns_stdout(),
+                unless: Some(("--mcp-transport", "http")),
+            },
+        ];
+        flags.extend(
+            self.one_shots()
+                .into_iter()
+                .filter(|shot| shot.implies_no_tui)
+                .map(|shot| named(shot.name, shot.active)),
+        );
+        flags
     }
 
     /// The flags on this command line that write their answer to standard
@@ -8878,9 +8911,12 @@ impl Cli {
     }
 
     pub fn validate(&self) -> Result<(), crate::Error> {
-        if self.gate_args.listing_cap_without_a_listing() {
+        if self
+            .gate_args
+            .listing_cap_without_a_relay(self.rtp_args.rtpengine_control.is_some())
+        {
             return Err(crate::Error::CliValidation(
-                "--relay-holdings-max bounds --relay-holdings or --relay-sessions and needs one of them"
+                "--relay-holdings-max sets how many held calls a relay ask covers and needs --rtpengine-control"
                     .to_string(),
             ));
         }
@@ -12950,8 +12986,19 @@ mod tests {
         // sets and why, so matching the raw body made this gate pass on a
         // mutation that deleted the very line it checks for -- it was reading
         // the explanation instead of the assignment.
+        //
+        // `normalize` sets -N from `implying_no_tui`, the table it shares
+        // with `.config/implies-no-tui.txt`, so the fields are read from that
+        // function's code as well.
+        let table_at = src
+            .find("pub fn implying_no_tui(&self)")
+            .ok_or("cli.rs no longer has the implying_no_tui table")?;
+        let table_end = src[table_at..]
+            .find("\n    }")
+            .map_or(src.len(), |e| table_at + e);
         let normalize: String = src[normalize_at..normalize_end]
             .lines()
+            .chain(src[table_at..table_end].lines())
             .filter(|l| !l.trim_start().starts_with("//"))
             .collect::<Vec<_>>()
             .join("\n");
@@ -15422,6 +15469,122 @@ mod tests {
 mod one_shot_plumbing_tests {
     use super::*;
 
+    // ── Owed for a cookbook checker that restated which flags imply -N ──────
+
+    /// The regeneration switch for `.config/implies-no-tui.txt`.
+    const BLESS_IMPLIES: &str = "SIPNAB_BLESS_IMPLIES_NO_TUI";
+
+    /// `.config/implies-no-tui.txt` is exactly what the CLI declares.
+    ///
+    /// `scripts/check-cookbook.py` reads that file to decide whether a
+    /// command raises the TUI. Held equal here, it is the CLI's own list and
+    /// not a copy that drifts when a query flag is added.
+    #[test]
+    fn the_implies_no_tui_file_is_what_the_cli_declares() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab"]).map_err(|e| format!("parse: {e}"))?;
+        let want = one_shot::listing(&cli.implying_no_tui());
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".config/implies-no-tui.txt");
+        if std::env::var_os(BLESS_IMPLIES).is_some() {
+            std::fs::write(&path, &want).map_err(|e| format!("write: {e}"))?;
+            return Ok(());
+        }
+        let have = std::fs::read_to_string(&path).map_err(|e| format!("read: {e}"))?;
+        assert!(
+            have == want,
+            "{} is stale; regenerate with `{BLESS_IMPLIES}=1 cargo test --features full \
+             --lib -- the_implies_no_tui_file`.\nwant:\n{want}\nhave:\n{have}",
+            path.display()
+        );
+        Ok(())
+    }
+
+    /// The table names the flags `normalize` handles by name and the query
+    /// family, and `--mcp` carries its http exception.
+    #[test]
+    fn the_implying_table_names_every_family() -> Result<(), TestError> {
+        let cli = Cli::try_parse_from(["sipnab"]).map_err(|e| format!("parse: {e}"))?;
+        let table = cli.implying_no_tui();
+        let names: Vec<&str> = table.iter().map(|f| f.name).collect();
+        for flag in [
+            "--call-report",
+            "--export-vcon",
+            "--export-vcon-when",
+            "--mcp",
+            "--count-by",
+            "--timeline",
+            "--talkers",
+            "--call-tree",
+        ] {
+            assert!(names.contains(&flag), "{flag} is missing: {names:?}");
+        }
+        let mcp = table.iter().find(|f| f.name == "--mcp").ok_or("--mcp")?;
+        assert_eq!(
+            mcp.unless,
+            Some(("--mcp-transport", "http")),
+            "MCP over HTTP serves beside the TUI"
+        );
+        assert!(
+            table.iter().all(|f| !f.active),
+            "a bare command line set {table:?}"
+        );
+        Ok(())
+    }
+
+    /// Every entry that is active implies `-N`, and `normalize` reads the
+    /// table: each flag on its own makes the run headless.
+    #[test]
+    fn each_listed_flag_alone_makes_the_run_headless() -> Result<(), TestError> {
+        let bare = Cli::try_parse_from(["sipnab"]).map_err(|e| format!("parse: {e}"))?;
+        for f in bare.implying_no_tui() {
+            let mut cli = Cli::try_parse_from(["sipnab"]).map_err(|e| format!("parse: {e}"))?;
+            match f.name {
+                "--call-report" => cli.output_args.call_report = Some("x@example.com".into()),
+                "--export-vcon" => cli.output_args.export_vcon = Some("x@example.com".into()),
+                "--mcp" => cli.mcp_args.mcp = true,
+                _ => continue,
+            }
+            assert!(
+                cli.implying_no_tui()
+                    .iter()
+                    .any(|g| g.name == f.name && g.active),
+                "{} set but not active in the table",
+                f.name
+            );
+            cli.normalize();
+            assert!(cli.mode_args.no_tui, "{} did not imply -N", f.name);
+        }
+        Ok(())
+    }
+
+    /// The listing writes one flag per line under a header, and the
+    /// exception in the `unless` form the script parses.
+    #[test]
+    fn the_listing_writes_the_exception_form() {
+        let text = one_shot::listing(&[
+            one_shot::ImpliesNoTui {
+                name: "--a",
+                active: false,
+                unless: None,
+            },
+            one_shot::ImpliesNoTui {
+                name: "--b",
+                active: true,
+                unless: Some(("--c", "d")),
+            },
+        ]);
+        let body: Vec<&str> = text
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+            .collect();
+        assert_eq!(
+            body,
+            ["--a", "--b unless --c d"],
+            "one flag per line, the exception in its written form"
+        );
+        assert!(text.starts_with("# "), "no header: {text}");
+    }
+
     type TestError = Box<dyn std::error::Error>;
 
     /// A parsed command line plus one injected declaration, normalized the way
@@ -15605,5 +15768,63 @@ mod one_shot_plumbing_tests {
         let cli = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])?;
         assert!(cli.one_shots().iter().all(|s| !s.active));
         Ok(())
+    }
+
+    /// `--relay-holdings-max` sets the default for every surface that asks
+    /// the relay, so it is accepted beside `--rtpengine-control` with no
+    /// one-shot flag: a TUI, REST or MCP run takes it.
+    #[test]
+    fn the_cap_flag_sets_the_default_for_a_tui_rest_or_mcp_run()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for extra in [
+            &[][..],
+            &["-N", "--api", "127.0.0.1:0", "--api-allow-relay-query"][..],
+        ] {
+            let mut argv = vec![
+                "sipnab",
+                "-L",
+                "127.0.0.1:0",
+                "--rtpengine-control",
+                "127.0.0.1:22222",
+                "--relay-holdings-max",
+                "64",
+            ];
+            argv.extend_from_slice(extra);
+            Cli::try_parse_from_args(&argv)?
+                .validate()
+                .map_err(|e| format!("{argv:?} must validate: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// Without a relay to ask, `--relay-holdings-max` is refused, naming
+    /// `--rtpengine-control`.
+    #[test]
+    fn the_cap_flag_needs_a_relay_to_ask() -> Result<(), Box<dyn std::error::Error>> {
+        let e =
+            Cli::try_parse_from_args(["sipnab", "-L", "127.0.0.1:0", "--relay-holdings-max", "5"])?
+                .validate()
+                .err()
+                .map(|e| e.to_string())
+                .ok_or("a cap with no relay to ask is refused")?;
+        assert!(e.contains("--rtpengine-control"), "{e}");
+        Ok(())
+    }
+
+    /// `--relay-holdings-max 0` is refused in the cap rule's own words.
+    #[test]
+    fn the_cap_flag_refuses_zero_in_the_rules_words() {
+        let e = Cli::try_parse_from_args([
+            "sipnab",
+            "--rtpengine-control",
+            "127.0.0.1:22222",
+            "--relay-holdings",
+            "--relay-holdings-max",
+            "0",
+        ])
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+        assert!(e.contains("at least 1") && e.contains("1024"), "{e}");
     }
 }

@@ -1142,13 +1142,18 @@ impl App {
             let sdp_of: crate::relay::engines::SdpLookup = Arc::new(move |c: &str| {
                 crate::relay::engines::call_sightings(&sdp_dialogs.read(), c)
             });
+            // The one cap rule, from `--relay-holdings-max`. Its parser
+            // refuses 0, so the refusal is only reachable from an access
+            // built by hand; the view then says so and asks nothing.
+            let cap = match crate::relay::scan_cap::scan_cap(None, access.holdings_max) {
+                Ok(cap) => cap,
+                Err(e) => {
+                    self.relay_stats.text = format!("--relay-holdings-max: {e}\n");
+                    return;
+                }
+            };
             self.relay_sessions.rx = Some(relay_sessions::spawn_snapshot_for(
-                access,
-                selected,
-                scan,
-                crate::relay::reconcile::DEFAULT_LIST_LIMIT,
-                ended,
-                sdp_of,
+                access, selected, scan, cap, ended, sdp_of,
             ));
             self.relay_sessions.asked_at = Some(now);
         }
@@ -1166,7 +1171,13 @@ impl App {
                     Some(call) => {
                         let ss = self.stream_store.read();
                         relay_sessions::compose_socket_compare(call, &|addr, port, way| {
-                            captured_on(&ss, addr, port, way)
+                            crate::output::query::relay_capture::captured_on(
+                                ss.iter(),
+                                cid,
+                                addr,
+                                port,
+                                way,
+                            )
                         })
                     }
                     None => relay_sessions::compose_call(&self.relay_sessions, cid),
@@ -2553,33 +2564,6 @@ fn refresh_text<K: PartialEq>(
         *cache.key = Some(now);
         cache.floor.mark();
     }
-}
-
-/// What this capture saw sent to (`ToRelay`) or from (`FromRelay`) one relay
-/// socket: the sum of `packet_count` over the streams whose destination, or
-/// source, is that address and port. `None` when the capture holds no such
-/// stream, which is "not captured", never a measured 0.
-fn captured_on(
-    ss: &crate::rtp::stream_store::StreamStore,
-    addr: &str,
-    port: u16,
-    way: relay_sessions::Way,
-) -> Option<u64> {
-    let ip: std::net::IpAddr = addr.parse().ok()?;
-    let want = std::net::SocketAddr::new(ip, port);
-    let mut seen = false;
-    let mut total = 0u64;
-    for s in ss.iter() {
-        let at = match way {
-            relay_sessions::Way::ToRelay => s.key.dst,
-            relay_sessions::Way::FromRelay => s.key.src,
-        };
-        if at == want {
-            seen = true;
-            total = total.saturating_add(s.packet_count);
-        }
-    }
-    seen.then_some(total)
 }
 
 #[cfg(test)]
@@ -5260,6 +5244,7 @@ mod relay_sessions_drive_tests {
             permit: TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?,
             addr: "192.0.2.10:22222".parse()?,
             routing: None,
+            holdings_max: None,
         });
         Ok(app)
     }
@@ -5398,6 +5383,299 @@ mod relay_sessions_drive_tests {
             *a.asked.lock().map_err(|e| e.to_string())?,
             ["list"],
             "the default engine is only listed"
+        );
+        Ok(())
+    }
+}
+
+/// The sessions view's scan cap and its `K` capture join (RELAY-S0): the cap
+/// from `--relay-holdings-max` by the one rule, and a capture count scoped to
+/// the asked call.
+#[cfg(test)]
+mod relay_s0_tests {
+    use super::*;
+    use crate::relay::reconcile::ReadOnlyRelay;
+    use crate::relay::types::{
+        CallView, ControlReply, Enumeration, RelayStream, RelayStreamFacts, RelayTag,
+        StreamCounters,
+    };
+    use crate::security::transmit_guard::TransmitPermit;
+    use std::sync::Mutex;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    const CALL: &str = "a@example.invalid";
+
+    /// A relay that lists `held` calls whatever the limit, records each
+    /// `list` limit and query, and answers every query with one call whose
+    /// caller socket is 192.0.2.11:30000, 300 packets in.
+    struct Holding {
+        held: usize,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl Holding {
+        fn new(held: usize) -> Arc<Self> {
+            Arc::new(Self {
+                held,
+                asked: Mutex::new(Vec::new()),
+            })
+        }
+
+        fn asked(&self) -> Result<Vec<String>, TestError> {
+            Ok(self.asked.lock().map_err(|e| e.to_string())?.clone())
+        }
+    }
+
+    impl ReadOnlyRelay for Holding {
+        fn list(&self, _: &TransmitPermit, limit: u32) -> anyhow::Result<ControlReply> {
+            self.asked
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .push(format!("list {limit}"));
+            let mut call_ids = vec![CALL.to_string()];
+            call_ids.extend((1..self.held).map(|n| format!("held-{n:02}@example.invalid")));
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids,
+                truncated: false,
+            }))
+        }
+        fn query(&self, _: &TransmitPermit, c: &str) -> anyhow::Result<ControlReply> {
+            self.asked
+                .lock()
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .push(format!("query {c}"));
+            Ok(ControlReply::Call(CallView {
+                call_id: c.to_string(),
+                tags: vec![RelayTag {
+                    tag: "caller-tag-1".to_string(),
+                    in_dialogue_with: Vec::new(),
+                    media_subscriptions: Vec::new(),
+                    codec: None,
+                    streams: vec![RelayStream {
+                        local_address: "192.0.2.11".to_string(),
+                        local_port: 30000,
+                        endpoint: None,
+                        advertised_endpoint: None,
+                        is_rtcp: false,
+                        ssrcs: Vec::new(),
+                        facts: RelayStreamFacts {
+                            ingress: StreamCounters {
+                                packets: Some(300),
+                                ..StreamCounters::default()
+                            },
+                            ..RelayStreamFacts::default()
+                        },
+                    }],
+                }],
+            }))
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("never asked")
+        }
+        fn describe(&self) -> String {
+            "holding".to_string()
+        }
+    }
+
+    fn app_with(relay: &Arc<Holding>, holdings_max: Option<u32>) -> Result<App, TestError> {
+        let mut app = App::new_test();
+        let live = crate::capture::CaptureSource::Live {
+            device: "eth0".to_string(),
+        };
+        app.relay_query = relay_stats::RelayQueryState::Ready(relay_stats::TuiRelayAccess {
+            relay: Arc::clone(relay) as Arc<dyn ReadOnlyRelay + Send + Sync>,
+            permit: TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?,
+            addr: "192.0.2.10:22222".parse()?,
+            routing: None,
+            holdings_max,
+        });
+        Ok(app)
+    }
+
+    /// Wait for the snapshot in flight and take it.
+    fn land(app: &mut App) -> Result<(), TestError> {
+        let rx = app.relay_sessions.rx.take().ok_or("a snapshot in flight")?;
+        let snapshot = rx.recv_timeout(std::time::Duration::from_secs(10))?;
+        let (tx, again) = std::sync::mpsc::channel();
+        tx.send(snapshot)?;
+        app.relay_sessions.rx = Some(again);
+        app.relay_sessions.absorb(std::time::Instant::now());
+        Ok(())
+    }
+
+    /// Open the sessions list, then scan once, and return the relay's asks.
+    fn scan(relay: &Arc<Holding>, holdings_max: Option<u32>) -> Result<App, TestError> {
+        let mut app = app_with(relay, holdings_max)?;
+        app.current_view = View::RelayStats {
+            call_id: None,
+            mode: RelayStatsMode::Sessions,
+        };
+        app.relay_sessions.scan_requested = true;
+        app.drive_relay_stats();
+        land(&mut app)?;
+        app.drive_relay_stats();
+        Ok(app)
+    }
+
+    /// One stream to the relay socket with `packets` packets, linked to
+    /// `call`.
+    fn to_socket(
+        ssrc: u32,
+        src: &str,
+        packets: u64,
+        call: Option<&str>,
+    ) -> Result<crate::rtp::stream::RtpStream, TestError> {
+        let header = crate::rtp::parser::RtpHeader {
+            version: 2,
+            padding: false,
+            extension: false,
+            csrc_count: 0,
+            marker: false,
+            payload_type: 0,
+            sequence: 1,
+            timestamp: 160,
+            ssrc,
+            payload_offset: 12,
+        };
+        let mut s = crate::rtp::stream::RtpStream::new(
+            crate::rtp::stream::StreamKey::new(ssrc, src.parse()?, "192.0.2.11:30000".parse()?),
+            &header,
+            chrono::DateTime::UNIX_EPOCH,
+        );
+        s.packet_count = packets;
+        s.associated_dialog = call.map(str::to_string);
+        Ok(s)
+    }
+
+    /// Open `K` for the call and return the view's text.
+    fn compare_text(app: &mut App) -> Result<String, TestError> {
+        app.current_view = View::RelayStats {
+            call_id: Some(CALL.to_string()),
+            mode: RelayStatsMode::SessionCompare,
+        };
+        app.drive_relay_stats();
+        land(app)?;
+        app.drive_relay_stats();
+        Ok(app.relay_stats.text.clone())
+    }
+
+    /// Without the flag a TUI scan takes the default of 32.
+    #[test]
+    fn a_tui_scan_without_the_flag_takes_the_default() -> Result<(), TestError> {
+        let relay = Holding::new(40);
+        let _app = scan(&relay, None)?;
+        let asked = relay.asked()?;
+        assert_eq!(
+            asked.first().map(String::as_str),
+            Some("list 32"),
+            "{asked:?}"
+        );
+        assert_eq!(
+            asked.iter().filter(|a| a.starts_with("query")).count(),
+            32,
+            "Without the flag a TUI scan takes the default of 32"
+        );
+        Ok(())
+    }
+
+    /// `--relay-holdings-max` sets the TUI scan's cap.
+    #[test]
+    fn a_tui_scan_takes_the_operators_cap() -> Result<(), TestError> {
+        let relay = Holding::new(5);
+        let _app = scan(&relay, Some(2))?;
+        let asked = relay.asked()?;
+        assert_eq!(
+            asked.first().map(String::as_str),
+            Some("list 2"),
+            "{asked:?}"
+        );
+        assert_eq!(
+            asked.iter().filter(|a| a.starts_with("query")).count(),
+            2,
+            "a relay that lists more than the cap is queried up to the cap: {asked:?}"
+        );
+        Ok(())
+    }
+
+    /// A flag above the ceiling is lowered to 1024, and the view says so.
+    #[test]
+    fn a_tui_cap_above_the_ceiling_is_clamped_and_the_view_says_so() -> Result<(), TestError> {
+        let relay = Holding::new(1);
+        let app = scan(&relay, Some(5000))?;
+        let asked = relay.asked()?;
+        assert_eq!(
+            asked.first().map(String::as_str),
+            Some("list 1024"),
+            "{asked:?}"
+        );
+        assert!(
+            app.relay_stats.text.contains("the ceiling is 1024"),
+            "{}",
+            app.relay_stats.text
+        );
+        Ok(())
+    }
+
+    /// `K` counts only the asked call's packets on a relay port another call
+    /// used before it.
+    #[test]
+    fn k_counts_only_the_asked_calls_packets_on_a_reused_port() -> Result<(), TestError> {
+        let relay = Holding::new(1);
+        let mut app = app_with(&relay, None)?;
+        {
+            let mut ss = app.stream_store.write();
+            ss.insert_for_test(to_socket(
+                1,
+                "198.51.100.5:4000",
+                3000,
+                Some("b@example.invalid"),
+            )?);
+            ss.insert_for_test(to_socket(2, "198.51.100.6:4000", 299, Some(CALL))?);
+        }
+        let text = compare_text(&mut app)?;
+        assert!(
+            text.contains("in:  relay_reported 300  sipnab_measured 299\n"),
+            "{text}"
+        );
+        Ok(())
+    }
+
+    /// `K` reads "not captured" when only another call used the socket.
+    #[test]
+    fn k_reads_not_captured_when_only_another_call_used_the_port() -> Result<(), TestError> {
+        let relay = Holding::new(1);
+        let mut app = app_with(&relay, None)?;
+        app.stream_store.write().insert_for_test(to_socket(
+            1,
+            "198.51.100.5:4000",
+            3000,
+            Some("b@example.invalid"),
+        )?);
+        let text = compare_text(&mut app)?;
+        assert!(
+            text.contains("in:  relay_reported 300  sipnab_measured not captured\n"),
+            "{text}"
+        );
+        Ok(())
+    }
+
+    /// `K` shows a stream linked to no dialog apart, labeled.
+    #[test]
+    fn k_shows_an_unlinked_stream_apart() -> Result<(), TestError> {
+        let relay = Holding::new(1);
+        let mut app = app_with(&relay, None)?;
+        {
+            let mut ss = app.stream_store.write();
+            ss.insert_for_test(to_socket(1, "198.51.100.5:4000", 290, Some(CALL))?);
+            ss.insert_for_test(to_socket(2, "198.51.100.7:4000", 30, None)?);
+        }
+        let text = compare_text(&mut app)?;
+        assert!(
+            text.contains(
+                "in:  relay_reported 300  sipnab_measured 290  not linked to a dialog 30\n"
+            ),
+            "{text}"
         );
         Ok(())
     }

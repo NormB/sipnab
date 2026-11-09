@@ -3629,11 +3629,18 @@ fn ci_derives_the_test_count_and_hands_the_suite_output_to_the_site() -> Result<
         upload + 1
     );
     let body = workflow_step_body(wf, "Hand the suite output to the site build")?;
+    // Pull requests upload it too (RELEASE-FAST C): a merge commit whose own
+    // push run has not finished takes the count from its merged pull
+    // request's head on the same tree (scripts/fetch-ci-suite-output.py).
+    assert!(
+        !body.contains("if: github.event_name == 'push'"),
+        "{wf} step \"Hand the suite output to the site build\" runs on pushes only, so a \
+         release deploy waits for the merge commit's push run again:\n{body}"
+    );
     for needle in [
         "uses: actions/upload-artifact@",
         "name: suite-output",
         "path: test-output.txt",
-        "if: github.event_name == 'push'",
     ] {
         assert!(
             body.contains(needle),
@@ -6650,7 +6657,15 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // Measurement: with origin/main's release.yml swapped back in, the scan
     // reads 234; quality.yml, 235; pages.yml, 238. The composite actions and
     // the new script are not in the scan.
-    const EXPECTED_REFERENCES: usize = 239;
+    // 239 -> 255 (RELEASE-FAST C): release.yml's advertise, records and tap
+    // jobs name scripts/advertise-release.py, release-records.py,
+    // homebrew-tap-push.py and the files they read (+7); pages.yml's
+    // advertisement step and path filter name scripts/advertise-release.py,
+    // download-markers.txt and build-site-pages.py (+7); cert-expiry.yml's
+    // advertisement step names scripts/advertise-release.py (+2).
+    // Measurement: with origin/main's release.yml swapped back in the scan
+    // reads 248, with its pages.yml 248, with its cert-expiry.yml 253.
+    const EXPECTED_REFERENCES: usize = 255;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

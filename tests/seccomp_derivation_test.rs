@@ -535,3 +535,283 @@ fn no_change_happens_before_the_trap_is_armed() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+// ── Owed for a collector that read only the kernel log ──────────────────────
+//
+// On a host with an audit daemon the kernel hands seccomp records to that
+// daemon and they land in its log (`/var/log/audit/audit.log`, searchable with
+// `ausearch -m SECCOMP`), not in the kernel ring buffer. The collector streamed
+// only `dmesg --follow`, so on such a host every run ended in NO RECORDS and no
+// allowlist could be derived there. The source is now chosen by a function
+// over `auditctl -s` output, and the one record parser reads both formats.
+
+/// Run one of the script's text-only modes over `input`.
+fn mode(flag: &str, input: &str) -> Result<(i32, String), TestError> {
+    let mut child = Command::new("sh")
+        .arg(script())
+        .arg(flag)
+        .current_dir(repo())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("spawn the script in {flag}: {e}"))?;
+    // A mode that exits without reading its input closes the pipe; that is
+    // the script's answer, and the exit code and text below report it.
+    match child
+        .stdin
+        .as_mut()
+        .ok_or("stdin")?
+        .write_all(input.as_bytes())
+    {
+        Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => {
+            return Err(format!("write the input: {e}").into());
+        }
+        _ => {}
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("the script finishes: {e}"))?;
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok((out.status.code().unwrap_or(-1), text))
+}
+
+/// `auditctl -s` from a host where a daemon is connected, as auditctl prints it.
+const AUDITCTL_WITH_DAEMON: &str = "enabled 1\nfailure 1\npid 1043\nrate_limit 0\n\
+    backlog_limit 8192\nlost 0\nbacklog 0\nbacklog_wait_time 60000\n\
+    backlog_wait_time_actual 0\nloginuid_immutable 0 unlocked\n";
+
+/// One audit-log SECCOMP record, in the enriched format auditd writes by
+/// default: the raw fields, a group separator (0x1d), then the interpreted
+/// fields, where `SYSCALL=` carries the name rather than the number.
+fn audit_record(nr: u32, name: &str) -> String {
+    format!(
+        "type=SECCOMP msg=audit(1794138579.292:4786689): auid=4294967295 uid=0 \
+         gid=0 ses=4294967295 subj=unconfined pid=7 comm=\"sipnab\" \
+         exe=\"/usr/bin/sipnab\" sig=0 arch=c00000b7 syscall={nr} compat=0 \
+         ip=0xffffa94416ec code=0x7ffc0000\u{1d}AUID=\"unset\" UID=\"root\" \
+         GID=\"root\" ARCH=aarch64 SYSCALL={name}\n"
+    )
+}
+
+/// A host with a connected audit daemon reads the audit log.
+#[test]
+fn a_host_with_an_audit_daemon_reads_the_audit_log() -> Result<(), TestError> {
+    let (code, out) = mode("--source", AUDITCTL_WITH_DAEMON)?;
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.trim(), "audit", "the daemon's records were not chosen");
+    Ok(())
+}
+
+/// A pid of 0 means no daemon, so the records are in the kernel log.
+#[test]
+fn a_pid_of_zero_reads_the_kernel_log() -> Result<(), TestError> {
+    let (code, out) = mode(
+        "--source",
+        &AUDITCTL_WITH_DAEMON.replace("pid 1043", "pid 0"),
+    )?;
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(
+        out.trim(),
+        "kernel",
+        "a host without a daemon chose the audit log"
+    );
+    Ok(())
+}
+
+/// No `auditctl -s` output at all (not installed, or it refused) reads the
+/// kernel log, and a field whose name only ends in `pid` is not the pid.
+#[test]
+fn no_auditctl_output_or_a_lookalike_field_reads_the_kernel_log() -> Result<(), TestError> {
+    let (code, out) = mode("--source", "")?;
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.trim(), "kernel", "empty status chose the audit log");
+    let (code, out) = mode("--source", "enabled 1\nppid 77\nlost 0\n")?;
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.trim(), "kernel", "`ppid 77` was read as a daemon pid");
+    Ok(())
+}
+
+/// The record parser reads audit-log SECCOMP records.
+#[test]
+fn audit_log_records_are_parsed_by_the_same_judge() -> Result<(), TestError> {
+    let mut text = String::new();
+    for (shape, calls) in [
+        ("a", &[(63_u32, "read"), (291, "statx")][..]),
+        ("b", &[(63, "read")][..]),
+        ("c", &[(291, "statx")][..]),
+    ] {
+        text.push_str(&format!("== SHAPE {shape}\n"));
+        for (nr, name) in calls {
+            text.push_str(&audit_record(*nr, name));
+        }
+    }
+    let (code, out) = classify(&text)?;
+    assert_eq!(code, 0, "audit-log records were not understood:\n{out}");
+    assert!(out.contains("records 4 across 3 shape(s)"), "{out}");
+    assert!(
+        out.contains("union is 2 syscall(s)") && out.contains("63 291"),
+        "the numbers were not extracted from audit-log records:\n{out}"
+    );
+    Ok(())
+}
+
+/// `ausearch -m SECCOMP` output, separators and time lines included, parses.
+#[test]
+fn ausearch_output_with_its_separators_parses() -> Result<(), TestError> {
+    let mut text = String::new();
+    for shape in ["a", "b", "c"] {
+        text.push_str(&format!(
+            "== SHAPE {shape}\n----\ntime->Sun Nov  8 07:21:01 2026\n"
+        ));
+        text.push_str(&audit_record(17, "getcwd"));
+    }
+    let (code, out) = classify(&text)?;
+    assert_eq!(code, 0, "{out}");
+    assert!(
+        out.contains("union is 1 syscall(s)") && out.contains(" 17"),
+        "{out}"
+    );
+    Ok(())
+}
+
+/// The interpreted `SYSCALL=name` field is not taken for the number.
+///
+/// The enriched trailer repeats the field name in capitals with a name as its
+/// value. A parser that matched it would record nothing, or the wrong field.
+#[test]
+fn the_enriched_syscall_name_is_not_taken_for_the_number() -> Result<(), TestError> {
+    let mut text = String::new();
+    for shape in ["a", "b", "c"] {
+        text.push_str(&format!("== SHAPE {shape}\n"));
+        text.push_str(&audit_record(291, "statx"));
+    }
+    let (code, out) = classify(&text)?;
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("union is 1 syscall(s)"), "{out}");
+    assert!(out.contains(" 291"), "{out}");
+    assert!(
+        !out.contains("statx"),
+        "the name leaked into the union:\n{out}"
+    );
+    Ok(())
+}
+
+/// Records the audit subsystem lost during a shape refuse the run.
+///
+/// The audit path has no `callbacks suppressed` line; its loss shows as a
+/// rising `lost` counter in `auditctl -s`. The collector writes the rise for
+/// each shape as `== LOST <n>`, and the judge refuses any non-zero one.
+#[test]
+fn records_the_audit_subsystem_lost_refuse_the_run() -> Result<(), TestError> {
+    let mut text = log(&[("a", &[1]), ("b", &[1])]);
+    text.push_str("== LOST 0\n== SHAPE c\n");
+    text.push_str(&record(1));
+    text.push_str("== LOST 12\n");
+    let (code, out) = classify(&text)?;
+    assert_eq!(
+        code, 1,
+        "a run that lost audit records was accepted:\n{out}"
+    );
+    assert!(out.contains("LOST"), "{out}");
+    assert!(!out.contains("SETTLED"), "{out}");
+    assert!(
+        out.contains("auditctl -b"),
+        "the refusal names no fix for the audit path:\n{out}"
+    );
+    Ok(())
+}
+
+/// A lost count of zero is not a loss.
+#[test]
+fn a_lost_count_of_zero_is_not_a_loss() -> Result<(), TestError> {
+    let mut text = String::new();
+    for shape in ["a", "b", "c"] {
+        text.push_str(&format!("== SHAPE {shape}\n"));
+        text.push_str(&record(1));
+        text.push_str("== LOST 0\n");
+    }
+    let (code, out) = classify(&text)?;
+    assert_eq!(code, 0, "a zero lost count was treated as a loss:\n{out}");
+    assert!(out.contains("SETTLED"), "{out}");
+    Ok(())
+}
+
+/// The audit log's path comes from `log_file` in auditd.conf.
+#[test]
+fn the_audit_log_path_comes_from_auditd_conf() -> Result<(), TestError> {
+    let conf = "# log_file = /nowhere\nlocal_events = yes\nlog_file = /srv/audit/a.log\n";
+    let (code, out) = mode("--audit-log-file", conf)?;
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(out.trim(), "/srv/audit/a.log", "{out}");
+    Ok(())
+}
+
+/// Without a `log_file` line (or without a readable config) it is auditd's
+/// default.
+#[test]
+fn a_config_without_log_file_means_the_default_path() -> Result<(), TestError> {
+    for conf in ["", "# log_file = /nowhere\nflush = INCREMENTAL_ASYNC\n"] {
+        let (code, out) = mode("--audit-log-file", conf)?;
+        assert_eq!(code, 0, "{out}");
+        assert_eq!(
+            out.trim(),
+            "/var/log/audit/audit.log",
+            "for {conf:?}: {out}"
+        );
+    }
+    Ok(())
+}
+
+/// The collector chooses its source with the tested function and streams the
+/// audit log when that is the source.
+///
+/// Structural because the collector needs root: the property is that the code
+/// path calls `choose_source` (the function `--source` drives) rather than a
+/// second copy of the rule, and follows the audit log by name across rotation.
+#[test]
+fn the_collector_uses_the_tested_source_choice() -> Result<(), TestError> {
+    let src =
+        std::fs::read_to_string(script()).map_err(|e| format!("the script is in the tree: {e}"))?;
+    let code: String = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let collector = code
+        .split("The collector")
+        .nth(1)
+        .unwrap_or(&code[code.find("BIN=").ok_or("the collector starts")?..]);
+    assert!(
+        collector.contains("auditctl -s 2>/dev/null | choose_source"),
+        "the collector does not choose its source with choose_source"
+    );
+    assert!(
+        collector.contains("tail -F -n 0 \"$AUDIT_LOG\""),
+        "the collector does not follow the audit log"
+    );
+    assert_eq!(
+        code.matches("pid [0-9]").count() + code.matches("$1 == \"pid\"").count(),
+        1,
+        "the source rule appears more or less than once"
+    );
+    Ok(())
+}
+
+/// The judge writes no file under a fixed /tmp name.
+///
+/// The collector runs as root; a predictable path in a world-writable
+/// directory is one another user can plant a link at.
+#[test]
+fn the_script_writes_no_fixed_tmp_path() -> Result<(), TestError> {
+    let src =
+        std::fs::read_to_string(script()).map_err(|e| format!("the script is in the tree: {e}"))?;
+    let code: Vec<&str> = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter(|l| l.contains("/tmp/"))
+        .collect();
+    assert!(code.is_empty(), "fixed /tmp paths in code: {code:?}");
+    Ok(())
+}

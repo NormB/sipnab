@@ -350,7 +350,16 @@ them, and leaves the original as it was:
 sipnab --strip-secrets shareable.pcapng -I with-keys.pcapng
 ```
 
-It prints nothing and exits `0`. Check the copy by reading both:
+It exits `0` and prints one line on stderr, at any log level and with
+`--quiet`: how many Decryption Secrets Blocks it removed, counted by the kind of
+secret each held, and the path it wrote.
+
+```text
+Stripped 1 Decryption Secrets Block (1 TLS Key Log): with-keys.pcapng -> shareable.pcapng
+```
+
+A capture with no secrets says `0 Decryption Secrets Blocks (the input had
+none)` and still writes the copy. Check the copy by reading both:
 
 ```bash
 sipnab -N -I with-keys.pcapng --portrange 1-65535 --report --no-cli-print

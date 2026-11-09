@@ -1,0 +1,26 @@
+# The download markers of docs/install.md: the lines that tell a reader which
+# release to download. They name `published_version` from website/config.toml,
+# never the crate version.
+#
+# One regular expression per line, with exactly one capture group, the
+# version. Python's `re` and Rust's `regex` read every line here the same way.
+# Two readers, one list:
+#   scripts/advertise-release.py moves every captured version from the old
+#     advertised release to the new one (pages.yml at deploy time, and the
+#     advertisement commit a release pull request carries);
+#   tests/docs_drift_test.rs (docs_current_version_markers_match_cargo)
+#     requires each line to match at least once and to name published_version.
+# Add a line here when install.md gains a line naming the release to download.
+SIPNAB_VERSION=(\d+\.\d+\.\d+)
+e\.g\. (\d+\.\d+\.\d+)
+(?m)^ *VERSION=(\d+\.\d+\.\d+)$
+\| Artifact \((\d+\.\d+\.\d+)\) \|
+sipnab-(\d+\.\d+\.\d+)-1\.(?:x86_64|aarch64)(?:-noaudio)?\.rpm
+dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.x86_64\.rpm
+dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.x86_64-noaudio\.rpm
+dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.aarch64\.rpm
+dnf install \./sipnab-(\d+\.\d+\.\d+)-1\.aarch64-noaudio\.rpm
+ghcr\.io/normb/sipnab:(\d+\.\d+\.\d+)
+(?m)^\| `(\d+\.\d+\.\d+)` \| That release \|
+For `(\d+\.\d+\.\d+)` that is
+docker\.yml@refs/tags/v(\d+\.\d+\.\d+)

@@ -5,7 +5,7 @@
 //!
 //! CLAUDE.md has said "delete every temp file in the SAME turn" for months,
 //! and on 2026-09-01 this repository held 21 stray `.git/*.log` files I had
-//! written across sessions, three abandoned worktrees totalling 136 GB, and a
+//! written across sessions, three abandoned worktrees totaling 136 GB, and a
 //! `target/` of 1.6 TB — 44% of the disk — on a box whose root filesystem
 //! genuinely fills up. The instruction was right and it was not enforced by
 //! anything, so it was followed exactly as well as an instruction with no gate

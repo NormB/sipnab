@@ -271,6 +271,7 @@ fn build_tui_relay_query(
         permit,
         addr,
         routing: crate::app::relay_engines::routing(cli, selection),
+        holdings_max: cli.gate_args.relay_holdings_max,
     })
 }
 
@@ -2563,6 +2564,28 @@ mod tests {
             plain.routing.is_none(),
             "an engine rule gives the view its routing"
         );
+        Ok(())
+    }
+
+    /// `--relay-holdings-max` reaches the sessions view's access, so the
+    /// view's scan takes the operator's cap; without it the access carries
+    /// none and the view takes the default.
+    #[test]
+    fn the_cap_flag_reaches_the_views_access() -> Result<(), TestError> {
+        use crate::tui::relay_stats::RelayQueryState;
+        for (extra, want) in [
+            (&["--relay-holdings-max", "7"][..], Some(7)),
+            (&[][..], None),
+        ] {
+            let mut argv = vec!["--rtpengine-control", "127.0.0.1:22222"];
+            argv.extend_from_slice(extra);
+            let RelayQueryState::Ready(access) =
+                super::build_tui_relay_query(&cli_from(&argv), Some(live_permit()?), None)
+            else {
+                return Err("expected Ready".into());
+            };
+            assert_eq!(access.holdings_max, want, "{argv:?}");
+        }
         Ok(())
     }
 

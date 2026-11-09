@@ -1688,7 +1688,7 @@ For implementers picking this up, the bridge from each MCP tool to existing func
 |---|---|
 | Bind address parsing | `output::api::parse_bind_addr` ([`src/output/api.rs:1155`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L1155)) |
 | Bearer auth | `output::api::check_auth` + `constant_time_eq` ([`src/output/api.rs:283`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L283), `:309`) |
-| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:566`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L566)) |
+| Rate limiting | `output::api::RateLimiter` ([`src/output/api.rs:584`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L584)) |
 | Shared store mirroring | `mirror_to_shared_stores` — **gone**; no such function exists today |
 | Server thread + tokio runtime | `start_api_server` — **gone**; see [`src/app/servers.rs`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs) |
 | Privilege drop ordering | Existing capture-ready rendezvous + `privilege::drop_privileges` (`src/main.rs:387–442`) |

@@ -866,7 +866,7 @@ impl FilterExpr {
     /// An expression that matches **no** dialog.
     ///
     /// Used to represent "show nothing" — e.g. the filter dialog with every SIP
-    /// method unchecked — so the call-list filter path keeps funnelling through
+    /// method unchecked — so the call-list filter path keeps funneling through
     /// a single `Option<FilterExpr>` instead of growing a special case.
     ///
     /// `one_way` is a concrete per-dialog boolean, so requiring it to be both

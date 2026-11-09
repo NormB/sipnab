@@ -2604,6 +2604,10 @@ fn serve_hep_stream<R: std::io::Read>(
 /// The longest a reader spends forwarding what a connection already holds
 /// once the listener stops. A peer that keeps sending cannot hold the stop
 /// past it.
+///
+/// At a `--duration` stop it also bounds how long the accept loop goes on
+/// taking connections from its backlog ([`accepts_after_stop`]) and how long
+/// a TLS handshake under way goes on ([`tls_handshake_given_up`]).
 const HEP_STREAM_DRAIN_BUDGET: Duration = Duration::from_secs(1);
 
 /// Forward what a stream connection holds when the listener stops: the whole
@@ -2731,14 +2735,63 @@ impl HepStreamShared<'_, '_> {
     /// Whether a reader should stop: the listener is winding down, a
     /// shutdown was requested, or a capture limit has been reached.
     fn stopping(&self) -> bool {
-        use std::sync::atomic::Ordering;
-        self.stop.load(Ordering::Relaxed)
-            || listener_stop(
-                self.config,
-                self.received.load(Ordering::Relaxed),
-                self.start,
-            )
-            .is_some()
+        self.stop.load(std::sync::atomic::Ordering::Relaxed) || self.limit().is_some()
+    }
+
+    /// The stop [`listener_stop`] names for this listener now, if any.
+    fn limit(&self) -> Option<ListenerStop> {
+        listener_stop(
+            self.config,
+            self.received.load(std::sync::atomic::Ordering::Relaxed),
+            self.start,
+        )
+    }
+
+    /// Whether a TLS handshake with `peer` must be given up before its next
+    /// step, by [`tls_handshake_given_up`] on this listener's state now.
+    ///
+    /// # Arguments
+    ///
+    /// * `deadline` — the handshake's own deadline.
+    /// * `stop_seen` — when this handshake first saw the listener stop;
+    ///   set here the first time it does.
+    /// * `peer` — the outer source address, for log lines.
+    ///
+    /// # Side effects
+    ///
+    /// Reads the stop flag, the process-wide shutdown flag and the monotonic
+    /// clock; logs a `tracing::warn` line when the deadline has passed and a
+    /// `tracing::debug` line when a stop ends the handshake.
+    fn tls_handshake_cut_short(
+        &self,
+        deadline: Instant,
+        stop_seen: &mut Option<Instant>,
+        peer: IpAddr,
+    ) -> bool {
+        let now = Instant::now();
+        let stop = self.limit();
+        let wound_down = self.stop.load(std::sync::atomic::Ordering::Relaxed);
+        if stop_seen.is_none() && (stop.is_some() || wound_down) {
+            *stop_seen = Some(now);
+        }
+        if !tls_handshake_given_up(
+            stop,
+            wound_down,
+            *stop_seen,
+            now,
+            deadline,
+            HEP_STREAM_DRAIN_BUDGET,
+        ) {
+            return false;
+        }
+        if now >= deadline {
+            tracing::warn!(
+                "HEP TLS handshake with {peer} did not finish within {HEP_TLS_HANDSHAKE_TIMEOUT:?}"
+            );
+        } else {
+            tracing::debug!("HEP TLS handshake with {peer} given up: the listener stopped");
+        }
+        true
     }
 
     /// Hand every whole HEP packet at the front of `buf` to the ingest path
@@ -2759,8 +2812,10 @@ impl HepStreamShared<'_, '_> {
     ///
     /// # Side effects
     ///
-    /// Counts every packet received; forwards admitted ones to `tx`
-    /// (blocking on backpressure); sets `stop` if the pipeline's receiving
+    /// Counts every packet received while `--count` leaves a place for it
+    /// ([`next_received`]), leaving a packet past the count in `buf`; forwards
+    /// admitted ones to `tx` (blocking on backpressure); sets `stop` if the
+    /// pipeline's receiving
     /// side has gone; logs resumptions and the reason a connection ends.
     fn forward_whole_packets(
         &self,
@@ -2788,7 +2843,20 @@ impl HepStreamShared<'_, '_> {
             // packets", so a run whose packets are dropped by the allowlist,
             // rate limiter, parser or auth still makes progress toward the
             // limit rather than appearing to stall.
-            self.received.fetch_add(1, Ordering::Relaxed);
+            //
+            // The place is claimed before the packet is taken, in one atomic
+            // step, so a packet at or past `--count` is neither counted nor
+            // forwarded, however many connections reach the count at once
+            // (CAP-2-COUNT-OVERSHOOT).
+            if self
+                .received
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |received| {
+                    next_received(received, self.config.count)
+                })
+                .is_err()
+            {
+                return ControlFlow::Break(());
+            }
             let outcome = self
                 .ingest
                 .lock()
@@ -2827,6 +2895,19 @@ impl ListenerStop {
             }
         }
     }
+}
+
+/// The packet count after one more packet, when `count` (`--count`) leaves
+/// a place for it; `None` when `received` packets have already met it.
+///
+/// One rule for every stream reader: the packet is counted, and forwarded,
+/// only when this returns a place for it.
+#[inline]
+fn next_received(received: u64, count: Option<u64>) -> Option<u64> {
+    if count.is_some_and(|max_count| received >= max_count) {
+        return None;
+    }
+    received.checked_add(1)
 }
 
 /// The `--count` limit in `config`, when `received` packets have met it;
@@ -2868,6 +2949,78 @@ fn listener_stop(config: &CaptureConfig, received: u64, start: Instant) -> Optio
         return Some(ListenerStop::Shutdown);
     }
     capture_limit_reached(config, received, start)
+}
+
+/// Whether a stream listener stopped by `stop` still finishes what its peers
+/// sent before it: `--duration` does; `--count` has every packet it asked
+/// for, and a signal ends the receive loop without reading what the listener
+/// still delivers.
+#[inline]
+fn stop_finishes_what_was_sent(stop: ListenerStop) -> bool {
+    matches!(stop, ListenerStop::Duration(_))
+}
+
+/// Whether the accept loop of a stream listener stopped by `stop` at
+/// `stopped_at` takes another connection from its backlog at `now` (CAP-2).
+///
+/// A connection the kernel completed before the stop holds what its peer
+/// sent before the deadline, and closing it unaccepted loses all of it. The
+/// loop takes such connections for `budget` after the stop, so a peer that
+/// keeps connecting cannot hold the stop open.
+///
+/// # Arguments
+///
+/// * `stop` — the limit the listener reached.
+/// * `stopped_at` — when the accept loop saw it.
+/// * `now` — the time of this pass.
+/// * `budget` — how long after the stop the backlog is taken.
+#[inline]
+fn accepts_after_stop(
+    stop: ListenerStop,
+    stopped_at: Instant,
+    now: Instant,
+    budget: Duration,
+) -> bool {
+    stop_finishes_what_was_sent(stop) && now.saturating_duration_since(stopped_at) < budget
+}
+
+/// Whether a TLS handshake under way is given up before its next step.
+///
+/// Before any stop the handshake goes on until `deadline`. At a stop that
+/// finishes what was sent ([`stop_finishes_what_was_sent`]) it goes on for
+/// `budget` after the handshake first saw the stop, so the peer of a
+/// connection taken from the backlog can send what it queued before the
+/// deadline (CAP-2). At any other stop, or when the listener winds down with
+/// no limit reached, it is given up at once.
+///
+/// # Arguments
+///
+/// * `stop` — the limit the listener has reached, if any.
+/// * `wound_down` — the listener's stop flag: its accept loop has ended or
+///   its pipeline has gone.
+/// * `stop_seen` — when this handshake first saw `stop` or `wound_down`.
+/// * `now` — the time of this step.
+/// * `deadline` — the handshake's own deadline.
+/// * `budget` — how long a handshake goes on after it first saw the stop.
+#[inline]
+fn tls_handshake_given_up(
+    stop: Option<ListenerStop>,
+    wound_down: bool,
+    stop_seen: Option<Instant>,
+    now: Instant,
+    deadline: Instant,
+    budget: Duration,
+) -> bool {
+    if now >= deadline {
+        return true;
+    }
+    match stop {
+        Some(stop) if stop_finishes_what_was_sent(stop) => {
+            stop_seen.is_none_or(|seen| now.saturating_duration_since(seen) >= budget)
+        }
+        Some(_) => true,
+        None => wound_down,
+    }
 }
 
 /// Log the resumptions one received packet reported, then hand its packet,
@@ -2984,6 +3137,11 @@ fn log_resumed(received: &Received, bind_addr: &str) {
 /// and ingest state need no `Arc`. Every reader polls `stop` on its read
 /// timeout, which bounds teardown at [`HEP_STREAM_READ_TIMEOUT`].
 ///
+/// At a `--duration` stop the loop goes on taking the connections already
+/// waiting in its backlog, until one accept finds none or
+/// [`HEP_STREAM_DRAIN_BUDGET`] has passed ([`accepts_after_stop`]); each is
+/// read as every other connection is at a stop (CAP-2).
+///
 /// # Errors
 ///
 /// The socket cannot be bound or configured, or a non-transient accept error
@@ -3054,24 +3212,39 @@ fn capture_hep_stream(
     let mut fatal: Option<anyhow::Error> = None;
 
     std::thread::scope(|scope| {
+        // The stop the loop has seen, and when. From then on the loop only
+        // takes what is waiting in the backlog (CAP-2).
+        let mut stopped: Option<(ListenerStop, Instant)> = None;
         loop {
-            if let Some(stop) = listener_stop(
-                config,
-                shared.received.load(Ordering::Relaxed),
-                shared.start,
-            ) {
-                stop.log();
-                break;
+            let now = Instant::now();
+            match stopped {
+                Some((stop, at)) => {
+                    if !accepts_after_stop(stop, at, now, HEP_STREAM_DRAIN_BUDGET) {
+                        break;
+                    }
+                }
+                None => {
+                    if let Some(stop) = shared.limit() {
+                        stop.log();
+                        stopped = Some((stop, now));
+                        continue;
+                    }
+                    // Every pass, as the datagram loop does: readers on other
+                    // threads feed the watch, and this loop is the one that
+                    // polls it. Taken as a value so the ingest lock is not held
+                    // while the line is written.
+                    let sweep = shared.ingest.lock().sweep(now);
+                    log_sweep(sweep, bind_addr, false);
+                }
             }
-
-            // Every pass, as the datagram loop does: readers on other threads
-            // feed the watch, and this loop is the one that polls it. Taken as
-            // a value so the ingest lock is not held while the line is written.
-            let sweep = shared.ingest.lock().sweep(Instant::now());
-            log_sweep(sweep, bind_addr, false);
 
             let (sock, peer) = match listener.accept() {
                 Ok(pair) => pair,
+                // After the stop, an empty backlog ends the loop: every
+                // connection the kernel completed before it has been taken.
+                Err(ref e) if stopped.is_some() && e.kind() == std::io::ErrorKind::WouldBlock => {
+                    break;
+                }
                 Err(ref e) if is_transient_recv_error(e.kind()) => {
                     std::thread::sleep(HEP_ACCEPT_POLL);
                     continue;
@@ -3119,17 +3292,20 @@ fn capture_hep_stream(
 ///
 /// # Returns
 ///
-/// The established stream, or `None` — the handshake failed, timed out, or the
-/// listener is shutting down — in which case it has already been logged.
+/// The established stream, or `None` — the handshake failed, timed out, or
+/// was given up at a stop ([`tls_handshake_given_up`]) — in which case it has
+/// already been logged.
 ///
 /// # Side effects
 ///
-/// Reads and writes the socket for as long as the handshake takes.
+/// Reads and writes the socket for as long as the handshake takes; reads the
+/// listener's stop flag, the process-wide shutdown flag and the monotonic
+/// clock.
 fn hep_tls_accept(
     sock: std::net::TcpStream,
     peer: IpAddr,
     cfg: std::sync::Arc<rustls::ServerConfig>,
-    stop: &std::sync::atomic::AtomicBool,
+    shared: &HepStreamShared<'_, '_>,
 ) -> Option<rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream>> {
     let mut conn = match rustls::ServerConnection::new(cfg) {
         Ok(c) => c,
@@ -3140,8 +3316,9 @@ fn hep_tls_accept(
     };
     let mut sock = sock;
     let deadline = Instant::now() + HEP_TLS_HANDSHAKE_TIMEOUT;
+    let mut stop_seen = None;
     while conn.is_handshaking() {
-        if tls_handshake_cut_short(stop, deadline, peer)
+        if shared.tls_handshake_cut_short(deadline, &mut stop_seen, peer)
             || !tls_handshake_step(&mut conn, &mut sock, peer)
         {
             return None;
@@ -3149,31 +3326,6 @@ fn hep_tls_accept(
     }
     tracing::debug!("HEP TLS session established with {peer}");
     Some(rustls::StreamOwned::new(conn, sock))
-}
-
-/// Whether a TLS handshake still in progress must be given up before its
-/// next step: the listener is shutting down, or `deadline` has passed.
-///
-/// # Side effects
-///
-/// Reads `stop`, the process-wide shutdown flag and the monotonic clock; logs
-/// a `tracing::warn` line when the deadline has passed.
-#[inline]
-fn tls_handshake_cut_short(
-    stop: &std::sync::atomic::AtomicBool,
-    deadline: Instant,
-    peer: IpAddr,
-) -> bool {
-    if stop.load(std::sync::atomic::Ordering::Relaxed) || signals::shutdown_requested() {
-        return true;
-    }
-    if Instant::now() >= deadline {
-        tracing::warn!(
-            "HEP TLS handshake with {peer} did not finish within {HEP_TLS_HANDSHAKE_TIMEOUT:?}"
-        );
-        return true;
-    }
-    false
 }
 
 /// Move one round of handshake bytes between `conn` and `sock`.
@@ -3223,7 +3375,7 @@ fn serve_hep_connection(
     match tls {
         None => serve_hep_stream(&mut sock, peer, shared, tx),
         Some(cfg) => {
-            if let Some(mut stream) = hep_tls_accept(sock, peer, cfg, &shared.stop) {
+            if let Some(mut stream) = hep_tls_accept(sock, peer, cfg, shared) {
                 serve_hep_stream(&mut stream, peer, shared, tx);
             }
         }
@@ -3662,7 +3814,7 @@ use std::net::TcpStream;
 const HEP_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// The name a collector's certificate is checked against: the host the
-/// operator dialled, without the port.
+/// operator dialed, without the port.
 ///
 /// Whatever they wrote is what gets verified. A name is offered as a name, so
 /// the certificate's SAN must match it; a bare address is offered as an
@@ -5904,13 +6056,13 @@ mod tests {
         Ok(())
     }
 
-    /// The certificate is checked against the host the operator dialled, with
+    /// The certificate is checked against the host the operator dialed, with
     /// the port removed and a bracketed IPv6 literal unwrapped.
     ///
     /// Deriving it from anything else — the resolved address, a reverse lookup
     /// — is how a client ends up validating a name nobody asked for.
     #[test]
-    fn the_verified_name_is_the_host_the_operator_dialled() -> Result<(), TestError> {
+    fn the_verified_name_is_the_host_the_operator_dialed() -> Result<(), TestError> {
         assert_eq!(
             server_name_of("collector.example:9060").as_deref(),
             Some("collector.example")
@@ -6675,6 +6827,312 @@ mod tests {
         assert!(
             matches!(done.recv_timeout(MUST_ARRIVE), Ok(Ok(()))),
             "the listener stops cleanly at the deadline"
+        );
+        Ok(())
+    }
+
+    /// A HEP v3 frame carrying OPTIONS number `n` between RFC 5737 addresses.
+    fn backlog_frame(n: usize) -> Vec<u8> {
+        let endpoint = HepEndpoint {
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 2)),
+            src_port: 5060,
+            dst_port: 5060,
+            transport: TransportProto::Udp,
+        };
+        let body = format!("OPTIONS sip:a@example.com SIP/2.0\r\nCSeq: {n} OPTIONS\r\n\r\n");
+        build_hep_v3(
+            &endpoint,
+            Utc::now(),
+            HepProtocol::Sip,
+            12,
+            None,
+            body.as_bytes(),
+        )
+    }
+
+    /// `count` frames, numbered from `first`, laid end to end.
+    fn backlog_burst(first: usize, count: usize) -> Vec<u8> {
+        (first..first + count).flat_map(backlog_frame).collect()
+    }
+
+    /// A `--duration` that has passed when the listener starts.
+    ///
+    /// The CLI refuses a zero `--duration`; the listener is handed one here
+    /// only to place its stop before its first accept.
+    ///
+    /// The accept loop's first pass finds the deadline reached before it has
+    /// accepted anything, so a connection the test made before the start is,
+    /// at the stop, one the kernel completed and sipnab had not accepted,
+    /// however loaded the host is. A later deadline would race the accept
+    /// loop, which takes a waiting connection within [`HEP_ACCEPT_POLL`].
+    fn stopped_at_start() -> CaptureConfig {
+        CaptureConfig {
+            duration: Some(Duration::ZERO),
+            ..CaptureConfig::default()
+        }
+    }
+
+    /// Read the pipeline until every sender has gone, then take the
+    /// listener's own result.
+    ///
+    /// The bound is twice [`MUST_ARRIVE`], far above the drain budgets, so a
+    /// loaded host does not trip it; a listener that never stops trips it.
+    ///
+    /// # Returns
+    ///
+    /// The number of packets delivered, and whether the listener stopped
+    /// cleanly within the bound.
+    fn deliveries_until_stopped(
+        rx: &crate::capture::channel::PacketRx,
+        done: &std::sync::mpsc::Receiver<std::result::Result<(), String>>,
+    ) -> (usize, bool) {
+        let bound = Instant::now() + 2 * MUST_ARRIVE;
+        let mut got = 0usize;
+        while Instant::now() < bound {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(_) => got += 1,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
+            }
+        }
+        let left = bound.saturating_duration_since(Instant::now());
+        (got, matches!(done.recv_timeout(left), Ok(Ok(()))))
+    }
+
+    /// A `--duration` stop serves a TCP connection the kernel had completed
+    /// and sipnab had not yet accepted, and delivers what its peer sent
+    /// before the deadline (CAP-2).
+    ///
+    /// The accept loop used to stop accepting at the deadline, so such a
+    /// connection was closed with everything on it unread: 0 of 300.
+    #[test]
+    fn a_duration_stop_serves_a_connection_waiting_in_the_backlog() -> Result<(), TestError> {
+        use std::io::Write;
+        const SENT: usize = 300;
+        let (socket, bind) = loopback_tcp()?;
+        let mut peer = std::net::TcpStream::connect(&bind)?;
+        peer.write_all(&backlog_burst(0, SENT))?;
+        let (rx, done) = start_listener(
+            socket,
+            HepTransport::Tcp,
+            None,
+            vec![],
+            None,
+            stopped_at_start(),
+        );
+        let (got, stopped) = deliveries_until_stopped(&rx, &done);
+        drop(peer);
+        assert_eq!(
+            got, SENT,
+            "every packet on the waiting connection is delivered"
+        );
+        assert!(stopped, "the listener stops cleanly");
+        Ok(())
+    }
+
+    /// The same for every connection waiting in the backlog, not only the
+    /// first.
+    #[test]
+    fn a_duration_stop_serves_every_connection_waiting_in_the_backlog() -> Result<(), TestError> {
+        use std::io::Write;
+        const PEERS: usize = 5;
+        const EACH: usize = 60;
+        let (socket, bind) = loopback_tcp()?;
+        let mut peers = Vec::with_capacity(PEERS);
+        for p in 0..PEERS {
+            let mut peer = std::net::TcpStream::connect(&bind)?;
+            peer.write_all(&backlog_burst(p * EACH, EACH))?;
+            peers.push(peer);
+        }
+        let (rx, done) = start_listener(
+            socket,
+            HepTransport::Tcp,
+            None,
+            vec![],
+            None,
+            stopped_at_start(),
+        );
+        let (got, stopped) = deliveries_until_stopped(&rx, &done);
+        drop(peers);
+        assert_eq!(
+            got,
+            PEERS * EACH,
+            "every packet on every waiting connection is delivered"
+        );
+        assert!(stopped, "the listener stops cleanly");
+        Ok(())
+    }
+
+    /// A waiting connection whose peer sent nothing holds the stop no longer
+    /// than one read timeout, and delivers nothing.
+    #[test]
+    fn a_backlogged_peer_that_sent_nothing_does_not_hold_the_stop() -> Result<(), TestError> {
+        let (socket, bind) = loopback_tcp()?;
+        let peer = std::net::TcpStream::connect(&bind)?;
+        let (rx, done) = start_listener(
+            socket,
+            HepTransport::Tcp,
+            None,
+            vec![],
+            None,
+            stopped_at_start(),
+        );
+        let (got, stopped) = deliveries_until_stopped(&rx, &done);
+        // Held open to here: the stop, not the peer, ends the connection.
+        drop(peer);
+        assert_eq!(got, 0, "a silent peer delivers nothing");
+        assert!(stopped, "a silent waiting peer does not hold the stop");
+        Ok(())
+    }
+
+    /// A waiting connection whose peer goes on sending after the stop
+    /// delivers what it sent before it and cannot hold the stop open: the
+    /// reader's drain budget ends it.
+    #[test]
+    fn a_backlogged_peer_that_keeps_sending_cannot_hold_the_stop() -> Result<(), TestError> {
+        use std::io::Write;
+        const BEFORE: usize = 50;
+        let (socket, bind) = loopback_tcp()?;
+        let mut peer = std::net::TcpStream::connect(&bind)?;
+        peer.write_all(&backlog_burst(0, BEFORE))?;
+        let mut writer = peer.try_clone()?;
+        let (rx, done) = start_listener(
+            socket,
+            HepTransport::Tcp,
+            None,
+            vec![],
+            None,
+            stopped_at_start(),
+        );
+        // Writes until the listener closes the connection.
+        let sender = std::thread::spawn(move || {
+            let mut n = BEFORE;
+            while writer.write_all(&backlog_frame(n)).is_ok() {
+                n += 1;
+            }
+        });
+        let (got, stopped) = deliveries_until_stopped(&rx, &done);
+        drop(peer);
+        assert!(
+            stopped,
+            "a peer that never stops sending does not hold the stop"
+        );
+        assert!(
+            got >= BEFORE,
+            "what the peer sent before the stop is delivered: {got} of {BEFORE}"
+        );
+        sender.join().map_err(|_| "the sender thread panicked")?;
+        Ok(())
+    }
+
+    /// A TLS client for the chain under `ca`, whose handshake starts on a
+    /// connection to `bind` before the listener has accepted it.
+    ///
+    /// The ClientHello is written and `payload` is queued in the session.
+    /// TLS sends no application data before the handshake completes, so
+    /// this is all a TLS peer can have sent on a connection nobody has
+    /// accepted.
+    fn tls_peer_in_backlog(
+        ca: &std::path::Path,
+        bind: &str,
+        payload: &[u8],
+    ) -> Result<(rustls::ClientConnection, std::net::TcpStream), TestError> {
+        use std::io::Write;
+        let mut roots = rustls::RootCertStore::empty();
+        for c in crate::tls_files::pem_certificates(ca)? {
+            roots.add(c)?;
+        }
+        let cfg = rustls::ClientConfig::builder_with_provider(crate::tls_files::provider())
+            .with_safe_default_protocol_versions()?
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        let name = rustls::pki_types::ServerName::try_from("127.0.0.1")?;
+        let mut conn = rustls::ClientConnection::new(std::sync::Arc::new(cfg), name)?;
+        conn.writer().write_all(payload)?;
+        let mut sock = std::net::TcpStream::connect(bind)?;
+        while conn.wants_write() {
+            conn.write_tls(&mut sock)?;
+        }
+        Ok((conn, sock))
+    }
+
+    /// The TLS twin of
+    /// [`a_duration_stop_serves_a_connection_waiting_in_the_backlog`]: the
+    /// handshake on the waiting connection is completed, and what the peer
+    /// queued before the deadline is delivered.
+    ///
+    /// Two rules lost it: the accept loop stopped accepting at the deadline,
+    /// and a handshake was given up as soon as the listener wound down.
+    #[test]
+    fn a_duration_stop_serves_a_tls_connection_waiting_in_the_backlog() -> Result<(), TestError> {
+        const SENT: usize = 200;
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (ca, cert, key) = test_chain(dir.path())?;
+        let (socket, bind) = loopback_tcp()?;
+        let (mut conn, mut sock) = tls_peer_in_backlog(&ca, &bind, &backlog_burst(0, SENT))?;
+        let (rx, done) = start_listener(
+            socket,
+            HepTransport::Tls,
+            Some((cert, key)),
+            vec![],
+            None,
+            stopped_at_start(),
+        );
+        // The peer answers the handshake and sends what it queued. An error
+        // here is a listener that closed the connection, which the count
+        // below reports.
+        let client = std::thread::spawn(move || {
+            while conn.is_handshaking() || conn.wants_write() {
+                if conn.complete_io(&mut sock).is_err() {
+                    return;
+                }
+            }
+            // Held open until the listener closes it.
+            let mut sink = [0u8; 256];
+            while matches!(std::io::Read::read(&mut sock, &mut sink), Ok(n) if n > 0) {}
+        });
+        let (got, stopped) = deliveries_until_stopped(&rx, &done);
+        client.join().map_err(|_| "the TLS peer thread panicked")?;
+        assert_eq!(
+            got, SENT,
+            "every packet the TLS peer queued before the deadline is delivered"
+        );
+        assert!(stopped, "the listener stops cleanly");
+        Ok(())
+    }
+
+    /// A waiting TLS connection whose peer never answers the handshake holds
+    /// the stop for the drain budget, not for the whole
+    /// [`HEP_TLS_HANDSHAKE_TIMEOUT`].
+    ///
+    /// The bound asserted is the handshake timeout itself, ten times the
+    /// budget, so a loaded host has nine seconds of slack.
+    #[test]
+    fn a_backlogged_tls_peer_that_stalls_its_handshake_cannot_hold_the_stop()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (ca, cert, key) = test_chain(dir.path())?;
+        let (socket, bind) = loopback_tcp()?;
+        // The ClientHello is sent and the peer then says nothing more.
+        let (_conn, sock) = tls_peer_in_backlog(&ca, &bind, b"")?;
+        let begun = Instant::now();
+        let (rx, done) = start_listener(
+            socket,
+            HepTransport::Tls,
+            Some((cert, key)),
+            vec![],
+            None,
+            stopped_at_start(),
+        );
+        let (got, stopped) = deliveries_until_stopped(&rx, &done);
+        let took = begun.elapsed();
+        drop(sock);
+        assert_eq!(got, 0, "a stalled handshake delivers nothing");
+        assert!(stopped, "the listener stops cleanly");
+        assert!(
+            took < HEP_TLS_HANDSHAKE_TIMEOUT,
+            "a stalled handshake is given up at the drain budget: {took:?}"
         );
         Ok(())
     }
@@ -11323,6 +11781,183 @@ mod tests {
             Ok(())
         }
 
+        /// A reader on a connection that is still draining forwards nothing
+        /// once another connection has reached `--count`
+        /// (CAP-2-COUNT-OVERSHOOT).
+        ///
+        /// The count was checked only after a packet had been counted and
+        /// forwarded, so a reader that found the count already reached still
+        /// forwarded one packet past it.
+        #[test]
+        fn a_reader_forwards_nothing_once_another_connection_reached_the_count()
+        -> Result<(), TestError> {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(Some(2), None);
+            let shared = shared(&opts, &config);
+            // Another connection has delivered both packets the run asked for.
+            shared.received.store(2, Ordering::Relaxed);
+            let (tx, rx) = crate::capture::channel::packet_channel(16);
+            let one = stream_packet();
+            let mut stream = std::io::Cursor::new([one.as_slice(), &one].concat());
+
+            serve_hep_stream(&mut stream, PEER, &shared, &tx);
+
+            assert_eq!(delivered(&rx), 0, "nothing past --count is forwarded");
+            assert_eq!(
+                shared.received.load(Ordering::Relaxed),
+                2,
+                "nothing past --count is counted"
+            );
+            Ok(())
+        }
+
+        /// The same rule where the packets are framed: at the count, a whole
+        /// packet in the buffer is left there, uncounted and unforwarded.
+        #[test]
+        fn whole_packets_at_the_count_are_left_unread() -> Result<(), TestError> {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(Some(3), None);
+            let shared = shared(&opts, &config);
+            shared.received.store(3, Ordering::Relaxed);
+            let (tx, rx) = crate::capture::channel::packet_channel(16);
+            let one = stream_packet();
+            let mut buf = one.clone();
+
+            let flow = shared.forward_whole_packets(&mut buf, PEER, &tx);
+
+            assert!(flow.is_break(), "the count reached ends the connection");
+            assert_eq!(buf, one, "the packet past the count stays in the buffer");
+            assert_eq!(delivered(&rx), 0, "nothing past --count is forwarded");
+            assert_eq!(
+                shared.received.load(Ordering::Relaxed),
+                3,
+                "nothing past --count is counted"
+            );
+            Ok(())
+        }
+
+        /// Several connections served one after another deliver exactly
+        /// `--count` between them (CAP-2-COUNT-OVERSHOOT).
+        ///
+        /// The first two reach the count; each one served after that used to
+        /// forward one packet past it, so this delivered 7 of 5.
+        #[test]
+        fn several_connections_read_in_turn_deliver_exactly_the_count() -> Result<(), TestError> {
+            use std::sync::atomic::Ordering;
+            const COUNT: u64 = 5;
+            let opts = opts(&[], None);
+            let config = limits(Some(COUNT), None);
+            let shared = shared(&opts, &config);
+            let (tx, rx) = crate::capture::channel::packet_channel(64);
+            let carried = stream_packet().repeat(3);
+            for _ in 0..4 {
+                let mut stream = std::io::Cursor::new(carried.clone());
+                serve_hep_stream(&mut stream, PEER, &shared, &tx);
+            }
+            drop(tx);
+
+            assert_eq!(
+                u64::try_from(delivered(&rx))?,
+                COUNT,
+                "the connections deliver --count between them, no more"
+            );
+            assert_eq!(
+                shared.received.load(Ordering::Relaxed),
+                COUNT,
+                "the listener counts --count, no more"
+            );
+            Ok(())
+        }
+
+        /// Several connections read at once deliver exactly `--count`
+        /// between them.
+        ///
+        /// Whether readers racing past the count forward more than it depends
+        /// on how their threads interleave, so this test does not fail on
+        /// every run of a listener with the defect; the test above does.
+        #[test]
+        fn several_connections_read_at_once_deliver_exactly_the_count() -> Result<(), TestError> {
+            use std::sync::atomic::Ordering;
+            const READERS: usize = 4;
+            const EACH: usize = 3;
+            const COUNT: u64 = 5;
+            let opts = opts(&[], None);
+            let config = limits(Some(COUNT), None);
+            let shared = shared(&opts, &config);
+            let (tx, rx) = crate::capture::channel::packet_channel(64);
+            let one = stream_packet();
+            let carried = one.repeat(EACH);
+            std::thread::scope(|scope| {
+                for _ in 0..READERS {
+                    let tx = tx.clone();
+                    let shared = &shared;
+                    let mut stream = std::io::Cursor::new(carried.clone());
+                    scope.spawn(move || serve_hep_stream(&mut stream, PEER, shared, &tx));
+                }
+            });
+            drop(tx);
+
+            assert_eq!(
+                u64::try_from(delivered(&rx))?,
+                COUNT,
+                "the connections deliver --count between them, no more"
+            );
+            assert_eq!(
+                shared.received.load(Ordering::Relaxed),
+                COUNT,
+                "the listener counts --count, no more"
+            );
+            Ok(())
+        }
+
+        /// `--count 1` over two connections: the first packet ends the run,
+        /// and the second connection forwards nothing.
+        #[test]
+        fn a_count_of_one_takes_one_packet_from_two_connections() -> Result<(), TestError> {
+            use std::sync::atomic::Ordering;
+            let opts = opts(&[], None);
+            let config = limits(Some(1), None);
+            let shared = shared(&opts, &config);
+            let (tx, rx) = crate::capture::channel::packet_channel(16);
+            let one = stream_packet();
+            let mut first = std::io::Cursor::new([one.as_slice(), &one].concat());
+            let mut second = std::io::Cursor::new([one.as_slice(), &one].concat());
+
+            serve_hep_stream(&mut first, PEER, &shared, &tx);
+            serve_hep_stream(&mut second, PEER, &shared, &tx);
+
+            assert_eq!(delivered(&rx), 1, "--count 1 delivers one packet");
+            assert_eq!(
+                shared.received.load(Ordering::Relaxed),
+                1,
+                "--count 1 counts one packet"
+            );
+            Ok(())
+        }
+
+        /// Below `--count` a packet takes the next place; at or past it, none.
+        #[test]
+        fn a_packet_is_counted_only_below_the_count() {
+            assert_eq!(next_received(0, Some(2)), Some(1), "the first of two");
+            assert_eq!(next_received(1, Some(2)), Some(2), "the last of two");
+            assert_eq!(next_received(2, Some(2)), None, "at the count");
+            assert_eq!(next_received(3, Some(2)), None, "past the count");
+            assert_eq!(next_received(0, Some(0)), None, "a count of zero");
+        }
+
+        /// Without `--count` every packet is counted.
+        #[test]
+        fn without_a_count_every_packet_is_counted() {
+            assert_eq!(next_received(0, None), Some(1), "the first packet");
+            assert_eq!(
+                next_received(u64::MAX - 1, None),
+                Some(u64::MAX),
+                "up to the counter's end"
+            );
+        }
+
         /// Whole packets are handed on and a partial one is kept for the next
         /// read.
         #[test]
@@ -11512,21 +12147,193 @@ mod tests {
             Ok(())
         }
 
-        /// A handshake is given up once its deadline has passed, or as soon as
-        /// the listener winds down; before either it goes on.
+        /// The budget the stop tests below hand the rules: the one the
+        /// listener uses.
+        const BUDGET: Duration = HEP_STREAM_DRAIN_BUDGET;
+
+        /// A `--duration` stop, the one that finishes what was already sent.
+        const DURATION_STOP: ListenerStop = ListenerStop::Duration(Duration::from_secs(5));
+
+        /// A handshake deadline no test below reaches.
+        fn far_off(t0: Instant) -> Instant {
+            t0 + Duration::from_secs(3600)
+        }
+
+        /// A `--duration` stop takes connections from the backlog from the
+        /// moment of the stop until just before its budget ends (CAP-2).
         #[test]
-        fn a_handshake_is_given_up_at_its_deadline_or_on_stop() -> Result<(), TestError> {
-            use std::sync::atomic::Ordering;
-            let stop = AtomicBool::new(false);
-            let later = Instant::now() + Duration::from_secs(60);
-            assert!(!tls_handshake_cut_short(&stop, later, PEER));
-            let Some(past) = Instant::now().checked_sub(Duration::from_secs(1)) else {
-                return Ok(());
-            };
-            assert!(tls_handshake_cut_short(&stop, past, PEER));
-            stop.store(true, Ordering::Relaxed);
-            assert!(tls_handshake_cut_short(&stop, later, PEER));
-            Ok(())
+        fn a_duration_stop_accepts_the_backlog_within_the_budget() {
+            let t0 = Instant::now();
+            assert!(
+                accepts_after_stop(DURATION_STOP, t0, t0, BUDGET),
+                "at the stop"
+            );
+            assert!(
+                accepts_after_stop(DURATION_STOP, t0, t0 + BUDGET / 2, BUDGET),
+                "halfway through the budget"
+            );
+            assert!(
+                accepts_after_stop(
+                    DURATION_STOP,
+                    t0,
+                    t0 + BUDGET - Duration::from_millis(1),
+                    BUDGET
+                ),
+                "just before the budget ends"
+            );
+        }
+
+        /// The backlog closes when the budget ends: a peer that keeps
+        /// connecting cannot hold the stop open.
+        #[test]
+        fn a_duration_stop_stops_accepting_when_its_budget_ends() {
+            let t0 = Instant::now();
+            assert!(
+                !accepts_after_stop(DURATION_STOP, t0, t0 + BUDGET, BUDGET),
+                "at the end of the budget"
+            );
+            assert!(
+                !accepts_after_stop(DURATION_STOP, t0, t0 + 10 * BUDGET, BUDGET),
+                "long after it"
+            );
+        }
+
+        /// A zero budget takes nothing from the backlog, even at the stop.
+        #[test]
+        fn a_zero_budget_accepts_nothing_from_the_backlog() {
+            let t0 = Instant::now();
+            assert!(
+                !accepts_after_stop(DURATION_STOP, t0, t0, Duration::ZERO),
+                "a zero budget ends at the stop"
+            );
+        }
+
+        /// A `--count` stop has every packet it asked for: it takes nothing
+        /// more from the backlog.
+        #[test]
+        fn a_count_stop_accepts_nothing_from_the_backlog() {
+            let t0 = Instant::now();
+            assert!(
+                !accepts_after_stop(ListenerStop::Count(10), t0, t0, BUDGET),
+                "a --count stop takes nothing from the backlog"
+            );
+        }
+
+        /// A signal stop takes nothing from the backlog: the receive loop
+        /// ends at a signal without reading what the listener still delivers,
+        /// so a connection served then would only delay the exit.
+        #[test]
+        fn a_signal_stop_accepts_nothing_from_the_backlog() {
+            let t0 = Instant::now();
+            assert!(
+                !accepts_after_stop(ListenerStop::Shutdown, t0, t0, BUDGET),
+                "a signal stop takes nothing from the backlog"
+            );
+        }
+
+        /// Before any stop a handshake goes on until its deadline, and is
+        /// given up from the deadline on.
+        #[test]
+        fn a_handshake_is_given_up_at_its_deadline() {
+            let t0 = Instant::now();
+            assert!(
+                !tls_handshake_given_up(None, false, None, t0, far_off(t0), BUDGET),
+                "before its deadline"
+            );
+            assert!(
+                tls_handshake_given_up(None, false, None, t0, t0, BUDGET),
+                "at its deadline"
+            );
+            assert!(
+                tls_handshake_given_up(None, false, None, t0 + BUDGET, t0, BUDGET),
+                "after its deadline"
+            );
+        }
+
+        /// A handshake under way at a `--duration` stop goes on for the
+        /// drain budget, so the peer of a connection taken from the backlog
+        /// can send what it queued before the deadline (CAP-2).
+        ///
+        /// This rule used to be "given up as soon as the listener winds
+        /// down", which closed such a connection unread.
+        #[test]
+        fn a_handshake_goes_on_through_a_duration_stop_within_the_budget() {
+            let t0 = Instant::now();
+            let far = far_off(t0);
+            let stop = Some(DURATION_STOP);
+            assert!(
+                !tls_handshake_given_up(stop, false, Some(t0), t0, far, BUDGET),
+                "at the stop, before the listener has wound down"
+            );
+            assert!(
+                !tls_handshake_given_up(stop, true, Some(t0), t0, far, BUDGET),
+                "at the stop, once the listener has wound down"
+            );
+            assert!(
+                !tls_handshake_given_up(
+                    stop,
+                    true,
+                    Some(t0),
+                    t0 + BUDGET - Duration::from_millis(1),
+                    far,
+                    BUDGET
+                ),
+                "just before the budget ends"
+            );
+        }
+
+        /// The drain budget bounds a handshake at a `--duration` stop: a peer
+        /// that never finishes it cannot hold the stop.
+        #[test]
+        fn a_handshake_at_a_duration_stop_is_given_up_when_the_budget_ends() {
+            let t0 = Instant::now();
+            let far = far_off(t0);
+            let stop = Some(DURATION_STOP);
+            assert!(
+                tls_handshake_given_up(stop, true, Some(t0), t0 + BUDGET, far, BUDGET),
+                "at the end of the budget"
+            );
+            assert!(
+                tls_handshake_given_up(stop, true, None, t0, far, BUDGET),
+                "a stop with no time seen has no budget left"
+            );
+        }
+
+        /// The handshake's own deadline holds inside the drain budget too.
+        #[test]
+        fn a_handshake_is_given_up_at_its_deadline_even_within_the_budget() {
+            let t0 = Instant::now();
+            assert!(
+                tls_handshake_given_up(Some(DURATION_STOP), true, Some(t0), t0, t0, BUDGET),
+                "the deadline holds inside the budget"
+            );
+        }
+
+        /// A `--count` or signal stop gives up a handshake at once: nothing
+        /// that connection could send would be read.
+        #[test]
+        fn a_handshake_is_given_up_at_once_on_a_count_or_signal_stop() {
+            let t0 = Instant::now();
+            let far = far_off(t0);
+            for stop in [ListenerStop::Count(10), ListenerStop::Shutdown] {
+                for wound_down in [false, true] {
+                    assert!(
+                        tls_handshake_given_up(Some(stop), wound_down, Some(t0), t0, far, BUDGET),
+                        "{stop:?}, wound down: {wound_down}"
+                    );
+                }
+            }
+        }
+
+        /// A listener winding down with no limit reached (its pipeline has
+        /// gone, or accept failed) gives up a handshake at once.
+        #[test]
+        fn a_handshake_is_given_up_when_the_listener_winds_down_for_another_reason() {
+            let t0 = Instant::now();
+            assert!(
+                tls_handshake_given_up(None, true, Some(t0), t0, far_off(t0), BUDGET),
+                "a listener winding down with no limit reached"
+            );
         }
 
         /// A transport that hands over `inbound` and then has nothing more to
