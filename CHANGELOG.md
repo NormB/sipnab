@@ -13,6 +13,7 @@ entry that carries them.
 ### Fixed
 
 - **A release run no longer fails on the Homebrew tap.** The 0.5.241 entry says the tap bump is a commit GitHub verifies through its contents API. It is not: GitHub did not sign the commit made with the personal access token, and the release run concluded failure. The bump is now a commit signed locally and made by `scripts/post-release.py`, and the tap's `main` moves only to a commit GitHub reports as verified.
+- **A release no longer waits in the local queue at its tag push.** `scripts/release-train.py` drives a release from its pull request to the end, and resumes after a crash. It closes the heavy-run release window during remote waits and opens it again before the next local step. On 0.5.240 the tag push queued 434 s behind an ordinary hook.
 - **The checks after a release run side by side.** `scripts/post-release.py` runs the eBPF load verification, the `.deb` upgrade, the site check and the tap bump at once, and withdraws a release whose eBPF program does not attach.
 
 ## [0.5.241] - 2026-11-09

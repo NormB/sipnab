@@ -239,13 +239,18 @@ fn three_members_report_and_a_stopped_one_is_silent_within_three_heartbeats()
         .collect();
     let mut seq = 0;
     let mut stopped_at = None;
+    let mut last_sent = None;
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut silent_after = None;
+    let mut silent_after_send = None;
     while Instant::now() < deadline {
         seq += 1;
         for (i, name) in names.iter().enumerate() {
             if i == 2 && stopped_at.is_some() {
                 continue;
+            }
+            if i == 2 {
+                last_sent = Some(Instant::now());
             }
             let (status, v) = ingest(
                 &c.addr,
@@ -264,6 +269,7 @@ fn three_members_report_and_a_stopped_one_is_silent_within_three_heartbeats()
             let v = members(&c.addr)?;
             if row(&v, "edge-c").is_some_and(|r| r["silent"] == true) {
                 silent_after = Some(at.elapsed());
+                silent_after_send = last_sent.map(|t: Instant| t.elapsed());
                 for name in ["edge-a", "edge-b"] {
                     let r = row(&v, name).ok_or("a row")?;
                     assert_eq!(r["silent"], false, "{name} keeps reporting: {v}");
@@ -291,9 +297,16 @@ fn three_members_report_and_a_stopped_one_is_silent_within_three_heartbeats()
         after <= Duration::from_millis(6_500),
         "silent only after {after:?}"
     );
+    // Measured from before edge-c's last heartbeat was sent. The center counts
+    // from when it received that heartbeat, which is no earlier than this, so
+    // the bound holds at any load. From after the response it does not: on a
+    // loaded host the response took tens of milliseconds to come back, and
+    // silence at 2.989 s from there was correct.
+    let since_send = silent_after_send.ok_or("no send time")?;
     assert!(
-        after > Duration::from_secs(3),
-        "silent after {after:?}, before three intervals passed"
+        since_send > Duration::from_secs(3),
+        "silent {since_send:?} after the last heartbeat was sent, before three \
+         intervals passed"
     );
     assert!(
         c.wait_for_log("fleet member 'edge-c' is silent", Duration::from_secs(5))

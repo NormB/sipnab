@@ -996,7 +996,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/verify-bpf-load.sh, scripts/tests/test_post_release.py and
     // packaging/homebrew/update-formula.sh (+7), and no longer links
     // homebrew-tap-push.py, which is deleted (-1).
-    const EXPECTED_CODE_LINKS: usize = 829;
+    // 829 -> 831 (RELEASE-FAST E): build-ci-release.md's "The release train"
+    // links scripts/release-train.py and scripts/tests/test_release_train.py.
+    const EXPECTED_CODE_LINKS: usize = 831;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
