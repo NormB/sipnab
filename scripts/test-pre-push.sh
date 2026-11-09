@@ -1101,6 +1101,80 @@ else
 fi
 ( cd "$CRATE" && git remote remove origin )
 
+# -- A push of release-only commits skips the tree gates ----------------------
+# SCENARIO: RELEASE-FAST B
+#   Given a pushed branch whose only new commit moves the version and the
+#     CHANGELOG heading, then the push is ALLOWED without clippy, rustdoc or
+#     the other tree gates, the output names the release-only proof, the
+#     release-delivery test still runs, and the corpus gate says NOT RUN.
+#   Given the same range plus a code commit, a new branch with no origin/main
+#     to measure from, or SIPNAB_GATE_NO_CACHE=1, then every gate runs.
+sign_commit() { # $1 = message
+	( cd "$CRATE" && git -c gpg.format=ssh -c "user.signingkey=$TMP/trusted.pub" commit -S -qm "$1" ) >/dev/null 2>&1
+}
+( cd "$CRATE" && printf '# Changelog\n\n## [Unreleased]\n\n- a change\n' >CHANGELOG.md && git add CHANGELOG.md )
+sign_commit changelog
+RO_BASE=$( cd "$CRATE" && git rev-parse HEAD )
+sed 's/^version = "0.0.0"$/version = "0.0.1"/' "$CRATE/Cargo.toml" >"$TMP/Cargo.toml.ro" && mv "$TMP/Cargo.toml.ro" "$CRATE/Cargo.toml"
+sed 's/^## \[Unreleased\]$/## [0.0.1] - 2026-11-08/' "$CRATE/CHANGELOG.md" >"$TMP/CHANGELOG.ro" && mv "$TMP/CHANGELOG.ro" "$CRATE/CHANGELOG.md"
+( cd "$CRATE" && git add Cargo.toml CHANGELOG.md )
+sign_commit "Release 0.0.1"
+RO_HEAD=$( cd "$CRATE" && git rev-parse HEAD )
+if [ "$RO_HEAD" = "$RO_BASE" ]; then
+	bad "fixture: the release commit was not made, so the release-only scenarios cannot run"
+fi
+make_gh "[]"
+
+# RELEASE-ONLY: allowed, tree gates skipped, release-delivery still runs.
+if PATH="$STUB_BIN:$PATH" run_hook "" "refs/heads/release/0.0.1 $RO_HEAD refs/heads/release/0.0.1 $RO_BASE"; then
+	if blocked_for "release-only push: release/0.0.1 carry only release bumps" \
+		&& ! blocked_for "cargo clippy --workspace --all-features" \
+		&& blocked_for "cargo test --features full --test release_delivery_test ... " \
+		&& blocked_for "corpus: NOT RUN -- a release-only push"; then
+		ok "a release-only push skips the tree gates, keeps release-delivery and says the corpus did not run"
+	else
+		bad "a release-only push was allowed, but not by the release-only path"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+else
+	bad "a release-only push was BLOCKED"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# SIPNAB_GATE_NO_CACHE=1 runs every gate on the same range.
+export SIPNAB_GATE_NO_CACHE=1
+PATH="$STUB_BIN:$PATH" run_hook "" "refs/heads/release/0.0.1 $RO_HEAD refs/heads/release/0.0.1 $RO_BASE" || true
+unset SIPNAB_GATE_NO_CACHE
+if blocked_for "cargo clippy --workspace --all-features" && ! blocked_for "release-only push:"; then
+	ok "SIPNAB_GATE_NO_CACHE=1 runs the tree gates on a release-only push"
+else
+	bad "SIPNAB_GATE_NO_CACHE=1 still skipped the tree gates on a release-only push"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# A NEW BRANCH with no origin/main to measure from: every gate runs.
+PATH="$STUB_BIN:$PATH" run_hook "" "refs/heads/release/0.0.1 $RO_HEAD refs/heads/release/0.0.1 0000000000000000000000000000000000000000" || true
+if blocked_for "cargo clippy --workspace --all-features" && ! blocked_for "release-only push:"; then
+	ok "a new branch with no merge base to measure from runs the tree gates"
+else
+	bad "a new branch with no merge base skipped the tree gates"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# A CODE COMMIT after the bump: every gate runs.
+printf '// a code change\n' >>"$CRATE/src/main.rs"
+( cd "$CRATE" && git add src/main.rs )
+sign_commit code
+RO_CODE=$( cd "$CRATE" && git rev-parse HEAD )
+PATH="$STUB_BIN:$PATH" run_hook "" "refs/heads/release/0.0.1 $RO_CODE refs/heads/release/0.0.1 $RO_BASE" || true
+if blocked_for "cargo clippy --workspace --all-features" && ! blocked_for "release-only push:"; then
+	ok "a push with a code commit after the release bump runs the tree gates"
+else
+	bad "a push with a code commit after the release bump skipped the tree gates"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+( cd "$CRATE" && git reset -q --hard "$TAGGED" )
+
 # -- Corpus gate --------------------------------------------------------------
 # SCENARIO: the conditional corpus gate
 #   Given a crate with corpus test targets and a readable SIPNAB_CORPUS,

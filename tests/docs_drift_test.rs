@@ -705,6 +705,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/contributing.md",
         ],
     ),
+    // ~/Development/bin/heavy-run's `--release-window`, the shared host's
+    // release window, which the release flow opens and closes.
+    (
+        "release-window",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // scripts/tag-push-proof.py's `--tag-ci <commit>`, which prints the tag
     // CI gate's verdict on one commit without pushing.
     (
@@ -6110,11 +6119,13 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/internals/testing.md (+1), the dead-engine timing table in
     // docs/relay-engines.md (+1), and their site mirrors (+1 each). Counted
     // per file against origin/main 5dc6e5f5b.
-    // 1437 -> 1439 (RELAY-S0): the cap-rule table of "Choose how many held
+    // 1437 -> 1439 (RELEASE-FAST B): the release timeline table in
+    // docs/internals/build-ci-release.md (+1) and its site mirror (+1).
+    // 1439 -> 1441 (RELAY-S0): the cap-rule table of "Choose how many held
     // calls one ask covers" in docs/relay-statistics.md (+1) and its site
-    // mirror (+1). Counted per file against origin/main 82472045e: no other
-    // changed page gained or lost a table.
-    const EXPECTED_TABLES: usize = 1439;
+    // mirror (+1). Counted per file against origin/main 14f97d93c: no other
+    // page this branch changed gained or lost a table.
+    const EXPECTED_TABLES: usize = 1441;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

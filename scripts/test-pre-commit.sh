@@ -963,6 +963,97 @@ else
 fi
 rm -rf "$D"
 
+# ── Scenario 9: a release-only commit runs the release gates, not the suite ─
+# The 0.5.238 release commit spent 14 minutes in this hook running the whole
+# suite on a version bump. scripts/release-only.py decides; these drive the
+# REAL hook on a sandbox with a CHANGELOG and watch which cargo runs it makes.
+#
+# release_sandbox: a sandbox whose base commit has a CHANGELOG under
+# [Unreleased], then the version 9.9.9 -> 9.9.10 and the heading staged.
+release_sandbox() {
+	_rd=$(sandbox 1)
+	printf '# Changelog\n\n## [Unreleased]\n\n- a change\n' >"$_rd/CHANGELOG.md"
+	( cd "$_rd" && git add CHANGELOG.md && git commit -qm changelog )
+	sed -i.bak 's/^version = "9.9.9"$/version = "9.9.10"/' "$_rd/Cargo.toml" && rm -f "$_rd/Cargo.toml.bak"
+	sed -i.bak 's/^## \[Unreleased\]$/## [9.9.10] - 2026-11-08/' "$_rd/CHANGELOG.md" && rm -f "$_rd/CHANGELOG.md.bak"
+	( cd "$_rd" && git add Cargo.toml CHANGELOG.md )
+	: >"$_rd/cargo-invocations"
+	echo "$_rd"
+}
+D=$(release_sandbox)
+run_hook "$D"
+if [ "$HOOK_RC" -eq 0 ] && printf '%s' "$HOOK_OUT" | grep -qF 'release-only: 9.9.9 -> 9.9.10'; then
+	ok "a staged release bump passes and the hook names the release-only proof"
+else
+	bad "a staged release bump was not handled as release-only (rc=$HOOK_RC): $HOOK_OUT"
+fi
+if ! grep -q '^nextest run' "$D/cargo-invocations" && ! grep -q '^clippy' "$D/cargo-invocations"; then
+	ok "a release-only commit runs neither the suite nor clippy"
+else
+	bad "a release-only commit still ran the suite or clippy: $(cat "$D/cargo-invocations")"
+fi
+if grep -q '^test --features full --color never --test cli_flag_since_test .*--test docs_drift_test .*--test release_delivery_test' "$D/cargo-invocations"; then
+	ok "a release-only commit runs the release test targets"
+else
+	bad "a release-only commit did not run the release test targets: $(cat "$D/cargo-invocations")"
+fi
+if printf '%s' "$HOOK_OUT" | grep -qF 'Homepage test count generated... ' \
+	&& printf '%s' "$HOOK_OUT" | grep -qF 'not counted: a release-only commit'; then
+	ok "a release-only commit still checks the homepage count mechanism and says it counted nothing"
+else
+	bad "the homepage count step did not say the release-only commit counted nothing: $HOOK_OUT"
+fi
+rm -rf "$D"
+
+# A failing release test target blocks the commit.
+D=$(release_sandbox)
+: >"$D/fail-test"
+run_hook "$D"
+if [ "$HOOK_RC" -ne 0 ] && printf '%s' "$HOOK_OUT" | grep -qF '(the release test targets)' \
+	&& printf '%s' "$HOOK_OUT" | grep -qF 'test stub_fails ... FAILED'; then
+	ok "a failing release test target blocks a release-only commit"
+else
+	bad "a failing release test target did not block the release-only commit (rc=$HOOK_RC): $HOOK_OUT"
+fi
+rm -rf "$D"
+
+# The same bump with a source change beside it is an ordinary commit.
+D=$(release_sandbox)
+echo 'pub fn prod() -> u8 { 2 }' >"$D/src/lib.rs"
+( cd "$D" && git add src/lib.rs )
+run_hook "$D"
+if grep -q '^nextest run --profile suite' "$D/cargo-invocations" \
+	&& ! printf '%s' "$HOOK_OUT" | grep -qF 'release-only:'; then
+	ok "a release bump with a source change runs the full suite"
+else
+	bad "a release bump with a source change skipped the suite: $(cat "$D/cargo-invocations")"
+fi
+rm -rf "$D"
+
+# SIPNAB_GATE_NO_CACHE=1 runs every step, even on a release bump.
+D=$(release_sandbox)
+set +e
+HOOK_OUT=$(cd "$D" && PATH="$D/bin:$PATH" SIPNAB_HOOK_ANY_TREE=1 SIPNAB_GATE_NO_CACHE=1 bash "$HOOK" 2>&1)
+HOOK_RC=$?
+set -e
+if grep -q '^nextest run --profile suite' "$D/cargo-invocations"; then
+	ok "SIPNAB_GATE_NO_CACHE=1 runs the full suite on a release bump"
+else
+	bad "SIPNAB_GATE_NO_CACHE=1 did not run the suite on a release bump: $(cat "$D/cargo-invocations")"
+fi
+rm -rf "$D"
+
+# A tree without scripts/release-only.py (an older branch) runs every step.
+D=$(release_sandbox)
+rm -f "$D/scripts/release-only.py"
+run_hook "$D"
+if grep -q '^nextest run --profile suite' "$D/cargo-invocations"; then
+	ok "a tree without the classifier runs the full suite"
+else
+	bad "a tree without the classifier skipped the suite: $(cat "$D/cargo-invocations")"
+fi
+rm -rf "$D"
+
 printf '\n%d passed, %d failed, %d skipped (host: %s)\n' \
 	"$PASS" "$FAIL" "$SKIP" "$(uname -s)"
 if [ "$SKIP" -ne 0 ]; then

@@ -691,6 +691,21 @@ starting at 0, in order:
 Gate 0 is first because it is the cheapest check in either hook (~1.4s
 against clippy's minutes).
 
+A release-only commit runs a smaller set.
+
+- [`scripts/release-only.py`](https://github.com/NormB/sipnab/blob/main/scripts/release-only.py) decides it: the version moves
+  forward and every changed line is the version, a Since cell of the CLI reference or the
+  one CHANGELOG heading. [`test_release_only.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_release_only.py)
+  replays the real 0.5.238 and 0.5.237 release commits against it.
+- The hook then skips the failed-tests replay, clippy, the suite and gate 2b, and runs the
+  release test targets that `release-only.py tests` prints in place of the suite.
+- The pre-push hook skips its tree gates for a push of such commits, as it does for a proven
+  tag push, and skips the corpus gate.
+- The release pull request's CI still runs every gate on the same tree.
+- On 0.5.238 the full hooks took 14 minutes (pre-commit) and 15 minutes (pre-push) on a
+  24-line version bump.
+
+
 - So an unformatted tree fails in seconds rather than after a full lint and test run.
 - `pre-push` still checks formatting.
   That copy is the one guaranteeing nothing unformatted reaches the remote.
@@ -1595,6 +1610,47 @@ It publishes immediately and irreversibly, whatever that commit contains:
 - a Homebrew formula
 
 That is thirty-three release assets in all.
+**Release timeline.** 0.5.238 took 4 h 44 min from start (12:08Z) to the site
+advertising it (16:52Z). The second column holds those measurements. Fill in
+the third at the next release, from the same sources: the heavy-run log for the
+hook steps, the workflow runs for the CI steps, and the tag and Pages times.
+
+| Step | 0.5.238 | Next release |
+|---|---|---|
+| Waiting for an unrelated pull request | 42 min | |
+| Release commit: pre-commit hook | 14 min | |
+| Release commit: pre-push hook | 15 min | |
+| Release pull request CI | 33 min | |
+| Waiting for CI on the merge commit before the tag | 37 min | |
+| Tag push | 161 s | |
+| Release workflow | 26 min | |
+| Phase two: pre-commit and pre-push hooks | 16 min and 21 min, 10 min of it queued | |
+| Phase two: pull request CI | 31 min | |
+| Pages waiting for main CI's test count | 39 min | |
+| `.deb` steps queued for the heavy-run main slot | 10 min | |
+| Merge to site | about 3 h | |
+
+On this host, open the heavy-run release window before the release pull request merges,
+and close it once the site advertises the release. To open it:
+
+```sh
+~/Development/bin/heavy-run --release-window open release-<version> 120
+```
+
+To close it:
+
+```sh
+~/Development/bin/heavy-run --release-window close release-<version>
+```
+
+- While the window is open, an ordinary main-slot job waits instead of starting.
+  Lane, urgent and quick jobs start as before, and a job already running is not stopped.
+- The window expires on its own after the minutes given (at most 360), so a crashed release
+  cannot hold the queue.
+- `heavy-report` prints whether the window is open, whose it is and how long it has left.
+- The v0.5.239 tag push waited 769 s in the lane queue behind an ordinary main-slot job that
+  had started 7 s before it.
+
 The order is therefore:
 
 - Land the release commit.
