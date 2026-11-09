@@ -974,7 +974,7 @@ jobs:
       # flag stops covering the union.
       # ---------------------------------------------------------------------
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
+        uses: ./.github/actions/pinned-tool
         with:
           tool: cargo-cyclonedx
 
@@ -1099,12 +1099,14 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           cp "$PROVENANCE_BUNDLE" "artifacts/sipnab-${version}.intoto.jsonl"
 
-      # The installer checks the cosign binary's digest against one pinned in
-      # the action itself; v3.0.6 is the version that digest names.
+      # cosign v3.0.6, pinned by the sha256 of its linux-amd64 binary in
+      # .github/actions/pinned-tool (from cosign_checksums.txt), and fetched
+      # with fetch-pinned.sh's retries. sigstore/cosign-installer fetched it
+      # in one live attempt and checked it with a bootstrap cosign instead.
       - name: Install cosign
-        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        uses: ./.github/actions/pinned-tool
         with:
-          cosign-release: v3.0.6
+          tool: cosign
 
       - name: Sign the checksum list
         run: |
@@ -1302,55 +1304,3 @@ jobs:
           if-no-files-found: error
           # The next release reads it; releases are days apart, not months.
           retention-days: 90
-
-  tap:
-    # Bounds a wedged job: an unbounded one holds its
-    # concurrency group indefinitely. Observed: 16.7 min slowest (aarch64-apple-darwin build).
-    timeout-minutes: 45
-    name: Bump Homebrew tap
-    needs: release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          # Do not leave GITHUB_TOKEN in .git/config for later steps or
-          # third-party actions to read. Nothing here pushes with it:
-          # wiki-sync and release pass the token explicitly via GH_TOKEN.
-          persist-credentials: false
-      # Pull the SHA256SUMS.txt that the release job just attached to the GitHub
-      # release; it is the single source of truth for every artifact checksum.
-      - name: Download release checksums
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --pattern SHA256SUMS.txt --dir .
-
-      - name: Render formula
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          bash packaging/homebrew/update-formula.sh "$version" SHA256SUMS.txt > sipnab.rb
-          echo "----- generated Formula/sipnab.rb -----"
-          cat sipnab.rb
-
-      # Commit the rendered formula to NormB/homebrew-tap so that
-      # `brew reinstall normb/tap/sipnab` serves the just-released version.
-      # Through the GitHub API, not a local commit: GitHub signs a commit the
-      # contents API creates, and scripts/homebrew-tap-push.py moves the
-      # tap's main to it only when GitHub reports it verified, as a
-      # fast-forward. Every bump pushed with git before 0.5.241 is unsigned
-      # (HOMEBREW-TAP-UNSIGNED); the tap's history is left as it is.
-      # Requires a HOMEBREW_TAP_TOKEN secret: a PAT (classic: `repo`, or
-      # fine-grained: Contents read+write on NormB/homebrew-tap) — the default
-      # GITHUB_TOKEN cannot write to a different repository. If the secret is
-      # absent the release still succeeds; only the auto-bump is skipped.
-      - name: Commit to homebrew-tap through the API
-        env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-        run: |
-          set -euo pipefail
-          if [ -z "${TAP_TOKEN:-}" ]; then
-            echo "::warning title=Homebrew tap not bumped::HOMEBREW_TAP_TOKEN secret is not set; skipping auto-bump. Set a PAT with contents:write on NormB/homebrew-tap to enable it."
-            exit 0
-          fi
-          GH_TOKEN="$TAP_TOKEN" python3 scripts/homebrew-tap-push.py \
-            --repo NormB/homebrew-tap --version "${GITHUB_REF_NAME#v}" --formula sipnab.rb

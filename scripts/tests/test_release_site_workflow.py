@@ -14,9 +14,10 @@ RELEASE-FAST C. After the `release` job publishes the assets:
 * `records` measures the published x86_64-musl binary with
   `scripts/release-records.py ceiling` and uploads the `release-records`
   artifact the next release pull request's advertisement commit reads;
-* `tap` bumps the Homebrew tap through the GitHub API with
-  scripts/homebrew-tap-push.py, which moves the tap's main only to a commit
-  GitHub reports as verified (HOMEBREW-TAP-UNSIGNED).
+* no job bumps the Homebrew tap: the PAT's contents-API commit came back
+  unsigned on 0.5.241 and failed the run, so a release's tap bump is a
+  locally signed fast-forward in scripts/post-release.py
+  (HOMEBREW-TAP-API-COMMIT-UNSIGNED).
 
 The jobs cannot run outside a real tag push, so these tests hold the
 workflow text to that shape; the scripts' behavior is tested in their own
@@ -80,9 +81,8 @@ def test_records_measures_the_published_tarball_and_uploads_the_line():
     assert "name: release-records" in body
 
 
-def test_the_tap_is_bumped_through_the_api_script():
-    body = job(RELEASE, "tap")
-    assert "python3 scripts/homebrew-tap-push.py" in body
+def test_the_tap_bump_is_not_in_the_release_run():
+    assert not re.search(r"(?m)^  tap:$", RELEASE)
 
 
 def test_pages_takes_expect_as_a_dispatch_input():
@@ -91,9 +91,9 @@ def test_pages_takes_expect_as_a_dispatch_input():
 
 # ── FAILURE ────────────────────────────────────────────────────────────────
 
-def test_the_tap_job_never_pushes_a_local_commit():
-    body = job(RELEASE, "tap")
-    assert "git push" not in body and "git commit" not in body
+def test_the_release_run_needs_no_tap_token():
+    assert "HOMEBREW_TAP_TOKEN" not in RELEASE
+    assert "homebrew-tap-push" not in RELEASE
 
 
 def test_the_expect_input_reaches_the_script_through_the_environment_not_the_shell():

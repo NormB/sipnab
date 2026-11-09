@@ -1,0 +1,160 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+name: Pinned tool
+description: >-
+  Put one pinned, prebuilt tool on PATH: cargo-audit, cargo-deny,
+  cargo-llvm-cov, clippy-sarif, sarif-fmt, cargo-cyclonedx or cosign. The
+  archive comes through ./.github/actions/pinned-download, so its sha256 is
+  checked on every run, hit or miss, and an outage is retried for up to five
+  minutes.
+
+# WHY THIS EXISTS (RELEASE-FAST D, after CI-TOOL-DOWNLOAD-RESILIENCE)
+#
+# These tools were installed by taiki-e/install-action and
+# sigstore/cosign-installer. Each fetched its tool from a GitHub release
+# inside the action, in one live attempt outside scripts/fetch-pinned.sh's
+# retry budget, so the 504s github.com served on 2026-11-08 would have failed
+# the audit, coverage, clippy-sarif and release jobs the same way they failed
+# the Pages deploy. #700 recorded the two actions as not yet covered.
+#
+# - Every pin is here, in one table: a version and a sha256 per platform.
+#   The versions are the ones install-action c509219c installed for the five
+#   tools it has a manifest for, and the ones its cargo-binstall fallback took
+#   for clippy-sarif and sarif-fmt (0.8.0, the newest on crates.io); cosign is
+#   the v3.0.6 the release workflow already asked cosign-installer for. Each
+#   hash was checked against GitHub's asset digest and, where upstream
+#   publishes one, its checksum file (cosign_checksums.txt for cosign).
+#   clippy-sarif and sarif-fmt publish no checksum and GitHub lists no digest
+#   for them: the pin is the hash of the bytes downloaded on 2026-11-09.
+# - cosign-installer checked the cosign it fetched with a bootstrap cosign's
+#   signature check. A sha256 pin of the exact bytes is stricter: any other
+#   bytes are refused, signed or not.
+# - On a tag run (release.yml) the cache restore misses and nothing is saved,
+#   as with bpf-linker; the fetch still goes through fetch-pinned.sh, so the
+#   retries and the check are the same.
+# - tests/workflow_supply_chain_test.rs: `no_workflow_uses_an_action_that_
+#   fetches_its_tool_unchecked` refuses the two actions,
+#   `every_pinned_tool_is_fetched_by_the_one_rule` requires this action in
+#   every job that runs one of these tools, and `the_pinned_tool_action_pins_
+#   every_tool_through_pinned_download` holds the table's shape.
+#
+# Bumping a pin: change the VERSION and every SHA256 of the tool together,
+# taking each hash from the release's checksum file or `gh api
+# repos/<owner>/<repo>/releases/tags/<tag>` (the asset's `digest`).
+inputs:
+  tool:
+    description: The tool to install, one of the names above.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Choose the pinned archive
+      id: pick
+      shell: bash
+      env:
+        TOOL: ${{ inputs.tool }}
+        RUNNER_OS_NAME: ${{ runner.os }}
+        RUNNER_ARCH_NAME: ${{ runner.arch }}
+        CARGO_AUDIT_VERSION: '0.22.2'
+        CARGO_AUDIT_SHA256_LINUX_X64: '7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428'
+        CARGO_DENY_VERSION: '0.20.2'
+        CARGO_DENY_SHA256_LINUX_X64: '9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f'
+        CARGO_LLVM_COV_VERSION: '0.9.1'
+        CARGO_LLVM_COV_SHA256_LINUX_X64: '3fca950394a3c49457657c158b1619cec8dfd2647ae5b48746734c0ab969a522'
+        CARGO_LLVM_COV_SHA256_LINUX_ARM64: '49c0085628392a8d727c4464d91ec417c613c5015f5197cd16d5c05aa3fb5ad1'
+        CLIPPY_SARIF_VERSION: '0.8.0'
+        CLIPPY_SARIF_SHA256_LINUX_X64: 'd97c49a32e50c294437dbfdb764a6ced94c386ee5d45d82ba881694cc6d77329'
+        SARIF_FMT_VERSION: '0.8.0'
+        SARIF_FMT_SHA256_LINUX_X64: '39464516e1e3684f3af250985de755a6287c5a79e6c17d6a9d54675ad853ffe2'
+        CARGO_CYCLONEDX_VERSION: '0.5.9'
+        CARGO_CYCLONEDX_SHA256_LINUX_X64: '9bd3e599314f50810c9d98b8b68a617ff9d3cc20873968d90b29d121f6b226ff'
+        COSIGN_VERSION: '3.0.6'
+        COSIGN_SHA256_LINUX_X64: 'c956e5dfcac53d52bcf058360d579472f0c1d2d9b69f55209e256fe7783f4c74'
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS_NAME/$RUNNER_ARCH_NAME" in
+          Linux/X64) plat=LINUX_X64; arch=x86_64; deb=amd64 ;;
+          Linux/ARM64) plat=LINUX_ARM64; arch=aarch64; deb=arm64 ;;
+          *) echo "::error::pinned-tool pins nothing for $RUNNER_OS_NAME/$RUNNER_ARCH_NAME"; exit 1 ;;
+        esac
+        member=""
+        case "$TOOL" in
+          cargo-audit)
+            v=$CARGO_AUDIT_VERSION; file="cargo-audit-$arch-unknown-linux-musl-v$v.tgz"
+            repo=rustsec/rustsec; tag="cargo-audit/v$v"
+            kind=tgz; member="cargo-audit-$arch-unknown-linux-musl-v$v/cargo-audit" ;;
+          cargo-deny)
+            v=$CARGO_DENY_VERSION; file="cargo-deny-$v-$arch-unknown-linux-musl.tar.gz"
+            repo=EmbarkStudios/cargo-deny; tag="$v"
+            kind=tgz; member="cargo-deny-$v-$arch-unknown-linux-musl/cargo-deny" ;;
+          cargo-llvm-cov)
+            v=$CARGO_LLVM_COV_VERSION; file="cargo-llvm-cov-$arch-unknown-linux-musl.tar.gz"
+            repo=taiki-e/cargo-llvm-cov; tag="v$v"
+            kind=tgz; member="cargo-llvm-cov" ;;
+          clippy-sarif)
+            v=$CLIPPY_SARIF_VERSION; file="clippy-sarif-$arch-unknown-linux-gnu"
+            repo=psastras/sarif-rs; tag="clippy-sarif-v$v"
+            kind=bin ;;
+          sarif-fmt)
+            v=$SARIF_FMT_VERSION; file="sarif-fmt-$arch-unknown-linux-gnu"
+            repo=psastras/sarif-rs; tag="sarif-fmt-v$v"
+            kind=bin ;;
+          cargo-cyclonedx)
+            v=$CARGO_CYCLONEDX_VERSION; file="cargo-cyclonedx-$arch-unknown-linux-musl.tar.xz"
+            repo=CycloneDX/cyclonedx-rust-cargo; tag="cargo-cyclonedx-$v"
+            kind=txz; member="cargo-cyclonedx-$arch-unknown-linux-musl/cargo-cyclonedx" ;;
+          cosign)
+            v=$COSIGN_VERSION; file="cosign-linux-$deb"
+            repo=sigstore/cosign; tag="v$v"
+            kind=bin ;;
+          *) echo "::error::pinned-tool has no pin for the tool '$TOOL'"; exit 1 ;;
+        esac
+        key=$(printf '%s' "$TOOL" | tr 'a-z-' 'A-Z_')
+        shavar="${key}_SHA256_${plat}"
+        sha=${!shavar:-}
+        if [ -z "$sha" ]; then
+          echo "::error::pinned-tool pins no $TOOL build for $RUNNER_OS_NAME/$RUNNER_ARCH_NAME ($shavar)"
+          exit 1
+        fi
+        {
+          echo "name=$TOOL-linux-$deb"
+          echo "version=$v"
+          echo "sha256=$sha"
+          echo "repo=$repo"
+          echo "tag=$tag"
+          echo "file=$file"
+          echo "kind=$kind"
+          echo "member=$member"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Fetch the pinned archive (cached, sha256 checked)
+      id: archive
+      uses: ./.github/actions/pinned-download
+      with:
+        name: ${{ steps.pick.outputs.name }}
+        version: ${{ steps.pick.outputs.version }}
+        sha256: ${{ steps.pick.outputs.sha256 }}
+        url: https://github.com/${{ steps.pick.outputs.repo }}/releases/download/${{ steps.pick.outputs.tag }}/${{ steps.pick.outputs.file }}
+        file: ${{ steps.pick.outputs.file }}
+
+    - name: Put the tool on PATH
+      shell: bash
+      env:
+        TOOL: ${{ inputs.tool }}
+        KIND: ${{ steps.pick.outputs.kind }}
+        MEMBER: ${{ steps.pick.outputs.member }}
+        ARCHIVE: ${{ steps.archive.outputs.path }}
+      run: |
+        set -euo pipefail
+        bin="$RUNNER_TEMP/sipnab-tools/bin"
+        mkdir -p "$bin"
+        work=$(mktemp -d "$RUNNER_TEMP/sipnab-tool.XXXXXX")
+        case $KIND in
+          tgz) tar xzf "$ARCHIVE" -C "$work" "$MEMBER"; src="$work/$MEMBER" ;;
+          txz) tar xJf "$ARCHIVE" -C "$work" "$MEMBER"; src="$work/$MEMBER" ;;
+          bin) src="$ARCHIVE" ;;
+          *) echo "::error::pinned-tool: unknown archive kind '$KIND'"; exit 1 ;;
+        esac
+        install -m 0755 "$src" "$bin/$TOOL"
+        rm -rf "$work"
+        echo "$bin" >> "$GITHUB_PATH"
+        echo "pinned-tool: $TOOL installed at $bin/$TOOL"

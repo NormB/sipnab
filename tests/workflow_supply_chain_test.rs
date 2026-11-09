@@ -248,10 +248,18 @@ fn no_workflow_installs_a_release_artifact_without_checking_its_bytes() -> Resul
 /// timeout, that download failed the Docs job's "Dead links" step with
 /// exit 22. lychee is now fetched through `pinned-download` and run directly.
 ///
-/// Not yet covered, recorded rather than hidden: taiki-e/install-action
-/// (ci.yml, quality.yml, release.yml) and sigstore/cosign-installer
-/// (release.yml) also fetch their tools from GitHub releases themselves.
-const ACTIONS_THAT_FETCH_THEIR_OWN_TOOL: &[&str] = &["lycheeverse/lychee-action"];
+/// taiki-e/install-action (cargo-audit, cargo-deny, cargo-llvm-cov,
+/// clippy-sarif, sarif-fmt, cargo-cyclonedx) and sigstore/cosign-installer
+/// (cosign) fetched their tools from GitHub releases the same way: one live
+/// download inside the action, outside fetch-pinned.sh's retry budget, so a
+/// 504 failed the job. RELEASE-FAST D moved each tool to a pinned, cached,
+/// sha256-checked download; `every_pinned_tool_is_fetched_by_the_one_rule`
+/// holds each one there.
+const ACTIONS_THAT_FETCH_THEIR_OWN_TOOL: &[&str] = &[
+    "lycheeverse/lychee-action",
+    "taiki-e/install-action",
+    "sigstore/cosign-installer",
+];
 
 /// No workflow uses an action listed in `ACTIONS_THAT_FETCH_THEIR_OWN_TOOL`.
 #[test]
@@ -1185,5 +1193,168 @@ fn nextest_is_installed_through_one_pinned_rule() -> Result<(), TestError> {
         "only {suite_jobs} job(s) found running the suite; ci.yml's check (macOS), \
          test and features jobs all do, so the scan stopped matching"
     );
+    Ok(())
+}
+
+/// The tools `.github/actions/pinned-tool` installs, each with the command a
+/// workflow runs it by. RELEASE-FAST D: these came from
+/// taiki-e/install-action and sigstore/cosign-installer, which each fetched
+/// the tool from a GitHub release inside the action, in one live attempt.
+const PINNED_TOOLS: &[(&str, &str)] = &[
+    ("cargo-audit", "cargo audit"),
+    ("cargo-deny", "cargo deny"),
+    ("cargo-llvm-cov", "cargo llvm-cov"),
+    ("clippy-sarif", "clippy-sarif"),
+    ("sarif-fmt", "sarif-fmt"),
+    ("cargo-cyclonedx", "cargo cyclonedx"),
+    ("cosign", "cosign "),
+];
+
+const PINNED_TOOL_ACTION: &str = ".github/actions/pinned-tool/action.yml";
+const PINNED_TOOL_USES: &str = "uses: ./.github/actions/pinned-tool";
+
+/// A workflow's jobs as `(id, lines)`, comments dropped: the `jobs:` mapping
+/// split at its two-space keys.
+fn workflow_jobs(body: &str) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    let mut in_jobs = false;
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - trimmed.len();
+        if indent == 0 {
+            in_jobs = trimmed.starts_with("jobs:");
+        } else if in_jobs && indent == 2 && trimmed.ends_with(':') {
+            out.push((trimmed.trim_end_matches(':').to_string(), Vec::new()));
+        } else if in_jobs && let Some((_, lines)) = out.last_mut() {
+            lines.push(line.to_string());
+        }
+    }
+    out
+}
+
+/// The `tool:` inputs of a job's `pinned-tool` steps.
+fn pinned_tool_inputs(lines: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for step in steps(&lines.join("\n")) {
+        if !step.contains(PINNED_TOOL_USES) {
+            continue;
+        }
+        for line in step.lines() {
+            if let Some(v) = line.trim().strip_prefix("tool:") {
+                out.push(v.trim().trim_matches(['\'', '"']).to_string());
+            }
+        }
+    }
+    out
+}
+
+/// Every job that runs one of `PINNED_TOOLS` installs it through
+/// `.github/actions/pinned-tool` in the same job.
+#[test]
+fn every_pinned_tool_is_fetched_by_the_one_rule() -> Result<(), TestError> {
+    let mut runs = 0;
+    let mut missing = Vec::new();
+    for (name, body) in workflows()? {
+        for (job, lines) in workflow_jobs(&body) {
+            let installed = pinned_tool_inputs(&lines);
+            for (tool, command) in PINNED_TOOLS {
+                let used = lines.iter().any(|l| {
+                    let t = l.trim_start().trim_start_matches("- ");
+                    !t.starts_with("name:") && !t.starts_with("tool:") && l.contains(command)
+                });
+                if !used {
+                    continue;
+                }
+                runs += 1;
+                if !installed.iter().any(|t| t == tool) {
+                    missing.push(format!("{name} job {job} runs `{}` without a {PINNED_TOOL_USES} step with tool: {tool}", command.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "install these through {PINNED_TOOL_ACTION}, not an action that downloads them itself:\n  {}",
+        missing.join("\n  ")
+    );
+    assert!(
+        runs >= PINNED_TOOLS.len(),
+        "only {runs} job(s) found running a pinned tool; ci.yml (audit, deny), quality.yml \
+         (llvm-cov twice, clippy-sarif, sarif-fmt) and release.yml (cyclonedx, cosign) all do, \
+         so the scan stopped matching"
+    );
+    Ok(())
+}
+
+/// Every `tool:` given to `pinned-tool` is one the action pins.
+#[test]
+fn every_pinned_tool_step_names_a_tool_the_action_pins() -> Result<(), TestError> {
+    let mut seen = 0;
+    for (name, body) in workflows()? {
+        for (job, lines) in workflow_jobs(&body) {
+            for tool in pinned_tool_inputs(&lines) {
+                seen += 1;
+                assert!(
+                    PINNED_TOOLS.iter().any(|(t, _)| *t == tool),
+                    "{name} job {job} asks {PINNED_TOOL_ACTION} for `{tool}`, which it does not pin"
+                );
+            }
+        }
+    }
+    assert!(
+        seen >= PINNED_TOOLS.len(),
+        "only {seen} pinned-tool step(s) found"
+    );
+    Ok(())
+}
+
+/// `pinned-tool` pins a version and a full sha256 for every tool, fetches
+/// through `pinned-download` only, and downloads nothing itself.
+#[test]
+fn the_pinned_tool_action_pins_every_tool_through_pinned_download() -> Result<(), TestError> {
+    let action = std::fs::read_to_string(repo().join(PINNED_TOOL_ACTION))
+        .map_err(|e| format!("read {PINNED_TOOL_ACTION}: {e}"))?;
+    for (tool, _) in PINNED_TOOLS {
+        let key = tool.to_uppercase().replace('-', "_");
+        let version = regex::Regex::new(&format!(
+            r"(?m)^\s+{key}_VERSION: '([0-9][0-9A-Za-z.\-]*)'$"
+        ))
+        .map_err(|e| format!("regex: {e}"))?;
+        assert!(
+            version.is_match(&action),
+            "{PINNED_TOOL_ACTION} pins no {key}_VERSION for {tool}"
+        );
+        let sha = regex::Regex::new(&format!(r"(?m)^\s+{key}_SHA256_[A-Z0-9_]+: '([^']*)'$"))
+            .map_err(|e| format!("regex: {e}"))?;
+        let hashes: Vec<String> = sha
+            .captures_iter(&action)
+            .map(|c| c[1].to_string())
+            .collect();
+        assert!(
+            !hashes.is_empty(),
+            "{PINNED_TOOL_ACTION} pins no {key}_SHA256_* for {tool}"
+        );
+        for h in &hashes {
+            assert!(
+                h.len() == 64
+                    && h.chars()
+                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                "{PINNED_TOOL_ACTION}: {tool} hash `{h}` is not a full lowercase sha256"
+            );
+        }
+    }
+    assert!(
+        action.contains(PINNED_DOWNLOAD),
+        "{PINNED_TOOL_ACTION} must fetch through {PINNED_DOWNLOAD}"
+    );
+    for fetcher in ["curl ", "wget ", "gh release download"] {
+        assert!(
+            !action.contains(fetcher),
+            "{PINNED_TOOL_ACTION} downloads with `{fetcher}` itself; only {PINNED_DOWNLOAD} may"
+        );
+    }
     Ok(())
 }

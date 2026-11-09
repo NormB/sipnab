@@ -28,7 +28,9 @@ fixtures. The real github.com is never contacted.
 
 import hashlib
 import http.server
+import os
 import pathlib
+import shutil
 import socket
 import subprocess
 import threading
@@ -140,13 +142,98 @@ def server():
     s.stop()
 
 
-def run(*args, timeout=60):
+def run(*args, timeout=60, env=None):
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
         capture_output=True,
         text=True,
         timeout=timeout,
+        env=env,
     )
+
+
+# ---------------------------------------------------------------------------
+# The virtual clock (FLAKY-FETCH-PINNED-UNDER-LOAD)
+# ---------------------------------------------------------------------------
+#
+# fetch-pinned.sh retries only while the time spent so far plus the next delay
+# fits the budget, and the time spent includes starting curl and date. The
+# tests that count attempts used budgets of 0.03 s and 0.5 s of wall-clock
+# time, so at load average 30 on the self-hosted runner a slow process start
+# used up the slack and an attempt was dropped ("assert 3 == 4", and
+# "assert 1 >= 2" for a 0.03 s budget). The counts depended on the host's
+# load, not on the script.
+#
+# The script reads time only through `date` (now_ms) and waits only through
+# `sleep`. These stubs put both on a clock kept in a file: `sleep D` adds D
+# and returns at once, and every `date` read adds STEP ms after it answers,
+# which stands for the cost of one attempt. An attempt count asserted on this
+# clock is the same at any load.
+
+REAL_DATE = shutil.which("date")
+VCLOCK_START_MS = 1_700_000_000_000
+
+DATE_STUB = f"""#!/usr/bin/env bash
+case "$*" in
+  +%s%3N | +%s) ;;
+  *) exec {REAL_DATE} "$@" ;;
+esac
+read -r t < "$VCLOCK"
+if [ "$1" = +%s ]; then echo $((t / 1000)); else echo "$t"; fi
+echo $((t + ${{VCLOCK_STEP_MS:-0}})) > "$VCLOCK"
+"""
+
+SLEEP_STUB = """#!/usr/bin/env bash
+v=$1 int=${1%%.*} frac=""
+if [ "$int" != "$v" ]; then frac=${v#*.}; fi
+while [ ${#frac} -lt 3 ]; do frac="${frac}0"; done
+read -r t < "$VCLOCK"
+echo $((t + 10#${int:-0} * 1000 + 10#${frac:0:3})) > "$VCLOCK"
+echo "$v" >> "$VCLOCK.sleeps"
+"""
+
+
+class Clock:
+    def __init__(self, base):
+        self.dir = base / "vclock-bin"
+        self.dir.mkdir()
+        self.file = base / "vclock"
+        self.file.write_text(f"{VCLOCK_START_MS}\n")
+        for name, body in (("date", DATE_STUB), ("sleep", SLEEP_STUB)):
+            stub = self.dir / name
+            stub.write_text(body)
+            stub.chmod(0o755)
+
+    def env(self, step_ms=0, extra_path=None):
+        e = dict(os.environ)
+        path = [str(self.dir)] + ([str(extra_path)] if extra_path else [])
+        e["PATH"] = os.pathsep.join(path + [e.get("PATH", "")])
+        e["VCLOCK"] = str(self.file)
+        e["VCLOCK_STEP_MS"] = str(step_ms)
+        return e
+
+    def sleeps(self):
+        f = pathlib.Path(f"{self.file}.sleeps")
+        return f.read_text().split() if f.exists() else []
+
+    def elapsed_ms(self):
+        return int(self.file.read_text()) - VCLOCK_START_MS
+
+
+@pytest.fixture
+def clock(tmp_path):
+    return Clock(tmp_path)
+
+
+def slow_curl(base, seconds):
+    """A curl on PATH that waits SECONDS of real time before each attempt:
+    what a process start costs at load average 30, made certain."""
+    d = base / "slow-curl-bin"
+    d.mkdir()
+    stub = d / "curl"
+    stub.write_text(f"#!/usr/bin/env bash\n{shutil.which('sleep')} {seconds}\nexec {shutil.which('curl')} \"$@\"\n")
+    stub.chmod(0o755)
+    return d
 
 
 def fetch(url, dest, sha=SHA, *extra):
@@ -343,18 +430,20 @@ def test_failure_504_for_the_whole_budget_exits_1_naming_url_and_status(server, 
     assert not (tmp_path / "a.tgz").exists()
 
 
-def test_failure_the_attempts_are_the_ones_the_schedule_allows(server, tmp_path):
-    # budget 0.5 with delays 0.05, 0.1, 0.2: their 0.35 s fits with room for
-    # the attempts themselves, the next 0.4 does not, so four attempts and
-    # then the error.
+def test_failure_the_attempts_are_the_ones_the_schedule_allows(server, tmp_path, clock):
+    # budget 0.5 with delays 0.05, 0.1, 0.2: their 0.35 s fits, the next 0.4
+    # does not, so four attempts and then the error. On the virtual clock an
+    # attempt costs nothing, so the count is the schedule's at any load.
     url = server.plan("/a.tgz", {"status": 503, "body": b"x"})
     r = run(
         "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
         "--first-delay", "0.05", "--max-delay", "10", "--budget", "0.5",
+        env=clock.env(),
     )
     assert r.returncode == 1, r.stderr
     assert server.hits("/a.tgz") == 4
     assert "4 attempts" in r.stderr
+    assert clock.sleeps() == ["0.05", "0.1", "0.2"]
 
 
 def test_failure_404_is_permanent_after_one_attempt(server, tmp_path):
@@ -562,9 +651,12 @@ def test_edge_a_zero_budget_makes_exactly_one_attempt(server, tmp_path):
 
 
 def test_edge_time_spent_in_stalled_attempts_counts_against_the_budget(server, tmp_path):
+    # Real time, on purpose: this is the test that curl's own time is counted.
     # Delays 0.1, 0.2, 0.4 fit a 1.2 s budget, so the schedule alone allows
     # four attempts. Each stalled attempt takes its 0.5 s timeout, and after
-    # the second the 1.1 s spent plus the 0.2 s delay passes the budget.
+    # the second the 1.1 s spent plus the 0.2 s delay passes the budget. Load
+    # only adds time, so it can only lower the count: the bound is an upper
+    # one, and anything below the schedule's four proves the time counted.
     url = server.plan("/a.tgz", {"status": 200, "stall": 3})
     r = run(
         "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
@@ -572,7 +664,21 @@ def test_edge_time_spent_in_stalled_attempts_counts_against_the_budget(server, t
         "--attempt-timeout", "0.5",
     )
     assert r.returncode == 1, r.stderr
+    assert 1 <= server.hits("/a.tgz") <= 2
+
+
+def test_edge_the_cost_of_each_attempt_counts_against_the_budget(server, tmp_path, clock):
+    # The virtual-clock form of the test above: each attempt costs 500 ms, so
+    # after the second the 1.1 s spent plus the 0.2 s delay passes 1.2 s.
+    url = server.plan("/a.tgz", {"status": 503, "body": b"x"})
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "0.1", "--max-delay", "10", "--budget", "1.2",
+        env=clock.env(step_ms=500),
+    )
+    assert r.returncode == 1, r.stderr
     assert server.hits("/a.tgz") == 2
+    assert clock.sleeps() == ["0.1"]
 
 
 def test_edge_an_empty_file_with_the_empty_hash_is_valid(server, tmp_path):
@@ -617,16 +723,17 @@ def test_edge_no_temporary_file_is_left_after_a_success(server, tmp_path):
     assert leftovers(tmp_path, "a.tgz") == []
 
 
-def test_edge_no_temporary_file_is_left_after_an_exhausted_outage(server, tmp_path):
-    # The script retries only while the time spent so far plus the next
-    # delay fits the budget, so the budget must leave room for the first
-    # attempt's own run time: with 0.03 s, a first attempt slower than
-    # 20 ms on a loaded host left no retry, and the test saw 1 hit.
+def test_edge_no_temporary_file_is_left_after_an_exhausted_outage(server, tmp_path, clock):
+    # Delays 0.01 and 0.02 exactly fill the 0.03 s budget: three attempts.
     url = server.plan("/a.tgz", {"status": 504, "body": b"x"})
-    r = run("--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"), "--first-delay", "0.01", "--budget", "1")
+    dest_dir = tmp_path / "dl"
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(dest_dir / "a.tgz"),
+        "--first-delay", "0.01", "--budget", "0.03", env=clock.env(),
+    )
     assert r.returncode == 1, r.stderr
-    assert server.hits("/a.tgz") >= 2
-    assert leftovers(tmp_path, "a.tgz") == []
+    assert server.hits("/a.tgz") == 3
+    assert leftovers(dest_dir, "a.tgz") == []
 
 
 def test_edge_a_504_body_is_never_left_as_the_destination(server, tmp_path):
@@ -657,4 +764,125 @@ def test_edge_the_retry_message_names_the_status_and_the_next_delay(server, tmp_
     assert r.returncode == 0, r.stderr
     assert "HTTP 502" in r.stderr
     assert "0.02" in r.stderr
+
+
+# ---------------------------------------------------------------------------
+# FLAKY-FETCH-PINNED-UNDER-LOAD: attempt counts do not depend on the load
+# ---------------------------------------------------------------------------
+
+
+def test_success_a_slow_process_start_does_not_change_the_attempt_count(server, tmp_path, clock):
+    # 150 ms of real time before every curl, ten times the slack the old
+    # wall-clock version of the schedule test had per attempt.
+    url = server.plan("/a.tgz", {"status": 503, "body": b"x"})
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "0.05", "--max-delay", "10", "--budget", "0.5",
+        env=clock.env(extra_path=slow_curl(tmp_path, 0.15)),
+    )
+    assert r.returncode == 1, r.stderr
+    assert server.hits("/a.tgz") == 4
+
+
+def test_success_a_slow_process_start_still_reaches_the_answer_after_retries(server, tmp_path, clock):
+    url = server.plan("/a.tgz", {"status": 504, "body": b"x"}, {"status": 504, "body": b"x"}, {"status": 200})
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "0.01", "--max-delay", "0.02", "--budget", "0.03",
+        env=clock.env(extra_path=slow_curl(tmp_path, 0.15)),
+    )
+    assert r.returncode == 0, r.stderr
+    assert server.hits("/a.tgz") == 3
+    assert (tmp_path / "a.tgz").read_bytes() == PAYLOAD
+
+
+def test_success_the_virtual_clock_sees_every_delay_the_script_waits(server, tmp_path, clock):
+    url = server.plan("/a.tgz", {"status": 503, "body": b"x"})
+    run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "1", "--max-delay", "4", "--budget", "15",
+        env=clock.env(),
+    )
+    assert clock.sleeps() == ["1", "2", "4", "4", "4"]
+    assert clock.elapsed_ms() == 15_000
+
+
+def test_failure_the_script_reads_its_time_through_date(server, tmp_path, clock):
+    # If the script stopped reading time through `date` (EPOCHREALTIME, say),
+    # the virtual clock would be bypassed and the counting tests would depend
+    # on the load again. A first attempt that costs 1 s on the virtual clock
+    # leaves no room in a 0.5 s budget.
+    url = server.plan("/a.tgz", {"status": 503, "body": b"x"})
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "0.05", "--budget", "0.5",
+        env=clock.env(step_ms=1000),
+    )
+    assert r.returncode == 1, r.stderr
+    assert server.hits("/a.tgz") == 1
+    assert "1 attempt " in r.stderr
+
+
+def test_failure_the_script_waits_through_sleep(server, tmp_path, clock):
+    # A 30 s first delay on the virtual clock returns at once; a script that
+    # waited any other way would hit the 10 s subprocess timeout.
+    url = server.plan("/a.tgz", {"status": 503, "body": b"x"}, {"status": 200})
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "30", "--max-delay", "30", "--budget", "40",
+        env=clock.env(), timeout=10,
+    )
+    assert r.returncode == 0, r.stderr
+    assert clock.sleeps() == ["30"]
+
+
+def test_failure_the_error_reports_the_time_spent_on_the_clock(server, tmp_path, clock):
+    url = server.plan("/a.tgz", {"status": 503, "body": b"x"})
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "0.05", "--max-delay", "10", "--budget", "0.5",
+        env=clock.env(),
+    )
+    assert r.returncode == 1, r.stderr
+    assert "over 0.35 s (budget 0.5 s)" in r.stderr
+
+
+def test_edge_a_delay_that_exactly_fills_the_rest_of_the_budget_is_taken(server, tmp_path, clock):
+    # Attempts cost 100 ms: after the first, 0.1 + 0.4 = 0.5 is the budget
+    # exactly and is taken; after the second, 0.6 + 0.8 is not.
+    url = server.plan("/a.tgz", {"status": 503, "body": b"x"})
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "0.4", "--max-delay", "10", "--budget", "0.5",
+        env=clock.env(step_ms=100),
+    )
+    assert r.returncode == 1, r.stderr
+    assert server.hits("/a.tgz") == 2
+
+
+def test_edge_one_millisecond_over_the_budget_is_not_taken(server, tmp_path, clock):
+    url = server.plan("/a.tgz", {"status": 503, "body": b"x"})
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "0.4", "--max-delay", "10", "--budget", "0.5",
+        env=clock.env(step_ms=101),
+    )
+    assert r.returncode == 1, r.stderr
+    assert server.hits("/a.tgz") == 1
+
+
+def test_edge_whole_second_clocks_still_bound_the_attempts(server, tmp_path, clock):
+    # Where date has no %N (macOS) the script falls back to whole seconds.
+    # The stub answers +%s for that form; this drives the fallback by making
+    # +%s%3N fail.
+    stub = clock.dir / "date"
+    stub.write_text(stub.read_text().replace("+%s%3N | +%s) ;;", "+%s) ;;\n  +%s%3N) exit 1 ;;"))
+    url = server.plan("/a.tgz", {"status": 503, "body": b"x"})
+    r = run(
+        "--url", url, "--sha256", SHA, "--dest", str(tmp_path / "a.tgz"),
+        "--first-delay", "1", "--max-delay", "1", "--budget", "3",
+        env=clock.env(),
+    )
+    assert r.returncode == 1, r.stderr
+    assert server.hits("/a.tgz") == 4
 

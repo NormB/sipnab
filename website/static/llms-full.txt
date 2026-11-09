@@ -81592,7 +81592,14 @@ Every such download now goes through one rule:
   [`tests/ci_curl_retry_test.rs`](../../tests/ci_curl_retry_test.rs) fails a CI file that runs `curl` itself.
   `no_workflow_uses_an_action_that_fetches_its_tool_unchecked` fails a step that uses `lycheeverse/lychee-action`.
   That action downloads lychee from a release with one `curl` and no checksum, and on 2026-11-08 that download failed the Docs job.
-  `taiki-e/install-action` and `sigstore/cosign-installer` still fetch their tools from GitHub releases themselves.
+  It also fails a step that uses `taiki-e/install-action` or `sigstore/cosign-installer`, which fetched their tools from GitHub releases
+  in one live attempt (RELEASE-FAST D).
+- [`.github/actions/pinned-tool`](../../.github/actions/pinned-tool/action.yml) installs those tools instead:
+  cargo-audit, cargo-deny, cargo-llvm-cov, clippy-sarif, sarif-fmt, cargo-cyclonedx and cosign.
+  - It holds one table, a version and a sha256 per platform for each tool, and fetches through `pinned-download`.
+  - `every_pinned_tool_is_fetched_by_the_one_rule` fails a job that runs one of these tools without it.
+  - To bump one, change its `_VERSION` and every `_SHA256_` value together, taking each hash from the release's
+    checksum file or the asset's `digest` in `gh api repos/<owner>/<repo>/releases/tags/<tag>`.
 - [`scripts/tests/test_fetch_pinned.py`](../../scripts/tests/test_fetch_pinned.py) drives the script against a local HTTP server.
 
 To bump a tool:
@@ -82872,20 +82879,14 @@ RELEASE-FAST C removes that pull request.
   [`scripts/release-records.py`](../../scripts/release-records.py) `ceiling` checks the sha256 of the
   tarball and measures the `sipnab` file in it.
   It writes the binary-ceiling line, and the job uploads it as the run's `release-records` artifact.
-- The eBPF load verification stays a manual release step on the OpenSIPS VM (a privileged host with BTF),
-  run once the assets exist:
-
-  ```sh
-  sudo scripts/verify-bpf-load.sh <version>
-  ```
-
+- The eBPF load verification runs on the OpenSIPS VM (a privileged host with BTF) once the assets exist,
+  from [`scripts/post-release.py`](../../scripts/post-release.py) (see [After the release](#after-the-release)).
+  The site no longer waits for it, so a verify that does not print `ATTACHED` withdraws the release at once.
   Write the ledger row it describes, in the format of the rows in
   [`uprobe-capture.md`](uprobe-capture.md#testing-it), to a file for the next step.
-  The site no longer waits for it.
   Without the row, the hooks refuse the next release pull request, because
   `the_load_verification_record_names_the_published_release` requires a row for the
   `published_version` its advertisement commit sets.
-  If the verifier rejects the object, withdraw the release from the site as above.
 - The next release pull request carries an **advertisement commit** before the version bump.
   From a checkout of `main` with the tags fetched, for the previous release `<prev>`:
 
@@ -82912,12 +82913,14 @@ RELEASE-FAST C removes that pull request.
   `published_version` is the newest release tag below the crate version, or the crate version
   itself once a tag names it.
 
-**The release bumps the Homebrew tap through the GitHub API.**
+**The Homebrew tap's bump is a locally signed commit, made after the release.**
 
-- The `tap` job runs [`scripts/homebrew-tap-push.py`](../../scripts/homebrew-tap-push.py)
-  with the `HOMEBREW_TAP_TOKEN` secret.
-- It creates the formula commit with the contents API on a branch of the tap, so GitHub signs it,
-  and moves the tap's `main` to it only when GitHub reports the commit verified, as a fast-forward.
+- GitHub does not sign a contents-API commit made with a personal access token.
+  On 0.5.241 the release job's commit `83b56c480` came back `verified: false`, reason `unsigned`.
+  The job refused to move the tap's `main`, and the run concluded failure.
+  The bump for that release is the hand-signed fast-forward `1bd0c0dd3`.
+- So no workflow job writes to the tap, and the release needs no token for it.
+  The `tap` check of [After the release](#after-the-release) makes the commit.
 - Every bump made with `git push` before 0.5.241 carries no signature (HOMEBREW-TAP-UNSIGNED).
   This change leaves the history of the tap as it is.
 
@@ -82956,7 +82959,7 @@ also attaches two files, both made from the job's own OIDC identity with no
 stored key:
 
 - `SHA256SUMS.txt.sigstore.json`, from `cosign sign-blob` over the checksum
-  list. `sigstore/cosign-installer` installs cosign and checks its digest.
+  list. `.github/actions/pinned-tool` installs cosign v3.0.6 and checks the sha256 of the binary.
 - `sipnab-<version>.intoto.jsonl`, a copy of the bundle that
   `attest-build-provenance` writes to its `bundle-path` output.
 
@@ -83039,8 +83042,7 @@ That is the union of every feature set the build matrix compiles.
 - One workspace-level invocation emits a document per member into that member's own directory.
 - The release step renames them apart on the way into `artifacts/`.
 
-Finally the `tap` job renders the Homebrew formula and pushes it to `NormB/homebrew-tap`.
-It skips with a warning if the token is absent.
+The workflow leaves the Homebrew formula alone: the `tap` check of [`scripts/post-release.py`](../../scripts/post-release.py) bumps it once the assets exist.
 
 The tag is what starts it, and everything after is automatic.
 
@@ -83051,7 +83053,6 @@ sequenceDiagram
     participant Rel as release.yml
     participant Gate as glibc floor gate
     participant GH as GitHub release
-    participant Tap as homebrew-tap
     participant GHCR
 
     Dev->>Dev: land the release PR once its head is green
@@ -83060,7 +83061,6 @@ sequenceDiagram
     Rel->>Gate: readelf -V each gnu binary
     Gate-->>Rel: max GLIBC symbol <= 2.36 or fail
     Rel->>GH: SHA256SUMS.txt + attest-build-provenance
-    Rel->>Tap: render formula, push if token set
     Dev->>GHCR: same tag triggers docker.yml in parallel
     Note over GHCR: image + sigstore provenance
 ```
@@ -83102,6 +83102,87 @@ The homepage's test count is not a marker.
   - Platform-gated tests mean the macOS leg runs a handful fewer.
   - So one advertised number cannot be true of both.
   - The figure describes the Linux run.
+
+### After the release
+
+[`scripts/post-release.py`](../../scripts/post-release.py) runs the four checks that follow a release, side by side.
+Until 0.5.240 they ran one after another, and on 0.5.239 the `.deb` steps also queued 10 minutes for the heavy-run main slot.
+None of them builds anything, so none of them goes through heavy-run.
+
+**Prerequisites.**
+
+- The release workflow of the tag is green, so the assets exist and the `advertise` job has deployed the site.
+- `gh` has a login with write access to the releases and the workflows of `NormB/sipnab`.
+- `ssh <user>@<host>` to the x86_64 OpenSIPS VM works without a password prompt (`BatchMode`), and `sudo` there needs no password.
+  That VM has kernel BTF.
+- The services the upgrade must not restart are active on that VM: `opensips`, `vcon-server` and `tfps` by default.
+- `git` on this machine signs with an SSH key GitHub lists as a signing key (`gpg.format=ssh`, with `allowedSignersFile` set so `git verify-commit` works), and can push to `NormB/homebrew-tap`.
+
+**Steps.** From a checkout of `main`:
+
+```sh
+python3 scripts/post-release.py run <version> --host <user>@<host>
+```
+
+It runs four checks at once:
+
+- **bpf.**
+  - Copies [`scripts/verify-bpf-load.sh`](../../scripts/verify-bpf-load.sh) to a fresh `/tmp/sipnab-post.*` directory on the VM and runs it there under `sudo`.
+  - Removes the directory afterwards.
+  - Passes only when the verifier exits 0 and prints its `ATTACHED:` line.
+- **deb.**
+  - Downloads `sipnab_<version>_amd64.deb` and `SHA256SUMS.txt` into the git directory and checks the sha256.
+  - Simulates the install on the VM; the plan may install sipnab `<version>` and nothing else, and remove nothing.
+  - Installs the package and checks `sipnab --version`.
+  - Checks that each service kept its PID and its restart count and is still active.
+  - Removes the copied and downloaded files.
+- **site.** Runs `scripts/verify-site-advertises.sh <version>`.
+  It retries a STALE page for up to 10 minutes and fails at once on anything else.
+- **tap.**
+  - Renders the formula with [`packaging/homebrew/update-formula.sh`](../../packaging/homebrew/update-formula.sh) from the release's `SHA256SUMS.txt`.
+  - Commits it in a fresh clone of the tap with `git commit -S`, and runs `git verify-commit` before any push.
+  - Pushes to the branch `sipnab-bump-<version>` and reads GitHub's verification of that commit.
+  - Fast-forwards `main` only when GitHub says `verified: true`, then reads `main` back and requires the same commit, verified.
+  - Deletes the branch. The check never forces a push.
+  - A tap that already has this formula on a verified commit passes without a commit, and the check leaves a tap on a newer release alone.
+
+**The safeguard.** RELEASE-FAST C made the site advertise a release before the BPF verify. Phase two used to hold the site until it said `ATTACHED`.
+
+- So when the `bpf` check ends without `ATTACHED`, for any reason, it withdraws the release on its own thread at once.
+  That includes a refusal, no verdict, an unreachable VM and a crash.
+- First `gh release edit v<version> --prerelease`, with up to three attempts, and then a read-back of the flag.
+- Only then `gh workflow run pages.yml --ref main`.
+- `advertise-release.py` does not advertise a prerelease, so that deploy puts the site back on the previous release.
+- A deploy dispatched before the flag reads back would advertise the release again.
+  So a flag that does not read back dispatches nothing, and the script prints the commands to run by hand.
+- `python3 scripts/post-release.py withdraw <version>` runs the same withdrawal alone.
+
+**Verify.** The exit status says what happened:
+
+| Exit | Meaning | Next |
+|---|---|---|
+| 0 | All four checks passed. | Keep the `ATTACHED:` line for the ledger row. |
+| 1 | The deb, site or tap check failed; the release stays advertised. | Read the check's line; fix the host, the site or the key. |
+| 2 | Usage error. | Give the version as `X.Y.Z`. |
+| 3 | The `bpf` check failed and the script withdrew the release. | Read the verdict; the site deploy is running. |
+| 4 | The `bpf` check failed and the withdrawal did not complete. | Run the printed commands now. |
+
+**Troubleshooting.**
+
+- `no directory on <user>@<host>`: the VM is down or refuses the key.
+  The release is withdrawn, as for any missing `ATTACHED`.
+  Once the VM is back, run the check again, then `gh release edit v<version> --prerelease=false` and `gh workflow run pages.yml --ref main`.
+- `not active before the upgrade`: a service was already down, so the script installed nothing.
+  Start it, then run the check again.
+- `the simulated install would remove <packages>` or `the simulated install would also install <packages>`:
+  the package pulls in or removes something else.
+  The script installed nothing. Read the plan with `apt-get -s install ./sipnab_<version>_amd64.deb` on the VM.
+- `restarted`: the package's maintainer scripts restarted a service. That is a packaging defect; record it.
+- `not moving the tap's main: GitHub reports <sha> as not verified: <reason>`: the tap's `main` did not move.
+  Check that the signing key is on GitHub as a signing key and that GitHub lists the commit email as verified, then run the check again.
+- `the tap commit does not verify locally`: `git` signed with a key `allowedSignersFile` does not list, or did not sign. The check pushed nothing.
+- `the tap is on <version>, newer than <version>`: you ran the check for an older release, and the tap is correct as it stands.
+- [`scripts/tests/test_post_release.py`](../../scripts/tests/test_post_release.py) drives every branch through a fake runner.
 
 ### Symbol files
 
