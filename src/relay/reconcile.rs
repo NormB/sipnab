@@ -11,24 +11,31 @@
 //!
 //! # The bounds, and how each one is held
 //!
-//! - **Never periodic.** There is no timer, no thread and no interval in this
-//!   module. It acts when it is called, and it is called from exactly two
-//!   places: once at startup, and when a stream turns up that no signaling
-//!   explains. A poller cannot be built out of these pieces by accident --
-//!   it would have to be written on purpose, somewhere else.
+//! - **Never periodic.** There is no timer and no interval in this module.
+//!   It acts when it is called, and it is called from exactly two places:
+//!   once at startup, and when a stream turns up that no signaling explains.
+//!   A poller cannot be built out of these pieces by accident -- it would have
+//!   to be written on purpose, somewhere else. The only threads are the ones
+//!   [`Reconcilers::at_startup`] asks every engine on at once, one per engine,
+//!   and each is joined before it returns.
 //! - **Once per question.** Startup latches. Each relay-side port is asked
-//!   about at most once for the life of the run, so a stream that stays
-//!   unexplained -- which is the normal case for traffic the relay is not
-//!   handling at all -- does not re-ask on every packet. A port is REMEMBERED
-//!   as asked about only while the ceiling below has room: past that nothing
-//!   is remembered, because nothing will be asked. That is what keeps this
-//!   guarantee from being paid for with a set that grows per socket forever,
-//!   which is a bound on the traffic wearing the shape of a bound on us.
-//! - **A ceiling that does not depend on the traffic.** [`DEFAULT_BUDGET`],
-//!   or whatever [`Reconciler::with_budget`] was given, bounds transactions
-//!   for the whole run. A capture full of orphans cannot
-//!   turn into a flood of control traffic, and when the ceiling is reached
-//!   sipnab SAYS so rather than quietly attributing nothing.
+//!   about once, so a stream that stays unexplained -- which is the normal
+//!   case for traffic the relay is not handling at all -- does not re-ask on
+//!   every packet. A port is REMEMBERED as asked about only while the budget
+//!   below has room: past that nothing is remembered, because nothing will be
+//!   asked. The memory holds at most [`SOCKET_MEMORY`] sockets, oldest
+//!   forgotten first, so the set does not grow with the length of the run
+//!   either; a forgotten socket asked about again spends a transaction like
+//!   any other ask.
+//! - **A budget that does not depend on the traffic.** Each engine spends
+//!   from a [`super::budget::TransactionBudget`]: a burst of
+//!   [`DEFAULT_BUDGET`] (or whatever [`Reconciler::with_budget`] was given)
+//!   that refills at [`super::budget::DEFAULT_REFILL`], 33 transactions an
+//!   hour. A capture full of orphans cannot turn into a flood of control
+//!   traffic, a run of days still names a call set up late, and when the
+//!   budget is empty sipnab SAYS so rather than quietly attributing nothing.
+//!   A complete enumeration forgets the calls it no longer names, so the
+//!   index holds what the engine holds rather than every call the run saw.
 //! - **One reach past a capped answer, per run.** A relay that returns a
 //!   capped enumeration is asked ONCE more, for [`WIDE_LIST_LIMIT`], because
 //!   covering 32 of 400 calls reports the other 368 as orphans and looks like
@@ -61,6 +68,13 @@ use std::net::IpAddr;
 use super::types::{CallView, ControlReply};
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 use crate::security::transmit_guard::TransmitPermit;
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+use std::sync::Arc;
+
+/// Where a reconciler reads the time: the system's monotonic clock, or a
+/// test's.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub type Clock = Arc<dyn Fn() -> std::time::Instant + Send + Sync>;
 
 /// Everything the reconciler is permitted to ask a relay.
 ///
@@ -171,7 +185,7 @@ pub enum Unattributed {
     /// The snapshot was partial, so the port may belong to a call that was
     /// never enumerated.
     EnumerationWasPartial,
-    /// The transaction ceiling was reached, so this port was never asked about.
+    /// The transaction budget was empty, so this port was not asked about.
     BudgetSpent,
     /// The relay named calls, but some of them could not be read, so this
     /// port may belong to one of those.
@@ -201,8 +215,8 @@ impl Unattributed {
                  evidence the stream is unattached"
                     .to_owned()
             }
-            Self::BudgetSpent => "the control-transaction ceiling for this run was reached, so \
-                 this port was never asked about"
+            Self::BudgetSpent => "the control-transaction budget was empty, so this port was \
+                 not asked about"
                 .to_owned(),
             Self::SnapshotIncomplete { unread_calls } => {
                 format!(
@@ -243,13 +257,25 @@ pub const DEFAULT_LIST_LIMIT: u32 = 32;
 /// a stream returns without difficulty.
 pub const WIDE_LIST_LIMIT: u32 = 1024;
 
-/// Control transactions one run may spend, in total.
+/// The most control transactions one engine's budget holds: its burst.
 ///
 /// Enough for a full startup snapshot (one `list` plus a `query` per call at
 /// the default limit) and a comparable refresh afterwards. The point is that
-/// the ceiling does not depend on how much traffic the capture carries: a
-/// capture full of orphans cannot turn into a flood of control traffic.
+/// the burst does not depend on how much traffic the capture carries: a
+/// capture full of orphans cannot turn into a flood of control traffic. The
+/// budget refills at [`super::budget::DEFAULT_REFILL`] and never holds more
+/// than this.
 pub const DEFAULT_BUDGET: u32 = 2 * (DEFAULT_LIST_LIMIT + 1);
+
+/// How many asked-about sockets one engine's reconciler remembers.
+///
+/// Each socket in the set cost a transaction, and the budget refills, so over
+/// a long run the set would grow with the run's length. Past this many the
+/// oldest is forgotten. A forgotten socket that turns up again is asked about
+/// again, which spends a transaction like any other ask, so the budget still
+/// bounds the traffic. At the default refill of 33 an hour, filling it takes
+/// more than five days of transactions spent on nothing else.
+pub const SOCKET_MEMORY: usize = 4096;
 
 /// Asks a relay at the two moments RE4 allows, and never otherwise.
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
@@ -322,9 +348,16 @@ pub struct Reconciler<R: ReadOnlyRelay> {
     calls_never_read: usize,
     /// Transactions spent so far this run.
     spent: u32,
-    /// The ceiling on [`Self::spent`], fixed for the run and independent of
-    /// how much traffic the capture carries.
-    budget: u32,
+    /// What this engine may still spend: a burst that does not depend on how
+    /// much traffic the capture carries, refilled over time.
+    budget: super::budget::TransactionBudget,
+    /// Where the budget reads the time.
+    clock: Clock,
+    /// The most sockets [`Self::asked_ports`] remembers.
+    socket_memory: usize,
+    /// [`Self::asked_ports`] in the order they were asked about, oldest
+    /// first, so the oldest is the one forgotten.
+    asked_order: std::collections::VecDeque<(IpAddr, u16)>,
     /// How many Call-IDs to enumerate.
     list_limit: u32,
 }
@@ -349,15 +382,53 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             unread_calls: HashSet::new(),
             calls_never_read: 0,
             spent: 0,
-            budget: DEFAULT_BUDGET,
+            budget: super::budget::TransactionBudget::new(
+                DEFAULT_BUDGET,
+                Some(super::budget::DEFAULT_REFILL),
+                std::time::Instant::now(),
+            ),
+            clock: Arc::new(std::time::Instant::now),
+            socket_memory: SOCKET_MEMORY,
+            asked_order: std::collections::VecDeque::new(),
             list_limit: DEFAULT_LIST_LIMIT,
         }
     }
 
-    /// Override the transaction ceiling.
+    /// Override the burst: the most transactions a full budget holds. The
+    /// budget starts full.
     #[must_use]
     pub fn with_budget(mut self, budget: u32) -> Self {
-        self.budget = budget;
+        self.budget =
+            super::budget::TransactionBudget::new(budget, self.budget.refill(), (self.clock)());
+        self
+    }
+
+    /// Override how fast the budget refills; `None` never refills, a ceiling
+    /// for the run. The budget starts full.
+    #[must_use]
+    pub fn with_refill(mut self, refill: Option<super::budget::Refill>) -> Self {
+        self.budget =
+            super::budget::TransactionBudget::new(self.budget.burst(), refill, (self.clock)());
+        self
+    }
+
+    /// Read the time from `clock` rather than the system's monotonic clock.
+    /// The budget starts full at the clock's first reading.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Clock) -> Self {
+        self.clock = clock;
+        self.budget = super::budget::TransactionBudget::new(
+            self.budget.burst(),
+            self.budget.refill(),
+            (self.clock)(),
+        );
+        self
+    }
+
+    /// Override how many asked-about sockets are remembered.
+    #[must_use]
+    pub fn with_socket_memory(mut self, sockets: usize) -> Self {
+        self.socket_memory = sockets;
         self
     }
 
@@ -383,13 +454,38 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         self.relay.describe()
     }
 
-    /// The transaction ceiling for this run.
+    /// The burst: the most transactions a full budget holds.
     ///
-    /// Exposed beside [`Self::transactions`] so a report can state both --
-    /// "8 of 66" says whether the run was bounded by the relay or by sipnab.
+    /// Exposed beside [`Self::transactions`] and [`Self::available`] so a
+    /// report can state all three -- "8 spent, 58 of 66 left" says whether the
+    /// run was bounded by the relay or by sipnab.
     #[must_use]
     pub fn budget(&self) -> u32 {
-        self.budget
+        self.budget.burst()
+    }
+
+    /// Transactions the budget holds now.
+    #[must_use]
+    pub fn available(&self) -> u32 {
+        self.budget.available((self.clock)())
+    }
+
+    /// How fast the budget refills, `None` when it does not.
+    #[must_use]
+    pub fn refill(&self) -> Option<super::budget::Refill> {
+        self.budget.refill()
+    }
+
+    /// How long until the budget holds one more transaction, `None` when it
+    /// is full or does not refill.
+    #[must_use]
+    pub fn next_refill_in(&self) -> Option<std::time::Duration> {
+        self.budget.next_in((self.clock)())
+    }
+
+    /// Whether the budget has a transaction to spend now.
+    fn has_room(&self) -> bool {
+        self.available() > 0
     }
 
     /// Ports the relay accounted for.
@@ -488,7 +584,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
 
     /// Spend one transaction, or refuse.
     fn spend(&mut self) -> bool {
-        if self.spent >= self.budget {
+        if !self.budget.try_spend((self.clock)()) {
             return false;
         }
         self.spent += 1;
@@ -538,10 +634,10 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         // the bounds at the top of this module say they do not do. Checked
         // first, the set cannot outgrow the ceiling, because every entry in it
         // cost a transaction.
-        if self.spent >= self.budget {
+        if !self.has_room() {
             return Err(self.why_not(socket));
         }
-        if !self.asked_ports.insert(socket) {
+        if !self.remember_asked(socket) {
             // Already asked about this port and the refresh did not find it.
             // Asking again would produce the same answer and one more packet.
             return Err(self.why_not(socket));
@@ -577,7 +673,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
             Unattributed::AskFailed {
                 reason: reason.clone(),
             }
-        } else if self.spent >= self.budget
+        } else if !self.has_room()
             && (!self.asked_ports.contains(&socket) || self.calls_never_read > 0)
         {
             Unattributed::BudgetSpent
@@ -666,10 +762,13 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                 }
             } else {
                 self.wide_enumeration_failure =
-                    Some("the control-transaction ceiling was already spent".to_owned());
+                    Some("the control-transaction budget was already empty".to_owned());
             }
         }
         self.enumeration_partial = enumeration.truncated;
+        if !enumeration.truncated {
+            self.forget_ended(&enumeration.call_ids);
+        }
 
         let mut queried = 0_usize;
         for call_id in &enumeration.call_ids {
@@ -734,7 +833,7 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
         if never_read > 0 {
             line.push_str(&format!(
                 ". {never_read} call(s) were never read because the \
-                 control-transaction ceiling was reached, so their ports stay \
+                 control-transaction budget ran out, so their ports stay \
                  unattributed"
             ));
         }
@@ -769,13 +868,50 @@ impl<R: ReadOnlyRelay> Reconciler<R> {
                 self.unkeyable_streams
             ));
         }
-        if self.spent >= self.budget {
-            line.push_str(
-                ". The control-transaction ceiling for this run is now spent, \
-                 so no further questions will be asked",
-            );
+        if !self.has_room() {
+            line.push_str(&match self.refill() {
+                Some(refill) => format!(
+                    ". The control-transaction budget is now empty; it refills \
+                     at {refill}, up to {}, so a stream that turns up later is \
+                     asked about once it has",
+                    self.budget()
+                ),
+                None => ". The control-transaction ceiling for this run is now \
+                         spent, so no further questions will be asked"
+                    .to_owned(),
+            });
         }
         line
+    }
+
+    /// Forget every call a complete enumeration no longer names, and its
+    /// sockets.
+    ///
+    /// The budget refills, so over a run of days the reconciler reads far
+    /// more calls than one snapshot holds. A call the engine no longer holds
+    /// has ended, and keeping it would grow the index with the run's length.
+    /// Only a COMPLETE enumeration says a call ended: a capped one says
+    /// nothing about the calls past the cap.
+    fn forget_ended(&mut self, listed: &[String]) {
+        let listed: HashSet<&str> = listed.iter().map(String::as_str).collect();
+        self.known_calls.retain(|c| listed.contains(c.as_str()));
+        self.unread_calls.retain(|c| listed.contains(c.as_str()));
+        self.index
+            .retain(|_, a| listed.contains(a.call_id.as_str()));
+    }
+
+    /// Record that `socket` was asked about. False when it already was.
+    fn remember_asked(&mut self, socket: (IpAddr, u16)) -> bool {
+        if !self.asked_ports.insert(socket) {
+            return false;
+        }
+        self.asked_order.push_back(socket);
+        while self.asked_order.len() > self.socket_memory {
+            if let Some(oldest) = self.asked_order.pop_front() {
+                self.asked_ports.remove(&oldest);
+            }
+        }
+        true
     }
 
     /// Fold one call's view into the port index.
@@ -941,10 +1077,16 @@ pub struct EnginesAnswer {
 
 /// One [`Reconciler`] per listed engine, asked together.
 ///
-/// Startup asks every engine the run lists: `--rtpengine-control`, then each
-/// other engine an engine map row or an ng engine row names. Each engine
-/// keeps its own index, its own record of what was asked, and its own
-/// transaction ceiling, so one busy engine cannot spend another's.
+/// Startup asks every engine the run lists at once: `--rtpengine-control`,
+/// then each other engine an engine map row or an ng engine row names. Each
+/// engine keeps its own index, its own record of what was asked, and its own
+/// transaction budget, so one busy engine cannot spend another's.
+///
+/// A stream nothing explains is still asked of each engine in turn, stopping
+/// at the first that holds it. Asking every engine at once would spend a
+/// transaction of every engine's budget on a socket only one engine holds,
+/// and this ask runs on the reconciler's own thread, never on the packet
+/// path or a caller's question.
 #[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
 pub struct Reconcilers<R: ReadOnlyRelay> {
     /// The engines, `--rtpengine-control` first.
@@ -976,12 +1118,20 @@ impl<R: ReadOnlyRelay> Reconcilers<R> {
     /// Returns each engine's line, in order, then `Held by several engines:`
     /// naming each call two or more engines read at startup. Empty when
     /// startup has already run.
-    pub fn at_startup(&mut self, permit: &TransmitPermit) -> Vec<String> {
-        let mut lines: Vec<String> = self
-            .engines
-            .iter_mut()
-            .filter_map(|e| e.at_startup(permit))
-            .collect();
+    pub fn at_startup(&mut self, permit: &TransmitPermit) -> Vec<String>
+    where
+        R: Send,
+    {
+        // Every engine at once, each on its own reconciler, so a dead engine
+        // costs one control timeout rather than one per engine, and the lines
+        // stay in the engines' order.
+        let mut lines: Vec<String> = crate::relay::fan_out::ask_each(
+            self.engines.iter_mut().collect(),
+            |e: &mut Reconciler<R>| e.at_startup(permit),
+        )
+        .into_iter()
+        .flatten()
+        .collect();
         if lines.is_empty() {
             return lines;
         }
@@ -2327,7 +2477,7 @@ mod tests {
 
         assert!(lines[0].contains("does not hold this port"), "{}", lines[0]);
         assert!(lines[1].contains("PARTIAL list of calls"), "{}", lines[1]);
-        assert!(lines[2].contains("never asked about"), "{}", lines[2]);
+        assert!(lines[2].contains("was not asked about"), "{}", lines[2]);
         assert!(
             lines[3].contains("named 3 call(s) that could not be read"),
             "the count of unread calls belongs in the sentence: {}",
@@ -2493,7 +2643,7 @@ mod tests {
         );
         assert!(
             line.starts_with("203.0.113.7:22222: not asked -- ")
-                && line.contains("ceiling for this run was reached"),
+                && line.contains("the control-transaction budget was empty"),
             "{line}"
         );
         assert_eq!(r.attributed_ports(), 0);
@@ -2591,7 +2741,7 @@ mod tests {
             "no second packet"
         );
         assert!(
-            line.contains("failed (the control-transaction ceiling was already spent)"),
+            line.contains("failed (the control-transaction budget was already empty)"),
             "{line}"
         );
         assert!(
@@ -2599,7 +2749,7 @@ mod tests {
             "the calls the ceiling could not pay for are named: {line}"
         );
         assert!(
-            line.ends_with("so no further questions will be asked"),
+            line.ends_with("so a stream that turns up later is asked about once it has"),
             "{line}"
         );
         Ok(())
@@ -2854,6 +3004,545 @@ mod tests {
             single.take_new_links(chrono::Utc::now()).links.len(),
             "the same sockets"
         );
+        Ok(())
+    }
+
+    // ── A budget that refills, and every engine asked at once ─────────
+
+    /// A clock a test moves by hand, and the handle that moves it.
+    fn test_clock() -> (Clock, Arc<std::sync::Mutex<std::time::Instant>>) {
+        let now = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+        let read = Arc::clone(&now);
+        let clock: Clock = Arc::new(move || {
+            read.lock()
+                .map(|t| *t)
+                .unwrap_or_else(|_| std::time::Instant::now())
+        });
+        (clock, now)
+    }
+
+    /// Move a test clock forward.
+    fn advance(
+        now: &std::sync::Mutex<std::time::Instant>,
+        by: std::time::Duration,
+    ) -> Result<(), TestError> {
+        let mut t = now.lock().map_err(|e| format!("clock lock: {e}"))?;
+        *t = t
+            .checked_add(by)
+            .ok_or("the instant cannot be represented")?;
+        Ok(())
+    }
+
+    /// Just over one token of the default refill (109.09 s).
+    const ONE_TOKEN: std::time::Duration = std::time::Duration::from_secs(110);
+
+    /// Short of one token of the default refill.
+    const SHORT_OF_A_TOKEN: std::time::Duration = std::time::Duration::from_secs(100);
+
+    /// A relay whose list a test changes between asks, holding each call on
+    /// one port, or failing its query when the port is `None`.
+    struct ChangingRelay {
+        listed: RefCell<(Vec<&'static str>, bool)>,
+        ports: HashMap<&'static str, Option<u16>>,
+        lists: RefCell<u32>,
+    }
+
+    impl ChangingRelay {
+        fn new(listed: &[&'static str], ports: &[(&'static str, Option<u16>)]) -> Self {
+            Self {
+                listed: RefCell::new((listed.to_vec(), false)),
+                ports: ports.iter().copied().collect(),
+                lists: RefCell::new(0),
+            }
+        }
+
+        fn list_now(&self, listed: &[&'static str], truncated: bool) {
+            *self.listed.borrow_mut() = (listed.to_vec(), truncated);
+        }
+    }
+
+    impl ReadOnlyRelay for ChangingRelay {
+        fn list(&self, _: &TransmitPermit, _: u32) -> anyhow::Result<ControlReply> {
+            *self.lists.borrow_mut() += 1;
+            let (ids, truncated) = self.listed.borrow().clone();
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: ids.into_iter().map(str::to_owned).collect(),
+                truncated,
+            }))
+        }
+
+        fn query(&self, _: &TransmitPermit, call_id: &str) -> anyhow::Result<ControlReply> {
+            let Some(Some(port)) = self.ports.get(call_id) else {
+                anyhow::bail!("relay busy");
+            };
+            Ok(ControlReply::Call(CallView {
+                call_id: call_id.to_owned(),
+                tags: vec![RelayTag {
+                    tag: "from-tag".to_owned(),
+                    in_dialogue_with: Vec::new(),
+                    media_subscriptions: Vec::new(),
+                    codec: None,
+                    streams: vec![RelayStream {
+                        local_address: RELAY_IP.to_owned(),
+                        local_port: *port,
+                        endpoint: None,
+                        advertised_endpoint: None,
+                        is_rtcp: false,
+                        ssrcs: Vec::new(),
+                        facts: Default::default(),
+                    }],
+                }],
+            }))
+        }
+
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("not scripted")
+        }
+
+        fn describe(&self) -> String {
+            "engine at 192.0.2.5:2223".to_owned()
+        }
+    }
+
+    /// An empty budget refills, and a stream that turns up once it has is
+    /// asked about.
+    #[test]
+    fn a_spent_budget_refills_and_a_later_stream_is_asked() -> Result<(), TestError> {
+        let (clock, now) = test_clock();
+        let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
+            .holding("call-a", Some(vec![30000]));
+        let mut r = Reconciler::new(relay).with_clock(clock).with_budget(2);
+        let _ = r.at_startup(&permit()?);
+        assert_eq!(r.available(), 0, "startup spent the list and the query");
+        advance(&now, ONE_TOKEN)?;
+        let got = r.on_unexplained_stream(&permit()?, relay_ip()?, 40000);
+        assert_eq!(*r.relay.lists.borrow(), 2, "asked once the budget refilled");
+        assert_eq!(got, Err(Unattributed::RelayDoesNotHoldIt), "and answered");
+        Ok(())
+    }
+
+    /// Short of the refill, a stream is still not asked about.
+    #[test]
+    fn short_of_the_refill_a_stream_is_not_asked() -> Result<(), TestError> {
+        let (clock, now) = test_clock();
+        let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
+            .holding("call-a", Some(vec![30000]));
+        let mut r = Reconciler::new(relay).with_clock(clock).with_budget(2);
+        let _ = r.at_startup(&permit()?);
+        advance(&now, SHORT_OF_A_TOKEN)?;
+        assert_eq!(
+            r.on_unexplained_stream(&permit()?, relay_ip()?, 40000),
+            Err(Unattributed::BudgetSpent),
+            "short of the refill the budget is still empty",
+        );
+        assert_eq!(*r.relay.lists.borrow(), 1, "nothing asked while empty");
+        Ok(())
+    }
+
+    /// A call the engine set up after the budget ran out is named once the
+    /// budget has refilled: a list and a query.
+    #[test]
+    fn a_call_set_up_later_is_named_after_the_refill() -> Result<(), TestError> {
+        let (clock, now) = test_clock();
+        let relay = ChangingRelay::new(&["a"], &[("a", Some(30000)), ("b", Some(30002))]);
+        let mut r = Reconciler::new(relay).with_clock(clock).with_budget(2);
+        let _ = r.at_startup(&permit()?);
+        r.relay.list_now(&["a", "b"], false);
+        advance(&now, ONE_TOKEN * 2)?;
+        let got = r
+            .on_unexplained_stream(&permit()?, relay_ip()?, 30002)
+            .map(|a| a.call_id);
+        assert_eq!(
+            got,
+            Ok("b".to_owned()),
+            "the later call is named once two tokens refilled"
+        );
+        Ok(())
+    }
+
+    /// The refresh that empties the budget says how it refills.
+    #[test]
+    fn the_line_that_empties_the_budget_says_how_it_refills() -> Result<(), TestError> {
+        let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
+            .holding("call-a", Some(vec![30000]));
+        let mut r = Reconciler::new(relay).with_budget(2);
+        let line = r.at_startup(&permit()?).ok_or("a line")?;
+        assert!(
+            line.ends_with(
+                ". The control-transaction budget is now empty; it refills at 33 \
+                 per hour, up to 2, so a stream that turns up later is asked about \
+                 once it has"
+            ),
+            "{line}"
+        );
+        Ok(())
+    }
+
+    /// With no refill, the line says the ceiling for the run is spent, as it
+    /// did before the budget refilled.
+    #[test]
+    fn with_no_refill_the_line_says_the_run_is_spent() -> Result<(), TestError> {
+        let relay = ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
+            .holding("call-a", Some(vec![30000]));
+        let mut r = Reconciler::new(relay).with_budget(2).with_refill(None);
+        let line = r.at_startup(&permit()?).ok_or("a line")?;
+        assert!(
+            line.ends_with(
+                ". The control-transaction ceiling for this run is now spent, so \
+                 no further questions will be asked"
+            ),
+            "{line}"
+        );
+        Ok(())
+    }
+
+    /// The reconciler says what it holds and how long until the next
+    /// transaction.
+    #[test]
+    fn the_reconciler_says_what_is_left_and_when_more_comes() -> Result<(), TestError> {
+        let (clock, now) = test_clock();
+        let relay = ScriptedRelay::new(Answer::Calls(vec![], false));
+        let mut r = Reconciler::new(relay).with_clock(clock).with_budget(1);
+        assert_eq!((r.available(), r.next_refill_in()), (1, None), "full");
+        let _ = r.at_startup(&permit()?);
+        let wait = r.next_refill_in().ok_or("empty, so a wait")?;
+        assert!(
+            wait > SHORT_OF_A_TOKEN && wait <= ONE_TOKEN,
+            "one token's time: {wait:?}"
+        );
+        advance(&now, ONE_TOKEN)?;
+        assert_eq!(r.available(), 1, "refilled");
+        assert_eq!(
+            r.refill(),
+            Some(super::super::budget::DEFAULT_REFILL),
+            "the default refill is reported"
+        );
+        Ok(())
+    }
+
+    /// The asked-about sockets remembered never pass the memory's size,
+    /// however many are asked about.
+    #[test]
+    fn the_remembered_sockets_are_capped() -> Result<(), TestError> {
+        let relay = ScriptedRelay::new(Answer::Calls(vec![], false));
+        let mut r = Reconciler::new(relay)
+            .with_budget(100)
+            .with_socket_memory(4);
+        for port in 1..=10 {
+            let _ = r.on_unexplained_stream(&permit()?, relay_ip()?, port);
+        }
+        assert_eq!(
+            r.tracked_sockets(),
+            4,
+            "the memory holds four sockets however many were asked about"
+        );
+        assert_eq!(
+            *r.relay.lists.borrow(),
+            10,
+            "each new socket was asked about"
+        );
+        Ok(())
+    }
+
+    /// The oldest socket is the one forgotten: asked about again, it spends a
+    /// transaction, and a socket still remembered does not.
+    #[test]
+    fn a_forgotten_socket_is_asked_again_and_spends() -> Result<(), TestError> {
+        let relay = ScriptedRelay::new(Answer::Calls(vec![], false));
+        let mut r = Reconciler::new(relay)
+            .with_budget(100)
+            .with_socket_memory(2);
+        for port in [1, 2, 3] {
+            let _ = r.on_unexplained_stream(&permit()?, relay_ip()?, port);
+        }
+        let _ = r.on_unexplained_stream(&permit()?, relay_ip()?, 3);
+        assert_eq!(*r.relay.lists.borrow(), 3, "3 is remembered");
+        let _ = r.on_unexplained_stream(&permit()?, relay_ip()?, 1);
+        assert_eq!(
+            *r.relay.lists.borrow(),
+            4,
+            "1 was forgotten and asked again"
+        );
+        assert_eq!(
+            r.transactions(),
+            4,
+            "four transactions: three sockets and one forgotten one asked again"
+        );
+        Ok(())
+    }
+
+    /// A complete list that no longer names a call forgets it and its
+    /// sockets: the index holds what the engine holds, not every call the run
+    /// ever saw.
+    #[test]
+    fn a_complete_list_forgets_ended_calls() -> Result<(), TestError> {
+        let relay = ChangingRelay::new(&["a", "b"], &[("a", Some(30000)), ("b", Some(30002))]);
+        let mut r = Reconciler::new(relay);
+        let _ = r.at_startup(&permit()?);
+        assert_eq!(r.attributed_ports(), 2, "both calls attributed at startup");
+        r.relay.list_now(&["b"], false);
+        let _ = r.on_unexplained_stream(&permit()?, relay_ip()?, 39998);
+        let ports: Vec<u16> = r.links().map(|(_, p, _)| p).collect();
+        assert_eq!(ports, vec![30002], "a ended and is forgotten");
+        Ok(())
+    }
+
+    /// A capped list says nothing about the calls past the cap, so it forgets
+    /// nothing.
+    #[test]
+    fn a_capped_list_forgets_nothing() -> Result<(), TestError> {
+        let relay = ChangingRelay::new(&["a", "b"], &[("a", Some(30000)), ("b", Some(30002))]);
+        let mut r = Reconciler::new(relay);
+        let _ = r.at_startup(&permit()?);
+        r.relay.list_now(&["b"], true);
+        let _ = r.on_unexplained_stream(&permit()?, relay_ip()?, 39998);
+        assert_eq!(r.attributed_ports(), 2, "a may be past the cap");
+        Ok(())
+    }
+
+    /// A call that could not be read and has since ended no longer makes the
+    /// snapshot incomplete.
+    #[test]
+    fn an_unread_call_that_ended_stops_counting_as_unread() -> Result<(), TestError> {
+        let relay = ChangingRelay::new(&["a", "c"], &[("a", Some(30000)), ("c", None)]);
+        let mut r = Reconciler::new(relay);
+        let _ = r.at_startup(&permit()?);
+        r.relay.list_now(&["a"], false);
+        assert_eq!(
+            r.on_unexplained_stream(&permit()?, relay_ip()?, 39998),
+            Err(Unattributed::RelayDoesNotHoldIt),
+            "c ended, so its unread state no longer governs"
+        );
+        Ok(())
+    }
+
+    /// One engine's empty budget leaves the other engines theirs: each
+    /// engine keeps its own ceiling, asked at once.
+    #[test]
+    fn one_engines_empty_budget_leaves_the_others_theirs() -> Result<(), TestError> {
+        let mut engines = Reconcilers::new(vec![
+            Reconciler::new(
+                ScriptedRelay::new(Answer::Calls(vec!["call-a"], false))
+                    .holding("call-a", Some(vec![30000]))
+                    .named("engine at 192.0.2.5:2223"),
+            )
+            .with_budget(1),
+            Reconciler::new(
+                ScriptedRelay::new(Answer::Calls(vec!["call-b"], false))
+                    .holding_on("call-b", "203.0.113.8", vec![40000])
+                    .named("engine at 192.0.2.6:2223"),
+            ),
+        ]);
+        let lines = engines.at_startup(&permit()?);
+        assert!(
+            lines[0].contains("1 call(s) were never read")
+                && lines[0].contains("budget is now empty"),
+            "{lines:?}"
+        );
+        assert!(lines[1].contains("queried 1 of them"), "{lines:?}");
+        let spent: Vec<u32> = engines
+            .engines()
+            .iter()
+            .map(Reconciler::transactions)
+            .collect();
+        assert_eq!(spent, vec![1, 2], "each within its own budget");
+        Ok(())
+    }
+
+    /// A relay that answers its list only when every engine is being asked
+    /// at the same moment.
+    struct GateRelay {
+        gate: Arc<crate::test_engines::Gate>,
+        name: String,
+    }
+
+    impl ReadOnlyRelay for GateRelay {
+        fn list(&self, _: &TransmitPermit, _: u32) -> anyhow::Result<ControlReply> {
+            if !self.gate.arrive(std::time::Duration::from_secs(5)) {
+                anyhow::bail!("asked alone");
+            }
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: Vec::new(),
+                truncated: false,
+            }))
+        }
+        fn query(&self, _: &TransmitPermit, _: &str) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("not scripted")
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("not scripted")
+        }
+        fn describe(&self) -> String {
+            self.name.clone()
+        }
+    }
+
+    /// Startup asks every engine at the same time.
+    #[test]
+    fn startup_asks_every_engine_at_once() -> Result<(), TestError> {
+        let gate = Arc::new(crate::test_engines::Gate::new(3));
+        let mut engines = Reconcilers::new(
+            (0..3)
+                .map(|i| {
+                    Reconciler::new(GateRelay {
+                        gate: Arc::clone(&gate),
+                        name: format!("engine {i}"),
+                    })
+                })
+                .collect(),
+        );
+        let lines = engines.at_startup(&permit()?);
+        assert!(
+            lines.iter().all(|l| l.contains("enumerated")),
+            "every engine was asked with the others: {lines:?}"
+        );
+        Ok(())
+    }
+
+    /// A relay that answers its list after a delay and records when it did.
+    struct LateRelay {
+        delay: std::time::Duration,
+        name: String,
+        answered: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl ReadOnlyRelay for LateRelay {
+        fn list(&self, _: &TransmitPermit, _: u32) -> anyhow::Result<ControlReply> {
+            std::thread::sleep(self.delay);
+            if let Ok(mut a) = self.answered.lock() {
+                a.push(self.name.clone());
+            }
+            Ok(ControlReply::Calls(Enumeration {
+                call_ids: Vec::new(),
+                truncated: false,
+            }))
+        }
+        fn query(&self, _: &TransmitPermit, _: &str) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("not scripted")
+        }
+        fn statistics(&self, _: &TransmitPermit) -> anyhow::Result<ControlReply> {
+            anyhow::bail!("not scripted")
+        }
+        fn describe(&self) -> String {
+            self.name.clone()
+        }
+    }
+
+    /// Answers that arrive last engine first still print first engine first.
+    #[test]
+    fn startup_lines_keep_the_configured_order() -> Result<(), TestError> {
+        let answered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut engines = Reconcilers::new(
+            (0..3_u32)
+                .map(|i| {
+                    Reconciler::new(LateRelay {
+                        delay: std::time::Duration::from_millis(u64::from(2 - i) * 150),
+                        name: format!("engine {i}"),
+                        answered: Arc::clone(&answered),
+                    })
+                })
+                .collect(),
+        );
+        let lines = engines.at_startup(&permit()?);
+        let first_words: Vec<&str> = lines.iter().filter_map(|l| l.split(':').next()).collect();
+        assert_eq!(
+            first_words,
+            vec!["engine 0", "engine 1", "engine 2"],
+            "the lines are in the engines' order"
+        );
+        assert_eq!(
+            answered.lock().map(|a| a.clone()).unwrap_or_default(),
+            vec!["engine 2", "engine 1", "engine 0"],
+            "they answered in reverse"
+        );
+        Ok(())
+    }
+
+    /// Startup with three dead engines and a live one costs one timeout, and
+    /// every engine still gets its line, in order.
+    #[test]
+    fn startup_with_dead_engines_costs_one_timeout() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, one_timeout};
+        let fakes = [
+            FakeEngine::dead()?,
+            FakeEngine::live()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+        ];
+        let mut engines = Reconcilers::new(
+            fakes
+                .iter()
+                .map(|f| Reconciler::new(f.control_client()))
+                .collect(),
+        );
+        let started = std::time::Instant::now();
+        let lines = engines.at_startup(&permit()?);
+        let took = started.elapsed();
+        assert!(one_timeout(took), "one timeout, not three: {took:?}");
+        for (i, (line, fake)) in lines.iter().zip(&fakes).enumerate() {
+            assert!(
+                line.starts_with(&fake.describe()),
+                "line {i} is engine {i}'s: {lines:?}"
+            );
+        }
+        assert!(lines[1].contains("enumerated"), "{lines:?}");
+        for i in [0, 2, 3] {
+            assert!(lines[i].contains("could not be asked"), "{lines:?}");
+        }
+        Ok(())
+    }
+
+    /// With every engine dead, each says so, in order, after one timeout.
+    #[test]
+    fn startup_with_every_engine_dead_says_so_for_each() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, one_timeout};
+        let fakes = [
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+        ];
+        let mut engines = Reconcilers::new(
+            fakes
+                .iter()
+                .map(|f| Reconciler::new(f.control_client()))
+                .collect(),
+        );
+        let started = std::time::Instant::now();
+        let lines = engines.at_startup(&permit()?);
+        let took = started.elapsed();
+        assert!(one_timeout(took), "{took:?}");
+        let want: Vec<String> = fakes
+            .iter()
+            .map(|f| format!("{} could not be asked", f.describe()))
+            .collect();
+        let got: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.split(" which calls")
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect();
+        assert_eq!(got, want, "each dead engine's line, in the engines' order");
+        Ok(())
+    }
+
+    /// Asked at once, each dead engine still gets exactly one request: no
+    /// retry, and one socket per engine.
+    #[test]
+    fn startup_sends_each_dead_engine_one_request() -> Result<(), TestError> {
+        use crate::test_engines::FakeEngine;
+        let fakes = [FakeEngine::dead()?, FakeEngine::dead()?];
+        let mut engines = Reconcilers::new(
+            fakes
+                .iter()
+                .map(|f| Reconciler::new(f.control_client()))
+                .collect(),
+        );
+        let _ = engines.at_startup(&permit()?);
+        let seen: Vec<usize> = fakes.iter().map(FakeEngine::requests).collect();
+        assert_eq!(seen, vec![1, 1], "one request per dead engine, no retry");
         Ok(())
     }
 }

@@ -1387,8 +1387,8 @@ struct EngineList {
 /// Every listed engine's `list`, asked at most once per question.
 ///
 /// A question about a call whose ng offer and SDP sipnab has not seen asks
-/// each listed engine which calls it holds, and asks the engine whose list
-/// names the call. One value lives for one question, so a question that
+/// each listed engine which calls it holds, all at once, and asks the engine
+/// whose list names the call. One value lives for one question, so a question that
 /// chooses an engine for several calls asks each engine once.
 pub struct EngineLists<'a> {
     /// The run's permission to transmit.
@@ -1446,11 +1446,15 @@ pub fn call_target_listed(
     if !unseen || engines.len() < 2 {
         return target(default, routing, chosen, Vec::new());
     }
+    let (permit, limit) = (lists.permit, lists.limit);
     let answers = lists.answers.get_or_init(|| {
-        listed_relays(default, routing.default_engine(), Some(routing))
-            .into_iter()
-            .map(|(control, relay)| {
-                let answer = match relay.list(lists.permit, lists.limit) {
+        // Every engine at once: an engine that does not answer costs one
+        // control timeout, not one per engine, and the notes below stay in
+        // the engines' order.
+        crate::relay::fan_out::ask_each(
+            listed_relays(default, routing.default_engine(), Some(routing)),
+            |(control, relay)| {
+                let answer = match relay.list(permit, limit) {
                     Ok(crate::relay::types::ControlReply::Calls(e)) => Ok(e),
                     Ok(crate::relay::types::ControlReply::Refused { reason }) => {
                         Err(format!("refused: {reason}"))
@@ -1463,8 +1467,8 @@ pub fn call_target_listed(
                     describe: relay.describe(),
                     answer,
                 }
-            })
-            .collect()
+            },
+        )
     });
     let holders: Vec<&EngineList> = answers
         .iter()
@@ -3545,5 +3549,195 @@ mod tests {
             }
         }
         Arc::new(Never)
+    }
+
+    // ── the lists of an unseen call, asked at once ──────────────────
+
+    /// An engine whose list answers only when every engine is being asked at
+    /// the same moment, naming `calls`.
+    struct GatedListing {
+        gate: Arc<crate::test_engines::Gate>,
+        calls: Vec<&'static str>,
+        name: String,
+    }
+
+    impl ReadOnlyRelay for GatedListing {
+        fn list(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            _: u32,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            if !self.gate.arrive(std::time::Duration::from_secs(5)) {
+                anyhow::bail!("asked alone");
+            }
+            Ok(crate::relay::types::ControlReply::Calls(
+                crate::relay::types::Enumeration {
+                    call_ids: self.calls.iter().map(|c| (*c).to_string()).collect(),
+                    truncated: false,
+                },
+            ))
+        }
+        fn query(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+            _: &str,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            anyhow::bail!("not scripted")
+        }
+        fn statistics(
+            &self,
+            _: &crate::security::transmit_guard::TransmitPermit,
+        ) -> anyhow::Result<crate::relay::types::ControlReply> {
+            anyhow::bail!("not scripted")
+        }
+        fn describe(&self) -> String {
+            self.name.clone()
+        }
+    }
+
+    /// The lists of an unseen call are asked of every engine at once: each
+    /// answers only with the others, and the engine whose list names the
+    /// call is asked, with no engine reported silent.
+    #[test]
+    fn an_unseen_calls_lists_are_asked_at_once() -> Result<(), TestError> {
+        let gate = Arc::new(crate::test_engines::Gate::new(4));
+        let gated =
+            |control: &str, calls: &[&'static str]| -> Arc<dyn ReadOnlyRelay + Send + Sync> {
+                Arc::new(GatedListing {
+                    gate: Arc::clone(&gate),
+                    calls: calls.to_vec(),
+                    name: format!("engine at {control}"),
+                })
+            };
+        let rows: Vec<(SocketAddr, Arc<dyn ReadOnlyRelay + Send + Sync>)> = vec![
+            (addr("192.0.2.5:2223")?, gated("192.0.2.5:2223", &[])),
+            (
+                addr("192.0.2.6:2223")?,
+                gated("192.0.2.6:2223", &["up-1@example.invalid"]),
+            ),
+            (addr("192.0.2.7:2223")?, gated("192.0.2.7:2223", &[])),
+        ];
+        let connect: Connect = Arc::new(move |control| {
+            rows.iter()
+                .find(|(c, _)| *c == control)
+                .map_or_else(unreachable_relay, |(_, r)| Arc::clone(r))
+        });
+        let routing = EngineRouting::new(ng_rules(false)?, addr(DEFAULT)?, false, connect);
+        let default = gated(DEFAULT, &[]);
+        let permit = live_permit()?;
+        let lists = EngineLists::new(&permit, crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+        let target = call_target_listed(
+            &default,
+            Some(&routing),
+            &CallEvidence::default(),
+            "up-1@example.invalid",
+            &lists,
+        );
+        assert_eq!(
+            asked_of(&target)?,
+            (
+                Some(addr("192.0.2.6:2223")?),
+                Some(
+                    "sipnab has seen no ng offer for this call; this engine's list names it"
+                        .to_string()
+                )
+            ),
+            "every list answered together"
+        );
+        Ok(())
+    }
+
+    /// The default engine and the routing for a set of fake engines, the
+    /// first being the default.
+    fn udp_target(
+        fakes: &[&crate::test_engines::FakeEngine],
+        call_id: &str,
+    ) -> Result<(CallTarget, std::time::Duration), TestError> {
+        use crate::test_engines::{TIMEOUT, client, routing};
+        let routing = routing(fakes, TIMEOUT)?;
+        let default = client(routing.default_engine(), TIMEOUT);
+        let permit = live_permit()?;
+        let lists = EngineLists::new(&permit, crate::relay::reconcile::DEFAULT_LIST_LIMIT);
+        let started = std::time::Instant::now();
+        let target = call_target_listed(
+            &default,
+            Some(&routing),
+            &CallEvidence::default(),
+            call_id,
+            &lists,
+        );
+        Ok((target, started.elapsed()))
+    }
+
+    /// An unseen call with three dead engines costs one timeout, and each
+    /// dead engine is named in its configured place.
+    #[test]
+    fn an_unseen_call_with_dead_engines_costs_one_timeout() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, one_timeout};
+        let fakes = [
+            FakeEngine::live()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+        ];
+        let (target, took) = udp_target(&fakes.iter().collect::<Vec<_>>(), "up-1@example.invalid")?;
+        assert!(one_timeout(took), "one timeout, not three: {took:?}");
+        let (control, reason) = asked_of(&target)?;
+        assert_eq!(control, Some(fakes[0].addr), "the default's list names it");
+        let reason = reason.ok_or("a reason")?;
+        let silent: Vec<usize> = fakes[1..]
+            .iter()
+            .filter_map(|f| reason.find(&format!("{} did not answer", f.describe())))
+            .collect();
+        assert_eq!(silent.len(), 3, "each dead engine is named: {reason}");
+        assert!(
+            silent.windows(2).all(|w| w[0] < w[1]),
+            "in configured order: {reason}"
+        );
+        Ok(())
+    }
+
+    /// Lists that answer last engine first are still reported first engine
+    /// first.
+    #[test]
+    fn the_notes_follow_the_configured_order_not_the_answers() -> Result<(), TestError> {
+        use crate::test_engines::{CUT_BODY, FakeEngine};
+        let late = |ms| FakeEngine::answering(CUT_BODY, std::time::Duration::from_millis(ms));
+        let fakes = [FakeEngine::live()?, late(300)?, late(150)?, late(0)?];
+        let (target, _) = udp_target(&fakes.iter().collect::<Vec<_>>(), "up-1@example.invalid")?;
+        let reason = asked_of(&target)?.1.ok_or("a reason")?;
+        let at: Vec<usize> = fakes[1..]
+            .iter()
+            .filter_map(|f| reason.find(&format!("{} did not answer", f.describe())))
+            .collect();
+        assert_eq!(at.len(), 3, "{reason}");
+        assert!(
+            at.windows(2).all(|w| w[0] < w[1]),
+            "configured order: {reason}"
+        );
+        Ok(())
+    }
+
+    /// With every engine dead the default is asked, every engine is named as
+    /// silent, and it costs one timeout.
+    #[test]
+    fn with_every_engine_dead_the_default_is_asked_after_one_timeout() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, one_timeout};
+        let fakes = [
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+        ];
+        let (target, took) = udp_target(&fakes.iter().collect::<Vec<_>>(), "up-1@example.invalid")?;
+        assert!(one_timeout(took), "{took:?}");
+        let (control, reason) = asked_of(&target)?;
+        assert_eq!(control, Some(fakes[0].addr), "the default");
+        let reason = reason.ok_or("a reason")?;
+        assert_eq!(
+            reason.matches("did not answer its list").count(),
+            3,
+            "{reason}"
+        );
+        Ok(())
     }
 }

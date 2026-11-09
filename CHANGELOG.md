@@ -8,6 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Every listed rtpengine engine is asked at once, so engines that do not answer cost one control timeout, not one each.** Startup reconciliation, `--relay-stats`, `--relay-stats-interval`, `GET /v1/relay/stats` and `GET /v1/relay/stats/polled`, MCP `relay_stats` and `relay_stats_polled`, the TUI relay view, `--relay-holdings`, the sessions view's `list` and the lists that find the engine of a call sipnab has seen nothing for asked the engines one after another, and each engine that never answered added its 2 s timeout. Measured with one live engine and three dead ones, startup reconciliation and `--relay-stats` together took 12.16 to 12.20 s, six 2 s timeouts; they now take 4.10 to 4.11 s, two. Each engine is asked on a thread of its own with one control socket, every thread ends before the answer is printed, each engine keeps its own transaction budget, and the answers stay in the configured order. A stream nothing explains is still asked of each engine in turn, so it spends one engine's budget, not every engine's. How-to: [What an engine that does not answer costs](docs/relay-engines.md#what-an-engine-that-does-not-answer-costs).
+- **The reconciliation budget refills: 66 control transactions per engine at most, refilled at 33 an hour.** The 66 were for the whole run, so a node that ran for days spent them and from then on never named a call an engine set up later. The burst stays 66, a startup snapshot and one refresh, so the bound on a flood of unexplained streams is unchanged; the refill of one refresh's worth an hour (one transaction every 109 s) names a later call within the hour. A refill asks nothing, and the budget counts monotonic time. A complete `list` now forgets the calls it no longer names, and each engine remembers at most 4096 asked-about ports, so neither grows with the length of the run. The closing line reads `4 control transaction(s) spent; 62 of 66 left in the budget, which refills at 33 per hour` (it read `spent of a ceiling of 66`), and a stream asked about while the budget was empty reads `the control-transaction budget was empty, so this port was not asked about`. How-to: [The control-transaction budget, and how it refills](docs/relay-engines.md#the-control-transaction-budget-and-how-it-refills).
+
+### Fixed
+
+- **A signal no longer cuts an rtpengine control question short.** A read on a control socket with a receive timeout fails with `EINTR` when a handled signal reaches its thread, even with `SA_RESTART`, and sipnab handles `SIGUSR1` and `SIGHUP`. The control client treated that as no answer, so an engine that was about to answer read as one that `did not answer`, after any part of its timeout. Under the library test suite, 1.5 s waits ended after 0.7 s with `Interrupted system call (os error 4)`. The client now reads again with what is left of the timeout, over UDP and over a stream.
+
 ## [0.5.239] - 2026-11-08
 
 ### Fixed

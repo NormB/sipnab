@@ -104,11 +104,16 @@ fn run<R: ReadOnlyRelay>(
     }
 
     for ((engine, relay), attributed) in engines.engines().iter().zip(&relays).zip(attributed) {
+        let refill = engine.refill().map_or_else(
+            || "does not refill".to_owned(),
+            |r| format!("refills at {r}"),
+        );
         tracing::info!(
             "{relay}: {asked} unexplained stream(s) offered, \
-             {attributed} attributed, {} control transaction(s) spent of a \
-             ceiling of {}",
+             {attributed} attributed, {} control transaction(s) spent; {} of \
+             {} left in the budget, which {refill}",
             engine.transactions(),
+            engine.available(),
             engine.budget(),
         );
     }
@@ -403,7 +408,8 @@ mod tests {
         assert!(
             logs.contains(
                 "rtpengine at 10.0.0.2:22222: 3 unexplained stream(s) offered, 0 attributed, \
-                 3 control transaction(s) spent of a ceiling of 66"
+                 3 control transaction(s) spent; 63 of 66 left in the budget, which \
+                 refills at 33 per hour"
             ),
             "the closing line reports what the run did: {logs}"
         );
@@ -427,7 +433,7 @@ mod tests {
             "a relay disowning traffic it does not carry is not reported: {logs}"
         );
         assert_eq!(
-            logs.matches("was never asked about").count(),
+            logs.matches("was not asked about").count(),
             1,
             "the ceiling running out on the third socket is new, so it is said: {logs}"
         );
@@ -448,11 +454,26 @@ mod tests {
         assert!(
             logs.contains(
                 "rtpengine at 10.0.0.2:22222: 1 unexplained stream(s) offered, 1 attributed, \
-                 2 control transaction(s) spent of a ceiling of 66"
+                 2 control transaction(s) spent; 64 of 66 left in the budget, which \
+                 refills at 33 per hour"
             ),
             "{logs}"
         );
         assert_eq!(logs.lines().count(), 1, "nothing else is news: {logs}");
+        Ok(())
+    }
+
+    /// The closing line of a budget that does not refill says so.
+    #[test]
+    fn the_closing_line_of_a_budget_that_does_not_refill_says_so() -> Result<(), TestError> {
+        let logs = run_logged(Reconciler::new(OneCallRelay).with_refill(None), &[30000])?;
+        assert!(
+            logs.contains(
+                "2 control transaction(s) spent; 64 of 66 left in the budget, which \
+                 does not refill"
+            ),
+            "{logs}"
+        );
         Ok(())
     }
 
@@ -528,14 +549,16 @@ mod tests {
         assert!(
             logs.contains(
                 "rtpengine at 192.0.2.5:2223: 2 unexplained stream(s) offered, 0 attributed, \
-                 1 control transaction(s) spent of a ceiling of 66"
+                 1 control transaction(s) spent; 65 of 66 left in the budget, which \
+                 refills at 33 per hour"
             ),
             "{logs}"
         );
         assert!(
             logs.contains(
                 "rtpengine at 192.0.2.6:2223: 2 unexplained stream(s) offered, 2 attributed, \
-                 2 control transaction(s) spent of a ceiling of 66"
+                 2 control transaction(s) spent; 64 of 66 left in the budget, which \
+                 refills at 33 per hour"
             ),
             "the second engine attributed both, the second from memory: {logs}"
         );

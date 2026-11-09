@@ -45,7 +45,10 @@ const EXPECTED: &[(&str, usize, usize, usize)] = &[
     // src panic 16 -> 18: the probes in the tests that a SIP message whose
     // parse panics is dropped (src/pipeline.rs) and that an RTP frame whose
     // decoder panics is a decode error (src/rtp/audio_export.rs).
-    ("src", 5, 3, 18),
+    // src panic 18 -> 19: the probe in src/relay/fan_out.rs's test that a
+    // panicking ask is raised again after every other ask has finished. The
+    // panic is the input under test, not error handling.
+    ("src", 5, 3, 19),
     // tests panic 2 -> 5: the three probes in tests/temp_path_isolation_test.rs
     // that a test directory is removed when its test body panics (TEMP-PATH-
     // GATE-ACCEPTS-PID). The panic is the input under test, not error handling.
