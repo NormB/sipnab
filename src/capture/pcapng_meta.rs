@@ -861,7 +861,7 @@ mod tests {
 
         let n = strip_secrets(&src, &dst)?;
         assert_eq!(n.total(), 1, "one DSB stripped");
-        assert_eq!(n.count("TLS Key Log"), 1, "it was a TLS key log: {n:?}");
+        assert_eq!(n.count("TLS Key Log"), 1, "it was a TLS key log");
 
         // Output: no secrets, names preserved.
         let after = read_pcapng_metadata(&dst)?;
@@ -950,9 +950,13 @@ mod tests {
         let tls = Some(0x544c_534b);
         let wireguard = Some(0x5747_4b4c);
         let n = strip_bytes(&pcapng_with_dsbs(false, &[tls, wireguard, tls]))?;
-        assert_eq!(n.total(), 3, "{n:?}");
-        assert_eq!(n.count("TLS Key Log"), 2, "{n:?}");
-        assert_eq!(n.count("WireGuard Key Log"), 1, "{n:?}");
+        assert_eq!(n.total(), 3, "three blocks were removed");
+        assert_eq!(n.count("TLS Key Log"), 2, "two blocks were TLS key logs");
+        assert_eq!(
+            n.count("WireGuard Key Log"),
+            1,
+            "one block was a WireGuard key log"
+        );
         Ok(())
     }
 
@@ -963,8 +967,16 @@ mod tests {
             true,
             &[Some(0x5353_484b), Some(0x5a41_5053)],
         ))?;
-        assert_eq!(n.count("SSH Key Log"), 1, "{n:?}");
-        assert_eq!(n.count("ZigBee APS Key"), 1, "{n:?}");
+        assert_eq!(
+            n.count("SSH Key Log"),
+            1,
+            "the big-endian SSH type is named"
+        );
+        assert_eq!(
+            n.count("ZigBee APS Key"),
+            1,
+            "the big-endian ZigBee APS type is named"
+        );
         Ok(())
     }
 
@@ -973,9 +985,13 @@ mod tests {
     #[test]
     fn an_unlisted_type_and_a_bodiless_block_are_counted() -> Result<(), TestError> {
         let n = strip_bytes(&pcapng_with_dsbs(false, &[Some(0x1234_5678), None]))?;
-        assert_eq!(n.total(), 2, "{n:?}");
-        assert_eq!(n.count("Secrets Type 0x12345678"), 1, "{n:?}");
-        assert_eq!(n.count("no Secrets Type"), 1, "{n:?}");
+        assert_eq!(n.total(), 2, "both blocks were removed");
+        assert_eq!(
+            n.count("Secrets Type 0x12345678"),
+            1,
+            "an unlisted type is named by its value"
+        );
+        assert_eq!(n.count("no Secrets Type"), 1, "a bodiless block is counted");
         Ok(())
     }
 
