@@ -13,6 +13,10 @@
 //! at 2 s and its BYE at 3.5 s. `older.pcap`, read second, holds the call's
 //! INVITE at 1 s.
 
+// Every helper below serves a test that reads a capture, so the file needs
+// the capture path: a build without `native` has nothing here to run.
+#![cfg(feature = "native")]
+
 #[path = "support/codecs.rs"]
 mod codecs;
 
@@ -79,7 +83,6 @@ fn write_set(dir: &std::path::Path) -> Result<[std::path::PathBuf; 2], TestError
 }
 
 /// The `--cores` path over the set at `cores` workers.
-#[cfg(feature = "native")]
 fn sharded(
     set: &[std::path::PathBuf; 2],
     cores: usize,
@@ -116,7 +119,6 @@ fn sharded(
 
 /// The call's `DialogSummary` (the REST, MCP and TUI-save row) at `cores`
 /// workers, as JSON.
-#[cfg(feature = "native")]
 fn summary_at(cores: usize) -> Result<serde_json::Value, TestError> {
     let dir = tempfile::tempdir()?;
     let set = write_set(dir.path())?;
@@ -136,7 +138,6 @@ fn at(v: &serde_json::Value) -> Result<chrono::DateTime<chrono::FixedOffset>, Te
 
 /// The summary names the INVITE read second as the oldest message, and
 /// keeps `created_at` on the 200 OK read first.
-#[cfg(feature = "native")]
 #[test]
 fn the_summary_names_the_message_read_second_as_the_oldest() -> Result<(), TestError> {
     let s = summary_at(1)?;
@@ -152,7 +153,6 @@ fn the_summary_names_the_message_read_second_as_the_oldest() -> Result<(), TestE
 }
 
 /// Every worker count builds the same oldest message.
-#[cfg(feature = "native")]
 #[test]
 fn the_oldest_message_is_the_same_at_every_worker_count() -> Result<(), TestError> {
     let one = summary_at(1)?;
@@ -191,7 +191,6 @@ fn the_dialog_schema_requires_earliest_message_at_as_a_date_time() -> Result<(),
 
 /// A real summary, with its `earliest_message_at`, validates against the
 /// published schema.
-#[cfg(feature = "native")]
 #[test]
 fn a_real_summary_validates_against_the_dialog_schema() -> Result<(), TestError> {
     let validator = schema::load_validator("dialog.schema.json")?;
@@ -205,7 +204,6 @@ fn a_real_summary_validates_against_the_dialog_schema() -> Result<(), TestError>
 }
 
 /// The schema refuses a summary that leaves `earliest_message_at` out.
-#[cfg(feature = "native")]
 #[test]
 fn the_dialog_schema_refuses_a_summary_without_earliest_message_at() -> Result<(), TestError> {
     let validator = schema::load_validator("dialog.schema.json")?;
@@ -221,7 +219,6 @@ fn the_dialog_schema_refuses_a_summary_without_earliest_message_at() -> Result<(
 }
 
 /// The schema refuses an `earliest_message_at` that is not a string.
-#[cfg(feature = "native")]
 #[test]
 fn the_dialog_schema_refuses_a_numeric_earliest_message_at() -> Result<(), TestError> {
     let validator = schema::load_validator("dialog.schema.json")?;
@@ -232,7 +229,6 @@ fn the_dialog_schema_refuses_a_numeric_earliest_message_at() -> Result<(), TestE
 }
 
 /// The oldest message is never later than the first read or the last read.
-#[cfg(feature = "native")]
 #[test]
 fn earliest_message_at_is_never_after_created_at_or_updated_at() -> Result<(), TestError> {
     let s = summary_at(1)?;
