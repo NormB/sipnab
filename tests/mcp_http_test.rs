@@ -13,7 +13,7 @@
 #[path = "support/mcp.rs"]
 mod mcp;
 
-use mcp::{post_json, shutdown, spawn_http};
+use mcp::{post_initialize_with_media_types, post_json, shutdown, spawn_http};
 
 use mcp::TestError;
 
@@ -484,5 +484,200 @@ fn without_a_resource_url_the_challenge_stands_alone_and_nothing_is_published()
     );
 
     shutdown(child);
+    Ok(())
+}
+
+// ── Accept and Content-Type on POST /mcp ───────────────────────────
+//
+// rmcp 3.9.0 (#1382) replaced substring tests on the media-type headers with
+// a parse of each entry: the media type must match exactly, ignoring case,
+// an entry weighted `q=0` does not count, and every `Accept` line is read.
+// These tests pin what sipnab's `/mcp` endpoint answers, so a later rmcp
+// that changes the rule again fails here, not at a client.
+
+/// The two media types MCP's Streamable HTTP transport requires a client to
+/// accept on a POST.
+const CANONICAL_ACCEPT: &str = "application/json, text/event-stream";
+
+/// Start a loopback server with no token, run `check` against its address,
+/// and stop the server whatever `check` returned.
+fn with_loopback_server(
+    check: impl FnOnce(&str) -> Result<(), TestError>,
+) -> Result<(), TestError> {
+    let (child, addr) =
+        spawn_http(&["--mcp-bind", "127.0.0.1:0"])?.ok_or("failed to start MCP HTTP server")?;
+    let result = check(&addr);
+    shutdown(child);
+    result
+}
+
+/// An `Accept` entry weighted `q=0` is a refusal of that media type (RFC 9110
+/// section 12.4.2), so a client that lists `text/event-stream;q=0` does not
+/// accept the event stream and gets 406.
+#[test]
+fn an_accept_entry_weighted_zero_does_not_count_and_the_post_gets_406() -> Result<(), TestError> {
+    with_loopback_server(|addr| {
+        let resp = post_initialize_with_media_types(
+            addr,
+            &["application/json, text/event-stream;q=0"],
+            "application/json",
+        )?;
+        assert_eq!(
+            resp.status, 406,
+            "text/event-stream;q=0 refuses the event stream; body: {}",
+            resp.body
+        );
+        Ok(())
+    })
+}
+
+/// A media type that only contains `text/event-stream` as a prefix is a
+/// different media type, so the POST gets 406.
+#[test]
+fn an_accept_media_type_that_only_starts_with_event_stream_gets_406() -> Result<(), TestError> {
+    with_loopback_server(|addr| {
+        let resp = post_initialize_with_media_types(
+            addr,
+            &["application/json, text/event-stream-v2"],
+            "application/json",
+        )?;
+        assert_eq!(
+            resp.status, 406,
+            "text/event-stream-v2 is not text/event-stream; body: {}",
+            resp.body
+        );
+        Ok(())
+    })
+}
+
+/// RFC 9110 section 5.3 lets a client split a list header over several lines.
+/// `Accept: application/json` and `Accept: text/event-stream` on separate
+/// lines accept both media types, so `initialize` succeeds.
+#[test]
+fn accept_split_over_two_header_lines_is_read_as_one_list() -> Result<(), TestError> {
+    with_loopback_server(|addr| {
+        let resp = post_initialize_with_media_types(
+            addr,
+            &["application/json", "text/event-stream"],
+            "application/json",
+        )?;
+        assert_eq!(
+            resp.status, 200,
+            "two Accept lines together accept both media types; body: {}",
+            resp.body
+        );
+        Ok(())
+    })
+}
+
+/// Media types are case-insensitive (RFC 9110 section 8.3.1) and may carry
+/// parameters, so `Application/JSON; charset=utf-8` is JSON and `initialize`
+/// succeeds.
+#[test]
+fn content_type_matches_without_regard_to_case_and_with_parameters() -> Result<(), TestError> {
+    with_loopback_server(|addr| {
+        let resp = post_initialize_with_media_types(
+            addr,
+            &[CANONICAL_ACCEPT],
+            "Application/JSON; charset=utf-8",
+        )?;
+        assert_eq!(
+            resp.status, 200,
+            "Application/JSON; charset=utf-8 is application/json; body: {}",
+            resp.body
+        );
+        Ok(())
+    })
+}
+
+/// A `Content-Type` that only starts with `application/json` names a
+/// different media type (`application/json-seq` is RFC 7464), so the body is
+/// not read as JSON-RPC and the POST gets 415.
+#[test]
+fn a_content_type_that_only_starts_with_application_json_gets_415() -> Result<(), TestError> {
+    with_loopback_server(|addr| {
+        let resp =
+            post_initialize_with_media_types(addr, &[CANONICAL_ACCEPT], "application/json-seq")?;
+        assert_eq!(
+            resp.status, 415,
+            "application/json-seq is not application/json; body: {}",
+            resp.body
+        );
+        Ok(())
+    })
+}
+
+/// The control for the five tests above: the canonical headers sent through
+/// the same helper get 200, so a refusal above comes from the header under
+/// test and not from the helper.
+#[test]
+fn the_canonical_media_type_headers_through_the_same_helper_get_200() -> Result<(), TestError> {
+    with_loopback_server(|addr| {
+        let resp = post_initialize_with_media_types(addr, &[CANONICAL_ACCEPT], "application/json")?;
+        assert_eq!(
+            resp.status, 200,
+            "the canonical pair is accepted; body: {}",
+            resp.body
+        );
+        Ok(())
+    })
+}
+
+// ── Teardown on every exit path ─────────────────────────────────────
+
+/// Whether `pid` names a process that is still running (not reaped and not
+/// a zombie), read from `ps`, which Linux and macOS both have.
+///
+/// `ps` prints nothing for a process that is gone. A zombie's state starts
+/// with `Z`, and Linux's `X` is a process being torn down.
+fn is_running(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|out| {
+            let stat = String::from_utf8_lossy(&out.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with(['Z', 'X'])
+        })
+}
+
+/// A server that `spawn_http` started is stopped when a panic unwinds out of
+/// the test holding it, not only when the test reaches `shutdown`.
+///
+/// A failing assertion used to unwind past `shutdown(child)` and leave the
+/// server running, reparented to PID 1. Each leaked server also kept every
+/// file descriptor the test binary inherited, so on 2026-11-09 five of them
+/// held the host's shared test-queue lock after their test run had ended.
+#[test]
+fn a_panic_in_the_test_still_stops_the_spawned_server() -> Result<(), TestError> {
+    let (server, _addr) =
+        spawn_http(&["--mcp-bind", "127.0.0.1:0"])?.ok_or("failed to start MCP HTTP server")?;
+    let pid = server.id();
+    assert!(is_running(pid), "the server runs before the panic");
+
+    // The unwind runs on a thread of its own, which `join` reports as an
+    // error, so it cannot end this test. `resume_unwind` starts it without
+    // the panic hook, so a passing run prints no panic message.
+    let unwound = std::thread::spawn(move || {
+        let _held = server;
+        std::panic::resume_unwind(Box::new("an assertion in the test failed"));
+    })
+    .join();
+    assert!(unwound.is_err(), "the thread unwound");
+
+    let leaked = is_running(pid);
+    if leaked {
+        // Stop it here so a red run leaks nothing. The handle was dropped
+        // unreaped, so the pid is still this process's child and cannot have
+        // been reused.
+        let raw = libc::pid_t::try_from(pid)?;
+        // SAFETY: kill(2) and waitpid(2) on an unreaped child of this
+        // process; neither touches memory this code owns.
+        unsafe {
+            libc::kill(raw, libc::SIGKILL);
+            libc::waitpid(raw, std::ptr::null_mut(), 0);
+        }
+    }
+    assert!(!leaked, "the server outlived the panic that ended its test");
     Ok(())
 }
