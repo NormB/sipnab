@@ -1743,7 +1743,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2494 -> 2498 (RELEASE-FAST C): internals/build-ci-release.md links its
     // new "Advertising a release" section twice and uprobe-capture.md's
     // ledger once, and internals/uprobe-capture.md links that section (+4).
-    const EXPECTED_WIKI_LINKS: usize = 2498;
+    // 2498 -> 2499 (3c, tail cursor and earliest_message_at): output-formats.md
+    // links its new section "Follow changes with a tail cursor" from its
+    // steps (+1) and rest-api.md's tail route links it (+1);
+    // mcp-tools-signaling.md's tail_dialogs text links it in place of the
+    // list_dialogs and "Which dialog time to read" links it dropped (-1).
+    // Counted per file against origin/main 1c46058c8.
+    const EXPECTED_WIKI_LINKS: usize = 2499;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

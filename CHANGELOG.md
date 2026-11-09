@@ -8,6 +8,13 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **`GET /v1/dialogs/tail` and `tail_dialogs` no longer lose a dialog that changed after their cursor (3c, TAIL-CURSOR-READ-ORDER).** The cursor named a position on `updated_at`, the timestamp of the message read last, which moves back when sipnab reads a message stamped older than one it already read, as on an `-I` set whose files overlap in time. Such a dialog fell behind a cursor already handed out and was never returned again; the docs said to list every dialog once at the end instead. The store now numbers every message it processes for a dialog, one above the last, and the cursor names that number: `next_cursor` reads `v2:<N>`, and a page holds the dialogs changed after it, in the order they changed. A version-1 cursor (`<RFC 3339>|<Call-ID>`, or a bare timestamp) still works as before, and its page hands back a `v2:` cursor. A `v2:` cursor without a whole number, or a cursor version sipnab does not read, is a REST 400 or an MCP `invalid_params`. How-to: [Follow changes with a tail cursor](docs/output-formats.md#follow-changes-with-a-tail-cursor).
+- **A dialog summary carries `earliest_message_at`, and `duration_sec` runs from it (3c, CREATED-AT-READ-ORDER).** `created_at` is the timestamp of the first message sipnab read for a dialog. On an `-I` set whose files overlap in time, a call's first message in the file read first is not always its oldest, so every duration started late: a call from 1 s to 3.5 s whose 200 OK at 2 s was read first lasted 1.5 s. `earliest_message_at` is the oldest timestamp among the dialog's messages. `duration_sec` (REST, MCP, `--json-dialogs`, the JSON call report), the dialog table's Duration, the TUI's Duration column and sort, the filter DSL's `duration` and the short-call fraud check now run from it to `latest_message_at`, and so do the call report's `Time` line, a call tree's `first_activity` and the `sdp_origin` lifetime. `created_at` keeps its meaning, the first message read, which never changes: the pages, time windows, buckets, sorts and the vCon uuid key on it. The REST rows and the OpenAPI `DialogSummary`, the MCP dialog summaries and `tests/schemas/dialog.schema.json` carry `earliest_message_at` as a required [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) date-time. `--cores N` builds the same field as `--cores 1`. How-to: [Which dialog time to read](docs/output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at).
+
 ## [0.5.241] - 2026-11-09
 
 ### Fixed

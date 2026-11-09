@@ -372,6 +372,86 @@ fn a_calls_duration_runs_to_its_newest_message_at_every_core_count() -> Result<(
     Ok(())
 }
 
+/// A two-file set where the file read first holds a call's later messages
+/// and the file read second holds its older INVITE: the first file starts
+/// earlier, with another call's INVITE at 0 s.
+fn a_call_read_from_its_middle() -> Result<(tempfile::TempDir, [std::path::PathBuf; 2]), TestError>
+{
+    let first = leg(0);
+    let other = leg(1);
+    let answered = Leg {
+        caller: first.callee,
+        callee: first.caller,
+    };
+    let early_start = vec![
+        (
+            0,
+            captures::request(other, "INVITE", "other@example.com", 1, ""),
+        ),
+        (
+            2_000_000,
+            captures::response(answered, 200, "INVITE", "middle@example.com", 1, ""),
+        ),
+        (
+            3_500_000,
+            captures::request(first, "BYE", "middle@example.com", 2, ""),
+        ),
+    ];
+    let older = vec![(
+        1_000_000,
+        captures::request(first, "INVITE", "middle@example.com", 1, ""),
+    )];
+    let dir = tempfile::tempdir()?;
+    // `early.pcap` starts at 0 s and is read first; `older.pcap` starts at
+    // 1 s and is read second, although its INVITE is older than the call's
+    // first message read, the 200 OK at 2 s.
+    let set = [
+        write(dir.path(), "early.pcap", &early_start)?,
+        write(dir.path(), "older.pcap", &older)?,
+    ];
+    Ok((dir, set))
+}
+
+/// A call's duration runs from its oldest message, which on a set of files
+/// that overlap in time is not the first one READ: the same at every core
+/// count.
+#[test]
+fn a_calls_duration_runs_from_its_oldest_message_at_every_core_count() -> Result<(), TestError> {
+    let (_dir, set) = a_call_read_from_its_middle()?;
+    let single = assert_same_at_every_count("the dialogs", |n| json_dialogs(&set, n, &[]))?;
+    let line = single
+        .lines()
+        .find(|l| l.contains("middle@example.com"))
+        .ok_or("the call's line")?;
+    let v: serde_json::Value = serde_json::from_str(line)?;
+    assert_eq!(
+        v["duration_sec"].as_f64(),
+        Some(2.5),
+        "1 s to 3.5 s; from the 200 OK read first it would be 1.5 s: {single}"
+    );
+    Ok(())
+}
+
+/// The call report's Time line starts at the oldest message at every core
+/// count.
+#[test]
+fn a_calls_report_starts_at_its_oldest_message_at_every_core_count() -> Result<(), TestError> {
+    let (_dir, set) = a_call_read_from_its_middle()?;
+    let single = assert_same_at_every_count("the call report", |n| {
+        Ok(run(
+            &set,
+            n,
+            &["--call-report", "middle@example.com", "--no-cli-print"],
+        )?
+        .stdout)
+    })?;
+    assert!(
+        single.contains("(2s)") && single.contains("Time:"),
+        "the Time line counts the 2 whole seconds from the oldest message: {single}"
+    );
+    Ok(())
+}
+
 // ── --limit ──────────────────────────────────────────────────────────
 
 /// The leg of call `i`: each call on a host pair of its own.

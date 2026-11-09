@@ -133,7 +133,7 @@ because the incident is over.
 **The operator's screen is the tool's output.** sipnab has no other product. Every
 mutating verb proposed so far — tag a dialog, acknowledge a finding, name a host
 — edits the thing the operator is reading, and does so with no signal that it
-happened. `DialogStore::generation` ([`dialog_store.rs:1271`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1271))
+happened. `DialogStore::generation` ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292))
 is bumped by every mutating method and exposed on no wire format: not in
 `DialogSummary` ([`model.rs:54-56`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L56)), not in any REST
 response (`build_router`, [`api.rs:204-213`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L213) — eight
@@ -345,7 +345,7 @@ store, no schema migration and no wire-visible generation counter.
 **What would change this.** Both of the following, not either:
 
 1. A wire-visible store identity — `generation`
-   ([`dialog_store.rs:1271`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1271)) surfaced on REST and
+   ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) surfaced on REST and
    MCP responses — so a consumer can detect that what it is reading changed
    underneath it.
 2. A demonstrated need that `save_findings` does not meet, from someone who has

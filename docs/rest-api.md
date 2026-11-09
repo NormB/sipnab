@@ -842,6 +842,7 @@ console.log(`${dialogs.length} dialogs (${total} total)`);
       "created_at": "2026-04-13T10:30:00Z",
       "updated_at": "2026-04-13T10:30:03Z",
       "latest_message_at": "2026-04-13T10:30:03Z",
+      "earliest_message_at": "2026-04-13T10:30:00Z",
       "frame": "capture.pcap#41@6f3a1c02b8d4e795"
     }
   ],
@@ -928,11 +929,12 @@ Four list-row keys drop out rather than reading null:
 - `tags`: the labels `--tag` gave this run's dialogs, absent when the run set
   none.
 
-`updated_at` is the timestamp of the message processed last, and
-`latest_message_at` the newest timestamp among the dialog's messages.
-`duration_sec` runs from `created_at` to `latest_message_at`. They differ only
-when sipnab read an older-stamped message after a newer one, as on an `-I` set
-whose files overlap in time. [Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at)
+`updated_at` is the timestamp of the message processed last,
+`latest_message_at` the newest timestamp among the dialog's messages, and
+`earliest_message_at` the oldest. `duration_sec` runs from
+`earliest_message_at` to `latest_message_at`. They differ from `created_at`
+and `updated_at` only when sipnab read an older-stamped message after a newer
+one, as on an `-I` set whose files overlap in time. [Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at)
 says which to use for what.
 
 The list rows carry `from_user`/`to_user`. The single-dialog and report
@@ -4230,8 +4232,10 @@ The dialogs that changed since your last poll. This is cursor-based change track
 **Query parameters:**
 
 - `since` (optional) — the previous response's `next_cursor`, passed back
-  verbatim. The route returns only dialogs updated strictly after it. Omit it on the
-  first poll. A cursor whose timestamp half is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) is a `400`.
+  verbatim. The route returns only dialogs changed after it. Omit it on the
+  first poll. A `v2:` cursor without a whole number, a cursor version this
+  sipnab does not read, or a version-1 cursor whose timestamp half is not
+  [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) is a `400`.
 - `limit` (optional) — the most rows to return, clamped to the server's row cap.
 
 **curl:**
@@ -4249,7 +4253,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
     { "call_id": "a@example.com", "state": "InCall", "updated_at": "2026-09-15T12:00:03Z" }
   ],
   "returned": 1,
-  "next_cursor": "2026-09-15T12:00:03Z|a@example.com",
+  "next_cursor": "v2:42",
   "capture_identity": {
     "node": "capture-01",
     "instance": "117b0818df1033d4fd2a28-2",
@@ -4259,17 +4263,23 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
 }
 ```
 
-**The rows are the same summaries `/v1/dialogs` returns,** oldest update first.
+**The rows are the same summaries `/v1/dialogs` returns,** in the order they
+changed.
 
 - Pass `next_cursor` back as `since` on the next poll. Only later changes come
   back.
-- The cursor renders its timestamp as `Z` rather than `+00:00`.
-  So it drops straight into the `since` query. A raw `+` there decodes to a space.
-- A tie
-  group sharing one update instant resumes on the `(timestamp, Call-ID)` pair.
-  So a page boundary inside it neither repeats nor skips a row.
-- `next_cursor` is null
-  when nothing changed.
+- `next_cursor` is `v2:<N>`, the number of the last change on the page. The
+  store numbers every message it processes for a dialog, one above the last,
+  so a dialog that changes after the cursor comes back even when its new
+  message carries a timestamp older than every row the cursor saw.
+- Each number belongs to one change of one dialog, so a page boundary neither
+  repeats nor skips a row.
+- A version-1 cursor, `<RFC 3339>|<Call-ID>`, from an earlier sipnab still
+  works: it returns dialogs updated after that instant, and the page hands
+  back a `v2:` cursor.
+- `next_cursor` is null when nothing changed.
+
+See [Follow changes with a tail cursor](output-formats.md#follow-changes-with-a-tail-cursor).
 
 ---
 

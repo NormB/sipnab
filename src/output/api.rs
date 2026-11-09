@@ -798,10 +798,11 @@ pub struct CompareParams {
 #[into_params(parameter_in = Query)]
 pub struct TailParams {
     /// Resume cursor: pass back the previous response's `next_cursor` verbatim
-    /// (`<RFC 3339>|<Call-ID>`). Only dialogs updated strictly after that
-    /// position are returned. A bare RFC 3339 timestamp is also accepted. Omit
-    /// on the first poll to start from the beginning. A cursor whose timestamp
-    /// half is not RFC 3339 is a 400.
+    /// (`v2:<N>`, a position in the store's change sequence). Only dialogs
+    /// changed after it are returned, whatever their messages' timestamps. A
+    /// version-1 cursor (`<RFC 3339>` or `<RFC 3339>|<Call-ID>`) is still
+    /// read, as dialogs updated after that instant. Omit on the first poll to
+    /// start from the beginning. A cursor that does not parse is a 400.
     pub since: Option<String>,
     /// Maximum dialogs to return, clamped to the server's row cap.
     pub limit: Option<usize>,
@@ -2340,9 +2341,9 @@ async fn get_compare(
 ///
 /// # Returns
 ///
-/// 200 with the dialogs updated after the cursor (oldest update first) and a
-/// `next_cursor` to resume from; 400 for a `since` whose timestamp half is not
-/// RFC 3339; 401/503 from the guard.
+/// 200 with the dialogs changed after the cursor (in the order they changed)
+/// and a `next_cursor` to resume from; 400 for a `since` that does not parse;
+/// 401/503 from the guard.
 ///
 /// # Side effects
 ///
@@ -2352,12 +2353,12 @@ async fn get_compare(
     path = "/v1/dialogs/tail",
     tag = "dialogs",
     summary = "Poll for dialogs changed since a cursor",
-    description = "The dialogs updated since your last poll — cursor-based change tracking, the pattern a monitoring system uses and one that `/v1/dialogs` offset pagination cannot express. The same question the MCP `tail_dialogs` tool answers.\n\nPass the previous response's `next_cursor` back as `since`, and only dialogs updated strictly after it are returned, oldest update first. Omit `since` on the first poll. The rows are the same summaries `/v1/dialogs` returns. `next_cursor` is null when nothing changed.",
+    description = "The dialogs changed since your last poll — cursor-based change tracking, the pattern a monitoring system uses and one that `/v1/dialogs` offset pagination cannot express. The same question the MCP `tail_dialogs` tool answers.\n\nPass the previous response's `next_cursor` (`v2:<N>`) back as `since`, and only dialogs changed after it are returned, in the order they changed. A change is a message processed for the dialog, numbered by a sequence that only rises, so a message stamped older than one already read still brings its dialog back. A version-1 cursor (`<RFC 3339>|<Call-ID>`) is still read, as dialogs updated after that instant. Omit `since` on the first poll. The rows are the same summaries `/v1/dialogs` returns. `next_cursor` is null when nothing changed.",
     params(TailParams),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "The changed dialogs and the cursor to resume from.", body = schema::TailPage),
-        (status = 400, description = "A `since` cursor whose timestamp half is not RFC 3339.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 400, description = "A `since` cursor that does not parse: a `v2:` cursor without a whole number, a cursor version this sipnab does not read, or a version-1 cursor whose timestamp half is not RFC 3339.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
@@ -2372,7 +2373,7 @@ async fn get_dialogs_tail(
 
     let cursor = match params.since.as_deref() {
         Some(raw) => Some(
-            crate::cursor::parse_cursor(raw)
+            crate::cursor::parse_tail_cursor(raw)
                 .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("since: {e}")))?,
         ),
         None => None,
@@ -7243,10 +7244,13 @@ pub mod schema {
         /// Final response code of the dialog's INVITE, or of the request that
         /// opened a dialog without one. Absent — never zero — while it has none.
         pub final_status_code: Option<u16>,
-        /// First message to the newest one (`latest_message_at`), seconds.
-        /// `0` for a single-message dialog.
+        /// The oldest message (`earliest_message_at`) to the newest one
+        /// (`latest_message_at`), seconds. `0` for a single-message dialog.
         pub duration_sec: f64,
-        /// RFC 3339 timestamp of the first message.
+        /// RFC 3339 timestamp of the first message sipnab read for the
+        /// dialog. On a set of capture files that overlap in time that is not
+        /// always the oldest message; it never changes, so it is the key to
+        /// page and sort on.
         #[schema(format = DateTime)]
         pub created_at: String,
         /// RFC 3339 timestamp of the message processed last. On a set of
@@ -7259,6 +7263,10 @@ pub mod schema {
         /// messages were read in. Never earlier than `created_at`.
         #[schema(format = DateTime)]
         pub latest_message_at: String,
+        /// RFC 3339 timestamp of the oldest message, whatever order the
+        /// messages were read in. Never later than `created_at`.
+        #[schema(format = DateTime)]
+        pub earliest_message_at: String,
         /// Transaction timing metrics.
         pub timing: TimingSummary,
         /// `<source>#<ordinal>` pointer to the frame this dialog opened in.
@@ -9019,6 +9027,93 @@ mod tests {
             !cursor.contains('+'),
             "the cursor rides back in a URL query, where `+` becomes a space: {cursor}"
         );
+        Ok(())
+    }
+
+    /// GET `uri` against `state`'s router, as JSON.
+    async fn tail_get(state: &ApiState, uri: &str) -> Result<(StatusCode, Value), TestError> {
+        let resp = build_router(state.clone())
+            .oneshot(test_request(uri)?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let status = resp.status();
+        let body = body_to_string(resp.into_body()).await?;
+        Ok((status, serde_json::from_str(&body)?))
+    }
+
+    /// 3c TAIL-CURSOR-READ-ORDER: a message stamped older than the newest
+    /// one, read after the poller took its cursor, still brings the dialog
+    /// back on `GET /v1/dialogs/tail?since=`.
+    #[tokio::test]
+    async fn tail_returns_a_dialog_whose_new_message_is_older_than_the_cursor()
+    -> Result<(), TestError> {
+        let state = make_state();
+        let mut messages =
+            crate::test_utils::out_of_order_messages("ooo@example.com", [192, 0, 2, 1].into())?;
+        let last = messages.pop().ok_or("five messages")?;
+        for m in messages {
+            state.dialog_store.write().process_message(m);
+        }
+        let (_, first) = tail_get(&state, "/v1/dialogs/tail").await?;
+        let cursor = first["next_cursor"].as_str().ok_or("a cursor")?.to_string();
+        state.dialog_store.write().process_message(last);
+        let (status, again) = tail_get(&state, &format!("/v1/dialogs/tail?since={cursor}")).await?;
+        assert_eq!(status, StatusCode::OK, "{again}");
+        assert_eq!(
+            again["dialogs"][0]["call_id"], "ooo@example.com",
+            "the 200 OK stamped +0.905 s, older than the BYE the cursor saw, is a change: {again}"
+        );
+        Ok(())
+    }
+
+    /// A cursor of a version this sipnab does not read is a 400 that names
+    /// the version.
+    #[tokio::test]
+    async fn tail_refuses_an_unknown_cursor_version() -> Result<(), TestError> {
+        let state = make_state();
+        let (status, v) = tail_get(&state, "/v1/dialogs/tail?since=v3:5").await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert!(
+            v["detail"].as_str().is_some_and(|d| d.contains("version")),
+            "the problem names the cursor version: {v}"
+        );
+        Ok(())
+    }
+
+    /// A version-2 cursor without a number is a 400.
+    #[tokio::test]
+    async fn tail_refuses_a_version_2_cursor_without_a_number() -> Result<(), TestError> {
+        let state = make_state();
+        let (status, v) = tail_get(&state, "/v1/dialogs/tail?since=v2:abc").await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "v2:abc is refused: {v}");
+        assert!(
+            v["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("whole number")),
+            "the problem says the number is missing: {v}"
+        );
+        Ok(())
+    }
+
+    /// The REST row carries `earliest_message_at`, the oldest message, and
+    /// `duration_sec` runs from it.
+    #[tokio::test]
+    async fn a_rest_row_carries_the_oldest_message() -> Result<(), TestError> {
+        let state = make_state();
+        for m in crate::test_utils::late_start_messages("early@example.com")? {
+            state.dialog_store.write().process_message(m);
+        }
+        let (_, v) = tail_get(&state, "/v1/dialogs").await?;
+        let row = &v["dialogs"][0];
+        assert_eq!(
+            row["earliest_message_at"], "2023-11-14T22:13:19.500+00:00",
+            "the INVITE copy read second, 0.5 s before the first message read: {row}"
+        );
+        assert_eq!(
+            row["created_at"], "2023-11-14T22:13:20+00:00",
+            "the first read: {row}"
+        );
+        assert_eq!(row["duration_sec"], 3.005, "19.5 s to 22.505 s: {row}");
         Ok(())
     }
 
