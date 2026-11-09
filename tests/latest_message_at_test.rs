@@ -288,8 +288,8 @@ fn a_late_retransmission_with_an_older_timestamp_keeps_the_duration() -> Result<
     Ok(())
 }
 
-/// A call whose first message read is newer than one read after it reports
-/// no time, never a negative duration.
+/// A call whose first message read is newer than one read after it lasts
+/// from its oldest message to its newest, never a negative duration.
 #[test]
 fn a_call_read_newest_first_reports_no_negative_duration() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
@@ -316,8 +316,8 @@ fn a_call_read_newest_first_reports_no_negative_duration() -> Result<(), TestErr
     )?;
     assert_eq!(
         duration_of(&[first, second], call)?,
-        Some(0.0),
-        "the call read newest first lasts no time, not -1 s"
+        Some(1.0),
+        "the 486 at 1 s to the INVITE at 2 s: 1 s, not -1 s, and not the 0 s measured from the first read"
     );
     Ok(())
 }

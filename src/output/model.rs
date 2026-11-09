@@ -72,10 +72,14 @@ pub struct DialogSummary {
     /// a zero would read as a real code to anything doing arithmetic on it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_status_code: Option<u16>,
-    /// Wall-clock span from the first message to the newest one
-    /// (`latest_message_at`), seconds (0 for single-message dialogs).
+    /// Wall-clock span from the oldest message (`earliest_message_at`) to
+    /// the newest one (`latest_message_at`), seconds (0 for single-message
+    /// dialogs).
     pub duration_sec: f64,
-    /// RFC 3339 timestamp of the first message.
+    /// RFC 3339 timestamp of the first message sipnab read for the dialog.
+    /// On a set of capture files that overlap in time that is not always the
+    /// oldest message; it never changes, so it is the key to page and sort
+    /// on.
     pub created_at: String,
     /// RFC 3339 timestamp of the message processed last. On a set of
     /// capture files that overlap in time that is not always the newest
@@ -83,8 +87,11 @@ pub struct DialogSummary {
     /// change.
     pub updated_at: String,
     /// RFC 3339 timestamp of the newest message, whatever order the messages
-    /// were read in. `duration_sec` runs from `created_at` to it.
+    /// were read in. `duration_sec` runs from `earliest_message_at` to it.
     pub latest_message_at: String,
+    /// RFC 3339 timestamp of the oldest message, whatever order the messages
+    /// were read in. Never later than `created_at`.
+    pub earliest_message_at: String,
     /// Transaction timing metrics.
     pub timing: TimingSummary,
     /// Pointer to the frame this dialog opened in, as `<source>#<ordinal>`.
@@ -144,6 +151,7 @@ impl From<&SipDialog> for DialogSummary {
             created_at: d.created_at.to_rfc3339(),
             updated_at: d.updated_at.to_rfc3339(),
             latest_message_at: d.latest_message_at.to_rfc3339(),
+            earliest_message_at: d.earliest_message_at.to_rfc3339(),
             timing: TimingSummary {
                 pdd_ms: d.timing.pdd_ms(),
                 setup_ms: d.timing.setup_ms(),
@@ -1053,6 +1061,60 @@ mod latest_message_tests {
             summary()?.updated_at,
             "2023-11-14T22:13:20.905+00:00",
             "updated_at stays the 200 OK read last, stamped +0.905 s"
+        );
+        Ok(())
+    }
+}
+
+/// `DialogSummary`'s times on a call whose second capture began earlier: see
+/// [`crate::test_utils::late_start_messages`].
+#[cfg(test)]
+mod earliest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The summary of the late-start call.
+    fn summary() -> Result<DialogSummary, TestError> {
+        let mut store = crate::sip::dialog_store::DialogStore::new(100, false);
+        for m in crate::test_utils::late_start_messages("early@example.com")? {
+            store.process_message(m);
+        }
+        Ok(DialogSummary::from(
+            store.get("early@example.com").ok_or("the call")?,
+        ))
+    }
+
+    /// `earliest_message_at` names the oldest message, the INVITE copy at
+    /// T0 - 0.5 s.
+    #[test]
+    fn the_summary_names_the_oldest_message() -> Result<(), TestError> {
+        assert_eq!(
+            summary()?.earliest_message_at,
+            "2023-11-14T22:13:19.500+00:00",
+            "the INVITE copy read last, 0.5 s before the first message read"
+        );
+        Ok(())
+    }
+
+    /// `duration_sec` runs from the oldest message to the newest.
+    #[test]
+    fn the_summary_duration_runs_from_the_oldest_message() -> Result<(), TestError> {
+        assert_eq!(
+            summary()?.duration_sec,
+            3.005,
+            "19.5 s to 22.505 s; from the first read it would be 2.505 s"
+        );
+        Ok(())
+    }
+
+    /// `created_at` keeps its meaning: the first message read.
+    #[test]
+    fn the_summary_keeps_created_at_on_the_first_message_read() -> Result<(), TestError> {
+        assert_eq!(
+            summary()?.created_at,
+            "2023-11-14T22:13:20+00:00",
+            "created_at is the INVITE read first, not the older copy read last"
         );
         Ok(())
     }

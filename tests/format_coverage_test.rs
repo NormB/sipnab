@@ -273,6 +273,20 @@ fn call_lines(body: &str) -> impl Iterator<Item = &str> {
     code_lines(body).filter(|l| !l.starts_with("echo ") && !l.starts_with("printf "))
 }
 
+/// A command that reads the files it names and runs none of them.
+const LINT_ONLY: &str = "shellcheck ";
+
+/// The commands on one line of a workflow step, without its `run:` key: a
+/// line can lint a hook and then run it.
+fn commands_of(line: &str) -> impl Iterator<Item = &str> {
+    let line = line.trim_start();
+    let line = line.strip_prefix("- ").unwrap_or(line);
+    let line = line.strip_prefix("run:").unwrap_or(line);
+    line.split([';', '|', '&'])
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+}
+
 /// A shell script or a git hook, the only files that run the hooks and the
 /// format script. A Python script that names one does so in prose.
 fn is_shell(path: &str) -> bool {
@@ -361,9 +375,11 @@ fn jobs_missing_the_pin(workflow: &str, runners: &BTreeSet<String>) -> Vec<Strin
             // after the Python tests that run prepare-commit.sh.
             let text = body.join("\n");
             let first_run = call_lines(&text).position(|l| {
-                runners
-                    .iter()
-                    .any(|r| l.contains(r.as_str()) || runs_dir_of(l, r))
+                runners.iter().any(|r| {
+                    commands_of(l).any(|c| {
+                        !c.starts_with(LINT_ONLY) && (c.contains(r.as_str()) || runs_dir_of(c, r))
+                    })
+                })
             });
             let first_pin = code_lines(&text)
                 .filter(|l| !l.starts_with("echo ") && !l.starts_with("printf "))
@@ -405,6 +421,44 @@ fn scripts_and_hooks() -> Result<BTreeMap<String, String>, TestError> {
 /// rustfmt, and twelve scenarios failed as "blocked, but not by that gate".
 /// The runners are derived from the scripts that exist, so a new harness that
 /// reaches the gate is covered the day it is added.
+/// `shellcheck` reads the files it is given and runs none of them, so a job
+/// that lints a hook does not reach the format gate and needs no pinned
+/// rustfmt.
+#[test]
+fn a_job_that_only_shellchecks_a_hook_needs_no_pin() {
+    let runners = BTreeSet::from([".githooks/pre-push".to_string()]);
+    let workflow =
+        "jobs:\n  lint:\n    steps:\n      - run: shellcheck -s bash .githooks/pre-push\n";
+    assert!(
+        jobs_missing_the_pin(workflow, &runners).is_empty(),
+        "shellcheck does not run the hook it reads"
+    );
+}
+
+/// A line that lints a hook and then runs it does reach the gate.
+#[test]
+fn a_hook_run_after_shellcheck_on_one_line_needs_the_pin() {
+    let runners = BTreeSet::from([".githooks/pre-push".to_string()]);
+    let workflow = "jobs:\n  lint:\n    steps:\n      - run: shellcheck .githooks/pre-push && bash .githooks/pre-push\n";
+    assert_eq!(
+        jobs_missing_the_pin(workflow, &runners),
+        ["lint"],
+        "the second command runs the hook"
+    );
+}
+
+/// `;` separates commands as `&&` does.
+#[test]
+fn a_hook_run_after_a_semicolon_needs_the_pin() {
+    let runners = BTreeSet::from([".githooks/pre-push".to_string()]);
+    let workflow = "jobs:\n  lint:\n    steps:\n      - run: shellcheck .githooks/pre-push; .githooks/pre-push\n";
+    assert_eq!(
+        jobs_missing_the_pin(workflow, &runners),
+        ["lint"],
+        "the command after the semicolon runs the hook"
+    );
+}
+
 #[test]
 fn every_job_that_runs_the_format_gate_installs_the_pinned_rustfmt() -> Result<(), TestError> {
     let runners = format_gate_runners(&scripts_and_hooks()?);

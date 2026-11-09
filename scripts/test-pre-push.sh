@@ -717,6 +717,79 @@ for t in v9.9.9 v9.9.6 v9.9.7; do
 done
 REFLINE=$(tag_ref v9.9.9)
 
+# -- PRE-PUSH-ON-DELETE: a push that only deletes refs sends no commits -------
+# `git push origin --delete <4 branches>` ran every gate against the working
+# tree for about 25 minutes, and the branches were still on GitHub afterwards:
+# a tree gate that fails aborts the push, and git then deletes nothing. A ref
+# line whose local sha is all zeros deletes that ref. Each scenario below runs
+# with unformatted Rust in the tree, so any scenario that reaches the gates is
+# blocked by rustfmt.
+ZERO=0000000000000000000000000000000000000000
+OLD=$( cd "$CRATE" && git rev-parse HEAD )
+delete_line() { # $1 = ref name -> the pre-push stdin line deleting it
+	printf '(delete) %s %s %s' "$ZERO" "$1" "$OLD"
+}
+write_unformatted
+if run_hook "" "$(delete_line refs/heads/old-topic)"; then
+	if grep -qF "only deletes refs: refs/heads/old-topic" "$TMP/out.log"; then
+		ok "a push that deletes one branch is allowed at once, naming the ref"
+	else
+		bad "a delete-only push was allowed without saying why"
+		sed 's/^/    /' "$TMP/out.log"
+	fi
+else
+	bad "a push that only deletes a branch was BLOCKED by a tree gate"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+write_unformatted
+FOUR=$(printf '%s\n%s\n%s\n%s' "$(delete_line refs/heads/a)" "$(delete_line refs/heads/b)" \
+	"$(delete_line refs/heads/c)" "$(delete_line refs/heads/d)")
+if run_hook "" "$FOUR" && grep -qF "refs/heads/a refs/heads/b refs/heads/c refs/heads/d" "$TMP/out.log"; then
+	ok "a push that deletes four branches is allowed at once, naming all four"
+else
+	bad "a push that deletes four branches was not allowed with all four named"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+write_unformatted
+if run_hook "" "$(delete_line refs/tags/v9.9.1)"; then
+	ok "a push that deletes a tag is allowed at once"
+else
+	bad "a push that only deletes a tag was BLOCKED"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+write_unformatted
+MIXED=$(printf '%s\n%s' "$(delete_line refs/heads/old-topic)" \
+	"refs/heads/main $OLD refs/heads/main $ZERO")
+if run_hook "" "$MIXED"; then
+	bad "a push that deletes one ref and sends another was ALLOWED past the gates"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "scripts/check-rustfmt.sh --fix"; then
+	bad "a push that deletes one ref and sends another: blocked, but not by rustfmt"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a push that also sends a ref still runs every gate"
+fi
+write_unformatted
+if run_hook "" "refs/heads/new-topic $OLD refs/heads/new-topic $ZERO"; then
+	bad "a push creating a branch (zero REMOTE sha) was ALLOWED past the gates"
+	sed 's/^/    /' "$TMP/out.log"
+elif ! blocked_for "scripts/check-rustfmt.sh --fix"; then
+	bad "a push creating a branch: blocked, but not by rustfmt"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a zero remote sha (a new ref) is not a deletion: every gate runs"
+fi
+write_unformatted
+if run_hook "" ""; then
+	bad "a push with no ref lines was ALLOWED past the gates"
+	sed 's/^/    /' "$TMP/out.log"
+else
+	ok "a push with no ref lines is not a deletion: every gate runs"
+fi
+# The scenarios after this one expect a formatted tree.
+fmt_fixture
+
+
 # SIGNATURE: each unsigned or untrusted shape is blocked by the signature gate,
 # named, before CI is consulted. gh reports green so only the signature can
 # block.
@@ -753,6 +826,25 @@ if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
 else
 	bad "tag gate BLOCKED a tag on a green commit"
 	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# PRE-PUSH-958-PERCENT-B: the phase-one note an allowed tag prints ended with
+# `%%b` in its printf format, which prints a literal `%b` and never uses the
+# color-reset argument, so the yellow it opens ran on into the next line. In
+# this harness stdout is a file and every color is empty, so the defect shows
+# as the literal text.
+NOTE_END="landed. The checker names which of the two it is."
+if ! grep -qF "$NOTE_END" "$TMP/out.log"; then
+	bad "the allowed tag printed no phase-one note to check"
+	sed 's/^/    /' "$TMP/out.log"
+elif grep -qF "$NOTE_END%b" "$TMP/out.log"; then
+	bad "the phase-one note prints a literal %b instead of resetting the color"
+	grep -F "$NOTE_END" "$TMP/out.log" | sed 's/^/    /'
+elif ! grep -qxF "  $NOTE_END" "$TMP/out.log"; then
+	bad "the phase-one note's last line carries text after its sentence"
+	grep -F "$NOTE_END" "$TMP/out.log" | sed 's/^/    /'
+else
+	ok "the phase-one note ends with its color reset, not a literal %b"
 fi
 
 # RED: a failed run for the commit -> blocked. This is the 0.5.61 case.

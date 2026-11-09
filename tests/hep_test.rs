@@ -151,7 +151,7 @@ impl HepListener {
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
-        let mut child = cmd.spawn()?;
+        let mut child = cmd.tied_to_test().spawn()?;
         let stdout_rx = line_reader(child.stdout.take().ok_or("stdout")?);
         let (stderr_tx, stderr_rx) = mpsc::channel();
         let stderr = child.stderr.take().ok_or("stderr")?;
@@ -778,6 +778,7 @@ fn a_hep_senders_roster_that_cannot_be_written_fails_the_run() -> Result<(), Tes
         .stdin(Stdio::null())
         .stdout(Stdio::from(full))
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let stderr = BufReader::new(child.stderr.take().ok_or("stderr is piped")?);
     let (port_tx, port_rx) = mpsc::channel();
@@ -1469,6 +1470,7 @@ fn hep_send_forwards_captured_sip_as_hep3() -> Result<(), TestError> {
         .env("NO_COLOR", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
 
     let mut buf = [0u8; 65535];
@@ -1626,6 +1628,7 @@ fn hep_send_stamps_tcp_sip_as_ip_protocol_6() -> Result<(), TestError> {
         .env("NO_COLOR", "1")
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
 
     let mut buf = [0u8; 65535];
@@ -1967,7 +1970,7 @@ fn a_live_device_and_a_hep_listener_run_in_one_process() -> Result<(), TestError
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.tied_to_test().spawn()?;
     let stdout_rx = line_reader(child.stdout.take().ok_or("stdout")?);
     let stderr_rx = line_reader(child.stderr.take().ok_or("stderr")?);
 
@@ -2191,3 +2194,5 @@ fn closing_the_persistence_gate_stops_the_pcap_output() -> Result<(), TestError>
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

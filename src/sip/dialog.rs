@@ -198,7 +198,14 @@ pub struct SipDialog {
     pub method: SipMethod,
     /// All SIP messages seen in this dialog, in order.
     pub messages: Vec<SipMessage>,
-    /// Timestamp when this dialog was first created.
+    /// The timestamp of the first message sipnab READ for this dialog, which
+    /// is not always the earliest.
+    ///
+    /// It never changes after the dialog opens, which is why the pagers, the
+    /// time windows, the buckets and the vCon uuid key on it. On an `-I` set
+    /// whose files overlap in time, a file read later can hold an older
+    /// message; for when the dialog's messages begin, read
+    /// [`Self::earliest_message_at`].
     pub created_at: DateTime<Utc>,
     /// Timestamp of the message processed last: the last one READ, which is
     /// not always the newest.
@@ -218,6 +225,20 @@ pub struct SipDialog {
     /// Durations ([`Self::duration`]), idle compaction, the active counts and
     /// the newest-first sorts measure from it.
     pub latest_message_at: DateTime<Utc>,
+    /// The oldest timestamp among the dialog's messages, whatever order they
+    /// were read in. Never later than `created_at`, and never moves forward.
+    ///
+    /// The start of every span that ends at [`Self::latest_message_at`]:
+    /// [`Self::duration`], the call report's `Time` line, a call tree's
+    /// `first_activity` and the `sdp_origin` lifetime.
+    pub earliest_message_at: DateTime<Utc>,
+    /// The store's change sequence number of this dialog's last change: the
+    /// message processed last. Assigned by the
+    /// [`DialogStore`](crate::sip::dialog_store::DialogStore) that holds the
+    /// dialog, strictly increasing across every dialog it changes, so a tail
+    /// cursor that names it never falls behind a dialog that changed later,
+    /// whatever the message's timestamp. 0 until a store stamps it.
+    pub change_seq: u64,
     /// User-supplied tags (from `--tag` CLI flag).
     pub tags: Vec<String>,
     /// Source IP address of the initial message.
@@ -357,15 +378,16 @@ impl FinalCodeFold {
 }
 
 impl SipDialog {
-    /// How long the dialog has lasted so far: from `created_at` to
-    /// [`Self::latest_message_at`].
+    /// How long the dialog has lasted so far: from
+    /// [`Self::earliest_message_at`] to [`Self::latest_message_at`], the
+    /// oldest message to the newest, whatever order they were read in.
     ///
     /// THE duration every surface reports (`duration_sec`, the dialog
     /// table's Duration column, the call report, the TUI, the filter DSL's
     /// `duration`, the short-call fraud check), so they cannot disagree.
     #[must_use]
     pub fn duration(&self) -> chrono::TimeDelta {
-        self.latest_message_at - self.created_at
+        self.latest_message_at - self.earliest_message_at
     }
 
     /// Returns a reference to the current dialog state.
@@ -501,6 +523,8 @@ impl SipDialog {
             created_at: msg.timestamp,
             updated_at: msg.timestamp,
             latest_message_at: msg.timestamp,
+            earliest_message_at: msg.timestamp,
+            change_seq: 0,
             src_addr: msg.src_addr,
             dst_addr: msg.dst_addr,
             src_port: msg.src_port,

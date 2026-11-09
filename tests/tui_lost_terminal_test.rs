@@ -60,6 +60,9 @@ struct PtyRun {
     hang_up: Arc<AtomicBool>,
     /// Bytes for the reader thread to type into the terminal.
     typed: Arc<Mutex<Vec<u8>>>,
+    /// A stall of the reader thread, which a test asks for with
+    /// [`Self::stall_reader`].
+    stall: Arc<Mutex<Stall>>,
     /// The reader thread, which owns the master side.
     reader: Option<thread::JoinHandle<()>>,
 }
@@ -71,17 +74,23 @@ impl PtyRun {
     /// does to a process a terminal window or tmux pane starts; without it no
     /// SIGHUP arrives and only the terminal itself reports the hang-up.
     fn spawn(extra: &[&str], controlling: bool) -> Result<Self, TestError> {
-        let spawning = SPAWNING
-            .lock()
-            .map_err(|_| "a test panicked while spawning")?;
-        let (master, slave) = open_pty(50, 200)?;
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
         cmd.current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"))
             .args(["-I", "sip_call.pcap"])
             .args(extra)
             .env("SIPNAB_LOG", "off")
-            .env("TERM", "xterm-256color")
-            .stdin(Stdio::from(slave.try_clone()?))
+            .env("TERM", "xterm-256color");
+        Self::spawn_command(cmd, controlling)
+    }
+
+    /// Start `cmd` on a new 200x50 pty, in a new session, as [`Self::spawn`]
+    /// starts sipnab. The pty is its standard input, output and error.
+    fn spawn_command(mut cmd: Command, controlling: bool) -> Result<Self, TestError> {
+        let spawning = SPAWNING
+            .lock()
+            .map_err(|_| "a test panicked while spawning")?;
+        let (master, slave) = open_pty(50, 200)?;
+        cmd.stdin(Stdio::from(slave.try_clone()?))
             .stdout(Stdio::from(slave.try_clone()?))
             .stderr(Stdio::from(slave));
         // SAFETY: the closure runs in the forked child before exec and calls
@@ -98,24 +107,27 @@ impl PtyRun {
                 Ok(())
             });
         }
-        let child = cmd.spawn()?;
+        let child = cmd.tied_to_test().spawn()?;
         // The parent's copies of the slave side close here, with `cmd`.
         drop(cmd);
         drop(spawning);
         let output = Arc::new(Mutex::new(Vec::new()));
         let hang_up = Arc::new(AtomicBool::new(false));
         let typed = Arc::new(Mutex::new(Vec::new()));
+        let stall = Arc::new(Mutex::new(Stall::default()));
         let reader = {
             let output = Arc::clone(&output);
             let hang_up = Arc::clone(&hang_up);
             let typed = Arc::clone(&typed);
-            thread::spawn(move || serve_terminal(master, &output, &hang_up, &typed))
+            let stall = Arc::clone(&stall);
+            thread::spawn(move || serve_terminal(master, &output, &hang_up, &typed, &stall))
         };
         Ok(PtyRun {
             child,
             output,
             hang_up,
             typed,
+            stall,
             reader: Some(reader),
         })
     }
@@ -126,6 +138,25 @@ impl PtyRun {
             .lock()
             .map_err(|_| "the pty reader thread panicked")?
             .extend_from_slice(bytes);
+        Ok(())
+    }
+
+    /// Make the reader thread read nothing for `period` from now, and return
+    /// once it has stopped reading: a read it had already begun is over, so
+    /// nothing written from here on is read before the stall ends.
+    fn stall_reader(&self, period: Duration) -> Result<(), TestError> {
+        let poisoned = |_| "the pty reader thread panicked";
+        *self.stall.lock().map_err(poisoned)? = Stall {
+            until: Some(Instant::now() + period),
+            entered: false,
+        };
+        let deadline = Instant::now() + test_timeout(10);
+        while !self.stall.lock().map_err(poisoned)?.entered {
+            if Instant::now() >= deadline {
+                return Err("the pty reader thread did not stall within 10 s".into());
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
         Ok(())
     }
 
@@ -183,13 +214,20 @@ impl PtyRun {
         Ok(())
     }
 
-    /// The exit status, if sipnab ends within `within`. A run still going at
-    /// the deadline is an error, and Drop kills it.
+    /// The exit status, if sipnab ends within `within`, once everything it
+    /// wrote to its terminal is in the output. A run still going at the
+    /// deadline is an error, and Drop kills it.
+    ///
+    /// The exit alone does not say that: the reader thread reads on its own
+    /// schedule, and the last bytes the child wrote (the terminal restore)
+    /// can still be in the terminal when the exit is seen. The reader ends
+    /// when the terminal reports that no process holds its slave side any
+    /// more and nothing is left to read, so this waits for the reader.
     fn wait_for_exit(&mut self, within: Duration, after: &str) -> Result<ExitStatus, TestError> {
         let deadline = Instant::now() + within;
-        loop {
+        let status = loop {
             if let Some(status) = self.child.try_wait()? {
-                return Ok(status);
+                break status;
             }
             if Instant::now() >= deadline {
                 return Err(format!(
@@ -199,7 +237,29 @@ impl PtyRun {
                 .into());
             }
             thread::sleep(Duration::from_millis(50));
+        };
+        self.read_to_the_end(deadline)?;
+        Ok(status)
+    }
+
+    /// Wait until the reader thread has read everything written to the
+    /// terminal and ended, then join it. Nothing to do when [`Self::hang_up`]
+    /// already joined it.
+    fn read_to_the_end(&mut self, deadline: Instant) -> Result<(), TestError> {
+        let Some(reader) = self.reader.take() else {
+            return Ok(());
+        };
+        while !reader.is_finished() {
+            if Instant::now() >= deadline {
+                // Drop stops it.
+                self.reader = Some(reader);
+                return Err("the terminal was still open after sipnab exited".into());
+            }
+            thread::sleep(Duration::from_millis(10));
         }
+        reader
+            .join()
+            .map_err(|_| "the pty reader thread panicked".into())
     }
 }
 
@@ -257,24 +317,49 @@ fn open_pty(rows: u16, cols: u16) -> Result<(OwnedFd, OwnedFd), TestError> {
     Ok(pair)
 }
 
+/// A stall of the reader thread: it reads nothing until `until`.
+#[derive(Default)]
+struct Stall {
+    /// When the reader may read again; `None` for no stall.
+    until: Option<Instant>,
+    /// Set by the reader once it has stopped reading for this stall.
+    entered: bool,
+}
+
 /// Held from `openpty` until the child is spawned. The descriptors are not
 /// close-on-exec until `fcntl` marks them, and a test spawning in another
 /// thread in between would hand them to its own child.
 static SPAWNING: Mutex<()> = Mutex::new(());
 
 /// Act as the terminal: collect what sipnab writes and answer its
-/// cursor-position queries, until `hang_up` is set; then drop the master
-/// side, which hangs the terminal up.
+/// cursor-position queries, until `hang_up` is set or everything written
+/// to the terminal has been read; then drop the master side, which hangs
+/// the terminal up.
+///
+/// Everything has been read when a read of the master side fails or
+/// returns nothing: Linux's master side reads `EIO` once no process holds
+/// the slave side open and no byte written to it is left, so that read
+/// comes only after the child has exited and its output is in `output`.
 fn serve_terminal(
     master: OwnedFd,
     output: &Mutex<Vec<u8>>,
     hang_up: &AtomicBool,
     typed: &Mutex<Vec<u8>>,
+    stall: &Mutex<Stall>,
 ) {
     let mut file = std::fs::File::from(master);
     let mut buf = [0u8; 4096];
     let mut answered = 0;
     while !hang_up.load(Ordering::SeqCst) {
+        let rest = stall.lock().ok().and_then(|mut s| {
+            let rest = s.until?.checked_duration_since(Instant::now())?;
+            s.entered = true;
+            Some(rest)
+        });
+        if let Some(rest) = rest {
+            thread::sleep(rest.min(Duration::from_millis(50)));
+            continue;
+        }
         let pending = typed
             .lock()
             .map(|mut t| std::mem::take(&mut *t))
@@ -289,16 +374,16 @@ fn serve_terminal(
         };
         // SAFETY: one valid pollfd for an open descriptor.
         let ready = unsafe { libc::poll(&mut pfd, 1, 50) };
-        if ready <= 0 || pfd.revents & libc::POLLIN == 0 {
-            if pfd.revents & (libc::POLLHUP | libc::POLLERR) != 0 {
-                // The slave side is closed everywhere: sipnab has exited.
-                thread::sleep(Duration::from_millis(50));
-            }
+        if ready <= 0 || pfd.revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) == 0 {
             continue;
         }
-        let Ok(n) = file.read(&mut buf) else {
-            thread::sleep(Duration::from_millis(50));
-            continue;
+        // Readable, or the slave side is closed everywhere: either way a
+        // read does not block, and it returns what is left before it fails.
+        let n = match file.read(&mut buf) {
+            Ok(0) => return,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
         };
         let Ok(mut out) = output.lock() else { return };
         out.extend_from_slice(&buf[..n]);
@@ -430,3 +515,123 @@ fn input_crossterm_leaves_unread_does_not_make_the_tui_spin() -> Result<(), Test
     assert_exit(status, 0, "SIGTERM is a graceful stop");
     Ok(())
 }
+
+// ── What the TUI wrote before it exited is read before it is checked ──
+//
+// `wait_for_exit` returns once the child has ended. The reader thread reads
+// the terminal on its own schedule, and on a loaded host it can run after
+// the test has seen the exit and asked whether the restore was written: the
+// bytes are in the terminal, not yet in `output`. These tests stall the
+// reader across the exit, which is that order made certain.
+
+/// How long the stalled reader reads nothing: longer than a TUI takes to
+/// exit after a stop signal (at most 0.31 s from the signal to the exit
+/// seen, measured over 740 runs at a load average up to 64 on 14 cores).
+const READER_STALL: Duration = Duration::from_secs(3);
+
+/// SIGTERM's restore is seen when the reader runs only after the exit.
+#[test]
+fn sigterm_restore_is_seen_when_the_reader_lags_the_exit() -> Result<(), TestError> {
+    let mut run = PtyRun::spawn(&[], true)?;
+    run.wait_until_drawn()?;
+    run.stall_reader(READER_STALL)?;
+    run.signal(libc::SIGTERM)?;
+    let status = run.wait_for_exit(test_timeout(15), "SIGTERM")?;
+    assert_exit(status, 0, "SIGTERM is a graceful stop");
+    assert!(
+        run.wrote(LEAVE_ALTERNATE_SCREEN),
+        "the restore the TUI wrote before it exited must be read before the check"
+    );
+    Ok(())
+}
+
+/// The same for SIGHUP, which exits 129.
+#[test]
+fn sighup_restore_is_seen_when_the_reader_lags_the_exit() -> Result<(), TestError> {
+    let mut run = PtyRun::spawn(&[], true)?;
+    run.wait_until_drawn()?;
+    run.stall_reader(READER_STALL)?;
+    run.signal(libc::SIGHUP)?;
+    let status = run.wait_for_exit(test_timeout(15), "SIGHUP")?;
+    assert_exit(status, 129, "a SIGHUP stop exits 128 + 1");
+    assert!(
+        run.wrote(LEAVE_ALTERNATE_SCREEN),
+        "the restore the TUI wrote before it exited must be read before the check"
+    );
+    Ok(())
+}
+
+/// SIGINT stops the TUI as SIGTERM does, exiting 0 with the terminal
+/// restored, with the reader stalled across the exit.
+#[test]
+fn sigint_stops_a_tui_and_restores_the_terminal() -> Result<(), TestError> {
+    let mut run = PtyRun::spawn(&[], true)?;
+    run.wait_until_drawn()?;
+    run.stall_reader(READER_STALL)?;
+    run.signal(libc::SIGINT)?;
+    let status = run.wait_for_exit(test_timeout(15), "SIGINT")?;
+    assert_exit(status, 0, "SIGINT is a graceful stop");
+    assert!(
+        run.wrote(LEAVE_ALTERNATE_SCREEN),
+        "the TUI must restore the terminal on its way out"
+    );
+    Ok(())
+}
+
+/// The harness itself, with a child that is not sipnab: a few bytes written
+/// just before the child exits are in the output once `wait_for_exit`
+/// returns, though the reader read nothing until after the exit.
+#[test]
+fn the_last_bytes_before_an_exit_are_read() -> Result<(), TestError> {
+    let mut cmd = Command::new("printf");
+    cmd.arg("last-bytes-before-exit");
+    let mut run = PtyRun::spawn_command(cmd, true)?;
+    run.stall_reader(READER_STALL)?;
+    let status = run.wait_for_exit(test_timeout(15), "printf")?;
+    assert_exit(status, 0, "printf succeeds");
+    assert!(
+        run.wrote(b"last-bytes-before-exit"),
+        "what the child wrote before it exited must be read"
+    );
+    Ok(())
+}
+
+/// More output than the terminal holds arrives whole: 300,000 bytes, then
+/// a marker. The child blocks until the reader reads, so most of it is read
+/// while the child runs, and the rest after it exits.
+#[test]
+fn output_larger_than_the_terminal_buffer_is_read_whole() -> Result<(), TestError> {
+    const BYTES: usize = 300_000;
+    let mut cmd = Command::new("sh");
+    cmd.args([
+        "-c",
+        "head -c 300000 /dev/zero | tr '\\000' x; printf end-of-output",
+    ]);
+    let mut run = PtyRun::spawn_command(cmd, true)?;
+    run.stall_reader(Duration::from_secs(1))?;
+    let status = run.wait_for_exit(test_timeout(30), "sh")?;
+    assert_exit(status, 0, "the shell succeeds");
+    let out = run.output.lock().map(|o| o.clone()).unwrap_or_default();
+    let xs = out.iter().filter(|b| **b == b'x').count();
+    assert_eq!(xs, BYTES, "every byte the child wrote is read");
+    assert!(
+        out.ends_with(b"end-of-output"),
+        "the marker written last is read last"
+    );
+    Ok(())
+}
+
+/// A child that writes nothing ends the reader too: `wait_for_exit` returns
+/// with the status and an empty output, and does not wait for bytes that
+/// never come.
+#[test]
+fn a_child_that_writes_nothing_is_waited_for_without_output() -> Result<(), TestError> {
+    let mut run = PtyRun::spawn_command(Command::new("true"), true)?;
+    let status = run.wait_for_exit(test_timeout(15), "true")?;
+    assert_exit(status, 0, "true succeeds");
+    let out = run.output.lock().map(|o| o.clone()).unwrap_or_default();
+    assert!(out.is_empty(), "nothing was written: {out:?}");
+    Ok(())
+}
+
+include!("support/child_lifetime.rs");

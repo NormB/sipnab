@@ -36,6 +36,7 @@ mod tui_e2e {
     /// parse and JSON errors alike.
     type TestError = Box<dyn std::error::Error>;
 
+    use super::TiedToTest as _;
     use std::process::Command;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::time::{Duration, Instant};
@@ -168,7 +169,8 @@ mod tui_e2e {
     /// dies (killed by a hook's timeout, say) leaves that server and every
     /// pane running: nothing kills them. A server that is the test's child
     /// is reaped by the session's Drop, and on Linux it is SIGKILLed by the
-    /// kernel when the thread that started it ends (`PR_SET_PDEATHSIG`), so
+    /// kernel when the thread that started it ends (`PR_SET_PDEATHSIG`, set
+    /// by `tied_to_test` from `support/child_lifetime.rs`), so
     /// it cannot outlive the test. Its panes then lose their terminal, and
     /// sipnab ends on a lost terminal.
     fn spawn_server(name: &str) -> Result<std::process::Child, TestError> {
@@ -177,21 +179,7 @@ mod tui_e2e {
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::process::CommandExt as _;
-            // SAFETY: prctl(2) is async-signal-safe, and the closure runs in
-            // the forked child before exec.
-            unsafe {
-                cmd.pre_exec(|| {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
-        }
-        let mut server = cmd.spawn()?;
+        let mut server = cmd.tied_to_test().spawn()?;
         let deadline = Instant::now() + Duration::from_secs(10);
         // `start-server` would start a daemonized server of its own if this
         // one were not up yet, so wait for this one's socket to answer.
@@ -1077,3 +1065,5 @@ mod tui_e2e {
         Ok(())
     }
 }
+
+include!("support/child_lifetime.rs");

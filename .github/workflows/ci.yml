@@ -1093,6 +1093,24 @@ jobs:
       - name: Self-test (no root, no netns, no capture device)
         run: bash bench/live-capture.sh --self-test
 
+  hook-shellcheck:
+    # PRE-PUSH-958-PERCENT-B: .githooks/pre-push printed a literal `%b` and
+    # never reset its color after the phase-one release note, a defect
+    # shellcheck reports as SC2182 (error). Nothing ran shellcheck over the
+    # git hooks. All three are clean at warning level, so any new warning
+    # fails here. Observed: under 0.1 min.
+    timeout-minutes: 15
+    name: Shellcheck (git hooks)
+    runs-on: ubuntu-latest
+    # GitHub-hosted on purpose: shell scripts, arch-independent, and the
+    # image ships shellcheck, as the bench-scripts job above relies on.
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Shellcheck (bash)
+        run: shellcheck -s bash -S warning .githooks/pre-push .githooks/pre-commit .githooks/commit-msg
+
   # Reduced feature combinations must keep compiling AND lint-clean (lib and
   # test code). --all-features alone let `#[cfg]`-gating rot: at one point 7
   # of 8 reduced combos failed to build. Compiling was not enough either: a
@@ -1277,6 +1295,13 @@ jobs:
       - name: Cargo deny
         run: cargo deny check
 
+      # The fuzz targets build sipnab as a path dependency against their own
+      # lockfile, and Dependabot updates the two lockfiles separately. Every
+      # version of a shared crate in fuzz/Cargo.lock must be one Cargo.lock
+      # holds, or the targets fuzz code the binary does not ship.
+      - name: Fuzz lockfile matches Cargo.lock
+        run: python3 scripts/check-lockfile-drift.py
+
   fuzz-check:
     # Bounds how long this job can hold the main-branch concurrency
     # group, which never supersedes. Observed: 3.8 min.
@@ -1341,7 +1366,7 @@ jobs:
     # refuses. See the comment on check-macos;
     # the_macos_leg_blocks_main_and_no_pull_request in site_journey_test.rs
     # holds it.
-    needs: [check, test, test-results, install-sh, deb-package, rpm-packaging,
+    needs: [check, test, test-results, hook-shellcheck, install-sh, deb-package, rpm-packaging,
             homebrew-formula, tsan-verdict, bench-scripts, features,
             crate-package, audit, fuzz-check,
             code-scanning-clean, symbol-split, pre-push-scenarios]

@@ -783,7 +783,7 @@ fn every_documented_command_runs_or_says_why_not() -> Result<(), TestError> {
             c.stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped());
-            match c.spawn() {
+            match c.tied_to_test().spawn() {
                 Ok(child) => pending.push((inv.clone(), child)),
                 Err(e) => failures.push(format!("{}:{} could not spawn: {e}", inv.page, inv.line)),
             }
@@ -1925,3 +1925,5 @@ fn no_command_sits_in_a_fence_the_parsers_cannot_see() -> Result<(), TestError> 
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

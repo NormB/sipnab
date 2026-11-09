@@ -6673,7 +6673,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 257 -> 254 (HOMEBREW-TAP-API-COMMIT-UNSIGNED): the deleted `tap` job of
     // release.yml named packaging/homebrew/update-formula.sh once and
     // homebrew-tap-push.py twice (-3).
-    const EXPECTED_REFERENCES: usize = 254;
+    // 254 -> 259: ci.yml's new hook-shellcheck job names .githooks/pre-push in
+    // its comment and all three hooks in its run line (+4), and the Security
+    // audit job's new step runs scripts/check-lockfile-drift.py (+1).
+    const EXPECTED_REFERENCES: usize = 259;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

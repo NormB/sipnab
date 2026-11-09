@@ -792,6 +792,23 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         "fail-fast",
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
+    // cargo's `update --manifest-path fuzz/Cargo.toml -p <crate>@<v> --precise
+    // <v>`, with which the contributing guide aligns fuzz/Cargo.lock to
+    // Cargo.lock (scripts/check-lockfile-drift.py prints the same command).
+    // `git push origin --delete <branch>`, in the guide's section on pushes
+    // that only delete refs.
+    (
+        "delete",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    (
+        "manifest-path",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
+    (
+        "precise",
+        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
+    ),
     // git's `rev-parse --git-common-dir`, which names the directory every
     // worktree's pass stamps share.
     (

@@ -149,6 +149,7 @@ impl ApiServer {
         cmd.stderr(Stdio::piped());
 
         let mut child = cmd
+            .tied_to_test()
             .spawn()
             .map_err(|e| format!("spawn sipnab --api: {e}"))?;
         let stderr = child.stderr.take().ok_or("piped stderr")?;
@@ -531,6 +532,7 @@ pub fn run_and_capture_stderr(extra_args: &[&str], wait: Duration) -> Result<Str
     cmd.stderr(Stdio::piped());
 
     let mut child = cmd
+        .tied_to_test()
         .spawn()
         .map_err(|e| format!("spawn sipnab --api: {e}"))?;
     let stderr = child.stderr.take().ok_or("piped stderr")?;
@@ -554,3 +556,5 @@ pub fn run_and_capture_stderr(extra_args: &[&str], wait: Duration) -> Result<Str
 }
 
 impl ApiServer {}
+
+include!("child_lifetime.rs");

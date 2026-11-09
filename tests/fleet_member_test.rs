@@ -427,6 +427,7 @@ fn a_token_file_others_can_read_stops_the_member_not_the_run() -> Result<(), Tes
         .env("NO_COLOR", "1")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let stderr = child.stderr.take().ok_or("piped stderr")?;
     let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -521,3 +522,5 @@ fn a_member_reports_over_https_with_its_own_ca() -> Result<(), TestError> {
     assert!(reported, "the member's heartbeats reach the HTTPS center");
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

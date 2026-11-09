@@ -229,6 +229,7 @@ impl Listener {
             .env("NO_COLOR", "1")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .tied_to_test()
             .spawn()?;
         let out = child.stdout.take().ok_or("piped stdout")?;
         let (out_tx, stdout) = std::sync::mpsc::channel::<String>();
@@ -725,3 +726,5 @@ fn th_mappings_ends_a_live_run_with_the_table() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

@@ -403,16 +403,17 @@ Returns one page of dialog summaries from the live capture store.
 
 Each `DialogSummary` row carries `call_id`, `state`, `method`, `from_user`,
 `to_user`, `msg_count`, `duration_sec`, `created_at`, `updated_at`,
-`latest_message_at`, a `timing` object (`pdd_ms`, `setup_ms`, `retransmits`,
+`latest_message_at`, `earliest_message_at`, a `timing` object (`pdd_ms`, `setup_ms`, `retransmits`,
 `duration_ms`, each `null` when the capture never showed it) and a `frame`
 pointer for [`show_evidence`](mcp-tools-captures.md#show_evidence). `from_user`
 and `to_user` arrive fenced, because an endpoint chose them.
 
-`updated_at` is the timestamp of the message processed last, and
-`latest_message_at` the newest timestamp among the dialog's messages.
-`duration_sec` runs from `created_at` to `latest_message_at`. The two differ
-only when sipnab read an older-stamped message after a newer one, as on an
-`-I` set whose files overlap in time: see
+`updated_at` is the timestamp of the message processed last,
+`latest_message_at` the newest timestamp among the dialog's messages, and
+`earliest_message_at` the oldest. `duration_sec` runs from
+`earliest_message_at` to `latest_message_at`. They differ from `created_at`
+and `updated_at` only when sipnab read an older-stamped message after a newer
+one, as on an `-I` set whose files overlap in time: see
 [Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at).
 
 Two more keys appear when sipnab knows them, and are **left out rather than sent
@@ -449,6 +450,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
       "created_at": "2016-11-17T21:52:35.303349+00:00",
       "updated_at": "2016-11-17T21:52:35.339349+00:00",
       "latest_message_at": "2016-11-17T21:52:35.339349+00:00",
+      "earliest_message_at": "2016-11-17T21:52:35.303349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -470,6 +472,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
       "created_at": "2016-11-17T21:52:35.403349+00:00",
       "updated_at": "2016-11-17T21:52:35.439349+00:00",
       "latest_message_at": "2016-11-17T21:52:35.439349+00:00",
+      "earliest_message_at": "2016-11-17T21:52:35.403349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -525,8 +528,8 @@ or repeat the dialogs that share that timestamp.
 
 `list_dialogs` pages on `created_at`, which does not change, so a dialog that
 receives another message during the sweep keeps its place.
-[`tail_dialogs`](mcp-tools-signaling.md#tail_dialogs) pages on `updated_at`
-instead, because it reports changes.
+[`tail_dialogs`](mcp-tools-signaling.md#tail_dialogs) pages on the store's
+change sequence instead, because it reports changes.
 
 ### `aggregate_dialogs`
 
@@ -632,6 +635,7 @@ invalid_params (-32602) naming the offending value.
       "created_at": "2016-11-17T21:54:34.903349+00:00",
       "updated_at": "2016-11-17T21:54:34.933349+00:00",
       "latest_message_at": "2016-11-17T21:54:34.933349+00:00",
+      "earliest_message_at": "2016-11-17T21:54:34.903349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -892,6 +896,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
     "call_id": "1-1966@10.0.2.20",
     "created_at": "2016-11-26T14:52:59.666393+00:00",
     "duration_sec": 8.504,
+    "earliest_message_at": "2016-11-26T14:52:59.666393+00:00",
     "final_status_code": 200,
     "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
     "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",

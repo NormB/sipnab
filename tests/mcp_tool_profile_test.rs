@@ -192,6 +192,7 @@ fn tools_list(extra: &[&str]) -> Result<Vec<serde_json::Value>, TestError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
 
     {
@@ -328,3 +329,5 @@ fn output_schemas_are_off_by_default_and_the_flag_restores_them() -> Result<(), 
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

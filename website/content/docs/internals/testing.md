@@ -71,8 +71,66 @@ with no `mod.rs` chain. Each test binary compiles its own copy.
 | [`schema.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/schema.rs) | JSON-Schema validation against [`tests/schemas/`](https://github.com/NormB/sipnab/blob/main/tests/schemas). |
 | [`tui_fixtures.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
 | [`executable.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/executable.rs) | `write_executable()`, the one way a test writes a file it then runs: a child process writes it, so this process never holds it open for writing and an `exec` cannot fail with `ETXTBSY` ("Text file busy") while another test thread forks. `executable_stub_test` refuses a file written in-process and then made executable. |
+| [`child_lifetime.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/child_lifetime.rs) | `tied_to_test()`, the one way a test starts a process: call it on the `Command` before `.spawn()`. On Linux it sets `PR_SET_PDEATHSIG` to SIGKILL, so the child ends when the spawning thread ends, even when a signal ends the test process and no `Drop` runs. See [Children end with their test](#children-end-with-their-test). Pulled in with `include!`. |
 | [`fuzz.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/fuzz.rs) | A deterministic xorshift PRNG shared by the stable-toolchain fuzzers, so a failure reproduces from its seed. |
 | [`ports.rs`](https://github.com/NormB/sipnab/blob/main/tests/support/ports.rs) | `refused_tcp_port()`, the one way a test gets a loopback TCP port where a connect fails with `ConnectionRefused`: a socket bound and not listening, held until the guard drops, so no test running alongside can bind the number. Binding `:0`, reading the port, and closing the socket leaves the number free for another test to listen on; `released_port_scan_test` refuses that pattern under `tests/`. |
+
+### Children end with their test
+
+A process a test starts ends when that test ends, however the test ends
+(TEST-CHILD-ORPHAN).
+
+**Why.** The helpers stop their child in `Drop`. `Drop` does not run when
+something kills the test process: SIGKILL, the kernel's OOM killer, or a
+harness that signals the test's pid and not its process group. A serving
+sipnab left that way keeps running, with init as its parent, until someone
+stops it.
+
+**Prerequisites.** Linux, for the guarantee. Other systems have no
+equivalent of `PR_SET_PDEATHSIG`, so `tied_to_test()` does nothing there and
+`Drop` is the only stop.
+
+**How to start a child.**
+
+```rust
+include!("support/child_lifetime.rs"); // once per file, at module level
+
+let child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+    .args(["-N", "-I", "capture.pcap", "--api", "127.0.0.1:0"])
+    .tied_to_test()
+    .spawn()?;
+```
+
+- Spawn the child on the thread that holds it. The kernel sends the signal
+  when the spawning THREAD ends, so a child started on a helper thread dies
+  as soon as that thread returns.
+- The child of a parent that died between the fork and the `prctl` sees a
+  different parent, and its spawn fails with `ESRCH` instead of running
+  untied.
+- The kernel clears the setting when the child executes a set-user-ID
+  program (`sudo`) or changes its user or group id (`--user`). Such runs are
+  not tied; `privilege_drop_test.rs` stops its `sudo` runs itself.
+- The child's own children are not tied: a fork clears the setting.
+
+**How to verify.** `cargo test --features full --test child_lifetime_test`.
+
+- `an_api_server_ends_when_its_test_process_is_killed`, and the same for the
+  HTTP MCP server and the fleet center, run a child role that holds the
+  server, SIGKILL the role's process, and require that the server has ended
+  within 10 s.
+- `every_child_a_sipnab_test_spawns_is_tied_to_it` reads `tests/`: every
+  `.spawn()` in a file that starts the sipnab binary, and every `.spawn()` in
+  `tests/support/`, must have `.tied_to_test()` before it. The exceptions are
+  a `Command::new("sudo")` and the race test that ties its child by hand.
+
+**Troubleshooting.**
+
+- `these spawns are not tied to their test`: add `.tied_to_test()` before
+  the `.spawn()` it names, and `include!("support/child_lifetime.rs")` to
+  the file (`include!("child_lifetime.rs")` in a file under `support/`). In
+  a nested module, add `use super::TiedToTest as _;`.
+- A child that ends early with signal 9 while its test still runs was
+  started on a thread that has since ended. Start it on the test's thread.
 
 ## Fixtures and corpora
 
@@ -359,6 +417,27 @@ What the script does that a reader of the user page does not need to:
   `cargo install cargo-nextest --locked --version 0.9.148`.
 - CI installs it through [`.github/actions/nextest`](https://github.com/NormB/sipnab/blob/main/.github/actions/nextest/action.yml): the release tarball, checked against its SHA-256, from the actions cache or, on a miss, from GitHub.
 - Measured on 2026-11-06, on one tree, in the host's heavy-run slot, against the pool it replaced, which ran `cargo test`'s binaries side by side: the test step took 202 s and 158 s under nextest against 164 s and 129 s, plus 11 s of doctests.
+
+**Rate limits in tests.** A test of a fixed-window rate limiter does not
+count on the wall clock to keep a burst inside one window.
+
+- The REST limiter's windows are one second long. A burst of 101 requests at
+  the shipped cap of 100 fits in one window only if the host sends it in under
+  a second.
+  - Measured on 2026-11-08 against `sipnab --api`, at a load average of 50 to
+    88 on 14 cores: in 5 of 20 bursts the window ended mid-burst and the first
+    `503` came at request 122 to 200 instead of 101. Unloaded, the limiter
+    refused 5 of 5 bursts at request 101.
+  - `rate_limiter_rejects_when_per_ip_budget_exhausted` sent such a burst and
+    failed once in CI that way.
+- Unit tests build the limiter with
+  [`RateLimiter::with_clock`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs) and move the clock
+  themselves, so only the test decides when a window ends.
+- A test of the real clock, in-process or against the binary, sends at most
+  three requests at a cap of 1 and times them. A span shorter than one window
+  touches at most two windows, so three requests in it put two in one window,
+  and the limiter must refuse one of them. The test fails with the measured span if
+  the host took a whole window for them.
 
 **The docker lab.** [`harness/`](https://github.com/NormB/sipnab/blob/main/harness) is a docker-compose stack
 for generating real traffic.

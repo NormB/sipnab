@@ -394,7 +394,7 @@ Incremental fetch of the dialogs updated after a cursor position.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `cursor?` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|<Call-ID>`). A bare RFC 3339 timestamp also parses, and filters strictly after it. | Starts from the beginning of the store. |
+| `cursor?` | string? | The previous response's `next_cursor`, verbatim (`v2:<N>`). A version-1 cursor (`<RFC 3339>` or `<RFC 3339>\|<Call-ID>`) also parses, and returns dialogs whose `updated_at` is after it. | Starts from the beginning of the store. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `fields?` | string[]? | Field names to keep on each row, plus `call_id`. Same rules as [`list_dialogs`](mcp-tools-core.md#list_dialogs) — see [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
 | `max_response_bytes?` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](mcp-tools.md#rules-every-tool-follows). | The ceiling. |
@@ -411,25 +411,20 @@ the store can change between polls. Poll until `dialogs` comes back empty and
 nothing extra, because its `next_cursor` already names the last row returned
 and the next poll continues from there either way.
 
-`next_cursor` is compound — `<RFC 3339>|<Call-ID>` — not a bare
-timestamp. Several dialogs can share an `updated_at`, and the pair resumes
-exactly after the last row returned, so a page boundary neither skips nor
-repeats a dialog.
+`next_cursor` is `v2:<N>`: the number of the last change on the page. The
+store numbers every message it processes for a dialog, one above the last,
+and the page holds the dialogs changed after the cursor, in the order they
+changed. A dialog that changes after the cursor comes back, even when its new
+message carries a timestamp older than every row the cursor saw, as on an `-I` set
+whose files overlap in time. Each number belongs to one change of one dialog,
+so a page boundary neither skips nor repeats a dialog.
 
-Pass it back unmodified. A bare timestamp built from a dialog's `updated_at`
-also works, but it selects only dialogs updated strictly after that instant,
-so the next page can skip or repeat dialogs that share the timestamp, with no
-error. `|` occurs in neither an RFC 3339 timestamp nor a valid Call-ID
-([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) `word`).
-
-The cursor pages on `updated_at`, the timestamp of the message processed
-last, and not on `latest_message_at`, the newest: the tool reports change, and
-a message stamped older than the newest is a change. On an `-I` set whose
-files overlap in time, such a message can move a dialog's `updated_at` behind
-a cursor already returned, and the dialog is not returned again. Once
-`source_exhausted` is `true`, one [`list_dialogs`](mcp-tools-core.md#list_dialogs)
-sweep reads every dialog as it ended. See
-[Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at).
+Pass it back unmodified. A version-1 cursor, `<RFC 3339>|<Call-ID>` or a bare
+timestamp, from an earlier sipnab still parses: it selects dialogs whose
+`updated_at` is after it, and the page hands back a `v2:` cursor. A `v2:`
+cursor without a whole number, or a version this sipnab does not read
+(`v3:1`), is `invalid_params`. See
+[Follow changes with a tail cursor](output-formats.md#follow-changes-with-a-tail-cursor).
 
 `source_exhausted` is `false` while more dialog updates can still
 arrive and `true` once the capture source is fully drained — the end of
@@ -454,6 +449,7 @@ has finished: stop when it turns `true` instead of polling forever.
       "created_at": "2016-11-26T14:52:59.666393+00:00",
       "updated_at": "2016-11-26T14:53:08.170676+00:00",
       "latest_message_at": "2016-11-26T14:53:08.170676+00:00",
+      "earliest_message_at": "2016-11-26T14:52:59.666393+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": 4,
@@ -552,6 +548,7 @@ which holds four failed calls:
       "call_id": "busy-3a2b1c@192.0.2.30",
       "created_at": "2023-11-14T22:13:23+00:00",
       "duration_sec": 1.81,
+      "earliest_message_at": "2023-11-14T22:13:23+00:00",
       "final_status_code": 486,
       "frame": "tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b",
       "from_user": "⟦untrusted-capture-data⟧carol⟦/untrusted-capture-data⟧",
@@ -573,6 +570,7 @@ which holds four failed calls:
       "call_id": "decline-7c6d5e@198.51.100.30",
       "created_at": "2023-11-14T22:13:26+00:00",
       "duration_sec": 1.81,
+      "earliest_message_at": "2023-11-14T22:13:26+00:00",
       "final_status_code": 603,
       "frame": "tests/pcap-samples/sip-problem-call.pcap#9@4201862d9613e2f2",
       "from_user": "⟦untrusted-capture-data⟧erin⟦/untrusted-capture-data⟧",
@@ -594,6 +592,7 @@ which holds four failed calls:
       "call_id": "notfound-1b2c3d@203.0.113.30",
       "created_at": "2023-11-14T22:13:29+00:00",
       "duration_sec": 1.81,
+      "earliest_message_at": "2023-11-14T22:13:29+00:00",
       "final_status_code": 404,
       "frame": "tests/pcap-samples/sip-problem-call.pcap#13@091b886751922950",
       "from_user": "⟦untrusted-capture-data⟧grace⟦/untrusted-capture-data⟧",
@@ -615,6 +614,7 @@ which holds four failed calls:
       "call_id": "unavail-4e5f60@192.0.2.50",
       "created_at": "2023-11-14T22:13:32+00:00",
       "duration_sec": 1.81,
+      "earliest_message_at": "2023-11-14T22:13:32+00:00",
       "final_status_code": 503,
       "frame": "tests/pcap-samples/sip-problem-call.pcap#17@cc2aeb6bbdcb704c",
       "from_user": "⟦untrusted-capture-data⟧ivan⟦/untrusted-capture-data⟧",
@@ -1406,7 +1406,7 @@ type 0 while the wire carried payload type 8, that RTP arrived on a port no
 the capture holds it in one, or that the packet spacing contradicts
 `a=ptime`.
 
-The RFC 3261 syntax rules and the [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264.html) offer/answer rules run alongside
+The [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) syntax rules and the [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264.html) offer/answer rules run alongside
 them. Everything citing [RFC 4566](https://www.rfc-editor.org/rfc/rfc4566.html), 3551 or 5761 belongs to the observation half.
 [SIP conformance rules](sip-lint-rules.md) lists every rule, the section behind
 it, and the suppression syntax.

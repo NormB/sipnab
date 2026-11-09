@@ -204,6 +204,7 @@ fn stdio_mcp_round_trips_three_tools() -> Result<(), TestError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     // Take stdout out of the child for buffered reading.
@@ -350,6 +351,7 @@ fn stdio_mcp_phase_8_3_tools_round_trip() -> Result<(), TestError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     let mut stdout = child.stdout.take().ok_or("stdout")?;
@@ -599,6 +601,7 @@ fn stdio_mcp_tail_dialogs_reports_source_exhausted_after_replay() -> Result<(), 
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     let mut stdout = child.stdout.take().ok_or("stdout")?;
@@ -684,6 +687,7 @@ fn stdio_mcp_full_tool_set_and_remaining_tools() -> Result<(), TestError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     let mut stdout = child.stdout.take().ok_or("stdout")?;
@@ -979,6 +983,7 @@ fn every_tool_call_leaves_an_audit_line_on_stderr() -> Result<(), TestError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     let mut stdout = child.stdout.take().ok_or("stdout")?;
@@ -1143,6 +1148,7 @@ fn a_looping_caller_is_rate_limited_on_the_wire_and_in_the_audit_line() -> Resul
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     let mut stdout = child.stdout.take().ok_or("stdout")?;
@@ -1291,6 +1297,7 @@ fn the_byte_budget_bounds_the_stamped_response_and_the_default_cuts_nothing()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
     let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut reader = BufReader::new(&mut stdout);
@@ -1390,3 +1397,5 @@ fn the_byte_budget_bounds_the_stamped_response_and_the_default_cuts_nothing()
     let _ = child.wait();
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

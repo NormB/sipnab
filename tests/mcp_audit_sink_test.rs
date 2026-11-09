@@ -97,6 +97,7 @@ fn session(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
     let mut stdout = child.stdout.take().ok_or("stdout")?;
     let mut responses = Vec::new();
@@ -331,6 +332,7 @@ fn without_the_flag_no_file_is_written_and_calls_still_answer() -> Result<(), Te
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
     let mut stdout = child.stdout.take().ok_or("stdout")?;
     {
@@ -418,3 +420,5 @@ fn an_unopenable_audit_path_fails_the_run_at_startup() -> Result<(), TestError> 
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

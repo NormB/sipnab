@@ -782,6 +782,7 @@ impl Collector {
             .env("NO_COLOR", "1")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
+            .tied_to_test()
             .spawn()?;
         let stderr = child.stderr.take().ok_or("piped stderr")?;
         let (tx, rx) = std::sync::mpsc::channel::<String>();
@@ -1135,3 +1136,5 @@ fn a_fleet_report_token_opens_nothing_on_an_instance() -> Result<(), TestError> 
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

@@ -2853,14 +2853,19 @@
             "type": "string"
           },
           "created_at": {
-            "description": "RFC 3339 timestamp of the first message.",
+            "description": "RFC 3339 timestamp of the first message sipnab read for the\ndialog. On a set of capture files that overlap in time that is not\nalways the oldest message; it never changes, so it is the key to\npage and sort on.",
             "format": "date-time",
             "type": "string"
           },
           "duration_sec": {
-            "description": "First message to the newest one (`latest_message_at`), seconds.\n`0` for a single-message dialog.",
+            "description": "The oldest message (`earliest_message_at`) to the newest one\n(`latest_message_at`), seconds. `0` for a single-message dialog.",
             "format": "double",
             "type": "number"
+          },
+          "earliest_message_at": {
+            "description": "RFC 3339 timestamp of the oldest message, whatever order the\nmessages were read in. Never later than `created_at`.",
+            "format": "date-time",
+            "type": "string"
           },
           "final_status_code": {
             "description": "Final response code of the dialog's INVITE, or of the request that\nopened a dialog without one. Absent — never zero — while it has none.",
@@ -2946,6 +2951,7 @@
           "created_at",
           "updated_at",
           "latest_message_at",
+          "earliest_message_at",
           "timing"
         ],
         "type": "object"
@@ -9330,11 +9336,11 @@
     },
     "/v1/dialogs/tail": {
       "get": {
-        "description": "The dialogs updated since your last poll — cursor-based change tracking, the pattern a monitoring system uses and one that `/v1/dialogs` offset pagination cannot express. The same question the MCP `tail_dialogs` tool answers.\n\nPass the previous response's `next_cursor` back as `since`, and only dialogs updated strictly after it are returned, oldest update first. Omit `since` on the first poll. The rows are the same summaries `/v1/dialogs` returns. `next_cursor` is null when nothing changed.",
+        "description": "The dialogs changed since your last poll — cursor-based change tracking, the pattern a monitoring system uses and one that `/v1/dialogs` offset pagination cannot express. The same question the MCP `tail_dialogs` tool answers.\n\nPass the previous response's `next_cursor` (`v2:<N>`) back as `since`, and only dialogs changed after it are returned, in the order they changed. A change is a message processed for the dialog, numbered by a sequence that only rises, so a message stamped older than one already read still brings its dialog back. A version-1 cursor (`<RFC 3339>|<Call-ID>`) is still read, as dialogs updated after that instant. Omit `since` on the first poll. The rows are the same summaries `/v1/dialogs` returns. `next_cursor` is null when nothing changed.",
         "operationId": "get_dialogs_tail",
         "parameters": [
           {
-            "description": "Resume cursor: pass back the previous response's `next_cursor` verbatim\n(`<RFC 3339>|<Call-ID>`). Only dialogs updated strictly after that\nposition are returned. A bare RFC 3339 timestamp is also accepted. Omit\non the first poll to start from the beginning. A cursor whose timestamp\nhalf is not RFC 3339 is a 400.",
+            "description": "Resume cursor: pass back the previous response's `next_cursor` verbatim\n(`v2:<N>`, a position in the store's change sequence). Only dialogs\nchanged after it are returned, whatever their messages' timestamps. A\nversion-1 cursor (`<RFC 3339>` or `<RFC 3339>|<Call-ID>`) is still\nread, as dialogs updated after that instant. Omit on the first poll to\nstart from the beginning. A cursor that does not parse is a 400.",
             "in": "query",
             "name": "since",
             "required": false,
@@ -9372,7 +9378,7 @@
                 }
               }
             },
-            "description": "A `since` cursor whose timestamp half is not RFC 3339."
+            "description": "A `since` cursor that does not parse: a `v2:` cursor without a whole number, a cursor version this sipnab does not read, or a version-1 cursor whose timestamp half is not RFC 3339."
           },
           "401": {
             "content": {

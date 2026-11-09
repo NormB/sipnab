@@ -7903,6 +7903,7 @@ console.log(`${dialogs.length} dialogs (${total} total)`);
       "created_at": "2026-04-13T10:30:00Z",
       "updated_at": "2026-04-13T10:30:03Z",
       "latest_message_at": "2026-04-13T10:30:03Z",
+      "earliest_message_at": "2026-04-13T10:30:00Z",
       "frame": "capture.pcap#41@6f3a1c02b8d4e795"
     }
   ],
@@ -7989,11 +7990,12 @@ Four list-row keys drop out rather than reading null:
 - `tags`: the labels `--tag` gave this run's dialogs, absent when the run set
   none.
 
-`updated_at` is the timestamp of the message processed last, and
-`latest_message_at` the newest timestamp among the dialog's messages.
-`duration_sec` runs from `created_at` to `latest_message_at`. They differ only
-when sipnab read an older-stamped message after a newer one, as on an `-I` set
-whose files overlap in time. [Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at)
+`updated_at` is the timestamp of the message processed last,
+`latest_message_at` the newest timestamp among the dialog's messages, and
+`earliest_message_at` the oldest. `duration_sec` runs from
+`earliest_message_at` to `latest_message_at`. They differ from `created_at`
+and `updated_at` only when sipnab read an older-stamped message after a newer
+one, as on an `-I` set whose files overlap in time. [Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at)
 says which to use for what.
 
 The list rows carry `from_user`/`to_user`. The single-dialog and report
@@ -11291,8 +11293,10 @@ The dialogs that changed since your last poll. This is cursor-based change track
 **Query parameters:**
 
 - `since` (optional) — the previous response's `next_cursor`, passed back
-  verbatim. The route returns only dialogs updated strictly after it. Omit it on the
-  first poll. A cursor whose timestamp half is not [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) is a `400`.
+  verbatim. The route returns only dialogs changed after it. Omit it on the
+  first poll. A `v2:` cursor without a whole number, a cursor version this
+  sipnab does not read, or a version-1 cursor whose timestamp half is not
+  [RFC 3339](https://www.rfc-editor.org/rfc/rfc3339.html) is a `400`.
 - `limit` (optional) — the most rows to return, clamped to the server's row cap.
 
 **curl:**
@@ -11310,7 +11314,7 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
     { "call_id": "a@example.com", "state": "InCall", "updated_at": "2026-09-15T12:00:03Z" }
   ],
   "returned": 1,
-  "next_cursor": "2026-09-15T12:00:03Z|a@example.com",
+  "next_cursor": "v2:42",
   "capture_identity": {
     "node": "capture-01",
     "instance": "117b0818df1033d4fd2a28-2",
@@ -11320,17 +11324,23 @@ curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dia
 }
 ```
 
-**The rows are the same summaries `/v1/dialogs` returns,** oldest update first.
+**The rows are the same summaries `/v1/dialogs` returns,** in the order they
+changed.
 
 - Pass `next_cursor` back as `since` on the next poll. Only later changes come
   back.
-- The cursor renders its timestamp as `Z` rather than `+00:00`.
-  So it drops straight into the `since` query. A raw `+` there decodes to a space.
-- A tie
-  group sharing one update instant resumes on the `(timestamp, Call-ID)` pair.
-  So a page boundary inside it neither repeats nor skips a row.
-- `next_cursor` is null
-  when nothing changed.
+- `next_cursor` is `v2:<N>`, the number of the last change on the page. The
+  store numbers every message it processes for a dialog, one above the last,
+  so a dialog that changes after the cursor comes back even when its new
+  message carries a timestamp older than every row the cursor saw.
+- Each number belongs to one change of one dialog, so a page boundary neither
+  repeats nor skips a row.
+- A version-1 cursor, `<RFC 3339>|<Call-ID>`, from an earlier sipnab still
+  works: it returns dialogs updated after that instant, and the page hands
+  back a `v2:` cursor.
+- `next_cursor` is null when nothing changed.
+
+See [Follow changes with a tail cursor](output-formats.md#follow-changes-with-a-tail-cursor).
 
 ---
 
@@ -29948,9 +29958,9 @@ and gateways write the same session ID into every call. So sipnab reports
 
 - The two legs were open at one time. A B2BUA sends the second leg before the
   first one's call setup ends, and both stay up for the call. Calls placed one
-  after the other are not open at one time. The time runs from a leg's first
-  message to its last, and a leg that starts at the instant the other ended
-  still counts.
+  after the other are not open at one time. The time runs from a leg's oldest
+  message to its newest, whatever order sipnab read them in, and a leg that
+  starts at the instant the other ended still counts.
 - No two calls in the capture used the origin on one hop at once. A hop is the
   sending address and the receiving address and port of a leg's first
   message. Each leg of a B2BUA call is a different hop. A load test that places
@@ -33216,41 +33226,45 @@ its own variable name: `SIPNAB_STREAM_JSON`, **not** `SIPNAB_JSON`.
 
 ## Which dialog time to read: `updated_at` or `latest_message_at`
 
-A dialog summary carries three times. The REST rows (`GET /v1/dialogs`,
+A dialog summary carries four times. The REST rows (`GET /v1/dialogs`,
 `GET /v1/dialogs/tail` and the other routes that return a dialog summary), the
 MCP dialog summaries and the dialogs the TUI saves as JSON all carry them:
 
 | Field | What it holds | Read it to |
 |---|---|---|
-| `created_at` | The timestamp of the first message sipnab read for the dialog. | Find when sipnab first saw the call. |
-| `updated_at` | The timestamp of the message sipnab processed last. | Detect that a dialog changed. |
+| `created_at` | The timestamp of the first message sipnab read for the dialog. It never changes. | Find when sipnab first saw the call, or page and sort by a key that does not move. |
+| `updated_at` | The timestamp of the message sipnab processed last. | See which message sipnab read last. |
+| `earliest_message_at` | The oldest timestamp among the dialog's messages. | Find when the call's messages begin. |
 | `latest_message_at` | The newest timestamp among the dialog's messages. | Measure how long the call lasted, or how long it has been quiet. |
 
-`duration_sec` is `latest_message_at` minus `created_at`, in seconds.
-`--json-dialogs` carries `duration_sec` but none of the three times.
+`duration_sec` is `latest_message_at` minus `earliest_message_at`, in seconds.
+`--json-dialogs` carries `duration_sec` but none of the four times.
 
-### When the two differ
+### When the times differ
 
 On a live capture, and on one file whose timestamps only go forward, sipnab
-reads a dialog's messages in timestamp order, and `updated_at` equals
-`latest_message_at`. They differ when sipnab reads an older-stamped message
-after a newer one:
+reads a dialog's messages in timestamp order: `created_at` equals
+`earliest_message_at`, and `updated_at` equals `latest_message_at`. They
+differ when sipnab reads an older-stamped message after a newer one:
 
 - **An `-I` set whose files overlap in time.** sipnab reads a set file by
   file, in the order of each file's first packet. A file read second can hold
-  messages stamped before the last message of the file read first.
+  messages stamped before the last message of the file read first, and
+  before the first message of a call that file holds. A call's first message
+  in the file read first is then not its oldest.
 - **A capture whose timestamps go backwards.** For example, one capture
   merged from two hosts whose clocks differ.
 
-`updated_at` then moves back to the older stamp. `latest_message_at` does not
-move back.
+`updated_at` then moves back to the older stamp, and `earliest_message_at`
+moves back to it when it is the oldest. `latest_message_at` never moves back,
+`earliest_message_at` never moves forward, and `created_at` never moves.
 
 ### Before you start
 
 - A sipnab binary with the `api` feature for the REST steps, or the `mcp`
   feature for the MCP ones. [Check your binary has the API](rest-api.md#check-your-binary-has-the-api)
   shows how to tell.
-- Nothing changes on any other system: sipnab derives both fields from the
+- Nothing changes on any other system: sipnab derives every field from the
   captures it already reads.
 
 ### Read the times
@@ -33261,25 +33275,26 @@ move back.
    sipnab -N -I edge.pcap -I core.pcap --api 127.0.0.1:8080
    ```
 
-2. Read each dialog's three times and its duration:
+2. Read each dialog's four times and its duration:
 
    ```bash
    curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs \
-     | jq -c '.dialogs[] | {call_id, created_at, updated_at, latest_message_at, duration_sec}'
+     | jq -c '.dialogs[] | {call_id, created_at, updated_at, earliest_message_at, latest_message_at, duration_sec}'
    ```
 
-3. For how long a call lasted, read `duration_sec`, or subtract `created_at`
-   from `latest_message_at`.
+3. For how long a call lasted, read `duration_sec`, or subtract
+   `earliest_message_at` from `latest_message_at`.
 4. For which calls changed since your last poll, poll
    [`GET /v1/dialogs/tail`](rest-api.md#get-v1-dialogs-tail) or the MCP
    [`tail_dialogs`](mcp-tools-signaling.md#tail_dialogs) tool. Both page on
-   `updated_at`.
+   the store's change sequence, not on a time: see
+   [Follow changes with a tail cursor](#follow-changes-with-a-tail-cursor).
 
 ### Check the result
 
-- In every row, `latest_message_at` is never earlier than `created_at` or
-  `updated_at`.
-- `duration_sec` equals `latest_message_at` minus `created_at`.
+- In every row, `earliest_message_at` is never later than `created_at` or
+  `updated_at`, and `latest_message_at` is never earlier than either.
+- `duration_sec` equals `latest_message_at` minus `earliest_message_at`.
 
 On a two-file set where the first file read holds a call from its INVITE to
 the 200 OK to its BYE 2.505 s later, and the second file holds the same
@@ -33289,41 +33304,89 @@ call's messages up to 0.905 s, the row reads:
 {
   "created_at": "2023-11-14T22:13:20+00:00",
   "updated_at": "2023-11-14T22:13:20.905+00:00",
+  "earliest_message_at": "2023-11-14T22:13:20+00:00",
   "latest_message_at": "2023-11-14T22:13:22.505+00:00",
   "duration_sec": 2.505
 }
 ```
 
+When the second file also holds a copy of the INVITE captured 0.5 s earlier
+at another hop, `earliest_message_at` reads `2023-11-14T22:13:19.500+00:00`,
+`created_at` stays `2023-11-14T22:13:20+00:00`, and `duration_sec` is 3.005.
+
+### Follow changes with a tail cursor
+
+`GET /v1/dialogs/tail` and `tail_dialogs` return the dialogs that changed
+after a cursor, in the order they changed. A change is a message sipnab
+processed for the dialog. The store numbers every change, one above the last,
+and the cursor names one: `"next_cursor": "v2:42"`. A dialog that changes
+after the cursor comes back, whatever its new message's timestamp.
+
+1. Poll without a cursor:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs/tail \
+     | jq '{next_cursor, rows: [.dialogs[].call_id]}'
+   ```
+
+2. Pass `next_cursor` back as `since` on the next poll, unchanged:
+
+   ```bash
+   curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/dialogs/tail?since=v2:42"
+   ```
+
+3. When a poll returns no rows, nothing has changed since the cursor. Keep the
+   same cursor for the next poll.
+
+To check it: on the two-file set above, a poll taken after the first file
+returns the call. When sipnab reads the second file's 200 OK, stamped
+0.905 s, older than every message the first poll saw, the next poll with that
+cursor returns the call again.
+
+A cursor counts changes in one store, so it holds for one sipnab process and
+one capture. When `capture_identity.instance` changes, start again without a
+cursor.
+
 ### What sipnab reads each one for
 
-- **`latest_message_at`:** `duration_sec` on every output, the dialog
-  table's Duration column, the call report's `Time` line, the TUI's Duration
-  column and its sort, `duration` in the filter DSL, the short-call check of
-  the fraud detector, idle compaction, the active dialog and call counts, a
-  call tree's `last_activity`, the newest-first order of `describe_endpoint`'s
-  recent dialogs, and the lifetime the `sdp_origin` correlation compares.
+- **`latest_message_at`:** the end of `duration_sec` on every output, of the
+  dialog table's Duration column, of the call report's `Time` line and of the
+  TUI's Duration column and its sort; `duration` in the filter DSL, the
+  short-call check of the fraud detector, idle compaction, the active dialog
+  and call counts, a call tree's `last_activity`, the newest-first order of
+  `describe_endpoint`'s recent dialogs, and the end of the lifetime the
+  `sdp_origin` correlation compares.
+- **`earliest_message_at`:** the start of each of those spans: `duration_sec`
+  and every duration above, the call report's `Time` line, a call tree's
+  `first_activity`, and the start of the `sdp_origin` lifetime.
+- **`created_at`:** the keys that must not move while a reader walks them,
+  among them the `list_dialogs`, `search_by_time` and `/v1/dialogs` pages and their
+  time windows, `--since` and `--until`, `time` in the filter DSL, the
+  timeline buckets and the hourly group, the TUI's Date column and its sort,
+  the vCon uuid and its `start`, and the timing rule that ties two legs of a
+  B2BUA call.
 - **`updated_at`:** the live vCon export, which records the `updated_at` it
   wrote each container at and writes the container again when `updated_at`
-  changes, and measures an ended call's settle wait from it; the
-  `GET /v1/dialogs/tail` and `tail_dialogs` cursors; and the TUI's call-flow
-  cache. Each of these asks whether a dialog changed, and a message stamped
-  older than the newest is a change.
+  changes, and measures an ended call's settle wait from it; version-1 tail
+  cursors; and the TUI's call-flow cache.
 
 ### Troubleshooting
 
 - **`duration_sec` on an `-I` set changed after an upgrade.** Before
   `latest_message_at` existed, `duration_sec` ran to the message read last.
-  On a set whose files overlap in time that was shorter than the call, and
-  below zero when the message read last was older than the first one read.
-  It now runs to the newest message.
-- **A tail poller did not see a dialog again.** The tail route and
-  `tail_dialogs` return dialogs whose `updated_at` is after the cursor. A
-  message stamped older than the cursor moves `updated_at` behind it, so
-  neither returns that dialog again. After sipnab has read the input, list
-  the dialogs once with `GET /v1/dialogs` or `list_dialogs`.
-- **`updated_at` is earlier than `latest_message_at`.** The capture holds a
-  message stamped older than one sipnab read before it. See
-  [When the two differ](#when-the-two-differ).
+  Before `earliest_message_at` existed, it ran from the first message read.
+  On a set whose files overlap in time either could be short of the call. It
+  now runs from the oldest message to the newest.
+- **A stored tail cursor reads `<RFC 3339>|<Call-ID>`.** That is a version-1
+  cursor from an earlier sipnab. It still works, as dialogs whose
+  `updated_at` is after it, and the page hands back a `v2:` cursor. Use that
+  one from then on.
+- **`since: cursor 'v3:1': cursor version v3 is not one this sipnab reads`.**
+  Pass back a `next_cursor` this sipnab returned, or poll without a cursor.
+- **`updated_at` is earlier than `latest_message_at`, or `created_at` is
+  later than `earliest_message_at`.** The capture holds a message stamped
+  older than one sipnab read before it. See
+  [When the times differ](#when-the-times-differ).
 
 ## STUN / TURN JSON (`--json-stun`)
 
@@ -36961,6 +37024,7 @@ The blocks below run against
       "created_at": "2016-05-17T08:01:35.431471+00:00",
       "updated_at": "2016-05-17T08:01:35.433107+00:00",
       "latest_message_at": "2016-05-17T08:01:35.433107+00:00",
+      "earliest_message_at": "2016-05-17T08:01:35.431471+00:00",
       "timing": { "pdd_ms": null, "setup_ms": null, "retransmits": 0, "duration_ms": null },
       "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
       "input_origin": "wire"
@@ -38204,7 +38268,7 @@ text block.
     "content": [
       {
         "type": "text",
-        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"final_status_code\":403,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"latest_message_at\":\"2016-05-17T08:01:35.433107+00:00\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
+        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"earliest_message_at\":\"2016-05-17T08:01:35.431471+00:00\",\"final_status_code\":403,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"latest_message_at\":\"2016-05-17T08:01:35.433107+00:00\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
       },
       {
         "type": "text",
@@ -38229,6 +38293,7 @@ text block.
           "call_id": "auth-fail-register-synth@203.0.113.1",
           "created_at": "2016-05-17T08:01:35.431471+00:00",
           "duration_sec": 0.001,
+          "earliest_message_at": "2016-05-17T08:01:35.431471+00:00",
           "final_status_code": 403,
           "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
           "from_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
@@ -38271,7 +38336,7 @@ Each row is a dialog summary: the compact projection.
 
 - It holds `call_id`, `state`, `method`, `from_user`, `to_user`,
   `msg_count`, `duration_sec`, `created_at`, `updated_at`,
-  `latest_message_at`, `timing`, `frame`.
+  `latest_message_at`, `earliest_message_at`, `timing`, `frame`.
 - It adds `final_status_code` and `input_origin` where sipnab knows them.
 - The full aggregated dialog document is what `get_dialog_report` returns.
   (The [REST API](rest-api.md#get-v1-dialogs-call-id-report) returns the same
@@ -40630,7 +40695,7 @@ The rules:
   `data.valid_values` list the fields the row carries:
 
   ```json
-  {"code":-32602,"message":"unknown field 'stat'; this row carries: call_id, created_at, duration_sec, final_status_code, frame, from_user, input_origin, latest_message_at, method, msg_count, state, timing, to_user, updated_at","data":{"param":"fields","reason":"invalid_choice","valid_values":["call_id","created_at","duration_sec","final_status_code","frame","from_user","input_origin","latest_message_at","method","msg_count","state","timing","to_user","updated_at"]}}
+  {"code":-32602,"message":"unknown field 'stat'; this row carries: call_id, created_at, duration_sec, earliest_message_at, final_status_code, frame, from_user, input_origin, latest_message_at, method, msg_count, state, timing, to_user, updated_at","data":{"param":"fields","reason":"invalid_choice","valid_values":["call_id","created_at","duration_sec","final_status_code","frame","from_user","input_origin","latest_message_at","method","msg_count","state","timing","to_user","updated_at"]}}
   ```
 
 - **The page fields are always kept.** `total_matched`, `truncated`,
@@ -41319,16 +41384,17 @@ Returns one page of dialog summaries from the live capture store.
 
 Each `DialogSummary` row carries `call_id`, `state`, `method`, `from_user`,
 `to_user`, `msg_count`, `duration_sec`, `created_at`, `updated_at`,
-`latest_message_at`, a `timing` object (`pdd_ms`, `setup_ms`, `retransmits`,
+`latest_message_at`, `earliest_message_at`, a `timing` object (`pdd_ms`, `setup_ms`, `retransmits`,
 `duration_ms`, each `null` when the capture never showed it) and a `frame`
 pointer for [`show_evidence`](mcp-tools-captures.md#show_evidence). `from_user`
 and `to_user` arrive fenced, because an endpoint chose them.
 
-`updated_at` is the timestamp of the message processed last, and
-`latest_message_at` the newest timestamp among the dialog's messages.
-`duration_sec` runs from `created_at` to `latest_message_at`. The two differ
-only when sipnab read an older-stamped message after a newer one, as on an
-`-I` set whose files overlap in time: see
+`updated_at` is the timestamp of the message processed last,
+`latest_message_at` the newest timestamp among the dialog's messages, and
+`earliest_message_at` the oldest. `duration_sec` runs from
+`earliest_message_at` to `latest_message_at`. They differ from `created_at`
+and `updated_at` only when sipnab read an older-stamped message after a newer
+one, as on an `-I` set whose files overlap in time: see
 [Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at).
 
 Two more keys appear when sipnab knows them, and are **left out rather than sent
@@ -41365,6 +41431,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
       "created_at": "2016-11-17T21:52:35.303349+00:00",
       "updated_at": "2016-11-17T21:52:35.339349+00:00",
       "latest_message_at": "2016-11-17T21:52:35.339349+00:00",
+      "earliest_message_at": "2016-11-17T21:52:35.303349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -41386,6 +41453,7 @@ which holds 1334 dialogs. `limit: 2` therefore reports 2 of 1334 — and says so
       "created_at": "2016-11-17T21:52:35.403349+00:00",
       "updated_at": "2016-11-17T21:52:35.439349+00:00",
       "latest_message_at": "2016-11-17T21:52:35.439349+00:00",
+      "earliest_message_at": "2016-11-17T21:52:35.403349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -41441,8 +41509,8 @@ or repeat the dialogs that share that timestamp.
 
 `list_dialogs` pages on `created_at`, which does not change, so a dialog that
 receives another message during the sweep keeps its place.
-[`tail_dialogs`](mcp-tools-signaling.md#tail_dialogs) pages on `updated_at`
-instead, because it reports changes.
+[`tail_dialogs`](mcp-tools-signaling.md#tail_dialogs) pages on the store's
+change sequence instead, because it reports changes.
 
 ### `aggregate_dialogs`
 
@@ -41548,6 +41616,7 @@ invalid_params (-32602) naming the offending value.
       "created_at": "2016-11-17T21:54:34.903349+00:00",
       "updated_at": "2016-11-17T21:54:34.933349+00:00",
       "latest_message_at": "2016-11-17T21:54:34.933349+00:00",
+      "earliest_message_at": "2016-11-17T21:54:34.903349+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": null,
@@ -41808,6 +41877,7 @@ The example runs against [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github
     "call_id": "1-1966@10.0.2.20",
     "created_at": "2016-11-26T14:52:59.666393+00:00",
     "duration_sec": 8.504,
+    "earliest_message_at": "2016-11-26T14:52:59.666393+00:00",
     "final_status_code": 200,
     "frame": "tests/pcap-samples/sip-rtp-g711.pcap#0@db88659b94678546",
     "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
@@ -42700,7 +42770,7 @@ Incremental fetch of the dialogs updated after a cursor position.
 
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
-| `cursor?` | string? | The previous response's `next_cursor`, verbatim (`<RFC 3339>\|<Call-ID>`). A bare RFC 3339 timestamp also parses, and filters strictly after it. | Starts from the beginning of the store. |
+| `cursor?` | string? | The previous response's `next_cursor`, verbatim (`v2:<N>`). A version-1 cursor (`<RFC 3339>` or `<RFC 3339>\|<Call-ID>`) also parses, and returns dialogs whose `updated_at` is after it. | Starts from the beginning of the store. |
 | `limit?` | u32? | Ceiling is `--mcp-max-rows` (1000 by default). Higher clamps to it, `0` means the default. | 50 rows. |
 | `fields?` | string[]? | Field names to keep on each row, plus `call_id`. Same rules as [`list_dialogs`](mcp-tools-core.md#list_dialogs) — see [Narrowing a row with `fields`](mcp-tools.md#narrowing-a-row-with-fields). | The whole row. |
 | `max_response_bytes?` | u64? | Bytes for the whole response. Ceiling is `--mcp-max-response-bytes` (1048576 unless the operator changed it). Higher clamps to it, `0` means the ceiling. Past it the page ends early at a whole row with `truncated_by: "bytes"` — see [Rules every tool follows](mcp-tools.md#rules-every-tool-follows). | The ceiling. |
@@ -42717,25 +42787,20 @@ the store can change between polls. Poll until `dialogs` comes back empty and
 nothing extra, because its `next_cursor` already names the last row returned
 and the next poll continues from there either way.
 
-`next_cursor` is compound — `<RFC 3339>|<Call-ID>` — not a bare
-timestamp. Several dialogs can share an `updated_at`, and the pair resumes
-exactly after the last row returned, so a page boundary neither skips nor
-repeats a dialog.
+`next_cursor` is `v2:<N>`: the number of the last change on the page. The
+store numbers every message it processes for a dialog, one above the last,
+and the page holds the dialogs changed after the cursor, in the order they
+changed. A dialog that changes after the cursor comes back, even when its new
+message carries a timestamp older than every row the cursor saw, as on an `-I` set
+whose files overlap in time. Each number belongs to one change of one dialog,
+so a page boundary neither skips nor repeats a dialog.
 
-Pass it back unmodified. A bare timestamp built from a dialog's `updated_at`
-also works, but it selects only dialogs updated strictly after that instant,
-so the next page can skip or repeat dialogs that share the timestamp, with no
-error. `|` occurs in neither an RFC 3339 timestamp nor a valid Call-ID
-([RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) `word`).
-
-The cursor pages on `updated_at`, the timestamp of the message processed
-last, and not on `latest_message_at`, the newest: the tool reports change, and
-a message stamped older than the newest is a change. On an `-I` set whose
-files overlap in time, such a message can move a dialog's `updated_at` behind
-a cursor already returned, and the dialog is not returned again. Once
-`source_exhausted` is `true`, one [`list_dialogs`](mcp-tools-core.md#list_dialogs)
-sweep reads every dialog as it ended. See
-[Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at).
+Pass it back unmodified. A version-1 cursor, `<RFC 3339>|<Call-ID>` or a bare
+timestamp, from an earlier sipnab still parses: it selects dialogs whose
+`updated_at` is after it, and the page hands back a `v2:` cursor. A `v2:`
+cursor without a whole number, or a version this sipnab does not read
+(`v3:1`), is `invalid_params`. See
+[Follow changes with a tail cursor](output-formats.md#follow-changes-with-a-tail-cursor).
 
 `source_exhausted` is `false` while more dialog updates can still
 arrive and `true` once the capture source is fully drained — the end of
@@ -42760,6 +42825,7 @@ has finished: stop when it turns `true` instead of polling forever.
       "created_at": "2016-11-26T14:52:59.666393+00:00",
       "updated_at": "2016-11-26T14:53:08.170676+00:00",
       "latest_message_at": "2016-11-26T14:53:08.170676+00:00",
+      "earliest_message_at": "2016-11-26T14:52:59.666393+00:00",
       "timing": {
         "pdd_ms": null,
         "setup_ms": 4,
@@ -42858,6 +42924,7 @@ which holds four failed calls:
       "call_id": "busy-3a2b1c@192.0.2.30",
       "created_at": "2023-11-14T22:13:23+00:00",
       "duration_sec": 1.81,
+      "earliest_message_at": "2023-11-14T22:13:23+00:00",
       "final_status_code": 486,
       "frame": "tests/pcap-samples/sip-problem-call.pcap#5@884d4525ec86f71b",
       "from_user": "⟦untrusted-capture-data⟧carol⟦/untrusted-capture-data⟧",
@@ -42879,6 +42946,7 @@ which holds four failed calls:
       "call_id": "decline-7c6d5e@198.51.100.30",
       "created_at": "2023-11-14T22:13:26+00:00",
       "duration_sec": 1.81,
+      "earliest_message_at": "2023-11-14T22:13:26+00:00",
       "final_status_code": 603,
       "frame": "tests/pcap-samples/sip-problem-call.pcap#9@4201862d9613e2f2",
       "from_user": "⟦untrusted-capture-data⟧erin⟦/untrusted-capture-data⟧",
@@ -42900,6 +42968,7 @@ which holds four failed calls:
       "call_id": "notfound-1b2c3d@203.0.113.30",
       "created_at": "2023-11-14T22:13:29+00:00",
       "duration_sec": 1.81,
+      "earliest_message_at": "2023-11-14T22:13:29+00:00",
       "final_status_code": 404,
       "frame": "tests/pcap-samples/sip-problem-call.pcap#13@091b886751922950",
       "from_user": "⟦untrusted-capture-data⟧grace⟦/untrusted-capture-data⟧",
@@ -42921,6 +42990,7 @@ which holds four failed calls:
       "call_id": "unavail-4e5f60@192.0.2.50",
       "created_at": "2023-11-14T22:13:32+00:00",
       "duration_sec": 1.81,
+      "earliest_message_at": "2023-11-14T22:13:32+00:00",
       "final_status_code": 503,
       "frame": "tests/pcap-samples/sip-problem-call.pcap#17@cc2aeb6bbdcb704c",
       "from_user": "⟦untrusted-capture-data⟧ivan⟦/untrusted-capture-data⟧",
@@ -43712,7 +43782,7 @@ type 0 while the wire carried payload type 8, that RTP arrived on a port no
 the capture holds it in one, or that the packet spacing contradicts
 `a=ptime`.
 
-The RFC 3261 syntax rules and the [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264.html) offer/answer rules run alongside
+The [RFC 3261](https://www.rfc-editor.org/rfc/rfc3261.html) syntax rules and the [RFC 3264](https://www.rfc-editor.org/rfc/rfc3264.html) offer/answer rules run alongside
 them. Everything citing [RFC 4566](https://www.rfc-editor.org/rfc/rfc4566.html), 3551 or 5761 belongs to the observation half.
 [SIP conformance rules](sip-lint-rules.md) lists every rule, the section behind
 it, and the suppression syntax.
@@ -45531,6 +45601,7 @@ The example runs against
       "call_id": "1-1968@10.0.2.20",
       "created_at": "2016-11-26T14:53:08.286194+00:00",
       "duration_sec": 0.004,
+      "earliest_message_at": "2016-11-26T14:53:08.286194+00:00",
       "final_status_code": 200,
       "frame": "tests/pcap-samples/sip-rtp-g711.pcap#433@b034a3ca525e06ff",
       "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",
@@ -51823,10 +51894,12 @@ stores at the end of the input. The merge rebuilds what the one store holds:
   is.
 - **sipnab counts rtpproxy retries per proxy.** A retry is a proxy sending a
   cookie it sent before. A cookie two proxies both use is two commands.
-- **Durations and idleness run to each dialog's newest message.** On an `-I`
-  set whose files overlap in time, the message sipnab reads last can be older
-  than the newest. `duration_sec`, idle compaction and the active counts
-  measure from `latest_message_at`, the newest, at every `--cores`. See
+- **Durations run from each dialog's oldest message to its newest, and
+  idleness from its newest.** On an `-I` set whose files overlap in time, the
+  message sipnab reads last can be older than the newest, and the one it reads
+  first newer than the oldest. `duration_sec` runs from `earliest_message_at`
+  to `latest_message_at`, and idle compaction and the active counts measure
+  from `latest_message_at`, at every `--cores`. See
   [Which dialog time to read](output-formats.md#which-dialog-time-to-read-updated_at-or-latest_message_at).
 
 Two differences remain:
@@ -77227,6 +77300,11 @@ the release-delivery test. The corpus gate does not run on such a push, since
 no parser input changed. Anything else, or anything the rule cannot read, runs
 every gate. `SIPNAB_GATE_NO_CACHE=1` runs every gate too.
 
+**Delete-only pushes.** A push that only deletes refs, such as
+`git push origin --delete <branch>`, sends no commit, so the pre-push hook
+runs no gate and prints the refs it deletes. A push that deletes one ref and
+sends another runs every gate.
+
 **Tag-only pushes.** A push that updates tags and nothing else skips the tree
 gates when GitHub already proved the tagged commit:
 
@@ -77773,7 +77851,9 @@ The reviewer checks the rest:
   also committed.
 - **Dependabot opens update pull requests weekly** for both lock files.
   [`.github/dependabot.yml`](.github/dependabot.yml) sets this up. It groups
-  minor and patch updates into one pull request.
+  minor and patch updates into one pull request per lock file. The two lock
+  files must agree on the crates they share; see
+  [Keeping fuzz/Cargo.lock aligned with Cargo.lock](#keeping-fuzzcargolock-aligned-with-cargolock).
 - **CI scans every pull request to `main`.**
   - The `Security audit` job in
     [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `cargo audit`
@@ -77798,7 +77878,94 @@ push. Install the tools once with `cargo install cargo-audit cargo-deny`.
 cargo audit --ignore RUSTSEC-2023-0071
 cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
 cargo deny check
+python3 scripts/check-lockfile-drift.py
 ```
+
+### Keeping fuzz/Cargo.lock aligned with Cargo.lock
+
+**Purpose.** The fuzz targets build the sipnab crate as a path dependency,
+against their own [`fuzz/Cargo.lock`](fuzz/Cargo.lock). Every crate sipnab
+uses is therefore resolved twice. When the two lock files pick different
+versions, the fuzz targets test dependency code that the binary does not
+ship. On 2026-11-08, 39 of the 214 crates in both files differed, among them
+`clap` 4.6.7 against 4.6.3 and `cc` 1.4.0 against 1.2.59.
+
+**The rule.** [`scripts/check-lockfile-drift.py`](scripts/check-lockfile-drift.py)
+holds it. The pre-commit hook and the `Security audit` job in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) run it.
+
+- For each crate that both lock files list, every version in
+  `fuzz/Cargo.lock` must also be in `Cargo.lock`.
+- `Cargo.lock` may hold more versions of a crate than the fuzz tree. The main
+  crate has more dependents, so it can need several semver-incompatible
+  versions of one crate, such as `hashbrown` 0.15, 0.16 and 0.17.
+- A crate that only one file lists passes, such as `libfuzzer-sys`.
+- A version that both files list must come from the same source with the
+  same checksum.
+- An exception goes in `EXCEPTIONS` in the script. It names the crate, the
+  exact `fuzz/Cargo.lock` versions it allows, and the reason. The script
+  reports an exception that no longer matches any drift as stale.
+
+**Prerequisites.** Python 3.11 or later, for `tomllib`. To align the files you
+also need `cargo`.
+
+**Steps.** Dependabot updates the two lock files in separate pull requests,
+the `cargo-minor-patch` group for `/` and the `fuzz-minor-patch` group for
+`/fuzz`. Each pull request moves only its own file, so it fails this check
+whenever it moves a crate that both files share.
+
+1. Combine the root and fuzz updates in one branch.
+   - Take the root update first. That is the version that ships.
+   - If you regenerate `THIRD-PARTY-NOTICES.md`, do it after the root
+     update: `python3 scripts/build-third-party-notices.py`.
+2. Run `python3 scripts/check-lockfile-drift.py`. Each line names the crate,
+   both version sets, and the command that aligns it, for example:
+
+   ```bash
+   cargo update --manifest-path fuzz/Cargo.toml -p clap@4.6.7 --precise 4.6.3
+   ```
+
+3. Run the commands it names, then run the check again. Moving one crate can
+   move the crates that depend on it, so repeat until it reports no lines.
+4. If a dependency that only the fuzz tree has needs a version that
+   `Cargo.lock` lacks, there are two choices:
+   - move `Cargo.lock` to that version with `cargo update -p <crate>`, and
+     regenerate `THIRD-PARTY-NOTICES.md`;
+   - or add an exception to `EXCEPTIONS` that gives the reason.
+
+**Verify.**
+
+1. Run the check. It exits 0 and prints one `ok:` line.
+
+   ```bash
+   python3 scripts/check-lockfile-drift.py
+   # ok: 210 crates in both lockfiles, every fuzz/Cargo.lock version is one Cargo.lock has (0 exceptions)
+   ```
+
+2. Build the fuzz targets with the aligned versions. This is the pre-push
+   hook's fuzz gate.
+
+   ```bash
+   (cd fuzz && cargo clippy --all-targets -- -D warnings)
+   ```
+
+**Troubleshooting.**
+
+- **A line says `Cargo.lock has no N.x line`.** No `--precise` target exists
+  on that semver-compatible line. A crate in the fuzz tree pulls in a
+  release line that the main crate does not use. One example is `shlex` 2,
+  which `cc` 1.4 pulls in. Align the crate that pulls it in, which is `cc`
+  here. The line for that crate is in the same output. Then run the check
+  again.
+- **`NOT CHECKED` and exit status 2.** A lock file is missing, does not parse,
+  or lists no packages, or an exception lacks a crate, versions or a
+  reason. The message names which one. A check that did not run is not a pass.
+- **A line says `stale exception`.** The drift that the exception allowed is
+  gone. Remove the exception from `EXCEPTIONS`.
+- **`cargo update --precise` refuses the version.** Another crate in the fuzz
+  tree requires a newer release. Run
+  `cargo tree --manifest-path fuzz/Cargo.toml -i <crate>@<version>` to find
+  it, and align that crate first.
 
 ### Updating vendored files
 
@@ -79940,8 +80107,66 @@ with no `mod.rs` chain. Each test binary compiles its own copy.
 | [`schema.rs`](../../tests/support/schema.rs) | JSON-Schema validation against [`tests/schemas/`](../../tests/schemas). |
 | [`tui_fixtures.rs`](../../tests/support/tui_fixtures.rs) | SIP fixture builders shared by the TUI snapshot and state tests. |
 | [`executable.rs`](../../tests/support/executable.rs) | `write_executable()`, the one way a test writes a file it then runs: a child process writes it, so this process never holds it open for writing and an `exec` cannot fail with `ETXTBSY` ("Text file busy") while another test thread forks. `executable_stub_test` refuses a file written in-process and then made executable. |
+| [`child_lifetime.rs`](../../tests/support/child_lifetime.rs) | `tied_to_test()`, the one way a test starts a process: call it on the `Command` before `.spawn()`. On Linux it sets `PR_SET_PDEATHSIG` to SIGKILL, so the child ends when the spawning thread ends, even when a signal ends the test process and no `Drop` runs. See [Children end with their test](#children-end-with-their-test). Pulled in with `include!`. |
 | [`fuzz.rs`](../../tests/support/fuzz.rs) | A deterministic xorshift PRNG shared by the stable-toolchain fuzzers, so a failure reproduces from its seed. |
 | [`ports.rs`](../../tests/support/ports.rs) | `refused_tcp_port()`, the one way a test gets a loopback TCP port where a connect fails with `ConnectionRefused`: a socket bound and not listening, held until the guard drops, so no test running alongside can bind the number. Binding `:0`, reading the port, and closing the socket leaves the number free for another test to listen on; `released_port_scan_test` refuses that pattern under `tests/`. |
+
+### Children end with their test
+
+A process a test starts ends when that test ends, however the test ends
+(TEST-CHILD-ORPHAN).
+
+**Why.** The helpers stop their child in `Drop`. `Drop` does not run when
+something kills the test process: SIGKILL, the kernel's OOM killer, or a
+harness that signals the test's pid and not its process group. A serving
+sipnab left that way keeps running, with init as its parent, until someone
+stops it.
+
+**Prerequisites.** Linux, for the guarantee. Other systems have no
+equivalent of `PR_SET_PDEATHSIG`, so `tied_to_test()` does nothing there and
+`Drop` is the only stop.
+
+**How to start a child.**
+
+```rust
+include!("support/child_lifetime.rs"); // once per file, at module level
+
+let child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+    .args(["-N", "-I", "capture.pcap", "--api", "127.0.0.1:0"])
+    .tied_to_test()
+    .spawn()?;
+```
+
+- Spawn the child on the thread that holds it. The kernel sends the signal
+  when the spawning THREAD ends, so a child started on a helper thread dies
+  as soon as that thread returns.
+- The child of a parent that died between the fork and the `prctl` sees a
+  different parent, and its spawn fails with `ESRCH` instead of running
+  untied.
+- The kernel clears the setting when the child executes a set-user-ID
+  program (`sudo`) or changes its user or group id (`--user`). Such runs are
+  not tied; `privilege_drop_test.rs` stops its `sudo` runs itself.
+- The child's own children are not tied: a fork clears the setting.
+
+**How to verify.** `cargo test --features full --test child_lifetime_test`.
+
+- `an_api_server_ends_when_its_test_process_is_killed`, and the same for the
+  HTTP MCP server and the fleet center, run a child role that holds the
+  server, SIGKILL the role's process, and require that the server has ended
+  within 10 s.
+- `every_child_a_sipnab_test_spawns_is_tied_to_it` reads `tests/`: every
+  `.spawn()` in a file that starts the sipnab binary, and every `.spawn()` in
+  `tests/support/`, must have `.tied_to_test()` before it. The exceptions are
+  a `Command::new("sudo")` and the race test that ties its child by hand.
+
+**Troubleshooting.**
+
+- `these spawns are not tied to their test`: add `.tied_to_test()` before
+  the `.spawn()` it names, and `include!("support/child_lifetime.rs")` to
+  the file (`include!("child_lifetime.rs")` in a file under `support/`). In
+  a nested module, add `use super::TiedToTest as _;`.
+- A child that ends early with signal 9 while its test still runs was
+  started on a thread that has since ended. Start it on the test's thread.
 
 ## Fixtures and corpora
 
@@ -80228,6 +80453,27 @@ What the script does that a reader of the user page does not need to:
   `cargo install cargo-nextest --locked --version 0.9.148`.
 - CI installs it through [`.github/actions/nextest`](../../.github/actions/nextest/action.yml): the release tarball, checked against its SHA-256, from the actions cache or, on a miss, from GitHub.
 - Measured on 2026-11-06, on one tree, in the host's heavy-run slot, against the pool it replaced, which ran `cargo test`'s binaries side by side: the test step took 202 s and 158 s under nextest against 164 s and 129 s, plus 11 s of doctests.
+
+**Rate limits in tests.** A test of a fixed-window rate limiter does not
+count on the wall clock to keep a burst inside one window.
+
+- The REST limiter's windows are one second long. A burst of 101 requests at
+  the shipped cap of 100 fits in one window only if the host sends it in under
+  a second.
+  - Measured on 2026-11-08 against `sipnab --api`, at a load average of 50 to
+    88 on 14 cores: in 5 of 20 bursts the window ended mid-burst and the first
+    `503` came at request 122 to 200 instead of 101. Unloaded, the limiter
+    refused 5 of 5 bursts at request 101.
+  - `rate_limiter_rejects_when_per_ip_budget_exhausted` sent such a burst and
+    failed once in CI that way.
+- Unit tests build the limiter with
+  [`RateLimiter::with_clock`](../../src/output/api.rs) and move the clock
+  themselves, so only the test decides when a window ends.
+- A test of the real clock, in-process or against the binary, sends at most
+  three requests at a cap of 1 and times them. A span shorter than one window
+  touches at most two windows, so three requests in it put two in one window,
+  and the limiter must refuse one of them. The test fails with the measured span if
+  the host took a whole window for them.
 
 **The docker lab.** [`harness/`](../../harness) is a docker-compose stack
 for generating real traffic.
@@ -84082,6 +84328,61 @@ cargo test --features tui --test tui_e2e_test -- --ignored
 ```
 
 These tests are slower (~2s each). They may be flaky in CI.
+
+## Bare-PTY stop tests (tests/tui_lost_terminal_test.rs)
+
+These tests check how the TUI stops: on SIGTERM, SIGINT and SIGHUP, and when
+its terminal goes away. They run the real binary on a pseudo-terminal the test
+owns, without tmux, because a hang-up is something the test does to that
+terminal.
+
+### Prerequisites
+- Linux. The pty set-up uses Linux's `openpty` and `TIOCSCTTY` behavior.
+- A build with the `tui` feature. The tests are not `#[ignore]`d, so the
+  suite runs them.
+
+### Running the stop tests
+```bash
+cargo test --features tui --test tui_lost_terminal_test
+```
+
+### How a test reads the terminal
+- A reader thread plays the terminal. It collects what sipnab writes and
+  answers the cursor-position query (`ESC[6n`) that crossterm sends at startup.
+- `wait_until_drawn` waits for the call list (`INVITE`) on the terminal. Only
+  then does a test send a signal or hang the terminal up, so sipnab has
+  installed its signal handlers and drawn the first frame.
+- `wait_for_exit` returns the exit status once the child has ended AND the
+  reader has read everything the child wrote. The reader ends when a read of
+  the pty's master side fails with `EIO`, which Linux returns once no process
+  holds the slave side open and no written byte remains.
+  - Before this, `wait_for_exit` returned at the exit alone. The reader runs
+    on its own schedule, so on a loaded host the terminal restore
+    (`ESC[?1049l`) could still be unread when the test asked for it, and
+    `sigterm_stops_a_tui_and_restores_the_terminal` could fail although
+    sipnab had written the restore.
+- `stall_reader` stops the reader for a set time and returns once it has
+  stopped. The `*_when_the_reader_lags_the_exit` tests use it to put the exit
+  before the reader's next read, which is the order a loaded host can produce.
+- `spawn_command` runs any program on the same kind of pty, for the tests of
+  the reader itself (`the_last_bytes_before_an_exit_are_read` and the two
+  after it).
+
+### How to verify
+All tests pass, and the run takes a few seconds:
+`input_crossterm_leaves_unread_does_not_make_the_tui_spin` measures CPU over
+4 s, and the stalled-reader tests each wait out a 3 s stall.
+
+### Troubleshooting
+- `the terminal was still open after sipnab exited`: a process other than
+  the child still holds the pty's slave side, so the reader never reads
+  `EIO`. A test that spawns its own processes must not hand them the pty.
+- `sipnab did not draw the call list within 60 s`: the TUI did not start.
+  Run `sipnab -I sip_call.pcap` in `tests/fixtures` in a terminal to see
+  what it shows instead.
+- `the pty reader thread did not stall within 10 s`: the reader thread is
+  blocked outside its loop. It holds no lock across a read, so this points
+  at a change to `serve_terminal`.
 
 ---
 
@@ -90302,8 +90603,9 @@ a timestamp (a burst of registrations lands on one millisecond), and a bare
 timestamp forces a choice between dropping the rest of that group and serving
 it twice. `list_dialogs` pages on `created_at` because it never moves: in an
 `updated_at` ordering, a dialog that gained a message mid-sweep would jump past
-a cursor already gone by and vanish. `tail_dialogs` pages on `updated_at`
-because reporting change is its job.
+a cursor already gone by and vanish. `tail_dialogs` pages on the store's
+change sequence because reporting change is its job: a message stamped older
+than one already read is still a later change.
 
 `sipp-branch-scenario.pcapng` is the example fixture because its `by_method`
 shows all 1334 dialogs are REGISTER, which the two rows on the page cannot.
@@ -90462,10 +90764,10 @@ the store and reports the population beside it.
   `list_dialogs` rejects.
 - `tail_dialogs` has no `returned` or `total_matched` because "how many are
   there" is not a question a tail can answer while the store changes. The
-  compound cursor exists because dialogs share `updated_at`. A bare timestamp
-  falls back to the pre-compound strictly after filter, which the tool still
-  accepts, so a client that rebuilds one loses or repeats tied dialogs
-  silently.
+  `v2:<N>` cursor names one change, so no two dialogs share a position. A
+  version-1 cursor falls back to the strictly after filter on `updated_at`,
+  which the tool still accepts, so a client that keeps one can lose or repeat
+  dialogs until its next page hands back a `v2:` cursor.
 - `await_condition` returns a passed deadline as a successful call because
   "the fault has not reproduced" and "the tool broke" are different findings.
   Constants: `DEFAULT_TIMEOUT_SECONDS` (30), `DEFAULT_MCP_MAX_WAIT_SECONDS`

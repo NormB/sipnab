@@ -803,6 +803,26 @@ if ! PRIV_OUT=$(python3 scripts/check-privilege-drop.py 2>&1); then
 fi
 echo -e "${GREEN}OK${NC}"
 
+# ── 3c. The fuzz targets build the dependency versions that ship ──
+# fuzz/Cargo.lock is a second lockfile for the sipnab crate's dependencies,
+# and Dependabot updates it in a pull request of its own. On 2026-11-08 it
+# held a different version than Cargo.lock for 39 of the 214 crates the two
+# share (clap 4.6.7 against 4.6.3, cc 1.4.0 against 1.2.59), so the fuzz
+# targets fuzzed dependency code the binary does not ship, and no gate said
+# so. Reads the two lockfiles, in milliseconds. CI's Security audit job runs
+# the same script.
+echo -n "  Fuzz lockfile matches Cargo.lock... "
+if ! DRIFT_OUT=$(python3 scripts/check-lockfile-drift.py 2>&1); then
+    echo -e "${RED}FAIL${NC}"
+    echo "$DRIFT_OUT" | tail -12 | sed 's/^/    /'
+    echo "  Every line: python3 scripts/check-lockfile-drift.py"
+    echo "  Align each line with the cargo update it names, or record an"
+    echo "  exception with its reason. How-to: CONTRIBUTING.md,"
+    echo "  \"Keeping fuzz/Cargo.lock aligned with Cargo.lock\"."
+    exit 1
+fi
+echo -e "${GREEN}OK${NC}"
+
 # ── 4. WASM module in sync with source ────────────────────────────
 echo -n "  WASM exports in sync... "
 if [ -f "website/static/wasm/sipnab.js" ]; then

@@ -231,6 +231,7 @@ impl Run {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .tied_to_test()
             .spawn()?;
         let stdout = lines_of(child.stdout.take().ok_or("stdout")?);
         let stderr = lines_of(child.stderr.take().ok_or("stderr")?);
@@ -905,6 +906,7 @@ fn run_to_exit(args: &[&str]) -> Result<Finished, TestError> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let stdout = lines_of(child.stdout.take().ok_or("stdout")?);
     let stderr = lines_of(child.stderr.take().ok_or("stderr")?);
@@ -2573,3 +2575,5 @@ fn a_call_that_came_up_on_another_engine_after_start_is_asked_of_it() -> Result<
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");
