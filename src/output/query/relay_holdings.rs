@@ -118,10 +118,10 @@ pub fn ask(
 }
 
 /// Ask which calls are held: the one relay, or with engine selection every
-/// engine the operator named, each with its own answer.
+/// engine the operator named, all at once, each with its own answer.
 #[must_use]
 pub fn ask_engines(
-    relay: &dyn ReadOnlyRelay,
+    relay: &(dyn ReadOnlyRelay + Sync),
     routing: Option<&crate::relay::engines::EngineRouting>,
     permit: &TransmitPermit,
     max_calls: u32,
@@ -130,17 +130,16 @@ pub fn ask_engines(
     let Some(routing) = routing else {
         return ask(relay, permit, max_calls, now);
     };
-    let engines = routing
-        .listing_engines()
-        .into_iter()
-        .map(|addr| {
-            if addr == routing.default_engine() {
-                ask(relay, permit, max_calls, now)
-            } else {
-                ask(routing.relay(addr).as_ref(), permit, max_calls, now)
-            }
-        })
-        .collect();
+    // Every engine at once: an engine that does not answer costs one control
+    // timeout, not one per engine, and the answers stay in the engines'
+    // order.
+    let engines = crate::relay::fan_out::ask_each(routing.listing_engines(), |addr| {
+        if addr == routing.default_engine() {
+            ask(relay, permit, max_calls, now)
+        } else {
+            ask(routing.relay(addr).as_ref(), permit, max_calls, now)
+        }
+    });
     Holdings::Several {
         engines,
         obtained_at: now,
@@ -593,6 +592,68 @@ mod tests {
         assert!(
             one.body().get("engines").is_none(),
             "without routing the answer is the one relays"
+        );
+        Ok(())
+    }
+
+    /// Each engine's holdings in the configured order, the outcome of each,
+    /// asked of real fake engines, and how long the question took.
+    fn udp_holdings(
+        fakes: &[crate::test_engines::FakeEngine],
+    ) -> Result<(Vec<String>, std::time::Duration), TestError> {
+        use crate::test_engines::{TIMEOUT, client, routing};
+        let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
+        let default = client(r.default_engine(), TIMEOUT);
+        let started = std::time::Instant::now();
+        let answer = ask_engines(default.as_ref(), Some(&r), &permit()?, 32, at()?);
+        let took = started.elapsed();
+        let body = answer.body();
+        let engines = body["engines"].as_array().ok_or("engines")?;
+        Ok((
+            engines
+                .iter()
+                .map(|e| format!("{} {}", e["relay"], e["outcome"]).replace('"', ""))
+                .collect(),
+            took,
+        ))
+    }
+
+    /// Engines that answer last first are listed first first.
+    #[test]
+    fn holdings_keep_the_configured_order_whatever_order_they_answer() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, LIST_BODY};
+        let late = |ms| FakeEngine::answering(LIST_BODY, std::time::Duration::from_millis(ms));
+        let fakes = [late(300)?, late(150)?, late(0)?];
+        let (got, _) = udp_holdings(&fakes)?;
+        let want: Vec<String> = fakes
+            .iter()
+            .map(|f| format!("relay ({}) ok", f.describe()))
+            .collect();
+        assert_eq!(got, want, "every engine answered, in the engines' order");
+        Ok(())
+    }
+
+    /// Dead engines cost one timeout, and each reads unreachable in its own
+    /// place beside the live one.
+    #[test]
+    fn holdings_with_dead_engines_cost_one_timeout() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, one_timeout};
+        let fakes = [
+            FakeEngine::dead()?,
+            FakeEngine::live()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+        ];
+        let (got, took) = udp_holdings(&fakes)?;
+        assert!(
+            one_timeout(took),
+            "one timeout, not three: {took:?}: {got:?}"
+        );
+        let outcomes: Vec<&str> = got.iter().filter_map(|g| g.rsplit(' ').next()).collect();
+        assert_eq!(
+            outcomes,
+            vec!["unreachable", "ok", "unreachable", "unreachable"],
+            "each dead engine unreachable in its own place",
         );
         Ok(())
     }

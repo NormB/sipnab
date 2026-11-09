@@ -2366,7 +2366,7 @@ fn run_relay_listing(
     flag: &str,
     answer: fn(
         &Cli,
-        &dyn crate::relay::reconcile::ReadOnlyRelay,
+        &(dyn crate::relay::reconcile::ReadOnlyRelay + Sync),
         Option<&crate::relay::engines::EngineRouting>,
         &TransmitPermit,
     ) -> i32,
@@ -2524,7 +2524,19 @@ fn report_relay_statistics(cli: &Cli, config: &Config, source: Option<&CaptureSo
         if let Some(routing) = crate::app::relay_engines::routing(cli, selection.as_ref())
             && routing.listing_engines().len() > 1
         {
-            for socket in routing.listing_engines() {
+            // Every engine is asked at once, so an engine that does not
+            // answer costs one control timeout, not one per engine; the
+            // tables print in the engines' order.
+            let sockets = routing.listing_engines();
+            let clients: Vec<ControlClient> = sockets
+                .iter()
+                .map(|&socket| ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT))
+                .collect();
+            let answers = crate::rtpengine::control::statistics_of_each(
+                clients.iter().collect(),
+                &ask.permit,
+            );
+            for (socket, fetched) in sockets.into_iter().zip(answers) {
                 // The address as the operator typed it names the default
                 // engine, as it always has.
                 let engine_addr = if socket == ask.socket {
@@ -2533,8 +2545,6 @@ fn report_relay_statistics(cli: &Cli, config: &Config, source: Option<&CaptureSo
                     socket.to_string()
                 };
                 let label = format!("rtpengine at {engine_addr}");
-                let fetched =
-                    ControlClient::new(socket, DEFAULT_CONTROL_TIMEOUT).statistics(&ask.permit);
                 show_relay_statistics(
                     fetched,
                     &RelayStatsRendering {

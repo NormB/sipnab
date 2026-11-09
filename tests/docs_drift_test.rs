@@ -6100,7 +6100,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/internals/testing.md (+1) and its site mirror (+1). Counted per
     // file against origin/main 47f2630b5: CONTRIBUTING.md's new shell section has
     // no table.
-    const EXPECTED_TABLES: usize = 1433;
+    // 1433 -> 1437 (RELAY-ENGINE-FOLLOWUPS-2): the test matrix in
+    // docs/internals/testing.md (+1), the dead-engine timing table in
+    // docs/relay-engines.md (+1), and their site mirrors (+1 each). Counted
+    // per file against origin/main 5dc6e5f5b.
+    const EXPECTED_TABLES: usize = 1437;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -459,7 +459,7 @@ Both ends of the stream go into the hand-off.
 - A socket the relay does not hold costs one lookup in the index the startup snapshot already built.
 
 ```text
-rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent of a ceiling of 66
+rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent; 62 of 66 left in the budget, which refills at 33 per hour
 ```
 
 ### Why the asking runs on a thread
@@ -566,7 +566,7 @@ So it keeps five reasons apart:
 - the relay refused the question, or nothing answered at all
 - the relay named calls sipnab could not read
 - the relay's enumeration came back capped
-- the run had already spent its transaction ceiling
+- the engine's transaction budget was empty
 - sipnab asked, and the relay does not hold the port
 
 Only the last of those says anything about the relay.
@@ -610,7 +610,7 @@ The wider ask runs once for the run, whether it succeeds or fails.
 - The summary says which happened.
 - "We never tried" and "we tried and could not" send an operator to different places.
 
-Reaching further also moves the binding constraint from the enumeration to the transaction ceiling.
+Reaching further also moves the binding constraint from the enumeration to the transaction budget.
 
 - A run can enumerate more calls than it can afford to query.
 - Such a run names how many went unread.

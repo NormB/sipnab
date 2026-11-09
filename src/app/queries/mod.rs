@@ -296,7 +296,7 @@ pub fn startup(cli: &Cli) -> Option<i32> {
 #[must_use]
 pub fn relay_holdings(
     cli: &Cli,
-    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    relay: &(dyn crate::relay::reconcile::ReadOnlyRelay + Sync),
     routing: Option<&crate::relay::engines::EngineRouting>,
     permit: &crate::security::transmit_guard::TransmitPermit,
 ) -> i32 {
@@ -309,7 +309,7 @@ pub fn relay_holdings(
 #[must_use]
 pub fn relay_sessions(
     cli: &Cli,
-    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    relay: &(dyn crate::relay::reconcile::ReadOnlyRelay + Sync),
     routing: Option<&crate::relay::engines::EngineRouting>,
     permit: &crate::security::transmit_guard::TransmitPermit,
 ) -> i32 {

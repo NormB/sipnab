@@ -972,7 +972,12 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // roster row links tests/pipefail_early_exit_test.rs and
     // tests/support/pipefail_scan.rs (+2), and its early-exit reader test matrix links
     // the test files it counts (+3); every other developer page unchanged.
-    const EXPECTED_CODE_LINKS: usize = 795;
+    // 795 -> 810 (RELAY-ENGINE-FOLLOWUPS-2): docs/internals/testing.md's test
+    // matrix for engines asked at once links src/relay/fan_out.rs and
+    // src/relay/budget.rs twice each, src/test_engines.rs and ten other source
+    // files once (+15); every other developer page unchanged. Counted against
+    // origin/main 5dc6e5f5b.
+    const EXPECTED_CODE_LINKS: usize = 810;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
