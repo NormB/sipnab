@@ -31,8 +31,16 @@
 
 // Engine selection names a relay to ask, which only a build that can ask
 // (`native`, where `ReadOnlyRelay` and the command line live) has use for.
+// The refilling budget of control transactions each engine's reconciler
+// spends, in the builds that have a reconciler.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod budget;
 #[cfg(feature = "native")]
 pub mod engines;
+// Asking every listed engine at once needs threads, which a wasm32 build has
+// none of, and only the builds that ask an engine have a question to put.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub mod fan_out;
 pub mod reconcile;
 pub mod rtpproxy;
 pub mod types;

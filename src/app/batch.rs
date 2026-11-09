@@ -958,13 +958,17 @@ impl RelayStatsPoll {
         }
     }
 
-    /// Ask each engine once and print what each answered, in order.
+    /// Ask every engine once, all at once, and print what each answered, in
+    /// engine order.
     fn poll_once(&mut self) {
-        // The cadence is the whole poll's: every engine is asked in turn, and
-        // the next poll starts one interval after the last engine answered.
+        // The cadence is the whole poll's: every engine is asked at once, and
+        // the next poll starts one interval after the slowest engine answered
+        // or timed out. Polls never overlap, so a relay slower than the
+        // interval slows the cadence rather than stacking requests; this says
+        // so when it happens (ST-S4 condition 13, the visibility half).
         let started = std::time::Instant::now();
-        for i in 0..self.engines.len() {
-            self.poll_engine(i);
+        for (i, result) in self.fetch_all().into_iter().enumerate() {
+            self.on_answer(i, result);
         }
         let elapsed = started.elapsed();
         if crate::app::relay_poller::cadence_slipped(elapsed, self.interval) {
@@ -982,16 +986,21 @@ impl RelayStatsPoll {
         }
     }
 
-    /// Ask engine `i` once and print what it answered.
-    fn poll_engine(&mut self, i: usize) {
+    /// Ask every engine for its counters at once: the answers in engine
+    /// order.
+    fn fetch_all(&self) -> Vec<anyhow::Result<crate::relay::types::ControlReply>> {
+        crate::rtpengine::control::statistics_of_each(
+            self.engines.iter().map(|e| &e.client).collect(),
+            &self.permit,
+        )
+    }
+
+    /// Print what engine `i` answered.
+    fn on_answer(&mut self, i: usize, result: anyhow::Result<crate::relay::types::ControlReply>) {
         let Some(engine) = self.engines.get(i) else {
             return;
         };
         let label = engine.label.clone();
-        // The serial loop never overlaps polls, so a relay slower than the
-        // interval slows the cadence rather than stacking requests; `poll_once`
-        // says so when it happens (ST-S4 condition 13, the visibility half).
-        let result = engine.client.statistics(&self.permit);
         match result {
             Ok(crate::relay::types::ControlReply::Statistics(pairs)) => {
                 self.on_statistics(i, pairs);
@@ -21004,6 +21013,72 @@ mod polled_publish_order_tests {
             recorded.into_inner(),
             Some(wire),
             "the reading was recorded"
+        );
+        Ok(())
+    }
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A poll of the fake engines, labeled by address.
+    fn fake_poll(fakes: &[crate::test_engines::FakeEngine]) -> Result<RelayStatsPoll, TestError> {
+        use crate::test_engines::{TIMEOUT, live_permit};
+        Ok(RelayStatsPoll {
+            engines: fakes
+                .iter()
+                .map(|f| EnginePoll {
+                    client: crate::rtpengine::control::ControlClient::new(f.addr, TIMEOUT),
+                    label: format!("rtpengine at {}", f.addr),
+                    previous: None,
+                })
+                .collect(),
+            permit: live_permit()?,
+            secs: 1,
+            interval: std::time::Duration::from_secs(1),
+            json: false,
+            json_pretty: false,
+        })
+    }
+
+    /// One poll of three dead engines and a live one costs one timeout, and
+    /// each engine's reading is in its configured place.
+    #[test]
+    fn one_poll_of_dead_engines_costs_one_timeout() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, one_timeout};
+        let fakes = [
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+            FakeEngine::live()?,
+        ];
+        let poll = fake_poll(&fakes)?;
+        let started = std::time::Instant::now();
+        let got = poll.fetch_all();
+        let took = started.elapsed();
+        assert!(one_timeout(took), "one timeout, not three: {took:?}");
+        let ok: Vec<bool> = got.iter().map(Result::is_ok).collect();
+        assert_eq!(
+            ok,
+            vec![false, false, false, true],
+            "only the live engine's reading is counters, in its own place"
+        );
+        Ok(())
+    }
+
+    /// A poll whose engines answer last first keeps each reading in its
+    /// engine's place.
+    #[test]
+    fn one_poll_keeps_each_reading_in_its_engines_place() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, LIST_BODY};
+        let fakes = [
+            FakeEngine::answering(LIST_BODY, std::time::Duration::from_millis(300))?,
+            FakeEngine::cut()?,
+        ];
+        let got = fake_poll(&fakes)?.fetch_all();
+        let ok: Vec<bool> = got.iter().map(Result::is_ok).collect();
+        assert_eq!(
+            ok,
+            vec![true, false],
+            "the late engine's reading first, the cut one second"
         );
         Ok(())
     }

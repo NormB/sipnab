@@ -472,6 +472,10 @@ pub mod test_alloc;
 pub mod test_scratch;
 #[cfg(test)]
 pub mod test_utils;
+// Fake relay engines on local UDP sockets, for the tests of every surface
+// that asks the listed engines at once.
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "native"))]
+pub(crate) mod test_engines;
 
 // Convenience re-exports for library consumers
 pub use capture::pcap_reader::{PcapReader, decompress_capture};

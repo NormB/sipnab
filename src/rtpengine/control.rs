@@ -870,7 +870,12 @@ impl ControlClient {
                      stream bounds it but this"
                 );
             }
-            let n = conn.read(&mut chunk).with_context(|| {
+            let deadline = std::time::Instant::now() + self.timeout;
+            let n = read_until(deadline, &std::time::Instant::now, |left| {
+                conn.set_read_timeout(Some(left))?;
+                conn.read(&mut chunk)
+            })
+            .with_context(|| {
                 format!(
                     "no complete reply from {} within {:?} -- the answer was \
                      still arriving, or it is not a complete message",
@@ -923,9 +928,12 @@ impl ControlClient {
             .with_context(|| format!("sending {} to {}", request.command, self.addr))?;
 
         let mut buf = vec![0u8; MAX_REPLY_BYTES];
-        let n = sock
-            .recv(&mut buf)
-            .with_context(|| format!("no reply from {} within {:?}", self.addr, self.timeout))?;
+        let deadline = std::time::Instant::now() + self.timeout;
+        let n = read_until(deadline, &std::time::Instant::now, |left| {
+            sock.set_read_timeout(Some(left))?;
+            sock.recv(&mut buf)
+        })
+        .with_context(|| format!("no reply from {} within {:?}", self.addr, self.timeout))?;
         buf.truncate(n);
 
         // The reply is framed exactly as the request: cookie, space, bencode.
@@ -2482,6 +2490,49 @@ impl crate::relay::reconcile::ReadOnlyRelay for ControlClient {
     }
 }
 
+/// Run one blocking read with what is left of its timeout, again whenever a
+/// signal interrupts it, until `deadline`.
+///
+/// A read on a socket with a receive timeout fails with `EINTR` when any
+/// handled signal reaches the thread, even with `SA_RESTART` (signal(7)),
+/// and sipnab handles `SIGUSR1` and `SIGHUP`. Without the retry, an engine
+/// that was about to answer read as one that `did not answer`, after any
+/// fraction of its timeout: under the library test suite, 1.5 s waits ended
+/// after 0.7 s with `Interrupted system call (os error 4)`. `attempt` is given the time left, which it
+/// sets as the socket's timeout. Past `deadline` this fails as a timeout
+/// does, `WouldBlock`.
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+fn read_until<T>(
+    deadline: std::time::Instant,
+    now: &dyn Fn() -> std::time::Instant,
+    mut attempt: impl FnMut(Duration) -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    loop {
+        let left = deadline.saturating_duration_since(now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
+        match attempt(left) {
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            done => return done,
+        }
+    }
+}
+
+/// Ask each of `clients` for its own counters, all at once, and return the/// Ask each of `clients` for its own counters, all at once, and return the
+/// answers in the order of `clients`.
+///
+/// The one fetch `--relay-stats` and `--relay-stats-interval` make of every
+/// listed engine, so an engine that does not answer costs one control
+/// timeout, not one per engine after it. See [`crate::relay::fan_out`].
+#[cfg(all(not(target_arch = "wasm32"), feature = "native"))]
+pub fn statistics_of_each(
+    clients: Vec<&ControlClient>,
+    permit: &crate::security::transmit_guard::TransmitPermit,
+) -> Vec<anyhow::Result<ControlReply>> {
+    crate::relay::fan_out::ask_each(clients, |c| c.statistics(permit))
+}
+
 /// The relay sessions verdicts, read from real recorded replies through the
 /// real parser.
 ///
@@ -2835,5 +2886,202 @@ mod session_fixture_tests {
             "63 s into a call, after its BYE, the relay still lists and answers for it with nothing marking it deleted"
         );
         Ok(())
+    }
+}
+
+/// [`statistics_of_each`] against engines that answer, answer late, answer
+/// cut short, or never answer.
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "native"))]
+mod statistics_of_each_tests {
+    use super::*;
+    use crate::test_engines::{FakeEngine, LIST_BODY, TIMEOUT, live_permit, one_timeout};
+
+    type TestError = Box<dyn std::error::Error>;
+
+    fn clients(fakes: &[FakeEngine]) -> Vec<ControlClient> {
+        fakes
+            .iter()
+            .map(|f| ControlClient::new(f.addr, TIMEOUT))
+            .collect()
+    }
+
+    /// Every engine's counters, in the order given.
+    #[test]
+    fn every_engine_is_read_in_the_order_given() -> Result<(), TestError> {
+        let fakes = [FakeEngine::live()?, FakeEngine::live()?];
+        let c = clients(&fakes);
+        let got = statistics_of_each(c.iter().collect(), &live_permit()?);
+        assert_eq!(got.len(), 2, "one answer per engine");
+        assert!(
+            got.iter()
+                .all(|r| matches!(r, Ok(ControlReply::Statistics(_)))),
+            "{got:?}"
+        );
+        Ok(())
+    }
+
+    /// Three dead engines and a live one cost one timeout, not three, and
+    /// each dead engine reads unreachable in its own place.
+    #[test]
+    fn dead_engines_cost_one_timeout_not_one_each() -> Result<(), TestError> {
+        let fakes = [
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+            FakeEngine::live()?,
+            FakeEngine::dead()?,
+        ];
+        let c = clients(&fakes);
+        let started = std::time::Instant::now();
+        let got = statistics_of_each(c.iter().collect(), &live_permit()?);
+        let took = started.elapsed();
+        assert!(one_timeout(took), "one timeout, not three: {took:?}");
+        let outcomes: Vec<String> = got
+            .iter()
+            .map(|r| match r {
+                Ok(_) => "ok".to_owned(),
+                Err(e) => crate::relay::types::fetch_error_outcome(e)
+                    .as_wire_str()
+                    .to_owned(),
+            })
+            .collect();
+        assert_eq!(
+            outcomes,
+            vec!["unreachable", "unreachable", "ok", "unreachable"],
+            "each dead engine unreachable in its own place",
+        );
+        Ok(())
+    }
+
+    /// A reply cut short is suspect, in its own place, and the other engines'
+    /// answers stand.
+    #[test]
+    fn a_cut_reply_is_suspect_and_the_others_stand() -> Result<(), TestError> {
+        let fakes = [FakeEngine::live()?, FakeEngine::cut()?, FakeEngine::live()?];
+        let c = clients(&fakes);
+        let got = statistics_of_each(c.iter().collect(), &live_permit()?);
+        let err = got[1].as_ref().err().ok_or("a cut reply is not counters")?;
+        assert_eq!(
+            crate::relay::types::fetch_error_outcome(err),
+            crate::stats_vocab::StatisticsOutcome::Suspect,
+            "a cut reply arrived, so it is suspect",
+        );
+        assert!(got[0].is_ok() && got[2].is_ok(), "{got:?}");
+        Ok(())
+    }
+
+    /// Answers that arrive last engine first are returned first engine
+    /// first: the late engine's answer is in its own place.
+    #[test]
+    fn answers_arriving_out_of_order_keep_the_given_order() -> Result<(), TestError> {
+        let fakes = [
+            FakeEngine::answering(LIST_BODY, std::time::Duration::from_millis(300))?,
+            FakeEngine::cut()?,
+        ];
+        let c = clients(&fakes);
+        let got = statistics_of_each(c.iter().collect(), &live_permit()?);
+        assert!(got[0].is_ok(), "the late engine's counters first: {got:?}");
+        assert!(
+            got[1].is_err(),
+            "the prompt engine's cut reply second: {got:?}"
+        );
+        Ok(())
+    }
+}
+
+/// [`read_until`]: a read a signal interrupts is retried with what is left
+/// of its timeout, and nothing else is.
+#[cfg(all(test, not(target_arch = "wasm32"), feature = "native"))]
+mod read_until_tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+    use std::io::ErrorKind;
+    use std::time::Instant;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// A clock that moves `step` each time it is read.
+    fn stepping(start: Instant, step: Duration) -> impl Fn() -> Instant {
+        let reads = Cell::new(0_u32);
+        move || {
+            let t = start + step * reads.get();
+            reads.set(reads.get() + 1);
+            t
+        }
+    }
+
+    /// An interrupted read is tried again, and its answer is the answer.
+    #[test]
+    fn an_interrupted_read_is_retried_and_answers() -> Result<(), TestError> {
+        let start = Instant::now();
+        let clock = stepping(start, Duration::from_millis(100));
+        let mut tries = 0;
+        let got = read_until(start + Duration::from_secs(2), &clock, |_| {
+            tries += 1;
+            if tries < 3 {
+                Err(ErrorKind::Interrupted.into())
+            } else {
+                Ok(42)
+            }
+        })?;
+        assert_eq!((got, tries), (42, 3), "the third try answered");
+        Ok(())
+    }
+
+    /// Interrupted until the deadline, the read fails as a timeout does.
+    #[test]
+    fn interrupted_until_the_deadline_is_a_timeout() {
+        let start = Instant::now();
+        let clock = stepping(start, Duration::from_millis(500));
+        let mut tries = 0;
+        let got: std::io::Result<()> = read_until(start + Duration::from_secs(2), &clock, |_| {
+            tries += 1;
+            Err(ErrorKind::Interrupted.into())
+        });
+        assert_eq!(
+            got.map_err(|e| e.kind()),
+            Err(ErrorKind::WouldBlock),
+            "interrupted to the deadline reads as a timeout"
+        );
+        assert_eq!(tries, 4, "tried at 0, 0.5, 1 and 1.5 s, not at 2 s");
+    }
+
+    /// Each try is given only what is left of the timeout.
+    #[test]
+    fn each_try_gets_what_is_left_of_the_timeout() {
+        let start = Instant::now();
+        let clock = stepping(start, Duration::from_millis(600));
+        let given = RefCell::new(Vec::new());
+        let _: std::io::Result<()> = read_until(start + Duration::from_secs(2), &clock, |left| {
+            given.borrow_mut().push(left);
+            Err(ErrorKind::Interrupted.into())
+        });
+        assert_eq!(
+            given.into_inner(),
+            vec![
+                Duration::from_millis(2000),
+                Duration::from_millis(1400),
+                Duration::from_millis(800),
+                Duration::from_millis(200),
+            ],
+            "each try gets only what is left",
+        );
+    }
+
+    /// Any other failure is returned at once, not retried.
+    #[test]
+    fn any_other_failure_is_not_retried() {
+        let start = Instant::now();
+        let clock = stepping(start, Duration::from_millis(1));
+        let mut tries = 0;
+        let got: std::io::Result<()> = read_until(start + Duration::from_secs(2), &clock, |_| {
+            tries += 1;
+            Err(ErrorKind::ConnectionRefused.into())
+        });
+        assert_eq!(
+            got.map_err(|e| e.kind()),
+            Err(ErrorKind::ConnectionRefused),
+            "a refused connection is not retried"
+        );
+        assert_eq!(tries, 1, "tried once");
     }
 }

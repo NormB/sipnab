@@ -75,7 +75,7 @@ fn render_expect(ctx: &QueryContext<'_>) -> bool {
 /// something that cannot be trusted, or stdout refused the answer.
 pub(super) fn relay_holdings(
     cli: &crate::cli::Cli,
-    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    relay: &(dyn crate::relay::reconcile::ReadOnlyRelay + Sync),
     routing: Option<&crate::relay::engines::EngineRouting>,
     permit: &crate::security::transmit_guard::TransmitPermit,
 ) -> i32 {
@@ -119,7 +119,7 @@ pub(super) fn relay_holdings(
 /// cannot be trusted, or stdout refused the answer.
 pub(super) fn relay_sessions(
     cli: &crate::cli::Cli,
-    relay: &dyn crate::relay::reconcile::ReadOnlyRelay,
+    relay: &(dyn crate::relay::reconcile::ReadOnlyRelay + Sync),
     routing: Option<&crate::relay::engines::EngineRouting>,
     permit: &crate::security::transmit_guard::TransmitPermit,
 ) -> i32 {

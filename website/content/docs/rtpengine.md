@@ -482,12 +482,14 @@ The two keys answer one half of that each.
 The second summary arrives when the capture ends:
 
 ```text
-rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent of a ceiling of 66
+rtpengine at 127.0.0.1:22222: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent; 62 of 66 left in the budget, which refills at 33 per hour
 ```
 
 - The capture path handed two streams to the asking thread.
 - Neither of them gained a Call-ID.
-- The run spent four control transactions of the 66 it may spend.
+- The run spent four control transactions. The budget holds 66 at most and
+  refills at 33 an hour, and it held 62 when the capture ended. See
+  [The control-transaction budget](@/docs/relay-engines.md#the-control-transaction-budget-and-how-it-refills).
 
 A count of zero with no reason line beside it is not a failure. The relay
 answered and holds neither port, so that media belongs to something else on
@@ -543,8 +545,9 @@ applies:
   that quietly:
   - A capped first answer earns one wider ask, for up to 1024 Call-IDs.
   - The summary says whether that wider ask landed or failed.
-- **The run spent its transaction ceiling.** sipnab never asked about the
-  port at all.
+- **The engine's transaction budget was empty.** sipnab did not ask about
+  the port. The budget refills at 33 transactions an hour, so sipnab asks
+  about a stream that turns up after that.
 - **The relay does not hold the port.** This one, and only this one, says
   something about the relay: the stream is not its media.
 
