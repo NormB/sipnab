@@ -8878,9 +8878,12 @@ impl Cli {
     }
 
     pub fn validate(&self) -> Result<(), crate::Error> {
-        if self.gate_args.listing_cap_without_a_listing() {
+        if self
+            .gate_args
+            .listing_cap_without_a_relay(self.rtp_args.rtpengine_control.is_some())
+        {
             return Err(crate::Error::CliValidation(
-                "--relay-holdings-max bounds --relay-holdings or --relay-sessions and needs one of them"
+                "--relay-holdings-max sets how many held calls a relay ask covers and needs --rtpengine-control"
                     .to_string(),
             ));
         }
@@ -15605,5 +15608,63 @@ mod one_shot_plumbing_tests {
         let cli = Cli::try_parse_from(["sipnab", "-N", "-I", "x.pcap"])?;
         assert!(cli.one_shots().iter().all(|s| !s.active));
         Ok(())
+    }
+
+    /// `--relay-holdings-max` sets the default for every surface that asks
+    /// the relay, so it is accepted beside `--rtpengine-control` with no
+    /// one-shot flag: a TUI, REST or MCP run takes it.
+    #[test]
+    fn the_cap_flag_sets_the_default_for_a_tui_rest_or_mcp_run()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for extra in [
+            &[][..],
+            &["-N", "--api", "127.0.0.1:0", "--api-allow-relay-query"][..],
+        ] {
+            let mut argv = vec![
+                "sipnab",
+                "-L",
+                "127.0.0.1:0",
+                "--rtpengine-control",
+                "127.0.0.1:22222",
+                "--relay-holdings-max",
+                "64",
+            ];
+            argv.extend_from_slice(extra);
+            Cli::try_parse_from_args(&argv)?
+                .validate()
+                .map_err(|e| format!("{argv:?} must validate: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// Without a relay to ask, `--relay-holdings-max` is refused, naming
+    /// `--rtpengine-control`.
+    #[test]
+    fn the_cap_flag_needs_a_relay_to_ask() -> Result<(), Box<dyn std::error::Error>> {
+        let e =
+            Cli::try_parse_from_args(["sipnab", "-L", "127.0.0.1:0", "--relay-holdings-max", "5"])?
+                .validate()
+                .err()
+                .map(|e| e.to_string())
+                .ok_or("a cap with no relay to ask is refused")?;
+        assert!(e.contains("--rtpengine-control"), "{e}");
+        Ok(())
+    }
+
+    /// `--relay-holdings-max 0` is refused in the cap rule's own words.
+    #[test]
+    fn the_cap_flag_refuses_zero_in_the_rules_words() {
+        let e = Cli::try_parse_from_args([
+            "sipnab",
+            "--rtpengine-control",
+            "127.0.0.1:22222",
+            "--relay-holdings",
+            "--relay-holdings-max",
+            "0",
+        ])
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+        assert!(e.contains("at least 1") && e.contains("1024"), "{e}");
     }
 }

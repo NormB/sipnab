@@ -243,6 +243,31 @@ impl Holdings {
         serde_json::from_str(&text).unwrap_or_else(|_| json!({ "outcome": "suspect" }))
     }
 
+    /// [`Self::body`], with `cap_clamped` when the cap asked for was above
+    /// the ceiling and lowered to it.
+    #[must_use]
+    pub fn body_capped(&self, clamp: Option<&crate::relay::scan_cap::CapClamp>) -> Value {
+        let mut body = self.body();
+        if let (Some(clamp), Some(fields)) = (clamp, body.as_object_mut()) {
+            fields.insert("cap_clamped".to_string(), json!(clamp));
+        }
+        body
+    }
+
+    /// [`Self::render`], with the clamp's sentence first when the cap asked
+    /// for was above the ceiling and lowered to it.
+    #[must_use]
+    pub fn render_capped(
+        &self,
+        format: ReportFormat,
+        clamp: Option<&crate::relay::scan_cap::CapClamp>,
+    ) -> String {
+        match clamp {
+            Some(clamp) => format!("{}\n{}", clamp.sentence(), self.render(format)),
+            None => self.render(format),
+        }
+    }
+
     /// The relay one engine's answer names.
     fn relay_of(engine: &Self) -> String {
         match engine {
@@ -654,6 +679,71 @@ mod tests {
             outcomes,
             vec!["unreachable", "ok", "unreachable", "unreachable"],
             "each dead engine unreachable in its own place",
+        );
+        Ok(())
+    }
+
+    const CLAMP: crate::relay::scan_cap::CapClamp = crate::relay::scan_cap::CapClamp {
+        requested: 5000,
+        ceiling: 1024,
+    };
+
+    /// A clamped holdings answer carries `cap_clamped` in its body.
+    #[test]
+    fn a_clamped_answer_carries_the_clamp_in_its_body() -> Result<(), TestError> {
+        let answer = ask(
+            &Scripted(listed(&["a@192.0.2.10"])),
+            &permit()?,
+            1024,
+            at()?,
+        );
+        let body = answer.body_capped(Some(&CLAMP));
+        assert_eq!(
+            body["outcome"], "ok",
+            "A clamped holdings answer carries `cap_clamped` in its body"
+        );
+        assert_eq!(
+            body["cap_clamped"],
+            json!({ "requested": 5000, "ceiling": 1024 }),
+            "{body}"
+        );
+        Ok(())
+    }
+
+    /// An unclamped answer's body is exactly [`Holdings::body`].
+    #[test]
+    fn an_unclamped_answer_is_the_plain_body() -> Result<(), TestError> {
+        let answer = ask(&Scripted(listed(&["a@192.0.2.10"])), &permit()?, 32, at()?);
+        assert_eq!(
+            answer.body_capped(None),
+            answer.body(),
+            "An unclamped answer's body is exactly [`Holdings::body`]"
+        );
+        assert!(
+            answer.body_capped(None).get("cap_clamped").is_none(),
+            "An unclamped answer's body is exactly [`Holdings::body`]"
+        );
+        Ok(())
+    }
+
+    /// A clamped answer's text states the clamp.
+    #[test]
+    fn a_clamped_answer_states_the_clamp_in_text() -> Result<(), TestError> {
+        let answer = ask(
+            &Scripted(listed(&["a@192.0.2.10"])),
+            &permit()?,
+            1024,
+            at()?,
+        );
+        let text = answer.render_capped(ReportFormat::Text, Some(&CLAMP));
+        assert!(
+            text.contains("Asked for 5000 calls; the ceiling is 1024"),
+            "{text}"
+        );
+        assert_eq!(
+            answer.render_capped(ReportFormat::Text, None),
+            answer.render(ReportFormat::Text),
+            "A clamped answer's text states the clamp"
         );
         Ok(())
     }

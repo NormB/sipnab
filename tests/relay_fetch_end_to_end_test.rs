@@ -1480,6 +1480,81 @@ fn relay_sessions_is_one_answer_on_the_cli_rest_and_mcp() -> Result<(), TestErro
     Ok(())
 }
 
+/// `--relay-holdings-max` on a server run is the cap of a REST and an MCP
+/// sessions scan that name no `max_calls` (RELAY-S0): both list for it and
+/// query no more than it.
+#[test]
+fn the_cap_flag_is_the_default_of_a_rest_and_an_mcp_scan() -> Result<(), TestError> {
+    let relay = holding_sessions()?;
+    let mut server = Run::start(
+        &relay,
+        &[
+            "--api",
+            "127.0.0.1:0",
+            "--api-allow-relay-query",
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-bind",
+            "127.0.0.1:0",
+            "--mcp-allow-relay-query",
+            "--relay-holdings-max",
+            "1",
+        ],
+    )?;
+    assert!(
+        server.wait_stderr("REST API listening on ")
+            && server.wait_stderr("MCP HTTP server listening on "),
+        "{}",
+        server.err.join("\n")
+    );
+    let api = server
+        .err
+        .iter()
+        .find_map(|l| l.split("REST API listening on ").nth(1))
+        .map(|s| s.trim().trim_start_matches("http://").to_string())
+        .ok_or("the REST listening address")?;
+    let mcp_addr = server
+        .err
+        .iter()
+        .find_map(|l| l.split("MCP HTTP server listening on ").nth(1))
+        .map(|a| a.trim().to_string())
+        .ok_or("the MCP listening address")?;
+    let rest = http_get_json(&api, "/v1/relay/sessions?scan=true")?;
+    let session = mcp::establish_session(&mcp_addr).map_err(|e| e.to_string())?;
+    let reply = mcp::session_request(
+        &mcp_addr,
+        &session,
+        2,
+        "tools/call",
+        serde_json::json!({
+            "name": "query_relay",
+            "arguments": {"sessions": true, "scan": true}
+        }),
+    )
+    .map_err(|e| e.to_string())?;
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .ok_or_else(|| format!("a text block: {reply}"))?;
+    let answer: serde_json::Value = serde_json::from_str(text)?;
+    drop(server.finish());
+    for (side, v) in [("REST", &rest), ("MCP", &answer["sessions"])] {
+        assert_eq!(v["cap"], 1, "{side}: {v}");
+        assert_eq!(v["list_limit"], 1, "{side}: {v}");
+        assert_eq!(
+            v["calls"].as_array().map(Vec::len),
+            Some(1),
+            "{side} queried one call: {v}"
+        );
+        assert_eq!(
+            v["not_queried"].as_array().map(Vec::len),
+            Some(1),
+            "{side} names the other: {v}"
+        );
+    }
+    Ok(())
+}
+
 /// A run reading a file holds no permit to transmit: `--relay-sessions` asks
 /// nothing, says why and exits 2, and the relay double receives zero
 /// datagrams.

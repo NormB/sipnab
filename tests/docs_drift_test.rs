@@ -6104,7 +6104,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/internals/testing.md (+1), the dead-engine timing table in
     // docs/relay-engines.md (+1), and their site mirrors (+1 each). Counted
     // per file against origin/main 5dc6e5f5b.
-    const EXPECTED_TABLES: usize = 1437;
+    // 1437 -> 1439 (RELAY-S0): the cap-rule table of "Choose how many held
+    // calls one ask covers" in docs/relay-statistics.md (+1) and its site
+    // mirror (+1). Counted per file against origin/main 82472045e: no other
+    // changed page gained or lost a table.
+    const EXPECTED_TABLES: usize = 1439;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

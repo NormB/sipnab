@@ -5250,7 +5250,10 @@ It closes the gap a passive decoder cannot.
   response.
 
 These are the same holdings the MCP `query_relay` tool lists. `?max_calls=<N>`
-caps the list, and the relay marks the rest `truncated`.
+caps the list, and the relay marks the rest `truncated`. Without it the cap is
+`--relay-holdings-max`, or 32. Above 1024, sipnab asks for 1024 and the body
+carries `cap_clamped` with the number asked for and the ceiling.
+`max_calls=0` is a 400 problem and sends nothing.
 
 ```bash
 curl -s -H "Authorization: Bearer $SIPNAB_API_KEY" "http://127.0.0.1:8080/v1/relay/holdings?max_calls=500" | jq .
@@ -5289,7 +5292,11 @@ values a program keys on.
 What the live relay holds, and whether media reaches it each way.
 
 - It sends one `list`, then one `query` for `?call_id=<CALL-ID>` and, with
-  `?scan=true`, one per held call, up to 32 in all.
+  `?scan=true`, one per held call, up to the cap in all: `?max_calls=<N>`,
+  or `--relay-holdings-max`, or 32. Above 1024, sipnab asks for 1024 and
+  the body carries `cap_clamped`. `max_calls=0` is a 400 problem and sends
+  nothing. See
+  [Choose how many held calls one ask covers](relay-statistics.md#choose-how-many-held-calls-one-ask-covers).
 - It TRANSMITS, so it sits behind `--api-allow-relay-query` on a live source,
   and reads `not_permitted`/`not_configured` otherwise.
 - Each party's RTP socket gets a `verdict` from the relay's own counters and

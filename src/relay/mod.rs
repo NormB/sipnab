@@ -43,6 +43,7 @@ pub mod engines;
 pub mod fan_out;
 pub mod reconcile;
 pub mod rtpproxy;
+pub mod scan_cap;
 pub mod types;
 
 use std::sync::atomic::{AtomicU64, Ordering};

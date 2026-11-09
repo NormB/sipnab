@@ -1765,6 +1765,28 @@
         ],
         "type": "object"
       },
+      "CapClamp": {
+        "description": "A cap that was asked for above the ceiling of 1024 and lowered to it.",
+        "properties": {
+          "ceiling": {
+            "description": "The ceiling it was lowered to; the ask covered at most this many.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "requested": {
+            "description": "The number of calls asked for.",
+            "format": "int32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "requested",
+          "ceiling"
+        ],
+        "type": "object"
+      },
       "Capabilities": {
         "description": "What this build can do and what the operator turned on: the machine\ncontract a client reads before it asks, so a refusal it could have\npredicted does not read as a dead end. The build fields are the same the\nMCP `server_capabilities` tool returns — one canonical `compiled_features`\nlist — paired with the REST server's own runtime opt-ins.",
         "properties": {
@@ -4828,6 +4850,17 @@
               "null"
             ]
           },
+          "cap_clamped": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CapClamp",
+                "description": "Present when the cap asked for was above 1024 and was lowered to\nit: the number asked for and the ceiling."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "detail": {
             "description": "What happened, on a non-`ok` outcome; on `ok`, absent unless the\nrelay's `list` was not answered.",
             "type": [
@@ -4958,6 +4991,17 @@
             "type": [
               "array",
               "null"
+            ]
+          },
+          "cap_clamped": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/CapClamp",
+                "description": "Present when `max_calls` was above 1024 and the relay was asked\nfor 1024 (holdings list): the number asked for and the ceiling."
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "detail": {
@@ -10259,11 +10303,11 @@
     },
     "/v1/relay/holdings": {
       "get": {
-        "description": "Asks the configured relay for every Call-ID it is holding right now. This TRANSMITS: it puts one control request on the network per call, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. It closes the gap a passive decoder cannot — a call already in progress when sipnab started has no control exchange left to read — which is exactly the case during incident response. The same holdings the MCP `query_relay` tool lists. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
+        "description": "Asks the configured relay for every Call-ID it is holding right now, up to `max_calls` (omitted: `--relay-holdings-max`, or 32; above 1024 it is lowered to 1024 and `cap_clamped` names the number asked for and the ceiling). This TRANSMITS: it puts one control request on the network, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. It closes the gap a passive decoder cannot — a call already in progress when sipnab started has no control exchange left to read — which is exactly the case during incident response. The same holdings the MCP `query_relay` tool lists. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx. `max_calls=0` is a 400.",
         "operationId": "get_relay_holdings",
         "parameters": [
           {
-            "description": "The most Call-IDs to ask for; the relay marks the rest `truncated`.\nOmitted takes the shared default.",
+            "description": "The most Call-IDs to ask for; the relay marks the rest `truncated`.\nOmitted takes `--relay-holdings-max`, or 32. Above 1024 it is lowered\nto 1024 and the answer says so in `cap_clamped`; 0 is a 400.",
             "in": "query",
             "name": "max_calls",
             "required": false,
@@ -10284,6 +10328,16 @@
               }
             },
             "description": "outcome=ok with the held Call-IDs, or a classification."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`max_calls` is 0. Nothing was sent."
           },
           "401": {
             "content": {
@@ -10377,7 +10431,7 @@
     },
     "/v1/relay/sessions": {
       "get": {
-        "description": "Asks the configured relay for its held calls (`list`), then `query` for `call_id` and, with `scan=true`, for every held call up to 32. For each party's RTP socket it returns a verdict from the relay's own counters and clock: `never_received` (0 packets in and the socket never `confirmed`), `stalled` (its `last packet` more than 2 s behind the newest in the same reply), `flowing`, or `not_reported`. A call with an early media branch has its sockets shown and no verdict. Calls listed and not queried are named in `not_queried`; `truncated` is true when `list` returned as many as asked for. Every value is `relay_reported`, and an absent value is absent, never 0. This TRANSMITS, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. The same snapshot `--relay-sessions --json` prints and the MCP `query_relay` tool returns with `sessions: true`. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
+        "description": "Asks the configured relay for its held calls (`list`), then `query` for `call_id` and, with `scan=true`, for every held call up to the cap, `call_id` included: `max_calls`, or `--relay-holdings-max`, or 32. A cap above 1024 is lowered to 1024 and `cap_clamped` names the number asked for and the ceiling; `max_calls=0` is a 400 and sends nothing. For each party's RTP socket it returns a verdict from the relay's own counters and clock: `never_received` (0 packets in and the socket never `confirmed`), `stalled` (its `last packet` more than 2 s behind the newest in the same reply), `flowing`, or `not_reported`. A call with an early media branch has its sockets shown and no verdict. Calls listed and not queried are named in `not_queried`; `truncated` is true when `list` returned as many as asked for. Every value is `relay_reported`, and an absent value is absent, never 0. This TRANSMITS, so it is off unless `--api-allow-relay-query` is set on a live source, and answers `not_permitted`/`not_configured` otherwise. The same snapshot `--relay-sessions --json` prints and the MCP `query_relay` tool returns with `sessions: true`. `outcome` is `ok` or one of five classifications; a refusal is content, not a 4xx.",
         "operationId": "get_relay_sessions",
         "parameters": [
           {
@@ -10390,12 +10444,23 @@
             }
           },
           {
-            "description": "`true` to query every held call too, up to 32 including `call_id`.",
+            "description": "`true` to query every held call too, up to the cap including\n`call_id`.",
             "in": "query",
             "name": "scan",
             "required": false,
             "schema": {
               "type": "boolean"
+            }
+          },
+          {
+            "description": "The most held calls to cover: the `list` limit and the most calls a\nscan queries. Omitted takes `--relay-holdings-max`, or 32. Above 1024\nit is lowered to 1024 and the answer says so in `cap_clamped`; 0 is a\n400.",
+            "in": "query",
+            "name": "max_calls",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "minimum": 0,
+              "type": "integer"
             }
           }
         ],
@@ -10409,6 +10474,16 @@
               }
             },
             "description": "outcome=ok with the snapshot, or a classification."
+          },
+          "400": {
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`max_calls` is 0. Nothing was sent."
           },
           "401": {
             "content": {

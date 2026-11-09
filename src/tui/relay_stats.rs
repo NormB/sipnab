@@ -49,6 +49,10 @@ pub struct TuiRelayAccess {
     /// The run's engine rule, when one is configured: which engine to ask
     /// about one call, chosen from its SDP.
     pub routing: Option<Arc<crate::relay::engines::EngineRouting>>,
+    /// `--relay-holdings-max`: the operator's cap on the held calls one
+    /// sessions scan queries. `None` takes the default; see
+    /// [`crate::relay::scan_cap::scan_cap`].
+    pub holdings_max: Option<u32>,
 }
 
 /// Whether the relay-statistics view can ask, or which ST-S4 invocation refusal
@@ -595,6 +599,7 @@ mod tests {
             permit: TransmitPermit::for_source(&live).ok_or("a live source grants a permit")?,
             addr: addr()?,
             routing: None,
+            holdings_max: None,
         })
     }
 
@@ -1101,6 +1106,7 @@ mod tests {
             permit: crate::test_engines::live_permit()?,
             addr: r.default_engine(),
             routing: Some(Arc::new(r)),
+            holdings_max: None,
         };
         let started = std::time::Instant::now();
         let text = do_ask_for(

@@ -4050,6 +4050,7 @@ mod panel_view_tests {
             truncated: Some(false),
             scan: false,
             cap: 32,
+            cap_clamped: None,
             calls: Vec::new(),
             not_queried: ids
                 .iter()

@@ -941,7 +941,14 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // src/app/servers.rs +1 (the member's thread did not start), then +2 in
 // src/app/fleet_member.rs (an empty [fleet] path key, and a token file other
 // users can read). Nothing removed.
-const EXPECTED_TEMPLATES: usize = 596;
+// 596 -> 597 (RELAY-S0, one cap rule): src/app/queries/b4.rs,
+// `--relay-holdings-max: {e}` (a cap of 0 that bypassed the flag's parser,
+// +1); src/cli.rs, `--relay-holdings-max bounds --relay-holdings or
+// --relay-sessions and needs one of them` reworded to `--relay-holdings-max
+// sets how many held calls a relay ask covers and needs
+// --rtpengine-control`, since the flag now sets the TUI's, REST's and MCP's
+// default too (one removed, one added).
+const EXPECTED_TEMPLATES: usize = 597;
 
 // ---------------------------------------------------------------------------
 // The page gates

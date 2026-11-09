@@ -1109,8 +1109,9 @@ static SPECS: &[Spec] = &[
         Kind::Switch,
         &["--rtpengine-control", "127.0.0.1:22222"],
     ),
-    // `--relay-holdings-max`: the relay's `list` limit, from one up; it needs
-    // `--relay-holdings` or `--relay-sessions`.
+    // `--relay-holdings-max`: the cap of every relay ask about the held
+    // calls, from one up (above 1024 it is lowered to 1024); it needs
+    // `--rtpengine-control`.
     (
         "relay-holdings-max",
         Kind::Int {

@@ -216,8 +216,9 @@ Call-ID
 - sipnab sends one `list` request, prints the answer and exits 0. It reads no
   packet.
 - The relay returns at most 32 Call-IDs unless you raise the limit with
-  `--relay-holdings-max <CALLS>`. When it returns as many as you asked for,
-  the answer says the relay may hold more.
+  `--relay-holdings-max <CALLS>`, up to 1024. When it returns as many as you
+  asked for, the answer says the relay may hold more. See
+  [Choose how many held calls one ask covers](#choose-how-many-held-calls-one-ask-covers).
 - `--json` prints the body `GET /v1/relay/holdings` returns, with
   `"truncated"` true or false.
 
@@ -262,8 +263,8 @@ sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 --relay-sessions 2
 
 `-L 127.0.0.1:0` is a HEP listener that receives nothing. It is enough to
 make the run live, so it needs no privileges. sipnab sends one `list`, then
-one `query` per held call, up to `--relay-holdings-max` (32 by default),
-prints the answer and exits 0:
+one `query` per held call, up to `--relay-holdings-max` (32 by default, at
+most 1024), prints the answer and exits 0:
 
 ```text
 Sessions of relay (rtpengine at 192.0.2.11:22222), asked 2026-11-04T16:01:54.067925771+00:00 (relay_reported)
@@ -414,8 +415,9 @@ sipnab -N -L 127.0.0.1:0 --rtpengine-control 192.0.2.11:22222 \
   --mcp --mcp-transport http --mcp-bind 127.0.0.1:18732 --mcp-allow-relay-query
 ```
 
-`GET /v1/relay/sessions` takes `call_id` (one call to query) and `scan=true`
-(every held call, up to 32). Without `scan`, sipnab asks only `list` and
+`GET /v1/relay/sessions` takes `call_id` (one call to query), `scan=true`
+(every held call, up to the cap) and `max_calls` (the cap, or without it
+`--relay-holdings-max`, or 32). Without `scan`, sipnab asks only `list` and
 `call_id`:
 
 ```bash
@@ -527,11 +529,12 @@ Open the relay view with `S`, then press `H`:
   every `--relay-stats-interval` seconds, or every 2 s without it
   (`DEFAULT_REFRESH_SECS` (2) in [`src/tui/relay_sessions.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/relay_sessions.rs)). It asks
   nothing once you close it.
-- `a` asks about every held call once, up to 32. Up and Down move the
-  cursor, and Enter opens that call's directions and socket table.
+- `a` asks about every held call once, up to `--relay-holdings-max` (32 by
+  default). Up and Down move the cursor, and Enter opens that call's
+  directions and socket table.
 - In one call's view, `K` sets each relay socket's counts beside what this
-  capture saw on it, two tiers named and never subtracted. Captured on the
-  harness bridge, starting partway through the call:
+  capture saw on it for that call, two tiers named and never subtracted.
+  Captured on the harness bridge, starting partway through the call:
 
 ```text
 Call sg2-tui-1-121@192.0.2.21: relay sockets beside this capture
@@ -546,8 +549,16 @@ relay_reported is what the relay counted; sipnab_measured is what this capture s
 
 The relay counts from the start of the call and the capture from when it
 started, so the two differ. `not captured` means this capture has no
-stream to or from that socket. On a run that captures no media, such as
-`-L`, every socket reads `not captured`.
+stream of this call to or from that socket. On a run that captures no
+media, such as `-L`, every socket reads `not captured`.
+
+`sipnab_measured` counts only the streams sipnab linked to this Call-ID.
+rtpengine gives a port to a new call once an old call has released it, so
+in a long capture one relay socket can have carried several calls. The count
+leaves out streams linked to another Call-ID. `K` shows streams on the socket
+that sipnab linked to no dialog after the count, apart from it and never
+added to it, as `not linked to a dialog N`: nothing ties them to this call, and
+they can belong to an earlier call on the same port.
 
 ### Check that it worked
 
@@ -582,8 +593,62 @@ stream to or from that socket. On a run that captures no media, such as
   verdict.
 - **A held call reads `not queried`.** The scan stops at the cap, 32 by
   default, the selected call included. Raise it with
-  `--relay-holdings-max`, or ask about that call with
+  `--relay-holdings-max` or `max_calls`, or ask about that call with
   `--relay-sessions-call`.
+- **`Asked for 5000 calls; the ceiling is 1024, so at most 1024 were asked
+  for.`** (`cap_clamped` under `--json`, REST and MCP.) The cap you named
+  is above the ceiling. sipnab asked for 1024 and answered. Ask about the
+  calls you need by Call-ID.
+- **`max_calls: the number of calls must be at least 1`.** A REST 400 or an
+  MCP `invalid_params` error for `max_calls=0`. sipnab sent nothing.
+- **`K` shows `not linked to a dialog N` after the count.** The capture
+  holds streams on that relay socket that sipnab linked to no dialog. They
+  are not counted for this call. A stream links to a dialog when sipnab sees
+  the SDP that names its address, or asks the relay about the stream.
+
+### Choose how many held calls one ask covers
+
+One number bounds every relay ask about the held calls: the Call-IDs a
+`list` asks for, and the calls a sessions scan queries, the selected call
+included. A scan costs the relay one `list` and one `query` per call it
+covers, so this number is what one ask costs it. The same rule applies to
+`--relay-holdings`, `--relay-sessions`, the TUI sessions view, `GET
+/v1/relay/holdings`, `GET /v1/relay/sessions` and the MCP `query_relay`
+tool:
+
+| You give | The cap |
+|---|---|
+| nothing | 32 |
+| `--relay-holdings-max N` | `N`, for every surface of the run |
+| `max_calls=N` on REST or MCP | `N`, for that ask |
+| a number above 1024, either way | 1024, and the answer says so |
+| `0`, either way | refused, and sipnab sends nothing |
+
+Prerequisites: `--rtpengine-control` on the command line, as for every ask on
+this page. sipnab refuses `--relay-holdings-max` without it. sipnab sends a
+`list` above 32 over TCP to the same address, because the answer may not fit
+in one UDP datagram, so a cap above 32 needs rtpengine's `listen-tcp-ng` on
+that address. Without it the `list` fails and the answer reads
+`unreachable`.
+
+To raise the TUI's and the servers' default to 200:
+
+```bash
+sudo sipnab -d eth0 --rtpengine-control 192.0.2.11:22222 \
+  --api 127.0.0.1:18731 --api-allow-relay-query --relay-holdings-max 200
+```
+
+To ask for more than that in one REST request:
+
+```bash
+curl -s "http://127.0.0.1:18731/v1/relay/sessions?scan=true&max_calls=500" | jq '{cap, cap_clamped}'
+```
+
+Check that it worked: the answer's `cap` is the number you gave, and its
+first status line says `queried N of M`, with `N` at most the cap. A cap
+of 5000 reads `"cap": 1024` with `"cap_clamped": {"requested": 5000,
+"ceiling": 1024}`, and the text answer says `the ceiling is 1024`. The
+troubleshooting list above covers the refusals.
 
 ## Compare the relay's count with your capture
 

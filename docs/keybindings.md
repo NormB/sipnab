@@ -625,10 +625,10 @@ shows the view against a live relay.
 |-----|--------|
 | ? | Show the names the relay knows (what you can ask for) |
 | K | Compare the relay's per-call count against this capture's (per-call view only); in one call of the sessions view, set each relay socket's counts beside what this capture saw on it (press again to return) |
-| H | Open the relay sessions: each held call (up to 32) and whether media reaches the relay each way (press again to return to the counters) |
+| H | Open the relay sessions: each held call (up to `--relay-holdings-max`, 32 by default) and whether media reaches the relay each way (press again to return to the counters) |
 | Up / k, Down / j | Scroll; in the sessions list, move the cursor |
 | Enter | In the sessions list, open the call under the cursor: its directions and the relay's counters per socket |
-| a | In the sessions views, ask the relay about every held call once (up to 32) |
+| a | In the sessions views, ask the relay about every held call once (up to `--relay-holdings-max`, 32 by default) |
 | PgUp / PgDn | Page scroll |
 | Home / End | Jump to top/bottom |
 | Esc / S | Close; from one call of the sessions view, Esc returns to the list |

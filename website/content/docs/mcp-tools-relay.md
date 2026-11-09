@@ -115,7 +115,7 @@ may be somebody's laptop now.
 | Name | Type | Legal values | If omitted |
 |---|---|---|---|
 | `call_id?` | string? | One Call-ID to ask the relay about. | **Switches modes** — the tool enumerates what the relay holds. |
-| `max_calls?` | u32? | Enumeration and sessions. A cap on the Call-IDs the relay returns, and on the calls a sessions scan queries. | The relay's own default; 32 for sessions. |
+| `max_calls?` | u32? | Enumeration and sessions. A cap on the Call-IDs the relay returns, and on the calls a sessions scan queries, the selected `call_id` included. 1 to 1024. Above 1024, sipnab asks for 1024 and the answer carries `cap_clamped`. sipnab refuses 0 with `invalid_params`. A query about one `call_id` ignores it. | The operator's `--relay-holdings-max`, or 32. |
 | `sessions?` | bool? | `true` returns the sessions snapshot: `list`, then `query` for `call_id` and, with `scan`, for the held calls, each direction with a verdict. | The tool answers as before. |
 | `scan?` | bool? | With `sessions`, `true` queries every held call too, up to `max_calls`. | The tool asks about `call_id` alone. |
 
@@ -127,6 +127,12 @@ one UDP datagram, and sipnab reports a truncated answer rather than padding it.
 Omit `call_id` to enumerate. `truncated` reports that the relay held more than
 it returned, because "the relay holds these 32 calls" and "the relay returned
 the first 32 of an unknown number" are different statements.
+
+`max_calls` follows the rule every surface follows, in
+[Choose how many held calls one ask covers](@/docs/relay-statistics.md#choose-how-many-held-calls-one-ask-covers).
+sipnab answers a request above 1024 for 1024, never refuses it, and says so:
+`"cap_clamped": {"requested": 100000, "ceiling": 1024}` beside the
+enumeration's `call_ids`, or inside `sessions` for a sessions answer.
 
 When the relay gives no usable answer, the tool reports one of three classes,
 the same ones `--relay-holdings` and `GET /v1/relay/holdings` report:

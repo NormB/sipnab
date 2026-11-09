@@ -1731,7 +1731,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // new sections from the startup section (+2), rtpengine.md links the
     // budget section (+1), and internals/testing.md links both (+2). Counted
     // against origin/main 5dc6e5f5b.
-    const EXPECTED_WIKI_LINKS: usize = 2487;
+    // 2487 -> 2492 (RELAY-S0): the new section "Choose how many held calls
+    // one ask covers" in relay-statistics.md is linked from that page's
+    // holdings list (+1), and from cli-reference.md's --relay-holdings-max
+    // row, relay-engines.md's sessions section, mcp-tools-relay.md's
+    // max_calls text and rest-api.md's sessions route (+1 each). Counted per
+    // file against origin/main 82472045e.
+    const EXPECTED_WIKI_LINKS: usize = 2492;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

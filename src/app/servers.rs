@@ -764,6 +764,9 @@ pub fn start_servers(
                 // The engine rule, from the same resolution the MCP arm
                 // below uses, so both doors choose a call's engine alike.
                 routing: crate::app::relay_engines::routing(cli, selection.relay_engines.as_ref()),
+                // --relay-holdings-max, the default cap of a REST relay ask
+                // that names no `max_calls`; the MCP arm below gets it too.
+                holdings_max: cli.gate_args.relay_holdings_max,
             },
             // The SAME engine the MCP arm below is handed, so both doors read
             // one findings ring. `armed_detections` comes from Selection for the
@@ -985,7 +988,10 @@ pub fn start_servers(
                         .with_engine_routing(crate::app::relay_engines::routing(
                             cli,
                             selection.relay_engines.as_ref(),
-                        )),
+                        ))
+                        // The default cap of an ask that names no
+                        // `max_calls`, as on REST.
+                        .with_relay_holdings_max(cli.gate_args.relay_holdings_max),
                     Err(_) => s,
                 },
                 _ => s,
