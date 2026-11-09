@@ -94,12 +94,16 @@ pub fn not_a_file_kind(file_type: std::fs::FileType) -> Option<&'static str> {
 /// The type is read with `stat(2)`, which opens nothing and does not wait.
 #[must_use]
 pub fn not_a_file(path: &Path) -> Option<String> {
-    let kind = not_a_file_kind(std::fs::metadata(path).ok()?.file_type())?;
-    Some(format!(
+    not_a_file_kind(std::fs::metadata(path).ok()?.file_type()).map(not_a_file_reason)
+}
+
+/// The text [`not_a_file`] gives for a file of type `kind`. Pure.
+fn not_a_file_reason(kind: &str) -> String {
+    format!(
         "is {kind}, not a file: sipnab reads a capture from its start more than once, \
          and a pipe, a FIFO or a device can be read only once. Save the capture to a file \
          and name that file"
-    ))
+    )
 }
 
 /// [`open_offline`] with explicit inflation limits.
@@ -112,52 +116,84 @@ pub fn open_offline_with(
     path: &Path,
     limits: &crate::capture::archive::Limits,
 ) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    if let Some(why) = not_a_file(path) {
+        anyhow::bail!("'{}' {why}", crate::capture::archive::source_name(path));
+    }
+    open_classified(
+        path,
+        crate::capture::archive::container_format(path),
+        || Ok(pcap::Capture::from_file(path)?),
+        || crate::capture::archive::expand(path, limits),
+    )
+}
+
+/// [`open_offline_with`] for a file opened up front, read through `file`:
+/// `path` is the name it goes by and is never opened.
+///
+/// # Errors
+///
+/// As [`open_offline_with`]. The file's type was checked when it was opened
+/// ([`open_set_up_front`]).
+fn open_offline_up_front(
+    path: &Path,
+    file: &std::fs::File,
+    limits: &crate::capture::archive::Limits,
+) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+    let format =
+        rewound(file).and_then(|mut f| crate::capture::archive::container_format_in(&mut f));
+    open_classified(
+        path,
+        format,
+        || Ok(capture_from_descriptor(rewound(file)?)?),
+        || crate::capture::archive::expand_opened(rewound(file)?, path, limits),
+    )
+}
+
+/// Open the capture at `path`, whose leading bytes sniffed as `format`: with
+/// `open_capture` when it is a capture (or something libpcap will judge),
+/// through `expand` when it is a compressed capture, and not at all when it
+/// is an archive of several or a format this build does not unwrap.
+///
+/// One rule for a file opened by path and for one opened up front, so the
+/// two cannot come to accept different files.
+fn open_classified(
+    path: &Path,
+    format: std::io::Result<Option<crate::capture::archive::Format>>,
+    open_capture: impl FnOnce() -> Result<pcap::Capture<pcap::Offline>>,
+    expand: impl FnOnce() -> std::io::Result<crate::capture::archive::Expansion>,
+) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
     use crate::capture::archive;
 
-    if let Some(why) = not_a_file(path) {
-        anyhow::bail!("'{}' {why}", archive::source_name(path));
-    }
-
-    match archive::container_format(path) {
+    match format {
         Ok(Some(f)) if archive::unwraps(f) => {}
         Ok(Some(other)) => anyhow::bail!(
             "Failed to open '{}': {}",
-            crate::capture::archive::source_name(path),
+            archive::source_name(path),
             archive::SkipReason::Unsupported(other)
         ),
         // A capture, or something libpcap will judge and name.
         Ok(None) | Err(_) => {
-            let cap = pcap::Capture::from_file(path).with_context(|| {
-                format!(
-                    "Failed to open pcap file '{}'",
-                    crate::capture::archive::source_name(path)
-                )
+            let cap = open_capture().with_context(|| {
+                format!("Failed to open pcap file '{}'", archive::source_name(path))
             })?;
             return Ok((cap, None));
         }
     }
 
-    let exp = archive::expand(path, limits).with_context(|| {
-        format!(
-            "Failed to unpack '{}'",
-            crate::capture::archive::source_name(path)
-        )
-    })?;
+    let exp =
+        expand().with_context(|| format!("Failed to unpack '{}'", archive::source_name(path)))?;
     if let Some(stop) = exp.stops.first() {
-        anyhow::bail!(
-            "Failed to open '{}': {stop}",
-            crate::capture::archive::source_name(path)
-        );
+        anyhow::bail!("Failed to open '{}': {stop}", archive::source_name(path));
     }
     // A compressed capture unwraps to exactly one member that keeps the
     // file's own name. Anything else is an archive: a set, not a capture.
-    let own_name = crate::capture::archive::source_name(path).to_string();
+    let own_name = archive::source_name(path);
     match exp.members.as_slice() {
         [only] if only.label == own_name => {
             let cap = pcap::Capture::from_file(&only.path).with_context(|| {
                 format!(
                     "Failed to open decompressed capture from '{}'",
-                    crate::capture::archive::source_name(path)
+                    archive::source_name(path)
                 )
             })?;
             Ok((cap, Some(OfflineGuard { _expansion: exp })))
@@ -166,16 +202,51 @@ pub fn open_offline_with(
             Some(s) => anyhow::bail!("Failed to open '{}': {}", s.label, s.reason),
             None => anyhow::bail!(
                 "Failed to open '{}': it holds no capture",
-                crate::capture::archive::source_name(path)
+                archive::source_name(path)
             ),
         },
         members => anyhow::bail!(
             "'{}' is an archive holding {} capture(s), and this opens one capture. \
              Read it as a set: -I takes an archive the way it takes a directory",
-            crate::capture::archive::source_name(path),
+            archive::source_name(path),
             members.len()
         ),
     }
+}
+
+/// A second descriptor for `file`, positioned at its start.
+///
+/// The two share one read position, so each reader of a member takes one in
+/// turn, and none of them reads while another still does.
+fn rewound(file: &std::fs::File) -> std::io::Result<std::fs::File> {
+    use std::io::Seek as _;
+    let mut dup = file.try_clone()?;
+    dup.seek(std::io::SeekFrom::Start(0))?;
+    Ok(dup)
+}
+
+/// A libpcap handle reading the capture in `file`, which it takes over and
+/// closes when it is dropped.
+///
+/// libpcap does not close the stream it was handed when it refuses the
+/// file, so a member that libpcap refuses keeps one descriptor open until
+/// the process exits. Such a member passed the resolver's probe of its first
+/// packet, so this happens only to a file that changed between that probe
+/// and its read, and the descriptor it was opened up front with is closed
+/// once its read ends, so the run never holds more than one per member.
+///
+/// # Errors
+///
+/// libpcap cannot read the stream as a capture.
+fn capture_from_descriptor(
+    file: std::fs::File,
+) -> Result<pcap::Capture<pcap::Offline>, pcap::Error> {
+    use std::os::fd::IntoRawFd as _;
+    let fd = file.into_raw_fd();
+    // SAFETY: `fd` was taken out of an owned `File`, so no other value owns
+    // or closes it; the returned capture is its sole owner, as
+    // `from_raw_fd` requires.
+    unsafe { pcap::Capture::from_raw_fd(fd) }
 }
 
 /// Read packets from a pcap file and send them through the channel.
@@ -218,7 +289,7 @@ pub fn capture_file(
     // A stored vCon container is not a capture: its messages are rebuilt and
     // sent as pre-parsed packets. See `crate::capture::vcon_input`.
     if crate::capture::vcon_input::is_container_file(path) {
-        let rebuilt = match open_vcon(path, config) {
+        let rebuilt = match open_vcon(Member::by_path(path), config) {
             Ok(rebuilt) => rebuilt,
             Err(e) => {
                 if let Some(ready) = ready_tx {
@@ -420,8 +491,11 @@ fn merged_packet(
 /// A BPF filter is set (it selects frames, and a container holds none), this
 /// build has no vCon reader, or the container is unreadable or invalid. The
 /// error names the file and the schema's reasons.
-fn open_vcon(path: &Path, config: &CaptureConfig) -> Result<crate::capture::vcon_input::Rebuilt> {
-    let name = crate::capture::archive::source_name(path);
+fn open_vcon(
+    member: Member<'_>,
+    config: &CaptureConfig,
+) -> Result<crate::capture::vcon_input::Rebuilt> {
+    let name = crate::capture::archive::source_name(member.path);
     if let Some(bpf) = &config.bpf_filter {
         anyhow::bail!(
             "'{name}' is a stored vCon container, and the BPF filter '{bpf}' cannot apply \
@@ -429,8 +503,7 @@ fn open_vcon(path: &Path, config: &CaptureConfig) -> Result<crate::capture::vcon
              SIP messages. Drop the BPF filter, and select dialogs with --filter instead"
         );
     }
-    let rebuilt = crate::capture::vcon_input::read_file(path)
-        .map_err(|e| anyhow::anyhow!("'{name}': {e}"))?;
+    let rebuilt = member.read_container()?;
     // Reported per container, and not a reason to skip one: the SIP is what
     // is analyzed, and a container a store reshaped is still a record of the
     // call. The analysis carries the same findings.
@@ -522,7 +595,10 @@ pub fn capture_files(
         ..ReadTally::default()
     };
     let mut count: u64 = 0;
-    let result = read_set(paths, config, &tx, ready_tx, &mut tally, &mut count);
+    let up_front = config.open_set_up_front.then(|| open_set_up_front(paths));
+    let result = read_set(
+        paths, up_front, config, &tx, ready_tx, &mut tally, &mut count,
+    );
 
     // Reported before the result is propagated, and on every path out: a
     // filter that fails against file twelve still read eleven, and what
@@ -532,6 +608,164 @@ pub fn capture_files(
     }
     tally.report(count);
     result
+}
+
+/// Open every file of `paths` now, for a set read after the run chroots or
+/// drops privileges ([`CaptureConfig::open_set_up_front`]): one result per
+/// path, in set order.
+///
+/// A file that will not open keeps its error, and the reader reports it on
+/// reaching that file, as it reports a file that will not open by path then.
+/// The descriptors cost one open file each and no memory beyond the
+/// kernel's; `app::bootstrap` fits the set under the open-file limit before
+/// this runs.
+///
+/// A pipe, a FIFO, a device or a socket is refused without being opened, as
+/// [`not_a_file`] refuses it by path, and each file is opened non-blocking
+/// and its type read again from the descriptor, so a FIFO put in a file's
+/// place between the two is refused too rather than waited on.
+pub(crate) fn open_set_up_front(
+    paths: &[std::path::PathBuf],
+) -> Vec<std::io::Result<std::fs::File>> {
+    paths.iter().map(|path| open_up_front(path)).collect()
+}
+
+/// Open one file of a set up front. See [`open_set_up_front`].
+fn open_up_front(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    if let Some(why) = not_a_file(path) {
+        return Err(std::io::Error::other(why));
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    refuse_opened_non_file(file)
+}
+
+/// `file` when its descriptor is a regular file or a directory, refused as
+/// [`not_a_file`] refuses a path otherwise. The check [`open_up_front`] makes
+/// after the open, by descriptor, so a FIFO or device put in a file's place
+/// after the check by path is refused too.
+fn refuse_opened_non_file(file: std::fs::File) -> std::io::Result<std::fs::File> {
+    match not_a_file_kind(file.metadata()?.file_type()) {
+        Some(kind) => Err(std::io::Error::other(not_a_file_reason(kind))),
+        None => Ok(file),
+    }
+}
+
+/// One file of a set as its reader reaches it: the path it goes by, and the
+/// descriptor opened for it up front when the set was.
+///
+/// Every read of a member goes through here, so a member opened up front is
+/// never opened by its path again: after a chroot the path leads nowhere, or
+/// to a different file, and after a privilege drop it may not open.
+#[derive(Debug, Clone, Copy)]
+struct Member<'a> {
+    /// The member's path, which also names it in every log line and packet.
+    path: &'a Path,
+    /// The descriptor opened up front, or `None` to open the path now.
+    up_front: Option<&'a std::fs::File>,
+}
+
+impl<'a> Member<'a> {
+    /// A member read by its path.
+    fn by_path(path: &'a Path) -> Self {
+        Self {
+            path,
+            up_front: None,
+        }
+    }
+
+    /// Whether the member is a regular file, by its descriptor when it has
+    /// one.
+    fn is_regular(&self) -> bool {
+        match self.up_front {
+            Some(file) => file.metadata(),
+            None => self.path.metadata(),
+        }
+        .is_ok_and(|m| m.is_file())
+    }
+
+    /// Whether the member is a stored vCon container.
+    fn is_container(&self) -> bool {
+        match self.up_front {
+            Some(file) => rewound(file).is_ok_and(crate::capture::vcon_input::is_container_in),
+            None => crate::capture::vcon_input::is_container_file(self.path),
+        }
+    }
+
+    /// Read and rebuild the member as a stored vCon container.
+    fn read_container(&self) -> Result<crate::capture::vcon_input::Rebuilt> {
+        let name = crate::capture::archive::source_name(self.path);
+        let rebuilt = match self.up_front {
+            Some(file) => {
+                let file = rewound(file).map_err(|e| anyhow::anyhow!("'{name}': {e}"))?;
+                crate::capture::vcon_input::read_opened(file, self.path)
+            }
+            None => crate::capture::vcon_input::read_file(self.path),
+        };
+        rebuilt.map_err(|e| anyhow::anyhow!("'{name}': {e}"))
+    }
+
+    /// Whether the member is a pcapng whose interfaces disagree.
+    fn is_merged(&self) -> bool {
+        match self.up_front {
+            Some(file) => {
+                rewound(file).is_ok_and(|mut f| crate::capture::merged::is_merged_file(&mut f))
+            }
+            None => crate::capture::merged::is_merged(self.path),
+        }
+    }
+
+    /// Decode the member as a merged pcapng.
+    fn open_merged(&self) -> Result<crate::capture::merged::MergedPcapNg> {
+        match self.up_front {
+            Some(file) => crate::capture::merged::MergedPcapNg::from_file(
+                rewound(file).with_context(|| {
+                    format!(
+                        "Failed to read capture '{}'",
+                        crate::capture::archive::source_name(self.path)
+                    )
+                })?,
+                self.path,
+            ),
+            None => crate::capture::merged::MergedPcapNg::open(self.path),
+        }
+    }
+
+    /// Open the member for libpcap, unwrapping a compressed capture.
+    fn open_for_libpcap(&self) -> Result<(pcap::Capture<pcap::Offline>, Option<OfflineGuard>)> {
+        match self.up_front {
+            Some(file) => {
+                open_offline_up_front(self.path, file, &crate::capture::archive::Limits::for_run())
+            }
+            None => open_offline(self.path),
+        }
+    }
+
+    /// The frames of the member, read through `cap`: mapped when `may_map`
+    /// and the file maps, else through libpcap.
+    fn frames<'c>(&self, cap: &'c mut pcap::Capture<pcap::Offline>, may_map: bool) -> Frames<'c> {
+        let Some(file) = self.up_front else {
+            return Frames::open(cap, self.path, may_map);
+        };
+        let mapped = if may_map {
+            match crate::capture::mapped::MappedPcap::from_file(file) {
+                Ok(mapped) => mapped,
+                Err(e) => {
+                    tracing::debug!(
+                        "Mapping '{}' failed ({e}); reading via libpcap",
+                        crate::capture::archive::source_name(self.path)
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        Frames::from_mapping(cap, mapped)
+    }
 }
 
 /// Set once a run is refused at startup, so the reader stopped by that
@@ -714,6 +948,7 @@ struct SetState<'a> {
 /// tests rather than through a log line.
 fn read_set(
     paths: &[std::path::PathBuf],
+    up_front: Option<Vec<std::io::Result<std::fs::File>>>,
     config: &CaptureConfig,
     tx: &PacketTx,
     ready_tx: Option<crossbeam_channel::Sender<Result<(), String>>>,
@@ -741,8 +976,37 @@ fn read_set(
     // type the filter cannot apply to — in which case the next one inherits
     // it, or the consumer would wait on a signal nothing will ever send.
     let mut ready = ready_tx;
+    let mut up_front = up_front.map(Vec::into_iter);
     for path in std::iter::once(first).chain(rest) {
-        if !read_member(path, config, tx, start, &mut state, &mut ready)? {
+        let opened = up_front.as_mut().map(Iterator::next);
+        let file;
+        let member = match opened {
+            None => Member::by_path(path),
+            Some(Some(Ok(f))) => {
+                file = f;
+                Member {
+                    path,
+                    up_front: Some(&file),
+                }
+            }
+            Some(Some(Err(e))) => {
+                let e = anyhow::anyhow!(
+                    "Failed to open '{}': {e}",
+                    crate::capture::archive::source_name(path)
+                );
+                skip_unopened_member(path, e, &mut state, &mut ready)?;
+                continue;
+            }
+            Some(None) => {
+                let e = anyhow::anyhow!(
+                    "'{}' was not opened with the rest of the set",
+                    crate::capture::archive::source_name(path)
+                );
+                skip_unopened_member(path, e, &mut state, &mut ready)?;
+                continue;
+            }
+        };
+        if !read_member(member, config, tx, start, &mut state, &mut ready)? {
             break;
         }
     }
@@ -769,17 +1033,18 @@ fn read_set(
 /// A BPF filter that will not compile is treated the same wherever it happens.
 /// See [`filter_failure`].
 fn read_member(
-    path: &Path,
+    member: Member<'_>,
     config: &CaptureConfig,
     tx: &PacketTx,
     start: std::time::Instant,
     state: &mut SetState,
     ready_tx: &mut Option<crossbeam_channel::Sender<Result<(), String>>>,
 ) -> Result<bool> {
+    let path = member.path;
     // A set may hold stored vCon containers beside captures: `-I` at a
     // directory of exported containers, or an archive of them.
-    if crate::capture::vcon_input::is_container_file(path) {
-        let rebuilt = match open_vcon(path, config) {
+    if member.is_container() {
+        let rebuilt = match open_vcon(member, config) {
             Ok(rebuilt) => rebuilt,
             Err(e) => return skip_unopened_member(path, e, state, ready_tx),
         };
@@ -794,8 +1059,8 @@ fn read_member(
     // A set may hold a merged pcapng; same up-front check as the single-file
     // path, for the same reason. Skipping it would drop a whole member while
     // the run reported success on the rest.
-    if crate::capture::merged::is_merged(path)
-        && let Ok(merged) = crate::capture::merged::MergedPcapNg::open(path)
+    if member.is_merged()
+        && let Ok(merged) = member.open_merged()
     {
         if let Some(ready) = ready_tx.take() {
             let _ = ready.send(Ok(()));
@@ -809,7 +1074,7 @@ fn read_member(
     }
 
     // `_gz_guard` owns any decompressed temp file and must outlive the read.
-    let (mut cap, _gz_guard) = match open_offline(path) {
+    let (mut cap, _gz_guard) = match member.open_for_libpcap() {
         Ok(opened) => opened,
         Err(e) => return skip_unopened_member(path, e, state, ready_tx),
     };
@@ -843,7 +1108,7 @@ fn read_member(
     // the store and stays there.
     let read = match read_opened_inner(
         &mut cap,
-        path,
+        member,
         config,
         tx,
         ReadTimeline {
@@ -1065,7 +1330,7 @@ fn read_opened(
     tx: &PacketTx,
     timeline: ReadTimeline<'_>,
 ) -> Result<()> {
-    let _ = read_opened_inner(cap, path, config, tx, timeline)?;
+    let _ = read_opened_inner(cap, Member::by_path(path), config, tx, timeline)?;
     Ok(())
 }
 
@@ -1167,11 +1432,12 @@ impl<'a> SendBatcher<'a> {
 /// [`capture_files`], which needs both halves of it.
 fn read_opened_inner(
     cap: &mut pcap::Capture<pcap::Offline>,
-    path: &Path,
+    member: Member<'_>,
     config: &CaptureConfig,
     tx: &PacketTx,
     timeline: ReadTimeline<'_>,
 ) -> Result<FileRead> {
+    let path = member.path;
     let ReadTimeline {
         start,
         count,
@@ -1186,7 +1452,7 @@ fn read_opened_inner(
     // packet, 9% of the cycles of a single-core run (perf, 2026-10-11), and
     // its frame is copied into a fresh allocation per packet. A BPF filter is
     // libpcap's to apply, so a filtered read never maps.
-    let mut frames = Frames::open(cap, path, config.bpf_filter.is_none());
+    let mut frames = member.frames(cap, config.bpf_filter.is_none());
 
     let reader = FileReader {
         tx,
@@ -1218,17 +1484,17 @@ fn read_opened_inner(
         // First and last packet of THIS file, tracked unconditionally: `prev_ts`
         // above is the replay pacing state and is only written in replay mode.
         span: None,
-        batcher: batches_sends(path, replay).then(|| SendBatcher::new(tx)),
+        batcher: batches_sends(member.is_regular(), replay).then(|| SendBatcher::new(tx)),
     };
 
     reader.run(&mut frames, path)
 }
 
-/// Whether the read of `path` batches its sends: only the plain read of a
+/// Whether the read of a file batches its sends: only the plain read of a
 /// regular file does. See [`SendBatcher`] for why replay and non-regular paths
-/// keep the per-packet send.
-fn batches_sends(path: &Path, replay: bool) -> bool {
-    !replay && path.metadata().is_ok_and(|m| m.is_file())
+/// keep the per-packet send. Pure.
+fn batches_sends(regular: bool, replay: bool) -> bool {
+    regular && !replay
 }
 
 /// Log which file is being read, and whether with its original timing.
@@ -1756,6 +2022,7 @@ mod tests {
         let mut count = 0u64;
         read_set(
             &[good, missing, also_good],
+            None,
             &CaptureConfig::default(),
             &tx,
             None,
@@ -1788,7 +2055,7 @@ mod tests {
         let mut prev_ts = None;
         let read = read_opened_inner(
             &mut cap,
-            path,
+            Member::by_path(path),
             config,
             &tx,
             ReadTimeline {
@@ -1964,7 +2231,7 @@ mod tests {
         let mut prev_ts = None;
         let read = read_opened_inner(
             &mut cap,
-            &path,
+            Member::by_path(&path),
             &CaptureConfig::default(),
             &tx,
             ReadTimeline {
@@ -2328,8 +2595,16 @@ mod tests {
         let mut count = 0u64;
         let (tx, _rx) = packet_channel(TEST_CAP);
         let started = std::time::Instant::now();
-        read_set(&[first, second], &config, &tx, None, &mut tally, &mut count)
-            .map_err(|e| format!("both files read: {e:?}"))?;
+        read_set(
+            &[first, second],
+            None,
+            &config,
+            &tx,
+            None,
+            &mut tally,
+            &mut count,
+        )
+        .map_err(|e| format!("both files read: {e:?}"))?;
         let took = started.elapsed();
         assert_eq!(count, 2);
         assert!(
@@ -2362,8 +2637,16 @@ mod tests {
         };
         let mut count = 0u64;
         let (tx, _rx) = packet_channel(TEST_CAP);
-        read_set(&[eth, mac], &config, &tx, None, &mut tally, &mut count)
-            .map_err(|e| format!("an undecodable member must not end the set: {e:?}"))?;
+        read_set(
+            &[eth, mac],
+            None,
+            &config,
+            &tx,
+            None,
+            &mut tally,
+            &mut count,
+        )
+        .map_err(|e| format!("an undecodable member must not end the set: {e:?}"))?;
         assert_eq!(tally.complete, 1, "{tally:?}");
         assert_eq!(tally.skipped, 1, "{tally:?}");
         assert!(!tally.lost, "nothing sipnab could decode was skipped");
@@ -2468,7 +2751,7 @@ mod tests {
         let mut prev_ts = None;
         let read = read_opened_inner(
             &mut cap,
-            path,
+            Member::by_path(path),
             config,
             tx,
             ReadTimeline {
@@ -2586,7 +2869,7 @@ mod tests {
             ..ReadTally::default()
         };
         let mut count = 0u64;
-        let result = read_set(&paths, &config, &tx, None, &mut tally, &mut count);
+        let result = read_set(&paths, None, &config, &tx, None, &mut tally, &mut count);
         assert!(result.is_err());
         assert!(tally.lossy(), "{tally:?}");
         assert_eq!(tally.skipped, 1, "{tally:?}");
@@ -2653,14 +2936,379 @@ mod tests {
     #[test]
     fn only_the_plain_read_of_a_regular_file_batches() -> Result<(), TestError> {
         let regular = sample_pcap();
-        assert!(batches_sends(&regular, false));
-        assert!(!batches_sends(&regular, true), "replay");
+        let is_regular = |p: &Path| Member::by_path(p).is_regular();
+        assert!(batches_sends(is_regular(&regular), false), "a plain read");
+        assert!(!batches_sends(is_regular(&regular), true), "replay");
         let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
-        assert!(!batches_sends(dir.path(), false), "not a regular file");
         assert!(
-            !batches_sends(&dir.path().join("missing"), false),
+            !batches_sends(is_regular(dir.path()), false),
+            "not a regular file"
+        );
+        assert!(
+            !batches_sends(is_regular(&dir.path().join("missing")), false),
             "nothing there"
         );
+        Ok(())
+    }
+
+    // ── A set opened up front (OPS2) ──────────────────────────────────────
+
+    /// What reading a set opened up front produced: the result, the tally,
+    /// the packet count, and the answer readiness was given.
+    type UpFrontRead = (Result<()>, ReadTally, u64, Option<Result<(), String>>);
+
+    /// Read `paths` as a set whose files were opened up front as `up_front`.
+    fn read_up_front(
+        paths: &[std::path::PathBuf],
+        up_front: Vec<std::io::Result<std::fs::File>>,
+        config: &CaptureConfig,
+    ) -> UpFrontRead {
+        let (tx, _rx) = packet_channel(TEST_CAP);
+        let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+        let mut tally = ReadTally {
+            given: paths.len(),
+            ..ReadTally::default()
+        };
+        let mut count = 0u64;
+        let result = read_set(
+            paths,
+            Some(up_front),
+            config,
+            &tx,
+            Some(ready_tx),
+            &mut tally,
+            &mut count,
+        );
+        (result, tally, count, ready_rx.try_recv().ok())
+    }
+
+    /// Two classic pcaps, three frames then two, in `dir`.
+    fn two_pcaps(dir: &Path) -> Result<Vec<std::path::PathBuf>, TestError> {
+        let a = dir.join("a.pcap");
+        let b = dir.join("b.pcap");
+        std::fs::write(&a, pcap_of(3, 1_700_000_000))?;
+        std::fs::write(&b, pcap_of(2, 1_700_000_010))?;
+        Ok(vec![a, b])
+    }
+
+    /// Remove every file of `paths`, so only a descriptor opened before can
+    /// still read it: the position a run is in once it has chrooted, or
+    /// dropped to a user the files are not readable by.
+    fn remove_all(paths: &[std::path::PathBuf]) -> Result<(), TestError> {
+        for p in paths {
+            std::fs::remove_file(p)?;
+        }
+        Ok(())
+    }
+
+    /// A set opened up front is read in full from the descriptors opened
+    /// then, once its paths no longer lead to the files.
+    #[test]
+    fn a_set_opened_up_front_is_read_after_its_paths_are_gone() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let up_front = open_set_up_front(&paths);
+        remove_all(&paths)?;
+        let (result, tally, count, ready) =
+            read_up_front(&paths, up_front, &CaptureConfig::default());
+        result.map_err(|e| format!("the set must read: {e:#}"))?;
+        assert_eq!(ready, Some(Ok(())), "the first member answers readiness");
+        assert_eq!(
+            (tally.complete, tally.skipped, count),
+            (2, 0, 5),
+            "{tally:?}"
+        );
+        assert!(!tally.lossy(), "nothing was lost: {tally:?}");
+        Ok(())
+    }
+
+    /// The libpcap arm reads from the descriptor too: a BPF filter keeps a
+    /// file off the mapping.
+    #[test]
+    fn a_filtered_set_opened_up_front_is_read_through_libpcap() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("sample.pcap");
+        std::fs::copy(sample_pcap(), &path)?;
+        let paths = vec![path];
+        let up_front = open_set_up_front(&paths);
+        remove_all(&paths)?;
+        let config = CaptureConfig {
+            bpf_filter: Some("udp".into()),
+            ..CaptureConfig::default()
+        };
+        let (result, tally, count, _) = read_up_front(&paths, up_front, &config);
+        result.map_err(|e| format!("the set must read: {e:#}"))?;
+        assert_eq!(tally.complete, 1, "{tally:?}");
+        assert!(count > 0, "the filter passes the sample's UDP frames");
+        Ok(())
+    }
+
+    /// A later member whose up-front open failed is skipped and counted as a
+    /// loss, even though its path opens now: the open made before the drop
+    /// is the one that decides, as it is the one the run could make.
+    #[test]
+    fn a_later_member_that_did_not_open_up_front_is_skipped_as_lost() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let mut up_front = open_set_up_front(&paths);
+        up_front[1] = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let (result, tally, count, ready) =
+            read_up_front(&paths, up_front, &CaptureConfig::default());
+        result.map_err(|e| format!("a later member must not fail the set: {e:#}"))?;
+        assert_eq!(ready, Some(Ok(())), "the first member answers readiness");
+        assert_eq!(
+            (tally.complete, tally.skipped, count),
+            (1, 1, 3),
+            "{tally:?}"
+        );
+        assert!(tally.lossy(), "a member that did not open is a loss");
+        Ok(())
+    }
+
+    /// A first member whose up-front open failed fails the set, and
+    /// readiness carries the reason.
+    #[test]
+    fn a_first_member_that_did_not_open_up_front_fails_the_set() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let mut up_front = open_set_up_front(&paths);
+        up_front[0] = Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let (result, _, count, ready) = read_up_front(&paths, up_front, &CaptureConfig::default());
+        assert!(
+            result.is_err(),
+            "the first member decides whether the set is usable"
+        );
+        assert_eq!(count, 0, "a set that failed sends nothing");
+        let reason = match ready {
+            Some(Err(reason)) => reason,
+            other => return Err(format!("readiness must carry the failure: {other:?}").into()),
+        };
+        assert!(
+            reason.contains("a.pcap") && reason.contains("permission denied"),
+            "{reason}"
+        );
+        Ok(())
+    }
+
+    /// Opening a set up front never waits on a FIFO: the open would block
+    /// until a writer appeared, before readiness was ever signaled.
+    #[test]
+    fn opening_a_set_up_front_never_waits_on_a_fifo() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let fifo = dir.path().join("pipe.pcap");
+        let c = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes())?;
+        // SAFETY: `c` is a valid NUL-terminated path; mkfifo only creates it.
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0, "mkfifo");
+        let paths = vec![fifo.clone()];
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let opener = std::thread::spawn(move || {
+            let _ = tx.send(open_set_up_front(&paths));
+        });
+        let Ok(opened) = rx.recv_timeout(std::time::Duration::from_secs(5)) else {
+            // Release the blocked open so the thread ends, then fail.
+            let _ = std::fs::OpenOptions::new().write(true).open(&fifo);
+            let _ = opener.join();
+            return Err("opening a FIFO up front waited for a writer".into());
+        };
+        let _ = opener.join();
+        match opened.as_slice() {
+            [Err(e)] => assert!(e.to_string().contains("a pipe or FIFO"), "{e}"),
+            other => return Err(format!("a FIFO must be refused: {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    /// A file of the set that does not exist keeps its own `NotFound`, and
+    /// the files after it are still opened.
+    #[test]
+    fn opening_a_set_up_front_keeps_a_missing_file_s_error_and_opens_the_rest()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut paths = vec![dir.path().join("gone.pcap")];
+        paths.extend(two_pcaps(dir.path())?);
+        match open_set_up_front(&paths).as_slice() {
+            [Err(e), Ok(_), Ok(_)] => {
+                assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
+            }
+            other => return Err(format!("one error, then two files: {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    /// A socket in the set is refused by type, naming it, without an open.
+    #[test]
+    fn opening_a_set_up_front_refuses_a_socket() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("listening.pcap");
+        let _listener = std::os::unix::net::UnixListener::bind(&path)?;
+        match open_set_up_front(std::slice::from_ref(&path)).as_slice() {
+            [Err(e)] => assert!(e.to_string().contains("is a socket, not a file"), "{e}"),
+            other => return Err(format!("a socket must be refused: {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    /// A character device in the set is refused by type, naming it.
+    #[test]
+    fn opening_a_set_up_front_refuses_a_character_device() -> Result<(), TestError> {
+        let path = std::path::PathBuf::from("/dev/null");
+        match open_set_up_front(std::slice::from_ref(&path)).as_slice() {
+            [Err(e)] => assert!(
+                e.to_string().contains("is a character device, not a file"),
+                "{e}"
+            ),
+            other => return Err(format!("a device must be refused: {other:?}").into()),
+        }
+        Ok(())
+    }
+
+    /// An empty set opens nothing and answers with no results.
+    #[test]
+    fn opening_an_empty_set_up_front_opens_nothing() {
+        assert!(open_set_up_front(&[]).is_empty(), "no paths, no results");
+    }
+
+    /// A descriptor that turns out to be a device after the open is refused
+    /// by its own type, the check that catches a file swapped for a device
+    /// or a FIFO between the check by path and the open.
+    #[test]
+    fn a_descriptor_that_is_a_device_is_refused_by_its_own_type() -> Result<(), TestError> {
+        let err = refuse_opened_non_file(std::fs::File::open("/dev/null")?)
+            .err()
+            .ok_or("a device descriptor must be refused")?;
+        assert!(
+            err.to_string()
+                .contains("is a character device, not a file"),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    /// A stored vCon container opened up front is read from its descriptor.
+    /// Reading one needs the `vcon` feature; without it the refusal below
+    /// holds.
+    #[cfg(feature = "vcon")]
+    #[test]
+    fn a_vcon_container_opened_up_front_is_read_after_its_path_is_gone() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("call.vcon.json");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json"
+            ),
+            &path,
+        )?;
+        let paths = vec![path];
+        let up_front = open_set_up_front(&paths);
+        remove_all(&paths)?;
+        let (result, tally, count, _) = read_up_front(&paths, up_front, &CaptureConfig::default());
+        result.map_err(|e| format!("the container must read: {e:#}"))?;
+        assert_eq!(tally.complete, 1, "{tally:?}");
+        assert!(count > 0, "the container's SIP messages are sent");
+        Ok(())
+    }
+
+    /// In a build without the `vcon` feature a vCon container opened up
+    /// front is refused by its descriptor, naming the feature, as one opened
+    /// by path is: it is still recognized after its path is gone.
+    #[cfg(not(feature = "vcon"))]
+    #[test]
+    fn a_vcon_container_opened_up_front_without_vcon_is_refused_naming_the_feature()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("call.vcon.json");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/vcon/sip-rtp-g711-1966.vcon.json"
+            ),
+            &path,
+        )?;
+        let paths = vec![path];
+        let up_front = open_set_up_front(&paths);
+        remove_all(&paths)?;
+        let (result, _, count, _) = read_up_front(&paths, up_front, &CaptureConfig::default());
+        let err = result
+            .err()
+            .ok_or("a vCon container must be refused without the vcon feature")?;
+        assert!(
+            format!("{err:#}").contains("compiled without the `vcon` feature"),
+            "{err:#}"
+        );
+        assert_eq!(count, 0, "nothing is sent from a refused container");
+        Ok(())
+    }
+
+    /// A merged pcapng opened up front is read from its descriptor.
+    #[test]
+    fn a_merged_pcapng_opened_up_front_is_read_after_its_path_is_gone() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("merged.pcapng");
+        crate::capture::merged::testutil::merged_fixture(&path)?;
+        let paths = vec![path];
+        let up_front = open_set_up_front(&paths);
+        remove_all(&paths)?;
+        let (result, tally, count, _) = read_up_front(&paths, up_front, &CaptureConfig::default());
+        result.map_err(|e| format!("the merged capture must read: {e:#}"))?;
+        assert_eq!((tally.complete, count), (1, 2), "{tally:?}");
+        Ok(())
+    }
+
+    /// A gzip-compressed capture opened up front is unwrapped from its
+    /// descriptor.
+    #[test]
+    fn a_compressed_capture_opened_up_front_is_unwrapped_from_its_descriptor()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("c.pcap.gz");
+        use std::io::Write as _;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&pcap_of(3, 1_700_000_000))?;
+        std::fs::write(&path, gz.finish()?)?;
+        let paths = vec![path];
+        let up_front = open_set_up_front(&paths);
+        remove_all(&paths)?;
+        let (result, tally, count, _) = read_up_front(&paths, up_front, &CaptureConfig::default());
+        result.map_err(|e| format!("the compressed capture must read: {e:#}"))?;
+        assert_eq!((tally.complete, count), (1, 3), "{tally:?}");
+        Ok(())
+    }
+
+    /// A member opened up front is a regular file by its descriptor, so its
+    /// read keeps batching its sends when its path no longer leads to it.
+    #[test]
+    fn a_member_opened_up_front_is_regular_by_its_descriptor() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let file = std::fs::File::open(&paths[0])?;
+        remove_all(&paths)?;
+        let member = Member {
+            path: &paths[0],
+            up_front: Some(&file),
+        };
+        assert!(member.is_regular(), "the descriptor still names the file");
+        let by_path = Member {
+            path: &paths[0],
+            up_front: None,
+        };
+        assert!(!by_path.is_regular(), "the path leads nowhere now");
+        Ok(())
+    }
+
+    /// `capture_files` opens the set up front when the config says so, and
+    /// reads it as it reads one opened file by file.
+    #[test]
+    fn capture_files_reads_a_set_it_opened_up_front() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let paths = two_pcaps(dir.path())?;
+        let config = CaptureConfig {
+            open_set_up_front: true,
+            ..CaptureConfig::default()
+        };
+        let (tx, rx) = packet_channel(TEST_CAP);
+        capture_files(&paths, &config, tx, None).map_err(|e| format!("read: {e:#}"))?;
+        assert_eq!(rx.try_iter().count(), 5, "three frames and two");
         Ok(())
     }
 }

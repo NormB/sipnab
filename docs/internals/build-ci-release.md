@@ -116,7 +116,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 146 `unsafe` blocks are libc FFI.
+- Most of this crate's 149 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -1931,7 +1931,7 @@ RELEASE-FAST C removes that pull request.
   with the `HOMEBREW_TAP_TOKEN` secret.
 - It creates the formula commit with the contents API on a branch of the tap, so GitHub signs it,
   and moves the tap's `main` to it only when GitHub reports the commit verified, as a fast-forward.
-- Every bump made with `git push` before 0.5.240 carries no signature (HOMEBREW-TAP-UNSIGNED).
+- Every bump made with `git push` before 0.5.241 carries no signature (HOMEBREW-TAP-UNSIGNED).
   This change leaves the history of the tap as it is.
 
 A release is a pushed `v*` tag. `release.yml` then runs a matrix of eight builds:

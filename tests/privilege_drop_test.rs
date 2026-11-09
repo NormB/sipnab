@@ -36,6 +36,10 @@
 
 #![cfg(all(unix, feature = "native"))]
 
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
+#[path = "support/tar_build.rs"]
+mod tar_build;
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
@@ -975,7 +979,6 @@ fn a_keylog_that_cannot_be_read_names_the_cause() -> Result<(), TestError> {
 /// read it. The owner and group are numeric because macOS has no group named
 /// `root` (gid 0 is `wheel` there), and `install -g root` fails on it. `dir` itself stays this runner's, so the tempdir can still delete
 /// the files.
-#[cfg(any(all(feature = "hep", feature = "tls"), feature = "api"))]
 fn root_only_files(
     dir: &std::path::Path,
     files: &[(&str, &[u8])],
@@ -1011,8 +1014,8 @@ fn root_only_files(
 /// Error: Failed to write file ...: Permission denied` on stderr. That line is
 /// the profiler's, not sipnab's, and it would fail every assertion that no
 /// secret read was refused. sipnab changes its working directory only when it
-/// chroots, which these runs do not.
-#[cfg(any(all(feature = "hep", feature = "tls"), feature = "api"))]
+/// chroots: it then works in the new root, so a `--chroot` run whose stderr is
+/// checked for `Permission denied` chroots into one of these directories too.
 fn dir_nobody_can_write() -> Result<tempfile::TempDir, TestError> {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir()?;
@@ -1859,5 +1862,825 @@ fn child_resolves_then_chroots_then_drops() -> Result<(), TestError> {
         "the drop inside the chroot reached the account resolved outside it"
     );
     println!("{CHILD_COMPLETE}");
+    Ok(())
+}
+
+// ── OPS2: every file of a set is read after the drop ──────────────────────
+
+/// Frames of a capture that holds no SIP: UDP from 192.0.2.1 to
+/// 198.51.100.1, `count` of them, the first `start_us` after the writer's
+/// base second and each `step_us` after the one before.
+fn udp_frames(count: u64, start_us: u64, step_us: u64) -> Vec<(Vec<u8>, u64)> {
+    let frame = pcap_build::udp_frame([192, 0, 2, 1], [198, 51, 100, 1], 40000, 40002, b"ops2");
+    (0..count)
+        .map(|i| (frame.clone(), start_us + i * step_us))
+        .collect()
+}
+
+/// The bytes of a classic pcap holding `frames`, written through `scratch`.
+fn pcap_bytes(scratch: &std::path::Path, frames: &[(Vec<u8>, u64)]) -> Result<Vec<u8>, TestError> {
+    pcap_build::write_pcap_at(scratch, frames, 1)?;
+    let bytes = std::fs::read(scratch)?;
+    std::fs::remove_file(scratch)?;
+    Ok(bytes)
+}
+
+/// The first file of a set a `--replay` run spends 1.5 seconds in: two
+/// frames 1.5 seconds apart. Every file after it is reached well after the
+/// privilege drop, whatever the scheduler does.
+fn slow_first(scratch: &std::path::Path) -> Result<Vec<u8>, TestError> {
+    pcap_bytes(scratch, &udp_frames(2, 0, 1_500_000))
+}
+
+/// A later file of the set: three frames starting 1.6 seconds after the
+/// first file's first frame, plus 20 milliseconds per `index` so several of
+/// them keep one order.
+fn later(scratch: &std::path::Path, index: u64) -> Result<Vec<u8>, TestError> {
+    pcap_bytes(scratch, &udp_frames(3, 1_600_000 + index * 20_000, 10))
+}
+
+/// Removes a directory as root when it drops, for a directory a root run
+/// may leave root-owned files in: this runner could not remove them.
+struct RootRemoves(std::path::PathBuf);
+
+impl Drop for RootRemoves {
+    fn drop(&mut self) {
+        let _ = Command::new("sudo")
+            .args(["-n", "rm", "-rf", "--"])
+            .arg(&self.0)
+            .status();
+    }
+}
+
+/// A directory every user may create entries in, as `/tmp` is (mode 1777),
+/// given to a root run as its `TMPDIR`, so what the run leaves there can be
+/// listed.
+fn scratch_tmpdir() -> Result<(tempfile::TempDir, RootRemoves), TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir()?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o1777))?;
+    let cleanup = RootRemoves(dir.path().to_path_buf());
+    Ok((dir, cleanup))
+}
+
+/// Run sipnab as root, through `sudo -n env`, with `SIPNAB_LOG=info` and
+/// `TMPDIR=tmpdir`, from a working directory `nobody` can write.
+fn root_sipnab(tmpdir: &std::path::Path, args: &[&std::ffi::OsStr]) -> Result<Output, TestError> {
+    let run_dir = dir_nobody_can_write()?;
+    let mut tmp = std::ffi::OsString::from("TMPDIR=");
+    tmp.push(tmpdir);
+    Ok(Command::new("sudo")
+        .current_dir(run_dir.path())
+        .args(["-n", "env", "SIPNAB_LOG=info"])
+        .arg(tmp)
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(args)
+        .output()?)
+}
+
+/// Assert that a run read all `files` of its set to their end, skipped none,
+/// and exited 0.
+fn assert_read_in_full(out: &Output, files: usize) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the run must read its whole set and exit 0; it exited {:?}:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        stderr.contains(&format!("{files} of {files} file(s) read in full")),
+        "every file of the set must be read in full:\n{stderr}"
+    );
+    assert!(!stderr.contains("Permission denied"), "{stderr}");
+    assert!(!stderr.contains("Skipping"), "{stderr}");
+}
+
+/// The entries left in `dir`.
+fn entries(dir: &std::path::Path) -> Result<Vec<String>, TestError> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        names.push(entry?.file_name().to_string_lossy().into_owned());
+    }
+    Ok(names)
+}
+
+/// Skip a root gate when this runner cannot reach root, announcing it.
+fn root_unavailable(test: &str) -> bool {
+    if sudo_available() {
+        return false;
+    }
+    announce_skip(
+        test,
+        "passwordless sudo is not available, so sipnab cannot be run as root here",
+    );
+    true
+}
+
+/// **A root run reads a root-only member it reaches after the drop.**
+///
+/// Only the first file read used to be opened before the drop; every later
+/// one was opened by path as `nobody` and skipped with `Permission denied`.
+/// `--replay` holds the reader in the first file for 1.5 seconds, so the
+/// second is reached after the drop on every run.
+#[test]
+fn a_root_run_reads_a_root_only_member_it_reaches_after_the_drop() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_reads_a_root_only_member_it_reaches_after_the_drop") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let scratch = dir.path().join("scratch.pcap");
+    let files = root_only_files(
+        dir.path(),
+        &[
+            ("a.pcap", &slow_first(&scratch)?),
+            ("b.pcap", &later(&scratch, 0)?),
+        ],
+    )?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "--replay".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "-I".as_ref(),
+            files[1].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    assert_read_in_full(&out, 2);
+    Ok(())
+}
+
+/// The shape the defect was reported in: no `--replay`, and a first file
+/// large enough (300,000 frames) that the reader is still in it when the run
+/// drops to `nobody`.
+#[test]
+fn a_root_run_reads_every_root_only_member_after_a_large_first_file() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_reads_every_root_only_member_after_a_large_first_file") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let scratch = dir.path().join("scratch.pcap");
+    let big = pcap_bytes(&scratch, &udp_frames(300_000, 0, 1))?;
+    let small = pcap_bytes(&scratch, &udp_frames(3, 86_400_000_000, 10))?;
+    let files = root_only_files(dir.path(), &[("big.pcap", &big), ("small.pcap", &small)])?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "-I".as_ref(),
+            files[1].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    assert_read_in_full(&out, 2);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("Read 300003 packets"), "{stderr}");
+    Ok(())
+}
+
+/// A `--chroot` run reads every member too: after the chroot the members'
+/// paths do not resolve at all, whoever the process is.
+#[test]
+fn a_chrooted_root_run_reads_every_root_only_member() -> Result<(), TestError> {
+    if root_unavailable("a_chrooted_root_run_reads_every_root_only_member") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let scratch = dir.path().join("scratch.pcap");
+    let files = root_only_files(
+        dir.path(),
+        &[
+            ("a.pcap", &slow_first(&scratch)?),
+            ("b.pcap", &later(&scratch, 0)?),
+        ],
+    )?;
+    let jail = dir_nobody_can_write()?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "--replay".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "-I".as_ref(),
+            files[1].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+            "--chroot".as_ref(),
+            jail.path().as_os_str(),
+        ],
+    )?;
+    assert_read_in_full(&out, 2);
+    Ok(())
+}
+
+/// `--cores` reads the same set from reader threads, and opens it before
+/// its own drop: every root-only member is read there as well.
+#[test]
+fn a_cores_root_run_reads_every_root_only_member() -> Result<(), TestError> {
+    if root_unavailable("a_cores_root_run_reads_every_root_only_member") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let scratch = dir.path().join("scratch.pcap");
+    let files = root_only_files(
+        dir.path(),
+        &[
+            ("a.pcap", &slow_first(&scratch)?),
+            ("b.pcap", &later(&scratch, 0)?),
+        ],
+    )?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "--cores".as_ref(),
+            "2".as_ref(),
+            "--json-dialogs".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "-I".as_ref(),
+            files[1].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    assert_read_in_full(&out, 2);
+    Ok(())
+}
+
+/// `count` root-only files, the first one [`slow_first`], in `dir`.
+fn root_only_set(dir: &std::path::Path, count: u64) -> Result<Vec<std::path::PathBuf>, TestError> {
+    let scratch = dir.join("scratch.pcap");
+    let mut named: Vec<(String, Vec<u8>)> = vec![("f000.pcap".to_string(), slow_first(&scratch)?)];
+    for i in 1..count {
+        named.push((format!("f{i:03}.pcap"), later(&scratch, i)?));
+    }
+    let refs: Vec<(&str, &[u8])> = named
+        .iter()
+        .map(|(n, b)| (n.as_str(), b.as_slice()))
+        .collect();
+    root_only_files(dir, &refs)
+}
+
+/// Run sipnab as root under `sh -c 'ulimit <limits>; exec ...'`, reading
+/// `-I dir` with `--replay`, dropping to `nobody`.
+fn root_sipnab_under_limit(
+    limits: &str,
+    dir: &std::path::Path,
+    tmpdir: &std::path::Path,
+) -> Result<Output, TestError> {
+    let run_dir = dir_nobody_can_write()?;
+    let mut tmp = std::ffi::OsString::from("TMPDIR=");
+    tmp.push(tmpdir);
+    Ok(Command::new("sudo")
+        .current_dir(run_dir.path())
+        .args(["-n", "env", "SIPNAB_LOG=info"])
+        .arg(tmp)
+        .args(["sh", "-c"])
+        .arg(format!("ulimit {limits} && exec \"$0\" \"$@\""))
+        .arg(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["-N", "--replay", "-I"])
+        .arg(dir)
+        .args(["--user", "nobody"])
+        .output()?)
+}
+
+/// A set that does not fit under the soft open-file limit, and does under
+/// the hard one, raises the soft limit and is read in full: 30 files and 64
+/// descriptors of headroom against a soft limit of 40.
+#[test]
+fn a_root_run_raises_its_soft_open_file_limit_to_hold_its_set() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_raises_its_soft_open_file_limit_to_hold_its_set") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    root_only_set(dir.path(), 30)?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab_under_limit("-S -n 40", dir.path(), tmpdir.path())?;
+    assert_read_in_full(&out, 30);
+    Ok(())
+}
+
+/// A set that does not fit under the hard open-file limit is refused before
+/// anything is read, with exit 2 and the limit named, instead of losing the
+/// files that would not open.
+#[test]
+fn a_root_run_refuses_a_set_over_its_hard_open_file_limit() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_refuses_a_set_over_its_hard_open_file_limit") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    root_only_set(dir.path(), 30)?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab_under_limit("-n 40", dir.path(), tmpdir.path())?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("30 input file(s)") && stderr.contains("40 open files"),
+        "the refusal names the set and the limit:\n{stderr}"
+    );
+    assert!(!stderr.contains("Read "), "nothing was read:\n{stderr}");
+    Ok(())
+}
+
+// ── OPS2: archive members a root run extracts ─────────────────────────────
+
+/// A root-only `.tar.gz` in `dir` holding [`slow_first`] and [`later`].
+fn root_only_archive(dir: &std::path::Path) -> Result<std::path::PathBuf, TestError> {
+    let scratch = dir.join("scratch.pcap");
+    let a = slow_first(&scratch)?;
+    let b = later(&scratch, 0)?;
+    let archive = tar_build::gzip(&tar_build::tar(&[
+        tar_build::Entry::file("a.pcap", &a),
+        tar_build::Entry::file("b.pcap", &b),
+    ]))?;
+    Ok(root_only_files(dir, &[("set.tar.gz", &archive)])?.remove(0))
+}
+
+/// **A root run reads every member of a root-only archive.** The members
+/// are extracted before the drop, as root, into a 0700 directory as 0600
+/// files; a member reached after the drop could not be opened by `nobody`.
+#[test]
+fn a_root_run_reads_every_member_of_a_root_only_archive() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_reads_every_member_of_a_root_only_archive") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let archive = root_only_archive(dir.path())?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "--replay".as_ref(),
+            "-I".as_ref(),
+            archive.as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    assert_read_in_full(&out, 2);
+    Ok(())
+}
+
+/// A root-only compressed capture (`.pcap.gz`) is unwrapped the same way,
+/// into one extracted member, and is read when reached after the drop.
+#[test]
+fn a_root_run_reads_a_root_only_compressed_member_after_the_drop() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_reads_a_root_only_compressed_member_after_the_drop") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let scratch = dir.path().join("scratch.pcap");
+    let compressed = tar_build::gzip(&later(&scratch, 0)?)?;
+    let files = root_only_files(
+        dir.path(),
+        &[
+            ("a.pcap", &slow_first(&scratch)?),
+            ("b.pcap.gz", &compressed),
+        ],
+    )?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "--replay".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "-I".as_ref(),
+            files[1].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    assert_read_in_full(&out, 2);
+    Ok(())
+}
+
+/// A root run whose `TMPDIR` sits inside a directory the drop user cannot
+/// enter removes its extraction before the drop: `nobody` could not reach
+/// the directory to remove it at exit. macOS gives root such a `TMPDIR`
+/// (its per-user directory under `/var/folders`, mode 0700), and the macOS runner's
+/// tests found the extraction left there.
+#[test]
+fn a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing") {
+        return Ok(());
+    }
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir()?;
+    let archive = root_only_archive(dir.path())?;
+    // A private directory (0700, this runner's), holding a scratch TMPDIR
+    // anyone may write: the scratch is writable, but `nobody` cannot reach it.
+    let private = tempfile::tempdir()?;
+    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))?;
+    let tmp = private.path().join("T");
+    std::fs::create_dir(&tmp)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o1777))?;
+    let _cleanup = RootRemoves(tmp.clone());
+    let out = root_sipnab(
+        &tmp,
+        &[
+            "-N".as_ref(),
+            "-I".as_ref(),
+            archive.as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_read_in_full(&out, 2);
+    assert_eq!(
+        entries(&tmp)?,
+        Vec::<String>::new(),
+        "an extraction the drop user cannot reach must be gone when the run ends:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// A root run removes what it extracted: the extraction directory was made
+/// by root, and the run that must remove it at exit runs as `nobody`.
+#[test]
+fn a_root_run_leaves_no_extracted_member_behind() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_leaves_no_extracted_member_behind") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let archive = root_only_archive(dir.path())?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "-I".as_ref(),
+            archive.as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert_eq!(
+        entries(tmpdir.path())?,
+        Vec::<String>::new(),
+        "the extraction directory must be gone when the run ends:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// A root run whose root-only archive breaks off inside a member is
+/// refused, naming it, and leaves no extraction directory behind.
+#[test]
+fn a_root_run_refuses_a_truncated_root_only_archive_and_leaves_nothing() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_refuses_a_truncated_root_only_archive_and_leaves_nothing") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    // A tar.gz cut off inside its second member: extraction starts, writes
+    // the first member, then fails.
+    let scratch = dir.path().join("scratch.pcap");
+    let a = later(&scratch, 0)?;
+    let b = slow_first(&scratch)?;
+    let mut bad = tar_build::gzip(&tar_build::tar(&[
+        tar_build::Entry::file("a.pcap", &a),
+        tar_build::Entry::file("b.pcap", &b),
+    ]))?;
+    bad.truncate(bad.len() * 3 / 4);
+    let archive = root_only_files(dir.path(), &[("set.tar.gz", &bad)])?.remove(0);
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "-I".as_ref(),
+            archive.as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a corrupt archive must not read:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("set.tar.gz"),
+        "the refusal names the archive:\n{stderr}"
+    );
+    assert!(!stderr.contains("Permission denied"), "{stderr}");
+    assert_eq!(
+        entries(tmpdir.path())?,
+        Vec::<String>::new(),
+        "a refused archive leaves no extraction directory:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// A root run whose later root-only member is not a capture is refused at
+/// startup, naming that member and its format, not a permission the drop
+/// took away: the set is checked as root, before the drop.
+#[test]
+fn a_root_run_refuses_a_later_root_only_member_that_is_not_a_capture() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_refuses_a_later_root_only_member_that_is_not_a_capture") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let scratch = dir.path().join("scratch.pcap");
+    let files = root_only_files(
+        dir.path(),
+        &[
+            ("a.pcap", &slow_first(&scratch)?),
+            ("b.pcap", b"this is not a capture file at all\n"),
+        ],
+    )?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "--replay".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "-I".as_ref(),
+            files[1].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "a set with a non-capture must not run:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("b.pcap") && stderr.contains("unknown file format"),
+        "the refusal names the member and its format:\n{stderr}"
+    );
+    assert!(!stderr.contains("Permission denied"), "{stderr}");
+    assert!(
+        !stderr.contains("Dropped privileges"),
+        "refused before the drop:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// A `--chroot` run reads every member of an archive and removes the
+/// extraction too: after the chroot its path does not resolve.
+#[test]
+fn a_chrooted_root_run_reads_an_archive_and_removes_its_extraction() -> Result<(), TestError> {
+    if root_unavailable("a_chrooted_root_run_reads_an_archive_and_removes_its_extraction") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let archive = root_only_archive(dir.path())?;
+    let jail = dir_nobody_can_write()?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "--replay".as_ref(),
+            "-I".as_ref(),
+            archive.as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+            "--chroot".as_ref(),
+            jail.path().as_os_str(),
+        ],
+    )?;
+    assert_read_in_full(&out, 2);
+    assert_eq!(
+        entries(tmpdir.path())?,
+        Vec::<String>::new(),
+        "the extraction must be gone"
+    );
+    Ok(())
+}
+
+/// A `--cores` run, which drops on its own path, removes its extraction too.
+#[test]
+fn a_cores_root_run_leaves_no_extracted_member_behind() -> Result<(), TestError> {
+    if root_unavailable("a_cores_root_run_leaves_no_extracted_member_behind") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let archive = root_only_archive(dir.path())?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "--cores".as_ref(),
+            "2".as_ref(),
+            "--json-dialogs".as_ref(),
+            "-I".as_ref(),
+            archive.as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    assert_read_in_full(&out, 2);
+    assert_eq!(
+        entries(tmpdir.path())?,
+        Vec::<String>::new(),
+        "the extraction must be gone"
+    );
+    Ok(())
+}
+
+// ── EMBEDDED-SECRETS-AFTER-DROP: TLS secrets embedded in the input ─────────
+
+/// The bytes of a pcapng holding one UDP frame and a Decryption Secrets
+/// Block with one TLS key-log line, built from repeated bytes.
+#[cfg(feature = "tls")]
+fn pcapng_with_dsb(scratch: &std::path::Path) -> Result<Vec<u8>, TestError> {
+    let frame = pcap_build::udp_frame([192, 0, 2, 1], [198, 51, 100, 1], 40000, 40002, b"ops2");
+    let dsb = format!("CLIENT_RANDOM {} {}\n", "0a".repeat(32), "0b".repeat(48));
+    pcap_build::write_pcapng_with_dsb(scratch, &dsb, &frame)?;
+    let bytes = std::fs::read(scratch)?;
+    std::fs::remove_file(scratch)?;
+    Ok(bytes)
+}
+
+/// The line a run logs when the secret embedded in `file` loaded.
+#[cfg(feature = "tls")]
+fn embedded_secret_loaded(out: &Output) {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the run must finish; it exited {:?}:\n{stderr}",
+        out.status.code()
+    );
+    assert!(
+        stderr.contains("TLS decryption active: 1 secret(s) from embedded DSB"),
+        "the secret embedded in the root-only input must load:\n{stderr}"
+    );
+}
+
+/// **A root run loads the TLS secrets embedded in a root-only input.** They
+/// were read after the drop, as `nobody`, and silently lost: the run read
+/// the capture in full and never logged a TLS line.
+#[cfg(feature = "tls")]
+#[test]
+fn a_root_run_loads_tls_secrets_embedded_in_a_root_only_member() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_loads_tls_secrets_embedded_in_a_root_only_member") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let bytes = pcapng_with_dsb(&dir.path().join("scratch.pcapng"))?;
+    let files = root_only_files(dir.path(), &[("dsb.pcapng", &bytes)])?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    embedded_secret_loaded(&out);
+    Ok(())
+}
+
+/// The secrets of a later member of a set load too, not only the first's.
+#[cfg(feature = "tls")]
+#[test]
+fn a_root_run_loads_tls_secrets_embedded_in_a_later_root_only_member() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_loads_tls_secrets_embedded_in_a_later_root_only_member") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let scratch = dir.path().join("scratch.pcap");
+    let first = pcap_bytes(&scratch, &udp_frames(3, 0, 10))?;
+    let bytes = pcapng_with_dsb(&dir.path().join("scratch.pcapng"))?;
+    let files = root_only_files(dir.path(), &[("a.pcap", &first), ("b.pcapng", &bytes)])?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "-I".as_ref(),
+            files[1].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    embedded_secret_loaded(&out);
+    Ok(())
+}
+
+/// A `--chroot` run loads them as well: after the chroot the input's path
+/// does not resolve at all.
+#[cfg(feature = "tls")]
+#[test]
+fn a_chrooted_root_run_loads_tls_secrets_embedded_in_its_input() -> Result<(), TestError> {
+    if root_unavailable("a_chrooted_root_run_loads_tls_secrets_embedded_in_its_input") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let bytes = pcapng_with_dsb(&dir.path().join("scratch.pcapng"))?;
+    let files = root_only_files(dir.path(), &[("dsb.pcapng", &bytes)])?;
+    let jail = dir_nobody_can_write()?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+            "--chroot".as_ref(),
+            jail.path().as_os_str(),
+        ],
+    )?;
+    embedded_secret_loaded(&out);
+    Ok(())
+}
+
+/// A pcapng with secrets inside a root-only archive: its member is
+/// extracted as root, and removed before a chroot, so its secrets must be
+/// read before either.
+#[cfg(feature = "tls")]
+#[test]
+fn a_chrooted_root_run_loads_tls_secrets_embedded_in_an_archive_member() -> Result<(), TestError> {
+    if root_unavailable("a_chrooted_root_run_loads_tls_secrets_embedded_in_an_archive_member") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let bytes = pcapng_with_dsb(&dir.path().join("scratch.pcapng"))?;
+    let archive = tar_build::gzip(&tar_build::tar(&[tar_build::Entry::file(
+        "dsb.pcapng",
+        &bytes,
+    )]))?;
+    let files = root_only_files(dir.path(), &[("set.tar.gz", &archive)])?;
+    let jail = dir_nobody_can_write()?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+            "--chroot".as_ref(),
+            jail.path().as_os_str(),
+        ],
+    )?;
+    embedded_secret_loaded(&out);
+    Ok(())
+}
+
+/// `--wireshark` names a root-only input in the `tshark -r` command it
+/// prints and opens nothing: the command is for the operator to run, so the
+/// input is read by whoever runs it, not by the user this run dropped to.
+#[test]
+fn a_root_run_prints_the_tshark_command_for_a_root_only_input() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_prints_the_tshark_command_for_a_root_only_input") {
+        return Ok(());
+    }
+    let dir = tempfile::tempdir()?;
+    let fixture = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/sip_call.pcap"
+    ))?;
+    let files = root_only_files(dir.path(), &[("call.pcap", &fixture)])?;
+    let (tmpdir, _cleanup) = scratch_tmpdir()?;
+    let out = root_sipnab(
+        tmpdir.path(),
+        &[
+            "-N".as_ref(),
+            "--wireshark".as_ref(),
+            "-I".as_ref(),
+            files[0].as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stdout.contains(&format!("tshark -r '{}'", files[0].display())),
+        "the command names the input:\n{stdout}\n{stderr}"
+    );
+    assert!(!stderr.contains("Permission denied"), "{stderr}");
     Ok(())
 }

@@ -1337,7 +1337,7 @@ jobs:
       # Through the GitHub API, not a local commit: GitHub signs a commit the
       # contents API creates, and scripts/homebrew-tap-push.py moves the
       # tap's main to it only when GitHub reports it verified, as a
-      # fast-forward. Every bump pushed with git before 0.5.240 is unsigned
+      # fast-forward. Every bump pushed with git before 0.5.241 is unsigned
       # (HOMEBREW-TAP-UNSIGNED); the tap's history is left as it is.
       # Requires a HOMEBREW_TAP_TOKEN secret: a PAT (classic: `repo`, or
       # fine-grained: Contents read+write on NormB/homebrew-tap) — the default

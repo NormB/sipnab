@@ -88,7 +88,7 @@ fn ensure_within_size_cap(len: u64, max: u64) -> std::io::Result<()> {
 }
 
 /// Metadata extracted from a pcapng file's non-packet blocks.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PcapngMetadata {
     /// IP → name pairs from Name Resolution Blocks.
     pub names: Vec<(IpAddr, String)>,
@@ -132,7 +132,86 @@ pub struct PcapngMetadata {
 /// # Side effects
 ///
 /// Reads the whole file into memory (bounded by [`max_metadata_file_bytes`]).
+///
+/// A path [`read_before_confinement`] read is answered from that read, error
+/// included, and not opened again.
 pub fn read_pcapng_metadata(path: &Path) -> std::io::Result<PcapngMetadata> {
+    if let Some(advance) = read_in_advance(path) {
+        return match advance {
+            Advance::Read(meta) => Ok(meta),
+            Advance::Failed { kind, text } => Err(std::io::Error::new(kind, text)),
+        };
+    }
+    read_from_disk(path)
+}
+
+/// What [`read_before_confinement`] found for one path.
+#[derive(Debug, Clone)]
+enum Advance {
+    /// The metadata read.
+    Read(PcapngMetadata),
+    /// The read failed: the error's kind and text, which an `io::Error`
+    /// cannot be cloned to keep.
+    Failed {
+        /// The error's kind.
+        kind: std::io::ErrorKind,
+        /// The error's text.
+        text: String,
+    },
+}
+
+/// The metadata of the files this process read before it confined itself,
+/// by the path each was named with.
+///
+/// Extended by [`read_before_confinement`] rather than set once, as
+/// `crate::secret_files` is: a run reads once, and tests in one binary each
+/// read their own uniquely named files.
+static READ_BEFORE: std::sync::OnceLock<
+    parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, Advance>>,
+> = std::sync::OnceLock::new();
+
+/// The advance read of `path`, if there was one.
+fn read_in_advance(path: &Path) -> Option<Advance> {
+    READ_BEFORE.get()?.lock().get(path).cloned()
+}
+
+/// Read the metadata of every file in `paths` now, and answer
+/// [`read_pcapng_metadata`] for those paths from this read from then on.
+///
+/// A root run reads the pcapng metadata of its input, the TLS secrets
+/// embedded in it among it, after it has dropped privileges or chrooted. A
+/// capture only root may read, or whose path the new root does not hold,
+/// then yields nothing, and its secrets were lost without a word. Called
+/// before the chroot and the drop, this reads them while the run still can.
+/// A read that fails is kept as its error, so a reader asking later is told
+/// what the read made before the drop found.
+///
+/// # Side effects
+///
+/// Reads each file (as [`read_pcapng_metadata`] does) and keeps what it
+/// found, the embedded TLS secrets included, for the life of the process.
+pub fn read_before_confinement(paths: &[std::path::PathBuf]) {
+    let read: Vec<(std::path::PathBuf, Advance)> = paths
+        .iter()
+        .map(|path| {
+            let advance = match read_from_disk(path) {
+                Ok(meta) => Advance::Read(meta),
+                Err(e) => Advance::Failed {
+                    kind: e.kind(),
+                    text: e.to_string(),
+                },
+            };
+            (path.clone(), advance)
+        })
+        .collect();
+    READ_BEFORE
+        .get_or_init(|| parking_lot::Mutex::new(std::collections::HashMap::new()))
+        .lock()
+        .extend(read);
+}
+
+/// [`read_pcapng_metadata`] from the file on disk.
+fn read_from_disk(path: &Path) -> std::io::Result<PcapngMetadata> {
     let mut meta = PcapngMetadata::default();
     ensure_within_size_cap(std::fs::metadata(path)?.len(), max_metadata_file_bytes())?;
     let bytes = std::fs::read(path)?;
@@ -586,6 +665,88 @@ mod tests {
     fn missing_file_errors() {
         let meta = read_pcapng_metadata(Path::new("/no/such/file.pcapng"));
         assert!(meta.is_err());
+    }
+
+    // ── EMBEDDED-SECRETS-AFTER-DROP ───────────────────────────────────────
+
+    /// Metadata read before the run confines itself answers for its path
+    /// once the file can no longer be read there, as after a chroot or a
+    /// drop to a user the file is not readable by.
+    #[test]
+    fn metadata_read_before_confinement_answers_after_the_file_is_gone() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = write_pcapng_with(dir.path(), "advance.pcapng", true)?;
+        read_before_confinement(std::slice::from_ref(&path));
+        std::fs::remove_file(&path)?;
+        let meta = read_pcapng_metadata(&path)?;
+        assert_eq!(meta.key_log_blocks, 1, "the DSB read in advance is kept");
+        assert_eq!(meta.tls_secrets.len(), 1, "and its key log");
+        Ok(())
+    }
+
+    /// An advance read that failed stays the answer for its path, even once
+    /// a file is there: after a chroot the same path can name a different
+    /// file, and the read made before is the one about the operator's.
+    #[test]
+    fn an_advance_read_that_failed_is_the_answer_for_its_path() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("late.pcapng");
+        read_before_confinement(std::slice::from_ref(&path));
+        let made = write_pcapng_with(dir.path(), "late.pcapng", true)?;
+        assert_eq!(made, path, "the file is written where the read failed");
+        let err = read_pcapng_metadata(&path)
+            .err()
+            .ok_or("the advance read found no file, and that must stand")?;
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{err}");
+        Ok(())
+    }
+
+    /// A gzip-compressed pcapng read in advance is inflated then, as a read
+    /// from disk inflates it.
+    #[test]
+    fn a_compressed_pcapng_read_in_advance_keeps_its_secrets() -> Result<(), TestError> {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir()?;
+        let plain = write_pcapng_with(dir.path(), "plain.pcapng", true)?;
+        let gz = dir.path().join("advance.pcapng.gz");
+        let mut enc = flate2::write::GzEncoder::new(
+            std::fs::File::create(&gz)?,
+            flate2::Compression::default(),
+        );
+        enc.write_all(&std::fs::read(&plain)?)?;
+        enc.finish()?;
+        read_before_confinement(std::slice::from_ref(&gz));
+        std::fs::remove_file(&gz)?;
+        let meta = read_pcapng_metadata(&gz)?;
+        assert_eq!(
+            meta.key_log_blocks, 1,
+            "the compressed DSB read in advance is kept"
+        );
+        Ok(())
+    }
+
+    /// A path not read in advance is read from disk, as before.
+    #[test]
+    fn a_path_not_read_in_advance_is_read_from_disk() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let other = write_pcapng_with(dir.path(), "other.pcapng", true)?;
+        read_before_confinement(&[dir.path().join("unrelated.pcapng")]);
+        let meta = read_pcapng_metadata(&other)?;
+        assert_eq!(meta.key_log_blocks, 1, "read from disk");
+        Ok(())
+    }
+
+    /// A pcapng with no secrets read in advance answers, after its path is
+    /// gone, with no secrets: the advance read is the answer, not a miss.
+    #[test]
+    fn a_pcapng_without_secrets_read_in_advance_answers_with_none() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = write_pcapng_with(dir.path(), "plain.pcapng", false)?;
+        read_before_confinement(std::slice::from_ref(&path));
+        std::fs::remove_file(&path)?;
+        let meta = read_pcapng_metadata(&path)?;
+        assert_eq!(meta.key_log_blocks, 0, "no DSB, no secrets");
+        Ok(())
     }
 
     /// Write a pcapng carrying an NRB and (optionally) a DSB.

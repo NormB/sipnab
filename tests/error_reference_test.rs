@@ -941,7 +941,11 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // src/app/servers.rs +1 (the member's thread did not start), then +2 in
 // src/app/fleet_member.rs (an empty [fleet] path key, and a token file other
 // users can read). Nothing removed.
-const EXPECTED_TEMPLATES: usize = 596;
+// 596 -> 598 (OPS2, the -I set opened before the drop): src/app/bootstrap.rs
+// +3 (set_fd_budget's refusal, the failed soft-limit raise, and the warning
+// when the archive extraction cannot be handed over) and -1 (the --cores
+// refusal set_fd_budget replaces).
+const EXPECTED_TEMPLATES: usize = 598;
 
 // ---------------------------------------------------------------------------
 // The page gates

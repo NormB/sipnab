@@ -83,6 +83,17 @@ pub fn is_merged(path: &Path) -> bool {
     is_merged_in(&mut file)
 }
 
+/// [`is_merged`] for a file already open, read from its start.
+///
+/// The `-I` reader of a run that drops privileges opens each file before
+/// the drop, and asks this of the descriptor. The read position is left
+/// wherever the scan stopped.
+#[must_use]
+pub fn is_merged_file(file: &mut std::fs::File) -> bool {
+    use std::io::Seek as _;
+    file.seek(std::io::SeekFrom::Start(0)).is_ok() && is_merged_in(file)
+}
+
 /// The scan itself, over anything readable, so a test can count what it
 /// consumed.
 ///
@@ -167,11 +178,31 @@ impl MergedPcapNg {
     /// Returns an error when the file cannot be read or is not a pcapng the
     /// decoder recognizes.
     pub fn open(path: &Path) -> Result<Self> {
-        use pcap_file::pcapng::{Block, PcapNgReader};
-
         let bytes = std::fs::read(path)
             .with_context(|| format!("Failed to read capture '{}'", path.display()))?;
-        let mut reader = PcapNgReader::new(&bytes[..])
+        Self::decode(&bytes, path)
+    }
+
+    /// [`Self::open`] for a file already open, read from its start, which
+    /// goes by `path`.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open`].
+    pub fn from_file(mut file: std::fs::File, path: &Path) -> Result<Self> {
+        use std::io::{Read as _, Seek as _};
+        let mut bytes = Vec::new();
+        file.seek(std::io::SeekFrom::Start(0))
+            .and_then(|_| file.read_to_end(&mut bytes))
+            .with_context(|| format!("Failed to read capture '{}'", path.display()))?;
+        Self::decode(&bytes, path)
+    }
+
+    /// Decode the pcapng in `bytes`, read from `path`.
+    fn decode(bytes: &[u8], path: &Path) -> Result<Self> {
+        use pcap_file::pcapng::{Block, PcapNgReader};
+
+        let mut reader = PcapNgReader::new(bytes)
             .with_context(|| format!("Not a pcapng file: '{}'", path.display()))?;
 
         // Interface index -> link type. The table the file already carries,

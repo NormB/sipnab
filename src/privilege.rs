@@ -177,26 +177,51 @@ pub fn drop_to(target: &DropTarget) -> Result<()> {
 /// in the TUI). macOS's security model relies on TCC and the app sandbox
 /// rather than uid-based privilege separation, so the drop buys little there.
 pub fn drop_is_skipped(target_user: Option<&str>, no_priv_drop: bool, root: bool) -> bool {
-    if no_priv_drop {
-        tracing::info!("Privilege drop disabled (--no-priv-drop)");
-        return true;
-    }
-    if !root {
-        tracing::debug!("Not running as root, skipping privilege drop");
-        return true;
-    }
-    #[cfg(target_os = "macos")]
-    if target_user.is_none() {
-        tracing::warn!(
+    let skip = drop_skip(target_user, no_priv_drop, root);
+    match skip {
+        Some(DropSkip::Disabled) => tracing::info!("Privilege drop disabled (--no-priv-drop)"),
+        Some(DropSkip::NotRoot) => {
+            tracing::debug!("Not running as root, skipping privilege drop");
+        }
+        Some(DropSkip::MacosWithoutUser) => tracing::warn!(
             "Running as root on macOS without --user; skipping privilege drop \
              to avoid breaking CoreAudio and other per-user services. \
              Pass --user <name> to opt in, or run without sudo."
-        );
-        return true;
+        ),
+        None => {}
+    }
+    skip.is_some()
+}
+
+/// Why a privilege drop is skipped. See [`drop_is_skipped`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropSkip {
+    /// `--no-priv-drop`.
+    Disabled,
+    /// The process is not root, so it has nothing to shed.
+    NotRoot,
+    /// Root on macOS with no `--user`.
+    MacosWithoutUser,
+}
+
+/// Why [`drop_is_skipped`] skips the drop, or `None` when the drop happens.
+/// Pure, and logs nothing, so a step that only needs to know whether the run
+/// will drop can ask without repeating the reason in the log.
+#[must_use]
+pub fn drop_skip(target_user: Option<&str>, no_priv_drop: bool, root: bool) -> Option<DropSkip> {
+    if no_priv_drop {
+        return Some(DropSkip::Disabled);
+    }
+    if !root {
+        return Some(DropSkip::NotRoot);
+    }
+    #[cfg(target_os = "macos")]
+    if target_user.is_none() {
+        return Some(DropSkip::MacosWithoutUser);
     }
     #[cfg(not(target_os = "macos"))]
     let _ = target_user;
-    false
+    None
 }
 
 /// Linux capabilities a live capture needs: `CAP_NET_RAW` to open the packet
@@ -1079,6 +1104,59 @@ mod tests {
     use super::*;
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// A root run with a drop user drops: no reason to skip.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn a_root_run_with_a_user_is_not_skipped() {
+        assert_eq!(
+            drop_skip(Some("nobody"), false, true),
+            None,
+            "root with a user drops"
+        );
+        assert_eq!(
+            drop_skip(None, false, true),
+            None,
+            "root drops to the default user"
+        );
+    }
+
+    /// A run that is not root has nothing to drop.
+    #[test]
+    fn a_run_that_is_not_root_skips_the_drop_as_not_root() {
+        assert_eq!(
+            drop_skip(Some("nobody"), false, false),
+            Some(DropSkip::NotRoot),
+            "not root, nothing to drop"
+        );
+    }
+
+    /// `--no-priv-drop` is the reason given whether or not the run is root,
+    /// and `drop_is_skipped` agrees with `drop_skip` on every input.
+    #[test]
+    fn no_priv_drop_is_the_reason_before_root_is_asked() {
+        assert_eq!(
+            drop_skip(None, true, true),
+            Some(DropSkip::Disabled),
+            "--no-priv-drop as root"
+        );
+        assert_eq!(
+            drop_skip(None, true, false),
+            Some(DropSkip::Disabled),
+            "--no-priv-drop is named before not-root"
+        );
+        for user in [None, Some("nobody")] {
+            for no_drop in [false, true] {
+                for root in [false, true] {
+                    assert_eq!(
+                        drop_is_skipped(user, no_drop, root),
+                        drop_skip(user, no_drop, root).is_some(),
+                        "{user:?} {no_drop} {root}"
+                    );
+                }
+            }
+        }
+    }
     /// A secret file you own that your group or other users can read is
     /// refused, naming the mode, and the same file at 0600 opens. This is the
     /// one rule every secret file sipnab reads goes through.

@@ -186,9 +186,9 @@
       "call": "PlanError::arg(refusal)",
       "count": 1,
       "carries": [
-        "--cores opens all {files} input file(s) before dropping root privileges, and this process may hold {soft_limit} open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read."
+        "sipnab opens all {files} input file(s) before it drops root privileges or chroots, beside {SET_FD_RESERVE} descriptors of its own, and this process may hold at most {hard} open files. Raise the limit (ulimit -n), read fewer files per run, or run as an ordinary user, which opens each file when it is read."
       ],
-      "why": "prepare_cores_inputs returns cores_fd_budget_refusal's one format! literal."
+      "why": "fit_set_under_open_file_limit returns set_fd_budget's one format! literal."
     },
     {
       "file": "src/app/bootstrap.rs",
