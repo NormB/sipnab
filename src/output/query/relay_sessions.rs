@@ -758,7 +758,7 @@ pub struct Routed<'a> {
 /// [`relay_sessions`], with engine selection when `routed` is given.
 #[must_use]
 pub fn relay_sessions_routed(
-    relay: &dyn ReadOnlyRelay,
+    relay: &(dyn ReadOnlyRelay + Sync),
     routed: Option<&Routed<'_>>,
     permit: &TransmitPermit,
     ask: &SessionsAsk<'_>,
@@ -787,48 +787,60 @@ pub fn relay_sessions_routed(
         std::collections::BTreeMap::new();
     let mut listed_at: std::collections::BTreeMap<String, Vec<std::net::SocketAddr>> =
         std::collections::BTreeMap::new();
-    for addr in routing.listing_engines() {
+    // Every engine's `list` at once, so an engine that does not answer costs
+    // one control timeout, not one per engine; the answers are then read in
+    // the engines' order.
+    let engines = routing.listing_engines();
+    let answers = crate::relay::fan_out::ask_each(engines.clone(), |addr| {
+        let mut answer = None;
         with_engine(addr, &mut |r, label| {
-            let mut listing = EngineListing {
-                relay: label.to_string(),
-                reach: "ok".to_string(),
-                detail: None,
-                held: None,
-                truncated: None,
-            };
-            match r.list(permit, ask.list_limit) {
-                Ok(ControlReply::Calls(e)) => {
-                    listing.held = Some(e.call_ids.len());
-                    listing.truncated = Some(e.truncated);
-                    for c in e.call_ids {
-                        let at = listed_at.entry(c.clone()).or_default();
-                        if !at.contains(&addr) {
-                            at.push(addr);
-                        }
-                        let by = listed_by.entry(c).or_default();
-                        if !by.iter().any(|l| l == label) {
-                            by.push(label.to_string());
-                        }
+            answer = Some((label.to_string(), r.list(permit, ask.list_limit)));
+        });
+        answer
+    });
+    for (addr, answer) in engines.into_iter().zip(answers) {
+        let Some((label, listed)) = answer else {
+            continue;
+        };
+        let label = label.as_str();
+        let mut listing = EngineListing {
+            relay: label.to_string(),
+            reach: "ok".to_string(),
+            detail: None,
+            held: None,
+            truncated: None,
+        };
+        match listed {
+            Ok(ControlReply::Calls(e)) => {
+                listing.held = Some(e.call_ids.len());
+                listing.truncated = Some(e.truncated);
+                for c in e.call_ids {
+                    let at = listed_at.entry(c.clone()).or_default();
+                    if !at.contains(&addr) {
+                        at.push(addr);
+                    }
+                    let by = listed_by.entry(c).or_default();
+                    if !by.iter().any(|l| l == label) {
+                        by.push(label.to_string());
                     }
                 }
-                Ok(ControlReply::Refused { reason }) => {
-                    listing.reach = StatisticsOutcome::Refused.as_wire_str().to_string();
-                    listing.detail = Some(format!("{label}: {reason}"));
-                }
-                Ok(_) => {
-                    listing.reach = StatisticsOutcome::Suspect.as_wire_str().to_string();
-                    listing.detail = Some(
-                        "the relay answered with something other than a call list".to_string(),
-                    );
-                }
-                Err(e) => {
-                    let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);
-                    listing.reach = outcome.as_wire_str().to_string();
-                    listing.detail = Some(detail);
-                }
             }
-            listings.push(listing);
-        });
+            Ok(ControlReply::Refused { reason }) => {
+                listing.reach = StatisticsOutcome::Refused.as_wire_str().to_string();
+                listing.detail = Some(format!("{label}: {reason}"));
+            }
+            Ok(_) => {
+                listing.reach = StatisticsOutcome::Suspect.as_wire_str().to_string();
+                listing.detail =
+                    Some("the relay answered with something other than a call list".to_string());
+            }
+            Err(e) => {
+                let (outcome, detail) = super::relay_holdings::fetch_failure(label, &e);
+                listing.reach = outcome.as_wire_str().to_string();
+                listing.detail = Some(detail);
+            }
+        }
+        listings.push(listing);
     }
 
     let mut out = RelaySessions {
@@ -3252,6 +3264,94 @@ mod tests {
         assert!(calls.iter().all(|c| c.get("engine").is_none()), "{body}");
         let nq = body["not_queried"].as_array().ok_or("not_queried")?;
         assert!(nq.iter().all(|c| c.get("engine").is_none()), "{body}");
+        Ok(())
+    }
+
+    /// A routed snapshot of fake engines, the first being the default, and
+    /// how long it took.
+    fn udp_snapshot(
+        fakes: &[crate::test_engines::FakeEngine],
+    ) -> Result<(RelaySessions, std::time::Duration), TestError> {
+        use crate::test_engines::{TIMEOUT, client, routing};
+        let rules = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
+        let default = client(rules.default_engine(), TIMEOUT);
+        let evidence = |_: &str| crate::relay::engines::CallEvidence::default();
+        let routed = Routed {
+            routing: &rules,
+            sdp_of: &evidence,
+        };
+        let started = std::time::Instant::now();
+        let snap = relay_sessions_routed(
+            default.as_ref(),
+            Some(&routed),
+            &permit()?,
+            &ask(None, false, 8),
+            &never,
+            &at,
+        );
+        Ok((snap, started.elapsed()))
+    }
+
+    /// Each engine's listing, as `relay reach`.
+    fn reaches(snap: &RelaySessions) -> Vec<String> {
+        snap.engines
+            .iter()
+            .flatten()
+            .map(|l| format!("{} {}", l.relay, l.reach))
+            .collect()
+    }
+
+    /// Dead engines cost one timeout, and each engine's listing is in its
+    /// configured place.
+    #[test]
+    fn sessions_with_dead_engines_cost_one_timeout() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, one_timeout};
+        let fakes = [
+            FakeEngine::live()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+        ];
+        let (snap, took) = udp_snapshot(&fakes)?;
+        assert!(
+            one_timeout(took),
+            "one timeout, not three: {took:?}: {:?}",
+            snap.engines
+        );
+        let want: Vec<String> = fakes
+            .iter()
+            .zip(["ok", "unreachable", "unreachable", "unreachable"])
+            .map(|(f, r)| format!("relay ({}) {r}", f.describe()))
+            .collect();
+        assert_eq!(
+            reaches(&snap),
+            want,
+            "each engine's listing in its own place"
+        );
+        assert_eq!(snap.held, Some(1), "the live engine's call is held");
+        Ok(())
+    }
+
+    /// A listing cut short reads suspect in its own place, after a prompt
+    /// one and before a late one.
+    #[test]
+    fn a_cut_listing_is_suspect_in_its_own_place() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, LIST_BODY};
+        let fakes = [
+            FakeEngine::live()?,
+            FakeEngine::cut()?,
+            FakeEngine::answering(LIST_BODY, std::time::Duration::from_millis(300))?,
+        ];
+        let (snap, _) = udp_snapshot(&fakes)?;
+        let got: Vec<String> = reaches(&snap)
+            .iter()
+            .filter_map(|r| r.rsplit(' ').next().map(str::to_owned))
+            .collect();
+        assert_eq!(
+            got,
+            vec!["ok", "suspect", "ok"],
+            "the cut listing is suspect between two that answered"
+        );
         Ok(())
     }
 }

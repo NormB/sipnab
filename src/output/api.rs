@@ -6018,19 +6018,22 @@ fn relay_rest_answer_with(
             let Some(routing) = rq.routing.as_deref() else {
                 return relay_wide_answer(relay.as_ref(), &label, &permit, now);
             };
-            let each: Vec<Value> = crate::relay::engines::listed_relays(
-                &relay,
-                routing.default_engine(),
-                Some(routing),
-            )
-            .iter()
-            .map(|(_, engine)| {
-                let label = crate::output::query::relay_holdings::relay_label(engine.as_ref());
-                let mut v = relay_wide_answer(engine.as_ref(), &label, &permit, now);
-                v["relay"] = json!(label);
-                v
-            })
-            .collect();
+            // Every engine at once: an engine that does not answer costs one
+            // control timeout, not one per engine, and `engines` stays in the
+            // engines' order.
+            let each: Vec<Value> = crate::relay::fan_out::ask_each(
+                crate::relay::engines::listed_relays(
+                    &relay,
+                    routing.default_engine(),
+                    Some(routing),
+                ),
+                |(_, engine)| {
+                    let label = crate::output::query::relay_holdings::relay_label(engine.as_ref());
+                    let mut v = relay_wide_answer(engine.as_ref(), &label, &permit, now);
+                    v["relay"] = json!(label);
+                    v
+                },
+            );
             let mut top = each
                 .first()
                 .cloned()
@@ -11218,6 +11221,43 @@ mod tests {
         rq.routing = None;
         let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
         assert!(v.get("engines").is_none(), "one relay, no engines: {v}");
+        Ok(())
+    }
+
+    /// `GET /v1/relay/stats` with three dead engines and a live one costs
+    /// one timeout, not three, and each engine's entry is in its configured
+    /// place.
+    #[test]
+    fn relay_rest_stats_with_dead_engines_cost_one_timeout() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, TIMEOUT, client, one_timeout, routing};
+        let fakes = [
+            FakeEngine::live()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+        ];
+        let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
+        let rq = RelayRestConfig {
+            relay: Some(client(r.default_engine(), TIMEOUT)),
+            permit: Some(live_permit()?),
+            polled: None,
+            routing: Some(Arc::new(r)),
+        };
+        let started = std::time::Instant::now();
+        let v = relay_rest_answer(&rq, &RelayAsk::Wide, &empty_streams());
+        let took = started.elapsed();
+        assert!(one_timeout(took), "one timeout, not three: {took:?}: {v}");
+        let engines = v["engines"].as_array().ok_or(format!("engines: {v}"))?;
+        let got: Vec<(Value, Value)> = engines
+            .iter()
+            .map(|e| (e["relay"].clone(), e["outcome"].clone()))
+            .collect();
+        let want: Vec<(Value, Value)> = fakes
+            .iter()
+            .zip(["ok", "unreachable", "unreachable", "unreachable"])
+            .map(|(f, o)| (json!(format!("relay ({})", f.describe())), json!(o)))
+            .collect();
+        assert_eq!(got, want, "{v}");
         Ok(())
     }
 

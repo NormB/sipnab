@@ -284,11 +284,18 @@ INFO sipnab::app::bootstrap: Held by several engines: moved-1@192.0.2.21
 - The engines are `--rtpengine-control`, then each engine an
   `--rtpengine-engine` row or an `--rtpengine-ng-engine` row names, each
   once.
+- sipnab asks every engine at once, so an engine that does not answer costs
+  one 2 s timeout however many engines are down. See
+  [What an engine that does not answer costs](#what-an-engine-that-does-not-answer-costs).
 - For a stream that turns up later with no call to name it, sipnab asks
-  each engine in turn, until one holds its port. A port an engine already
-  accounted for needs no question: sipnab names it from memory.
-- Each engine has its own ceiling of control transactions for the run (66).
-  When the run ends, each engine's line says how many it spent.
+  each engine in turn, until one holds its port. Asking them all at once
+  would spend every engine's budget on a port that one engine holds. A port
+  an engine already accounted for needs no question: sipnab names it from
+  memory.
+- Each engine has its own budget of control transactions: 66 at most,
+  refilled at 33 an hour. When the run ends, each engine's line says how
+  many it spent and how many it has left. See
+  [The control-transaction budget, and how it refills](#the-control-transaction-budget-and-how-it-refills).
 
 ## Read every engine's own counters
 
@@ -337,13 +344,91 @@ curl -s http://127.0.0.1:18764/v1/relay/stats | jq '{outcome, relay, engines: [.
   other entries are still there. sipnab never adds two engines' counters
   together.
 - With one engine there is no `engines`, and the answer reads as before.
-- `--relay-stats-interval` asks each engine in turn on every poll, and prints
+- `--relay-stats-interval` asks every engine at once on every poll, and prints
   each reading as `--relay-stats` does. `GET /v1/relay/stats/polled` and
   `relay_stats_polled` carry `engines` too: each engine's newest reading and
   its newest failed poll.
-- The interval is the whole poll's. An engine that does not answer holds the
-  poll for its timeout, 2 s, and a poll that takes longer than the interval
-  says the cadence slipped.
+- The interval is the whole poll's. Engines that do not answer hold the
+  poll for one timeout, 2 s, however many there are, and a poll that takes
+  longer than the interval says the cadence slipped.
+
+## What an engine that does not answer costs
+
+Every question sipnab puts to all the listed engines asks them at once:
+startup reconciliation, `--relay-stats`, `--relay-stats-interval`,
+`GET /v1/relay/stats` and `stats/polled`, MCP `relay_stats` and
+`relay_stats_polled`, the TUI relay view, `--relay-holdings`, the sessions
+view's `list`, and the lists that find the engine of a call sipnab has seen
+nothing for. Each engine has a 2 s control timeout. Asked at once, engines
+that do not answer cost one timeout together, not one each, and sipnab
+prints the answers in the order you listed the engines, whichever answers
+first.
+
+sipnab opens one control socket per engine for each question, never more.
+A thread of its own asks each engine, and every thread ends before sipnab
+prints the answer.
+
+Measured with one engine that answers and three that never answer, on
+loopback (`--rtpengine-control 127.0.0.1:42301` and three
+`--rtpengine-ng-engine` rows), from start until the third `did not answer
+the statistics request` line, three runs each:
+
+| sipnab | Startup reconciliation and `--relay-stats` |
+|---|---|
+| 0.5.238, engines asked one after another | 12.16 to 12.20 s: six timeouts, three at startup and three for `--relay-stats` |
+| This change, engines asked at once | 4.10 to 4.11 s: two timeouts, one at startup and one for `--relay-stats` |
+
+To check it on your own run, read the timestamps of the startup lines: every
+engine's `could not be asked` line is at most about 2 s after sipnab started,
+however many engines are down.
+
+A stream nothing explains is the one question still asked of each engine in
+turn, until one holds its port, on the thread that reconciles. Each dead
+engine before the one that holds the port adds 2 s to that stream's answer,
+and nothing else waits for it.
+
+## The control-transaction budget, and how it refills
+
+Each engine has its own budget of control transactions for startup
+reconciliation and the streams nothing explains:
+
+- **The burst is 66.** That is a startup snapshot at the default list limit
+  (one `list` and a `query` for each of 32 calls) and one refresh of the same
+  size. A full budget never holds more, however long it sits unspent, so a
+  capture full of unexplained streams cannot send more than 66 questions in
+  one go.
+- **It refills at 33 an hour**, one transaction every 109 s. 33 is the
+  size of one refresh. Before, the 66 were for the whole run, so a run of
+  several days spent them and then never named a call the engine set up
+  later. Now sipnab names a call set up later within the hour, and
+  reconciliation never asks an engine more than 66 times plus 33 for each
+  hour of the run. The questions you ask over the command line, REST, MCP
+  and the TUI do not spend from this budget.
+- **A refill asks nothing.** Only a stream nothing explains spends a
+  transaction. The refill only lets sipnab ask about a later stream.
+- **It counts monotonic time,** so a clock stepped by NTP or by hand neither
+  fills it nor empties it.
+- **sipnab forgets what has ended.** A complete `list` that no longer names
+  a call removes that call and its ports from what sipnab remembers. sipnab
+  remembers at most 4096 asked-about ports per engine and forgets the oldest
+  first; a forgotten port asked about again spends a transaction.
+
+How to read it:
+
+- The startup line of an engine that emptied its budget ends `The
+  control-transaction budget is now empty; it refills at 33 per hour, up to
+  66, so a stream that turns up later is asked about once it has`.
+- A stream that turned up while the budget was empty reads `the
+  control-transaction budget was empty, so this port was not asked about`,
+  once per engine, until the reason changes.
+- When the run ends, each engine's line gives the counts:
+
+  ```text
+  rtpengine at 192.0.2.5:2223: 2 unexplained stream(s) offered, 0 attributed, 4 control transaction(s) spent; 62 of 66 left in the budget, which refills at 33 per hour
+  ```
+
+  `4 control transaction(s) spent` counts the whole run. `62 of 66 left` is
+  the budget when the run ended.
 
 ## Ask about a call sipnab has seen nothing for
 
@@ -377,7 +462,7 @@ curl -s "http://127.0.0.1:18764/v1/relay/stats/call/only-b-1@192.0.2.21" | jq '{
   sends no `list`.
 
 **What it costs.** One `list` per listed engine, asked once per question
-and one engine after another, then the question itself to the chosen engine.
+and of every engine at once, then the question itself to the chosen engine.
 A question that names several calls asks each engine once. Measured on one
 host, with the engines on loopback, five questions each:
 
@@ -387,8 +472,11 @@ host, with the engines on loopback, five questions each:
 | Two, both answering | 6.7 to 20.7 ms |
 | Three, one never answering | 2.03 to 2.04 s |
 
-An engine that never answers costs its whole 2 s timeout on every question
-about such a call. Remove the row of an engine you took out of service.
+Those times come from when sipnab asked the lists one engine after
+another, so each engine that never answered added 2 s. The lists are now
+asked at once: engines that never answer cost one 2 s timeout on every
+question about such a call, however many they are. Remove the row of an
+engine you took out of service.
 
 ## See whether media reaches each call's engine
 
@@ -912,7 +1000,8 @@ Measured on the two engines above, before any `delete`:
   127.0.0.4:2223 within 2s: Resource temporarily unavailable (os error
   11))`** in the reason for a call sipnab has seen
   nothing for. That engine's `list` went unanswered, and the question waited
-  its 2 s timeout. The other engines' lists still chose. Check that the sipnab
+  its 2 s timeout, once for all such engines. The other engines' lists still
+  chose. Check that the sipnab
   host can reach that `listen-ng`, or remove its row.
 - **`Unknown call-id` from the engine sipnab chose.** The engine does not
   hold the call. Check that each row's port range is that engine's own

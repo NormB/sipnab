@@ -428,28 +428,33 @@ fn do_ask_for(
                 }
                 Err(e) => fetch_failure(&e),
             },
-            // The relay's own counters, from every listed engine, each under
-            // its own heading.
-            None => crate::relay::engines::listed_relays(
-                &access.relay,
-                access.addr,
-                access.routing.as_deref(),
+            // The relay's own counters, from every listed engine at once, each
+            // under its own heading in the engines' order.
+            None => crate::relay::fan_out::ask_each(
+                crate::relay::engines::listed_relays(
+                    &access.relay,
+                    access.addr,
+                    access.routing.as_deref(),
+                ),
+                |(addr, engine)| {
+                    let label = answer_label(engine.as_ref(), addr, None);
+                    match engine.statistics(&access.permit) {
+                        Ok(reply) => compose_counters_or_names(
+                            &reply,
+                            &label,
+                            obtained_at,
+                            false,
+                            false,
+                            origin,
+                        ),
+                        Err(e) => {
+                            let (outcome, detail) =
+                                crate::output::query::relay_holdings::fetch_failure(&label, &e);
+                            compose_outcome_text(outcome, &detail)
+                        }
+                    }
+                },
             )
-            .iter()
-            .map(|(addr, engine)| {
-                let label = answer_label(engine.as_ref(), *addr, None);
-                match engine.statistics(&access.permit) {
-                    Ok(reply) => {
-                        compose_counters_or_names(&reply, &label, obtained_at, false, false, origin)
-                    }
-                    Err(e) => {
-                        let (outcome, detail) =
-                            crate::output::query::relay_holdings::fetch_failure(&label, &e);
-                        compose_outcome_text(outcome, &detail)
-                    }
-                }
-            })
-            .collect::<Vec<_>>()
             .join("\n"),
         },
         // Names never label themselves polled: `?` is a one-shot question, and
@@ -1076,6 +1081,47 @@ mod tests {
         );
         assert_eq!(a.asked()?, ["statistics"], "the default, once");
         assert_eq!(b.asked()?, ["statistics"], "the other engine, once");
+        Ok(())
+    }
+
+    /// The relay's own counters with three dead engines and a live one cost
+    /// one timeout, and each engine's block is in its configured place.
+    #[test]
+    fn the_counters_of_dead_engines_cost_one_timeout() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, TIMEOUT, client, one_timeout, routing};
+        let fakes = [
+            FakeEngine::dead()?,
+            FakeEngine::live()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+        ];
+        let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
+        let acc = TuiRelayAccess {
+            relay: client(r.default_engine(), TIMEOUT),
+            permit: crate::test_engines::live_permit()?,
+            addr: r.default_engine(),
+            routing: Some(Arc::new(r)),
+        };
+        let started = std::time::Instant::now();
+        let text = do_ask_for(
+            &acc,
+            &(None, RelayStatsMode::Counters),
+            None,
+            fmt::FetchOrigin::Asked,
+            &crate::relay::engines::CallEvidence::default(),
+        );
+        let took = started.elapsed();
+        assert!(one_timeout(took), "one timeout, not three: {took:?}");
+        let at: Vec<usize> = fakes
+            .iter()
+            .filter_map(|f| text.find(&format!("({})", f.addr)))
+            .collect();
+        assert_eq!(at.len(), 4, "every engine has its block: {text}");
+        assert!(
+            at.windows(2).all(|w| w[0] < w[1]),
+            "configured order: {text}"
+        );
+        assert_eq!(text.matches("unreachable").count(), 3, "{text}");
         Ok(())
     }
 

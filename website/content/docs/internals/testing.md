@@ -633,3 +633,54 @@ that only looks like a pipe, or a position that must stay exact.
 The race tests use a writer that prints `MATCH` and then 1 MiB, sixteen times
 a pipe's capacity, so the outcome does not depend on timing. 256 KiB was not
 enough: `mawk` 1.3.4 reads that far ahead before it acts on `exit`.
+
+## Test matrix: engines asked at once, and the refilling budget
+
+Every question sipnab puts to all listed rtpengine engines asks them at once
+([`src/relay/fan_out.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/fan_out.rs)), and each engine's
+reconciliation budget refills ([`src/relay/budget.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/budget.rs)).
+[What an engine that does not answer costs](@/docs/relay-engines.md#what-an-engine-that-does-not-answer-costs)
+and [The control-transaction budget, and how it refills](@/docs/relay-engines.md#the-control-transaction-budget-and-how-it-refills)
+are the user-facing how-to.
+
+The tests, by what they check. SUCCESS: sipnab asks the engines and they
+answer, or the budget grants what it should. FAILURE: an engine is dead or answers cut
+short, a budget refuses, or a read fails. EDGE: answers out of order, limits,
+clock readings out of order, and degenerate inputs.
+
+| Where | SUCCESS | FAILURE | EDGE |
+|---|---|---|---|
+| [`src/relay/fan_out.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/fan_out.rs) (`ask_each`: order, concurrency, threads, panics) | 4 | 1 | 4 |
+| [`src/relay/budget.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/budget.rs) (the token bucket) | 5 | 5 | 8 |
+| [`src/relay/reconcile.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/reconcile.rs) (refill, forgetting, startup at once) | 6 | 4 | 7 |
+| [`src/relay/engines.rs`](https://github.com/NormB/sipnab/blob/main/src/relay/engines.rs) (the lists of an unseen call) | 1 | 2 | 1 |
+| [`src/rtpengine/control.rs`](https://github.com/NormB/sipnab/blob/main/src/rtpengine/control.rs) (`statistics_of_each`, `read_until`) | 2 | 4 | 2 |
+| [`src/output/query/relay_holdings.rs`](https://github.com/NormB/sipnab/blob/main/src/output/query/relay_holdings.rs) and [`relay_sessions.rs`](https://github.com/NormB/sipnab/blob/main/src/output/query/relay_sessions.rs) | 0 | 3 | 1 |
+| [`src/output/api.rs`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs), [`src/mcp/tools/relay.rs`](https://github.com/NormB/sipnab/blob/main/src/mcp/tools/relay.rs) and [`src/tui/relay_stats.rs`](https://github.com/NormB/sipnab/blob/main/src/tui/relay_stats.rs) | 0 | 3 | 0 |
+| [`src/app/batch.rs`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs) (`--relay-stats-interval`) and [`src/app/relay_reconciler.rs`](https://github.com/NormB/sipnab/blob/main/src/app/relay_reconciler.rs) (closing line) | 0 | 1 | 2 |
+| Total, 66 | 18 | 23 | 25 |
+
+The cases the matrix covers:
+
+- **Dead engines.** The fake engines are local UDP sockets
+  (`test_engines::FakeEngine` in [`src/test_engines.rs`](https://github.com/NormB/sipnab/blob/main/src/test_engines.rs)): one answers, one never answers, one answers
+  late, one answers with a reply cut short. Three dead engines and a live one
+  cost one client timeout (1.5 s in the tests), checked as at least one
+  timeout and less than two. Asked in turn they cost three.
+- **Asked at once, without timing.** A gate that opens only when every engine
+  is waiting at it (`test_engines::Gate`): asked in turn, the first engine
+  waits alone and gives up.
+- **Out of order.** Engines that answer last first; the answers stay in the
+  configured order on every surface.
+- **All dead, a partial answer, and one engine's budget spent** while the
+  others keep theirs.
+- **The budget:** empty, refilled, at its cap after a week or a century, never
+  above the burst, the part of a token already earned carried, a reading
+  earlier than the last, no refill, and a run of three hours that the budget
+  grants exactly the burst plus three hours of refill. The tests drive a hand-moved
+  `Instant`; nothing waits for a refill.
+- **A read a signal interrupts:** the client reads again with the rest of
+  its timeout (`read_until`). Under the full library suite a signal reached
+  the control sockets' threads, the read failed with `Interrupted system call
+  (os error 4)`, and 1.5 s waits ended after 0.7 s. That run found the
+  defect.

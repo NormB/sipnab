@@ -1727,10 +1727,14 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // c736934f3.
     // 2481 -> 2482 (PIPEFAIL-GREP-Q-SWEEP): testing.md's new gate roster row
     // links CONTRIBUTING.md's new shell section (+1); no other wiki page changed.
-    // 2482 -> 2484 (OPS2, root-only input files): least-privilege.md +2, the
+    // 2482 -> 2487 (RELAY-ENGINE-FOLLOWUPS-2): relay-engines.md links its two
+    // new sections from the startup section (+2), rtpengine.md links the
+    // budget section (+1), and internals/testing.md links both (+2). Counted
+    // against origin/main 5dc6e5f5b.
+    // 2487 -> 2489 (OPS2, root-only input files): least-privilege.md +2, the
     // step-table row and the troubleshooting row, both to "Read capture files
     // only root can read". Counted per file against origin/main d73a692ea.
-    const EXPECTED_WIKI_LINKS: usize = 2484;
+    const EXPECTED_WIKI_LINKS: usize = 2489;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

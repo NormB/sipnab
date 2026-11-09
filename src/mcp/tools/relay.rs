@@ -888,27 +888,21 @@ impl SipnabMcp {
         // engine's own. A call's counters and the name list ask one engine.
         let payload = match access.routing.as_deref() {
             Some(routing) if call_id.is_none() && !names_only => {
-                let mut each: Vec<RelayStatsAnswer> = Vec::new();
-                for (addr, engine) in
-                    crate::relay::engines::listed_relays(&access.relay, access.addr, Some(routing))
-                {
-                    // An engine that did not answer is an answer of its own
-                    // here, not the tool's failure: the other engines answered.
-                    each.push(
-                        relay_stats_answer(
-                            engine.as_ref(),
-                            addr,
-                            &access.permit,
-                            None,
-                            false,
-                            None,
-                        )
-                        .unwrap_or_else(|e| RelayStatsAnswer {
-                            detail: Some(e.message.to_string()),
-                            ..RelayStatsAnswer::base(addr, "unreachable")
-                        }),
-                    );
-                }
+                // Every engine at once: an engine that does not answer costs
+                // one control timeout, not one per engine, and `engines` stays
+                // in the engines' order. An engine that did not answer is an
+                // answer of its own here, not the tool's failure: the other
+                // engines answered.
+                let each: Vec<RelayStatsAnswer> = crate::relay::fan_out::ask_each(
+                    crate::relay::engines::listed_relays(&access.relay, access.addr, Some(routing)),
+                    |(addr, engine)| {
+                        relay_stats_answer(engine.as_ref(), addr, &access.permit, None, false, None)
+                            .unwrap_or_else(|e| RelayStatsAnswer {
+                                detail: Some(e.message.to_string()),
+                                ..RelayStatsAnswer::base(addr, "unreachable")
+                            })
+                    },
+                );
                 let mut top = each
                     .first()
                     .cloned()
@@ -4080,6 +4074,58 @@ mod relay_handler_tests {
                 false,
                 connect,
             )))))
+    }
+
+    /// `relay_stats` without a call, over three dead engines and a live
+    /// one, costs one timeout, and each engine's answer is in its configured
+    /// place.
+    #[tokio::test]
+    async fn relay_stats_with_dead_engines_costs_one_timeout() -> Result<(), TestError> {
+        use crate::test_engines::{FakeEngine, TIMEOUT, client, one_timeout, routing};
+        let fakes = [
+            FakeEngine::live()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+            FakeEngine::dead()?,
+        ];
+        let r = routing(&fakes.iter().collect::<Vec<_>>(), TIMEOUT)?;
+        let permit = TransmitPermit::for_source(&crate::capture::CaptureSource::Live {
+            device: "eth0".to_string(),
+        })
+        .ok_or("a live source grants a permit")?;
+        let s = server(engines_store()?, StreamStore::new(16))
+            .with_relay_query(
+                r.default_engine(),
+                client(r.default_engine(), TIMEOUT),
+                permit,
+            )
+            .with_engine_routing(Some(Arc::new(r)));
+        let started = std::time::Instant::now();
+        let v = payload(
+            &s.relay_stats(Parameters(RelayStatsParams::default()))
+                .await
+                .map_err(|e| format!("answered: {e:?}"))?,
+        )?;
+        let took = started.elapsed();
+        assert!(one_timeout(took), "one timeout, not three: {took:?}: {v}");
+        let got: Vec<(String, String)> = v["engines"]
+            .as_array()
+            .ok_or(format!("engines: {v}"))?
+            .iter()
+            .map(|e| {
+                (
+                    e["relay_address"].as_str().unwrap_or_default().to_owned(),
+                    e["outcome"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        let want: Vec<(String, String)> = fakes
+            .iter()
+            .zip(["ok", "unreachable", "unreachable", "unreachable"])
+            .map(|(f, o)| (f.addr.to_string(), o.to_owned()))
+            .collect();
+        assert_eq!(got, want, "{v}");
+        Ok(())
     }
 
     #[tokio::test]
