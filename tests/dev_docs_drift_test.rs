@@ -990,7 +990,13 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // release" links scripts/advertise-release.py, download-markers.txt,
     // fetch-ci-suite-output.py, release-records.py, release-only.py and
     // homebrew-tap-push.py, and uprobe-capture.md links release-only.py (+7).
-    const EXPECTED_CODE_LINKS: usize = 823;
+    // 823 -> 829 (RELEASE-FAST D): build-ci-release.md links
+    // .github/actions/pinned-tool/action.yml, scripts/post-release.py three
+    // times (the eBPF bullet, "After the release" and the release timeline),
+    // scripts/verify-bpf-load.sh, scripts/tests/test_post_release.py and
+    // packaging/homebrew/update-formula.sh (+7), and no longer links
+    // homebrew-tap-push.py, which is deleted (-1).
+    const EXPECTED_CODE_LINKS: usize = 829;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

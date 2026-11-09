@@ -44,6 +44,23 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // "After the release" runs `scripts/post-release.py run --host`.
+    (
+        "host",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    // "After the release" names `gh workflow run pages.yml --ref main`, the
+    // deploy scripts/post-release.py dispatches.
+    (
+        "ref",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // The release how-to runs scripts/release-records.py (`--dest`,
     // `--ceiling-line`, `--uprobe-row`) and `gh release edit --prerelease`.
     (
@@ -6106,7 +6123,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // page this branch changed gained or lost a table.
     // 1441 -> 1443 (CAP-4): the table of Landlock refusal reasons in
     // docs/least-privilege.md and its site mirror (+2).
-    const EXPECTED_TABLES: usize = 1443;
+    // 1443 -> 1445 (RELEASE-FAST D): the exit-status table of "After the
+    // release" in docs/internals/build-ci-release.md and its site mirror.
+    const EXPECTED_TABLES: usize = 1445;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

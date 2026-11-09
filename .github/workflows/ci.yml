@@ -1239,13 +1239,15 @@ jobs:
           packages: libpcap-dev
 
       - uses: dtolnay/rust-toolchain@70dec6087f2cb6bab9fbac4da23160afbe848e91 # 1.99.0
+      # Pinned and sha256-checked, with fetch-pinned.sh's retries
+      # (.github/actions/pinned-tool, RELEASE-FAST D).
       - name: Install cargo-audit
-        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
+        uses: ./.github/actions/pinned-tool
         with:
           tool: cargo-audit
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
+        uses: ./.github/actions/pinned-tool
         with:
           tool: cargo-deny
 

@@ -8,6 +8,13 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A release run no longer fails on the Homebrew tap.** The 0.5.241 entry says the tap bump is a commit GitHub verifies through its contents API. It is not: GitHub did not sign the commit made with the personal access token, and the release run concluded failure. The bump is now a commit signed locally and made by `scripts/post-release.py`, and the tap's `main` moves only to a commit GitHub reports as verified.
+- **The checks after a release run side by side.** `scripts/post-release.py` runs the eBPF load verification, the `.deb` upgrade, the site check and the tap bump at once, and withdraws a release whose eBPF program does not attach.
+
 ## [0.5.241] - 2026-11-09
 
 ### Fixed

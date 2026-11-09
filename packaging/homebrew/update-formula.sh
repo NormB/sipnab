@@ -9,7 +9,7 @@
 # pulling the four prebuilt-target checksums out of the release's
 # SHA256SUMS.txt. Prints the complete formula to stdout.
 #
-# Used by .github/workflows/release.yml to auto-bump the tap on every tag push,
+# Used by scripts/post-release.py to bump the tap after every release,
 # so a release can never again ship while the tap still points at the previous
 # version. Fails loudly (non-zero, message on stderr) if the version is empty,
 # the sums file is missing, any required target checksum is absent, or a

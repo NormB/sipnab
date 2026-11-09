@@ -11,7 +11,7 @@ see [`contrib/`](../contrib/README.md).
 | `deb/test-build-deb.sh` | 25 assertions over control metadata and payload | CI, every push |
 | `rpm/build-rpm.sh` | Builds the `.rpm` from a spec it generates inline | `release.yml`, on a tag |
 | `rpm/test-build-rpm.sh` | 37 assertions over rpm metadata, payload and the packaged binary's `DT_NEEDED` | CI, every push |
-| `homebrew/update-formula.sh` | Generates `sipnab.rb` from `SHA256SUMS.txt` | `release.yml`, on a tag |
+| `homebrew/update-formula.sh` | Generates `sipnab.rb` from `SHA256SUMS.txt` | `scripts/post-release.py`, after a release |
 | `homebrew/test-update-formula.sh` | 25 assertions over formula generation, against a fixture whose shape is checked by `test-real-sums.sh` | CI, every push |
 | `homebrew/test-real-sums.sh` | Runs the real generator against the **real** `SHA256SUMS.txt` of the latest published release | CI, every push |
 | `sipnab.service` | systemd unit, installed by both the `.deb` and the `.rpm` | — |
