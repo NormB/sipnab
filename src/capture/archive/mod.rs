@@ -1831,7 +1831,10 @@ pub enum ExtractionHandover {
     Keep,
     /// Give every directory, and everything in it, to this user and group,
     /// which the run drops to: it can then still read the members by path
-    /// and remove them at exit. The modes stay, so no other user can.
+    /// and remove them at exit. The modes stay, so no other user can. A
+    /// directory that user could not reach to remove (its `TMPDIR` lies
+    /// inside a directory only another user may enter) is removed now
+    /// instead, as for [`Self::Remove`].
     GiveTo {
         /// The user the run drops to.
         uid: u32,
@@ -1884,14 +1887,93 @@ pub fn hand_over_run_extractions(handover: ExtractionHandover) -> io::Result<()>
         }
         ExtractionHandover::GiveTo { uid, gid } => {
             let mut first = None;
-            for dir in held.iter().filter_map(KeptExtraction::dir) {
-                if let Err(e) = give_tree_to(dir, uid, gid, &mut change_owner) {
-                    first.get_or_insert(e);
+            for kept in held.iter_mut() {
+                let Some(dir) = kept.dir().map(Path::to_path_buf) else {
+                    continue;
+                };
+                if removable_as(&dir, uid, gid) {
+                    if let Err(e) = give_tree_to(&dir, uid, gid, &mut change_owner) {
+                        first.get_or_insert(e);
+                    }
+                } else {
+                    kept.remove_from_disk();
                 }
             }
             first.map_or(Ok(()), Err)
         }
     }
+}
+
+/// One directory on the path to an extraction: its permission bits and its
+/// owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DirAccess {
+    /// The mode, of which the low nine permission bits are read.
+    mode: u32,
+    /// The owning user.
+    uid: u32,
+    /// The owning group.
+    gid: u32,
+}
+
+/// Whether a process running as `uid`, with primary group `gid`, can remove
+/// an entry it owns from the last directory of `chain`, where `chain` lists
+/// every directory from the root down. It needs search permission on each,
+/// and write permission on the last. The class is the Unix one: the owner
+/// bits when it owns the directory, else the group bits when its group does,
+/// else the other bits. Pure.
+///
+/// Supplementary groups are not consulted, so this can answer `false` where
+/// the process could remove the entry; the extraction is then removed before
+/// the drop, as for a chroot. An empty chain answers `false`.
+fn can_remove_entry_in(chain: &[DirAccess], uid: u32, gid: u32) -> bool {
+    let bits = |d: &DirAccess| {
+        let shift = if d.uid == uid {
+            6
+        } else if d.gid == gid {
+            3
+        } else {
+            0
+        };
+        (d.mode >> shift) & 0o7
+    };
+    let Some(last) = chain.last() else {
+        return false;
+    };
+    chain.iter().all(|d| bits(d) & 0o1 != 0) && bits(last) & 0o2 != 0
+}
+
+/// Whether the user and group a run drops to can remove the extraction
+/// directory `dir` at exit once it owns it ([`can_remove_entry_in`] over the
+/// directories that lead to it). `false` when they cannot be read.
+#[cfg(unix)]
+fn removable_as(dir: &Path, uid: u32, gid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let Some(parent) = dir.parent() else {
+        return false;
+    };
+    let Ok(parent) = std::fs::canonicalize(parent) else {
+        return false;
+    };
+    let mut chain = Vec::new();
+    for ancestor in parent.ancestors() {
+        let Ok(meta) = std::fs::metadata(ancestor) else {
+            return false;
+        };
+        chain.push(DirAccess {
+            mode: meta.mode(),
+            uid: meta.uid(),
+            gid: meta.gid(),
+        });
+    }
+    chain.reverse();
+    can_remove_entry_in(&chain, uid, gid)
+}
+
+/// No owners to check where there are no uids.
+#[cfg(not(unix))]
+fn removable_as(_dir: &Path, _uid: u32, _gid: u32) -> bool {
+    true
 }
 
 /// Change the owner of `path` itself, a link included, to `uid` and `gid`.
@@ -2260,6 +2342,76 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
         assert_eq!(calls, 1, "{err}");
         Ok(())
+    }
+
+    /// The directory chain to an extraction, from the root down, for
+    /// [`can_remove_entry_in`]: `(mode, owner uid, owner gid)` each.
+    fn chain(dirs: &[(u32, u32, u32)]) -> Vec<DirAccess> {
+        dirs.iter()
+            .map(|&(mode, uid, gid)| DirAccess { mode, uid, gid })
+            .collect()
+    }
+
+    /// `/` and `/tmp` as Linux has them: anyone may search both and write
+    /// `/tmp`, so the drop user can remove what it owns there.
+    #[test]
+    fn a_drop_user_can_remove_its_extraction_from_tmp() {
+        let tmp = chain(&[(0o755, 0, 0), (0o1777, 0, 0)]);
+        assert!(can_remove_entry_in(&tmp, 65534, 65534), "/tmp is reachable");
+    }
+
+    /// A directory the drop user owns is judged by its owner bits.
+    #[test]
+    fn the_owner_bits_decide_for_a_directory_the_drop_user_owns() {
+        let own = chain(&[(0o755, 0, 0), (0o700, 65534, 0)]);
+        assert!(
+            can_remove_entry_in(&own, 65534, 65534),
+            "its own 0700 directory"
+        );
+    }
+
+    /// A `TMPDIR` inside another user's 0700 directory, as root's macOS
+    /// directory under `/var/folders` is, cannot be reached, however open the
+    /// `TMPDIR` itself is.
+    #[test]
+    fn a_tmpdir_inside_another_users_private_directory_is_out_of_reach() {
+        let macos = chain(&[(0o755, 0, 0), (0o700, 501, 20), (0o1777, 501, 20)]);
+        assert!(
+            !can_remove_entry_in(&macos, 65534, 65534),
+            "nobody cannot search the 0700 directory on the way"
+        );
+    }
+
+    /// A directory the drop user may search but not write keeps the entry.
+    #[test]
+    fn a_parent_the_drop_user_cannot_write_is_out_of_reach() {
+        let read_only = chain(&[(0o755, 0, 0), (0o755, 0, 0)]);
+        assert!(
+            !can_remove_entry_in(&read_only, 65534, 65534),
+            "no write permission on the parent"
+        );
+    }
+
+    /// The group class applies when the group matches, even where the other
+    /// bits would allow more: Unix asks one class, not the best one.
+    #[test]
+    fn the_group_class_is_asked_before_the_other_bits() {
+        let group_ok = chain(&[(0o755, 0, 0), (0o070, 0, 65534)]);
+        assert!(can_remove_entry_in(&group_ok, 65534, 65534), "group rwx");
+        let group_shut = chain(&[(0o755, 0, 0), (0o707, 0, 65534)]);
+        assert!(
+            !can_remove_entry_in(&group_shut, 65534, 65534),
+            "the group bits are empty, so the other bits do not count"
+        );
+    }
+
+    /// No directories means nothing to reach.
+    #[test]
+    fn an_empty_chain_is_out_of_reach() {
+        assert!(
+            !can_remove_entry_in(&[], 65534, 65534),
+            "no chain, no answer"
+        );
     }
 
     /// A descriptor whose read fails is answered with that error, not taken

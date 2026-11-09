@@ -2269,6 +2269,47 @@ fn a_root_run_reads_a_root_only_compressed_member_after_the_drop() -> Result<(),
     Ok(())
 }
 
+/// A root run whose `TMPDIR` sits inside a directory the drop user cannot
+/// enter removes its extraction before the drop: `nobody` could not reach
+/// the directory to remove it at exit. macOS gives root such a `TMPDIR`
+/// (its per-user directory under `/var/folders`, mode 0700), and the macOS runner's
+/// tests found the extraction left there.
+#[test]
+fn a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing() -> Result<(), TestError> {
+    if root_unavailable("a_root_run_whose_tmpdir_the_drop_user_cannot_reach_leaves_nothing") {
+        return Ok(());
+    }
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir()?;
+    let archive = root_only_archive(dir.path())?;
+    // A private directory (0700, this runner's), holding a scratch TMPDIR
+    // anyone may write: the scratch is writable, but `nobody` cannot reach it.
+    let private = tempfile::tempdir()?;
+    std::fs::set_permissions(private.path(), std::fs::Permissions::from_mode(0o700))?;
+    let tmp = private.path().join("T");
+    std::fs::create_dir(&tmp)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o1777))?;
+    let _cleanup = RootRemoves(tmp.clone());
+    let out = root_sipnab(
+        &tmp,
+        &[
+            "-N".as_ref(),
+            "-I".as_ref(),
+            archive.as_os_str(),
+            "--user".as_ref(),
+            "nobody".as_ref(),
+        ],
+    )?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_read_in_full(&out, 2);
+    assert_eq!(
+        entries(&tmp)?,
+        Vec::<String>::new(),
+        "an extraction the drop user cannot reach must be gone when the run ends:\n{stderr}"
+    );
+    Ok(())
+}
+
 /// A root run removes what it extracted: the extraction directory was made
 /// by root, and the run that must remove it at exit runs as `nobody`.
 #[test]

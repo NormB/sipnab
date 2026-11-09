@@ -116,9 +116,12 @@ then. A run that keeps its credentials (not root, or `--no-priv-drop` without
 - The run unpacks an archive (`.tar.gz`, `.zip`, a `.pcap.gz`) before the
   drop, as root, into a directory only its owner may enter (`0700`) holding
   files only its owner may read (`0600`). Before the drop it gives that
-  directory to the user the run drops to, so the run can remove it when it ends. A
-  `--chroot` run removes it before the chroot instead, because no path
-  reaches it afterwards; every member is open by then.
+  directory to the user the run drops to, so the run can remove it when it
+  ends. A `--chroot` run removes it before the chroot instead, because no
+  path reaches it afterwards. So does a run whose drop user could not reach
+  it to remove it: a `TMPDIR` inside a directory only another user may
+  enter, such as root's per-user temporary folder on macOS
+  (under `/var/folders`, mode `0700`). Every member is open by then.
 - The run reads the TLS secrets a pcapng carries in a Decryption Secrets
   Block before the drop too, so a root-only capture still decrypts.
 
