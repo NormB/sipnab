@@ -365,6 +365,34 @@ The build inputs are the paths that can change what cargo compiles:
   classify`, followed by the paths. Without paths, it classifies the staged
   paths.
 
+**Release-only commits.** A commit that is exactly a release bump runs the
+release gates, not the whole suite. The release pull request runs the whole
+suite in CI on the same tree, and that run is the one the tag gate accepts.
+`scripts/release-only.py` holds the rule. A change is release-only when:
+
+- the version in the `[package]` table of `Cargo.toml` moves forward.
+- every changed file changes in place. The change adds, deletes or renames no
+  file, changes no binary file and sets no new mode.
+- every changed file is one a release bump changes: the manifests and lock
+  files, `website/config.toml`, the man page, `CHANGELOG.md`, `llms-full.txt`
+  and the Markdown under `docs/` and `website/content/docs/`.
+- every changed line is the old line with the version moved, or a Since cell
+  of the CLI reference moving from `Unreleased` to the new version.
+- `website/config.toml` moves `version` alone. `published_version` moves once
+  the assets exist.
+- `CHANGELOG.md` changes one line: `## [Unreleased]` becomes
+  `## [<version>] - YYYY-MM-DD`.
+
+On such a commit the pre-commit hook prints one line naming both versions and
+skips the replay of failed tests, clippy, the suite and the `sipnab-bpf-types`
+tests. It runs the release test targets in their place:
+`python3 scripts/release-only.py tests` prints them. Every other step runs.
+The pre-push hook skips the tree gates for a push whose every new commit is
+release-only, and still runs the signature, message and test-count gates and
+the release-delivery test. The corpus gate does not run on such a push, since
+no parser input changed. Anything else, or anything the rule cannot read, runs
+every gate. `SIPNAB_GATE_NO_CACHE=1` runs every gate too.
+
 **Tag-only pushes.** A push that updates tags and nothing else skips the tree
 gates when GitHub already proved the tagged commit:
 

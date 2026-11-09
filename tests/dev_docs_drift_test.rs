@@ -980,7 +980,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 810 -> 812 (TAG-GATE-WAITS-FOR-MERGE-CI): build-ci-release.md's tag
     // gate paragraph links scripts/tag-push-proof.py and
     // scripts/tests/test_tag_ci_proof.py (+2).
-    const EXPECTED_CODE_LINKS: usize = 812;
+    // 812 -> 814 (RELEASE-FAST B): build-ci-release.md's release-only
+    // paragraph links scripts/release-only.py and
+    // scripts/tests/test_release_only.py (+2).
+    const EXPECTED_CODE_LINKS: usize = 814;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
