@@ -977,7 +977,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // src/relay/budget.rs twice each, src/test_engines.rs and ten other source
     // files once (+15); every other developer page unchanged. Counted against
     // origin/main 5dc6e5f5b.
-    const EXPECTED_CODE_LINKS: usize = 810;
+    // 810 -> 812 (TAG-GATE-WAITS-FOR-MERGE-CI): build-ci-release.md's tag
+    // gate paragraph links scripts/tag-push-proof.py and
+    // scripts/tests/test_tag_ci_proof.py (+2).
+    const EXPECTED_CODE_LINKS: usize = 812;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

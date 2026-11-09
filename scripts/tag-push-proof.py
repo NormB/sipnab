@@ -45,6 +45,7 @@ exit 1 and one line saying why not otherwise.
 from __future__ import annotations
 
 import dataclasses
+import json
 import os
 import re
 import subprocess
@@ -110,6 +111,14 @@ def _unmet(got: Checks | None, required: list[str]) -> list[str] | None:
     return [f"{ctx}: {v}" for ctx in required if (v := _verdict(got, ctx)) != "success"]
 
 
+def _proving_heads(heads: list, checks: dict, required: list[str]) -> list[tuple[int, str]]:
+    """(number, head sha) of each merged pull request head, in order, that has
+    the same tree as the commit and on which every required check concluded
+    `success`. The one place a head is accepted for a merge commit: `decide`
+    and `tag_ci` both read it."""
+    return [(n, h) for n, h, same_tree in heads if same_tree and _unmet(checks.get(h), required) == []]
+
+
 def decide(
     refs: list[Ref], contains: dict, checks: dict, required: list[str] | None, heads: dict | None = None
 ) -> Proof:
@@ -148,14 +157,7 @@ def decide(
         if bad == []:
             proven[c] = _short(c)
             continue
-        via = next(
-            (
-                (n, h)
-                for n, h, same_tree in heads.get(c, [])
-                if same_tree and _unmet(checks.get(h), required) == []
-            ),
-            None,
-        )
+        via = next(iter(_proving_heads(heads.get(c, []), checks, required)), None)
         if via:
             proven[c] = f"{_short(c)} (merge of PR #{via[0]}, head {_short(via[1])}, same tree)"
             continue
@@ -168,6 +170,151 @@ def decide(
         f"  tag-only push: {named} is on origin/main and passed all {len(required)} required checks "
         f"({', '.join(required)}) on GitHub; the tree gates are skipped",
     )
+
+
+# ── The tag CI gate: the tagged commit's runs, or its PR head's ────────────
+#
+# The v0.5.238 tag waited 37 minutes for the workflow runs on its merge commit
+# 26bfa26a8, which re-proved the tree PR #701's head f151b38d8 had proved
+# (TAG-GATE-WAITS-FOR-MERGE-CI). `tag_ci` is the rule the pre-push tag gate
+# applies to each tagged commit.
+
+# A workflow conclusion that is a red verdict on the tree. "cancelled" is not
+# one: a concurrency group or a newer push cancels runs without judging them.
+RED = {"failure", "timed_out", "action_required", "startup_failure"}
+
+# Exit status of `--tag-ci`, one per verdict, read by .githooks/pre-push.
+TAG_CI_EXIT = {"green": 0, "head": 10, "none": 3, "not_green": 4, "unreadable": 5}
+
+
+@dataclasses.dataclass(frozen=True)
+class Run:
+    """One workflow run, as `gh run list --json` reports it."""
+
+    id: int
+    name: str
+    status: str
+    conclusion: str | None
+    event: str
+    head_sha: str
+
+
+@dataclasses.dataclass(frozen=True)
+class TagCi:
+    """`state` is a key of TAG_CI_EXIT; `via` is (PR number, head sha) when
+    the head proved the commit; `line` says what was found."""
+
+    state: str
+    line: str
+    via: tuple | None = None
+
+
+def latest_runs(runs: list, sha: str) -> list:
+    """The runs that speak for `sha`: its own (the headSha filter refuses to
+    judge one commit by another's runs), scheduled ones set aside (a cron run
+    judges whatever main pointed at when its clock fired, not this change;
+    TAG-GATE-COUNTS-SCHEDULED-RUNS), and of those the newest of each workflow
+    by id (GATE-DUP1: a duplicated event runs a workflow twice and the older
+    run is canceled). The filter comes before the newest-per-name pick, so a
+    newer scheduled pass cannot hide an older failed push run."""
+    newest: dict[str, Run] = {}
+    for r in runs:
+        if r.head_sha != sha or r.event == "schedule":
+            continue
+        if r.name not in newest or r.id > newest[r.name].id:
+            newest[r.name] = r
+    return [newest[n] for n in sorted(newest)]
+
+
+def _describe(r: Run) -> str:
+    return f"{r.status}/{r.conclusion or '-'}/{r.name}"
+
+
+def runs_verdict(runs: list | None, sha: str) -> tuple[str, list[str]]:
+    """("green" | "none" | "not_green" | "unreadable", one line per run)."""
+    if runs is None:
+        return "unreadable", []
+    mine = latest_runs(runs, sha)
+    if not mine:
+        return "none", []
+    lines = [_describe(r) for r in mine]
+    if all(r.status == "completed" and r.conclusion == "success" for r in mine):
+        return "green", lines
+    return "not_green", lines
+
+
+def tag_ci(
+    commit: str,
+    own: list | None,
+    contains: bool | None,
+    required: list[str] | None,
+    heads: list,
+    checks: dict,
+    head_runs: dict,
+) -> TagCi:
+    """The rule. `own` is the tagged commit's runs (None: unreadable);
+    `contains`, `required`, `heads` and `checks` are as `decide` takes them;
+    `head_runs` maps a head sha to its runs (None: unreadable).
+
+    The commit passes on its own runs when they are all green. Otherwise a
+    merged pull request head proves it when the commit is on main, the head
+    has the same tree, every required check concluded `success` on the head,
+    every workflow run on the head is green by the same rule as the commit's
+    own runs (so the macOS leg, which `CI success` leaves out, still gates),
+    and no run on the commit itself has concluded red."""
+    own_state, own_lines = runs_verdict(own, commit)
+    if own_state == "green":
+        return TagCi("green", f"all {len(own_lines)} workflow runs on {_short(commit)} succeeded")
+    why = _head_refusal(commit, own, contains, required, heads, checks, head_runs)
+    if isinstance(why, tuple):
+        (n, h), count = why
+        return TagCi(
+            "head",
+            f"{_short(commit)} is on origin/main and is the merge of PR #{n}, whose head {_short(h)} has the "
+            f"same tree and passed all {len(required)} required checks and all {count} workflow runs; "
+            f"the runs on {_short(commit)} itself are not awaited",
+            (n, h),
+        )
+    return _fallback(own_state, own_lines, why)
+
+
+def _fallback(own_state: str, own_lines: list[str], why: str) -> TagCi:
+    """The commit's own verdict, with the reason no head proved it."""
+    own_text = "\n".join(own_lines)
+    return TagCi(own_state, f"PR head proof not used: {why}" + (f"\n{own_text}" if own_text else ""))
+
+
+def _head_refusal(commit, own, contains, required, heads, checks, head_runs):
+    """((number, head), run count) of the head that proves `commit`, or the
+    reason, as text, that none does."""
+    if own is None:
+        return f"the workflow runs on {_short(commit)} could not be read"
+    if contains is None:
+        return f"could not tell whether origin/main contains {_short(commit)}"
+    if contains is not True:
+        return f"{_short(commit)} is not on origin/main"
+    if required is None:
+        return "main's required checks could not be read"
+    if not required:
+        return "main requires no checks, so nothing proves the head"
+    red = [r for r in latest_runs(own or [], commit) if r.status == "completed" and r.conclusion in RED]
+    if red:
+        return f"red on {_short(commit)} itself: {', '.join(_describe(r) for r in red)}"
+    same = [(n, h) for n, h, same_tree in heads if same_tree]
+    if not same:
+        return f"no merged pull request head has the tree of {_short(commit)}"
+    reasons = []
+    proven = set(_proving_heads(heads, checks, required))
+    for n, h in same:
+        if (n, h) not in proven:
+            bad = _unmet(checks.get(h), required)
+            reasons.append(f"PR #{n} head {_short(h)}: " + ("checks unreadable" if bad is None else ", ".join(bad)))
+            continue
+        state, lines = runs_verdict(head_runs.get(h), h)
+        if state == "green":
+            return (n, h), len(lines)
+        reasons.append(f"PR #{n} head {_short(h)} workflow runs {state}: " + (", ".join(lines) or "none"))
+    return "; ".join(reasons)
 
 
 # ── Reading the inputs ─────────────────────────────────────────────────────
@@ -288,6 +435,70 @@ def read_pr_heads(repo: str, commit: str, gh) -> list:
     return found
 
 
+def parse_runs(text: str) -> list | None:
+    """`gh run list --json databaseId,headSha,status,conclusion,name,event`
+    output as Runs; None when it is not that."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, list):
+        return None
+    out = []
+    for d in data:
+        # As the jq rule this replaced read them: `.databaseId // 0`, and a
+        # missing event is not "schedule". The name, status and commit are
+        # what the verdict is about, so a run without them is unreadable.
+        try:
+            out.append(Run(int(d.get("databaseId") or 0), str(d["name"]), str(d["status"]), d.get("conclusion"),
+                           str(d.get("event") or ""), str(d["headSha"])))
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return None
+    return out
+
+
+def gh_run_list(sha: str) -> tuple[int, str]:
+    """The workflow runs of one commit. Scoped by the FULL sha, not by
+    recency: `--commit` returns nothing for an abbreviated one, and a window
+    over the most recent runs lost older commits."""
+    cmd = ["gh", "run", "list", "--commit", sha, "--limit", "50",
+           "--json", "databaseId,headSha,status,conclusion,name,event"]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 1, str(e)
+    return out.returncode, out.stdout
+
+
+def _read_runs(run_list, sha: str) -> list | None:
+    rc, out = run_list(sha)
+    return parse_runs(out) if rc == 0 else None
+
+
+def gather_tag_ci(repo: str | None, commit: str, gh, run_list) -> TagCi:
+    """Gather the answers `tag_ci` needs, asking for a head proof only when
+    the commit's own runs are not green, then apply it."""
+    rc, out = run_list(commit)
+    own = parse_runs(out) if rc == 0 else None
+    if rc == 0 and own is None:
+        # gh answered, and the answer is not a run list: refuse rather than
+        # skip, since "gh unavailable" is the only case the hook lets through.
+        return TagCi("not_green", f"gh run list answered for {_short(commit)} with something that is not a run list")
+    if runs_verdict(own, commit)[0] == "green":
+        return tag_ci(commit, own, None, None, [], {}, {})
+    if repo is None:
+        return _fallback(*runs_verdict(own, commit), "origin is not a GitHub repository")
+    required = read_required(repo, gh)
+    contains = on_main(repo, commit, gh)
+    heads = read_pr_heads(repo, commit, gh)
+    checks, head_runs = {}, {}
+    for _n, h, same in heads:
+        if same:
+            checks[h] = read_checks(repo, h, gh)
+            head_runs[h] = _read_runs(run_list, h)
+    return tag_ci(commit, own, contains, required, heads, checks, head_runs)
+
+
 def main_decision(refs: list[Ref], env: dict, repo: str | None, gh) -> Proof:
     """Gather the answers `decide` needs, then apply it."""
     if env.get("SIPNAB_GATE_NO_CACHE", "") not in ("", "0"):
@@ -315,7 +526,22 @@ def _git(*args) -> str | None:
     return out.stdout.strip() if out.returncode == 0 else None
 
 
+def main_tag_ci(commit: str) -> int:
+    """`--tag-ci <commit>`: print the tag CI gate's verdict on one commit and
+    exit with its TAG_CI_EXIT status."""
+    url = _git("remote", "get-url", "origin") or ""
+    v = gather_tag_ci(github_repo(url), commit, gh_api, gh_run_list)
+    print(v.line)
+    return TAG_CI_EXIT[v.state]
+
+
 def main() -> int:
+    if len(sys.argv) > 1:
+        if len(sys.argv) == 3 and sys.argv[1] == "--tag-ci" and re.fullmatch(r"[0-9a-f]{40}", sys.argv[2]):
+            return main_tag_ci(sys.argv[2])
+        print("usage: tag-push-proof.py < <pre-push stdin>\n       tag-push-proof.py --tag-ci <40-hex commit>",
+              file=sys.stderr)
+        return 2
     raw = parse_refs(sys.stdin.read())
     if raw is None:
         print("  tag-only push: the full gates run -- a pushed ref line could not be read")

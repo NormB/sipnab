@@ -1598,8 +1598,10 @@ That is thirty-three release assets in all.
 The order is therefore:
 
 - Land the release commit.
-- Wait for CI.
-- Tag the commit that passed.
+- Tag the merge commit once the release pull request's head is green.
+  The tag gate accepts the head's runs when GitHub reports the same tree for
+  the head and the merge commit (see below), so it does not wait for CI's run
+  of the merge commit on `main`. That wait cost 37 minutes on 0.5.238.
 
 **crates.io gets the release from the `crates-io` job in `release.yml`, after
 the GitHub release exists.**
@@ -1740,6 +1742,15 @@ A hook enforces this rather than merely advising it.
 
 - [`pre-push`](https://github.com/NormB/sipnab/blob/main/.githooks/pre-push) refuses a `v*` tag whose commit has a failed run,
   has runs still in flight, or has no runs at all.
+- It accepts a merge commit whose own runs are still going when the merged pull request's head
+  proves the same tree: the commit is on `main`, GitHub reports the same tree for both, every
+  required check concluded `success` on the head, every workflow run on the head succeeded,
+  and no run on the merge commit itself concluded red.
+  - The head's runs include the macOS leg, so a macOS break still blocks the release.
+  - The hook prints the pull request and head it used.
+  - The rule is `tag_ci` in [`scripts/tag-push-proof.py`](https://github.com/NormB/sipnab/blob/main/scripts/tag-push-proof.py),
+    tested in [`test_tag_ci_proof.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_tag_ci_proof.py) and in the
+    pre-push scenarios.
 - It skips with a warning when `gh` is unavailable, rather than blocking.
   - Forcing `SKIP_FMT_HOOK=1` would switch off every other gate too.
   - That turns one missing optional tool into running no checks at all.
@@ -1906,8 +1917,8 @@ sequenceDiagram
     participant Tap as homebrew-tap
     participant GHCR
 
-    Dev-&gt;&gt;Dev: push the release commit, wait for CI green
-    Dev-&gt;&gt;Rel: git push origin v0.5.x (pre-push re-checks CI)
+    Dev-&gt;&gt;Dev: land the release PR once its head is green
+    Dev-&gt;&gt;Rel: git push origin v0.5.x (pre-push accepts the same-tree PR head)
     Rel-&gt;&gt;Rel: build matrix (8 targets, bookworm for gnu)
     Rel-&gt;&gt;Gate: readelf -V each gnu binary
     Gate--&gt;&gt;Rel: max GLIBC symbol &lt;= 2.36 or fail
