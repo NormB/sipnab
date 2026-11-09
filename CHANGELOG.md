@@ -8,6 +8,16 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Security
+
+- **rmcp 3.8.0 to 3.9.0, for [RUSTSEC-2026-0462](https://rustsec.org/advisories/RUSTSEC-2026-0462.html) (GHSA-c9f9-cp8h-jcj5), unbounded response body buffering in Streamable HTTP clients.** sipnab is not affected: it builds only rmcp's server side, and the advisory names rmcp's `transport-streamable-http-client-reqwest` and `transport-streamable-http-client-unix-socket` features, and no sipnab feature set enables either or any other client feature (`cargo tree -e features -i rmcp --all-features` lists none). The lockfile names the vulnerable version, though, so lockfile scanners (OSV, `cargo audit`) report it until the bump. Only `rmcp` and `rmcp-macros` move; rmcp 3.9.0 adds a dependency on `sha2` 0.11.1, which the lockfile already holds. The 14-day wait for a new release is waived because this is a security update, the way Dependabot does not hold security updates back for its `cooldown` setting.
+
+### Changed
+
+- **MCP over HTTP reads the `Accept` and `Content-Type` of a `POST /mcp` by media type, not by substring (rmcp 3.9.0).** An `Accept` entry weighted `q=0` no longer counts, so `text/event-stream;q=0` is answered 406. A media type that only begins with a required one, such as `text/event-stream-v2` or a `Content-Type` of `application/json-seq`, is answered 406 or 415. `Accept` split over several header lines is read as one list, and `Content-Type` matches without regard to case, so `Application/JSON; charset=utf-8` is accepted. A client sending `Accept: application/json, text/event-stream` and `Content-Type: application/json` is unaffected.
+
 ## [0.5.240] - 2026-11-09
 
 ### Fixed

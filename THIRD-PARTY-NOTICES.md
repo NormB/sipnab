@@ -327,8 +327,8 @@ Files copied into the repository unmodified from another project's release. None
 | regex-automata | 0.4.16 | MIT OR Apache-2.0 |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 |
 | ring | 0.17.14 | Apache-2.0 AND ISC |
-| rmcp | 3.8.0 | Apache-2.0 |
-| rmcp-macros | 3.8.0 | Apache-2.0 |
+| rmcp | 3.9.0 | Apache-2.0 |
+| rmcp-macros | 3.9.0 | Apache-2.0 |
 | rsa | 0.9.10 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.4 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |

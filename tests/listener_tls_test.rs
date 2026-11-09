@@ -143,16 +143,8 @@ mod mcp {
     }
 
     /// A running MCP server, stopped when dropped, so a failing assertion
-    /// does not leave the process behind.
-    pub(super) struct Running(pub(super) Option<std::process::Child>);
-
-    impl Drop for Running {
-        fn drop(&mut self) {
-            if let Some(child) = self.0.take() {
-                support::shutdown(child);
-            }
-        }
-    }
+    /// does not leave the process behind. The rule is the shared harness's.
+    use support::HttpServer as Running;
 
     /// Start an HTTPS MCP server with `pki`'s files plus `extra`.
     fn spawn_tls(pki: &TestPki, extra: &[&str]) -> Result<(Running, String), TestError> {
@@ -160,7 +152,7 @@ mod mcp {
         args.extend(pki.args(CERT, KEY));
         args.extend_from_slice(extra);
         let (child, addr) = support::spawn_http(&args)?.ok_or("the HTTPS MCP server starts")?;
-        Ok((Running(Some(child)), addr))
+        Ok((child, addr))
     }
 
     /// POST the JSON-RPC `initialize` over HTTPS.
@@ -684,7 +676,6 @@ mod config_keys {
         let (child, addr) =
             mcp_support::spawn_http(&["--mcp-bind", "127.0.0.1:0", "--config", &cfg])?
                 .ok_or("MCP starts")?;
-        let child = super::mcp::Running(Some(child));
         let resp = https_exchange(
             &addr,
             "GET /health HTTP/1.1",
@@ -1372,15 +1363,7 @@ mod client_certs {
     }
 
     /// A running MCP server, stopped when dropped.
-    struct Mcp(Option<std::process::Child>);
-
-    impl Drop for Mcp {
-        fn drop(&mut self) {
-            if let Some(child) = self.0.take() {
-                mcp_support::shutdown(child);
-            }
-        }
-    }
+    use mcp_support::HttpServer as Mcp;
 
     /// POST one JSON-RPC message to MCP over HTTPS, presenting `client`,
     /// inside `session` when given.
@@ -1427,7 +1410,7 @@ mod client_certs {
         args.extend(pki.args("--mcp-tls-cert", "--mcp-tls-key"));
         args.extend(["--mcp-audit-file", &audit_arg]);
         let (child, addr) = mcp_support::spawn_http(&args)?.ok_or("MCP starts")?;
-        let _running = Mcp(Some(child));
+        let _running = child;
 
         let init = mcp_support::initialize_payload();
         let refused = mcp_post(&addr, &pki, None, None, &init);
@@ -1512,7 +1495,7 @@ mod client_certs {
         args.extend(pki.args("--mcp-tls-cert", "--mcp-tls-key"));
         args.extend_from_slice(extra);
         let (child, addr) = mcp_support::spawn_http(&args)?.ok_or("MCP starts")?;
-        Ok((Mcp(Some(child)), addr))
+        Ok((child, addr))
     }
 
     /// MCP refuses another CA's certificate and an expired one.
@@ -1567,7 +1550,7 @@ mod client_certs {
         let (child, addr) =
             mcp_support::spawn_http(&["--mcp-bind", "127.0.0.1:0", "--config", &cfg])?
                 .ok_or("MCP starts")?;
-        let _mcp = Mcp(Some(child));
+        let _mcp = child;
         let init = mcp_support::initialize_payload();
         assert!(
             mcp_post(&addr, &pki, None, None, &init).is_err(),
