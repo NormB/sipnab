@@ -555,6 +555,84 @@ pub fn run_and_capture_stderr(extra_args: &[&str], wait: Duration) -> Result<Str
     Ok(out)
 }
 
+/// What a `sipnab` run that ended on its own left behind.
+pub struct Finished {
+    /// Everything it wrote on stdout.
+    pub stdout: String,
+    /// Everything it wrote on stderr.
+    pub stderr: String,
+    /// Its exit code, or `None` when a signal ended it.
+    pub code: Option<i32>,
+}
+
+/// Run `sipnab` with exactly `args` (no `--api` is added) and wait for it to
+/// end, for the runs a startup refusal ends before anything listens.
+///
+/// The child reads no terminal and no user configuration: stdin is closed,
+/// and `HOME`, `XDG_CONFIG_HOME` and `SIPNAB_CONFIG` point into an empty
+/// directory made for the run. It is tied to the test thread, and a run still
+/// going after `wait` is stopped and reported as an error, so a refusal that
+/// does not happen fails the test instead of leaving a process behind.
+///
+/// # Arguments
+/// * `args` — the whole command line after the program name.
+/// * `log` — the value of `SIPNAB_LOG` for the run.
+/// * `wait` — how long the run may take.
+///
+/// # Errors
+/// When the binary cannot be spawned, or the run outlasts `wait`.
+pub fn run_to_exit(args: &[&str], log: &str, wait: Duration) -> Result<Finished, TestError> {
+    let home = tempfile::tempdir()?;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+    cmd.args(args)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env("HOME", home.path())
+        .env("XDG_CONFIG_HOME", home.path().join(".config"))
+        .env("SIPNAB_CONFIG", home.path().join("no-such-config.toml"))
+        .env("SIPNAB_LOG", log)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd
+        .tied_to_test()
+        .spawn()
+        .map_err(|e| format!("spawn sipnab: {e}"))?;
+    let mut out = child.stdout.take().ok_or("piped stdout")?;
+    let mut err = child.stderr.take().ok_or("piped stderr")?;
+    // Both pipes are drained while the child runs, so a full pipe cannot
+    // hold it. The threads end when the child closes its ends.
+    let stdout = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = out.read_to_string(&mut text);
+        text
+    });
+    let stderr = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = err.read_to_string(&mut text);
+        text
+    });
+    let deadline = Instant::now() + wait;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            break None;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let Some(status) = status else {
+        let _ = terminate(&mut child);
+        return Err(format!("sipnab {args:?} was still running after {wait:?}").into());
+    };
+    Ok(Finished {
+        stdout: stdout.join().map_err(|_| "the stdout reader panicked")?,
+        stderr: stderr.join().map_err(|_| "the stderr reader panicked")?,
+        code: status.code(),
+    })
+}
+
 impl ApiServer {}
 
 include!("child_lifetime.rs");

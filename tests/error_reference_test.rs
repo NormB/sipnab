@@ -952,7 +952,10 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // sets how many held calls a relay ask covers and needs
 // --rtpengine-control`, since the flag now sets the TUI's, REST's and MCP's
 // default too (one removed, one added).
-const EXPECTED_TEMPLATES: usize = 599;
+// 599 -> 601 (CONSOLE-FLAG-WITHOUT-API): src/app/bootstrap.rs, the refusal
+// of the web console on a run with no `--api` (+1) and `--api-console
+// requires the 'api' feature (not compiled in)` (+1).
+const EXPECTED_TEMPLATES: usize = 601;
 
 // ---------------------------------------------------------------------------
 // The page gates

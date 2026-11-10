@@ -732,7 +732,7 @@ Default: \fB100\fR.
 Additional \fBHost\fR header values the REST API accepts (repeatable), against DNS rebinding. Accepted by default: \fBlocalhost\fR, \fB127.0.0.1\fR, \fB::1\fR and the bound address, on any port (any IP address on a \fB0.0.0.0\fR / \fB::\fR bind). Add the name clients use, such as a reverse proxy's public name; \fBname:port\fR pins the port. \fB*\fR disables the check (not recommended). Replaces \fB[api] allowed_hosts\fR.
 .TP
 \fB\-\-api\-console\fR [\fIBOOL\fR]
-Serve the web console at \fB/console/\fR on the REST API listener (\fB[api] console\fR, default off). Needs \fB\-\-api\fR. The console is static files that call \fB/v1/\fR with the bearer token you paste into the page; it adds no listener and no access of its own. \fB\-\-api\-console=false\fR turns it off over a config that turns it on.
+Serve the web console at \fB/console/\fR on the REST API listener (\fB[api] console\fR, default off). Needs \fB\-\-api\fR: a run that turns the console on and starts no REST API is refused. The console is static files that call \fB/v1/\fR with the bearer token you paste into the page; it adds no listener and no access of its own. \fB\-\-api\-console=false\fR turns it off over a config that turns it on.
 Values: \fBtrue\fR, \fBfalse\fR.
 .TP
 \fB\-\-metrics\-max\-conn\fR \fIN\fR

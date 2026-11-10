@@ -1764,7 +1764,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // table's new `S` row links to #relay-statistics.
     // 2513 -> 2516 (TUI-CLEAR-CONFIRM): keybindings.md +3, the `Ctrl+L`, `i`
     // and `I` rows link to #clear-confirmation.
-    const EXPECTED_WIKI_LINKS: usize = 2516;
+    // 2516 -> 2519 (CONSOLE-FLAG-WITHOUT-API): rest-api.md +2, "What the
+    // console needs" and the troubleshooting table link to
+    // #the-console-without-the-api; errors.md +1, the refusal's entry links
+    // to the same section.
+    const EXPECTED_WIKI_LINKS: usize = 2519;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

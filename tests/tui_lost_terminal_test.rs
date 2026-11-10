@@ -22,6 +22,10 @@
 //! running at the deadline is killed by the pid recorded at spawn: a failing
 //! test leaves no process behind.
 //!
+//! The last section runs the TUI with the REST API on the same harness, for
+//! the web console (`--api-console`): this file holds the one pty harness the
+//! ordinary suite runs.
+//!
 //! Linux only: the pty set-up uses Linux's `openpty`/`TIOCSCTTY` semantics.
 //! The code under test does not differ by platform.
 #![cfg(all(feature = "tui", target_os = "linux"))]
@@ -631,6 +635,133 @@ fn a_child_that_writes_nothing_is_waited_for_without_output() -> Result<(), Test
     assert_exit(status, 0, "true succeeds");
     let out = run.output.lock().map(|o| o.clone()).unwrap_or_default();
     assert!(out.is_empty(), "nothing was written: {out:?}");
+    Ok(())
+}
+
+// ── The web console on a TUI run ─────────────────────────────────────────
+//
+// The harness above is the one way this suite runs the real TUI, so the
+// console's TUI wiring is checked here: the REST API a TUI run starts serves
+// the console when asked to, and a TUI run without the API refuses it.
+
+/// What the TUI writes when it enters the alternate screen.
+#[cfg(feature = "api")]
+const ENTER_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049h";
+
+/// A TUI run with the REST API on a port the system picks, logging at `info`
+/// so the bound address is written to the terminal.
+#[cfg(feature = "api")]
+fn spawn_with_api(extra: &[&str]) -> Result<PtyRun, TestError> {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sipnab"));
+    cmd.current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures"))
+        .args(["--no-config", "-I", "sip_call.pcap", "--api", "127.0.0.1:0"])
+        .args(extra)
+        .env("SIPNAB_LOG", "info")
+        .env("NO_COLOR", "1")
+        .env("TERM", "xterm-256color");
+    PtyRun::spawn_command(cmd, true)
+}
+
+/// The port of the REST API `run` started, read from its log line.
+#[cfg(feature = "api")]
+fn api_port(run: &mut PtyRun) -> Result<u16, TestError> {
+    const LINE: &[u8] = b"REST API listening on 127.0.0.1:";
+    let deadline = Instant::now() + test_timeout(60);
+    loop {
+        let out = run.output.lock().map(|o| o.clone()).unwrap_or_default();
+        if let Some(at) = out.windows(LINE.len()).position(|w| w == LINE) {
+            let digits: Vec<u8> = out[at + LINE.len()..]
+                .iter()
+                .copied()
+                .take_while(u8::is_ascii_digit)
+                .collect();
+            // The line is whole once something follows the digits.
+            if out.len() > at + LINE.len() + digits.len() && !digits.is_empty() {
+                return Ok(std::str::from_utf8(&digits)?.parse()?);
+            }
+        }
+        if let Some(status) = run.child.try_wait()? {
+            return Err(format!("sipnab ended before the API listened: {status}").into());
+        }
+        if Instant::now() >= deadline {
+            return Err("the REST API did not report its address within 60 s".into());
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// The status code of `GET path` on the loopback `port`.
+#[cfg(feature = "api")]
+fn get_status(port: u16, path: &str) -> Result<u16, TestError> {
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port))?;
+    stream.set_read_timeout(Some(test_timeout(30)))?;
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer)?;
+    let code = answer.split_whitespace().nth(1).ok_or("no status line")?;
+    Ok(code.parse()?)
+}
+
+/// A TUI run with `--api --api-console` serves the console page.
+#[cfg(feature = "api")]
+#[test]
+fn a_tui_with_the_api_serves_the_console_when_asked() -> Result<(), TestError> {
+    let mut run = spawn_with_api(&["--api-console"])?;
+    let port = api_port(&mut run)?;
+    assert_eq!(
+        get_status(port, "/console/")?,
+        200,
+        "the TUI's REST API serves the console page"
+    );
+    assert_eq!(
+        get_status(port, "/health")?,
+        200,
+        "the API answers beside the console"
+    );
+    run.signal(libc::SIGTERM)?;
+    let status = run.wait_for_exit(test_timeout(15), "SIGTERM")?;
+    assert_exit(status, 0, "SIGTERM is a graceful stop");
+    Ok(())
+}
+
+/// A TUI run with `--api` and no console has no console path, and
+/// `--api-console=false` is the same.
+#[cfg(feature = "api")]
+#[test]
+fn a_tui_with_the_api_has_no_console_unless_asked() -> Result<(), TestError> {
+    for extra in [&[][..], &["--api-console=false"]] {
+        let mut run = spawn_with_api(extra)?;
+        let port = api_port(&mut run)?;
+        assert_eq!(get_status(port, "/console/")?, 404, "{extra:?}");
+        assert_eq!(get_status(port, "/health")?, 200, "{extra:?}");
+        run.signal(libc::SIGTERM)?;
+        let status = run.wait_for_exit(test_timeout(15), "SIGTERM")?;
+        assert_exit(status, 0, "SIGTERM is a graceful stop");
+    }
+    Ok(())
+}
+
+/// A TUI run that turns the console on with no `--api` is refused with exit
+/// 2 before the screen is taken: the message is on the terminal as plain
+/// text, and the alternate screen was never entered.
+#[cfg(feature = "api")]
+#[test]
+fn a_tui_without_the_api_refuses_the_console_before_it_draws() -> Result<(), TestError> {
+    let mut run = PtyRun::spawn(&["--no-config", "--api-console"], true)?;
+    let status = run.wait_for_exit(test_timeout(60), "the refusal")?;
+    assert_exit(status, 2, "the console without the API is invalid usage");
+    assert!(
+        run.wrote(b"--api-console (or [api] console = true) needs the REST API"),
+        "the refusal is on the terminal"
+    );
+    assert!(run.wrote(b"Add --api ADDR"), "it says what to add");
+    assert!(
+        !run.wrote(ENTER_ALTERNATE_SCREEN),
+        "the screen was taken before the refusal"
+    );
     Ok(())
 }
 

@@ -533,6 +533,10 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
 /// address.
 pub fn plan(cli: &Cli, config: &Config) -> Result<RunPlan, PlanError> {
     refuse_unusable_requests(cli, config)?;
+    // The web console is served by the REST API listener and has none of its
+    // own: turned on with no `--api` it would be served nowhere, and the run
+    // would look as if it had been (CONSOLE-FLAG-WITHOUT-API).
+    console_without_api(cli, config, Compiled::THIS_BUILD.api)?;
     // A fleet member's settings are refused here, before any capture opens,
     // and resolved again by the same function where the member starts.
     #[cfg(feature = "api")]
@@ -799,6 +803,36 @@ fn mcp_tool_selection(cli: &Cli, config: &Config) -> Result<(), PlanError> {
             e,
         )
     })
+}
+
+/// Refuse the web console on a run that starts no REST API.
+///
+/// # Arguments
+///
+/// * `api_compiled` — whether this build has the `api` feature;
+///   `Compiled::THIS_BUILD.api` outside the tests.
+///
+/// # Errors
+///
+/// A `PlanError` that names both settings and what to add: exit code 2 when
+/// `--api-console` turned the console on, 1 when `[api] console` did.
+fn console_without_api(cli: &Cli, config: &Config, api_compiled: bool) -> Result<(), PlanError> {
+    // A build without the feature has no API to add. There the flag is
+    // refused by `uncompiled_flag`, and the key is left alone as every other
+    // `[api]` key is.
+    if !api_compiled {
+        return Ok(());
+    }
+    match cli.console_without_api(config) {
+        Some(origin) => Err(PlanError::refused(
+            origin,
+            "--api-console (or [api] console = true) needs the REST API, and this run does \
+             not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or turn the \
+             console off with --api-console=false"
+                .to_string(),
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Refuse a request sipnab cannot act on, before anything runs: a capture
@@ -3994,7 +4028,7 @@ fn uncompiled_flag(cli: &Cli, config: &Config, compiled: Compiled) -> Option<&'s
         (!compiled.mcp, !compiled.hep, !compiled.tls, !compiled.api);
     let tls = &cli.tls_args;
     let listener = &cli.listener_args;
-    let gates: [(bool, &str); 17] = [
+    let gates: [(bool, &str); 18] = [
         uncompiled_when(
             no_mcp && cli.mcp_args.mcp,
             "--mcp requires the 'mcp' feature (not compiled in)",
@@ -4041,6 +4075,10 @@ fn uncompiled_flag(cli: &Cli, config: &Config, compiled: Compiled) -> Option<&'s
         uncompiled_when(
             no_api && listener.api.is_some(),
             "--api requires the 'api' feature (not compiled in)",
+        ),
+        uncompiled_when(
+            no_api && listener.api_console == Some(true),
+            "--api-console requires the 'api' feature (not compiled in)",
         ),
         uncompiled_when(
             no_api && listener.api_key.is_some(),
@@ -8373,7 +8411,7 @@ mod tests {
             api: true,
         };
         let config = Config::default();
-        let cases: [(&[&str], &str); 17] = [
+        let cases: [(&[&str], &str); 20] = [
             (
                 &["--mcp"],
                 "--mcp requires the 'mcp' feature (not compiled in)",
@@ -8435,6 +8473,15 @@ mod tests {
                 &["--api-tls-client-auth", "optional"],
                 "--api-tls-client-auth requires the 'api' feature (not compiled in)",
             ),
+            (
+                &["--api-console"],
+                "--api-console requires the 'api' feature (not compiled in)",
+            ),
+            (
+                &["--api-console=true"],
+                "--api-console requires the 'api' feature (not compiled in)",
+            ),
+            (&["--api-console=false"], ""),
             (&[], ""),
         ];
         for (flags, refusal) in cases {
@@ -12812,6 +12859,147 @@ mod decision_tests {
         let e = plan_error(&cli, &Config::default())?;
         assert_eq!(e.exit_code, 2);
         assert!(e.message.contains("--vcon-out"), "{}", e.message);
+        Ok(())
+    }
+
+    // ── The web console without the REST API (CONSOLE-FLAG-WITHOUT-API) ──
+
+    /// The whole refusal, as `docs/errors.md` lists it.
+    const CONSOLE_WITHOUT_API: &str = "--api-console (or [api] console = true) needs the REST \
+         API, and this run does not start one. Add --api ADDR (for example --api \
+         127.0.0.1:8080), or turn the console off with --api-console=false";
+
+    /// A config whose `[api] console` is `value`.
+    fn console_key(value: bool) -> Config {
+        let mut config = Config::default();
+        config.api.console = Some(value);
+        config
+    }
+
+    /// `--api-console` with no `--api` is refused with exit 2 and the one
+    /// message, which names both flags and what to add.
+    #[test]
+    fn the_console_flag_without_the_api_is_refused_with_exit_2() -> Result<(), TestError> {
+        for flag in ["--api-console", "--api-console=true"] {
+            let e = plan_error(&cli_from(&["-I", FIXTURE_FILE, flag]), &Config::default())?;
+            assert_eq!(e.exit_code, 2, "{flag}");
+            assert_eq!(e.message, CONSOLE_WITHOUT_API, "{flag}");
+        }
+        for part in ["--api-console", "[api] console", "Add --api ADDR", "=false"] {
+            assert!(CONSOLE_WITHOUT_API.contains(part), "{part}");
+        }
+        Ok(())
+    }
+
+    /// `[api] console = true` alone is refused with exit 1: the setting came
+    /// from the file.
+    #[test]
+    fn the_console_key_without_the_api_is_refused_with_exit_1() -> Result<(), TestError> {
+        let e = plan_error(&cli_from(&["-I", FIXTURE_FILE]), &console_key(true))?;
+        assert_eq!(
+            e.exit_code, 1,
+            "the config file turned the console on, so the exit code is 1"
+        );
+        assert_eq!(
+            e.message, CONSOLE_WITHOUT_API,
+            "the refusal names both settings and what to add"
+        );
+        Ok(())
+    }
+
+    /// The flag beside the key: the command line asked for it, exit 2, also
+    /// over a key that says off.
+    #[test]
+    fn the_console_flag_over_either_key_value_is_refused_with_exit_2() -> Result<(), TestError> {
+        for key in [true, false] {
+            let cli = cli_from(&["-I", FIXTURE_FILE, "--api-console"]);
+            let e = plan_error(&cli, &console_key(key))?;
+            assert_eq!(e.exit_code, 2, "[api] console = {key}");
+            assert_eq!(
+                e.message, CONSOLE_WITHOUT_API,
+                "the refusal names both settings and what to add"
+            );
+        }
+        Ok(())
+    }
+
+    /// A live source is refused as a file is: the check does not depend on
+    /// where the packets come from.
+    #[test]
+    fn the_console_without_the_api_is_refused_on_a_live_source() -> Result<(), TestError> {
+        let e = plan_error(
+            &cli_from(&["-d", "eth0", "--api-console"]),
+            &Config::default(),
+        )?;
+        assert_eq!(
+            (e.exit_code, e.message.as_str()),
+            (2, CONSOLE_WITHOUT_API),
+            "exit code 2 and the whole refusal"
+        );
+        Ok(())
+    }
+
+    /// With the terminal UI (no `-N`) the refusal is the same.
+    #[test]
+    fn the_console_without_the_api_is_refused_with_the_terminal_ui() -> Result<(), TestError> {
+        let cli = Cli::parse_from_args(["sipnab", "-I", FIXTURE_FILE, "--api-console"]);
+        let e = plan_error(&cli, &Config::default())?;
+        assert_eq!(
+            (e.exit_code, e.message.as_str()),
+            (2, CONSOLE_WITHOUT_API),
+            "exit code 2 and the whole refusal"
+        );
+        Ok(())
+    }
+
+    /// Nothing is refused when the console is off, or when `--api` is given.
+    #[test]
+    fn a_console_that_is_off_or_has_its_api_is_planned() -> Result<(), TestError> {
+        // (arguments after `-I <file>`, [api] console)
+        let cases: [(&[&str], Option<bool>); 7] = [
+            (&[], None),
+            (&[], Some(false)),
+            (&["--api-console=false"], None),
+            (&["--api-console=false"], Some(true)),
+            (&["--api", "127.0.0.1:0"], Some(true)),
+            (&["--api", "127.0.0.1:0", "--api-console"], None),
+            (&["--api", "127.0.0.1:0", "--api-console"], Some(false)),
+        ];
+        for (args, key) in cases {
+            let mut argv = vec!["-I", FIXTURE_FILE];
+            argv.extend_from_slice(args);
+            let mut config = Config::default();
+            config.api.console = key;
+            plan(&cli_from(&argv), &config)
+                .map_err(|e| format!("{args:?} with [api] console = {key:?}: {e:?}"))?;
+        }
+        Ok(())
+    }
+
+    /// A build without the `api` feature has no API to add, so the console
+    /// refusal is not the one it gives: `--api-console` is refused as a flag
+    /// of a missing feature, and the key is left alone as the other `[api]`
+    /// keys are.
+    #[test]
+    fn a_build_without_the_api_gives_the_feature_refusal_not_this_one() -> Result<(), TestError> {
+        let cli = cli_from(&["-I", FIXTURE_FILE, "--api-console"]);
+        assert!(
+            console_without_api(&cli, &Config::default(), false).is_ok(),
+            "a build with no api feature leaves the flag to the feature refusal"
+        );
+        assert!(
+            console_without_api(&cli_from(&["-I", FIXTURE_FILE]), &console_key(true), false)
+                .is_ok(),
+            "a build with no api feature leaves the key alone"
+        );
+        let e = console_without_api(&cli, &Config::default(), true)
+            .err()
+            .ok_or("a build with the api feature refuses it")?;
+        assert_eq!(
+            (e.exit_code, e.message.as_str()),
+            (2, CONSOLE_WITHOUT_API),
+            "exit code 2 and the whole refusal"
+        );
         Ok(())
     }
 
