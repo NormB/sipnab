@@ -76,6 +76,14 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // "Advertising a release" names `scripts/pages-live.py verify --enforce`.
+    (
+        "enforce",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "After the release" runs `scripts/post-release.py run --host`.
     (
         "host",
@@ -6203,11 +6211,14 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1451 -> 1455 (TUI-CLEAR-CONFIRM, TUI-NARROW-COLUMNS): keybindings.md's
     // "Clear confirmation" key table and the call list's column-drop table,
     // and their site mirror (+4).
-    // 1455 -> 1458 (OPS batch 4): the "sipnab found" table of permission
+    // 1455 -> 1457 (PAGES-SAME-SHA-REDEPLOY-NOT-LIVE): the exit-status table
+    // of the live check in docs/internals/build-ci-release.md and its site
+    // mirror (+2).
+    // 1457 -> 1460 (OPS batch 4): the "sipnab found" table of permission
     // hints in docs/troubleshooting.md's "Live capture says Permission
     // denied" and its site mirror (+2), and the "What the packages do to the
     // service" table in packaging/README.md, which has no mirror (+1).
-    const EXPECTED_TABLES: usize = 1458;
+    const EXPECTED_TABLES: usize = 1460;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

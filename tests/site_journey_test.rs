@@ -6317,7 +6317,7 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
             //
             // `sipnab.js` is NOT here and must keep existing: it is text, the
             // export guard reads it, and its absence is a real failure.
-            const GENERATED: [&str; 8] = [
+            const GENERATED: [&str; 9] = [
                 "website/public",
                 "build/",
                 "target/",
@@ -6334,6 +6334,9 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
                 // pages.yml writes the docs pages' change history here at
                 // deploy (scripts/doc-history.py); it is never committed.
                 "website/data/doc-history.toml",
+                // pages.yml writes the deploy stamp here before the build
+                // (scripts/pages-live.py stamp); it is never committed.
+                "website/static/deploy-stamp.txt",
             ];
             if GENERATED.iter().any(|g| cand.starts_with(g)) {
                 continue;
@@ -6675,11 +6678,18 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 254 -> 259: ci.yml's new hook-shellcheck job names .githooks/pre-push in
     // its comment and all three hooks in its run line (+4), and the Security
     // audit job's new step runs scripts/check-lockfile-drift.py (+1).
-    // 259 -> 261: the maintainer-script comments in
+    // 259 -> 268 (PAGES-SAME-SHA-REDEPLOY-NOT-LIVE): pages.yml's path filter,
+    // stamp step and `live` job name scripts/pages-live.py and
+    // scripts/verify-site-advertises.sh (+7; the stamp file itself is a
+    // GENERATED path and is not counted); release.yml's advertise job names
+    // scripts/pages-live.py in its comment and its error line (+2).
+    // Measurement: with main's release.yml swapped back in the scan read two
+    // fewer.
+    // 268 -> 270: the maintainer-script comments in
     // `packaging/deb/build-deb.sh` and `packaging/rpm/build-rpm.sh` name the
     // harness that runs them, `packaging/deb/test-build-deb.sh` and
     // `packaging/rpm/test-build-rpm.sh` (+1 each).
-    const EXPECTED_REFERENCES: usize = 261;
+    const EXPECTED_REFERENCES: usize = 270;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

@@ -55,6 +55,9 @@ on:
       - 'docs/install.md'
       - 'CHANGELOG.md'
       - 'scripts/build-site-pages.py'
+      # The `live` job's check, and the stamp the build writes for it.
+      - 'scripts/pages-live.py'
+      - 'scripts/verify-site-advertises.sh'
   # release.yml's `advertise` job dispatches this on main once a release's
   # assets are published, with `expect` set to that release, and waits for
   # the run (RELEASE-FAST C: no phase-two pull request).
@@ -312,6 +315,13 @@ jobs:
           python3 scripts/doc-history.py --write website/data/doc-history.toml > /dev/null
           grep -c '^\[pages\.' website/data/doc-history.toml
 
+      # What the `live` job reads back from the published site: this commit,
+      # this run and this attempt. A deploy that reports success and leaves
+      # the previous artifact in place serves the previous stamp
+      # (PAGES-SAME-SHA-REDEPLOY-NOT-LIVE).
+      - name: Write the deploy stamp
+        run: python3 scripts/pages-live.py stamp --write website/static/deploy-stamp.txt
+
       - name: Build site
         working-directory: website
         run: zola build
@@ -439,6 +449,65 @@ jobs:
         id: deployment_retry
         if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
+  # PAGES-SAME-SHA-REDEPLOY-NOT-LIVE. On 0.5.242 two workflow_dispatch runs
+  # of this workflow on main commit 1ef3e74a0 (42714372409 and 42717859462)
+  # built artifacts naming 0.5.242, the deploy job reported success for both,
+  # and the site kept serving the push deploy of the same commit.
+  # actions/deploy-pages sends `pages_build_version = GITHUB_SHA`, and GitHub
+  # names the Pages deployment by that string, so a second deploy of one
+  # commit reads the status of a deployment that already says `succeed`. Its
+  # success says nothing about the new artifact.
+  #
+  # So this job judges the deploy by the live site. scripts/pages-live.py
+  # reads the stamp the build wrote. When the live stamp is not this run's
+  # within 5 minutes, it deploys the same artifact again under a build
+  # version GitHub has not seen, prints a warning that says so, and reads the
+  # stamp again. With `expect` it then checks that the download page names
+  # the release (scripts/verify-site-advertises.sh).
+  #
+  # A workflow_dispatch run enforces the verdict: a release advertises itself
+  # through one, and a withdrawal redeploys through one. A push run prints
+  # the same annotations and passes, because the pre-push tag gate refuses a
+  # release tag while a run on its merge commit is red.
+  #
+  # The job is inside the `pages` concurrency group with the rest of the run,
+  # so no later deploy can replace the site while it reads.
+  live:
+    # 300 s for the stamp, 600 s for a second deploy's status, 300 s for the
+    # stamp again and 300 s for the release: 25 minutes at the worst.
+    timeout-minutes: 30
+    name: The live site is this deploy
+    needs: deploy
+    runs-on: ubuntu-latest
+    # What a second deploy needs, as the deploy job has it: the Pages API
+    # takes an OIDC token from a job in the github-pages environment.
+    # actions:read lists this run's artifact.
+    permissions:
+      contents: read
+      actions: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Read the stamp back from the live site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECT: ${{ inputs.expect }}
+          ENFORCE: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          if [ "$ENFORCE" = true ]; then
+            python3 scripts/pages-live.py verify --expect "$EXPECT" --enforce
+          else
+            python3 scripts/pages-live.py verify --expect "${EXPECT:-}"
+          fi
+
   # The production CSP is a Cloudflare transform rule pinning inline-script
   # hashes (GitHub Pages cannot set response headers). A deploy that changes
   # an inline <script> without refreshing the rule ships pages whose scripts
