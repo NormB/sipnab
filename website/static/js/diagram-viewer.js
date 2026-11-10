@@ -94,18 +94,22 @@
     var controls = document.createElement("div");
     controls.className = "diagram-controls";
 
+    // Each button's face is a symbol, and its name is the aria-label. The
+    // symbol goes in `data-glyph`, which the stylesheet draws, not in the
+    // button's text: text that is not part of the name fails WCAG 2.5.3
+    // (label in name), and a symbol can be part of no name.
     var grip = document.createElement("button");
     grip.type = "button";
     grip.className = "diagram-grip";
     grip.setAttribute("aria-label", "Move diagram controls");
     grip.title = "Drag to move";
-    grip.textContent = "⠿";
+    grip.dataset.glyph = "⠿";
 
     var zoomOut = document.createElement("button");
     zoomOut.type = "button";
     zoomOut.setAttribute("aria-label", "Zoom out");
     zoomOut.title = "Zoom out";
-    zoomOut.textContent = "−";
+    zoomOut.dataset.glyph = "−";
 
     var zoomLabel = document.createElement("span");
     zoomLabel.className = "diagram-zoom-label";
@@ -114,20 +118,20 @@
     zoomIn.type = "button";
     zoomIn.setAttribute("aria-label", "Zoom in");
     zoomIn.title = "Zoom in";
-    zoomIn.textContent = "+";
+    zoomIn.dataset.glyph = "+";
 
     var resetBtn = document.createElement("button");
     resetBtn.type = "button";
     resetBtn.setAttribute("aria-label", "Reset zoom and position");
     resetBtn.title = "Reset";
-    resetBtn.textContent = "⤾";
+    resetBtn.dataset.glyph = "⤾";
 
     var collapse = document.createElement("button");
     collapse.type = "button";
     collapse.className = "diagram-collapse";
     collapse.setAttribute("aria-label", "Hide diagram controls");
     collapse.title = "Hide controls";
-    collapse.textContent = "×";
+    collapse.dataset.glyph = "×";
 
     controls.appendChild(grip);
     controls.appendChild(zoomOut);
@@ -143,7 +147,7 @@
     reopen.className = "diagram-reopen";
     reopen.setAttribute("aria-label", "Show diagram controls");
     reopen.title = "Show controls";
-    reopen.textContent = "⚙";
+    reopen.dataset.glyph = "⚙";
 
     figure.appendChild(controls);
     figure.appendChild(reopen);

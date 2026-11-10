@@ -267,7 +267,7 @@ alone.
 
 Recorded so these are not relitigated. Full reasoning in `backlog.md`.
 
-| | Verdict | Decisive reason |
+| Backend | Verdict | Decisive reason |
 |---|---|---|
 | **DPDK** | Declined | Deleted in libpcap 1.11; not in Debian's build; `selectable_fd = portid` means `dpdk:0` polls **stdin** and captures nothing |
 | **PF_RING** | Declined | Proprietary ntop-EULA blobs linked into `libpfring`; incompatible with MIT/Apache-2.0 redistribution; ZC needs a paid per-MAC license |

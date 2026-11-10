@@ -11,9 +11,8 @@ what its tool does differently. The [MCP tool reference](mcp-tools.md) lists
 the other bundles and finds any tool by name.
 
 > **The peer this needs.** The tools on this page read [TFPS](https://github.com/sippulse/tfps)
-> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS v0.2.1
-> rejects `--json`; the mode is on TFPS's `master` branch. Until a tagged
-> release carries it, build TFPS from `master`.
+> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS v0.3.0
+> is the first release with that mode. v0.2.1 and earlier reject `--json`.
 >
 > To check the `tfps_ctl` you have, run
 > `tfps_ctl status --json`. One line of JSON means it is ready, and

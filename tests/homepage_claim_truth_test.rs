@@ -515,7 +515,7 @@ fn hero_does_not_claim_zero_dependencies_while_the_default_build_links_one() -> 
     assert!(
         !hero.contains("zero dependencies"),
         "the hero claims zero dependencies while install.sh tells most Linux \
-         hosts the build it chose \"needs libpcap: apt/dnf install libpcap\".\n\
+         hosts the build it chose \"needs libpcap\".\n\
          Hero: {hero}"
     );
     Ok(())

@@ -87,7 +87,7 @@ curl -s -o /dev/null -w '%{http_code}\n' "https://freeswitch.signalwire.com/repo
 - The last line prints `401`. That is the HTTP status for a request that needs
   credentials.
 
-| | Debian 13 | Ubuntu 24.04 |
+| Source | Debian 13 | Ubuntu 24.04 |
 |---|---|---|
 | A `freeswitch` package from the distribution | none | none |
 | SignalWire's FreeSWITCH packages | need a SignalWire access token | need a SignalWire access token |

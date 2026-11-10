@@ -509,12 +509,10 @@ These are step-by-step guides.
     [run sipnab beside it](docs/opensips-sipnab.md)
   - [Use Kamailio](docs/kamailio.md) and
     [run sipnab beside it](docs/kamailio-sipnab.md)
-- **PBX.** Asterisk answers calls and places them on to the callee, as two
-  legs.
+- **Telephony platform.** Asterisk and FreeSWITCH answer each call and connect
+  it onward as a second call. The audio of both calls passes through them.
   - [Use Asterisk](docs/asterisk.md) and
     [run sipnab beside it](docs/asterisk-sipnab.md)
-- **Softswitch.** FreeSWITCH answers each call. It bridges the call to the
-  callee as a second call. The audio of both passes through it.
   - [Use FreeSWITCH](docs/freeswitch.md) and
     [run sipnab beside it](docs/freeswitch-sipnab.md)
 - **Call records.** A vCon server keeps every call as a vCon.

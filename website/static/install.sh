@@ -136,7 +136,7 @@ main() {
           info "no glibc detected — using the static musl build"
         fi
         ;;
-      *) info "glibc $glibc — using the gnu build (needs libpcap: apt/dnf install libpcap)" ;;
+      *) info "glibc $glibc — using the gnu build (needs libpcap: apt install libpcap0.8, or dnf install libpcap)" ;;
     esac
   fi
 

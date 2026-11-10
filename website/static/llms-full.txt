@@ -6418,6 +6418,10 @@ your rules, and which bytes prove a finding.
 Each call below runs the tool once over MCP stdio against a sample capture,
 with [`demos/mcp-stdio.sh`](https://github.com/NormB/sipnab/blob/main/demos/mcp-stdio.sh),
 and selects a few fields with `jq`. An agent sends the same arguments.
+
+The script needs `jq` and bash 3.2 or later, so it runs with the bash macOS
+ships. It names what is missing: `jq`, the capture, or the binary.
+
 Point `SIPNAB_BIN` at the binary you run:
 
 ```bash
@@ -6737,7 +6741,7 @@ It is also different from HEP, the Homer Encapsulation Protocol:
 
 A deployment can use both.
 
-### Scrape the metrics of a capture file
+## Scrape the metrics of a capture file
 
 With `--api`, sipnab keeps serving after it has read a file, until you stop
 it. On a loopback address with no API key, `/metrics` needs no token. Start
@@ -6779,7 +6783,7 @@ exits with the run, so on a file run it is reachable only while sipnab reads
 the file.
 
 
-### GET /metrics
+## GET /metrics
 
 Prometheus-compatible metrics endpoint. It returns metrics in the Prometheus
 text exposition format (`text/plain; version=0.0.4`).
@@ -6940,7 +6944,7 @@ and is absent from the scrape until the first alert. An absent series means
 no alert of that type has fired since the process started.
 
 
-### Choose a scrape target
+## Choose a scrape target
 
 sipnab serves the same metrics on two ports. Scrape whichever one the run
 already has:
@@ -6955,7 +6959,7 @@ Both publish the same series with the same values, so a rule or dashboard
 built against one works against the other. Every series in the table above is
 on both.
 
-### Prometheus scrape config
+## Prometheus scrape config
 
 ```yaml
 # prometheus.yml
@@ -9240,8 +9244,9 @@ Both routes sit behind the same authentication as every other `/v1/` route.
 
 > **The peer this needs.** These routes read [TFPS](https://github.com/sippulse/tfps)
 > through its `tfps_ctl` program in JSON mode, the `--json` flag.
-> TFPS v0.2.1 does not have that mode. Build TFPS from its `master` branch
+> TFPS v0.3.0 is the first release with that mode
 > ([sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6) added it).
+> v0.2.1 and earlier do not have it.
 >
 > Check the `tfps_ctl` you have:
 >
@@ -17373,8 +17378,8 @@ away keeps running. You closed the window, the SSH session dropped, or
 something killed the tmux server, and `sipnab` still shows in `ps` in state `R`, using
 CPU. It does not stop on `SIGTERM`.
 
-- **Fix:** upgrade. A later release stops on its own within a second of
-  losing its terminal, and exits 129.
+- **Fix:** upgrade to 0.5.235 or later. From 0.5.235, sipnab stops on its
+  own within a second of losing its terminal, and exits 129.
 - **On 0.5.234:** end the process with `SIGKILL`. First check that the pid
   is that run. Replace 12345 with its pid:
 
@@ -17388,8 +17393,8 @@ CPU. It does not stop on `SIGTERM`.
   kill -KILL 12345
   ```
 
-The same later release makes a terminal interface whose terminal is still
-there stop on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
+From 0.5.235, a terminal interface whose terminal is still
+there also stops on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
 0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
 process at once, with no end-of-run summary.
 
@@ -17401,8 +17406,8 @@ standard input stays open with nothing to read keeps waiting. `SIGTERM`,
 (`-I /dev/stdin`, a process substitution, a named pipe) can wait the same way, and such
 an input never worked.
 
-- **Fix:** upgrade. A later release stops `--vcon-fetch -` within a second of
-  the signal. It fetches nothing and exits 0, or 129 after `SIGHUP`. It
+- **Fix:** upgrade to 0.5.235 or later. From 0.5.235, sipnab stops
+  `--vcon-fetch -` within a second of the signal. It fetches nothing and exits 0, or 129 after `SIGHUP`. It
   refuses a FIFO, a pipe or a device given to `-I` at startup, with exit
   status 1. Save the capture to a file and give that file instead.
 - **On 0.5.234 or earlier:** end the input. Close the program that writes to
@@ -34771,10 +34776,8 @@ alert_exec = "/usr/local/bin/sipnab-alert.sh"
 > through its `tfps_ctl` program in JSON mode, the `--json` flag.
 >
 > - TFPS gained that mode in [sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6).
-> - No tagged release carries it yet. v0.2.1, the newest, rejects `--json`.
->
-> Until the next release, build TFPS from its `master` branch.
->
+> - TFPS v0.3.0 is the first release that carries it. v0.2.1 and earlier
+>   reject `--json`.
 > - To check the `tfps_ctl` you have, run `tfps_ctl status --json`.
 >   - One line of JSON means it is ready.
 >   - `unknown option: --json` means it predates the mode.
@@ -35813,7 +35816,7 @@ sipnab can show you SIP that only ever exists encrypted on the wire. It needs:
   - at the moment that process hands the bytes to its TLS library;
   - before any encryption happens.
 
-|  | |
+| Question | Answer |
 |---|---|
 | **What it needs** | `root` on the machine running the SIP daemon |
 | **What it reads** | memory of processes on that machine |
@@ -36863,7 +36866,7 @@ no-open-port property of SSH stdio.
 
 ### Which remote setup should I use?
 
-| | SSH stdio | HTTP+token | SSH tunnel |
+| Property | SSH stdio | HTTP+token | SSH tunnel |
 |---|---|---|---|
 | Server setup | install only | unit + token | unit |
 | Open port | none | 8731 | none |
@@ -39776,7 +39779,7 @@ set, rather than as an identifier match.
 
 Both work. Choose by where packet data may live.
 
-| | Federated (this section) | Centralized (HEP) |
+| Property | Federated (this section) | Centralized (HEP) |
 |---|---|---|
 | Setup | Register N servers with the client | `--hep-send` on each node into one `--hep-listen` collector |
 | Packet data | Never leaves the node | Concentrates on the collector |
@@ -47825,9 +47828,8 @@ what its tool does differently. The [MCP tool reference](mcp-tools.md) lists
 the other bundles and finds any tool by name.
 
 > **The peer this needs.** The tools on this page read [TFPS](https://github.com/sippulse/tfps)
-> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS v0.2.1
-> rejects `--json`; the mode is on TFPS's `master` branch. Until a tagged
-> release carries it, build TFPS from `master`.
+> through its `tfps_ctl` program in JSON mode, the `--json` flag. TFPS v0.3.0
+> is the first release with that mode. v0.2.1 and earlier reject `--json`.
 >
 > To check the `tfps_ctl` you have, run
 > `tfps_ctl status --json`. One line of JSON means it is ready, and
@@ -52509,7 +52511,7 @@ packets.
 
 ### Side by side
 
-| | `any` (the default) | Named — `-d eth0` / `-d eth0,eth1 --multi-device` |
+| Property | `any` (the default) | Named — `-d eth0` / `-d eth0,eth1 --multi-device` |
 |---|---|---|
 | **Loopback / container legs** | Captured | **Missed unless you name those interfaces too** |
 | **Link type** | `LINUX_SLL2` | `EN10MB` |
@@ -54002,7 +54004,7 @@ Two nodes exist for the case that cannot cover: a relay on separate hardware.
 - Attribution then has to come from the rtpengine `ng` control plane instead.
 - That carries four requirements with it.
 
-|  | Single node (co-located) | Two nodes (separate relay) |
+| Property | Single node (co-located) | Two nodes (separate relay) |
 |---|---|---|
 | Stream attribution | SDP in the signaling | rtpengine ng control plane |
 | `hep` build feature | Not needed | Required |
@@ -65547,10 +65549,13 @@ it.
 Build TFPS from its master branch, at
 [`984577dc`](https://github.com/sippulse/tfps/commit/984577dc).
 
-- The latest release, v0.2.1, has no `--json` option.
-  [Let sipnab see and control TFPS](tfps-sipnab.md) needs that option.
-- Master has it, merged on 2026-09-18. No release carries it yet.
-- When one does, install that release instead.
+- [Let sipnab see and control TFPS](tfps-sipnab.md) needs the `--json`
+  option of `tfps_ctl`.
+- TFPS v0.2.1 and earlier have no `--json` option.
+- Master has it, merged on 2026-09-18. TFPS v0.3.0, released on 2026-10-31,
+  is the first release that has it.
+- The steps below ran on the master build named above. They were not run
+  again on a release.
 
 The installer compiles the XDP program on this machine.
 
@@ -65867,16 +65872,17 @@ is the blocks in
 
 sipnab reads `tfps_ctl`'s answers as JSON. It asks with `--json`.
 
-- That option is on TFPS's master branch, merged 2026-09-18 as
+- TFPS gained that option on its master branch, merged 2026-09-18 as
   [`984577dc`](https://github.com/sippulse/tfps/commit/984577dc).
-- It is in no release yet. v0.2.1 answers `unknown option: --json`.
+- TFPS v0.3.0 is the first release that has it. v0.2.1 and earlier answer
+  `unknown option: --json`.
 - sipnab needs a TFPS built at or after the JSON contract, which landed on
   2026-09-16 (`e7ee57a`). A `tfps_ctl` that predates the JSON contract can
   answer `--json` and still not in that form: a build installed on 2026-09-03
   answered `status`, but its `ban` gave `expires` as a date string, which
   sipnab cannot read. Build `984577dc` or later.
 - [Add TFPS to your voice stack](tfps.md) builds that commit.
-- If your TFPS is a release, run its
+- If your TFPS is v0.2.1 or earlier, run its
   [Install TFPS](tfps.md#install-tfps) step.
   - The installer builds from the checkout and upgrades the release in place.
   - It keeps `/etc/tfps/config.json` and what TFPS has learned.
@@ -66230,8 +66236,9 @@ The `curl` commands from the same-machine section work unchanged.
 
 ## When something does not work
 
-- **`unknown option: --json`.** The TFPS in use is a release. Build master, as
-  in the "Check that TFPS answers in JSON" step.
+- **`unknown option: --json`.** The TFPS in use is v0.2.1 or earlier. Build
+  master, as in the "Check that TFPS answers in JSON" step, or install TFPS
+  v0.3.0 or later.
 - **``no loaded eBPF map called `blocked` — is tfps running, and are you root?``**
   Either TFPS is not running, or sipnab lacks `CAP_BPF` and `CAP_SYS_ADMIN`.
 - **`reading /etc/tfps/config.json: Permission denied`.** Give the file to the
@@ -68009,7 +68016,7 @@ rtpproxy fits beside the rtpengine that
 commands on different ports. They relay media on different ranges. So neither
 gets in the other's way:
 
-| | Control socket | Media ports |
+| Relay | Control socket | Media ports |
 |---|---|---|
 | rtpengine | `udp:127.0.0.1:2223` | 30000-39999 |
 | rtpproxy | `udp:127.0.0.1:7722` | 50000-59999 |
@@ -69466,7 +69473,7 @@ it. To read another engine's names, name that engine with
 
 The examples use these addresses. Replace them with yours.
 
-| | Media address in SDP | Ports | `listen-ng` |
+| Engine | Media address in SDP | Ports | `listen-ng` |
 |---|---|---|---|
 | Engine A | `203.0.113.5` | 30000-39999 | `192.0.2.5:2223` |
 | Engine B | `203.0.113.5` | 40000-49999 | `192.0.2.6:2223` |
@@ -74943,7 +74950,7 @@ curl -s -o /dev/null -w '%{http_code}\n' "https://freeswitch.signalwire.com/repo
 - The last line prints `401`. That is the HTTP status for a request that needs
   credentials.
 
-| | Debian 13 | Ubuntu 24.04 |
+| Source | Debian 13 | Ubuntu 24.04 |
 |---|---|---|
 | A `freeswitch` package from the distribution | none | none |
 | SignalWire's FreeSWITCH packages | need a SignalWire access token | need a SignalWire access token |
@@ -85146,7 +85153,7 @@ The result is worth recording, because the obvious version of it is a **regressi
 Measured on the 535k corpus (median-of-7, idle host, same binary either way via
 `SIPNAB_NO_MMAP`):
 
-| cores | mapped | libpcap |      |
+| cores | mapped | libpcap | gain |
 |-------|--------|---------|------|
 | 1     | 1.59M  | 1.60M   | —    |
 | 2     | 2.19M  | 2.19M   | —    |
@@ -92111,8 +92118,8 @@ the second line of `sipnab --version` and REST `GET /v1/capabilities`.
 ### TFPS JSON-mode provenance
 
 `tfps_ctl --json` arrived in sippulse/tfps#6, merged into `master` on
-2026-09-18 (commit `984577dc`). v0.2.1, the newest tag at that date, rejects
-`--json`. [`tests/peer_release_honesty_test.rs`](../../tests/peer_release_honesty_test.rs) and
+2026-09-18 (commit `984577dc`). v0.2.1 rejects `--json`. v0.3.0, published
+on 2026-10-31, is the first tag with it. [`tests/peer_release_honesty_test.rs`](../../tests/peer_release_honesty_test.rs) and
 [`tests/tfps_contract_test.rs`](../../tests/tfps_contract_test.rs) record the same facts.
 
 ## Notes for [tls bundle](../mcp-tools-tls.md)

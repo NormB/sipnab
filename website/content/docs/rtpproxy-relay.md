@@ -708,7 +708,7 @@ rtpproxy fits beside the rtpengine that
 commands on different ports. They relay media on different ranges. So neither
 gets in the other's way:
 
-| | Control socket | Media ports |
+| Relay | Control socket | Media ports |
 |---|---|---|
 | rtpengine | `udp:127.0.0.1:2223` | 30000-39999 |
 | rtpproxy | `udp:127.0.0.1:7722` | 50000-59999 |
