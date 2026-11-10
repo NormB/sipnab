@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A release no longer waits in the local queue at its tag push.** `scripts/release-train.py` drives a release from its pull request to the end, and resumes after a crash. It closes the heavy-run release window during remote waits and opens it again before the next local step. On 0.5.240 the tag push queued 434 s behind an ordinary hook.
+
 ## [0.5.242] - 2026-11-09
 
 ### Changed

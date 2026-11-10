@@ -444,6 +444,25 @@ def test_success_the_deb_is_upgraded_and_reports_the_version(cfg):
     assert any("sudo apt-get install -y /tmp/sipnab-post.abc/" + DEB in j for j in f.joined())
 
 
+def test_success_a_release_already_installed_passes_without_installing(cfg):
+    # A re-run after the upgrade: apt would plan nothing, and that is not a
+    # failure. release-train.py re-runs these checks on a resume.
+    f = healthy(cfg)
+    f.on(has("dpkg-query"), (0, VERSION + "\n"))
+    r = pr.check_deb(cfg, f)
+    assert r.ok, r.detail
+    assert not any("install -y" in j for j in f.joined())
+    assert not any(a[0] == "scp" for a in f.argvs())
+
+
+def test_failure_a_service_down_with_the_release_already_installed_fails(cfg):
+    down = UNITS_BEFORE.replace("ActiveState=active\n\nId=vcon", "ActiveState=failed\n\nId=vcon")
+    f = healthy(cfg)
+    f.on(has("dpkg-query"), (0, VERSION + "\n"))
+    f.on(has("systemctl", "show"), (0, down))
+    assert not pr.check_deb(cfg, f).ok
+
+
 def test_success_the_deb_is_checked_against_sha256sums_before_it_is_copied(cfg):
     f = healthy(cfg)
     pr.check_deb(cfg, f)

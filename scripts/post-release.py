@@ -308,6 +308,9 @@ def check_deb(cfg, run) -> CheckResult:
             ok, why = units_active(before, cfg.units)
             if not ok:
                 return CheckResult("deb", False, why)
+            have = ssh(cfg, run, "dpkg-query -W -f '${Version}' sipnab")
+            if have.rc == 0 and have.out.strip() == cfg.version:
+                return CheckResult("deb", True, f"sipnab {cfg.version} is already installed; the services are active")
             cp = run(["scp", *SSH_OPTS, str(local / deb), f"{cfg.host}:{d}/"], 120)
             if cp.rc != 0:
                 return CheckResult("deb", False, f"copying {deb} failed: {cp.out.strip()}")
