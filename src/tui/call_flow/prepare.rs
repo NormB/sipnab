@@ -260,6 +260,17 @@ const CID_COLORS: [Color; 6] = [
     Color::Red,
 ];
 
+/// The arrow style for rotation position `idx` in the Call-ID and CSeq
+/// color modes. `idx` wraps around the rotation. Under NO_COLOR every
+/// position is unstyled: the rotation is fixed colors, not theme slots, so
+/// the NO_COLOR theme cannot blank it.
+pub(super) fn cid_style(idx: usize, theme: &Theme) -> Style {
+    if theme.no_color {
+        return Style::default();
+    }
+    Style::default().fg(CID_COLORS[idx % CID_COLORS.len()])
+}
+
 #[cfg(test)]
 thread_local! {
     /// Per-thread call counter for `layout`, test-only: pins the WS4.3c
@@ -1048,8 +1059,8 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
                     cseq_idx,
                 } => match opts.color_mode {
                     ColorMode::Method => class_style(*class, theme),
-                    ColorMode::CallId => Style::default().fg(CID_COLORS[*cid_idx]),
-                    ColorMode::CSeq => Style::default().fg(CID_COLORS[*cseq_idx]),
+                    ColorMode::CallId => cid_style(*cid_idx, theme),
+                    ColorMode::CSeq => cid_style(*cseq_idx, theme),
                 },
             };
             FormattedMessage {
@@ -1504,6 +1515,43 @@ mod class_style_no_color_tests {
             );
             assert_eq!(style.bg, None, "{class:?}");
         }
+    }
+
+    /// Failure: under NO_COLOR the Call-ID and CSeq color modes emit no
+    /// color for any rotation position.
+    #[test]
+    fn no_rotation_color_is_emitted_under_no_color() {
+        let theme = Theme::monochrome();
+        for idx in 0..CID_COLORS.len() {
+            let style = cid_style(idx, &theme);
+            assert_eq!(style.fg, None, "position {idx}: {style:?}");
+            assert_eq!(style.bg, None, "position {idx}: {style:?}");
+        }
+    }
+
+    /// Success: with a color theme each position takes its rotation color.
+    #[test]
+    fn each_rotation_position_takes_its_color_with_the_default_theme() {
+        let theme = Theme::default();
+        for (idx, color) in CID_COLORS.iter().enumerate() {
+            assert_eq!(cid_style(idx, &theme).fg, Some(*color), "position {idx}");
+        }
+    }
+
+    /// Edge: a position past the end of the rotation wraps around.
+    #[test]
+    fn a_rotation_position_past_the_end_wraps() {
+        let theme = Theme::default();
+        assert_eq!(
+            cid_style(CID_COLORS.len() + 1, &theme).fg,
+            Some(CID_COLORS[1]),
+            "position 7 is position 1"
+        );
+        assert_eq!(
+            cid_style(usize::MAX, &theme).fg,
+            Some(CID_COLORS[usize::MAX % CID_COLORS.len()]),
+            "the largest position does not overflow"
+        );
     }
 
     /// Edge: a server error is still bold under NO_COLOR, so it is told

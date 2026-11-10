@@ -59,13 +59,19 @@ With a non-empty `NO_COLOR` environment variable, sipnab ignores `[theme]` and
 draws without color:
 
 ```bash
-NO_COLOR=1 sipnab -r capture.pcap
+NO_COLOR=1 sipnab -I capture.pcap
 ```
 
 - sipnab paints no status band and adjusts no color.
 - The call flow draws every message in the terminal's own text color. A 5xx
   response stays bold.
 - The call flow marks the selected row with reverse video in place of the band.
+- The Call-ID and CSeq color modes of the call flow (`c`) draw no color.
+- A search match in the raw message is bold reverse video.
+- The cursor of a text field is reverse video.
+
+sipnab does not rely on color alone for an error. An error on the status line
+starts with `Error:`, with or without `NO_COLOR`.
 
 ## Supported color syntax
 

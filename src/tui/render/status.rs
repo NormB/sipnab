@@ -221,6 +221,23 @@ fn status_bar_style(theme: &Theme) -> Style {
     }
 }
 
+/// The text of a status message on status line 3.
+///
+/// An error is labeled `Error:` in words, because its color is not enough:
+/// a reader who cannot tell the colors apart, and anyone under NO_COLOR,
+/// saw an error and a notice drawn the same. A message that already starts
+/// with the word, in any letter case, is not labeled twice.
+fn status_content(message: &str, is_error: bool) -> String {
+    let says_error = message
+        .get(..5)
+        .is_some_and(|start| start.eq_ignore_ascii_case("error"));
+    if is_error && !says_error {
+        format!(" Error: {message}")
+    } else {
+        format!(" {message}")
+    }
+}
+
 /// The style of text drawn in the theme color `color` on the status band.
 ///
 /// The band is painted `status_bg`, so the color is the one
@@ -304,7 +321,7 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
             band_text(&app.theme, app.theme.selected),
         )]
     } else if let Some(ref err) = app.status_error {
-        let content = format!(" {}", err);
+        let content = status_content(err, app.status_is_error());
         // Bold for contrast on the status bar. A message raised as an error
         // (`App::set_status_error`) takes the bad color; its words decide
         // nothing, so "File not found" is an error and "Cleared 3 failed
@@ -1117,6 +1134,71 @@ mod tests {
             .cell((1, 0))
             .ok_or("cell() returned None")?
             .fg)
+    }
+
+    /// Success: an error is labeled in words. Color was the only thing that
+    /// told an error from a notice, and NO_COLOR removes the color.
+    #[test]
+    fn an_error_is_labeled_in_words() {
+        assert_eq!(
+            status_content("File not found: /nope.pcap", true),
+            " Error: File not found: /nope.pcap",
+            "an error carries the label"
+        );
+    }
+
+    /// Failure: a notice takes no label, whatever its words.
+    #[test]
+    fn a_notice_takes_no_label() {
+        assert_eq!(
+            status_content("Cleared 3 failed dialogs", false),
+            " Cleared 3 failed dialogs",
+            "a notice is drawn as written"
+        );
+    }
+
+    /// Edge: an error that already starts with the word is not labeled
+    /// twice, in any letter case.
+    #[test]
+    fn an_error_that_says_error_is_not_labeled_twice() {
+        assert_eq!(
+            status_content("Error: bad filter", true),
+            " Error: bad filter",
+            "already labeled"
+        );
+        assert_eq!(
+            status_content("error opening file", true),
+            " error opening file",
+            "already starts with the word"
+        );
+    }
+
+    /// Edge: an error with no text still shows the label.
+    #[test]
+    fn an_empty_error_still_shows_the_label() {
+        assert_eq!(status_content("", true), " Error: ", "the label alone");
+    }
+
+    /// Failure: under NO_COLOR an error and a notice with the same words
+    /// draw different rows. They drew the same row.
+    #[test]
+    fn an_error_and_a_notice_differ_without_color() -> Result<(), TestError> {
+        let row = |app: &App| -> Result<String, TestError> {
+            let mut terminal = Terminal::new(TestBackend::new(60, 1))?;
+            terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, 60, 1), app))?;
+            let buf = terminal.backend().buffer();
+            Ok((0..60)
+                .filter_map(|x| buf.cell((x, 0)).map(ratatui::buffer::Cell::symbol))
+                .collect())
+        };
+        let mut error = App::new_test();
+        error.theme = Theme::monochrome();
+        error.set_status_error("Save did not finish");
+        let mut notice = App::new_test();
+        notice.theme = Theme::monochrome();
+        notice.status_error = Some("Save did not finish".to_string());
+        assert_ne!(row(&error)?, row(&notice)?, "the rows must differ");
+        Ok(())
     }
 
     /// The contrast of `fg` against the default status band.

@@ -592,6 +592,19 @@ fn min_pipe_gap(pipes: &[u16]) -> u16 {
         .unwrap_or(0)
 }
 
+/// The style of the mark-to-selection delta badge: bold accent text on a
+/// dark background, or bold alone under NO_COLOR. The background is a fixed
+/// color, not a theme slot, so the NO_COLOR theme cannot blank it.
+fn mark_badge_style(theme: &Theme) -> Style {
+    if theme.no_color {
+        return Style::default().add_modifier(Modifier::BOLD);
+    }
+    Style::default()
+        .fg(theme.accent)
+        .bg(Color::Rgb(40, 35, 20))
+        .add_modifier(Modifier::BOLD)
+}
+
 /// Mark + Delta badge (Feature 1): the time from the marked row to the
 /// selected one, in the top-right corner of the pipe row.
 fn draw_mark_badge(
@@ -622,10 +635,7 @@ fn draw_mark_badge(
     // one column left of its flush-right position.
     let badge_len = UnicodeWidthStr::width(badge.as_str()) as u16;
     let badge_x = (area.x + area.width).saturating_sub(badge_len + 1);
-    let badge_style = Style::default()
-        .fg(theme.accent)
-        .bg(Color::Rgb(40, 35, 20))
-        .add_modifier(Modifier::BOLD);
+    let badge_style = mark_badge_style(theme);
     // Render on row 1 (pipe row) at the far right — avoids overlapping endpoint labels
     crate::tui::render::set_string_clipped(buf, area, badge_x, area.y + 1, &badge, badge_style);
 }
@@ -1697,14 +1707,6 @@ fn format_ladder_with_options(
     let mut pdd_done = false;
     let mut in_call = false;
     let mut prev_ts = first_ts;
-    let cid_colors = [
-        Color::Green,
-        Color::Blue,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Cyan,
-        Color::Red,
-    ];
 
     for (mi, msg) in messages.iter().enumerate() {
         let (ts_str, ts_style) = match ts_mode {
@@ -1764,13 +1766,12 @@ fn format_ladder_with_options(
             ColorMode::Method => message_style(msg, theme),
             ColorMode::CallId => {
                 let ci = msg.call_id().unwrap_or("");
-                let i =
-                    ci.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % cid_colors.len();
-                Style::default().fg(cid_colors[i])
+                let i = ci.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize));
+                super::prepare::cid_style(i, theme)
             }
             ColorMode::CSeq => {
                 let cn = msg.cseq().map(|(n, _)| n).unwrap_or(0);
-                Style::default().fg(cid_colors[(cn as usize) % cid_colors.len()])
+                super::prepare::cid_style(cn as usize, theme)
             }
         };
         let sel = selected_msg == Some(mi);
@@ -2572,6 +2573,38 @@ mod tests {
         Ok(())
     }
 
+    /// Failure: under NO_COLOR the delta badge paints no background color.
+    /// It painted a fixed dark RGB background.
+    #[test]
+    fn the_delta_badge_paints_no_color_under_no_color() {
+        let style = mark_badge_style(&Theme::monochrome());
+        assert_eq!(style.bg, None, "no background color: {style:?}");
+        assert!(
+            matches!(style.fg, None | Some(Color::Reset)),
+            "no text color: {style:?}"
+        );
+    }
+
+    /// Success: under NO_COLOR the delta badge is still bold.
+    #[test]
+    fn the_delta_badge_stays_bold_under_no_color() {
+        let style = mark_badge_style(&Theme::monochrome());
+        assert!(
+            style.add_modifier.contains(Modifier::BOLD),
+            "bold: {style:?}"
+        );
+    }
+
+    /// Edge: with a color theme the badge keeps its accent text on the dark
+    /// background, as before.
+    #[test]
+    fn the_delta_badge_keeps_its_colors_with_the_default_theme() {
+        let theme = Theme::default();
+        let style = mark_badge_style(&theme);
+        assert_eq!(style.bg, Some(Color::Rgb(40, 35, 20)), "background");
+        assert_eq!(style.fg, Some(theme.accent), "accent text");
+    }
+
     /// Two participants and two INVITE rows, the first selected, drawn at
     /// 80x24 with `theme`. Returns the buffer.
     fn selected_row_buffer(theme: &Theme) -> Result<ratatui::buffer::Buffer, TestError> {
@@ -2668,6 +2701,50 @@ mod tests {
                 .ok_or_else(|| format!("cell ({x}, {y}) text {:?} is unmeasured", cell.fg))?;
             assert!(r >= crate::tui::theme::AA_TEXT_CONTRAST, "({x}, {y}) {r}:1");
         }
+        Ok(())
+    }
+
+    /// Edge: on the selected row a color that already passes on the band is
+    /// kept, next to default-colored text that is replaced: each run of one
+    /// color is judged on its own.
+    #[test]
+    fn a_passing_color_on_the_selected_row_is_kept() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let parts = vec![
+            Participant {
+                addr: "192.0.2.1:5060".into(),
+                label: "192.0.2.1:5060".into(),
+            },
+            Participant {
+                addr: "192.0.2.2:5060".into(),
+                label: "192.0.2.2:5060".into(),
+            },
+        ];
+        let mut selected = fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1)?;
+        selected.style = Style::default().fg(Color::LightGreen);
+        let msgs = vec![selected];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+            noted: Vec::new(),
+        };
+        let mut term = terminal(80, 24)?;
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })?;
+        let buf = term.backend().buffer().clone();
+        let y = *rows_with(&buf, "12:00:00.000")
+            .first()
+            .ok_or("no selected row")?;
+        let first = buf.cell((0, y)).ok_or("cell() returned None")?;
+        assert_eq!(first.fg, Color::White, "default text is replaced");
+        let arrow = (0..buf.area.width)
+            .filter_map(|x| buf.cell((x, y)))
+            .find(|c| c.symbol() == "\u{2500}")
+            .ok_or("no arrow shaft on the selected row")?;
+        assert_eq!(arrow.fg, Color::LightGreen, "a passing color is kept");
         Ok(())
     }
 
