@@ -38,6 +38,11 @@
 #
 #     SIPNAB_BIN=target/debug/sipnab demos/mcp-stdio.sh <capture> <tool>
 #
+# Needs: bash 3.2 or later (the bash macOS ships), jq, mkfifo and mktemp.
+# Nothing here uses a coprocess, an associative array or any other construct
+# bash gained after 3.2, and tests/demo_mcp_stdio_test.rs keeps it so; the
+# macOS leg of CI runs the script on 3.2 itself.
+#
 # demos/Makefile passes SIPNAB_BIN for every render and refuses to render when
 # that binary disagrees with Cargo.toml. Run through the Makefile, not by hand,
 # when the output is going to be published.
@@ -68,7 +73,20 @@ NODEFLAG=()
 
 [ -r "$CAPTURE" ] || { echo "no capture at $CAPTURE" >&2; exit 1; }
 
-# A coprocess rather than a pipe, because this has to READ before it writes.
+# Say what is missing before anything is started. Every reply is read with
+# jq, so without it each read fails and the run ends as "no initialize reply";
+# a binary that is not there ends the same way, 20 seconds later.
+command -v jq >/dev/null 2>&1 || {
+    echo "mcp-stdio: jq is not installed; this script reads every reply with it" >&2
+    exit 1
+}
+command -v "$SIPNAB_BIN" >/dev/null 2>&1 || {
+    echo "mcp-stdio: no sipnab at '$SIPNAB_BIN'; set SIPNAB_BIN to the binary to drive" >&2
+    exit 1
+}
+
+# Two named pipes rather than one pipeline, because this has to READ before
+# it writes.
 #
 # The capture loads in the BACKGROUND while the server is already answering
 # tool calls, so a call issued straight after `initialize` is answered from
@@ -83,28 +101,68 @@ NODEFLAG=()
 # has been read to its end, so this polls it and refuses to make the real call
 # until it is true. `MCP_MAX_POLLS` bounds the wait so a genuine hang fails
 # instead of running forever.
-coproc SRV { "$SIPNAB_BIN" --mcp -N -I "$CAPTURE" "${ROOTFLAG[@]}" "${NODEFLAG[@]}" --quiet 2>/dev/null; }
-SRV_PID=$!
-trap '[ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null' EXIT
+#
+# Named pipes and not `coproc`: a coprocess is bash 4.0, and macOS ships bash
+# 3.2, where the script ended at that line. The server reads its requests from
+# one pipe and writes its replies to the other; descriptors 3 and 4 are this
+# script's ends of them.
+WORK="$(mktemp -d)" || { echo "mcp-stdio: cannot make a temporary directory" >&2; exit 1; }
+SRV_PID=""
+cleanup() {
+    if [ -n "$SRV_PID" ]; then
+        kill "$SRV_PID" 2>/dev/null
+        # Reap it here, with stderr closed to the shell's own notice: bash 3.2
+        # otherwise prints "Terminated" and the server's whole command line
+        # as this script exits.
+        wait "$SRV_PID" 2>/dev/null
+    fi
+    rm -rf "$WORK"
+}
+trap cleanup EXIT
+mkfifo "$WORK/requests" "$WORK/replies" || { echo "mcp-stdio: cannot make a named pipe in $WORK" >&2; exit 1; }
 
-send() { printf '%s\n' "$1" >&"${SRV[1]}"; }
+# `${ARRAY[@]+"${ARRAY[@]}"}` and not `"${ARRAY[@]}"`: under `set -u`, bash
+# before 4.4 refuses the plain form of an EMPTY array as an unbound variable.
+# The guarded form expands to nothing when the array is empty.
+#
+# `exec`, so the background job IS the server: the pid recorded below is the
+# one to stop, with no shell left between this script and it.
+( exec "$SIPNAB_BIN" --mcp -N -I "$CAPTURE" ${ROOTFLAG[@]+"${ROOTFLAG[@]}"} ${NODEFLAG[@]+"${NODEFLAG[@]}"} --quiet \
+    <"$WORK/requests" >"$WORK/replies" 2>/dev/null ) &
+SRV_PID=$!
+
+# Opening a named pipe waits for the other end. The server's side opens
+# `requests` for reading and then `replies` for writing, so this opens them in
+# the same order. A server that could not start never opens its ends; the
+# opens are done read-write so that this script does not wait on it forever,
+# and the first read below times out instead.
+exec 3<>"$WORK/requests" 4<>"$WORK/replies"
+
+send() { printf '%s\n' "$1" >&3; }
 
 # Replies to earlier polls, and any notification the server sends, share the
 # one stream, so reading "the next line" is never reading "the answer". Each
 # request carries its own id and this keeps the line that quotes it back.
 #
-# The reply lands in a VARIABLE rather than on stdout because bash closes the
-# coprocess file descriptors inside a subshell, and `await 2 | jq ...` puts
-# `await` in one: the read then fails with EBADF on a descriptor the parent
-# still holds open. That failure was silent in every earlier stage of this
-# script and only bit the final call.
+# The reply lands in a VARIABLE rather than on stdout so that the caller reads
+# it without a subshell between the read and its use.
+#
+# A server that has exited cannot answer. Because this script holds both ends
+# of `replies` open, the read would not see end-of-file; it would wait out the
+# whole timeout on every call. So each wait is one second long at most, and a
+# server that is gone ends the wait at once.
 REPLY_LINE=""
 await() {
-    local want="$1" line got
+    local want="$1" line got waited=0
     REPLY_LINE=""
-    while IFS= read -r -t "${MCP_TIMEOUT:-20}" -u "${SRV[0]}" line; do
-        got="$(jq -r '.id // empty' 2>/dev/null <<< "$line")"
-        if [ "$got" = "$want" ]; then REPLY_LINE="$line"; return 0; fi
+    while [ "$waited" -lt "${MCP_TIMEOUT:-20}" ]; do
+        if IFS= read -r -t 1 -u 4 line; then
+            got="$(jq -r '.id // empty' 2>/dev/null <<< "$line")"
+            if [ "$got" = "$want" ]; then REPLY_LINE="$line"; return 0; fi
+        else
+            kill -0 "$SRV_PID" 2>/dev/null || return 1
+            waited=$((waited + 1))
+        fi
     done
     return 1
 }
@@ -130,8 +188,7 @@ while [ "$id" -le "$limit" ]; do
 done
 [ "$loaded" = 1 ] || { echo "mcp-stdio: $CAPTURE never finished loading" >&2; exit 1; }
 
-OUT="$(mktemp)"
-trap 'rm -f "$OUT"; [ -n "${SRV_PID:-}" ] && kill "$SRV_PID" 2>/dev/null' EXIT
+OUT="$WORK/answer"
 
 id=$((id + 1))
 send "$(printf '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"%s","arguments":%s}}' "$id" "$TOOL" "$ARGS")"
