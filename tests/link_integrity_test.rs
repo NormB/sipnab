@@ -1753,11 +1753,14 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // list_dialogs and "Which dialog time to read" links it dropped (-1).
     // 2501 -> 2502 (TEST-CHILD-ORPHAN): internals/testing.md +1, the support
     // table's link to "Children end with their test".
-    // 2502 -> 2510 (web console): rest-api.md +6, the "Web console" section's
+    // 2502 -> 2504 (RELEASE-FAST E): build-ci-release.md's pointer to "The
+    // release train" (#the-release-train) and that section's prerequisite
+    // link to #after-the-release.
+    // 2504 -> 2512 (web console): rest-api.md +6, the "Web console" section's
     // links to its own page's key, authentication, TLS and Host sections and
     // to mtls.md; cli-reference.md +1 and config-reference.md +1, the
     // `--api-console` row and the `[api] console` row linking that section.
-    const EXPECTED_WIKI_LINKS: usize = 2510;
+    const EXPECTED_WIKI_LINKS: usize = 2512;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

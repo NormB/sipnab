@@ -21,6 +21,15 @@ entry that carries them.
   - Captured text, such as a Call-ID or a SIP header, is written to the page as text only.
   - See [Web console](docs/rest-api.md#web-console).
 
+### Fixed
+
+- **Colored text on the TUI status rows meets WCAG 2.2 AA contrast (TUI-STATUS-BAND-CONTRAST).** The status rows paint their own background, `status_bg`, and drew error, capture-source, search and filter text on it in the theme colors as configured. Against the default band `#303040` the default `bad` red measured 1.7:1 and the default `selected` yellow 2.5:1; level AA asks 4.5:1 for text. Each such color is now checked against `status_bg` and, when it is below 4.5:1, moved toward white or black until it reaches it. A color that already passes is drawn as configured, and the `NO_COLOR` theme is unchanged. See the [theme guide](docs/theme-guide.md).
+- **The call flow draws no color under `NO_COLOR`, and its selected row is readable on a light terminal (TUI-FLOW-NO-COLOR).** Six message classes took a fixed RGB color that was not a theme slot, and the selected row painted a fixed dark band, so `NO_COLOR=1` still drew both. On a light terminal the band hid the terminal's own dark text. Under `NO_COLOR` the call flow now draws no color and marks the selected row with reverse video. With a color theme, text on the selected row is moved to 4.5:1 against the band when it is below it.
+- **The rest of the TUI's fixed colors are gone under `NO_COLOR` (TUI-FIXED-COLORS-NO-COLOR).** The raw-message search match (black on yellow), the text-field cursor (black on white), the call-flow delta badge background and the Call-ID/CSeq color rotation were fixed colors, not theme slots, so `NO_COLOR=1` still drew them. Under `NO_COLOR` a search match is now bold reverse video, the cursor is reverse video, and the badge and the rotation draw no color.
+- **An error on the TUI status line starts with `Error:` (TUI-ERROR-COLOR-ONLY).** Only its color told an error from a notice, so the two were drawn the same under `NO_COLOR` and for a reader who cannot tell the colors apart. A message that already starts with the word is not labeled twice.
+- **The F1 help lists `j`/`k` for the call flow, raw message, RTP streams and stream detail views, and `Home`/`End` for RTP streams (TUI-HELP-VI-KEYS).** The views accepted the keys and the [key bindings page](docs/keybindings.md) listed them; the help named only the arrow keys.
+- **A release no longer waits in the local queue at its tag push.** `scripts/release-train.py` drives a release from its pull request to the end, and resumes after a crash. It closes the heavy-run release window during remote waits and opens it again before the next local step. On 0.5.240 the tag push queued 434 s behind an ordinary hook.
+
 ## [0.5.242] - 2026-11-09
 
 ### Changed

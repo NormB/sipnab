@@ -1640,26 +1640,7 @@ hook steps, the workflow runs for the CI steps, and the tag and Pages times.
 | `.deb` steps queued for the heavy-run main slot | 10 min | none: 09:27:23 to 09:27:51 over SSH, outside heavy-run |
 | Merge to site | about 3 h | after this table |
 
-On this host, open the heavy-run release window before the release pull request merges,
-and close it once the site advertises the release. To open it:
-
-```sh
-~/Development/bin/heavy-run --release-window open release-<version> 120
-```
-
-To close it:
-
-```sh
-~/Development/bin/heavy-run --release-window close release-<version>
-```
-
-- While the window is open, an ordinary main-slot job waits instead of starting.
-  Lane, urgent and quick jobs start as before, and a job already running is not stopped.
-- The window expires on its own after the minutes given (at most 360), so a crashed release
-  cannot hold the queue.
-- `heavy-report` prints whether the window is open, whose it is and how long it has left.
-- The v0.5.239 tag push waited 769 s in the lane queue behind an ordinary main-slot job that
-  had started 7 s before it.
+Run a release with [the release train](#the-release-train), which opens and closes the heavy-run release window around the local steps.
 
 The order is therefore:
 
@@ -2126,6 +2107,79 @@ The homepage's test count is not a marker.
   - Platform-gated tests mean the macOS leg runs a handful fewer.
   - So one advertised number cannot be true of both.
   - The figure describes the Linux run.
+
+### The release train
+
+[`scripts/release-train.py`](https://github.com/NormB/sipnab/blob/main/scripts/release-train.py) is one entry point from a release pull request to the end of a release.
+Every run reads where the release is from GitHub and git, so a re-run after a crash continues from there.
+
+**Prerequisites.**
+
+- The release commit is on the branch `release/<version>`, and its pull request is open.
+- `heavy-run`, `land-queue`, `required-checks` and `cla-owner-exempt` are on `PATH`, or in the directory `--bin` names.
+- The prerequisites of [After the release](#after-the-release) hold.
+
+**Steps.** From a checkout of `main` with the tags fetched:
+
+```sh
+python3 scripts/release-train.py <version> --host <user>@<host>
+```
+
+It runs these stages, each only when the facts say it is due:
+
+| Stage | What happens | Window |
+|---|---|---|
+| `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last few checks |
+| `land` | Lands the pull request through `land-queue` and `required-checks`. | Open |
+| `tag` | Makes the signed tag on the merge commit and pushes it in the lane. | Open |
+| `release-wait` | Waits for `release.yml` on the tag. | Closed |
+| `post` | Runs `scripts/post-release.py run <version> --host <user>@<host>`. | Closed |
+
+**The window rule.** The release window stops ordinary main-slot jobs from starting, and cannot stop one that is running.
+So it has to be open for about one hook's length before a local step, and it must not hold the slot during a long remote wait.
+
+- During the pull request's CI the train keeps the window closed.
+- It opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+- It keeps the window open through the landing and the tag push, closes it once the tag is on GitHub, and leaves it closed for the release workflow and the post checks, which use no main slot.
+- It closes its window on every exit, and leaves another owner's window alone.
+- On 0.5.239 there was no window, and the tag push waited 769 s behind an ordinary job that had started 7 s before it.
+- On 0.5.240 the window stayed closed for all of CI, an ordinary hook started in the same second, and the tag queued 434 s behind it.
+
+To open the window by hand:
+
+```sh
+~/Development/bin/heavy-run --release-window open release-<version> 120
+```
+
+To close it by hand:
+
+```sh
+~/Development/bin/heavy-run --release-window close release-<version>
+```
+
+- While the window is open, an ordinary main-slot job waits instead of starting.
+  Lane, urgent and quick jobs start as before, and a job already running is not stopped.
+- The window expires on its own after the minutes given (at most 360), so a crashed release
+  cannot hold the queue.
+- `heavy-report` prints whether the window is open, whose it is and how long it has left.
+
+**Verify.** The exit status says how the train ended:
+
+| Exit | Meaning | Next |
+|---|---|---|
+| 0 | The release finished, and every post check passed. | Keep the `ATTACHED:` line for the ledger row. |
+| 1 | The train stopped; the output names the stage and why. | Fix it and run the same command again. |
+| 2 | Usage error. | Give the version as `X.Y.Z` and `--host`. |
+| 3 | The post checks withdrew the release. | Read the verdict. |
+| 4 | The withdrawal did not complete. | Run the printed commands now. |
+
+**Troubleshooting.**
+
+- `no-pr`: GitHub lists no pull request for the branch `release/<version>`, or GitHub closed it without merging.
+- `ci-failed: <names>`: fix the checks, push, and run the train again.
+- After an exit of 3 or 4 the train does not run the post checks again. To retry them, add `--retry-post`.
+- `the local tag v<version> is on <sha>, not the merge commit <sha>`: delete the stale local tag, then run the train again.
+- [`scripts/tests/test_release_train.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_release_train.py) runs a whole release on a fake clock.
 
 ### After the release
 

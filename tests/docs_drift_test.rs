@@ -44,6 +44,14 @@ type TestError = Box<dyn std::error::Error>;
 /// would still fail this guard instead of being silently whitelisted. The
 /// label is the first element of each `docs` tuple in `readme_long_flags_exist_in_cli`.
 const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
+    // "The release train" names `scripts/release-train.py --retry-post`.
+    (
+        "retry-post",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "After the release" runs `scripts/post-release.py run --host`.
     (
         "host",
@@ -6142,9 +6150,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/least-privilege.md and its site mirror (+2).
     // 1443 -> 1445 (RELEASE-FAST D): the exit-status table of "After the
     // release" in docs/internals/build-ci-release.md and its site mirror.
-    // 1445 -> 1447 (web console): the "When the console does not work" table
+    // 1445 -> 1449 (RELEASE-FAST E): the stage table and the exit-status
+    // table of "The release train" in docs/internals/build-ci-release.md,
+    // and their site mirror (+4).
+    // 1449 -> 1451 (web console): the "When the console does not work" table
     // in docs/rest-api.md and in its site mirror, website/content/docs/api.md.
-    const EXPECTED_TABLES: usize = 1447;
+    const EXPECTED_TABLES: usize = 1451;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

@@ -609,39 +609,15 @@ pub fn displayed_dialogs<'a>(
 /// their conventional sRGB values rather than guessed. On the default cyan
 /// band that is black, at about 7.2:1; white would be about 2.9:1 (#470).
 pub(crate) fn header_foreground(bg: Color) -> Option<Color> {
-    let (r, g, b) = match bg {
+    use crate::tui::theme::{relative_luminance, srgb};
+    let rgb = match bg {
         Color::Reset => return None,
-        Color::Black => (0, 0, 0),
-        Color::Red => (170, 0, 0),
-        Color::Green => (0, 170, 0),
-        Color::Yellow => (170, 85, 0),
-        Color::Blue => (0, 0, 170),
-        Color::Magenta => (170, 0, 170),
-        Color::Cyan => (0, 170, 170),
-        Color::Gray => (170, 170, 170),
-        Color::DarkGray => (85, 85, 85),
-        Color::LightRed => (255, 85, 85),
-        Color::LightGreen => (85, 255, 85),
-        Color::LightYellow => (255, 255, 85),
-        Color::LightBlue => (85, 85, 255),
-        Color::LightMagenta => (255, 85, 255),
-        Color::LightCyan => (85, 255, 255),
-        Color::White => (255, 255, 255),
-        Color::Rgb(r, g, b) => (r, g, b),
         // An indexed color has no portable RGB here. White-on-dark is the
         // safer default for the 16-255 range, which is mostly mid-to-dark.
         Color::Indexed(_) => return Some(Color::White),
+        other => srgb(other)?,
     };
-    // WCAG 2 relative luminance: linearize each sRGB channel, then weight.
-    let channel = |c: u8| {
-        let v = f64::from(c) / 255.0;
-        if v <= 0.040_45 {
-            v / 12.92
-        } else {
-            ((v + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let l = 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    let l = relative_luminance(rgb);
     // Contrast against black is (l + 0.05) / 0.05 and against white is
     // 1.05 / (l + 0.05); pick the larger.
     let on_black = (l + 0.05) / 0.05;
