@@ -64,7 +64,7 @@ CALL LIST:
   v                Show version / git commit \u{2014} global
 
 CALL FLOW:
-  \u{2191}/\u{2193}             Move through messages, or scroll the detail pane when it has focus
+  \u{2191}/\u{2193}, j/k       Move through messages, or scroll the detail pane when it has focus
   PgUp/PgDn       Page through messages
   Home/End         First/last message
   Enter            Full-screen raw message
@@ -94,7 +94,7 @@ CALL FLOW:
   N                Name endpoints (Tab/Shift+Tab between participants)
 
 RAW MESSAGE:
-  \u{2191}/\u{2193}             Scroll
+  \u{2191}/\u{2193}, j/k       Scroll
   PgUp/PgDn       Page scroll
   Home/End         Jump to top/bottom
   /                Search in message
@@ -198,8 +198,9 @@ QUALITY DASHBOARD:
   Esc, q, D        Close
 
 RTP STREAMS (Tab):
-  \u{2191}/\u{2193}             Navigate streams
+  \u{2191}/\u{2193}, j/k       Navigate streams
   PgUp/PgDn       Page scroll
+  Home/End         Jump to first/last
   /                Search streams (arrows work while typing; Enter opens)
   Enter            Stream detail
   D                Quality dashboard (live MOS/jitter/loss)
@@ -211,7 +212,7 @@ RTP STREAMS (Tab):
   Esc              Back to the call flow (after r) or the call list
 
 STREAM DETAIL:
-  \u{2191}/\u{2193}             Scroll
+  \u{2191}/\u{2193}, j/k       Scroll
   PgUp/PgDn, Home/End  Page / jump
   Shift+P          Play / stop audio (G.711 or Opus, audio build)
   L                Packet loss map (RTP loss pattern)
@@ -461,6 +462,86 @@ fn truncate_to_width(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The lines of the help section headed `heading`, up to the next
+    /// blank line.
+    fn section(heading: &str) -> Vec<&'static str> {
+        HELP_TEXT
+            .lines()
+            .skip_while(|l| *l != heading)
+            .skip(1)
+            .take_while(|l| !l.trim().is_empty())
+            .collect()
+    }
+
+    /// Whether a line of `heading`'s section names `key` in its key column.
+    fn section_names(heading: &str, key: &str) -> bool {
+        section(heading).iter().any(|l| {
+            let l = l.trim_start();
+            l.find("  ").is_some_and(|gap| l[..gap].contains(key))
+        })
+    }
+
+    /// Success: the call flow accepts j/k and its help says so.
+    #[test]
+    fn the_call_flow_help_names_j_and_k() {
+        assert!(section_names("CALL FLOW:", "j/k"), "CALL FLOW lacks j/k");
+    }
+
+    /// Success: the raw message view accepts j/k and its help says so.
+    #[test]
+    fn the_raw_message_help_names_j_and_k() {
+        assert!(
+            section_names("RAW MESSAGE:", "j/k"),
+            "RAW MESSAGE lacks j/k"
+        );
+    }
+
+    /// Success: the RTP stream list accepts j/k and its help says so.
+    #[test]
+    fn the_stream_list_help_names_j_and_k() {
+        assert!(
+            section_names("RTP STREAMS (Tab):", "j/k"),
+            "RTP STREAMS lacks j/k"
+        );
+    }
+
+    /// Success: the RTP stream list accepts Home and End and its help says so.
+    #[test]
+    fn the_stream_list_help_names_home_and_end() {
+        assert!(
+            section_names("RTP STREAMS (Tab):", "Home/End"),
+            "RTP STREAMS lacks Home/End"
+        );
+    }
+
+    /// Success: the stream detail accepts j/k and its help says so.
+    #[test]
+    fn the_stream_detail_help_names_j_and_k() {
+        assert!(
+            section_names("STREAM DETAIL:", "j/k"),
+            "STREAM DETAIL lacks j/k"
+        );
+    }
+
+    /// Failure: a section that does not exist names no key, so a renamed
+    /// heading fails the tests above instead of passing them.
+    #[test]
+    fn a_missing_help_section_names_no_key() {
+        assert!(section("NO SUCH VIEW:").is_empty(), "no such section");
+        assert!(!section_names("NO SUCH VIEW:", "j/k"), "no such key");
+    }
+
+    /// Edge: a key named only in a description is not a binding. The call
+    /// list's Esc line describes Ctrl+C but does not bind it there.
+    #[test]
+    fn a_key_in_a_description_is_not_a_binding() {
+        assert!(section_names("CALL LIST:", "Esc"), "Esc is bound");
+        assert!(
+            !section_names("CALL LIST:", "Ctrl+C"),
+            "Ctrl+C appears only in a description"
+        );
+    }
 
     /// The help text documents the CALL LIST section.
     #[test]

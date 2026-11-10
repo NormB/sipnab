@@ -1756,7 +1756,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2502 -> 2504 (RELEASE-FAST E): build-ci-release.md's pointer to "The
     // release train" (#the-release-train) and that section's prerequisite
     // link to #after-the-release.
-    const EXPECTED_WIKI_LINKS: usize = 2504;
+    // 2504 -> 2512 (web console): rest-api.md +6, the "Web console" section's
+    // links to its own page's key, authentication, TLS and Host sections and
+    // to mtls.md; cli-reference.md +1 and config-reference.md +1, the
+    // `--api-console` row and the `[api] console` row linking that section.
+    const EXPECTED_WIKI_LINKS: usize = 2512;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1906,7 +1910,9 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 146 -> 147: CONTRIBUTING.md's Dependabot bullet links its new "Keeping
     // fuzz/Cargo.lock aligned with Cargo.lock" section (+1). Counted against
     // origin/main db378a415.
-    const EXPECTED_COMMUNITY_LINKS: usize = 147;
+    // 147 -> 148 (web console): README.md's paragraph on `--api-console`
+    // links docs/rest-api.md#web-console.
+    const EXPECTED_COMMUNITY_LINKS: usize = 148;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

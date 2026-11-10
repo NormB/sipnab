@@ -14,6 +14,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::sip::dialog_store::DialogStore;
+use crate::tui::Theme;
 
 // ── Public rendering ────────────────────────────────────────────────
 
@@ -391,6 +392,7 @@ fn highlight_sip_message<'a>(
                     Style::default()
                         .fg(theme.muted)
                         .add_modifier(Modifier::ITALIC),
+                    theme,
                 )
             } else {
                 Line::from(Span::styled(
@@ -410,6 +412,7 @@ fn highlight_sip_message<'a>(
                     raw_line,
                     search_query,
                     Style::default().add_modifier(Modifier::BOLD),
+                    theme,
                 )
             } else {
                 Line::from(Span::styled(
@@ -426,7 +429,7 @@ fn highlight_sip_message<'a>(
 
                 if !search_query.is_empty() && raw_line.to_ascii_lowercase().contains(&search_lower)
                 {
-                    highlight_search_in_line(raw_line, search_query, Style::default())
+                    highlight_search_in_line(raw_line, search_query, Style::default(), theme)
                 } else {
                     Line::from(vec![
                         Span::styled(name.to_string(), Style::default().fg(theme.header)),
@@ -436,7 +439,7 @@ fn highlight_sip_message<'a>(
             } else if !search_query.is_empty()
                 && raw_line.to_ascii_lowercase().contains(&search_lower)
             {
-                highlight_search_in_line(raw_line, search_query, Style::default())
+                highlight_search_in_line(raw_line, search_query, Style::default(), theme)
             } else {
                 Line::from(Span::raw(raw_line.to_string()))
             };
@@ -447,17 +450,33 @@ fn highlight_sip_message<'a>(
     lines
 }
 
+/// The style of a search match in the raw message: bold black on a yellow
+/// band, or, under NO_COLOR, the line's own style in bold reverse video.
+/// The band is a fixed color, not a theme slot, so the NO_COLOR theme cannot
+/// blank it.
+fn search_highlight_style(theme: &Theme, base_style: Style) -> Style {
+    if theme.no_color {
+        return base_style.add_modifier(Modifier::REVERSED | Modifier::BOLD);
+    }
+    Style::default()
+        .bg(Color::Yellow)
+        .fg(Color::Black)
+        .add_modifier(Modifier::BOLD)
+}
+
 /// Highlight occurrences of `query` in a line with a colored background,
 /// case-insensitively; non-matching segments keep `base_style`. Pure.
-fn highlight_search_in_line<'a>(line: &str, query: &str, base_style: Style) -> Line<'a> {
+fn highlight_search_in_line<'a>(
+    line: &str,
+    query: &str,
+    base_style: Style,
+    theme: &Theme,
+) -> Line<'a> {
     if query.is_empty() {
         return Line::from(Span::styled(line.to_string(), base_style));
     }
 
-    let highlight_style = Style::default()
-        .bg(Color::Yellow)
-        .fg(Color::Black)
-        .add_modifier(Modifier::BOLD);
+    let highlight_style = search_highlight_style(theme, base_style);
 
     // to_ascii_lowercase preserves byte length (1:1 mapping), so byte
     // offsets from match_indices on the lowered string are valid for the
@@ -497,10 +516,78 @@ mod tests {
     use super::*;
     type TestError = Box<dyn std::error::Error>;
 
+    /// Failure: under NO_COLOR a search match paints no color. It painted a
+    /// fixed yellow background with black text.
+    #[test]
+    fn a_search_match_paints_no_color_under_no_color() {
+        let style = search_highlight_style(&Theme::monochrome(), Style::default());
+        assert_eq!(style.bg, None, "no background color: {style:?}");
+        assert_eq!(style.fg, None, "no text color: {style:?}");
+    }
+
+    /// Success: under NO_COLOR a search match is reverse video and bold, so
+    /// it is still told apart from the text around it.
+    #[test]
+    fn a_search_match_is_reversed_and_bold_under_no_color() {
+        let style = search_highlight_style(&Theme::monochrome(), Style::default());
+        assert!(
+            style
+                .add_modifier
+                .contains(Modifier::REVERSED | Modifier::BOLD),
+            "reverse video and bold: {style:?}"
+        );
+    }
+
+    /// Edge: under NO_COLOR a match in the body keeps the body's italic.
+    #[test]
+    fn a_search_match_keeps_the_line_attributes_under_no_color() {
+        let base = Style::default().add_modifier(Modifier::ITALIC);
+        let style = search_highlight_style(&Theme::monochrome(), base);
+        assert!(
+            style.add_modifier.contains(Modifier::ITALIC),
+            "italic kept: {style:?}"
+        );
+    }
+
+    /// Edge: with a color theme the match keeps its yellow band and black
+    /// text, as before.
+    #[test]
+    fn a_search_match_is_black_on_yellow_with_the_default_theme() {
+        let style = search_highlight_style(&Theme::default(), Style::default());
+        assert_eq!(style.bg, Some(Color::Yellow), "the band: {style:?}");
+        assert_eq!(style.fg, Some(Color::Black), "the text: {style:?}");
+    }
+
+    /// Failure: the matched span of a rendered line carries no color under
+    /// NO_COLOR, and the text beside it is not reversed.
+    #[test]
+    fn a_highlighted_line_carries_no_color_under_no_color() -> Result<(), TestError> {
+        let line = highlight_search_in_line(
+            "Via: SIP/2.0/UDP 192.0.2.1",
+            "udp",
+            Style::default(),
+            &Theme::monochrome(),
+        );
+        let matched = line
+            .spans
+            .iter()
+            .find(|s| s.content == "UDP")
+            .ok_or("the match is its own span")?;
+        assert_eq!(matched.style.bg, None, "match: {:?}", matched.style);
+        let before = line.spans.first().ok_or("a span before the match")?;
+        assert!(
+            !before.style.add_modifier.contains(Modifier::REVERSED),
+            "text before the match is plain: {:?}",
+            before.style
+        );
+        Ok(())
+    }
+
     /// A query with no occurrence yields a single unhighlighted span.
     #[test]
     fn highlight_search_in_line_no_match() -> Result<(), TestError> {
-        let line = highlight_search_in_line("Hello World", "xyz", Style::default());
+        let line =
+            highlight_search_in_line("Hello World", "xyz", Style::default(), &Theme::default());
         assert_eq!(line.spans.len(), 1);
         Ok(())
     }
@@ -508,7 +595,12 @@ mod tests {
     /// Repeated matches split the line into alternating match/text spans.
     #[test]
     fn highlight_search_in_line_with_match() -> Result<(), TestError> {
-        let line = highlight_search_in_line("Hello World Hello", "Hello", Style::default());
+        let line = highlight_search_in_line(
+            "Hello World Hello",
+            "Hello",
+            Style::default(),
+            &Theme::default(),
+        );
         // "Hello" appears twice, so we get: match, " World ", match
         assert!(line.spans.len() >= 3);
         Ok(())
@@ -517,7 +609,12 @@ mod tests {
     /// Lowercase query still highlights an uppercase occurrence.
     #[test]
     fn highlight_search_case_insensitive() -> Result<(), TestError> {
-        let line = highlight_search_in_line("INVITE sip:foo", "invite", Style::default());
+        let line = highlight_search_in_line(
+            "INVITE sip:foo",
+            "invite",
+            Style::default(),
+            &Theme::default(),
+        );
         assert!(line.spans.len() >= 2);
         Ok(())
     }

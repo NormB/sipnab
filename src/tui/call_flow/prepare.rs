@@ -260,6 +260,17 @@ const CID_COLORS: [Color; 6] = [
     Color::Red,
 ];
 
+/// The arrow style for rotation position `idx` in the Call-ID and CSeq
+/// color modes. `idx` wraps around the rotation. Under NO_COLOR every
+/// position is unstyled: the rotation is fixed colors, not theme slots, so
+/// the NO_COLOR theme cannot blank it.
+pub(super) fn cid_style(idx: usize, theme: &Theme) -> Style {
+    if theme.no_color {
+        return Style::default();
+    }
+    Style::default().fg(CID_COLORS[idx % CID_COLORS.len()])
+}
+
 #[cfg(test)]
 thread_local! {
     /// Per-thread call counter for `layout`, test-only: pins the WS4.3c
@@ -1048,8 +1059,8 @@ pub fn style(rows: &[LayoutRow], opts: &StyleOptions<'_>) -> Vec<FormattedMessag
                     cseq_idx,
                 } => match opts.color_mode {
                     ColorMode::Method => class_style(*class, theme),
-                    ColorMode::CallId => Style::default().fg(CID_COLORS[*cid_idx]),
-                    ColorMode::CSeq => Style::default().fg(CID_COLORS[*cseq_idx]),
+                    ColorMode::CallId => cid_style(*cid_idx, theme),
+                    ColorMode::CSeq => cid_style(*cseq_idx, theme),
                 },
             };
             FormattedMessage {
@@ -1386,6 +1397,15 @@ pub fn classify_message(msg: &SipMessage) -> MessageClass {
 /// Responses: amber for provisional, green for success, yellow for redirect,
 /// orange for client error, bold red for server error.
 pub fn class_style(class: MessageClass, theme: &Theme) -> Style {
+    // Six of the colors below are fixed values, not theme slots, so the
+    // NO_COLOR theme cannot blank them. Under NO_COLOR no class takes a
+    // color; a server error keeps its bold, and every row keeps its label.
+    if theme.no_color {
+        return match class {
+            MessageClass::ServerError => Style::default().add_modifier(Modifier::BOLD),
+            _ => Style::default(),
+        };
+    }
     match class {
         MessageClass::SessionRequest => Style::default().fg(Color::Rgb(95, 175, 175)), // Teal
         MessageClass::TeardownRequest => Style::default().fg(Color::Rgb(215, 95, 95)), // Coral
@@ -1462,6 +1482,101 @@ fn first_sdp_codec(session: &sdp::SdpSession) -> Option<String> {
 
 /// Tests for the data-preparation stage: layout/style split, folding,
 /// RTP bars, SDP badges, selection, and codec extraction.
+/// Tests for the colors `class_style` emits under the NO_COLOR theme.
+#[cfg(test)]
+mod class_style_no_color_tests {
+    use super::*;
+
+    const ALL: [MessageClass; 11] = [
+        MessageClass::SessionRequest,
+        MessageClass::TeardownRequest,
+        MessageClass::AckRequest,
+        MessageClass::RegisterRequest,
+        MessageClass::OtherRequest,
+        MessageClass::Provisional,
+        MessageClass::Success,
+        MessageClass::Redirect,
+        MessageClass::ClientError,
+        MessageClass::ServerError,
+        MessageClass::Other,
+    ];
+
+    /// Failure: under NO_COLOR no message class may emit a color. Six of
+    /// them carried a fixed RGB value that ignored the theme.
+    #[test]
+    fn no_class_emits_a_color_under_no_color() {
+        let theme = Theme::monochrome();
+        for class in ALL {
+            let style = class_style(class, &theme);
+            assert!(
+                matches!(style.fg, None | Some(Color::Reset)),
+                "{class:?} emits {:?}",
+                style.fg
+            );
+            assert_eq!(style.bg, None, "{class:?}");
+        }
+    }
+
+    /// Failure: under NO_COLOR the Call-ID and CSeq color modes emit no
+    /// color for any rotation position.
+    #[test]
+    fn no_rotation_color_is_emitted_under_no_color() {
+        let theme = Theme::monochrome();
+        for idx in 0..CID_COLORS.len() {
+            let style = cid_style(idx, &theme);
+            assert_eq!(style.fg, None, "position {idx}: {style:?}");
+            assert_eq!(style.bg, None, "position {idx}: {style:?}");
+        }
+    }
+
+    /// Success: with a color theme each position takes its rotation color.
+    #[test]
+    fn each_rotation_position_takes_its_color_with_the_default_theme() {
+        let theme = Theme::default();
+        for (idx, color) in CID_COLORS.iter().enumerate() {
+            assert_eq!(cid_style(idx, &theme).fg, Some(*color), "position {idx}");
+        }
+    }
+
+    /// Edge: a position past the end of the rotation wraps around.
+    #[test]
+    fn a_rotation_position_past_the_end_wraps() {
+        let theme = Theme::default();
+        assert_eq!(
+            cid_style(CID_COLORS.len() + 1, &theme).fg,
+            Some(CID_COLORS[1]),
+            "position 7 is position 1"
+        );
+        assert_eq!(
+            cid_style(usize::MAX, &theme).fg,
+            Some(CID_COLORS[usize::MAX % CID_COLORS.len()]),
+            "the largest position does not overflow"
+        );
+    }
+
+    /// Edge: a server error is still bold under NO_COLOR, so it is told
+    /// apart from other rows without color.
+    #[test]
+    fn a_server_error_stays_bold_under_no_color() {
+        let style = class_style(MessageClass::ServerError, &Theme::monochrome());
+        assert!(
+            style.add_modifier.contains(Modifier::BOLD),
+            "a server error is bold: {style:?}"
+        );
+    }
+
+    /// Success: the default theme keeps the fixed session-request color.
+    #[test]
+    fn the_default_theme_keeps_the_session_request_color() {
+        let style = class_style(MessageClass::SessionRequest, &Theme::default());
+        assert_eq!(
+            style.fg,
+            Some(Color::Rgb(95, 175, 175)),
+            "the session-request teal"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};

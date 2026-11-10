@@ -170,7 +170,7 @@ Files copied into the repository unmodified from another project's release. None
 | find-msvc-tools | 0.1.9 | MIT OR Apache-2.0 |
 | finl_unicode | 1.4.0 | (MIT OR Apache-2.0) AND Unicode-DFS-2016 |
 | fixedbitset | 0.4.2 | MIT/Apache-2.0 |
-| flate2 | 1.1.10 | MIT OR Apache-2.0 |
+| flate2 | 1.1.11 | MIT OR Apache-2.0 |
 | fnv | 1.0.7 | Apache-2.0 / MIT |
 | foldhash | 0.1.5 | Zlib |
 | foldhash | 0.2.0 | Zlib |
@@ -238,7 +238,7 @@ Files copied into the repository unmodified from another project's release. None
 | lock_api | 0.5.0 | MIT OR Apache-2.0 |
 | log | 0.4.35 | MIT OR Apache-2.0 |
 | lru | 0.18.2 | MIT |
-| lzma-rust2 | 0.23.0 | Apache-2.0 |
+| lzma-rust2 | 0.25.0 | Apache-2.0 |
 | mac_address | 1.1.8 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
@@ -352,7 +352,7 @@ Files copied into the repository unmodified from another project's release. None
 | serde_spanned | 1.1.1 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
 | serdect | 0.4.3 | Apache-2.0 OR MIT |
-| sevenz-rust2 | 0.24.2 | Apache-2.0 |
+| sevenz-rust2 | 0.25.0 | Apache-2.0 |
 | sha1 | 0.10.7 | MIT OR Apache-2.0 |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
@@ -367,7 +367,7 @@ Files copied into the repository unmodified from another project's release. None
 | simd-adler32 | 0.3.9 | MIT |
 | siphasher | 1.0.2 | MIT/Apache-2.0 |
 | slab | 0.4.12 | MIT |
-| smallvec | 1.16.4 | MIT OR Apache-2.0 |
+| smallvec | 1.16.5 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spin | 0.9.9 | MIT |
 | spki | 0.7.3 | Apache-2.0 OR MIT |
@@ -489,6 +489,6 @@ Files copied into the repository unmodified from another project's release. None
 | zerocopy-derive | 0.8.63 | BSD-2-Clause OR Apache-2.0 OR MIT |
 | zeroize | 1.9.1 | Apache-2.0 OR MIT |
 | zeroize_derive | 1.5.0 | Apache-2.0 OR MIT |
-| zip | 9.3.0 | MIT |
+| zip | 9.4.1 | MIT |
 | zlib-rs | 0.6.7 | Zlib |
 | zmij | 1.0.23 | MIT |
