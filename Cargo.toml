@@ -399,7 +399,7 @@ audio = ["dep:libloading", "dep:libc"]
 # (src/output/websocket.rs); rustls already builds it, so it adds no crate.
 # `webpki` reads a verified client certificate's names
 # (`--api-tls-client-ca`); rustls already builds it too.
-api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa", "dep:rustls", "dep:tokio-rustls", "dep:ring", "dep:hyper", "dep:hyper-util", "dep:futures-core", "dep:webpki"]
+api = ["native", "dep:axum", "dep:tokio", "dep:base64", "dep:hmac", "dep:sha2", "dep:utoipa", "dep:rustls", "dep:tokio-rustls", "dep:ring", "dep:hyper", "dep:hyper-util", "dep:futures-core", "dep:webpki", "dep:zeroize"]
 mcp = ["native", "dep:tokio", "dep:rmcp", "dep:base64", "dep:hmac", "dep:sha2"]
 mcp-http = ["mcp", "api", "rmcp/transport-streamable-http-server"]
 wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:web-sys", "dep:console_error_panic_hook"]

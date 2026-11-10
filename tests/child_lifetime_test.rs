@@ -227,11 +227,14 @@ fn start_center(dir: &Path) -> Result<fleet_center::Center, TestError> {
     std::fs::write(&key, "child-lifetime-signing-key-0123456789abcdef")?;
     std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))?;
     let store = dir.join("center.store");
+    let store_key = fleet_center::store_key_file(dir)?;
     fleet_center::Center::start(&[
         "--listen",
         "127.0.0.1:0",
         "--store",
         store.to_str().ok_or("utf-8")?,
+        "--store-key-file",
+        store_key.to_str().ok_or("utf-8")?,
         "--signing-key-file",
         key.to_str().ok_or("utf-8")?,
     ])

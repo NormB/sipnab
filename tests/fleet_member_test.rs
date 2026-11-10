@@ -23,7 +23,7 @@ mod fleet_center;
 #[path = "support/tls_pki.rs"]
 mod tls_pki;
 
-use fleet_center::{Center, TestError, http};
+use fleet_center::{Center, TestError, http, store_key_file};
 use server::ApiServer;
 
 /// The center's signing key.
@@ -64,11 +64,14 @@ fn private_file(
 fn center(dir: &std::path::Path, listen: &str, extra: &[&str]) -> Result<Center, TestError> {
     let key = private_file(dir, "center.signing", CENTER_KEY)?;
     let store = dir.join("center.store");
+    let store_key = store_key_file(dir)?;
     let mut args: Vec<String> = [
         "--listen",
         listen,
         "--store",
         store.to_str().ok_or("utf-8")?,
+        "--store-key-file",
+        store_key.to_str().ok_or("utf-8")?,
         "--signing-key-file",
         key.to_str().ok_or("utf-8")?,
     ]
@@ -520,6 +523,52 @@ fn a_member_reports_over_https_with_its_own_ca() -> Result<(), TestError> {
             .is_some_and(|n| n >= 2))
     })?;
     assert!(reported, "the member's heartbeats reach the HTTPS center");
+    Ok(())
+}
+
+/// Three real members report their real inventories to a real center. The
+/// center's store file is sealed: it holds none of the members' token ids,
+/// node names or version strings in clear. A second center process on the
+/// same store and key still lists the three.
+#[test]
+fn three_real_members_are_stored_sealed_and_listed_after_the_center_restarts()
+-> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let names = ["sealed-edge-a", "sealed-edge-b", "sealed-edge-c"];
+    let c = center(dir.path(), "127.0.0.1:0", &[])?;
+    let members_running: Vec<Member> = names
+        .iter()
+        .map(|n| member(dir.path(), n, &c.addr))
+        .collect::<Result<_, _>>()?;
+    for n in names {
+        assert!(
+            wait_until(Duration::from_secs(20), || Ok(heartbeats(&c.addr, n)? >= 2))?,
+            "{n} reported twice"
+        );
+    }
+    let store = dir.path().join("center.store");
+    let bytes = std::fs::read(&store)?;
+    assert!(bytes.starts_with(b"SNFS"), "the store is a sealed file");
+    let holds = |needle: &str| bytes.windows(needle.len()).any(|w| w == needle.as_bytes());
+    for needle in
+        names
+            .iter()
+            .copied()
+            .chain(["node_name", "binary_sha256", env!("CARGO_PKG_VERSION")])
+    {
+        assert!(!holds(needle), "{needle} is in the store in clear");
+    }
+    drop(members_running);
+    drop(c);
+    // The listen address is new, so the members above cannot report to this
+    // one: what it lists, it read from the store.
+    let again = center(dir.path(), "127.0.0.1:0", &[])?;
+    for n in names {
+        assert!(
+            row(&members(&again.addr)?, n).is_some(),
+            "{n} after the restart"
+        );
+    }
     Ok(())
 }
 
