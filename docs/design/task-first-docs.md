@@ -36,7 +36,7 @@ they want before the heading can tell them it is the thing they want.
 A heading is *task-first* when it begins with a verb the reader would use for
 their own goal. Counting `##`/`###` headings, ignoring leading numbering:
 
-| Page | Task-first | |
+| Page | Task-first | Share |
 |---|---|---|
 | `tui-walkthrough.md` | 9/10 | **90%** |
 | `examples.md` (cookbook) | 27/43 | 62% |

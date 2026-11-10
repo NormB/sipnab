@@ -2288,7 +2288,13 @@ input:focus-visible,
     line-height: 1.75;
   }
 
-  a {
+  // Prose links, and not a button placed in the prose. This rule outranks
+  // `.btn-primary`, so the one button on a docs page, "Sign the CLA", took the
+  // link color on the button's own background: 1.15:1, measured by axe on
+  // 2026-11-10 (WCAG 1.4.3 asks for 4.5:1). `:where()` adds no specificity, so
+  // every rule that outranked or lost to `.doc-content a` still does.
+  // e2e/tests/accessibility.spec.js scans /cla/ for this.
+  a:where(:not(.btn)) {
     color: $link;
     text-decoration: none;
     border-bottom: 1px solid rgba($link, 0.28);
@@ -2716,7 +2722,11 @@ input:focus-visible,
     margin: 0;
     padding-left: 1.25rem;
 
-    li { margin: 0.2rem 0; font-size: 0.88rem; line-height: 1.4; }
+    // Each row is a link, one under another. WCAG 2.2 success criterion
+    // 2.5.8 asks for 24px from the middle of one target to the next. At
+    // `0.2rem` and `1.4` the rows were 22.6px to 23.6px apart (axe
+    // `target-size`, 2026-11-10); these values space them 26px apart.
+    li { margin: 0.35rem 0; font-size: 0.88rem; line-height: 1.5; }
     a { color: $text-dim; &:hover { color: $accent; } }
   }
 }
@@ -2747,7 +2757,8 @@ input:focus-visible,
   a { color: $text-dim; font-size: 0.9rem; &:hover { color: $accent; } }
 }
 
-// Copy button injected on every .doc-body pre (see page.html).
+// Copy button that website/static/js/code-copy.js adds to every code block of
+// a docs page and a notes page.
 .doc-copy-btn {
   position: absolute;
   top: 0.5rem;
@@ -2766,7 +2777,7 @@ input:focus-visible,
   &:hover { color: $text; border-color: $border-light; }
   &.copied { color: $good; border-color: rgba($good, 0.5); opacity: 1; }
 }
-.doc-body pre:hover .doc-copy-btn,
+.doc-content pre:hover .doc-copy-btn,
 .doc-copy-btn:focus-visible { opacity: 1; }
 
 // A touch screen sends no hover, so the button that appears on hover never

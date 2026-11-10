@@ -923,9 +923,9 @@ fn a_non_zero_exit_is_an_error_carrying_stderr_verbatim() -> Result<(), TestErro
 /// parser: `error: unknown option: --json`, the usage text, exit 2. Read from
 /// `crates/tfps/src/bin/tfps_ctl.rs` at v0.2.1, the newest tag on 2026-09-18.
 /// JSON output reached sippulse/tfps `master` in #6 (merge commit `984577dc`)
-/// and no tag carries it yet, so this is what an operator with a packaged
-/// TFPS meets on every question sipnab asks. They get the peer's own words
-/// AND what to install.
+/// and TFPS v0.3.0 is the first release that carries it, so this is what an
+/// operator with an older packaged TFPS meets on every question sipnab asks.
+/// They get the peer's own words AND which release to install.
 #[test]
 fn a_released_peer_without_json_is_told_where_json_is() -> Result<(), TestError> {
     let fake = FakeCtl::with_body(
@@ -942,8 +942,11 @@ fn a_released_peer_without_json_is_told_where_json_is() -> Result<(), TestError>
         "the peer's own words must survive: {msg}"
     );
     assert!(
-        msg.contains("sippulse/tfps#6") && msg.contains("master") && msg.contains("v0.2.1"),
-        "the operator must be told where --json is and that no release has it: {msg}"
+        msg.contains("sippulse/tfps#6")
+            && msg.contains(sipnab::security::tfps::JSON_MODE_SINCE)
+            && msg.contains("v0.2.1"),
+        "the operator must be told where --json came from, which release has \
+         it and which releases lack it: {msg}"
     );
     Ok(())
 }

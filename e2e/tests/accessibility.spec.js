@@ -14,11 +14,11 @@
 // body were composed into one document. axe-core needs a rendered DOM with
 // styles applied, so it runs here.
 //
-// RULESET: wcag2a + wcag2aa
+// RULESET: WCAG 2.2 LEVEL A AND AA
 //
-// Scoped with `withTags(['wcag2a', 'wcag2aa'])`, which selects the axe rules
-// that map to a WCAG 2.0/2.1 Level A or AA success criterion. Deliberately NOT
-// the full default ruleset:
+// Scoped with `withTags(WCAG_TAGS)`: the axe rules that map to a Level A or AA
+// success criterion of WCAG 2.0, 2.1 or 2.2. Deliberately NOT the full default
+// ruleset:
 //
 //   * `best-practice` rules are axe's own house style, not a standard. They are
 //     good advice, and several of them ("region", "landmark-one-main") would
@@ -27,10 +27,13 @@
 //     and then muted.
 //   * `wcag2aaa` is not the target. AAA contrast (7:1) would reject the site's
 //     entire palette, which is a redesign, not a bug fix.
-//   * `wcag21a`/`wcag21aa` tags are included implicitly by axe for rules that
-//     carry both; naming the 2.0 tags keeps the selection stable across
-//     axe-core minor versions, which have moved individual rules between the
-//     2.1 and 2.2 tag sets before.
+//   * `wcag21a`, `wcag21aa` and `wcag22aa` are named beside the 2.0 tags. A
+//     rule runs when it carries one of the tags asked for, and a rule for a
+//     criterion that WCAG 2.1 or 2.2 added carries only its own version's
+//     tag. This list held the two 2.0 tags until 2026-11-10, with a note here
+//     that the later ones came along implicitly. They did not: `target-size`
+//     (2.5.8, tagged `wcag22aa`) never ran, and nine links on /docs/ were
+//     18px high with under 24px between them.
 //
 // SEVERITY: fail on serious + critical
 //
@@ -67,8 +70,9 @@
 const { test, expect } = require('@playwright/test');
 const AxeBuilder = require('@axe-core/playwright').default;
 
-// Level A and AA. See the ruleset note above before changing this.
-const WCAG_TAGS = ['wcag2a', 'wcag2aa'];
+// Level A and AA of WCAG 2.0, 2.1 and 2.2. See the ruleset note above before
+// changing this.
+const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa'];
 
 // The severities that fail a build. See the severity note above.
 const BLOCKING_IMPACTS = ['serious', 'critical'];
@@ -91,6 +95,20 @@ const INCOMPLETE_NOT_GATED = ['color-contrast'];
 //                 overview.html  -- long-form pages in the docs typography,
 //                                 with no sidebar; /deployments/ carries
 //                                 diagrams
+//   /notes/       notes.html    -- the list of how-tos and notes
+//   /notes/a-finding-is-a-floor-not-a-verdict/
+//                 note.html     -- one note, with code blocks that scroll
+//   /cla/         page.html     -- a hand-written page, and the one page
+//                                 that puts a button inside docs prose
+//
+// The last three were not scanned until 2026-11-10, on the reasoning that
+// page.html was covered by /docs/tui/ and that the notes were generated. A
+// scan of every built page that day found a serious violation on each kind:
+// the /cla/ button's text at 1.15:1 against its background, because the docs
+// link color won over the button's, and 125 code blocks on 22 notes that
+// scroll sideways and could not be reached from the keyboard, because
+// note.html did not add the copy button page.html adds. A template is not
+// covered by another page that uses it when the content differs in kind.
 //
 // Adding a template to the site without adding it here leaves it ungated, so
 // the list is asserted against the rendered site by
@@ -103,6 +121,9 @@ const PAGES = [
   { url: '/standards/', template: 'standards.html' },
   { url: '/features/', template: 'overview.html' },
   { url: '/deployments/', template: 'overview.html' },
+  { url: '/notes/', template: 'notes.html' },
+  { url: '/notes/a-finding-is-a-floor-not-a-verdict/', template: 'note.html' },
+  { url: '/cla/', template: 'page.html' },
 ];
 
 /** Render one axe finding as something a reader can act on without opening a report. */
@@ -141,7 +162,7 @@ function blockingFindings(results) {
 }
 
 for (const { url, template } of PAGES) {
-  test(`axe: ${url} (${template}) has no serious or critical WCAG 2 A/AA violations`, async ({
+  test(`axe: ${url} (${template}) has no serious or critical WCAG 2.2 A/AA violations`, async ({
     page,
   }) => {
     const results = await scan(page, url);
@@ -160,7 +181,7 @@ for (const { url, template } of PAGES) {
 
     expect(
       blocking,
-      `serious/critical WCAG 2 A/AA violations on ${url} (${template}):\n${blocking
+      `serious/critical WCAG 2.2 A/AA violations on ${url} (${template}):\n${blocking
         .map(describe)
         .join('\n')}`,
     ).toEqual([]);
@@ -276,7 +297,7 @@ test('the axe scan actually evaluated rules (an empty scan is not a pass)', asyn
 test('the gate blocks on serious as well as critical', async () => {
   expect(BLOCKING_IMPACTS).toContain('critical');
   expect(BLOCKING_IMPACTS).toContain('serious');
-  expect(WCAG_TAGS).toEqual(['wcag2a', 'wcag2aa']);
+  expect(WCAG_TAGS).toEqual(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa']);
   // The incomplete exemption list is a single named rule with a documented
   // reason. Appending to it is how this gate would be hollowed out one page at
   // a time, so growing it has to be a deliberate edit here as well.
@@ -296,12 +317,6 @@ const NOT_SCANNED = {
   // axe against a half-populated call table reports on rows that exist only in
   // that run. Covered by its own targeted test below instead.
   '/analyze/': 'scanned separately in its empty state; post-parse DOM is data-dependent',
-  // Contributor License Agreement: a static prose page rendered by page.html,
-  // which /docs/tui/ already covers.
-  '/cla/': 'page.html is already covered by /docs/tui/',
-  // Release notes index, rendered by notes.html; entries are generated from
-  // release metadata and change on every release.
-  '/notes/': 'notes.html renders generated release metadata',
 };
 
 test('every top-level site area is either scanned or excluded with a reason', async ({ page }) => {

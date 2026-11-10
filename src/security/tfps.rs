@@ -564,17 +564,27 @@ pub fn labels_request(limit: Option<u64>, cap: usize) -> u64 {
     }
 }
 
+/// The first TFPS release whose `tfps_ctl` has the JSON mode sipnab asks in.
+///
+/// sippulse/tfps#6 added `--json`; it merged into `master` on 2026-09-18
+/// (merge commit `984577dc`). v0.3.0, published 2026-10-31, is the first tag
+/// that contains that commit, and v0.2.1 and earlier reject the flag (checked
+/// 2026-11-10 against the tags: `tfps_ctl.rs` names `--json` at v0.3.0 and
+/// v0.3.1 and not at v0.2.1). [`JSON_MODE_HINT`], the peer notes in the docs
+/// and `tests/peer_release_honesty_test.rs` all read this one value.
+pub const JSON_MODE_SINCE: &str = "v0.3.0";
+
 /// What an operator is told when `tfps_ctl` has no JSON mode.
 ///
 /// sipnab asks every question with `--json`. TFPS gained that mode in
-/// sippulse/tfps#6, merged into `master` on 2026-09-18 (merge commit
-/// `984577dc`), and no tagged release carries it yet: v0.2.1 rejects the flag
-/// with `error: unknown option: --json` and exit 2. When a release ships it,
-/// this text, the peer notes in the docs and `RELEASED_FLAGS` in
-/// `tests/peer_release_honesty_test.rs` change together.
+/// sippulse/tfps#6, and [`JSON_MODE_SINCE`] is the first release with it:
+/// v0.2.1 and earlier reject the flag with `error: unknown option: --json`
+/// and exit 2. This text said "in no tagged release yet" until 2026-11-10,
+/// ten days after that release; `the_hint_names_the_release_that_has_the_json_mode`
+/// in `tests/peer_release_honesty_test.rs` now holds it to the constant.
 pub const JSON_MODE_HINT: &str = "this tfps_ctl has no JSON mode: TFPS gained --json in \
-    sippulse/tfps#6, merged into master on 2026-09-18 and in no tagged release yet \
-    (v0.2.1 rejects it); build TFPS from master, https://github.com/sippulse/tfps";
+    sippulse/tfps#6, and v0.3.0 is the first release with it (v0.2.1 and earlier reject \
+    it); install TFPS v0.3.0 or later, https://github.com/sippulse/tfps";
 
 /// What an operator is told when `tfps_ctl` has no `dropped` subcommand.
 ///

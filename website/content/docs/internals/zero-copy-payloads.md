@@ -96,7 +96,7 @@ The result is worth recording, because the obvious version of it is a **regressi
 Measured on the 535k corpus (median-of-7, idle host, same binary either way via
 `SIPNAB_NO_MMAP`):
 
-| cores | mapped | libpcap |      |
+| cores | mapped | libpcap | gain |
 |-------|--------|---------|------|
 | 1     | 1.59M  | 1.60M   | —    |
 | 2     | 2.19M  | 2.19M   | —    |

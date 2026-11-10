@@ -2187,8 +2187,9 @@ Both routes sit behind the same authentication as every other `/v1/` route.
 
 > **The peer this needs.** These routes read [TFPS](https://github.com/sippulse/tfps)
 > through its `tfps_ctl` program in JSON mode, the `--json` flag.
-> TFPS v0.2.1 does not have that mode. Build TFPS from its `master` branch
+> TFPS v0.3.0 is the first release with that mode
 > ([sippulse/tfps#6](https://github.com/sippulse/tfps/pull/6) added it).
+> v0.2.1 and earlier do not have it.
 >
 > Check the `tfps_ctl` you have:
 >

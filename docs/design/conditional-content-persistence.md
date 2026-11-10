@@ -63,7 +63,7 @@ with a claim it cannot verify. It never causes a container to exist.
 
 Applied in order, first match wins:
 
-| | Input | Effect |
+| Step | Input | Effect |
 |---|---|---|
 | 1 | Runtime gate, over REST | Off means nothing further reaches disk. |
 | 2 | Deny flag in the signaling | Suppresses that dialog, whatever the predicate says. |
@@ -271,7 +271,7 @@ Every task's requirements implicitly include the design above, plus:
   doc block of the function that follows, never between a doc block and its
   `fn` -- that steals the comment and leaves the original undocumented.
 
-### Task 1: The predicate and the output directory
+## Task 1: The predicate and the output directory
 
 **Files:**
 - Modify: [`src/cli.rs`](../../src/cli.rs) (new fields beside `export_vcon` at line 944)
@@ -456,7 +456,7 @@ rm -f /tmp/pc.txt
 
 ---
 
-### Task 2: The deny flag in the signaling
+## Task 2: The deny flag in the signaling
 
 **Files:**
 - Modify: [`src/cli.rs`](../../src/cli.rs)
@@ -586,7 +586,7 @@ rm -f /tmp/pc.txt
 
 ---
 
-### Task 3: The REST runtime gate
+## Task 3: The REST runtime gate
 
 **Files:**
 - Modify: [`src/output/api.rs`](../../src/output/api.rs) (router at line 252, handlers alongside `get_dialog_vcon`)
@@ -718,7 +718,7 @@ rm -f /tmp/pc.txt
 
 ---
 
-### Task 4: The container says what it does not contain
+## Task 4: The container says what it does not contain
 
 **Files:**
 - Modify: [`src/output/vcon.rs`](../../src/output/vcon.rs) (`CaptureCompleteness` at line 541, the prose builder near line 1618)
@@ -827,7 +827,7 @@ rm -f /tmp/pc.txt
 
 ---
 
-### Task 5: Documentation and the ratchet
+## Task 5: Documentation and the ratchet
 
 **Files:**
 - Modify: [`docs/cli-reference.md`](../../docs/cli-reference.md), [`docs/vcon.md`](../../docs/vcon.md), [`docs/rest-api.md`](../../docs/rest-api.md)

@@ -97,7 +97,7 @@ Both changes were measured before either was implemented, by building a
 diagnostic that removes the work entirely. Diagnostics are upper bounds, not
 shippable code. Interleaved replicates, fixed-state corpus, reference host:
 
-| | 2 cores | 4 cores |
+| Build | 2 cores | 4 cores |
 |---|---|---|
 | HEAD (0.5.89 + committed work) | 1.64-1.66M | 1.85-1.94M |
 | P1 — `parse_packet` builds no `FrameRef` | 1.84-1.87M (+13%) | 2.08-2.11M (+10%) |
@@ -317,7 +317,7 @@ remaining value may be smaller again.
 Re-measured on the tree P1 produced, because the two touch the same per-packet
 path and are not additive:
 
-| | P1 (shipped) | P1 + P2 | |
+| Cores | P1 (shipped) | P1 + P2 | Change |
 |---|---|---|---|
 | 2 cores | 1.85-1.88M | **2.23-2.24M** | +20% |
 | 4 cores | 2.05-2.10M | **2.15-2.18M** | +5% |
@@ -373,7 +373,7 @@ lands where it changes the number.
 
 Measured on the reference host, fixed-state corpus, 2 cores, interleaved:
 
-| | pkts/s |
+| Release | pkts/s |
 |---|---|
 | 0.5.83, before the regression | 2.30M |
 | 0.5.88, the regression | 1.39M |

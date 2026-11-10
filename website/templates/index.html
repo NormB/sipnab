@@ -251,7 +251,11 @@
    can run with nothing but the binary. One command per block, because the
    copy button copies the whole block: a single block of four commands put
    `sudo sipnab -d eth0` on the clipboard with the install line. The sample
-   capture is the file the analyze page loads, served from this site. #}
+   capture is the file the analyze page loads, served from this site.
+   tests/site_first_visit_test.rs runs the headless commands on that file:
+   the report step carries --no-cli-print because without it the same command
+   prints every SIP message of the sample first, 88 lines for a 15-line
+   report. #}
 <section class="quickstart" id="quickstart">
   <div class="quickstart-inner">
     <header class="section-head">
@@ -304,7 +308,7 @@
           <span aria-live="polite">Copy</span>
         </button>
       </div>
-      <pre><code class="language-bash">sipnab -N -I sample-call.pcap --report</code></pre>
+      <pre><code class="language-bash">sipnab -N -I sample-call.pcap --report --no-cli-print</code></pre>
     </div>
     <h3 class="qs-step">5. Capture live SIP traffic</h3>
     <div class="code-block-wrap">
@@ -558,7 +562,7 @@ Issues Detected:
   <div class="features-inner">
     <header class="section-head">
       <h2>Add it to your voice stack</h2>
-      <p class="section-sub">Step-by-step guides that install your SIP proxy, OpenSIPS or Kamailio, or your PBX, Asterisk or FreeSWITCH, and each piece beside it, then connect sipnab to it. Each was run command by command on fresh virtual machines, and each page says which.</p>
+      <p class="section-sub">Step-by-step guides that install your SIP proxy, OpenSIPS or Kamailio, or your telephony platform, Asterisk or FreeSWITCH, and each piece beside it, then connect sipnab to it. Each was run command by command on fresh virtual machines, and each page says which.</p>
     </header>
     <div class="features-grid">
       <div class="feature-card feature-card--green fade-in-up">
@@ -578,8 +582,8 @@ Issues Detected:
         <div class="feature-icon">
           <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 005 5L15 13l5 2v4a1 1 0 01-1 1A16 16 0 014 5a1 1 0 011-1"/></svg>
         </div>
-        <h3>PBX</h3>
-        <p>Asterisk and FreeSWITCH answer each call and connect it onward as a second call. Build either one from source and connect a test call with audio both ways, then see both of its calls in sipnab and receive the PBX's own HEP.</p>
+        <h3>Telephony platform</h3>
+        <p>Asterisk and FreeSWITCH answer each call and connect it onward as a second call. Build either one from source and connect a test call with audio both ways, then see both of its calls in sipnab and receive the platform's own HEP.</p>
         <ul class="stack-links">
           <li><a href="{{ get_url(path='@/docs/asterisk.md') }}">Use Asterisk</a></li>
           <li><a href="{{ get_url(path='@/docs/asterisk-sipnab.md') }}">Run sipnab beside it</a></li>
