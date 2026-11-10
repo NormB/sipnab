@@ -110,7 +110,7 @@ pub fn spawn_http(extra_args: &[&str]) -> Result<Option<(HttpServer, String)>, T
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.tied_to_test().spawn()?;
     let stderr = child.stderr.take().ok_or("the child has no stderr pipe")?;
 
     let (tx, rx) = mpsc::channel::<String>();
@@ -543,6 +543,7 @@ impl McpSession {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .tied_to_test()
             .spawn()?;
 
         {
@@ -712,3 +713,5 @@ pub fn ok_payload(msg: &serde_json::Value) -> Result<serde_json::Value, TestErro
         .ok_or_else(|| format!("expected success, got {msg}"))?;
     Ok(serde_json::from_str(text)?)
 }
+
+include!("child_lifetime.rs");

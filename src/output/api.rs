@@ -585,6 +585,9 @@ pub struct RateLimiter {
     /// The shared limiter, keyed by source address. No global ceiling: the
     /// REST surface has only ever capped per peer, and `0` there disables it.
     inner: crate::rate_limit::FixedWindowLimiter<IpAddr>,
+    /// Where [`Self::check`] reads "now": the monotonic clock, unless
+    /// [`Self::with_clock`] was given another.
+    clock: Arc<dyn Fn() -> Instant + Send + Sync>,
 }
 
 impl RateLimiter {
@@ -602,21 +605,45 @@ impl RateLimiter {
     /// * `max_tracked_peers` — how many distinct peers the map may hold.
     #[must_use]
     pub fn new(max_rps: u32, max_tracked_peers: usize) -> Self {
+        Self::with_clock(max_rps, max_tracked_peers, Arc::new(Instant::now))
+    }
+
+    /// [`Self::new`], reading "now" from `clock` instead of the monotonic
+    /// clock, for the first window's start and for every [`Self::check`].
+    ///
+    /// For tests: a burst counted on the wall clock fits in one window only
+    /// if the host sends it fast enough, and a loaded host does not. A clock
+    /// the test moves itself makes the window end when the test says.
+    ///
+    /// # Arguments
+    /// * `max_rps` — per-peer ceiling; `0` disables.
+    /// * `max_tracked_peers` — how many distinct peers the map may hold.
+    /// * `clock` — the reading of "now".
+    #[must_use]
+    pub fn with_clock(
+        max_rps: u32,
+        max_tracked_peers: usize,
+        clock: Arc<dyn Fn() -> Instant + Send + Sync>,
+    ) -> Self {
         Self {
             inner: crate::rate_limit::FixedWindowLimiter::new(
                 0,
                 u64::from(max_rps),
                 max_tracked_peers,
-            ),
+            )
+            .starting_at(clock()),
+            clock,
         }
     }
 
-    /// Check whether a request from `ip` is allowed right now.
+    /// Check whether a request from `ip` is allowed now, by this limiter's
+    /// clock.
     ///
     /// # Side effects
     /// Counts the request against the current window.
     pub fn check(&mut self, ip: IpAddr) -> bool {
-        self.check_at(ip, Instant::now())
+        let now = (self.clock)();
+        self.check_at(ip, now)
     }
 
     /// How many distinct peers this limiter will track, and the per-peer cap.
@@ -798,10 +825,11 @@ pub struct CompareParams {
 #[into_params(parameter_in = Query)]
 pub struct TailParams {
     /// Resume cursor: pass back the previous response's `next_cursor` verbatim
-    /// (`<RFC 3339>|<Call-ID>`). Only dialogs updated strictly after that
-    /// position are returned. A bare RFC 3339 timestamp is also accepted. Omit
-    /// on the first poll to start from the beginning. A cursor whose timestamp
-    /// half is not RFC 3339 is a 400.
+    /// (`v2:<N>`, a position in the store's change sequence). Only dialogs
+    /// changed after it are returned, whatever their messages' timestamps. A
+    /// version-1 cursor (`<RFC 3339>` or `<RFC 3339>|<Call-ID>`) is still
+    /// read, as dialogs updated after that instant. Omit on the first poll to
+    /// start from the beginning. A cursor that does not parse is a 400.
     pub since: Option<String>,
     /// Maximum dialogs to return, clamped to the server's row cap.
     pub limit: Option<usize>,
@@ -2340,9 +2368,9 @@ async fn get_compare(
 ///
 /// # Returns
 ///
-/// 200 with the dialogs updated after the cursor (oldest update first) and a
-/// `next_cursor` to resume from; 400 for a `since` whose timestamp half is not
-/// RFC 3339; 401/503 from the guard.
+/// 200 with the dialogs changed after the cursor (in the order they changed)
+/// and a `next_cursor` to resume from; 400 for a `since` that does not parse;
+/// 401/503 from the guard.
 ///
 /// # Side effects
 ///
@@ -2352,12 +2380,12 @@ async fn get_compare(
     path = "/v1/dialogs/tail",
     tag = "dialogs",
     summary = "Poll for dialogs changed since a cursor",
-    description = "The dialogs updated since your last poll — cursor-based change tracking, the pattern a monitoring system uses and one that `/v1/dialogs` offset pagination cannot express. The same question the MCP `tail_dialogs` tool answers.\n\nPass the previous response's `next_cursor` back as `since`, and only dialogs updated strictly after it are returned, oldest update first. Omit `since` on the first poll. The rows are the same summaries `/v1/dialogs` returns. `next_cursor` is null when nothing changed.",
+    description = "The dialogs changed since your last poll — cursor-based change tracking, the pattern a monitoring system uses and one that `/v1/dialogs` offset pagination cannot express. The same question the MCP `tail_dialogs` tool answers.\n\nPass the previous response's `next_cursor` (`v2:<N>`) back as `since`, and only dialogs changed after it are returned, in the order they changed. A change is a message processed for the dialog, numbered by a sequence that only rises, so a message stamped older than one already read still brings its dialog back. A version-1 cursor (`<RFC 3339>|<Call-ID>`) is still read, as dialogs updated after that instant. Omit `since` on the first poll. The rows are the same summaries `/v1/dialogs` returns. `next_cursor` is null when nothing changed.",
     params(TailParams),
     security(("bearer" = [])),
     responses(
         (status = 200, description = "The changed dialogs and the cursor to resume from.", body = schema::TailPage),
-        (status = 400, description = "A `since` cursor whose timestamp half is not RFC 3339.", body = schema::ProblemJson, content_type = "application/problem+json"),
+        (status = 400, description = "A `since` cursor that does not parse: a `v2:` cursor without a whole number, a cursor version this sipnab does not read, or a version-1 cursor whose timestamp half is not RFC 3339.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 401, description = "No bearer credential, or one this server does not accept.", body = schema::ProblemJson, content_type = "application/problem+json"),
         (status = 503, description = "Over the per-source-IP rate limit of 100 requests per second.", body = schema::ProblemJson, content_type = "application/problem+json"),
     )
@@ -2372,7 +2400,7 @@ async fn get_dialogs_tail(
 
     let cursor = match params.since.as_deref() {
         Some(raw) => Some(
-            crate::cursor::parse_cursor(raw)
+            crate::cursor::parse_tail_cursor(raw)
                 .map_err(|e| Problem::detailed(StatusCode::BAD_REQUEST, format!("since: {e}")))?,
         ),
         None => None,
@@ -7243,10 +7271,13 @@ pub mod schema {
         /// Final response code of the dialog's INVITE, or of the request that
         /// opened a dialog without one. Absent — never zero — while it has none.
         pub final_status_code: Option<u16>,
-        /// First message to the newest one (`latest_message_at`), seconds.
-        /// `0` for a single-message dialog.
+        /// The oldest message (`earliest_message_at`) to the newest one
+        /// (`latest_message_at`), seconds. `0` for a single-message dialog.
         pub duration_sec: f64,
-        /// RFC 3339 timestamp of the first message.
+        /// RFC 3339 timestamp of the first message sipnab read for the
+        /// dialog. On a set of capture files that overlap in time that is not
+        /// always the oldest message; it never changes, so it is the key to
+        /// page and sort on.
         #[schema(format = DateTime)]
         pub created_at: String,
         /// RFC 3339 timestamp of the message processed last. On a set of
@@ -7259,6 +7290,10 @@ pub mod schema {
         /// messages were read in. Never earlier than `created_at`.
         #[schema(format = DateTime)]
         pub latest_message_at: String,
+        /// RFC 3339 timestamp of the oldest message, whatever order the
+        /// messages were read in. Never later than `created_at`.
+        #[schema(format = DateTime)]
+        pub earliest_message_at: String,
         /// Transaction timing metrics.
         pub timing: TimingSummary,
         /// `<source>#<ordinal>` pointer to the frame this dialog opened in.
@@ -9019,6 +9054,93 @@ mod tests {
             !cursor.contains('+'),
             "the cursor rides back in a URL query, where `+` becomes a space: {cursor}"
         );
+        Ok(())
+    }
+
+    /// GET `uri` against `state`'s router, as JSON.
+    async fn tail_get(state: &ApiState, uri: &str) -> Result<(StatusCode, Value), TestError> {
+        let resp = build_router(state.clone())
+            .oneshot(test_request(uri)?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        let status = resp.status();
+        let body = body_to_string(resp.into_body()).await?;
+        Ok((status, serde_json::from_str(&body)?))
+    }
+
+    /// 3c TAIL-CURSOR-READ-ORDER: a message stamped older than the newest
+    /// one, read after the poller took its cursor, still brings the dialog
+    /// back on `GET /v1/dialogs/tail?since=`.
+    #[tokio::test]
+    async fn tail_returns_a_dialog_whose_new_message_is_older_than_the_cursor()
+    -> Result<(), TestError> {
+        let state = make_state();
+        let mut messages =
+            crate::test_utils::out_of_order_messages("ooo@example.com", [192, 0, 2, 1].into())?;
+        let last = messages.pop().ok_or("five messages")?;
+        for m in messages {
+            state.dialog_store.write().process_message(m);
+        }
+        let (_, first) = tail_get(&state, "/v1/dialogs/tail").await?;
+        let cursor = first["next_cursor"].as_str().ok_or("a cursor")?.to_string();
+        state.dialog_store.write().process_message(last);
+        let (status, again) = tail_get(&state, &format!("/v1/dialogs/tail?since={cursor}")).await?;
+        assert_eq!(status, StatusCode::OK, "{again}");
+        assert_eq!(
+            again["dialogs"][0]["call_id"], "ooo@example.com",
+            "the 200 OK stamped +0.905 s, older than the BYE the cursor saw, is a change: {again}"
+        );
+        Ok(())
+    }
+
+    /// A cursor of a version this sipnab does not read is a 400 that names
+    /// the version.
+    #[tokio::test]
+    async fn tail_refuses_an_unknown_cursor_version() -> Result<(), TestError> {
+        let state = make_state();
+        let (status, v) = tail_get(&state, "/v1/dialogs/tail?since=v3:5").await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+        assert!(
+            v["detail"].as_str().is_some_and(|d| d.contains("version")),
+            "the problem names the cursor version: {v}"
+        );
+        Ok(())
+    }
+
+    /// A version-2 cursor without a number is a 400.
+    #[tokio::test]
+    async fn tail_refuses_a_version_2_cursor_without_a_number() -> Result<(), TestError> {
+        let state = make_state();
+        let (status, v) = tail_get(&state, "/v1/dialogs/tail?since=v2:abc").await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "v2:abc is refused: {v}");
+        assert!(
+            v["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("whole number")),
+            "the problem says the number is missing: {v}"
+        );
+        Ok(())
+    }
+
+    /// The REST row carries `earliest_message_at`, the oldest message, and
+    /// `duration_sec` runs from it.
+    #[tokio::test]
+    async fn a_rest_row_carries_the_oldest_message() -> Result<(), TestError> {
+        let state = make_state();
+        for m in crate::test_utils::late_start_messages("early@example.com")? {
+            state.dialog_store.write().process_message(m);
+        }
+        let (_, v) = tail_get(&state, "/v1/dialogs").await?;
+        let row = &v["dialogs"][0];
+        assert_eq!(
+            row["earliest_message_at"], "2023-11-14T22:13:19.500+00:00",
+            "the INVITE copy read second, 0.5 s before the first message read: {row}"
+        );
+        assert_eq!(
+            row["created_at"], "2023-11-14T22:13:20+00:00",
+            "the first read: {row}"
+        );
+        assert_eq!(row["duration_sec"], 3.005, "19.5 s to 22.505 s: {row}");
         Ok(())
     }
 
@@ -13406,7 +13528,10 @@ mod tests {
             "an expired token is refused"
         );
         let mut state = make_state_with_signing_key(key);
-        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::new(1, 1024)));
+        // A still clock: the two requests are in one window however slowly
+        // the host runs them.
+        let clock = ManualClock::new();
+        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::with_clock(1, 1024, clock.reader())));
         let wrong = crate::test_material::key_bytes("rest-router-not-the-signing-key");
         let first = inventory_status(state.clone(), wrong, "/v1/inventory", inv, 3600).await?;
         let second = inventory_status(state, wrong, "/v1/inventory", inv, 3600).await?;
@@ -14360,9 +14485,11 @@ mod tests {
     }
 
     /// With max 1 request/second, the second request from the same IP gets
-    /// 503 Service Unavailable.
+    /// 503 Service Unavailable. The limiter's clock is held still, so the two
+    /// requests are in one window however slowly the host runs them.
     #[tokio::test]
     async fn rate_limit_exceeded_returns_503() -> Result<(), TestError> {
+        let clock = ManualClock::new();
         // Create state with rate_limiter max_rps = 1
         let state = ApiState {
             relay_query: Default::default(),
@@ -14372,7 +14499,7 @@ mod tests {
             verifier: Arc::new(crate::auth::TokenVerifier::new(
                 crate::auth::VerifierConfig::default(),
             )),
-            rate_limiter: Arc::new(Mutex::new(RateLimiter::new(1, 1024))),
+            rate_limiter: Arc::new(Mutex::new(RateLimiter::with_clock(1, 1024, clock.reader()))),
             max_inline_media_bytes: None,
             content_deny_header: None,
             max_rows: crate::cli::Cli::DEFAULT_API_MAX_ROWS as usize,
@@ -14431,8 +14558,10 @@ mod tests {
     #[test]
     fn guard_rate_limits_failed_auth_flood() -> Result<(), TestError> {
         let mut state = make_state_with_key("correct-secret");
-        // Tiny per-IP budget so the flood trips the limiter quickly.
-        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::new(3, 1024)));
+        // Tiny per-IP budget so the flood trips the limiter quickly, on a
+        // clock held still so the flood is in one window.
+        let clock = ManualClock::new();
+        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::with_clock(3, 1024, clock.reader())));
 
         let ip: IpAddr = "10.0.0.1".parse()?;
         let mut headers = HeaderMap::new();
@@ -14452,6 +14581,248 @@ mod tests {
         assert!(
             saw_rate_limit,
             "failed-auth flood must eventually be throttled with 503"
+        );
+        Ok(())
+    }
+
+    // ── Rate limiter under an injected clock ───────────────────────────
+    //
+    // The REST limiter counts a fixed one-second window. A test that reads
+    // the wall clock needs every request of its burst inside one window, and
+    // a loaded runner does not deliver that: at 10 ms a request, 101 requests
+    // take a second, the window ends mid-burst, and the budget is back before
+    // it is spent. `rate_limiter_rejects_when_per_ip_budget_exhausted` in
+    // `tests/api_test.rs` failed that way once. These tests move the clock by
+    // hand, so wall time cannot refill the budget.
+
+    /// A clock a test moves by hand, for [`RateLimiter::with_clock`].
+    #[derive(Clone)]
+    struct ManualClock(Arc<Mutex<Instant>>);
+
+    impl ManualClock {
+        /// A clock reading the real time once, then only what `advance` adds.
+        fn new() -> Self {
+            Self(Arc::new(Mutex::new(Instant::now())))
+        }
+
+        /// Move the clock forward by `by`.
+        fn advance(&self, by: Duration) {
+            *self.0.lock() += by;
+        }
+
+        /// The clock as a limiter reads it.
+        fn reader(&self) -> Arc<dyn Fn() -> Instant + Send + Sync> {
+            let now = Arc::clone(&self.0);
+            Arc::new(move || *now.lock())
+        }
+    }
+
+    /// `make_state` with a per-peer cap of `max_rps` read through `clock`.
+    fn state_with_clock(max_rps: u32, clock: &ManualClock) -> ApiState {
+        let mut state = make_state();
+        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::with_clock(
+            max_rps,
+            1024,
+            clock.reader(),
+        )));
+        state
+    }
+
+    /// The status `GET /v1/dialogs` answers from 127.0.0.1, through the
+    /// router and its guard.
+    async fn dialogs_status(state: &ApiState) -> Result<StatusCode, TestError> {
+        let resp = build_router(state.clone())
+            .oneshot(test_request("/v1/dialogs")?)
+            .await
+            .map_err(|e| format!("oneshot: {e:?}"))?;
+        Ok(resp.status())
+    }
+
+    /// Send `n` requests and fail on the first that is not 200.
+    async fn spend(state: &ApiState, n: u32) -> Result<(), TestError> {
+        for i in 1..=n {
+            let status = dialogs_status(state).await?;
+            if status != StatusCode::OK {
+                return Err(format!("request {i} of {n} answered {status}").into());
+            }
+        }
+        Ok(())
+    }
+
+    /// With the clock still, the shipped cap of 100 serves exactly 100
+    /// requests from one address and refuses the 101st with 503.
+    #[tokio::test]
+    async fn the_default_cap_refuses_the_request_after_it() -> Result<(), TestError> {
+        let clock = ManualClock::new();
+        let cap = crate::cli::Cli::DEFAULT_API_RATE_LIMIT_PER_PEER;
+        let state = state_with_clock(cap, &clock);
+        spend(&state, cap).await?;
+        assert_eq!(
+            dialogs_status(&state).await?,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "request {} in one window is over the cap of {cap}",
+            cap + 1
+        );
+        Ok(())
+    }
+
+    /// Wall time passing in the middle of a burst does not refill the
+    /// budget: only the limiter's clock decides when a window ends. This is
+    /// the delay a loaded runner adds; with the wall clock deciding, the
+    /// window ended during the pause and the 101st request was served.
+    #[tokio::test]
+    async fn wall_time_passing_mid_burst_does_not_refill_the_budget() -> Result<(), TestError> {
+        let clock = ManualClock::new();
+        let state = state_with_clock(100, &clock);
+        spend(&state, 50).await?;
+        tokio::time::sleep(crate::rate_limit::WINDOW + Duration::from_millis(50)).await;
+        spend(&state, 50).await?;
+        assert_eq!(
+            dialogs_status(&state).await?,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the clock did not move, so request 101 is in the same window"
+        );
+        Ok(())
+    }
+
+    /// One whole window later on the limiter's clock the allowance is back.
+    #[tokio::test]
+    async fn a_whole_window_on_the_clock_restores_the_allowance() -> Result<(), TestError> {
+        let clock = ManualClock::new();
+        let state = state_with_clock(2, &clock);
+        spend(&state, 2).await?;
+        assert_eq!(
+            dialogs_status(&state).await?,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the budget of 2 is spent in this window"
+        );
+        clock.advance(crate::rate_limit::WINDOW);
+        spend(&state, 2).await?;
+        Ok(())
+    }
+
+    /// One nanosecond before the window ends the request is still refused.
+    #[tokio::test]
+    async fn the_last_instant_of_the_window_is_still_refused() -> Result<(), TestError> {
+        let clock = ManualClock::new();
+        let state = state_with_clock(1, &clock);
+        spend(&state, 1).await?;
+        clock.advance(crate::rate_limit::WINDOW - Duration::from_nanos(1));
+        assert_eq!(
+            dialogs_status(&state).await?,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "still inside the first window"
+        );
+        Ok(())
+    }
+
+    /// The first window starts at the clock's reading when the limiter is
+    /// built, not at the wall time: a cap spent late in that window is back
+    /// once the clock reaches its end.
+    #[tokio::test]
+    async fn the_first_window_starts_on_the_injected_clock() -> Result<(), TestError> {
+        let clock = ManualClock::new();
+        let state = state_with_clock(1, &clock);
+        clock.advance(crate::rate_limit::WINDOW - Duration::from_millis(1));
+        spend(&state, 1).await?;
+        assert_eq!(
+            dialogs_status(&state).await?,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the last instant of the window is still inside it"
+        );
+        clock.advance(Duration::from_millis(1));
+        assert_eq!(
+            dialogs_status(&state).await?,
+            StatusCode::OK,
+            "the clock reached the end of the window that began at construction"
+        );
+        Ok(())
+    }
+
+    /// One address over its cap does not spend another address's allowance.
+    #[test]
+    fn another_address_keeps_its_allowance() -> Result<(), TestError> {
+        let clock = ManualClock::new();
+        let mut limiter = RateLimiter::with_clock(1, 1024, clock.reader());
+        let noisy: IpAddr = "192.0.2.10".parse()?;
+        let quiet: IpAddr = "192.0.2.20".parse()?;
+        assert!(
+            limiter.check(noisy),
+            "the first request is under its cap of 1"
+        );
+        assert!(!limiter.check(noisy), "over its cap of 1");
+        assert!(limiter.check(quiet), "a different address has its own cap");
+        Ok(())
+    }
+
+    /// A cap of 0 disables the limiter under a still clock too.
+    #[test]
+    fn a_zero_cap_admits_every_request() -> Result<(), TestError> {
+        let clock = ManualClock::new();
+        let mut limiter = RateLimiter::with_clock(0, 1024, clock.reader());
+        let ip: IpAddr = "192.0.2.30".parse()?;
+        for i in 0..1_000 {
+            assert!(limiter.check(ip), "request {i}: 0 disables the cap");
+        }
+        Ok(())
+    }
+
+    /// `RateLimiter::new` counts on the real clock: three requests at a cap
+    /// of 1 that all fall within one window of real time include a refusal.
+    ///
+    /// The windows are fixed, so a span shorter than one window touches at
+    /// most two of them, and three requests in two windows put two in one.
+    /// The span is measured around the three checks, so the premise is a
+    /// measurement, not an assumption; a host that took a whole window for
+    /// three in-process checks fails with that time in the message.
+    #[test]
+    fn the_real_clock_refuses_within_one_window() -> Result<(), TestError> {
+        let ip: IpAddr = "192.0.2.40".parse()?;
+        let started = Instant::now();
+        let mut limiter = RateLimiter::new(1, 1024);
+        let allowed: Vec<bool> = (0..3).map(|_| limiter.check(ip)).collect();
+        let span = started.elapsed();
+        assert!(
+            span < crate::rate_limit::WINDOW,
+            "three checks took {span:?}, a whole window: the premise does not hold"
+        );
+        assert!(
+            allowed.contains(&false),
+            "three requests within {span:?} at a cap of 1: {allowed:?}"
+        );
+        assert_eq!(
+            allowed.first(),
+            Some(&true),
+            "the first request is under the cap"
+        );
+        Ok(())
+    }
+
+    /// `RateLimiter::new` reads the real clock for the end of a window: an
+    /// address refused at its cap is served again a whole window later.
+    #[test]
+    fn the_real_clock_restores_the_allowance_after_a_window() -> Result<(), TestError> {
+        let ip: IpAddr = "192.0.2.50".parse()?;
+        let started = Instant::now();
+        let mut limiter = RateLimiter::new(1, 1024);
+        assert!(
+            limiter.check(ip),
+            "the first request of the window is served"
+        );
+        let refused = !limiter.check(ip);
+        let span = started.elapsed();
+        assert!(
+            span < crate::rate_limit::WINDOW,
+            "two checks took {span:?}, a whole window: the premise does not hold"
+        );
+        assert!(
+            refused,
+            "the second request within {span:?} is over the cap"
+        );
+        std::thread::sleep(crate::rate_limit::WINDOW);
+        assert!(
+            limiter.check(ip),
+            "a whole window of real time later the allowance is back"
         );
         Ok(())
     }
@@ -15825,7 +16196,8 @@ mod tests {
     /// Each source IP gets its own rate-limit bucket.
     #[test]
     fn rate_limiter_separate_ips_independent() -> Result<(), TestError> {
-        let mut limiter = RateLimiter::new(1, 1024);
+        let clock = ManualClock::new();
+        let mut limiter = RateLimiter::with_clock(1, 1024, clock.reader());
         let ip_a = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
         let ip_b = IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 2));
         assert!(limiter.check(ip_a));

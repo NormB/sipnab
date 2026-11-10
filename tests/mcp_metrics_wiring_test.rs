@@ -84,6 +84,7 @@ fn spawn() -> Result<McpWithMetrics, TestError> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     let stderr = child.stderr.take().ok_or("piped stderr")?;
@@ -307,3 +308,5 @@ fn a_server_that_has_answered_nothing_publishes_no_mcp_series() -> Result<(), Te
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

@@ -34,7 +34,7 @@ theme = "ayu-dark"
 # download links came from here. They did once — `download.html` was moved to
 # `published_version` and the claim was never revisited, which is also how the
 # same sentence ended up in site_journey_test.rs and pages.yml.
-version = "0.5.241"
+version = "0.5.242"
 # The last version that actually EXISTS as a published GitHub release, which is
 # what every download link must point at.
 #
@@ -49,7 +49,7 @@ version = "0.5.241"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.240"
+published_version = "0.5.241"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -192,6 +192,7 @@ macos_floor_intel = "10.12"
 #   0.5.238  24,651,840 bytes   (+147,456, leaving 513,984 bytes of headroom under 24 MB)
 #   0.5.239  24,655,936 bytes   (+4,096, leaving 509,888 bytes of headroom under 24 MB)
 #   0.5.240  24,770,752 bytes   (+114,816, leaving 395,072 bytes of headroom under 24 MB)
+#   0.5.241  24,905,920 bytes   (+135,168, leaving 259,904 bytes of headroom under 24 MB)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived
@@ -316,7 +317,19 @@ macos_floor_intel = "10.12"
 # seven releases. 24 MB leaves 1,284,736 bytes over that 23,881,088-byte
 # figure.
 #
-binary_size_ceiling_mb = "24"
+# 24 -> 25 after 0.5.241, before 0.5.242. 0.5.241 measured 24,905,920 bytes,
+# 259,904 under 24 MB, under the 262,144-byte THIN_MARGIN. It grew 135,168
+# bytes over 0.5.240. The published symbol files attribute 115,693 of them:
+# rmcp 43,694 (the 3.8.0 to 3.9.0 security bump, RUSTSEC-2026-0462, whose new
+# model types are monomorphized into the binary), sipnab::mcp 24,780, and core
+# 15,863. rmcp already builds with default-features off, and the profile
+# already sets lto, codegen-units = 1 and strip; panic = "unwind" is what
+# crash::contain needs (#534), and a lower opt-level would trade away packet
+# throughput. So nothing reasonable shrinks it. From 0.5.235 to 0.5.241 the
+# binary grew 1,094,464 bytes over six releases. 25 MB is 26,214,400 bytes and
+# leaves 1,308,480 over the 0.5.241 measurement.
+#
+binary_size_ceiling_mb = "25"
 github_url = "https://github.com/NormB/sipnab"
 # `owner/repo`, for the places a bare slug is what the command wants rather than
 # a URL: `gh attestation verify --repo`, the releases API path. These were

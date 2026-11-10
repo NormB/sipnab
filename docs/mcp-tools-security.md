@@ -182,6 +182,7 @@ The example runs against
       "call_id": "1-1968@10.0.2.20",
       "created_at": "2016-11-26T14:53:08.286194+00:00",
       "duration_sec": 0.004,
+      "earliest_message_at": "2016-11-26T14:53:08.286194+00:00",
       "final_status_code": 200,
       "frame": "tests/pcap-samples/sip-rtp-g711.pcap#433@b034a3ca525e06ff",
       "from_user": "⟦untrusted-capture-data⟧sipp⟦/untrusted-capture-data⟧",

@@ -86,7 +86,10 @@ fn udp_ports_owned_by_finds_this_process_socket_and_not_another() -> Result<(), 
     // child spawned after would hold the socket for an instant inside its
     // execve, which is what `listener_candidates` is for, not what this test
     // is about.
-    let mut other = std::process::Command::new("sleep").arg("30").spawn()?;
+    let mut other = std::process::Command::new("sleep")
+        .arg("30")
+        .tied_to_test()
+        .spawn()?;
     let mine = std::net::UdpSocket::bind("127.0.0.1:0")?;
     let port = mine.local_addr()?.port();
     assert!(
@@ -1059,6 +1062,7 @@ fn a_hep_carried_register_flood_is_not_written_to_the_jail_log() -> Result<(), T
             .env("SIPNAB_LOG", "warn")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
+            .tied_to_test()
             .spawn()?;
 
         let bind = wait_for_own_udp_listener(&mut child, &|| {
@@ -1353,6 +1357,7 @@ fn a_live_vcon_export_writes_while_running_and_nothing_on_a_stop() -> Result<(),
         .env("SIPNAB_LOG", "info")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     // Drain both pipes on threads, so a full pipe never stalls the run and
@@ -1502,6 +1507,7 @@ fn a_live_vcon_run_that_ends_on_its_own_does_not_report_zero_written() -> Result
         .env("SIPNAB_LOG", "info")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let mut pipe = child.stderr.take().ok_or("stderr piped")?;
     let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -1602,6 +1608,7 @@ fn run_live_single_vcon_export(
         .env("SIPNAB_LOG", "info")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let drain = |pipe: Box<dyn std::io::Read + Send>| {
         let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -1788,6 +1795,7 @@ fn a_stopped_live_decrypted_export_writes_nothing_it_held() -> Result<(), TestEr
         .env("SIPNAB_LOG", "info")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let drain = |pipe: Box<dyn std::io::Read + Send>| {
         let text = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
@@ -2137,6 +2145,7 @@ fn json_output_distinguishes_a_full_disk_from_a_closed_pipe() -> Result<(), Test
         .args(["-N", "-I", input, "--json"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
     // Drop the read end immediately: the next write gets EPIPE.
     drop(child.stdout.take());
@@ -2197,6 +2206,7 @@ fn report_output_fails_cleanly_and_tolerates_a_closed_pipe() -> Result<(), TestE
         .args(["-N", "-I", input, "--report"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
     drop(child.stdout.take());
     let status = child.wait()?;
@@ -3340,3 +3350,5 @@ fn an_unwritable_output_file_fails_the_run_before_the_first_packet() -> Result<(
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

@@ -385,6 +385,11 @@ the release-delivery test. The corpus gate does not run on such a push, since
 no parser input changed. Anything else, or anything the rule cannot read, runs
 every gate. `SIPNAB_GATE_NO_CACHE=1` runs every gate too.
 
+**Delete-only pushes.** A push that only deletes refs, such as
+`git push origin --delete <branch>`, sends no commit, so the pre-push hook
+runs no gate and prints the refs it deletes. A push that deletes one ref and
+sends another runs every gate.
+
 **Tag-only pushes.** A push that updates tags and nothing else skips the tree
 gates when GitHub already proved the tagged commit:
 
@@ -931,7 +936,9 @@ The reviewer checks the rest:
   also committed.
 - **Dependabot opens update pull requests weekly** for both lock files.
   [`.github/dependabot.yml`](.github/dependabot.yml) sets this up. It groups
-  minor and patch updates into one pull request.
+  minor and patch updates into one pull request per lock file. The two lock
+  files must agree on the crates they share; see
+  [Keeping fuzz/Cargo.lock aligned with Cargo.lock](#keeping-fuzzcargolock-aligned-with-cargolock).
 - **CI scans every pull request to `main`.**
   - The `Security audit` job in
     [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs `cargo audit`
@@ -956,7 +963,94 @@ push. Install the tools once with `cargo install cargo-audit cargo-deny`.
 cargo audit --ignore RUSTSEC-2023-0071
 cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
 cargo deny check
+python3 scripts/check-lockfile-drift.py
 ```
+
+### Keeping fuzz/Cargo.lock aligned with Cargo.lock
+
+**Purpose.** The fuzz targets build the sipnab crate as a path dependency,
+against their own [`fuzz/Cargo.lock`](fuzz/Cargo.lock). Every crate sipnab
+uses is therefore resolved twice. When the two lock files pick different
+versions, the fuzz targets test dependency code that the binary does not
+ship. On 2026-11-08, 39 of the 214 crates in both files differed, among them
+`clap` 4.6.7 against 4.6.3 and `cc` 1.4.0 against 1.2.59.
+
+**The rule.** [`scripts/check-lockfile-drift.py`](scripts/check-lockfile-drift.py)
+holds it. The pre-commit hook and the `Security audit` job in
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) run it.
+
+- For each crate that both lock files list, every version in
+  `fuzz/Cargo.lock` must also be in `Cargo.lock`.
+- `Cargo.lock` may hold more versions of a crate than the fuzz tree. The main
+  crate has more dependents, so it can need several semver-incompatible
+  versions of one crate, such as `hashbrown` 0.15, 0.16 and 0.17.
+- A crate that only one file lists passes, such as `libfuzzer-sys`.
+- A version that both files list must come from the same source with the
+  same checksum.
+- An exception goes in `EXCEPTIONS` in the script. It names the crate, the
+  exact `fuzz/Cargo.lock` versions it allows, and the reason. The script
+  reports an exception that no longer matches any drift as stale.
+
+**Prerequisites.** Python 3.11 or later, for `tomllib`. To align the files you
+also need `cargo`.
+
+**Steps.** Dependabot updates the two lock files in separate pull requests,
+the `cargo-minor-patch` group for `/` and the `fuzz-minor-patch` group for
+`/fuzz`. Each pull request moves only its own file, so it fails this check
+whenever it moves a crate that both files share.
+
+1. Combine the root and fuzz updates in one branch.
+   - Take the root update first. That is the version that ships.
+   - If you regenerate `THIRD-PARTY-NOTICES.md`, do it after the root
+     update: `python3 scripts/build-third-party-notices.py`.
+2. Run `python3 scripts/check-lockfile-drift.py`. Each line names the crate,
+   both version sets, and the command that aligns it, for example:
+
+   ```bash
+   cargo update --manifest-path fuzz/Cargo.toml -p clap@4.6.7 --precise 4.6.3
+   ```
+
+3. Run the commands it names, then run the check again. Moving one crate can
+   move the crates that depend on it, so repeat until it reports no lines.
+4. If a dependency that only the fuzz tree has needs a version that
+   `Cargo.lock` lacks, there are two choices:
+   - move `Cargo.lock` to that version with `cargo update -p <crate>`, and
+     regenerate `THIRD-PARTY-NOTICES.md`;
+   - or add an exception to `EXCEPTIONS` that gives the reason.
+
+**Verify.**
+
+1. Run the check. It exits 0 and prints one `ok:` line.
+
+   ```bash
+   python3 scripts/check-lockfile-drift.py
+   # ok: 210 crates in both lockfiles, every fuzz/Cargo.lock version is one Cargo.lock has (0 exceptions)
+   ```
+
+2. Build the fuzz targets with the aligned versions. This is the pre-push
+   hook's fuzz gate.
+
+   ```bash
+   (cd fuzz && cargo clippy --all-targets -- -D warnings)
+   ```
+
+**Troubleshooting.**
+
+- **A line says `Cargo.lock has no N.x line`.** No `--precise` target exists
+  on that semver-compatible line. A crate in the fuzz tree pulls in a
+  release line that the main crate does not use. One example is `shlex` 2,
+  which `cc` 1.4 pulls in. Align the crate that pulls it in, which is `cc`
+  here. The line for that crate is in the same output. Then run the check
+  again.
+- **`NOT CHECKED` and exit status 2.** A lock file is missing, does not parse,
+  or lists no packages, or an exception lacks a crate, versions or a
+  reason. The message names which one. A check that did not run is not a pass.
+- **A line says `stale exception`.** The drift that the exception allowed is
+  gone. Remove the exception from `EXCEPTIONS`.
+- **`cargo update --precise` refuses the version.** Another crate in the fuzz
+  tree requires a newer release. Run
+  `cargo tree --manifest-path fuzz/Cargo.toml -i <crate>@<version>` to find
+  it, and align that crate first.
 
 ### Updating vendored files
 

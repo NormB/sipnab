@@ -69,6 +69,7 @@ impl Center {
             .env_remove("SIPNAB_LOG")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
+            .tied_to_test()
             .spawn()?;
         let stderr = child.stderr.take().ok_or("piped stderr")?;
         let (tx, log) = std::sync::mpsc::channel::<String>();
@@ -734,3 +735,5 @@ fn an_optional_center_serves_no_certificate_but_refuses_a_bad_one() -> Result<()
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

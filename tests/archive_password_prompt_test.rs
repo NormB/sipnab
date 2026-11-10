@@ -178,7 +178,7 @@ fn start_with(
             Ok(())
         });
     }
-    let mut child = cmd.spawn()?;
+    let mut child = cmd.tied_to_test().spawn()?;
     let drains = vec![
         match child.stdout.take() {
             Some(out) => drain(out),
@@ -638,3 +638,5 @@ fn the_tui_asks_for_an_i_archive_before_it_draws() -> Result<(), TestError> {
     done.assert_terminal_restored();
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

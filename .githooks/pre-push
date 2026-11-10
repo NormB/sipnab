@@ -88,6 +88,28 @@ fi
 # Like the same-checkout check above, this is a precondition of running the
 # gates, not a gate: CI provisions these inputs itself, so nothing in CI
 # mirrors it, and it is not one of the hook's counted gates.
+# stdin is the only place a pre-push hook learns what is being pushed: one
+# `<local ref> <local sha> <remote ref> <remote sha>` line per ref. git always
+# provides it. It is read once, here, because the gates below need it.
+PUSH_REFS=$(cat)
+
+# ── A push that only deletes refs ────────────────────────────────────
+# A line whose local sha is all zeros deletes its remote ref, and sends no
+# commit. Every gate below judges the commits being sent or the working tree,
+# and neither is what a deletion publishes. `git push origin --delete` of four
+# branches on 2026-11-05 ran them for about 25 minutes and deleted nothing:
+# when any of them fails, git aborts the whole push (PRE-PUSH-ON-DELETE). A
+# push with no ref lines, or with any line that sends a commit, runs them all.
+DELETED_REFS=$(printf '%s\n' "$PUSH_REFS" | awk '
+	NF == 0 { next }
+	NF != 4 || $2 !~ /^0+$/ { sends = 1; exit }
+	{ refs = refs (refs ? " " : "") $3 }
+	END { if (!sends && refs) print refs }')
+if [ -n "$DELETED_REFS" ]; then
+	printf 'This push only deletes refs: %s. It sends no commit, so no gate runs.\n' "$DELETED_REFS"
+	exit 0
+fi
+
 if [ -f scripts/check-hook-prerequisites.py ]; then
 	if ! python3 scripts/check-hook-prerequisites.py pre-push; then
 		echo "No gate ran: fetch the missing inputs above, then try again." >&2
@@ -105,10 +127,7 @@ if [ "${SKIP_FMT_HOOK:-0}" = "1" ]; then
 	exit 0
 fi
 
-# stdin is the only place a pre-push hook learns what is being pushed: one
-# `<local ref> <local sha> <remote ref> <remote sha>` line per ref. git always
-# provides it. It is read once, here, because two gates below need it.
-PUSH_REFS=$(cat)
+# PUSH_REFS, the ref lines, were read before the prerequisites check above.
 
 # -- Hard gate: every pushed commit carries a good signature -----------------
 # Branch protection on main requires signed commits, and GitHub enforces that
@@ -1014,7 +1033,7 @@ for commit in $tag_commits; do
 	printf '  NOT `curl | grep -c`. That printed 0 for a stale page AND for a\n'
 	printf '  site that was down, and on 2026-09-11 it printed 0 for half an\n'
 	printf '  hour of outage while somebody read it as a deploy that had not\n'
-	printf '  landed. The checker names which of the two it is.%%b\n' "$NC"
+	printf '  landed. The checker names which of the two it is.%b\n' "$NC"
 done
 
 # -- Conditional gate: the real capture corpus --------------------------------

@@ -21,6 +21,11 @@ pub struct Center {
 }
 
 impl Center {
+    /// The center's process id.
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// `sipnab fleet serve` with `args`, once it says where it serves.
     pub fn start(args: &[&str]) -> Result<Self, TestError> {
         let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
@@ -30,6 +35,7 @@ impl Center {
             .env_remove("SIPNAB_LOG")
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
+            .tied_to_test()
             .spawn()?;
         let stderr = child.stderr.take().ok_or("piped stderr")?;
         let (tx, log) = std::sync::mpsc::channel::<String>();
@@ -94,3 +100,5 @@ pub fn http(
     let status = head.split_whitespace().nth(1).ok_or("a status")?.parse()?;
     Ok((status, rest.to_string()))
 }
+
+include!("child_lifetime.rs");

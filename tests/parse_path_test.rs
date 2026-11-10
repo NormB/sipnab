@@ -166,6 +166,7 @@ fn run_sipnab_with_timeout(
         .env("SIPNAB_LOG", "warn")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
 
     let pid = child.id() as i32;
@@ -226,3 +227,5 @@ fn batch_json_output_is_deterministic() -> Result<(), TestError> {
     assert_eq!(canonicalize_ndjson(&a), canonicalize_ndjson(&b));
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

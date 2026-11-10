@@ -1746,10 +1746,17 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2498 -> 2500 (RELEASE-FAST D): build-ci-release.md's eBPF bullet and
     // its Homebrew tap paragraph link the new "After the release" section
     // (#after-the-release).
-    // 2500 -> 2502 (RELEASE-FAST E): build-ci-release.md's pointer to "The
+    // 2500 -> 2501 (3c, tail cursor and earliest_message_at): output-formats.md
+    // links its new section "Follow changes with a tail cursor" from its
+    // steps (+1) and rest-api.md's tail route links it (+1);
+    // mcp-tools-signaling.md's tail_dialogs text links it in place of the
+    // list_dialogs and "Which dialog time to read" links it dropped (-1).
+    // 2501 -> 2502 (TEST-CHILD-ORPHAN): internals/testing.md +1, the support
+    // table's link to "Children end with their test".
+    // 2502 -> 2504 (RELEASE-FAST E): build-ci-release.md's pointer to "The
     // release train" (#the-release-train) and that section's prerequisite
     // link to #after-the-release.
-    const EXPECTED_WIKI_LINKS: usize = 2502;
+    const EXPECTED_WIKI_LINKS: usize = 2504;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
@@ -1896,7 +1903,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // 145 -> 146 (ci/gate-speed): CONTRIBUTING.md's link from the pre-commit
     // paragraph to its new "Pass stamps: what the hooks skip" section (+1).
     // Counted per file against origin/main b5cb8b61c.
-    const EXPECTED_COMMUNITY_LINKS: usize = 146;
+    // 146 -> 147: CONTRIBUTING.md's Dependabot bullet links its new "Keeping
+    // fuzz/Cargo.lock aligned with Cargo.lock" section (+1). Counted against
+    // origin/main db378a415.
+    const EXPECTED_COMMUNITY_LINKS: usize = 147;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

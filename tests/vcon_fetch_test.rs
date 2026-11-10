@@ -821,6 +821,7 @@ fn sipnab(args: &[String], stdin: &str) -> Result<(String, Option<i32>), TestErr
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     if let Some(mut input) = child.stdin.take() {
         input.write_all(stdin.as_bytes())?;
@@ -1744,3 +1745,5 @@ fn sigterm_between_uuids_asks_for_no_more() -> Result<(), TestError> {
     assert!(err.contains("--vcon-fetch: stopped before"), "{err}");
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

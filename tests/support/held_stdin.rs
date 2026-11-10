@@ -44,6 +44,7 @@ impl HeldStdin {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::piped())
+            .tied_to_test()
             .spawn()?;
         let pid = libc::pid_t::try_from(child.id())?;
         let stdin = child.stdin.take();
@@ -165,3 +166,5 @@ impl Drop for HeldStdin {
         }
     }
 }
+
+include!("child_lifetime.rs");

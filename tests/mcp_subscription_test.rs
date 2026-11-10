@@ -87,6 +87,7 @@ impl Wire {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .tied_to_test()
             .spawn()?;
 
         {
@@ -719,3 +720,5 @@ fn a_per_call_subscription_is_told_when_its_capture_is_replaced() -> Result<(), 
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

@@ -117,9 +117,9 @@ and gateways write the same session ID into every call. So sipnab reports
 
 - The two legs were open at one time. A B2BUA sends the second leg before the
   first one's call setup ends, and both stay up for the call. Calls placed one
-  after the other are not open at one time. The time runs from a leg's first
-  message to its last, and a leg that starts at the instant the other ended
-  still counts.
+  after the other are not open at one time. The time runs from a leg's oldest
+  message to its newest, whatever order sipnab read them in, and a leg that
+  starts at the instant the other ended still counts.
 - No two calls in the capture used the origin on one hop at once. A hop is the
   sending address and the receiving address and port of a leg's first
   message. Each leg of a B2BUA call is a different hop. A load test that places

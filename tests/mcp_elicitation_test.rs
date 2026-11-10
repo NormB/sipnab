@@ -113,6 +113,7 @@ impl Wire {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .tied_to_test()
             .spawn()?;
 
         {
@@ -675,3 +676,5 @@ fn a_confirmed_swap_replaces_the_capture() -> Result<(), TestError> {
     );
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

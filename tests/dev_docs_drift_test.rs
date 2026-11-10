@@ -996,9 +996,15 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // scripts/verify-bpf-load.sh, scripts/tests/test_post_release.py and
     // packaging/homebrew/update-formula.sh (+7), and no longer links
     // homebrew-tap-push.py, which is deleted (-1).
-    // 829 -> 831 (RELEASE-FAST E): build-ci-release.md's "The release train"
+    // 829 -> 830 (FLAKY rate-limiter burst): docs/internals/testing.md's
+    // paragraph on rate limits in tests links src/output/api.rs for
+    // `RateLimiter::with_clock` (+1); every other developer page unchanged.
+    // 830 -> 831 (TEST-CHILD-ORPHAN): docs/internals/testing.md's support
+    // table links tests/support/child_lifetime.rs (+1); every other
+    // developer page unchanged.
+    // 831 -> 833 (RELEASE-FAST E): build-ci-release.md's "The release train"
     // links scripts/release-train.py and scripts/tests/test_release_train.py.
-    const EXPECTED_CODE_LINKS: usize = 831;
+    const EXPECTED_CODE_LINKS: usize = 833;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

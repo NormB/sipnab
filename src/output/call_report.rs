@@ -378,7 +378,7 @@ fn generate_text_report(
     let _ = writeln!(
         out,
         "Time:       {} -> {} ({}s)",
-        dialog.created_at.format("%Y-%m-%d %H:%M:%S"),
+        dialog.earliest_message_at.format("%Y-%m-%d %H:%M:%S"),
         dialog.latest_message_at.format("%H:%M:%S"),
         duration_sec,
     );
@@ -556,7 +556,7 @@ fn generate_markdown_report(
     let _ = writeln!(
         out,
         "| Time | {} -> {} ({}s) |",
-        dialog.created_at.format("%Y-%m-%d %H:%M:%S"),
+        dialog.earliest_message_at.format("%Y-%m-%d %H:%M:%S"),
         dialog.latest_message_at.format("%H:%M:%S"),
         duration_sec,
     );
@@ -1865,6 +1865,66 @@ mod latest_message_tests {
     fn the_json_reports_duration_runs_to_the_newest_message() -> Result<(), TestError> {
         let v: serde_json::Value = serde_json::from_str(&report(ReportFormat::Json)?)?;
         assert_eq!(v["duration_sec"].as_f64(), Some(2.505), "{v}");
+        Ok(())
+    }
+}
+
+/// The call report on a call whose second capture began earlier: see
+/// [`crate::test_utils::late_start_messages`].
+#[cfg(test)]
+mod earliest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The report of the late-start call in `format`.
+    fn report(format: ReportFormat) -> Result<String, TestError> {
+        let mut store = crate::sip::dialog_store::DialogStore::new(100, false);
+        for m in crate::test_utils::late_start_messages("start@example.com")? {
+            store.process_message(m);
+        }
+        let d = store.get("start@example.com").ok_or("the call")?;
+        Ok(generate_call_report(
+            d,
+            &[],
+            &MediaDiagnosis::default(),
+            format,
+            crate::rtp::quality::MosDelay::unknown(),
+        ))
+    }
+
+    /// The text report's Time line starts at the oldest message, 22:13:19,
+    /// and counts the 3 whole seconds from it to the newest.
+    #[test]
+    fn the_text_reports_time_starts_at_the_oldest_message() -> Result<(), TestError> {
+        let text = report(ReportFormat::Text)?;
+        assert!(
+            text.contains("Time:       2023-11-14 22:13:19 -> 22:13:22 (3s)"),
+            "the line starts at the INVITE copy 0.5 s before the first read: {text}"
+        );
+        Ok(())
+    }
+
+    /// The Markdown report's Time row says the same.
+    #[test]
+    fn the_markdown_reports_time_starts_at_the_oldest_message() -> Result<(), TestError> {
+        let md = report(ReportFormat::Markdown)?;
+        assert!(
+            md.contains("| Time | 2023-11-14 22:13:19 -> 22:13:22 (3s) |"),
+            "the row starts at the oldest message: {md}"
+        );
+        Ok(())
+    }
+
+    /// The JSON report's `duration_sec` runs from the oldest message.
+    #[test]
+    fn the_json_reports_duration_runs_from_the_oldest_message() -> Result<(), TestError> {
+        let v: serde_json::Value = serde_json::from_str(&report(ReportFormat::Json)?)?;
+        assert_eq!(
+            v["duration_sec"].as_f64(),
+            Some(3.005),
+            "19.5 s to 22.505 s: {v}"
+        );
         Ok(())
     }
 }

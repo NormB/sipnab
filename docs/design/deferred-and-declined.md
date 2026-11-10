@@ -358,7 +358,7 @@ and the first has already told the agent what to send. And there is no
 observable "it happened" from outside: the process is still running, the counts
 still look plausible, and the operator reading `/v1/dialogs` has no way to tell
 a mutated store from a merely-changed one, because `DialogStore::generation`
-([`dialog_store.rs:1271`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1271)) is internal to
+([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) is internal to
 cache invalidation and appears on no wire format.
 
 ### The prompt-injection chain, grounded
@@ -455,7 +455,7 @@ requirement to satisfy rather than a reason to stop.
 1. **A wire-visible store identity** — a generation or etag on REST and MCP
    responses — so a consumer can detect that the thing it is reading changed
    underneath it. `DialogStore::generation` already exists internally
-   ([`dialog_store.rs:1271`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1271)) and is bumped by every
+   ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) and is bumped by every
    mutating method; exposing it is small. Without it, "who changed this" has no
    answer at any layer. [Section 4 (`open_capture`)](#4-the-open_capture-mcp-tool)
    needs the same primitive, so it is built once.
@@ -756,7 +756,7 @@ field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
 
 **Nothing on the wire would reveal the swap.** `DialogStore::generation`
-([`dialog_store.rs:1271`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1271)) is bumped by every
+([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) is bumped by every
 mutating method and is exposed nowhere: not in `DialogSummary`
 ([`model.rs`](../../src/output/model.rs)), not in any REST response
 ([`api.rs:204-211`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L211), all `GET`), not in any MCP payload.
@@ -833,7 +833,7 @@ decision was taken, not as it stands now:
    ([`server.rs:6741`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6741)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
-   ([`dialog_store.rs:1271`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1271)) is bumped by every
+   ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) is bumped by every
    mutating method and exposed nowhere, so a `/v1/dialogs` poller cannot tell the
    dataset changed underneath it. This is the same primitive
    [section 2 (write-back MCP tools)](#2-write-back-mcp-tools) requires;

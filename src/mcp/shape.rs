@@ -470,6 +470,7 @@ pub const DIALOG_VERBATIM_FIELDS: &[&str] = &[
     "created_at",
     "updated_at",
     "latest_message_at",
+    "earliest_message_at",
     "timing",
     "frame",
     "input_origin",

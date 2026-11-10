@@ -153,7 +153,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.241 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.242 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -855,7 +855,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.241"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.242"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -1334,6 +1334,7 @@ The blocks below run against
       "created_at": "2016-05-17T08:01:35.431471+00:00",
       "updated_at": "2016-05-17T08:01:35.433107+00:00",
       "latest_message_at": "2016-05-17T08:01:35.433107+00:00",
+      "earliest_message_at": "2016-05-17T08:01:35.431471+00:00",
       "timing": { "pdd_ms": null, "setup_ms": null, "retransmits": 0, "duration_ms": null },
       "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
       "input_origin": "wire"
@@ -1539,7 +1540,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.241",
+  "version": "0.5.242",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -2481,7 +2482,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.241"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.242"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -2577,7 +2578,7 @@ text block.
     "content": [
       {
         "type": "text",
-        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"final_status_code\":403,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"latest_message_at\":\"2016-05-17T08:01:35.433107+00:00\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
+        "text": "{\"by_method\":[{\"count\":1,\"method\":\"REGISTER\"}],\"capture_identity\":{\"dialog_generation\":8,\"instance\":\"f58a118d2c05a8c8d16e6-2\",\"node\":\"capture-01\",\"stream_generation\":0},\"dialogs\":[{\"call_id\":\"auth-fail-register-synth@203.0.113.1\",\"created_at\":\"2016-05-17T08:01:35.431471+00:00\",\"duration_sec\":0.001,\"earliest_message_at\":\"2016-05-17T08:01:35.431471+00:00\",\"final_status_code\":403,\"frame\":\"tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e\",\"from_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"input_origin\":\"wire\",\"latest_message_at\":\"2016-05-17T08:01:35.433107+00:00\",\"method\":\"REGISTER\",\"msg_count\":4,\"state\":\"Failed\",\"timing\":{\"duration_ms\":null,\"pdd_ms\":null,\"retransmits\":0,\"setup_ms\":null},\"to_user\":\"⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧\",\"updated_at\":\"2016-05-17T08:01:35.433107+00:00\"}],\"next_cursor\":null,\"returned\":1,\"schema_version\":1,\"source_exhausted\":true,\"source_stopped_early\":false,\"total_matched\":1,\"truncated\":false}"
       },
       {
         "type": "text",
@@ -2602,6 +2603,7 @@ text block.
           "call_id": "auth-fail-register-synth@203.0.113.1",
           "created_at": "2016-05-17T08:01:35.431471+00:00",
           "duration_sec": 0.001,
+          "earliest_message_at": "2016-05-17T08:01:35.431471+00:00",
           "final_status_code": 403,
           "frame": "tests/pcap-samples/sip-auth-failure.pcapng#0@416505cbe7efbd8e",
           "from_user": "⟦untrusted-capture-data⟧alice⟦/untrusted-capture-data⟧",
@@ -2644,7 +2646,7 @@ Each row is a dialog summary: the compact projection.
 
 - It holds `call_id`, `state`, `method`, `from_user`, `to_user`,
   `msg_count`, `duration_sec`, `created_at`, `updated_at`,
-  `latest_message_at`, `timing`, `frame`.
+  `latest_message_at`, `earliest_message_at`, `timing`, `frame`.
 - It adds `final_status_code` and `input_origin` where sipnab knows them.
 - The full aggregated dialog document is what `get_dialog_report` returns.
   (The [REST API](rest-api.md#get-v1-dialogs-call-id-report) returns the same

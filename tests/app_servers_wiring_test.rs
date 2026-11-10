@@ -189,6 +189,7 @@ impl Spawned {
             .stdin(stdin)
             .stdout(stdout)
             .stderr(Stdio::piped())
+            .tied_to_test()
             .spawn()?;
         let err = child.stderr.take().ok_or("piped stderr")?;
         let (tx, rx) = mpsc::channel();
@@ -257,6 +258,7 @@ fn after_finds_a_line_that_arrived_before_the_one_waited_on_first() -> Result<()
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .tied_to_test()
         .spawn()?;
     let (tx, rx) = mpsc::channel();
     tx.send("INFO sipnab::app::batch: API server active".to_string())?;
@@ -1193,3 +1195,5 @@ fn the_sampling_budget_flag_warns_at_startup() -> Result<(), TestError> {
     assert_eq!(code, Some(0), "the flag is still accepted:\n{log}");
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

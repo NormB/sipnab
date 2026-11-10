@@ -84,9 +84,10 @@ impl OriginCarrier {
             src: dialog.src_addr,
             dst: dialog.dst_addr,
             dst_port: dialog.dst_port,
-            start: dialog.created_at,
-            // The newest message, which is never before the first.
-            end: dialog.latest_message_at.max(dialog.created_at),
+            // The oldest message to the newest, whatever order they were
+            // read in: the span `SipDialog::duration` measures.
+            start: dialog.earliest_message_at,
+            end: dialog.latest_message_at,
         }
     }
 
@@ -414,6 +415,32 @@ mod latest_message_tests {
             "the lifetime ends at the newest message"
         );
         assert!(d.latest_message_at > d.updated_at, "the fixture");
+        Ok(())
+    }
+}
+
+/// The carrier lifetime on a call whose second capture began earlier: see
+/// [`crate::test_utils::late_start_messages`].
+#[cfg(test)]
+mod earliest_message_tests {
+    use super::*;
+
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The carrier's lifetime starts at the oldest message, not at the first
+    /// message read, so a leg that overlaps the call's start is seen to.
+    #[test]
+    fn a_carriers_lifetime_starts_at_the_oldest_message() -> Result<(), TestError> {
+        let mut store = crate::sip::dialog_store::DialogStore::new(100, false);
+        for m in crate::test_utils::late_start_messages("carrier0@example.com")? {
+            store.process_message(m);
+        }
+        let d = store.get("carrier0@example.com").ok_or("the call")?;
+        assert_eq!(
+            OriginCarrier::of(d).start,
+            d.created_at - chrono::TimeDelta::milliseconds(500),
+            "the lifetime starts at the INVITE copy 0.5 s before the first message read"
+        );
         Ok(())
     }
 }

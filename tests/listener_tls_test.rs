@@ -53,6 +53,7 @@ fn run_until_exit(args: &[&str], wait: Duration) -> Result<(String, Option<i32>)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let mut stderr = child.stderr.take().ok_or("stderr is piped")?;
     let reader = std::thread::spawn(move || {
@@ -756,6 +757,7 @@ mod config_keys {
 #[cfg(feature = "hep")]
 mod hep_keys {
     use super::TestError;
+    use super::TiedToTest as _;
     use super::tls_pki::{TestPki, test_pki};
     use super::{run_until_exit, test_timeout};
     use std::io::{BufRead, BufReader};
@@ -797,6 +799,7 @@ mod hep_keys {
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
+                .tied_to_test()
                 .spawn()?;
             let (out_tx, stdout) = std::sync::mpsc::channel();
             let out = child.stdout.take().ok_or("stdout")?;
@@ -1595,3 +1598,5 @@ mod client_certs {
         )
     }
 }
+
+include!("support/child_lifetime.rs");

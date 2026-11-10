@@ -1087,6 +1087,7 @@ fn the_dialog_summary_component_declares_exactly_what_the_projection_emits() -> 
         created_at: "2026-09-06T00:00:00Z".to_string(),
         updated_at: "2026-09-06T00:00:01Z".to_string(),
         latest_message_at: "2026-09-06T00:00:01.5Z".to_string(),
+        earliest_message_at: "2026-09-06T00:00:00Z".to_string(),
         timing: sipnab::output::model::TimingSummary {
             pdd_ms: Some(180),
             setup_ms: Some(2134),

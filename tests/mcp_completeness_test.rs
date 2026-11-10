@@ -103,6 +103,7 @@ impl Wire {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
+            .tied_to_test()
             .spawn()?;
 
         {
@@ -1397,3 +1398,5 @@ fn every_probed_tool_names_the_capture_it_describes() -> Result<(), TestError> {
     assert!(missing.is_empty(), "no capture_identity on: {missing:?}");
     Ok(())
 }
+
+include!("support/child_lifetime.rs");

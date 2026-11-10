@@ -193,6 +193,7 @@ fn enabled_without_a_usable_journal_sipnab_refuses_to_start_and_names_it() -> Re
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let out = bounded(out)?;
     assert!(!out.status.success(), "must refuse to start");
@@ -225,6 +226,7 @@ fn a_second_sipnab_on_the_same_journal_refuses_to_start() -> Result<(), TestErro
         ])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
+        .tied_to_test()
         .spawn()?;
     let out = bounded(out)?;
     assert!(!out.status.success(), "a second writer must be refused");
@@ -830,3 +832,5 @@ fn a_ban_that_times_out_can_be_lifted_by_its_caller() -> Result<(), TestError> {
 fn a_ban_that_times_out_can_be_lifted_by_an_admin() -> Result<(), TestError> {
     a_lost_answer_is_held_in_doubt_and_can_be_lifted("hang", "admin")
 }
+
+include!("support/child_lifetime.rs");
