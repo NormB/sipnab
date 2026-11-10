@@ -1002,7 +1002,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 830 -> 831 (TEST-CHILD-ORPHAN): docs/internals/testing.md's support
     // table links tests/support/child_lifetime.rs (+1); every other
     // developer page unchanged.
-    const EXPECTED_CODE_LINKS: usize = 831;
+    // 831 -> 833 (RELEASE-FAST E): build-ci-release.md's "The release train"
+    // links scripts/release-train.py and scripts/tests/test_release_train.py.
+    const EXPECTED_CODE_LINKS: usize = 833;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
