@@ -4,7 +4,7 @@
 """One resumable entry point from a release pull request to done (RELEASE-FAST E).
 
     release-train.py X.Y.Z --host USER@HOST [--repo OWNER/NAME] [--poll S]
-                     [--bin DIR] [--retry-post]
+                     [--bin DIR] [--retry-post] [--proof-wait S]
 
 The release commit is written by hand and pushed on the branch release/X.Y.Z
 with its pull request open. The train then drives what follows, and every run
@@ -13,7 +13,8 @@ a crash continues from there:
 
     ci-wait       post the CLA status for the head, wait for the checks
     land          land the pull request (land-queue, required-checks)
-    tag           make the signed tag on the merge commit, push it in the lane
+    tag           move this checkout to the merge commit, wait for GitHub's
+                  proof of it, make the signed tag, push it in the lane
     release-wait  wait for the release workflow on the tag
     post          scripts/post-release.py run X.Y.Z --host USER@HOST
     done
@@ -34,6 +35,20 @@ queued 434 s behind it. The default estimate is 0.5.240's 37 min of pull
 request CI.
 
 Another owner's window is left alone: it holds ordinary jobs just the same.
+
+BEFORE THE TAG (RELEASE-TRAIN-TAG-RACE). On 0.5.243 the train pushed the tag
+one second after the pull request merged, and the pre-push hook refused it
+twice, about six minutes in all. So the tag stage does two things first:
+
+- `checkout_at_merge`: the hook's release-delivery test reads the checkout it
+  runs in, and this checkout predates the merge commit. With no uncommitted
+  change to a tracked file it is moved there (`git checkout --detach`) and
+  HEAD is read back; otherwise the train stops and prints the command.
+- `wait_for_proof`: GitHub lists the merged pull request for the merge commit
+  some time after the merge, and until then the hook's fast path does not
+  engage. `tag-push-proof.py --ready` is the hook's two queries; the train
+  asks every `proof_poll_s` for at most `proof_wait_s` (--proof-wait), and
+  stops before making the tag if the proof never resolves.
 
 Exit status: 0 done; 1 stopped (the output says at which stage and why, and a
 re-run resumes); 2 usage; 3 the post checks withdrew the release; 4 the
@@ -110,6 +125,8 @@ class Config:
     last_few: int = 3
     lead_s: int = 900
     expected_ci_s: int = 2220
+    proof_wait_s: int = 300
+    proof_poll_s: float = 10.0
     window_minutes: int = 60
     bin_dir: str = ""
     retry_post: bool = False
@@ -303,12 +320,68 @@ def land(cfg: Config, run, f: Facts) -> None:
         raise Stopped(f"landing pull request {f.pr_number} failed: {r.out.strip()}")
 
 
-def tag_and_push(cfg: Config, run, f: Facts) -> None:
+def checkout_at_merge(run, f: Facts) -> None:
+    """Put this checkout at the merge commit. The pre-push hook's
+    release-delivery test reads the files and the HEAD of the checkout it runs
+    in, and the train starts before the merge commit exists."""
+    git = ["git", "-C", str(REPO)]
+    head = run([*git, "rev-parse", "HEAD"], 30)
+    if head.out.strip() == f.merge_sha:
+        return
+    by_hand = (f"The pre-push hook's release-delivery test reads the checkout it runs in, so the tag is "
+               f"not pushed from here. Run `git -C {REPO} checkout --detach {f.merge_sha}`, then re-run the train.")
+    at = head.out.strip()[:9] or "an unknown commit"
+    dirty = run([*git, "status", "--porcelain", "--untracked-files=no"], 60)
+    if head.rc != 0 or dirty.rc != 0:
+        raise Stopped(f"this checkout's state could not be read: {(head.out if head.rc else dirty.out).strip()}. "
+                      f"{by_hand}")
+    if dirty.out.strip():
+        raise Stopped(f"this checkout is at {at}, not the merge commit {f.merge_sha[:9]}, and it has "
+                      f"uncommitted changes, so the train did not move it. Commit or set them aside first. {by_hand}")
+    r = run([*git, "checkout", "--detach", f.merge_sha], 120)
+    if r.rc != 0:
+        raise Stopped(f"this checkout is at {at} and could not be moved to the merge commit "
+                      f"{f.merge_sha[:9]}: {r.out.strip()}. {by_hand}")
+    after = run([*git, "rev-parse", "HEAD"], 30).out.strip()
+    if after != f.merge_sha:
+        raise Stopped(f"after `git checkout --detach` this checkout is still at {after[:9] or 'an unknown commit'}, "
+                      f"not the merge commit {f.merge_sha[:9]}. {by_hand}")
+    print(f"checkout: moved from {at} to the merge commit {f.merge_sha[:9]} (detached)")
+
+
+def wait_for_proof(cfg: Config, run, f: Facts, sleep, clock) -> None:
+    """Wait, bounded, until the pre-push hook's fast path would carry the tag.
+
+    `tag-push-proof.py --ready` is the hook's two queries in one call. GitHub
+    lists a merged pull request for its merge commit some time after the
+    merge; pushed before that, the tag gets every gate instead of the proof."""
+    argv = [sys.executable, str(SCRIPTS / "tag-push-proof.py"), "--ready", f.merge_sha]
+    start = clock()
+    deadline = start + cfg.proof_wait_s
+    while True:
+        r = run(argv, 300)
+        if r.rc == 0:
+            if clock() > start:
+                print(f"tag: the proof resolved after {clock() - start:.0f} s")
+            return
+        if clock() == start:
+            print(f"tag: waiting for GitHub's proof of {f.merge_sha[:9]}, at most {cfg.proof_wait_s} s")
+        if clock() >= deadline:
+            raise Stopped(
+                f"GitHub's proof for the merge commit {f.merge_sha[:9]} did not resolve in {cfg.proof_wait_s} s, "
+                f"so the tag was not made or pushed. The last answer of `{' '.join(argv[1:])}`:\n"
+                f"{r.out.strip()}\nWhen that command exits 0, re-run the train; it resumes at the tag.")
+        sleep(cfg.proof_poll_s)
+
+
+def tag_and_push(cfg: Config, run, f: Facts, sleep=time.sleep, clock=time.time) -> None:
     git = ["git", "-C", str(REPO)]
     name = f"v{cfg.version}"
     r = run([*git, "fetch", "origin", "main"], 300)
     if r.rc != 0:
         raise Stopped(f"git fetch failed: {r.out.strip()}")
+    checkout_at_merge(run, f)
+    wait_for_proof(cfg, run, f, sleep, clock)
     local = run([*git, "rev-parse", "--verify", "--quiet", f"refs/tags/{name}^{{commit}}"], 30)
     if local.rc == 0:
         if local.out.strip() != f.merge_sha:
@@ -332,7 +405,7 @@ def post_checks(cfg: Config, run) -> int:
     return r.rc
 
 
-def tick(cfg: Config, run, clock) -> str:
+def tick(cfg: Config, run, clock, sleep=time.sleep) -> str:
     """Read the facts, set the window, and take the one local step that is due."""
     now = clock()
     f = read_facts(cfg, run)
@@ -343,7 +416,7 @@ def tick(cfg: Config, run, clock) -> str:
     if stage == "land":
         land(cfg, run, f)
     elif stage == "tag":
-        tag_and_push(cfg, run, f)
+        tag_and_push(cfg, run, f, sleep, clock)
     elif stage == "post":
         rc = post_checks(cfg, run)
         if rc == 0:
@@ -360,7 +433,7 @@ def train(cfg: Config, run, sleep=time.sleep, clock=time.time) -> int:
     try:
         while True:
             try:
-                stage = tick(cfg, run, clock)
+                stage = tick(cfg, run, clock, sleep)
             except ReadError as e:
                 errors += 1
                 print(f"read failed ({errors} of {READ_ATTEMPTS}): {e}")
@@ -412,6 +485,8 @@ def main(argv=None, runner=None) -> int:
     p.add_argument("--poll", type=float, default=30.0)
     p.add_argument("--bin", default="", help="directory holding heavy-run and land-queue, when not on PATH")
     p.add_argument("--retry-post", action="store_true")
+    p.add_argument("--proof-wait", type=int, default=Config.proof_wait_s,
+                   help="seconds to wait for GitHub's proof of the merge commit before the tag (default 300)")
     try:
         args = p.parse_args(argv)
     except SystemExit:
@@ -419,8 +494,12 @@ def main(argv=None, runner=None) -> int:
     if not re.fullmatch(r"\d+\.\d+\.\d+", args.version):
         print(f"release-train: the version is X.Y.Z, not {args.version!r}", file=sys.stderr)
         return 2
+    if args.proof_wait < 0:
+        print(f"release-train: --proof-wait is a number of seconds, 0 or more, not {args.proof_wait}", file=sys.stderr)
+        return 2
     cfg = Config(version=args.version, host=args.host, repo=args.repo, poll=args.poll, bin_dir=args.bin,
-                 retry_post=args.retry_post, state_file=git_dir() / f"release-train-{args.version}.json")
+                 retry_post=args.retry_post, proof_wait_s=args.proof_wait,
+                 state_file=git_dir() / f"release-train-{args.version}.json")
     return train(cfg, runner or subprocess_runner)
 
 
