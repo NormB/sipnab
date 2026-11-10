@@ -1082,7 +1082,8 @@ pub fn build_router(state: ApiState) -> Router {
 ///
 /// The console routes sit inside the same router, so the request hardening
 /// here and every layer `serve_on` adds (the `Host` allowlist, the in-flight
-/// cap) apply to them as to `/v1/`. See [`console`].
+/// cap) apply to them as to `/v1/`. The module `console`, beside this file,
+/// holds the files and the reason they need no token.
 ///
 /// # Arguments
 ///
