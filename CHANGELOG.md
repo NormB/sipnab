@@ -21,6 +21,10 @@ entry that carries them.
   - Captured text, such as a Call-ID or a SIP header, is written to the page as text only.
   - See [Web console](docs/rest-api.md#web-console).
 
+### Changed
+
+- **7z archives are read with `sevenz-rust2` 0.25.0, up from 0.24.2.** The release rejects a member whose decoded data ends before or runs past its declared size, a block whose decoded size differs from its declared size, and an archive whose count of files with data differs from its count of sub-streams. It also checks the CRC of the data a reader leaves unread in the last member of a block. sipnab reports such an archive as broken, or as a wrong password when the archive is encrypted. `lzma-rust2` moves from 0.23.0 to 0.25.0 with it.
+
 ### Fixed
 
 - **Colored text on the TUI status rows meets WCAG 2.2 AA contrast (TUI-STATUS-BAND-CONTRAST).** The status rows paint their own background, `status_bg`, and drew error, capture-source, search and filter text on it in the theme colors as configured. Against the default band `#303040` the default `bad` red measured 1.7:1 and the default `selected` yellow 2.5:1; level AA asks 4.5:1 for text. Each such color is now checked against `status_bg` and, when it is below 4.5:1, moved toward white or black until it reaches it. A color that already passes is drawn as configured, and the `NO_COLOR` theme is unchanged. See the [theme guide](docs/theme-guide.md).
