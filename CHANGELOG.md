@@ -10,6 +10,10 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **7z archives are read with `sevenz-rust2` 0.25.0, up from 0.24.2.** The release rejects a member whose decoded data ends before or runs past its declared size, a block whose decoded size differs from its declared size, and an archive whose count of files with data differs from its count of sub-streams. It also checks the CRC of the data a reader leaves unread in the last member of a block. sipnab reports such an archive as broken, or as a wrong password when the archive is encrypted. `lzma-rust2` moves from 0.23.0 to 0.25.0 with it.
+
 ### Fixed
 
 - **A release no longer waits in the local queue at its tag push.** `scripts/release-train.py` drives a release from its pull request to the end, and resumes after a crash. It closes the heavy-run release window during remote waits and opens it again before the next local step. On 0.5.240 the tag push queued 434 s behind an ordinary hook.

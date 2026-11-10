@@ -238,7 +238,7 @@ Files copied into the repository unmodified from another project's release. None
 | lock_api | 0.5.0 | MIT OR Apache-2.0 |
 | log | 0.4.35 | MIT OR Apache-2.0 |
 | lru | 0.18.2 | MIT |
-| lzma-rust2 | 0.23.0 | Apache-2.0 |
+| lzma-rust2 | 0.25.0 | Apache-2.0 |
 | mac_address | 1.1.8 | MIT OR Apache-2.0 |
 | matchers | 0.2.0 | MIT |
 | matchit | 0.8.4 | MIT AND BSD-3-Clause |
@@ -352,7 +352,7 @@ Files copied into the repository unmodified from another project's release. None
 | serde_spanned | 1.1.1 | MIT OR Apache-2.0 |
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
 | serdect | 0.4.3 | Apache-2.0 OR MIT |
-| sevenz-rust2 | 0.24.2 | Apache-2.0 |
+| sevenz-rust2 | 0.25.0 | Apache-2.0 |
 | sha1 | 0.10.7 | MIT OR Apache-2.0 |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
