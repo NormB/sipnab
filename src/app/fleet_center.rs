@@ -434,73 +434,99 @@ impl Registry {
     }
 }
 
-/// The store file: one [`MemberRecord`] per line, appended as heartbeats
-/// arrive and rewritten to the newest per member by [`Store::compact`].
+/// The store file: every member's newest record, sealed.
 ///
-/// Created with mode 0600 and refused when other users can read it, because
-/// it holds every member's inventory. Each append is synced before the
+/// The file is a sealed log ([`crate::app::fleet_seal`]): the center never
+/// writes a member's inventory in clear. It is created with mode 0600 and
+/// refused when other users can read it. Each append is synced before the
 /// center answers, so a heartbeat the center acknowledged survives a crash,
 /// and a replay of it is still recognized afterwards.
+///
+/// A sealed file is written by one process only. [`Store::open`] reads the
+/// file and writes it again under a new data key before it returns, so a
+/// data key never seals records for two processes.
 #[derive(Debug)]
 pub struct Store {
     /// The file.
     path: PathBuf,
-    /// Lines appended since the last rewrite.
+    /// Records appended since the last rewrite.
     appended: usize,
+    /// The keys: the current one to write under, the old ones to read under.
+    keys: Arc<crate::app::fleet_seal::Keys>,
+    /// Seals the appends to the file as it now is.
+    sealer: crate::app::fleet_seal::LogSealer,
 }
 
 impl Store {
-    /// Open the store at `path`, creating it with mode 0600 when absent, and
-    /// return the records it holds.
+    /// Open the store at `path`, creating it with mode 0600 when absent,
+    /// return the records it holds, and write it again under a new data
+    /// key of the current key in `keys`.
     ///
-    /// A last line that does not parse is dropped: it is a write the center
-    /// did not finish, and so never acknowledged.
+    /// A store that an earlier release wrote in clear is read and replaced
+    /// by its sealed form. An append the center did not finish is dropped:
+    /// it was never acknowledged.
     ///
     /// # Errors
     ///
-    /// The file cannot be created or read, other users can read it, or a
-    /// line before the last does not parse. The message names the path and
-    /// the line.
-    pub fn open(path: &Path) -> Result<(Self, Vec<MemberRecord>), String> {
+    /// The file cannot be created, read or rewritten, other users can read
+    /// it, or the sealed layer refuses it: its key is not in `keys`, it was
+    /// modified or truncated, or it is not a store. The message names the
+    /// path and the layer. A refused file is left as it was found.
+    pub fn open(
+        path: &Path,
+        keys: Arc<crate::app::fleet_seal::Keys>,
+    ) -> Result<(Self, Vec<MemberRecord>), String> {
+        use crate::app::fleet_seal::{Kind, SealError, open_log};
         let shown = path.display();
-        let text = match std::fs::read(path) {
+        let bytes = match std::fs::read(path) {
             Ok(bytes) => {
                 check_private(path)?;
-                String::from_utf8_lossy(&bytes).into_owned()
+                bytes
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                create_private(path).map_err(|e| format!("--store '{shown}': {e}"))?;
-                String::new()
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => return Err(format!("--store '{shown}': {e}")),
         };
-        let lines: Vec<&str> = text.lines().collect();
-        let mut records = Vec::new();
-        for (index, line) in lines.iter().enumerate() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            match serde_json::from_str::<MemberRecord>(line) {
-                Ok(record) => records.push(record),
-                Err(_) if index + 1 == lines.len() => {
-                    tracing::warn!(
-                        "--store '{shown}': line {} is incomplete, from a write the center \
-                         did not finish; it is dropped",
-                        index + 1
-                    );
+        let records = if bytes.is_empty() {
+            Vec::new()
+        } else {
+            match open_log(&bytes, &keys, Kind::Registry) {
+                Ok(log) => {
+                    if log.torn_tail {
+                        tracing::warn!(
+                            "--store '{shown}': the last record is incomplete, from a write \
+                             the center did not finish; it is dropped"
+                        );
+                    }
+                    sealed_records(&log.records)
+                        .map_err(|why| format!("--store '{shown}': sealed layer: {why}"))?
                 }
-                Err(e) => {
+                Err(SealError::NotSealed) => {
+                    let records = plaintext_records(&bytes)
+                        .map_err(|why| format!("--store '{shown}': {why}"))?;
+                    tracing::warn!(
+                        "--store '{shown}' held {} member(s) in clear, written by a release \
+                         before encryption at rest; it is sealed now",
+                        records.len()
+                    );
+                    records
+                }
+                Err(e @ SealError::KeyNotLoaded(_)) => {
                     return Err(format!(
-                        "--store '{shown}': line {} is not a member record: {e}",
-                        index + 1
+                        "--store '{shown}': sealed layer: the file {e}; give that key's file \
+                         with --store-old-key-file"
                     ));
                 }
+                Err(e) => return Err(format!("--store '{shown}': sealed layer: the file {e}")),
             }
-        }
+        };
+        let sealer = write_sealed(path, &keys, records.iter())
+            .map_err(|e| format!("--store '{shown}': {e}"))?;
         Ok((
             Self {
                 path: path.to_path_buf(),
                 appended: 0,
+                keys,
+                sealer,
             },
             records,
         ))
@@ -510,45 +536,27 @@ impl Store {
     ///
     /// # Errors
     ///
-    /// The file cannot be opened, written or synced.
+    /// The record cannot be sealed, or the file cannot be opened, written
+    /// or synced.
     pub fn append(&mut self, record: &MemberRecord) -> std::io::Result<()> {
-        let mut line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-        line.push(b'\n');
+        let line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+        let sealed = self.sealer.record(&line).map_err(std::io::Error::other)?;
         let mut file = std::fs::OpenOptions::new().append(true).open(&self.path)?;
-        file.write_all(&line)?;
+        file.write_all(&sealed)?;
         file.sync_data()?;
         self.appended += 1;
         Ok(())
     }
 
-    /// Rewrite the store to hold exactly `registry`'s records, mode 0600:
-    /// staged beside it and renamed over it, so a reader sees the old file
-    /// or the new one.
+    /// Rewrite the store to hold exactly `registry`'s records, sealed under
+    /// a new data key, mode 0600: staged beside it and renamed over it, so a
+    /// reader sees the old file or the new one.
     ///
     /// # Errors
     ///
-    /// The staged file cannot be written, synced or renamed.
+    /// The staged file cannot be sealed, written, synced or renamed.
     pub fn compact(&mut self, registry: &Registry) -> std::io::Result<()> {
-        let name = self
-            .path
-            .file_name()
-            .map_or_else(|| "store".into(), |n| n.to_string_lossy().into_owned());
-        let staged = self.path.with_file_name(format!(".{name}.partial"));
-        let _ = std::fs::remove_file(&staged);
-        let result = (|| {
-            let mut file = create_private(&staged)?;
-            for record in registry.records() {
-                let mut line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-                line.push(b'\n');
-                file.write_all(&line)?;
-            }
-            file.sync_all()?;
-            std::fs::rename(&staged, &self.path)
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&staged);
-        }
-        result?;
+        self.sealer = write_sealed(&self.path, &self.keys, registry.records().into_iter())?;
         self.appended = 0;
         Ok(())
     }
@@ -558,6 +566,80 @@ impl Store {
     pub fn appended(&self) -> usize {
         self.appended
     }
+}
+
+/// Write the sealed file at `path` holding exactly `records`, under a new
+/// data key of the current key in `keys`: staged beside it, synced, and
+/// renamed over it. Returns the sealer for appends to the new file.
+fn write_sealed<'a>(
+    path: &Path,
+    keys: &crate::app::fleet_seal::Keys,
+    records: impl Iterator<Item = &'a MemberRecord>,
+) -> std::io::Result<crate::app::fleet_seal::LogSealer> {
+    use crate::app::fleet_seal::{Kind, LogSealer, system_fill};
+    let name = path
+        .file_name()
+        .map_or_else(|| "store".into(), |n| n.to_string_lossy().into_owned());
+    let staged = path.with_file_name(format!(".{name}.partial"));
+    let _ = std::fs::remove_file(&staged);
+    let result = (|| {
+        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Registry, &system_fill)
+            .map_err(std::io::Error::other)?;
+        let mut file = create_private(&staged)?;
+        file.write_all(&header)?;
+        for record in records {
+            let line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
+            file.write_all(&sealer.record(&line).map_err(std::io::Error::other)?)?;
+        }
+        file.write_all(&sealer.base_end().map_err(std::io::Error::other)?)?;
+        file.sync_all()?;
+        std::fs::rename(&staged, path)?;
+        Ok(sealer)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&staged);
+    }
+    result
+}
+
+/// The member records a sealed store's records hold.
+fn sealed_records(records: &[Vec<u8>]) -> Result<Vec<MemberRecord>, String> {
+    records
+        .iter()
+        .enumerate()
+        .map(|(index, bytes)| {
+            serde_json::from_slice::<MemberRecord>(bytes)
+                .map_err(|e| format!("record {} is not a member record: {e}", index + 1))
+        })
+        .collect()
+}
+
+/// The member records of a store an earlier release wrote in clear, one
+/// JSON line each. A last line that does not parse is dropped: it is a
+/// write that release did not finish, and so never acknowledged.
+fn plaintext_records(bytes: &[u8]) -> Result<Vec<MemberRecord>, String> {
+    let text = String::from_utf8_lossy(bytes);
+    let lines: Vec<&str> = text.lines().collect();
+    let mut records = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<MemberRecord>(line) {
+            Ok(record) => records.push(record),
+            Err(_) if index + 1 == lines.len() => {
+                tracing::warn!(
+                    "the store's line {} is incomplete, from a write the center did not \
+                     finish; it is dropped",
+                    index + 1
+                );
+            }
+            Err(e) => {
+                return Err(format!("line {} is not a member record: {e}", index + 1));
+            }
+        }
+    }
+    Ok(records)
 }
 
 /// Create `path` new, readable and writable by this user only.
@@ -626,6 +708,12 @@ pub struct ServeArgs {
     pub listen: String,
     /// `--store`: the store file.
     pub store: PathBuf,
+    /// `--store-key-file`: the key the store is encrypted under.
+    pub store_key_file: Option<PathBuf>,
+    /// `--store-old-key-file`: earlier keys the store may still be under.
+    pub store_old_key_files: Vec<PathBuf>,
+    /// `--store-encryption`: how the store is encrypted.
+    pub store_encryption: crate::app::fleet_seal::Encryption,
     /// `--signing-key-file`: the key member and reader tokens are minted with.
     pub signing_key_file: PathBuf,
     /// `--revoked-file`: token ids no longer accepted, one per line.
@@ -751,7 +839,8 @@ fn prepare(
         revoked_file: args.revoked_file.clone(),
         audience: crate::auth::AUDIENCE_API.to_string(),
     });
-    let (mut store, records) = Store::open(&args.store)?;
+    let keys = store_keys(args)?;
+    let (mut store, records) = Store::open(&args.store, keys)?;
     let mut registry = Registry::from_records(records);
     let gone = registry.expire(Utc::now(), retention(args.retention_hours));
     store
@@ -781,6 +870,38 @@ fn prepare(
         allowed_hosts: args.allowed_hosts.clone(),
     };
     Ok((addr, state, server_config))
+}
+
+/// The keys `sipnab fleet serve` encrypts its store with, read from the
+/// files the arguments name.
+///
+/// # Errors
+///
+/// `--store-encryption` names a value this build cannot run, no
+/// `--store-key-file` was given, or a key file is refused. The center
+/// stores nothing in clear, so it does not start without a key.
+fn store_keys(args: &ServeArgs) -> Result<Arc<crate::app::fleet_seal::Keys>, String> {
+    use crate::app::fleet_seal::{Keys, read_key_file};
+    if let Some(why) = args.store_encryption.unavailable() {
+        return Err(why);
+    }
+    let file = args.store_key_file.as_ref().ok_or(
+        "--store-key-file is required: the center encrypts everything it stores. Create a \
+         key with `sipnab fleet keygen --out FILE` and pass --store-key-file FILE",
+    )?;
+    let current = read_key_file(file, "--store-key-file")?;
+    let old = args
+        .store_old_key_files
+        .iter()
+        .map(|file| read_key_file(file, "--store-old-key-file"))
+        .collect::<Result<Vec<_>, _>>()?;
+    tracing::info!(
+        "fleet center store encryption {}, key id {}, {} old key(s)",
+        args.store_encryption.as_str(),
+        current.id(),
+        old.len()
+    );
+    Ok(Arc::new(Keys::new(current, old)))
 }
 
 /// `--retention-hours` as a duration.
@@ -1036,6 +1157,16 @@ fn apply_retention(center: &mut Center, now: DateTime<Utc>, retention_hours: u64
         tracing::warn!("fleet center: the store was not rewritten: {e}");
     }
     gone
+}
+
+/// The store keys the tests use: the key of 32 bytes of `byte`, and no
+/// older one.
+#[cfg(test)]
+fn test_keys(byte: u8) -> Arc<crate::app::fleet_seal::Keys> {
+    Arc::new(crate::app::fleet_seal::Keys::new(
+        crate::app::fleet_seal::MasterKey::from_bytes([byte; 32]),
+        Vec::new(),
+    ))
 }
 
 #[cfg(test)]
@@ -1346,7 +1477,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt as _;
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store");
-        let (mut store, loaded) = Store::open(&path)?;
+        let (mut store, loaded) = Store::open(&path, test_keys(1))?;
         assert!(loaded.is_empty(), "a new store is empty");
         assert_eq!(
             std::fs::metadata(&path)?.permissions().mode() & 0o777,
@@ -1362,16 +1493,15 @@ mod tests {
         }
         assert_eq!(store.appended(), 3, "three lines");
         drop(store);
-        let (mut store, loaded) = Store::open(&path)?;
+        let (mut store, loaded) = Store::open(&path, test_keys(1))?;
         assert_eq!(loaded.len(), 3, "every appended line is there");
         let reopened = Registry::from_records(loaded);
         assert_eq!(reopened, reg, "the reopened registry is the one written");
         store.compact(&reopened)?;
-        let text = std::fs::read_to_string(&path)?;
         assert_eq!(
-            text.lines().count(),
+            Store::open(&path, test_keys(1))?.1.len(),
             1,
-            "the newest record per member: {text}"
+            "the newest record per member"
         );
         assert_eq!(
             std::fs::metadata(&path)?.permissions().mode() & 0o777,
@@ -1381,7 +1511,7 @@ mod tests {
         assert_eq!(store.appended(), 0, "a rewrite resets the count");
         drop(store);
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))?;
-        let refused = Store::open(&path);
+        let refused = Store::open(&path, test_keys(1));
         assert!(
             refused
                 .as_ref()
@@ -1391,14 +1521,15 @@ mod tests {
         Ok(())
     }
 
-    /// A store whose last line is cut short (the center stopped mid-write)
-    /// opens with that line dropped; a bad line before the last is refused,
-    /// because it is not a torn write.
+    /// A store an earlier release wrote in clear, whose last line is cut
+    /// short (that center stopped mid-write), is imported with that line
+    /// dropped; a bad line before the last is refused, because it is not a
+    /// torn write.
     #[test]
     fn a_torn_last_line_is_dropped_and_a_bad_middle_line_refused() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store");
-        let (mut store, _) = Store::open(&path)?;
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
         let reg = Registry::default();
         let plan = reg.plan(
             "edge-a",
@@ -1408,13 +1539,16 @@ mod tests {
         );
         store.append(plan.record.as_ref().ok_or("a record")?)?;
         drop(store);
-        let whole = std::fs::read_to_string(&path)?;
+        let whole = format!(
+            "{}\n",
+            serde_json::to_string(plan.record.as_ref().ok_or("a record")?)?
+        );
         std::fs::write(&path, format!("{whole}{{\"member\":\"edge-b\",\"recei"))?;
-        let (_, loaded) = Store::open(&path)?;
+        let (_, loaded) = Store::open(&path, test_keys(1))?;
         assert_eq!(loaded.len(), 1, "the torn line is dropped");
         std::fs::write(&path, format!("{whole}garbage\n{whole}"))?;
         assert!(
-            Store::open(&path).is_err_and(|e| e.contains("line 2")),
+            Store::open(&path, test_keys(1)).is_err_and(|e| e.contains("line 2")),
             "a bad line before the last is refused, by line"
         );
         Ok(())
@@ -1426,7 +1560,7 @@ mod tests {
     fn the_upkeep_applies_retention_to_the_registry_and_the_file() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store");
-        let (mut store, _) = Store::open(&path)?;
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
         let mut registry = Registry::default();
         for (member, at) in [
             ("old", "2026-11-01T00:00:00Z"),
@@ -1440,11 +1574,16 @@ mod tests {
         let gone = apply_retention(&mut center, t("2026-11-07T12:00:00Z")?, 72);
         assert_eq!(gone, vec!["old".to_string()], "only the old member");
         assert_eq!(center.registry.records().len(), 1, "one member left");
-        let text = std::fs::read_to_string(&path)?;
-        assert!(!text.contains("\"old\""), "removed from the file: {text}");
-        assert!(
-            text.contains("\"new\""),
-            "the other stays in the file: {text}"
+        drop(center);
+        let members: Vec<String> = Store::open(&path, test_keys(1))?
+            .1
+            .into_iter()
+            .map(|r| r.member)
+            .collect();
+        assert_eq!(
+            members,
+            vec!["new".to_string()],
+            "removed from the file, and the other stays in it"
         );
         Ok(())
     }
@@ -1571,7 +1710,7 @@ mod behavior_tests {
 
     /// A center state over a store in `dir`, `rate` requests per second.
     fn state(dir: &Path, rate: u32) -> Result<CenterState, TestError> {
-        let (store, records) = Store::open(&dir.join("center.store"))?;
+        let (store, records) = Store::open(&dir.join("center.store"), test_keys(1))?;
         Ok(CenterState {
             center: Arc::new(parking_lot::Mutex::new(Center {
                 registry: Registry::from_records(records),
@@ -1731,12 +1870,309 @@ mod behavior_tests {
         Ok(())
     }
 
+    /// A store in `dir` under `keys` with one heartbeat from each of
+    /// `members` appended, and the path of its file.
+    fn sealed_store(
+        dir: &Path,
+        keys: Arc<crate::app::fleet_seal::Keys>,
+        members: &[&str],
+    ) -> Result<PathBuf, TestError> {
+        let path = dir.join("center.store");
+        let (mut store, _) = Store::open(&path, keys)?;
+        let mut reg = Registry::default();
+        for m in members {
+            let at = "2026-11-07T12:00:00Z";
+            let p = reg.plan(m, "192.0.2.1", t(at)?, &[hb("s", 1, at)?]);
+            store.append(p.record.as_ref().ok_or("r")?)?;
+            reg.commit(p);
+        }
+        Ok(path)
+    }
+
+    /// The members a store file opens to under `keys`.
+    fn members_of(
+        path: &Path,
+        keys: Arc<crate::app::fleet_seal::Keys>,
+    ) -> Result<Vec<String>, String> {
+        Store::open(path, keys).map(|(_, r)| r.into_iter().map(|r| r.member).collect())
+    }
+
+    /// Whether `needle` appears anywhere in the file.
+    fn file_holds(path: &Path, needle: &[u8]) -> Result<bool, TestError> {
+        Ok(std::fs::read(path)?
+            .windows(needle.len())
+            .any(|w| w == needle))
+    }
+
+    /// The store file is a sealed file and holds no member name, node name
+    /// or address in clear, after an append and after a rewrite.
+    #[test]
+    fn success_the_store_file_is_sealed_and_holds_no_member_in_clear() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["edge-secret-a"])?;
+        for needle in [
+            &b"edge-secret-a"[..],
+            b"192.0.2.1",
+            b"\"member\"",
+            b"node_name",
+        ] {
+            assert!(
+                !file_holds(&path, needle)?,
+                "{:?}",
+                String::from_utf8_lossy(needle)
+            );
+        }
+        assert_eq!(&std::fs::read(&path)?[..4], b"SNFS", "a sealed file");
+        let (mut store, records) = Store::open(&path, test_keys(1))?;
+        store.compact(&Registry::from_records(records))?;
+        assert!(!file_holds(&path, b"edge-secret-a")?, "after a rewrite");
+        assert_eq!(
+            &std::fs::read(&path)?[..4],
+            b"SNFS",
+            "still a sealed file after a rewrite"
+        );
+        Ok(())
+    }
+
+    /// A store an earlier release wrote in clear is read, and the file is
+    /// sealed by the time `open` returns.
+    #[test]
+    fn success_a_plaintext_store_is_imported_and_sealed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let reg = Registry::default();
+        let at = "2026-11-07T12:00:00Z";
+        let p = reg.plan("edge-old", "192.0.2.7", t(at)?, &[hb("s", 1, at)?]);
+        let line = serde_json::to_string(p.record.as_ref().ok_or("r")?)?;
+        std::fs::write(&path, format!("{line}\n"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        assert_eq!(
+            members_of(&path, test_keys(1))?,
+            vec!["edge-old".to_string()],
+            "the member the clear store held"
+        );
+        assert!(!file_holds(&path, b"edge-old")?, "no longer in clear");
+        assert_eq!(
+            members_of(&path, test_keys(1))?,
+            vec!["edge-old".to_string()],
+            "the member, read from the sealed file"
+        );
+        Ok(())
+    }
+
+    /// A store written under an earlier key opens when that key is listed
+    /// as old, and is under the current key afterwards.
+    #[test]
+    fn success_a_store_under_an_old_key_opens_and_moves_to_the_current_key() -> Result<(), TestError>
+    {
+        use crate::app::fleet_seal::{Keys, MasterKey};
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a", "b"])?;
+        let rotated = Arc::new(Keys::new(
+            MasterKey::from_bytes([2; 32]),
+            vec![MasterKey::from_bytes([1; 32])],
+        ));
+        assert_eq!(
+            members_of(&path, rotated)?.len(),
+            2,
+            "both members, read under the old key"
+        );
+        assert_eq!(
+            members_of(&path, test_keys(2))?.len(),
+            2,
+            "the new key alone now opens it"
+        );
+        assert!(
+            members_of(&path, test_keys(1)).is_err(),
+            "the old key no longer does"
+        );
+        Ok(())
+    }
+
+    /// A store under a key that is not loaded is refused: the message names
+    /// the sealed layer, the file, the key id and the flag that fixes it.
+    #[test]
+    fn failure_a_store_under_a_key_that_is_not_loaded_names_the_key_and_the_flag()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a"])?;
+        let before = std::fs::read(&path)?;
+        let e = members_of(&path, test_keys(2)).err().unwrap_or_default();
+        let id = test_keys(1).current().id().to_string();
+        assert!(e.contains("sealed layer"), "{e}");
+        assert!(e.contains("center.store"), "{e}");
+        assert!(e.contains(&id), "{e}");
+        assert!(e.contains("--store-old-key-file"), "{e}");
+        assert_eq!(
+            std::fs::read(&path)?,
+            before,
+            "a refused file is not touched"
+        );
+        Ok(())
+    }
+
+    /// One changed byte anywhere in the store refuses it, and the file is
+    /// left as it was found.
+    #[test]
+    fn failure_a_modified_store_is_refused_as_the_sealed_layer() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a", "b"])?;
+        let good = std::fs::read(&path)?;
+        for at in [20, good.len() / 2, good.len() - 1] {
+            let mut bad = good.clone();
+            bad[at] ^= 0x01;
+            std::fs::write(&path, &bad)?;
+            let e = members_of(&path, test_keys(1)).err().unwrap_or_default();
+            assert!(
+                e.contains("sealed layer") && e.contains("center.store"),
+                "byte {at}: {e}"
+            );
+            assert_eq!(std::fs::read(&path)?, bad, "byte {at}: left as found");
+        }
+        Ok(())
+    }
+
+    /// A store cut inside the records it was rewritten with is refused as
+    /// truncated.
+    #[test]
+    fn failure_a_truncated_store_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a", "b"])?;
+        let (mut store, records) = Store::open(&path, test_keys(1))?;
+        store.compact(&Registry::from_records(records))?;
+        drop(store);
+        let good = std::fs::read(&path)?;
+        std::fs::write(&path, &good[..good.len() - 30])?;
+        let e = members_of(&path, test_keys(1)).err().unwrap_or_default();
+        assert!(e.contains("sealed layer") && e.contains("truncated"), "{e}");
+        Ok(())
+    }
+
+    /// A sealed file of another kind, put where the store is, is refused.
+    #[test]
+    fn failure_an_intake_file_in_the_stores_place_is_refused() -> Result<(), TestError> {
+        use crate::app::fleet_seal::{Kind, LogSealer, system_fill};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let keys = test_keys(1);
+        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Intake, &system_fill)?;
+        let mut bytes = header.to_vec();
+        bytes.extend(sealer.base_end()?);
+        std::fs::write(&path, bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        let e = members_of(&path, keys).err().unwrap_or_default();
+        assert!(e.contains("sealed layer") && e.contains("intake"), "{e}");
+        Ok(())
+    }
+
+    /// A sealed record that authenticates but is not a member record is
+    /// refused by its position.
+    #[test]
+    fn failure_a_sealed_record_that_is_not_a_member_record_is_refused() -> Result<(), TestError> {
+        use crate::app::fleet_seal::{Kind, LogSealer, system_fill};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let keys = test_keys(1);
+        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Registry, &system_fill)?;
+        let mut bytes = header.to_vec();
+        bytes.extend(sealer.record(b"{\"not\":\"a member\"}")?);
+        bytes.extend(sealer.base_end()?);
+        std::fs::write(&path, bytes)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        let e = members_of(&path, keys).err().unwrap_or_default();
+        assert!(
+            e.contains("record 1") && e.contains("not a member record"),
+            "{e}"
+        );
+        Ok(())
+    }
+
+    /// An append the center did not finish is dropped at the next start,
+    /// and every record before it is kept.
+    #[test]
+    fn edge_a_torn_append_is_dropped_and_the_rest_kept() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a", "b", "c"])?;
+        let good = std::fs::read(&path)?;
+        std::fs::write(&path, &good[..good.len() - 7])?;
+        assert_eq!(
+            members_of(&path, test_keys(1))?,
+            vec!["a".to_string(), "b".to_string()],
+            "the two whole appends"
+        );
+        Ok(())
+    }
+
+    /// Every open writes the file again under a new data key, so a data key
+    /// never seals for two processes: the same members, different bytes.
+    #[test]
+    fn edge_each_open_writes_the_file_under_a_new_data_key() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a"])?;
+        let first = std::fs::read(&path)?;
+        assert_eq!(members_of(&path, test_keys(1))?.len(), 1, "the one member");
+        let second = std::fs::read(&path)?;
+        assert_ne!(first[14..30], second[14..30], "a new file id");
+        assert_ne!(first[30..91], second[30..91], "a new wrapped data key");
+        Ok(())
+    }
+
+    /// A record appended after a rewrite is sealed for the rewritten file:
+    /// the store reopens with the rewritten records and the appended one.
+    #[test]
+    fn edge_an_append_after_a_rewrite_reopens() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a"])?;
+        let (mut store, records) = Store::open(&path, test_keys(1))?;
+        let mut reg = Registry::from_records(records);
+        store.compact(&reg)?;
+        let at = "2026-11-07T12:00:05Z";
+        let p = reg.plan("b", "192.0.2.2", t(at)?, &[hb("s", 1, at)?]);
+        store.append(p.record.as_ref().ok_or("r")?)?;
+        reg.commit(p);
+        drop(store);
+        assert_eq!(
+            members_of(&path, test_keys(1))?,
+            vec!["a".to_string(), "b".to_string()],
+            "the rewritten member and the one appended after"
+        );
+        Ok(())
+    }
+
+    /// The staged file of a rewrite is gone afterwards, so no second copy
+    /// of the store is left beside it.
+    #[test]
+    fn edge_a_rewrite_leaves_no_staged_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a"])?;
+        let (mut store, records) = Store::open(&path, test_keys(1))?;
+        store.compact(&Registry::from_records(records))?;
+        let names: Vec<String> = std::fs::read_dir(dir.path())?
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["center.store".to_string()], "{names:?}");
+        Ok(())
+    }
+
     /// A rewritten store reopens to the same registry.
     #[test]
     fn success_a_compacted_store_reopens_the_same() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("s");
-        let (mut store, _) = Store::open(&path)?;
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
         let mut reg = Registry::default();
         for m in ["a", "b"] {
             let p = reg.plan(
@@ -1750,7 +2186,7 @@ mod behavior_tests {
         }
         store.compact(&reg)?;
         drop(store);
-        let (_, loaded) = Store::open(&path)?;
+        let (_, loaded) = Store::open(&path, test_keys(1))?;
         assert_eq!(Registry::from_records(loaded), reg, "same registry");
         Ok(())
     }
@@ -1829,7 +2265,14 @@ mod behavior_tests {
             line(),
         )
         .await?;
-        let text = std::fs::read_to_string(dir.path().join("center.store"))?;
+        let bytes = std::fs::read(dir.path().join("center.store"))?;
+        let log = crate::app::fleet_seal::open_log(
+            &bytes,
+            &test_keys(1),
+            crate::app::fleet_seal::Kind::Registry,
+        )
+        .map_err(|e| e.to_string())?;
+        let text = String::from_utf8_lossy(log.records.last().ok_or("a record")?).into_owned();
         assert!(
             text.contains("\"member\":\"edge-a\""),
             "appended before the answer: {text}"
@@ -2046,7 +2489,10 @@ mod behavior_tests {
     #[test]
     fn failure_a_store_that_is_a_directory_is_refused() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
-        assert!(Store::open(dir.path()).is_err(), "a directory");
+        assert!(
+            Store::open(dir.path(), test_keys(1)).is_err(),
+            "a directory"
+        );
         Ok(())
     }
 
@@ -2213,17 +2659,18 @@ mod behavior_tests {
     fn edge_an_empty_store_opens_empty() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("s");
-        Store::open(&path)?;
-        assert!(Store::open(&path)?.1.is_empty(), "no records");
+        Store::open(&path, test_keys(1))?;
+        assert!(Store::open(&path, test_keys(1))?.1.is_empty(), "no records");
         Ok(())
     }
 
-    /// Blank lines between records are passed over.
+    /// Blank lines between the records of a store written in clear are
+    /// passed over when it is imported.
     #[test]
     fn edge_blank_lines_in_the_store_are_passed_over() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("s");
-        let (mut store, _) = Store::open(&path)?;
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
         let reg = Registry::default();
         let p = reg.plan(
             "a",
@@ -2232,24 +2679,33 @@ mod behavior_tests {
             &[hb("s", 1, "2026-11-07T12:00:00Z")?],
         );
         store.append(p.record.as_ref().ok_or("r")?)?;
-        let text = std::fs::read_to_string(&path)?;
+        let text = format!(
+            "{}\n",
+            serde_json::to_string(p.record.as_ref().ok_or("r")?)?
+        );
         std::fs::write(&path, format!("\n{text}\n\n{text}"))?;
         assert_eq!(
-            Store::open(&path)?.1.len(),
+            Store::open(&path, test_keys(1))?.1.len(),
             2,
             "two records, blank lines skipped"
         );
         Ok(())
     }
 
-    /// Rewriting an empty registry leaves an empty store.
+    /// Rewriting an empty registry leaves a sealed store with no records.
     #[test]
     fn edge_compacting_no_members_leaves_an_empty_file() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("s");
-        let (mut store, _) = Store::open(&path)?;
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
         store.compact(&Registry::default())?;
-        assert_eq!(std::fs::read_to_string(&path)?, "", "empty");
+        drop(store);
+        assert_eq!(
+            std::fs::read(&path)?.len(),
+            crate::app::fleet_seal::HEADER_BYTES + 4 + 1 + 8 + 16,
+            "a header and the end of an empty base"
+        );
+        assert!(Store::open(&path, test_keys(1))?.1.is_empty(), "no records");
         Ok(())
     }
 

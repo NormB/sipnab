@@ -952,7 +952,13 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // sets how many held calls a relay ask covers and needs
 // --rtpengine-control`, since the flag now sets the TUI's, REST's and MCP's
 // default too (one removed, one added).
-const EXPECTED_TEMPLATES: usize = 599;
+// 599 -> 605 (fleet center store encrypted at rest): src/app/fleet_center.rs
+// +4: the two sealed-layer refusals, the warning for a store imported from
+// clear and the incomplete last record; its two messages for a store written
+// in clear lose their `--store` prefix (two removed, two added).
+// src/app/fleet_seal.rs +2: a key file of the wrong length and a record over
+// the sealed record bound.
+const EXPECTED_TEMPLATES: usize = 605;
 
 // ---------------------------------------------------------------------------
 // The page gates

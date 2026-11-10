@@ -1753,7 +1753,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // list_dialogs and "Which dialog time to read" links it dropped (-1).
     // 2501 -> 2502 (TEST-CHILD-ORPHAN): internals/testing.md +1, the support
     // table's link to "Children end with their test".
-    const EXPECTED_WIKI_LINKS: usize = 2502;
+    // 2502 -> 2506 (fleet center store encrypted at rest): fleet.md +2, the
+    // center prerequisite's link to "Encrypt the center's store" and that
+    // section's link to "Step 1: start the center"; cli-reference.md +1 and
+    // errors.md +1, each a link to "Encrypt the center's store".
+    const EXPECTED_WIKI_LINKS: usize = 2506;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -3160,10 +3160,15 @@ A capture run with `--fleet-report-url` is a fleet member: it reports a heartbea
 
 It exits `0` when every instance answered and there is no finding, `1` when an instance did not answer or there is a finding, and `2` when it cannot use the hosts file.
 
+`sipnab fleet keygen --out <FILE>` creates the key a fleet center encrypts its store under: a new file with mode 0600 that holds 32 random bytes in base64. It prints the key's id, which is not secret, and exits `2` without writing when the file exists.
+
 `sipnab fleet serve` runs a fleet center: fleet members push heartbeats to its `POST /v1/fleet/ingest`, and it serves every member, with the ones gone silent, on `GET /v1/fleet/members`. It opens no capture, and runs until SIGINT or SIGTERM. [Run a fleet center](fleet.md#run-a-fleet-center) is the how-to.
 
 - `--listen <ADDR>`: the address to serve on, `HOST:PORT`. An address other than loopback needs `--tls-cert` and `--tls-key`: the center refuses plain HTTP except on loopback.
-- `--store <FILE>`: the store file, the newest heartbeat of each member. The center creates it with mode 0600, and refuses a store other users can read.
+- `--store <FILE>`: the store file, the newest heartbeat of each member, encrypted. The center creates it with mode 0600, and refuses a store other users can read.
+- `--store-key-file <FILE>`: the key the center encrypts the store under, readable by this user only. Required: the center stores nothing in clear, and does not start without it. `sipnab fleet keygen --out <FILE>` creates one. Back the file up: without it nobody can read the store. How-to: [Encrypt the center's store](fleet.md#encrypt-the-centers-store).
+- `--store-old-key-file <FILE>`: an earlier `--store-key-file` the store may still be under (repeatable). The center rewrites the store under the current key when it starts, so it needs the old key for one start.
+- `--store-encryption <sealed|modular|both>`: how the center encrypts the store. Default `sealed`: the center seals the file as one object with AES-256-GCM. No value turns encryption off. This build runs under `sealed` only, and refuses `modular` and `both` at start.
 - `--signing-key-file <FILE>`: the key that signs member and reader tokens, readable by this user only. Mint tokens with it: `--token-scope fleet-report --token-id <member>` for a member, `--token-scope inventory` for a reader.
 - `--revoked-file <FILE>`: token ids no longer accepted, one per line. Revoke one member by its id; sipnab re-reads the file when it changes.
 - `--tls-cert <FILE>` and `--tls-key <FILE>`: serve HTTPS with this certificate chain and key. The key must be readable by this user only.

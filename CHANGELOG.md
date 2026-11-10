@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking: a fleet center encrypts its store, and needs a key file to start.** `sipnab fleet serve` wrote its store, every member's inventory, in clear. It now seals the store file with AES-256-GCM under a key in a file that only its user can read, and does not start without `--store-key-file <FILE>`. `sipnab fleet keygen --out <FILE>` creates the key and prints its id. A center upgraded from 0.5.237 to 0.5.242 reads its old store on the first start with a key, writes it encrypted and replaces the file. A changed, truncated or swapped store, or a store under a key that is not loaded, stops the center at start with a message that names the file and the key id, and never a key. `--store-old-key-file <FILE>` reads a store under an earlier key once, and the center rewrites it under the current key. `--store-encryption` takes `sealed` (the default), `modular` or `both`; this release runs under `sealed` and refuses the other two. No value turns encryption off. Back the key file up: without it nobody can read the store. How-to: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
+
 ## [0.5.242] - 2026-11-09
 
 ### Changed

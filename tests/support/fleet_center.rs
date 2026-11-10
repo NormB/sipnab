@@ -101,4 +101,13 @@ pub fn http(
     Ok((status, rest.to_string()))
 }
 
+/// A store key file in `dir` for a test center: mode 0600, a fixed key.
+pub fn store_key_file(dir: &std::path::Path) -> Result<std::path::PathBuf, TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = dir.join("center.storekey");
+    std::fs::write(&path, "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n")?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(path)
+}
+
 include!("child_lifetime.rs");

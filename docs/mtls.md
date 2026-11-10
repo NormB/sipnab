@@ -262,6 +262,7 @@ then:
 
 ```bash
 sipnab fleet serve --listen 192.0.2.10:8444 --store /var/lib/sipnab/center.store \
+  --store-key-file /etc/sipnab/center.storekey \
   --signing-key-file /etc/sipnab/center.signing \
   --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key \
   --tls-client-ca /etc/sipnab/members-ca.pem
