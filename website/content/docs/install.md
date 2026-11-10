@@ -34,6 +34,28 @@ minute.
 | Drive it from an AI agent | [Turn on the MCP server](#turn-on-the-mcp-server) |
 | Move to a newer release | [Upgrade sipnab](#upgrade-sipnab) |
 | Take it off this machine | [Uninstall it](#uninstall-it) |
+| Fix an install that failed | [When something does not work](#when-something-does-not-work) |
+
+## Before you start
+
+- **A supported host.** Linux or macOS, on x86_64 or aarch64.
+- **`curl`, `tar` and a checksum tool** (`sha256sum` or `shasum`) for the
+  one-line installer. It stops with an error when one is missing.
+- **libpcap on a glibc Linux host.** The installer does not install it:
+  `libpcap0.8` on Debian and Ubuntu, `libpcap` on Fedora and RHEL. The static
+  musl build and macOS need nothing.
+- **Root only to write the install directory.** The installer uses `sudo` when
+  `/usr/local/bin` is not writable. Set `SIPNAB_INSTALL_DIR` to a directory you
+  own and it needs no root. Reading capture files needs no privileges. Live
+  capture needs root or the capabilities that
+  [Capture live traffic without root](#capture-live-traffic-without-root)
+  grants.
+- **No change on any other system.** The host must reach three names over
+  HTTPS (TCP port 443) during the install: `sipnab.com` for the script,
+  `api.github.com` for the latest version number and `github.com` for the
+  release files. On a network that filters outbound traffic, allow those or
+  [download a release binary yourself](#download-a-release-binary-yourself) on
+  another host and copy it over.
 
 ## Install in one command
 
@@ -1283,6 +1305,40 @@ Read two columns with care.
   - So the `REGISTER` row shows the registrar's 200 and not its 401.
 - `Duration` is the span from the dialog's first message to its last, not
   talk time.
+
+## When something does not work
+
+**The installer stops with a line that starts `sipnab-install: error:`.** The
+rest of that line names the reason. The table under
+[Install in one command](#install-in-one-command) lists each message with its
+cause and fix.
+
+**The shell cannot find `sipnab`.** `sh` prints `sipnab: not found` and bash
+prints `sipnab: command not found`, both with exit status 127. The install
+directory is not on your `PATH`. Run it by its full path, such as
+`/usr/local/bin/sipnab --version`, or add the directory to `PATH`.
+
+**`sipnab: error while loading shared libraries: libpcap.so.0.8: cannot open shared object file: No such file or directory`.**
+The `-gnu` build loads libpcap when it starts, and the host has none. The exit
+status is 127. Install `libpcap0.8` (Debian, Ubuntu) or `libpcap` (Fedora,
+RHEL).
+
+**`Permission denied on 'eth0'. Grant capture capabilities once (Linux), then re-run without sudo:`**
+Opening a network device needs privilege, and reading a file does not. sipnab
+exits with status 1 and prints the commands that fix it. The first one,
+`sipnab --setup-caps`, grants the two capture capabilities to the binary:
+[Capture live traffic without root](#capture-live-traffic-without-root)
+explains what it does.
+
+**A feature is missing.** `sipnab --version` lists the features in your
+build. [Feature flags](#feature-flags) says what each one adds.
+
+What ran: the two "not found" messages and the libpcap message came from
+sipnab 0.5.244, built from source against glibc, in a Debian 13 container with
+no libpcap, on 2026-11-10. The permission message came from the same build run
+as an unprivileged user on Linux, with the device `lo`.
+
+For any other message, look it up in the [error reference](@/docs/errors.md).
 
 ## Upgrade sipnab
 

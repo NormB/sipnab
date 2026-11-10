@@ -25,6 +25,8 @@ use std::collections::BTreeSet;
 
 #[path = "support/cli_flags.rs"]
 mod cli_flags;
+#[path = "support/howto_parts.rs"]
+mod howto_parts;
 #[path = "support/markdown.rs"]
 mod markdown;
 #[path = "support/mcp_reference.rs"]
@@ -6649,6 +6651,12 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
 ///
 /// Raising a floor after improving a page is the intended workflow. Lowering
 /// one is the thing to argue about in review.
+///
+/// The headings that open a how-to's fixed parts (prerequisites, check,
+/// troubleshooting) are left out of the count. `howto_sections_test.rs`
+/// requires them by name, and both tests read the same predicates in
+/// `support/howto_parts.rs`: adding the required parts to the walkthrough
+/// took it from 14 headings to 17 and under its floor until they were left out.
 #[test]
 fn how_to_headings_stay_task_first() -> Result<(), TestError> {
     /// Verbs a reader would use for their own goal. Extend freely — a missing
@@ -6731,6 +6739,10 @@ fn how_to_headings_stay_task_first() -> Result<(), TestError> {
         let heads: Vec<String> = heading
             .captures_iter(&markdown::prose(&text))
             .map(|c| c[1].to_string())
+            // "Before you start", "Check that it worked" and "When something
+            // does not work" are the fixed parts `howto_sections_test.rs`
+            // requires of a task page. They are not counted either way.
+            .filter(|head| !howto_parts::is_part(head))
             .collect();
         assert!(
             !heads.is_empty(),
