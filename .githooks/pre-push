@@ -181,14 +181,24 @@ fi
 # Still run on a tag-only push: the release-delivery test, the tag signature,
 # the tag's CI and code-scanning checks, the commit test-count check, and the
 # corpus gate, which validates against captures CI never sees.
+#
+# Exit 3 is "the proof is not found yet" (RELEASE-TRAIN-TAG-RACE): GitHub
+# lists a merged pull request for its merge commit some time after the merge,
+# and the v0.5.243 tag was pushed one second after it. Every gate runs then
+# too; the line says the proof is pending, and the release-delivery gate
+# below says so again if it refuses the push.
 TREE_PROVEN=0
+TAG_PROOF_PENDING=0
 TAG_PROOF="$(dirname "$0")/../scripts/tag-push-proof.py"
 case "$PUSH_REFS" in
 *refs/tags/*)
 	if [ -f "$TAG_PROOF" ]; then
-		if TAG_PROOF_LINE=$(printf '%s\n' "$PUSH_REFS" | python3 "$TAG_PROOF" 2>&1); then
-			TREE_PROVEN=1
-		fi
+		TAG_PROOF_RC=0
+		TAG_PROOF_LINE=$(printf '%s\n' "$PUSH_REFS" | python3 "$TAG_PROOF" 2>&1) || TAG_PROOF_RC=$?
+		case "$TAG_PROOF_RC" in
+		0) TREE_PROVEN=1 ;;
+		3) TAG_PROOF_PENDING=1 ;;
+		esac
 		printf '%s\n' "$TAG_PROOF_LINE"
 	fi
 	;;
@@ -429,10 +439,26 @@ if SIPNAB_RELEASE_GATES_STRICT=1 cargo test --features full --test release_deliv
 else
 	printf '%bFAIL%b\n' "$RED" "$NC"
 	printf '\n'
-	printf '%bPush blocked: work sits past the last tag and the tree does not say so.%b\n' "$RED" "$NC"
-	printf 'Reproduce with:\n'
-	printf '    cargo test --features full --test release_delivery_test\n'
-	printf 'Usually the fix is an [Unreleased] section in CHANGELOG.md naming what changed.\n'
+	# What to say is scripts/tag-push-proof.py's `delivery_hint`. For a push
+	# of branches it is the changelog. For a tag it never is: the v0.5.243
+	# tag was refused here twice, once while its proof was pending and both
+	# times because this test reads the checkout it runs in, which was at
+	# the main before the release, and the changelog text sent the reader
+	# to the wrong file.
+	DELIVERY_HINT=""
+	if [ -f "$TAG_PROOF" ]; then
+		DELIVERY_HINT=$(printf '%s\n' "$PUSH_REFS" | python3 "$TAG_PROOF" --delivery-hint \
+			"$TAG_PROOF_PENDING" "$(git rev-parse HEAD 2>/dev/null)" 2>/dev/null) || DELIVERY_HINT=""
+	fi
+	if [ -n "$DELIVERY_HINT" ]; then
+		printf '%b%s%b\n' "$RED" "$(printf '%s\n' "$DELIVERY_HINT" | sed -n 1p)" "$NC"
+		printf '%s\n' "$DELIVERY_HINT" | sed 1d
+	else
+		printf '%bPush blocked: work sits past the last tag and the tree does not say so.%b\n' "$RED" "$NC"
+		printf 'Reproduce with:\n'
+		printf '    cargo test --features full --test release_delivery_test\n'
+		printf 'Usually the fix is an [Unreleased] section in CHANGELOG.md naming what changed.\n'
+	fi
 	printf '\n'
 	printf 'Emergency bypass (discouraged): SKIP_FMT_HOOK=1 git push\n'
 	exit 1
