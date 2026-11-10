@@ -299,21 +299,33 @@ fn plugin_filename() -> String {
 /// for why it is tried last and what has to hold before it is honored at all.
 const PLUGIN_OVERRIDE_ENV: &str = "SIPNAB_AUDIO_PLUGIN";
 
-/// Trusted plugin locations, in the order they are tried:
-/// 1. next to the current executable (dev builds and relocatable installs),
-/// 2. `/usr/lib/sipnab/<soname>` (the Debian package's location),
+/// Trusted plugin locations for the running executable; see
+/// [`trusted_plugin_candidates_for`].
+fn trusted_plugin_candidates() -> Vec<OsString> {
+    trusted_plugin_candidates_for(std::env::current_exe().ok().as_deref())
+}
+
+/// Trusted plugin locations for a sipnab executable at `exe`, in the order
+/// they are tried:
+/// 1. next to `exe` (dev builds, release tarballs and relocatable installs),
+/// 2. `/usr/lib/sipnab/<soname>` (the `.deb` and `.rpm` location),
 /// 3. the bare soname, resolved through the dynamic loader's search path.
+///
+/// With `exe` unknown, the first is left out.
 ///
 /// Writing to any of these already implies the ability to replace the sipnab
 /// binary or the package that installed it, so loading from them confers no
 /// authority an attacker did not already hold.
-fn trusted_plugin_candidates() -> Vec<OsString> {
+///
+/// Public so that the install steps in `docs/install.md` and
+/// `website/static/install.sh` are tested against this rule rather than
+/// against a copy of it.
+#[must_use]
+pub fn trusted_plugin_candidates_for(exe: Option<&Path>) -> Vec<OsString> {
     let filename = plugin_filename();
     let mut candidates: Vec<OsString> = Vec::new();
 
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
+    if let Some(dir) = exe.and_then(Path::parent) {
         candidates.push(dir.join(&filename).into_os_string());
     }
     candidates.push(
@@ -860,6 +872,55 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(&self.path);
         }
+    }
+
+    /// A tarball install puts the plugin beside the binary, so the directory
+    /// of the executable is searched first, then the package location.
+    #[test]
+    fn candidates_for_an_executable_start_beside_it() {
+        let got = trusted_plugin_candidates_for(Some(Path::new("/opt/x/sipnab")));
+        let name = plugin_filename();
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::from("/opt/x").join(&name).into_os_string(),
+                PathBuf::from("/usr/lib/sipnab")
+                    .join(&name)
+                    .into_os_string(),
+                OsString::from(&name),
+            ],
+            "beside the executable first, then the package location, then the loader search"
+        );
+    }
+
+    /// With no executable path the package location and the loader search
+    /// remain.
+    #[test]
+    fn candidates_without_an_executable_skip_the_beside_entry() {
+        let got = trusted_plugin_candidates_for(None);
+        let name = plugin_filename();
+        assert_eq!(
+            got,
+            vec![
+                PathBuf::from("/usr/lib/sipnab")
+                    .join(&name)
+                    .into_os_string(),
+                OsString::from(&name),
+            ],
+            "no executable: the package location, then the loader search"
+        );
+    }
+
+    /// The running process uses the same rule, for its own executable.
+    #[test]
+    fn the_running_process_uses_the_rule_for_its_own_executable() -> Result<(), TestError> {
+        let exe = std::env::current_exe()?;
+        assert_eq!(
+            trusted_plugin_candidates(),
+            trusted_plugin_candidates_for(Some(&exe)),
+            "one rule for the running process"
+        );
+        Ok(())
     }
 
     /// The trusted list is built without consulting the environment at all, so

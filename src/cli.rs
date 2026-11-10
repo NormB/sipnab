@@ -413,7 +413,11 @@ pub const ENVIRONMENT: &[(&str, &str)] = &[
         "Log filter, in the `tracing` `EnvFilter` syntax: a level such as `debug`, or \
          per-target directives",
     ),
-    ("NO_COLOR", "A non-empty value turns color off in the TUI"),
+    (
+        "NO_COLOR",
+        "A non-empty value turns color off in the TUI, in the log, and in the SIP \
+         message lines under `--color auto`. The log colors only a terminal",
+    ),
     (
         "SIPNAB_API_KEY",
         "Read as `--api-key` when the flag is not given",
@@ -15834,6 +15838,136 @@ mod one_shot_plumbing_tests {
             }
         }
         assert!(missed.is_empty(), "accepted without -N: {missed:?}");
+        Ok(())
+    }
+
+    /// The flags the stdio refusal adds to [`STDOUT_FLAGS`] only when their
+    /// output lands on stdout, each with the arguments that put it there.
+    const CONDITIONAL_STDOUT_FLAGS: &[&[&str]] = &[
+        &["--call-report", "call-1@example.com"],
+        &["--export-vcon", "all"],
+        &["--evidence-out", "-"],
+        &[
+            "--rtpengine-control",
+            "127.0.0.1:22222",
+            "--relay-stats-interval",
+            "5",
+        ],
+    ];
+
+    /// The flag a [`CONDITIONAL_STDOUT_FLAGS`] entry is named by in the
+    /// refusal.
+    fn conditional_flag_name(flag: &[&str]) -> &'static str {
+        match flag[0] {
+            "--call-report" => "--call-report",
+            "--export-vcon" => "--export-vcon",
+            "--evidence-out" => "--evidence-out -",
+            _ => "--relay-stats-interval",
+        }
+    }
+
+    /// Whether this build carries the Cargo feature `flag` needs. A flag whose
+    /// feature is absent is refused for that reason before the stdout rule
+    /// is asked, so it says nothing about the rule.
+    fn compiled_in(flag: &[&str]) -> bool {
+        flag[0] != "--export-vcon" || cfg!(feature = "vcon")
+    }
+
+    /// Validate `-N -I x.pcap --mcp` with `transport` and `flag`.
+    fn validate_beside_mcp(
+        transport: &str,
+        flag: &[&str],
+    ) -> Result<Result<(), String>, TestError> {
+        let mut argv = vec![
+            "sipnab",
+            "-N",
+            "-I",
+            "x.pcap",
+            "--mcp",
+            "--mcp-transport",
+            transport,
+        ];
+        argv.extend_from_slice(flag);
+        let mut cli = Cli::try_parse_from(&argv)?;
+        cli.normalize();
+        Ok(cli.validate().map_err(|e| e.to_string()))
+    }
+
+    /// Over HTTP the JSON-RPC wire is a socket and stdout is free, so no
+    /// flag the stdio refusal covers is refused for that reason: every
+    /// stdout-writing flag is accepted beside `--mcp --mcp-transport http`.
+    #[test]
+    fn every_stdout_flag_is_allowed_beside_mcp_over_http() -> Result<(), TestError> {
+        let mut refused = Vec::new();
+        for flag in STDOUT_FLAGS
+            .iter()
+            .chain(CONDITIONAL_STDOUT_FLAGS)
+            .filter(|flag| compiled_in(flag))
+        {
+            if let Err(e) = validate_beside_mcp("http", flag)? {
+                refused.push(format!("{}: {e}", flag[0]));
+            }
+        }
+        assert!(
+            refused.is_empty(),
+            "refused beside MCP over HTTP: {refused:?}"
+        );
+        Ok(())
+    }
+
+    /// Each flag that writes to stdout only in one spelling is refused beside
+    /// MCP on stdio, by name, in that spelling.
+    #[test]
+    fn every_conditional_stdout_flag_is_refused_beside_mcp_on_stdio() -> Result<(), TestError> {
+        for flag in CONDITIONAL_STDOUT_FLAGS
+            .iter()
+            .filter(|flag| compiled_in(flag))
+        {
+            let name = conditional_flag_name(flag);
+            let e = validate_beside_mcp("stdio", flag)?
+                .err()
+                .ok_or_else(|| format!("{name} beside --mcp on stdio must be refused"))?;
+            assert!(
+                e.contains("JSON-RPC wire") && e.contains(name),
+                "the refusal must name {name}: {e}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Boundary: the same flags in a spelling that writes a file are not
+    /// refused beside MCP on stdio, so the transport, not the flag name,
+    /// decides.
+    #[test]
+    fn a_file_spelling_is_allowed_beside_mcp_on_stdio() -> Result<(), TestError> {
+        for flag in [
+            &["--export-vcon", "all", "--vcon-out", "out.vcon"][..],
+            &["--evidence-out", "evidence.jsonl"][..],
+        ]
+        .into_iter()
+        .filter(|flag| compiled_in(flag))
+        {
+            validate_beside_mcp("stdio", flag)?
+                .map_err(|e| format!("{flag:?} writes a file, not the wire: {e}"))?;
+        }
+        Ok(())
+    }
+
+    /// A stdout one-shot is accepted beside MCP over HTTP, where the stdio
+    /// refusal does not apply.
+    #[test]
+    fn a_stdout_one_shot_is_allowed_beside_mcp_over_http() -> Result<(), TestError> {
+        let writes = OneShot {
+            name: "--test-stdout",
+            active: true,
+            implies_no_tui: true,
+            owns_stdout: true,
+        };
+        with_shot(
+            &["-N", "--mcp", "--mcp-transport", "http", "-I", "x.pcap"],
+            writes,
+        )?
+        .validate()?;
         Ok(())
     }
 

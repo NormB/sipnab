@@ -109,6 +109,127 @@ else
     fail "full build failed or did not produce sipnab_1.2.3_amd64.deb"
 fi
 
+# --- 1b. Maintainer scripts: what each dpkg action does to the service -----
+#
+# Up to this fix the package had a postinst and nothing else, so `apt remove`
+# left the daemon running on a deleted /usr/bin/sipnab and left
+# multi-user.target.wants/sipnab.service pointing at a unit file that was
+# gone, and an upgrade left the old process running on the replaced binary.
+# Each script is taken out of the built package and run in a sandbox whose
+# PATH holds only stubs that record their arguments. The one absolute path the
+# scripts test, /run/systemd/system (present only while systemd is the running
+# init), is rewritten to a sandbox directory so both answers can be driven.
+echo "=== maintainer scripts ==="
+CTRL="$SANDBOX/ctrl"
+rm -rf "$CTRL"
+if [ -f sipnab_1.2.3_amd64.deb ] && dpkg-deb -e sipnab_1.2.3_amd64.deb "$CTRL" 2>/dev/null; then
+    pass "extracted the control archive"
+else
+    fail "cannot extract the control archive of sipnab_1.2.3_amd64.deb"
+fi
+for script in postinst prerm postrm; do
+    if [ -x "$CTRL/$script" ]; then
+        pass "$script is in the package and executable"
+    else
+        fail "$script is missing from the package or not executable"
+    fi
+done
+
+# run_script <script> <systemd running: 1|0> <deb-systemd-invoke present: 1|0> <args...>
+# Prints "rc=<exit status>" and then one line per systemd stub call. STUB_RC
+# sets the exit status of the systemd stubs, to show a failing systemctl does
+# not fail dpkg. getent always succeeds: the sipnab user exists, so postinst's
+# useradd (whose failure should fail the install) is not reached.
+run_script() {
+    local script="$CTRL/$1" running="$2" invoke="$3" d tool rc
+    shift 3
+    d="$(mktemp -d "$SANDBOX/run.XXXXXX")"
+    mkdir -p "$d/bin"
+    for tool in systemctl deb-systemd-invoke deb-systemd-helper useradd; do
+        printf '#!/bin/sh\nprintf "%%s\\n" "%s $*" >> "%s/calls"\nexit %s\n' \
+            "$tool" "$d" "${STUB_RC:-0}" > "$d/bin/$tool"
+        chmod 755 "$d/bin/$tool"
+    done
+    printf '#!/bin/sh\nexit 0\n' > "$d/bin/getent"
+    chmod 755 "$d/bin/getent"
+    [ "$invoke" = "1" ] || rm -f "$d/bin/deb-systemd-invoke"
+    [ "$running" = "1" ] && mkdir -p "$d/run/systemd/system"
+    : > "$d/calls"
+    if [ -f "$script" ]; then
+        sed "s#/run/systemd/system#$d/run/systemd/system#g" "$script" > "$d/script"
+        PATH="$d/bin" /bin/sh "$d/script" "$@" > /dev/null 2>&1
+        rc=$?
+    else
+        rc=127
+    fi
+    echo "rc=$rc"
+    cat "$d/calls"
+}
+
+# The rewrite above is what makes "systemd is not running" reachable. A script
+# that stopped naming the path would make every not-running case pass vacuously.
+for script in postinst prerm postrm; do
+    if grep -q '/run/systemd/system' "$CTRL/$script" 2>/dev/null; then
+        pass "$script tests /run/systemd/system"
+    else
+        fail "$script does not test /run/systemd/system, so the sandbox cannot drive it"
+    fi
+done
+
+expect_calls() { # description, expected (newline-separated), actual
+    if [ "$2" = "$3" ]; then
+        pass "$1"
+    else
+        fail "$1"
+        printf '  expected:\n%s\n  actual:\n%s\n' "$2" "$3" >&2
+    fi
+}
+
+NL='
+'
+expect_calls "prerm remove stops (via deb-systemd-invoke) and disables" \
+    "rc=0${NL}deb-systemd-invoke stop sipnab.service${NL}systemctl --no-reload disable sipnab.service" \
+    "$(run_script prerm 1 1 remove)"
+expect_calls "prerm remove without deb-systemd-invoke stops with systemctl" \
+    "rc=0${NL}systemctl stop sipnab.service${NL}systemctl --no-reload disable sipnab.service" \
+    "$(run_script prerm 1 0 remove)"
+expect_calls "prerm remove with systemd not running disables only" \
+    "rc=0${NL}systemctl --no-reload disable sipnab.service" \
+    "$(run_script prerm 0 1 remove)"
+expect_calls "prerm upgrade neither stops nor disables" \
+    "rc=0" "$(run_script prerm 1 1 upgrade 1.2.4)"
+expect_calls "prerm failed-upgrade does nothing" \
+    "rc=0" "$(run_script prerm 1 1 failed-upgrade 1.2.2)"
+expect_calls "prerm deconfigure does nothing" \
+    "rc=0" "$(run_script prerm 1 1 deconfigure)"
+expect_calls "prerm remove under DPKG_ROOT disables in that root and stops nothing" \
+    "rc=0${NL}systemctl --root=/target --no-reload disable sipnab.service" \
+    "$(DPKG_ROOT=/target run_script prerm 1 1 remove)"
+expect_calls "prerm remove still exits 0 when systemctl fails" \
+    "rc=0${NL}deb-systemd-invoke stop sipnab.service${NL}systemctl --no-reload disable sipnab.service" \
+    "$(STUB_RC=1 run_script prerm 1 1 remove)"
+expect_calls "postrm remove reloads systemd" \
+    "rc=0${NL}systemctl daemon-reload" "$(run_script postrm 1 1 remove)"
+expect_calls "postrm remove with systemd not running does nothing" \
+    "rc=0" "$(run_script postrm 0 1 remove)"
+expect_calls "postrm upgrade does nothing" \
+    "rc=0" "$(run_script postrm 1 1 upgrade 1.2.4)"
+expect_calls "postrm purge exits 0" \
+    "rc=0" "$(run_script postrm 0 1 purge)"
+expect_calls "postinst upgrade restarts a running service on the new binary" \
+    "rc=0${NL}systemctl daemon-reload${NL}deb-systemd-invoke try-restart sipnab.service" \
+    "$(run_script postinst 1 1 configure 1.2.2)"
+expect_calls "postinst upgrade without deb-systemd-invoke uses systemctl" \
+    "rc=0${NL}systemctl daemon-reload${NL}systemctl try-restart sipnab.service" \
+    "$(run_script postinst 1 0 configure 1.2.2)"
+expect_calls "postinst fresh install neither starts nor enables" \
+    "rc=0" "$(run_script postinst 1 1 configure)"
+expect_calls "postinst upgrade with systemd not running does nothing" \
+    "rc=0" "$(run_script postinst 0 1 configure 1.2.2)"
+expect_calls "postinst upgrade still exits 0 when systemctl fails" \
+    "rc=0${NL}systemctl daemon-reload${NL}deb-systemd-invoke try-restart sipnab.service" \
+    "$(STUB_RC=1 run_script postinst 1 1 configure 1.2.2)"
+
 # --- 2. noaudio variant: suffixed name, no plugin, no Recommends ------------
 echo "=== noaudio variant ==="
 if build 1.2.3 amd64 noaudio >/dev/null 2>&1 && [ -f sipnab_1.2.3_amd64-noaudio.deb ]; then

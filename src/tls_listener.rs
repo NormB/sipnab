@@ -158,6 +158,7 @@ impl axum::serve::Listener for TlsListener {
 /// Reads the certificate, key and client CA files.
 pub(crate) fn https_config(
     files: (&std::path::Path, &std::path::Path),
+    settings: (&str, &str),
     client_auth: &crate::config::ClientCertAuth,
     surface: &str,
 ) -> anyhow::Result<Arc<rustls::ServerConfig>> {
@@ -186,6 +187,7 @@ pub(crate) fn https_config(
         files.0,
         files.1,
         surface,
+        settings,
         HTTP1_ALPN.iter().map(|p| p.to_vec()).collect(),
         clients,
     )
@@ -677,6 +679,7 @@ mod tests {
             std::path::Path::new(&pki.cert),
             std::path::Path::new(&pki.key),
             "API TLS",
+            crate::cli::API_TLS_FLAGS,
             HTTP1_ALPN.iter().map(|p| p.to_vec()).collect(),
             clients,
         )?;
@@ -1501,6 +1504,7 @@ mod tests {
                 std::path::Path::new(&pki.cert),
                 std::path::Path::new(&pki.key),
             ),
+            crate::cli::API_TLS_FLAGS,
             &auth,
             "API TLS",
         )

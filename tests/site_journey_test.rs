@@ -6676,7 +6676,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 254 -> 259: ci.yml's new hook-shellcheck job names .githooks/pre-push in
     // its comment and all three hooks in its run line (+4), and the Security
     // audit job's new step runs scripts/check-lockfile-drift.py (+1).
-    const EXPECTED_REFERENCES: usize = 259;
+    // 259 -> 261: the maintainer-script comments in
+    // `packaging/deb/build-deb.sh` and `packaging/rpm/build-rpm.sh` name the
+    // harness that runs them, `packaging/deb/test-build-deb.sh` and
+    // `packaging/rpm/test-build-rpm.sh` (+1 each).
+    const EXPECTED_REFERENCES: usize = 261;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

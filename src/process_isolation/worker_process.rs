@@ -676,6 +676,8 @@ fn init_tracing(level: &str) {
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        // The parent's rule: it shares the parent's stderr.
+        .with_ansi(crate::output::cli_print::stderr_log_color())
         .with_target(true)
         .compact()
         .finish();

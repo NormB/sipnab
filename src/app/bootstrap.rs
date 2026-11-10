@@ -461,8 +461,8 @@ fn uprobe_unavailable(tls: bool, libraries: bool) -> String {
 ///
 /// # Errors
 ///
-/// A malformed `--hep-allow` CIDR or an unresolvable `--hep-auth` secret,
-/// both exit code 2.
+/// A malformed `--hep-allow` CIDR, an unresolvable `--hep-auth` secret, or a
+/// non-loopback bind with neither a secret nor an allowlist, all exit code 2.
 fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanError> {
     let hep_addr = match cli.hep_args.hep_listen.as_ref() {
         Some(a) => a,
@@ -489,6 +489,15 @@ fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanErro
     let hep_auth = cli
         .resolve_hep_auth()
         .map_err(|e| PlanError::arg(format!("HEP auth: {e}")))?;
+    // The listener's bind policy, applied while the run is planned so a
+    // refused address is a refused flag, exit 2, as the REST, MCP and
+    // metrics refusals of a routable bind are. Applied only in the listener
+    // thread, it was reported as a capture that failed to open, exit 1. The
+    // listener applies the same function again for a caller that starts it
+    // without planning.
+    #[cfg(feature = "hep")]
+    crate::capture::hep::enforce_hep_bind_policy(hep_addr, hep_auth.is_some(), allowlist.len())
+        .map_err(PlanError::arg)?;
     Ok(CaptureSource::Hep {
         bind_addr: hep_addr.clone(),
         #[cfg(feature = "hep")]
@@ -4426,19 +4435,170 @@ fn spawn_capture_thread(
 /// A permission error names what to grant capture rights on and how; any
 /// other failure is reported as it came.
 fn capture_open_failure(e: &str, source: &CaptureSource) -> String {
+    capture_open_failure_in(e, source, &CaptureEnvironment::of_this_process())
+}
+
+/// [`capture_open_failure`] for a process in `env`.
+///
+/// The permission hint names the cause `env` shows, because the general
+/// remedies do not work everywhere: under NoNewPrivs (systemd
+/// `NoNewPrivileges=yes`, a container's `no-new-privileges`) the kernel
+/// ignores file capabilities and set-user-ID, so `--setup-caps`, `setcap`
+/// and `sudo` all leave the capture refused; and `CAP_NET_RAW` missing from
+/// the bounding set cannot be gained by anything inside the process. Where
+/// `env` shows neither, the general hint stands, with the container-side
+/// grant in front when the process runs in a container.
+fn capture_open_failure_in(e: &str, source: &CaptureSource, env: &CaptureEnvironment) -> String {
     if !crate::capture::live::is_permission_error(e) {
         return format!("Capture source failed to open: {e}");
     }
+    let target = permission_denied_target(source);
+    let mut causes = Vec::new();
+    if env.net_raw_outside_bounding {
+        causes.push(format!(
+            "CAP_NET_RAW is not in this process's capability bounding set{}, so \
+             nothing inside it (setcap, sudo, root) can gain it. Add it where the \
+             process is started:\n  \
+             # a container:\n  \
+             docker run --cap-add=NET_RAW <image>\n  \
+             # a systemd unit:\n  \
+             CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN",
+            env.container
+                .as_deref()
+                .map(|marker| format!(" (container: {marker})"))
+                .unwrap_or_default(),
+        ));
+    }
+    if env.no_new_privs {
+        causes.push(
+            "This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or \
+             a container started with no-new-privileges), so the kernel ignores file \
+             capabilities and set-user-ID: sipnab --setup-caps, setcap and sudo \
+             cannot take effect. Grant the capabilities to the process instead:\n  \
+             # a systemd unit:\n  \
+             AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN\n  \
+             CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN\n  \
+             # or start it as root"
+                .to_string(),
+        );
+    }
+    if !causes.is_empty() {
+        return format!("Permission denied on '{target}'. {}", causes.join("\n"));
+    }
+    if let Some(marker) = env.container.as_deref() {
+        return format!(
+            "Permission denied on '{target}'. This process runs in a container \
+             ({marker}), where a non-root user gets no capabilities even with \
+             --cap-add. Start it as root with the capabilities granted. sipnab \
+             drops to nobody once the capture is open:\n  \
+             docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>"
+        );
+    }
     format!(
-        "Permission denied on '{}'. Grant capture capabilities once \
+        "Permission denied on '{target}'. Grant capture capabilities once \
          (Linux), then re-run without sudo:\n  \
          sipnab --setup-caps\n  \
          # or run this invocation under sudo:\n  \
          sudo sipnab\n  \
          # equivalent manual step:\n  \
-         sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)",
-        permission_denied_target(source)
+         sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)"
     )
+}
+
+/// What this process's own state says about why it may not capture: the
+/// inputs of [`capture_open_failure_in`]'s hint.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct CaptureEnvironment {
+    /// `NoNewPrivs: 1` in `/proc/self/status`.
+    no_new_privs: bool,
+    /// `CAP_NET_RAW` is missing from the `CapBnd` bounding set; `false` when
+    /// the set holds it or cannot be read.
+    ///
+    /// `CAP_NET_RAW` alone: it is what opening a capture needs. Docker's
+    /// default bounding set has no `CAP_NET_ADMIN`, and root captures on
+    /// `lo` in such a container, so its absence is not a cause.
+    net_raw_outside_bounding: bool,
+    /// The container marker found ([`container_marker`]), if any.
+    container: Option<String>,
+}
+
+/// `CAP_NET_RAW`'s bit in a `/proc/<pid>/status` capability mask
+/// (`linux/capability.h`).
+const CAP_NET_RAW_BIT: u32 = 13;
+
+impl CaptureEnvironment {
+    /// The environment a `/proc/self/status` text and a container marker
+    /// describe.
+    ///
+    /// A missing or unreadable line claims nothing: no `NoNewPrivs` line is
+    /// not NoNewPrivs, and a `CapBnd` that is not hexadecimal names no
+    /// missing capability, so the hint is never built from a guess.
+    ///
+    /// # Arguments
+    ///
+    /// * `status` — the text of `/proc/self/status`, `None` when it could not
+    ///   be read.
+    /// * `container` — the container marker found, if any.
+    fn from_status(status: Option<&str>, container: Option<String>) -> Self {
+        let field = |name: &str| {
+            status?
+                .lines()
+                .find_map(|l| l.strip_prefix(name)?.strip_prefix(':'))
+                .map(str::trim)
+        };
+        let no_new_privs = field("NoNewPrivs") == Some("1");
+        let net_raw_outside_bounding = field("CapBnd")
+            .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+            .is_some_and(|bounding| bounding & (1u64 << CAP_NET_RAW_BIT) == 0);
+        Self {
+            no_new_privs,
+            net_raw_outside_bounding,
+            container,
+        }
+    }
+
+    /// The environment of this process.
+    ///
+    /// # Side effects
+    ///
+    /// Reads `/proc/self/status` as the process started
+    /// ([`crate::privilege::status_before_block`]: sipnab sets `NoNewPrivs`
+    /// on itself before the capture opens), checks for `/.dockerenv` and
+    /// `/run/.containerenv`, and reads the `container` environment variable.
+    fn of_this_process() -> Self {
+        let status = crate::privilege::status_before_block();
+        let marker = container_marker(
+            std::path::Path::new("/.dockerenv").exists(),
+            std::path::Path::new("/run/.containerenv").exists(),
+            std::env::var_os("container").as_deref(),
+        );
+        Self::from_status(status.as_deref(), marker)
+    }
+}
+
+/// The marker that shows this process runs in a container, as the hint
+/// names it, or `None`.
+///
+/// # Arguments
+///
+/// * `dockerenv` — whether `/.dockerenv` exists (Docker).
+/// * `containerenv` — whether `/run/.containerenv` exists (Podman).
+/// * `container_var` — the `container` environment variable, which Podman,
+///   LXC and systemd-nspawn set; an empty value is not a marker.
+fn container_marker(
+    dockerenv: bool,
+    containerenv: bool,
+    container_var: Option<&std::ffi::OsStr>,
+) -> Option<String> {
+    if dockerenv {
+        return Some("/.dockerenv".to_string());
+    }
+    if containerenv {
+        return Some("/run/.containerenv".to_string());
+    }
+    container_var
+        .filter(|v| !v.is_empty())
+        .map(|v| format!("container={}", v.to_string_lossy()))
 }
 
 /// What a permission-denied message names as the thing to grant capture
@@ -4672,6 +4832,10 @@ pub fn init_logging_at(default_level: &str) {
     let subscriber = tracing_subscriber::fmt()
         .with_env_filter(env_filter)
         .with_writer(std::io::stderr)
+        // Color only on a terminal with NO_COLOR unset. The subscriber's own
+        // default reads NO_COLOR alone, so journald, `docker logs` and a pipe
+        // stored the escape sequences.
+        .with_ansi(crate::output::cli_print::stderr_log_color())
         // When a log line cannot be written, the subscriber reports that with
         // `eprintln!` to the same stderr, which panics if stderr is a pipe
         // whose reader has gone (`2>&1 | head`). The line is lost either way.
@@ -12304,6 +12468,62 @@ mod startup_refusal_tests {
         Ok(())
     }
 
+    /// The reported case: a routable `-L` with no secret and no allowlist is
+    /// a refused flag, exit 2, refused while the run is planned, as the
+    /// REST, MCP and metrics refusals of a routable bind are. It used to be
+    /// refused by the listener thread and reported as a capture that failed
+    /// to open, exit 1.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn a_routable_hep_listen_is_refused_at_plan_time_with_exit_2() -> Result<(), TestError> {
+        let cli = cli_from(&["-N", "-L", "0.0.0.0:9060"]);
+        let err = plan(&cli, &Config::default())
+            .err()
+            .ok_or("an unguarded routable HEP bind must refuse the run")?;
+        assert_eq!(err.exit_code, 2, "{}", err.message);
+        assert!(
+            err.message
+                .starts_with("HEP listener refuses to start: --hep-listen 0.0.0.0:9060"),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// The same refusal when the listener joins a live interface in a
+    /// composite (`-d lo -L ...`): one plan function builds both.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn a_routable_hep_listen_beside_a_device_is_refused_with_exit_2() -> Result<(), TestError> {
+        let cli = cli_from(&["-N", "-d", "lo", "-L", "198.51.100.7:9060"]);
+        let err = plan(&cli, &Config::default())
+            .err()
+            .ok_or("an unguarded routable HEP bind must refuse the composite")?;
+        assert_eq!(err.exit_code, 2, "{}", err.message);
+        assert!(
+            err.message.contains("--hep-listen 198.51.100.7:9060"),
+            "{}",
+            err.message
+        );
+        Ok(())
+    }
+
+    /// A loopback bind, and a routable one constrained by an allowlist or a
+    /// shared secret, pass the plan-time check.
+    #[test]
+    fn a_guarded_or_loopback_hep_listen_passes_the_plan_check() -> Result<(), TestError> {
+        for argv in [
+            &["-N", "-L", "127.0.0.1:9060"][..],
+            &["-N", "-L", "[::1]:9060"][..],
+            &["-N", "-L", "0.0.0.0:9060", "--hep-allow", "192.0.2.0/24"][..],
+            &["-N", "-L", "0.0.0.0:9060", "--hep-auth", "example-secret"][..],
+        ] {
+            plan_hep_source(&cli_from(argv), &Config::default())
+                .map_err(|e| format!("{argv:?} must pass: {}", e.message))?;
+        }
+        Ok(())
+    }
+
     /// `--uprobe-list` answers "what would this command probe", and
     /// `--uprobe-library` replaces discovery in the capture, so the listing
     /// lists the named libraries and not what discovery found. On 0.5.224 it
@@ -13370,6 +13590,187 @@ mod decision_tests {
             Ok(None)
         ));
         Ok(())
+    }
+
+    /// A `/proc/self/status` with the given `NoNewPrivs` and `CapBnd` lines.
+    fn status(no_new_privs: &str, cap_bnd: &str) -> String {
+        format!(
+            "Name:\tsipnab\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\n\
+             CapEff:\t0000000000000000\nCapBnd:\t{cap_bnd}\nCapAmb:\t0000000000000000\n\
+             NoNewPrivs:\t{no_new_privs}\nSeccomp:\t0\n"
+        )
+    }
+
+    /// The bounding set of an unconfined process: every capability.
+    const FULL_BOUNDING: &str = "000001ffffffffff";
+
+    /// Docker's default bounding set with `NET_RAW` (bit 13) dropped, as
+    /// `--cap-drop=NET_RAW` leaves it. Docker never grants `NET_ADMIN`
+    /// (bit 12) by default, so neither capture capability is in it.
+    const NO_NET_RAW: &str = "00000000a80405fb";
+
+    fn eth0() -> CaptureSource {
+        CaptureSource::Live {
+            device: "eth0".into(),
+        }
+    }
+
+    /// The reported case: under systemd `NoNewPrivileges=yes` the hint names
+    /// NoNewPrivs and the unit's `AmbientCapabilities=`, and no longer
+    /// suggests `--setup-caps`, `sudo` or `setcap`, which cannot take effect.
+    #[test]
+    fn a_permission_hint_under_no_new_privs_names_it() {
+        let env = CaptureEnvironment::from_status(Some(&status("1", FULL_BOUNDING)), None);
+        assert!(env.no_new_privs, "NoNewPrivs: 1 is read as set: {env:?}");
+        let msg = capture_open_failure_in("Operation not permitted", &eth0(), &env);
+        assert!(msg.starts_with("Permission denied on 'eth0'"), "{msg}");
+        assert!(msg.contains("NoNewPrivs"), "{msg}");
+        assert!(
+            msg.contains("AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN"),
+            "{msg}"
+        );
+        for absent in ["\n  sipnab --setup-caps", "sudo sipnab", "sudo setcap"] {
+            assert!(!msg.contains(absent), "{absent} cannot help here: {msg}");
+        }
+    }
+
+    /// `NoNewPrivs: 0` is not the cause: the hint stays the one that works.
+    #[test]
+    fn a_permission_hint_with_no_new_privs_clear_keeps_setup_caps() {
+        let env = CaptureEnvironment::from_status(Some(&status("0", FULL_BOUNDING)), None);
+        assert_eq!(
+            env,
+            CaptureEnvironment::default(),
+            "NoNewPrivs: 0 and a full bounding set name no cause"
+        );
+        let msg = capture_open_failure_in("Operation not permitted", &eth0(), &env);
+        assert!(msg.contains("sipnab --setup-caps"), "{msg}");
+        assert!(
+            msg.contains("sudo setcap cap_net_raw,cap_net_admin+ep"),
+            "{msg}"
+        );
+        assert!(!msg.contains("NoNewPrivs"), "{msg}");
+    }
+
+    /// A bounding set without `CAP_NET_RAW` names it and says where to add
+    /// it; nothing inside the process can gain it, so no `setcap` or `sudo`.
+    #[test]
+    fn a_permission_hint_names_a_bounding_set_without_net_raw() {
+        let env = CaptureEnvironment::from_status(Some(&status("0", NO_NET_RAW)), None);
+        assert!(
+            env.net_raw_outside_bounding,
+            "bit 13 is missing from CapBnd: {env:?}"
+        );
+        let msg = capture_open_failure_in("Operation not permitted", &eth0(), &env);
+        assert!(
+            msg.contains("CAP_NET_RAW is not in this process's capability bounding set"),
+            "{msg}"
+        );
+        assert!(msg.contains("--cap-add=NET_RAW"), "{msg}");
+        assert!(msg.contains("CapabilityBoundingSet="), "{msg}");
+        for absent in ["\n  sipnab --setup-caps", "sudo sipnab", "sudo setcap"] {
+            assert!(!msg.contains(absent), "{absent} cannot help here: {msg}");
+        }
+    }
+
+    /// Docker's default bounding set: `CAP_NET_RAW` in, `CAP_NET_ADMIN` out.
+    const DOCKER_DEFAULT: &str = "00000000a80425fb";
+
+    /// Boundary, measured: in a default Docker container root captures on
+    /// `lo` without `CAP_NET_ADMIN`, so a non-root user's refusal there is
+    /// the container hint (`--user root`), not a bounding-set one.
+    #[test]
+    fn a_bounding_set_without_net_admin_alone_is_no_cause() {
+        let env = CaptureEnvironment::from_status(
+            Some(&status("0", DOCKER_DEFAULT)),
+            Some("/.dockerenv".into()),
+        );
+        assert!(!env.net_raw_outside_bounding, "{env:?}");
+        let msg = capture_open_failure_in("Operation not permitted", &eth0(), &env);
+        assert!(!msg.contains("bounding set"), "{msg}");
+        assert!(msg.contains("docker run --user root"), "{msg}");
+    }
+
+    /// Both causes at once are both named, the bounding set first.
+    #[test]
+    fn a_permission_hint_names_both_causes() {
+        let env = CaptureEnvironment::from_status(
+            Some(&status("1", NO_NET_RAW)),
+            Some("/.dockerenv".into()),
+        );
+        let msg = capture_open_failure_in("Operation not permitted", &eth0(), &env);
+        let bounding = msg.find("bounding set").unwrap_or(usize::MAX);
+        let nnp = msg.find("NoNewPrivs").unwrap_or(usize::MAX);
+        assert!(bounding < nnp && nnp != usize::MAX, "{msg}");
+        assert!(msg.contains("/.dockerenv"), "names the container: {msg}");
+    }
+
+    /// In a container whose bounding set holds `CAP_NET_RAW`, the hint
+    /// says so and names the container-side grant: root, with the capabilities.
+    #[test]
+    fn a_permission_hint_in_a_container_names_the_container() {
+        let env = CaptureEnvironment::from_status(
+            Some(&status("0", FULL_BOUNDING)),
+            Some("container=podman".into()),
+        );
+        let msg = capture_open_failure_in("Operation not permitted", &eth0(), &env);
+        assert!(msg.contains("container (container=podman)"), "{msg}");
+        assert!(
+            msg.contains("--cap-add=NET_RAW --cap-add=NET_ADMIN"),
+            "{msg}"
+        );
+        assert!(!msg.contains("sudo sipnab"), "{msg}");
+    }
+
+    /// An unreadable status (no `/proc`) or a malformed `CapBnd` claims no
+    /// cause: the hint is the general one rather than a guess.
+    #[test]
+    fn an_unreadable_status_claims_no_cause() {
+        assert_eq!(
+            CaptureEnvironment::from_status(None, None),
+            CaptureEnvironment::default(),
+            "no status claims no cause"
+        );
+        let garbled = CaptureEnvironment::from_status(Some(&status("x", "zz")), None);
+        assert_eq!(
+            garbled,
+            CaptureEnvironment::default(),
+            "a status that does not parse claims no cause"
+        );
+        let msg = capture_open_failure_in("Operation not permitted", &eth0(), &garbled);
+        assert!(msg.contains("sipnab --setup-caps"), "{msg}");
+    }
+
+    /// Each container marker is recognized; an empty `container` variable
+    /// and no marker at all are not a container.
+    #[test]
+    fn container_markers_are_recognized() {
+        use std::ffi::OsStr;
+        assert_eq!(
+            container_marker(true, false, None).as_deref(),
+            Some("/.dockerenv"),
+            "/.dockerenv marks Docker"
+        );
+        assert_eq!(
+            container_marker(false, true, None).as_deref(),
+            Some("/run/.containerenv"),
+            "/run/.containerenv marks Podman"
+        );
+        assert_eq!(
+            container_marker(false, false, Some(OsStr::new("lxc"))).as_deref(),
+            Some("container=lxc"),
+            "the container variable is named with its value"
+        );
+        assert_eq!(
+            container_marker(false, false, Some(OsStr::new(""))),
+            None,
+            "an empty container variable is no marker"
+        );
+        assert_eq!(
+            container_marker(false, false, None),
+            None,
+            "no marker, no container"
+        );
     }
 
     /// A permission error names the interfaces to grant rights on, never a
