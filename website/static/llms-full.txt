@@ -7648,7 +7648,9 @@ On the sipnab host:
 
 - A binary with the `api` feature
   ([Check your binary has the API](#check-your-binary-has-the-api)).
-- The REST API started with `--api`. The console has no listener of its own.
+- The REST API started with `--api`. The console has no listener of its own,
+  so sipnab refuses `--api-console` on a run without `--api`
+  ([The console without the API](#the-console-without-the-api)).
 - A credential, as for any API client: the static key or a signed token
   ([Authentication](#authentication)). An API on a loopback address without a
   key takes an empty token field.
@@ -7707,6 +7709,44 @@ console = true
 
 `--api-console=false` turns it off for one run over a config file that turns
 it on.
+
+### The console without the API
+
+The flag and the key differ on a run that has no `--api`.
+
+**sipnab refuses the flag.** `--api-console` asks this run for the console, and a
+run with no `--api` cannot serve it. sipnab 0.5.243 started such a run, served
+no console, and said nothing.
+
+```sh
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --api-console
+```
+
+```text
+--api-console needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or remove --api-console
+```
+
+- The exit code is 2.
+- sipnab refuses before it reads the capture or opens a device, so the run
+  prints nothing else.
+- `--api-console=false` asks for nothing, so sipnab does not refuse it.
+
+**sipnab does not use the key.** `console = true` in the `[api]` section means: serve
+the console whenever the API is on. `--api` has no config key, so one config
+file serves runs with the API and runs without it. A run with no `--api`
+reads the file, does not use the key, and says nothing about it. The other
+`[api]` keys work the same way.
+
+```sh
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config sipnab.toml
+```
+
+That run prints the capture's messages and serves nothing. Add
+`--api 127.0.0.1:8080` to the same command, and the console is at
+`http://127.0.0.1:8080/console/`.
+
+A build without the `api` feature refuses `--api-console` as it refuses
+`--api`, and ignores `[api] console` as it ignores the other `[api]` keys.
 
 ### What the console does with the token
 
@@ -7770,6 +7810,8 @@ Without `--api-console` the first line is `404`.
 | What you see | Cause and fix |
 |---|---|
 | `404` at `/console/` | The console is off. Start sipnab with `--api-console`, or set `[api] console = true`. |
+| sipnab exits with `--api-console needs the REST API` | The command line has `--api-console` and no `--api`. Add `--api ADDR`, or remove `--api-console` ([The console without the API](#the-console-without-the-api)). |
+| The config file has `[api] console = true` and nothing serves the console | The run has no `--api`, so it does not use the key. Add `--api ADDR`. |
 | The browser cannot connect | Nothing listens there, or the address is loopback on another machine. Check `--api`, then forward the port or use HTTPS. |
 | `/console` shows a redirect to `/console/` | Expected. The page loads its files by relative name, so it lives under `/console/`. |
 | "The API refused the token (401)" | The token is wrong, expired or revoked, or its scope does not cover reading. The page clears it. Paste a valid one. |
@@ -13281,7 +13323,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.242 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.243 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13304,7 +13346,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.242` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.243` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13478,7 +13520,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.242) | Plugin | `Recommends` |
+| Artifact (0.5.243) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13518,11 +13560,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.242 for the
+it first, in the same shell, to the release you want, e.g. 0.5.243 for the
 latest:
 
 ```bash
-VERSION=0.5.242
+VERSION=0.5.243
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13649,13 +13691,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.242, as in
+you want, e.g. 0.5.243, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.242
+   VERSION=0.5.243
    ```
 
 - Download the package:
@@ -13766,25 +13808,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.242-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.243-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.242-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.243-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.242-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.243-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.242-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.243-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14155,7 +14197,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
-| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core`, `webpki` |
+| `api` | REST API + Prometheus metrics endpoint, over HTTP or HTTPS. Runs on a background thread in the sipnab process, sharing its address space — not a separate OS process, so treat the bind address and API key accordingly. | `native`, `axum`, `tokio`, `base64`, `hmac`, `sha2`, `utoipa`, `rustls`, `tokio-rustls`, `ring`, `hyper`, `hyper-util`, `futures-core`, `webpki`, `zeroize` |
 | `mcp` | Model Context Protocol server, stdio transport. Lets an AI agent, such as Claude Code or Claude Desktop, drive sipnab. | `native`, `tokio`, `rmcp`, `base64`, `hmac`, `sha2` |
 | `mcp-http` | MCP server over HTTP (Streamable-HTTP). Adds the `--mcp-transport http` option. | `mcp`, `api`, `rmcp/transport-streamable-http-server` |
 | `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
@@ -14269,14 +14311,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.242
+docker pull ghcr.io/normb/sipnab:0.5.243
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.242` | That release |
+| `0.5.243` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `sha-<commit>` | The image built from that commit |
 | `latest` | The newest commit on `main`, which can be ahead of every release |
@@ -14292,7 +14334,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.242 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.243 -N -I /data/capture.pcap
 ```
 
 **Live capture needs `--user root`.** The image runs as the unprivileged user
@@ -14301,7 +14343,7 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 to `nobody`:
 
 ```bash
-docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.242 -N -d eth0
+docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.243 -N -d eth0
 ```
 
 ```text
@@ -14319,7 +14361,7 @@ Permission denied on 'lo'. Grant capture capabilities once (Linux), then re-run 
 The outputs above came from an arm64 image built from the
 [`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
 stage with the 0.5.232 `.deb` binary, capturing `lo`, because the published
-image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.242`
+image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.243`
 shows the same `"User": "sipnab"` for the published image.
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14332,11 +14374,11 @@ shows the same `"User": "sipnab"` for the published image.
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.242 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.243 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.242` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.242`. For `latest` it is
+It names the workflow and the ref that built the image. For `0.5.243` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.243`. For `latest` it is
 `.github/workflows/docker.yml@refs/heads/main`.
 
 ### Build the Docker image locally
@@ -14440,7 +14482,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.243 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.244 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -14623,7 +14665,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.242
+docker pull ghcr.io/normb/sipnab:0.5.243
 ```
 
 Pulling `latest` gives the newest `main` commit, not the newest release. See
@@ -22394,7 +22436,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-tls-client-auth` | `<off\|optional\|required>` | `required` with `--api-tls-client-ca`, else `off` | 0.5.237 | When the REST API asks for a client certificate. `optional` verifies one when the client sends it and still serves a client that sends none; `required` refuses that handshake. `optional` or `required` without `--api-tls-client-ca` stops sipnab at startup. `off` wins over a client CA, so this flag can turn off what `[api] tls_client_ca` asks for; sipnab then logs at warn that it does not read the CA. Feature: `api`. How-to: [Require client certificates](mtls.md). Config: `[api] tls_client_auth` |
 | `--api-max-conn` | `<N>` | `100` | 0.3.0 | Maximum API requests handled at once; sipnab answers 503 to a request past it. `0` means no limit. Feature: `api` |
 | `--api-allowed-host` | `<HOST>` | -- | 0.5.198 | Additional `Host` header values the REST API accepts (repeatable), against DNS rebinding: a web page that points its own name at `127.0.0.1` and reads a loopback API with no key from your browser. Accepted by default: `localhost`, `127.0.0.1`, `::1` and the address `--api` binds, on any port, and any IP address when `--api` binds `0.0.0.0` or `::`. Add the name clients use, such as a reverse proxy's public name; `name:port` accepts that port only. Any other `Host` gets `403`, and a request with no `Host` gets `400`. `*` disables the check (not recommended). See [Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers). Config: `[api] allowed_hosts`, which the flag replaces Feature: `api` |
-| `--api-console` | `[=BOOL]` | off | 0.5.243 | Serve the web console at `/console/` on the REST API listener. Needs `--api`. The console is static files compiled into the binary: a read-only page that calls `/v1/` with the bearer token you paste into it. It adds no listener and no access of its own, and the `Host` allowlist, TLS and the rate limit apply to it as to the API. `--api-console=false` turns it off over a config file that turns it on. Config: `[api] console`. Feature: `api`. How-to: [Web console](rest-api.md#web-console) |
+| `--api-console` | `[=BOOL]` | off | 0.5.243 | Serve the web console at `/console/` on the REST API listener. Needs `--api`: sipnab refuses `--api-console` on a run with no `--api`, before it reads anything, with exit code 2. The console is static files compiled into the binary: a read-only page that calls `/v1/` with the bearer token you paste into it. It adds no listener and no access of its own, and the `Host` allowlist, TLS and the rate limit apply to it as to the API. `--api-console=false` turns it off over a config file that turns it on. Config: `[api] console`. Feature: `api`. How-to: [Web console](rest-api.md#web-console) |
 | `--api-signing-key` | `<KEY>` | -- | 0.4.3 | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY`; `--help` names the variable and never shows its value. See [`auth.md`](./auth.md). Feature: `api` |
 | `--api-signing-key-file` | `<FILE>` | -- | 0.4.3 | Read an API signing key from a file (contents trimmed); it becomes the minting key. Feature: `api` |
 | `--api-revoked-file` | `<FILE>` | -- | 0.4.3 | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
@@ -23130,10 +23172,15 @@ A capture run with `--fleet-report-url` is a fleet member: it reports a heartbea
 
 It exits `0` when every instance answered and there is no finding, `1` when an instance did not answer or there is a finding, and `2` when it cannot use the hosts file.
 
+`sipnab fleet keygen --out <FILE>` creates the key a fleet center encrypts its store under: a new file with mode 0600 that holds 32 random bytes in base64. It prints the key's id, which is not secret, and exits `2` without writing when the file exists.
+
 `sipnab fleet serve` runs a fleet center: fleet members push heartbeats to its `POST /v1/fleet/ingest`, and it serves every member, with the ones gone silent, on `GET /v1/fleet/members`. It opens no capture, and runs until SIGINT or SIGTERM. [Run a fleet center](fleet.md#run-a-fleet-center) is the how-to.
 
 - `--listen <ADDR>`: the address to serve on, `HOST:PORT`. An address other than loopback needs `--tls-cert` and `--tls-key`: the center refuses plain HTTP except on loopback.
-- `--store <FILE>`: the store file, the newest heartbeat of each member. The center creates it with mode 0600, and refuses a store other users can read.
+- `--store <FILE>`: the store file, the newest heartbeat of each member, encrypted. The center creates it with mode 0600, and refuses a store other users can read.
+- `--store-key-file <FILE>`: the key the center encrypts the store under, readable by this user only. Required: the center stores nothing in clear, and does not start without it. `sipnab fleet keygen --out <FILE>` creates one. Back the file up: without it nobody can read the store. How-to: [Encrypt the center's store](fleet.md#encrypt-the-centers-store).
+- `--store-old-key-file <FILE>`: an earlier `--store-key-file` the store may still be under (repeatable). The center rewrites the store under the current key when it starts, so it needs the old key for one start.
+- `--store-encryption <sealed|modular|both>`: how the center encrypts the store. Default `sealed`: the center seals the file as one object with AES-256-GCM. No value turns encryption off. This build runs under `sealed` only, and refuses `modular` and `both` at start.
 - `--signing-key-file <FILE>`: the key that signs member and reader tokens, readable by this user only. Mint tokens with it: `--token-scope fleet-report --token-id <member>` for a member, `--token-scope inventory` for a reader.
 - `--revoked-file <FILE>`: token ids no longer accepted, one per line. Revoke one member by its id; sipnab re-reads the file when it changes.
 - `--tls-cert <FILE>` and `--tls-key <FILE>`: serve HTTPS with this certificate chain and key. The key must be readable by this user only.
@@ -26246,6 +26293,26 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 **Exit code:** 2.
 
+### `--api-console requires the 'api' feature (not compiled in)`
+
+`--api-console` serves the web console on the REST API listener. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture. `--api-console=false` is not refused.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api-console`.
+
+**Exit code:** 2.
+
+### `--api-console needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or remove --api-console`
+
+The command line has `--api-console` and no `--api`. The REST API listener serves the web console, and the console has no listener of its own. sipnab refuses the run before it reads a capture or opens a device.
+
+`console = true` in the `[api]` section of the config file does not cause this message. With no `--api`, sipnab does not use that key.
+
+**What to do:** To use the console, add `--api` with the address to listen on, such as `--api 127.0.0.1:8080`. To run without it, remove `--api-console`.
+
+[The console without the API](rest-api.md#the-console-without-the-api) has an example.
+
+**Exit code:** 2.
+
 ### `--api-key requires the 'api' feature (not compiled in)`
 
 `--api-key` sets the key that the REST API server accepts. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.
@@ -28670,10 +28737,12 @@ or directory (os error 2)` for a directory that does not exist.
 
 **Exit code:** 2.
 
-### `--store '{shown}': line {} is not a member record: {e}`
+### `line {} is not a member record: {e}`
 
-A line of the store file, before its last line, is not a record the center
-wrote. Someone edited the file, or `--store` names another file.
+Printed after `--store '<file>':`. The store is one that a release from
+0.5.237 to 0.5.243 wrote in clear, and a line of it, before its last line, is
+not a record that center wrote. Someone edited the file, or `--store` names
+another file.
 
 **What to do:** Check that `--store` names the center's store. To start again
 with no members, move the file away. Members reappear with their next
@@ -28681,13 +28750,93 @@ heartbeat.
 
 **Exit code:** 2.
 
-### `--store '{shown}': line {} is incomplete, from a write the center did not finish; it is dropped`
+### `the store's line {} is incomplete, from a write the center did not finish; it is dropped`
 
-A warning. The last line of the store is incomplete, because the center
-stopped while writing it. The center never acknowledged that heartbeat, so the
-member sends it again.
+A warning. The store is one that a release from 0.5.237 to 0.5.243 wrote in
+clear, and its last line is incomplete, because that center stopped while
+writing it. The center never acknowledged that heartbeat, so the member sends
+it again.
 
 **What to do:** Nothing.
+
+### `--store '{shown}' held {} member(s) in clear, written by a release before encryption at rest; it is sealed now`
+
+A warning, once, on the first start after an upgrade. A release from 0.5.237
+to 0.5.243 wrote the store in clear. The center read it, wrote it encrypted
+under `--store-key-file` and replaced the file.
+
+**What to do:** Nothing for the center. The old bytes may remain in the free
+space of the disk until the file system reuses it. Treat a copy or a snapshot
+of the old file as holding every member's inventory in clear.
+
+### `--store '{shown}': the last record is incomplete, from a write the center did not finish; it is dropped`
+
+A warning. The center stopped while it appended a heartbeat to the store. The
+center never acknowledged that heartbeat, so the member sends it again.
+
+**What to do:** Nothing.
+
+### `--store '{shown}': sealed layer: the file {e}; give that key's file with --store-old-key-file`
+
+The center encrypted the store under another key than `--store-key-file`
+holds. `{e}`
+is `was written under key id <id>, which is not loaded`, and `<id>` is the id
+`sipnab fleet keygen` printed for the key the store needs. The center leaves
+the store as it found it.
+
+**What to do:** Start the center with the file of that key as
+`--store-key-file`. To move the store to a new key, give the new key as
+`--store-key-file` and the old one as `--store-old-key-file` for one start.
+[Encrypt the center's store](fleet.md#encrypt-the-centers-store) has the steps.
+
+**Exit code:** 2.
+
+### `--store '{shown}': sealed layer: the file {e}`
+
+The center could not open its encrypted store, and leaves it as it found it.
+`{e}` is the reason:
+
+- `has a header that did not authenticate (the file was modified, or the key
+  is wrong)` or `has a record <n> that did not authenticate (the file was
+  modified, or its records were moved)`: a byte of the file changed after the
+  center wrote it.
+- `was truncated: it ends before its records do`: the file is shorter than
+  the center wrote it.
+- `is a sealed intake file, not a registry file`: another of the center's files
+  is in the store's place.
+- `has sealed format <n>, and this build reads format 1`: a later sipnab wrote
+  the store.
+- `record <n> is not a member record: <reason>`: the record is intact and is not one
+  this build reads.
+
+**What to do:** Check that `--store` names this center's store. Restore the
+file from a copy, or move it away and start with an empty store: members
+reappear with their next heartbeat, and the list loses only a member that is
+silent now. For a store from a later sipnab, run that sipnab.
+
+**Exit code:** 2.
+
+### `is not a key: it holds {} bytes, and a key is {KEY_BYTES}`
+
+Printed after `--store-key-file '<file>'` or `--store-old-key-file '<file>'`.
+The file decodes to another length than a key's 32 bytes: it is empty, cut
+short, or is not a file `sipnab fleet keygen` wrote. The message gives the
+length and never the contents.
+
+**What to do:** Use the file `sipnab fleet keygen --out <FILE>` wrote,
+unchanged, or restore it from your backup. A new key cannot read a store
+written under the lost one.
+
+**Exit code:** 2.
+
+### `a record of {} bytes is over the {MAX_RECORD_BYTES} a sealed file holds`
+
+Printed after `fleet center: the store could not be written:`. One member's
+record is larger than 8 MiB, the most the center seals as one record. The
+center's request limit is 4 MiB, so a record this large comes from no member
+sipnab ships.
+
+**What to do:** Report it as a defect, with the member's version.
 
 ### `fleet center: the store could not be written: {e}`
 
@@ -34955,7 +35104,7 @@ bind).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `allowed_hosts` | list of strings | `[]` | Extra `Host` values to serve, such as a reverse proxy's public name. `name:port` accepts that port only. `"*"` turns the check off. `--api-allowed-host` replaces the list |
-| `console` | boolean | `false` | Serve the web console at `/console/` on the REST API listener: a read-only page that calls `/v1/` with the bearer token you paste into it. Used only when `--api` starts the API. See [Web console](rest-api.md#web-console). `--api-console` overrides it |
+| `console` | boolean | `false` | Serve the web console at `/console/` on the REST API listener: a read-only page that calls `/v1/` with the bearer token you paste into it. `true` means: serve the console whenever `--api` starts the API. A run with no `--api` does not use the key and says nothing about it, as with the other `[api]` keys, so one file can serve runs with and without the API. See [Web console](rest-api.md#web-console). `--api-console` overrides it |
 | `tls_cert` | string | -- | PEM certificate chain the REST API serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only when `--api` starts the API. See [API TLS](rest-api.md#api-tls). An empty string fails validation and names the key. `--api-tls-cert` overrides it |
 | `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--api-tls-key` overrides it |
 | `tls_client_ca` | string | -- | CA certificates (PEM) a client certificate must chain to: the REST API then asks each client for a certificate (mutual TLS). The bearer token is still checked. Needs `tls_cert` and `tls_key`. sipnab refuses a file any user can write. See [Require client certificates](mtls.md). An empty string fails validation and names the key. `--api-tls-client-ca` overrides it |
@@ -36068,7 +36217,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.243 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.244 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -36770,7 +36919,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.243"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.244"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -37455,7 +37604,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.243",
+  "version": "0.5.244",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -38397,7 +38546,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.243"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.244"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -39992,10 +40141,15 @@ used.
 - **A signing key for the center**, in a file only the center's user can read.
   The center mints and verifies member tokens with it. It is not any member's
   REST API key.
+- **A store key for the center**, in a file only the center's user can read.
+  The center encrypts its store under it, and does not start without it.
+  Step 1 creates it. [Encrypt the center's store](#encrypt-the-centers-store)
+  covers backup and rotation.
 - **Network.** Each member reaches the center's port over TCP, 8444 in this
   section. The center needs no route to the members.
 - **Disk.** The store file holds the newest heartbeat of each member: 1,884
-  and 1,883 bytes for the two members of this run.
+  and 1,883 bytes of JSON for the two members of this run. Encryption adds 21
+  bytes to each record and 120 bytes to the file.
 - **Bounds.** The center reads at most 4 MiB of one request
   (`MAX_INGEST_BYTES`) and answers `413` past it. Its rate limit counts at most
   4096 addresses in one second (`MAX_TRACKED_PEERS`); a further address in
@@ -40013,10 +40167,22 @@ used.
   head -c 32 /dev/urandom | base64 > /etc/sipnab/center.signing
   ```
 
+- **[center]** Create the store key, and copy it to your backup. The
+  command writes the file with mode `0600` and prints the key's id:
+
+  ```bash
+  sipnab fleet keygen --out /etc/sipnab/center.storekey
+  ```
+
+  ```text
+  store.key: key id ac7b02adecf75d31
+  ```
+
 - **[center]** Start it:
 
   ```bash
   sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+    --store-key-file /etc/sipnab/center.storekey \
     --signing-key-file /etc/sipnab/center.signing \
     --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key
   ```
@@ -40028,7 +40194,14 @@ used.
   INFO sipnab::output::api: REST API listening on 127.0.0.1:8444
   ```
 
-  It creates the store with mode `0600`. It removes a member it has not heard
+  A center after 0.5.243 also logs the key it encrypts the store under,
+  before the store line. This line is from a run on 2026-11-10:
+
+  ```text
+  INFO sipnab::app::fleet_center: fleet center store encryption sealed, key id ac7b02adecf75d31, 0 old key(s)
+  ```
+
+  It creates the store with mode `0600`, encrypted. It removes a member it has not heard
   from for `--retention-hours` (default 72), at start and every minute.
   `--silent-after-missed` (default 3) sets how many of a member's heartbeat
   intervals may pass before it is silent. Members reaching the center by a name
@@ -40271,6 +40444,194 @@ restarts.
 
   `edge-a`'s next heartbeat gets `401`, and `edge-b`'s still gets `200`. The
   members list keeps `edge-a`'s last heartbeat until retention removes it.
+
+### Encrypt the center's store
+
+**Purpose.** The center's store holds every member's inventory: node names,
+versions, configuration digests, addresses. The center never writes it in
+clear. It seals the store file with AES-256-GCM under a key that you keep in
+a file, and it refuses to start without that key. A center cannot run with
+encryption off.
+
+The outputs below come from a run on 2026-11-10 on one host, with a
+development build after 0.5.243 and the files in one working directory.
+
+**Before you start.**
+
+- **A sipnab after 0.5.243 on the center.** Members need no change, and no
+  other system does: OpenSIPS, Kamailio, Homer and any HEP collector keep
+  their configuration.
+- **A place to back up one small file**, apart from the center's disk. Whoever
+  holds the key file can read the store. Without the key file nobody can.
+- **A center from 0.5.237 to 0.5.243** wrote its store in clear and took no
+  key. After the upgrade it does not start until you give it
+  `--store-key-file`. [Upgrade a center that stored in clear](#upgrade-a-center-that-stored-in-clear)
+  has the steps and the way back.
+
+**Steps.**
+
+1. **[center]** Create the key. The file gets mode `0600`. The id it prints
+   is not secret: the center logs it, and a refusal names it.
+
+   ```bash
+   sipnab fleet keygen --out /etc/sipnab/center.storekey
+   ```
+
+   ```text
+   store.key: key id ac7b02adecf75d31
+   ```
+
+2. **[center]** Copy `/etc/sipnab/center.storekey` to your backup, and note
+   the key id beside it.
+
+3. **[center]** Start the center with `--store-key-file`, as
+   [Step 1](#step-1-start-the-center) shows, or add the flag to the service
+   unit of a center you upgraded.
+
+4. **To replace the key**, create a second key file, and start the center
+   once with the new file as `--store-key-file` and the old one as
+   `--store-old-key-file`:
+
+   ```bash
+   # Run all of these, in order.
+   sipnab fleet keygen --out /etc/sipnab/center.storekey.2
+   sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey.2 \
+     --store-old-key-file /etc/sipnab/center.storekey \
+     --signing-key-file /etc/sipnab/center.signing \
+     --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key
+   ```
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center store encryption sealed, key id dd70bddbd340fae5, 1 old key(s)
+   ```
+
+   The center rewrites the store under the new key as it starts. From the
+   next start on, leave `--store-old-key-file` out, back up the new key file
+   and destroy the old one.
+
+#### Upgrade a center that stored in clear
+
+Releases 0.5.237 to 0.5.243 wrote the store in clear. To upgrade such a
+center:
+
+1. **[center]** Stop the center. To keep a way back that loses no member,
+   copy the store aside, and treat the copy as every member's inventory in
+   clear:
+
+   ```bash
+   cp -p /var/lib/sipnab/center.store /var/lib/sipnab/center.store.clear
+   ```
+
+2. **[center]** Install the new sipnab, create the key as in step 1 above and
+   back it up.
+3. **[center]** Add `--store-key-file /etc/sipnab/center.storekey` to the
+   center's command line or service unit, and start it. On this first start
+   the center reads the clear store, writes a sealed copy beside it, waits
+   until that copy is on disk, reads it back, and only then puts it in the
+   store's place. A stop or a failure before that leaves the clear store as
+   it was. The center logs one warning that the store `held <n> member(s) in
+   clear` and `is sealed now`. The old bytes may stay in the disk's free
+   space until the file system reuses it.
+4. **[center]** When the members list is right, delete the copy from step 1.
+
+**To go back** to 0.5.243 or earlier: stop the center, and put the copy from
+step 1 back as the store, or move the sealed store away to start with an
+empty one. Do this before the older release starts: it cannot read a sealed
+store, and it either stops at start or starts with no members and writes
+over the file. Then install the older sipnab and start it without
+`--store-key-file`. With an empty store, the center lists each member again
+at its next heartbeat, and does not list a member that is silent then.
+
+**Verify.**
+
+- The center's first log line names the key id that `keygen` printed.
+- The store is a sealed file. Its first four bytes are `SNFS`, and no
+  member's name is in it:
+
+  ```bash
+  # Run all of these, in order.
+  head -c 4 /var/lib/sipnab/center.store; echo
+  grep -c edge-a /var/lib/sipnab/center.store
+  ```
+
+  ```text
+  SNFS
+  0
+  ```
+
+- `GET /v1/fleet/members` lists the same members after a restart.
+
+**What it covers and what it does not.** The center seals the store file and
+the file it stages a rewrite in, and writes no other file. It authenticates
+each record with the record's position in the file, so a changed byte, a
+moved record or a store cut short inside the records of its last rewrite
+stops the center at start. Two things it cannot detect: someone deleting the
+whole store, and someone removing whole records from the end of the file
+that the center appended after its last rewrite. A file that the center may
+stop writing at any moment cannot tell a removed last record from one it
+never wrote, unless it keeps a count somewhere else, and this release keeps
+none. The center rewrites the store at start and every minute, so the
+records this applies to are the heartbeats of at most the last minute. `--store-encryption` names how the center encrypts
+the store. This release has one mechanism, `sealed`, and refuses the values
+`modular` and `both`.
+
+**Troubleshoot.** Each message stops the center with exit `2`, and none
+shows a key.
+
+- **`--store-key-file is required`.** The center has no key. Create one and
+  pass it:
+
+  ```text
+  sipnab fleet serve: --store-key-file is required: the center encrypts everything it stores. Create a key with `sipnab fleet keygen --out FILE` and pass --store-key-file FILE
+  ```
+
+- **`which is not loaded`, after a key id.** The store is under
+  another key than the one given. Give the file of the key with that id as
+  `--store-key-file`, or as `--store-old-key-file` beside a new key. The
+  center leaves the store as it found it:
+
+  ```text
+  sipnab fleet serve: --store 'center.store': sealed layer: the file was written under key id ac7b02adecf75d31, which is not loaded; give that key's file with --store-old-key-file
+  ```
+
+- **`did not authenticate`, or `was truncated`.** Something changed the
+  store or cut it short after the center wrote it. The center leaves it as it
+  found it. Restore the store from a copy, or move it away and start with an
+  empty store: the members report again within one heartbeat interval each,
+  and the list loses only a member that is silent now.
+
+  ```text
+  sipnab fleet serve: --store 'center.store': sealed layer: the file has a header that did not authenticate (the file was modified, or the key is wrong)
+  ```
+
+- **`can be read or written by other users`**, naming the key file. Run
+  `chmod 600` on it:
+
+  ```text
+  sipnab fleet serve: --store-key-file 'store.key' can be read or written by other users (mode 0644); chmod 600 it
+  ```
+
+- **`is not a key`.** The file does not hold 32 bytes in base64. Use the file
+  `keygen` wrote, unchanged:
+
+  ```text
+  sipnab fleet serve: --store-key-file 'bad.key' is not a key: it holds 3 bytes, and a key is 32; create a key with `sipnab fleet keygen --out FILE`
+  ```
+
+- **`File exists`, from `keygen`.** `keygen` never overwrites a file, because
+  it may be the only copy of a key. Name a new file:
+
+  ```text
+  sipnab fleet keygen: --out 'store.key': File exists (os error 17)
+  ```
+
+- **`this build cannot read or write Parquet modular encryption`.** Leave
+  `--store-encryption` out, or set it to `sealed`:
+
+  ```text
+  sipnab fleet serve: --store-encryption modular: this build cannot read or write Parquet modular encryption; `sealed` is the one value it runs under
+  ```
 
 ### Troubleshoot the center
 
@@ -48065,7 +48426,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.243",
+  "version": "0.5.244",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -53294,7 +53655,7 @@ rules. MCP takes no archive password on any tool: an agent's
 | `can be read or written by other users (mode 0644); chmod 600 it`, exit 2 | The password file is not private | `chmod 600` it |
 | `uses ZipCrypto, which does not protect its contents` | The ZIP uses the legacy cipher (Info-ZIP's `zip -e` does) | sipnab reads it. Ask the sender to re-encrypt with AES-256 |
 | `xz data, which sipnab does not unwrap` (or `zstd`, `bzip2`, `LZ4`) | A compression sipnab does not read | Unpack that member with its own tool, then point `-I` at the result |
-| `decompressing reached the N-byte ceiling` | The archive inflates past `--max-gunzip-bytes` (1 GiB) | For an archive you trust, raise it |
+| `decompressing reached the N-byte ceiling` | The archive inflates past `--max-gunzip-bytes` (1 GiB) | For an archive you trust, raise it. sipnab reads nothing after the member it names, in a 7z as in a tar or a ZIP |
 | `could not be read past this point`, `INCOMPLETE RUN`, exit 1 | The archive stops early | sipnab kept what arrived. Fetch the archive again |
 | `has link type N, which sipnab does not decode` | A member is not an IP capture, such as an LTE MAC log | Nothing: its frames count as not decoded |
 
@@ -62213,6 +62574,7 @@ then:
 
 ```bash
 sipnab fleet serve --listen 192.0.2.10:8444 --store /var/lib/sipnab/center.store \
+  --store-key-file /etc/sipnab/center.storekey \
   --signing-key-file /etc/sipnab/center.signing \
   --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key \
   --tls-client-ca /etc/sipnab/members-ca.pem
@@ -86604,6 +86966,7 @@ Each successful run gets a row here.
 | 0.5.240 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-09 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.241 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-09 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.242 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.243 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it

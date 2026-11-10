@@ -443,10 +443,15 @@ used.
 - **A signing key for the center**, in a file only the center's user can read.
   The center mints and verifies member tokens with it. It is not any member's
   REST API key.
+- **A store key for the center**, in a file only the center's user can read.
+  The center encrypts its store under it, and does not start without it.
+  Step 1 creates it. [Encrypt the center's store](#encrypt-the-center-s-store)
+  covers backup and rotation.
 - **Network.** Each member reaches the center's port over TCP, 8444 in this
   section. The center needs no route to the members.
 - **Disk.** The store file holds the newest heartbeat of each member: 1,884
-  and 1,883 bytes for the two members of this run.
+  and 1,883 bytes of JSON for the two members of this run. Encryption adds 21
+  bytes to each record and 120 bytes to the file.
 - **Bounds.** The center reads at most 4 MiB of one request
   (`MAX_INGEST_BYTES`) and answers `413` past it. Its rate limit counts at most
   4096 addresses in one second (`MAX_TRACKED_PEERS`); a further address in
@@ -464,10 +469,22 @@ used.
   head -c 32 /dev/urandom | base64 > /etc/sipnab/center.signing
   ```
 
+- **[center]** Create the store key, and copy it to your backup. The
+  command writes the file with mode `0600` and prints the key's id:
+
+  ```bash
+  sipnab fleet keygen --out /etc/sipnab/center.storekey
+  ```
+
+  ```text
+  store.key: key id ac7b02adecf75d31
+  ```
+
 - **[center]** Start it:
 
   ```bash
   sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+    --store-key-file /etc/sipnab/center.storekey \
     --signing-key-file /etc/sipnab/center.signing \
     --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key
   ```
@@ -479,7 +496,14 @@ used.
   INFO sipnab::output::api: REST API listening on 127.0.0.1:8444
   ```
 
-  It creates the store with mode `0600`. It removes a member it has not heard
+  A center after 0.5.243 also logs the key it encrypts the store under,
+  before the store line. This line is from a run on 2026-11-10:
+
+  ```text
+  INFO sipnab::app::fleet_center: fleet center store encryption sealed, key id ac7b02adecf75d31, 0 old key(s)
+  ```
+
+  It creates the store with mode `0600`, encrypted. It removes a member it has not heard
   from for `--retention-hours` (default 72), at start and every minute.
   `--silent-after-missed` (default 3) sets how many of a member's heartbeat
   intervals may pass before it is silent. Members reaching the center by a name
@@ -722,6 +746,194 @@ restarts.
 
   `edge-a`'s next heartbeat gets `401`, and `edge-b`'s still gets `200`. The
   members list keeps `edge-a`'s last heartbeat until retention removes it.
+
+### Encrypt the center's store
+
+**Purpose.** The center's store holds every member's inventory: node names,
+versions, configuration digests, addresses. The center never writes it in
+clear. It seals the store file with AES-256-GCM under a key that you keep in
+a file, and it refuses to start without that key. A center cannot run with
+encryption off.
+
+The outputs below come from a run on 2026-11-10 on one host, with a
+development build after 0.5.243 and the files in one working directory.
+
+**Before you start.**
+
+- **A sipnab after 0.5.243 on the center.** Members need no change, and no
+  other system does: OpenSIPS, Kamailio, Homer and any HEP collector keep
+  their configuration.
+- **A place to back up one small file**, apart from the center's disk. Whoever
+  holds the key file can read the store. Without the key file nobody can.
+- **A center from 0.5.237 to 0.5.243** wrote its store in clear and took no
+  key. After the upgrade it does not start until you give it
+  `--store-key-file`. [Upgrade a center that stored in clear](#upgrade-a-center-that-stored-in-clear)
+  has the steps and the way back.
+
+**Steps.**
+
+1. **[center]** Create the key. The file gets mode `0600`. The id it prints
+   is not secret: the center logs it, and a refusal names it.
+
+   ```bash
+   sipnab fleet keygen --out /etc/sipnab/center.storekey
+   ```
+
+   ```text
+   store.key: key id ac7b02adecf75d31
+   ```
+
+2. **[center]** Copy `/etc/sipnab/center.storekey` to your backup, and note
+   the key id beside it.
+
+3. **[center]** Start the center with `--store-key-file`, as
+   [Step 1](#step-1-start-the-center) shows, or add the flag to the service
+   unit of a center you upgraded.
+
+4. **To replace the key**, create a second key file, and start the center
+   once with the new file as `--store-key-file` and the old one as
+   `--store-old-key-file`:
+
+   ```bash
+   # Run all of these, in order.
+   sipnab fleet keygen --out /etc/sipnab/center.storekey.2
+   sipnab fleet serve --listen 127.0.0.1:8444 --store /var/lib/sipnab/center.store \
+     --store-key-file /etc/sipnab/center.storekey.2 \
+     --store-old-key-file /etc/sipnab/center.storekey \
+     --signing-key-file /etc/sipnab/center.signing \
+     --tls-cert /etc/sipnab/center.crt --tls-key /etc/sipnab/center.key
+   ```
+
+   ```text
+   INFO sipnab::app::fleet_center: fleet center store encryption sealed, key id dd70bddbd340fae5, 1 old key(s)
+   ```
+
+   The center rewrites the store under the new key as it starts. From the
+   next start on, leave `--store-old-key-file` out, back up the new key file
+   and destroy the old one.
+
+#### Upgrade a center that stored in clear
+
+Releases 0.5.237 to 0.5.243 wrote the store in clear. To upgrade such a
+center:
+
+1. **[center]** Stop the center. To keep a way back that loses no member,
+   copy the store aside, and treat the copy as every member's inventory in
+   clear:
+
+   ```bash
+   cp -p /var/lib/sipnab/center.store /var/lib/sipnab/center.store.clear
+   ```
+
+2. **[center]** Install the new sipnab, create the key as in step 1 above and
+   back it up.
+3. **[center]** Add `--store-key-file /etc/sipnab/center.storekey` to the
+   center's command line or service unit, and start it. On this first start
+   the center reads the clear store, writes a sealed copy beside it, waits
+   until that copy is on disk, reads it back, and only then puts it in the
+   store's place. A stop or a failure before that leaves the clear store as
+   it was. The center logs one warning that the store `held <n> member(s) in
+   clear` and `is sealed now`. The old bytes may stay in the disk's free
+   space until the file system reuses it.
+4. **[center]** When the members list is right, delete the copy from step 1.
+
+**To go back** to 0.5.243 or earlier: stop the center, and put the copy from
+step 1 back as the store, or move the sealed store away to start with an
+empty one. Do this before the older release starts: it cannot read a sealed
+store, and it either stops at start or starts with no members and writes
+over the file. Then install the older sipnab and start it without
+`--store-key-file`. With an empty store, the center lists each member again
+at its next heartbeat, and does not list a member that is silent then.
+
+**Verify.**
+
+- The center's first log line names the key id that `keygen` printed.
+- The store is a sealed file. Its first four bytes are `SNFS`, and no
+  member's name is in it:
+
+  ```bash
+  # Run all of these, in order.
+  head -c 4 /var/lib/sipnab/center.store; echo
+  grep -c edge-a /var/lib/sipnab/center.store
+  ```
+
+  ```text
+  SNFS
+  0
+  ```
+
+- `GET /v1/fleet/members` lists the same members after a restart.
+
+**What it covers and what it does not.** The center seals the store file and
+the file it stages a rewrite in, and writes no other file. It authenticates
+each record with the record's position in the file, so a changed byte, a
+moved record or a store cut short inside the records of its last rewrite
+stops the center at start. Two things it cannot detect: someone deleting the
+whole store, and someone removing whole records from the end of the file
+that the center appended after its last rewrite. A file that the center may
+stop writing at any moment cannot tell a removed last record from one it
+never wrote, unless it keeps a count somewhere else, and this release keeps
+none. The center rewrites the store at start and every minute, so the
+records this applies to are the heartbeats of at most the last minute. `--store-encryption` names how the center encrypts
+the store. This release has one mechanism, `sealed`, and refuses the values
+`modular` and `both`.
+
+**Troubleshoot.** Each message stops the center with exit `2`, and none
+shows a key.
+
+- **`--store-key-file is required`.** The center has no key. Create one and
+  pass it:
+
+  ```text
+  sipnab fleet serve: --store-key-file is required: the center encrypts everything it stores. Create a key with `sipnab fleet keygen --out FILE` and pass --store-key-file FILE
+  ```
+
+- **`which is not loaded`, after a key id.** The store is under
+  another key than the one given. Give the file of the key with that id as
+  `--store-key-file`, or as `--store-old-key-file` beside a new key. The
+  center leaves the store as it found it:
+
+  ```text
+  sipnab fleet serve: --store 'center.store': sealed layer: the file was written under key id ac7b02adecf75d31, which is not loaded; give that key's file with --store-old-key-file
+  ```
+
+- **`did not authenticate`, or `was truncated`.** Something changed the
+  store or cut it short after the center wrote it. The center leaves it as it
+  found it. Restore the store from a copy, or move it away and start with an
+  empty store: the members report again within one heartbeat interval each,
+  and the list loses only a member that is silent now.
+
+  ```text
+  sipnab fleet serve: --store 'center.store': sealed layer: the file has a header that did not authenticate (the file was modified, or the key is wrong)
+  ```
+
+- **`can be read or written by other users`**, naming the key file. Run
+  `chmod 600` on it:
+
+  ```text
+  sipnab fleet serve: --store-key-file 'store.key' can be read or written by other users (mode 0644); chmod 600 it
+  ```
+
+- **`is not a key`.** The file does not hold 32 bytes in base64. Use the file
+  `keygen` wrote, unchanged:
+
+  ```text
+  sipnab fleet serve: --store-key-file 'bad.key' is not a key: it holds 3 bytes, and a key is 32; create a key with `sipnab fleet keygen --out FILE`
+  ```
+
+- **`File exists`, from `keygen`.** `keygen` never overwrites a file, because
+  it may be the only copy of a key. Name a new file:
+
+  ```text
+  sipnab fleet keygen: --out 'store.key': File exists (os error 17)
+  ```
+
+- **`this build cannot read or write Parquet modular encryption`.** Leave
+  `--store-encryption` out, or set it to `sealed`:
+
+  ```text
+  sipnab fleet serve: --store-encryption modular: this build cannot read or write Parquet modular encryption; `sealed` is the one value it runs under
+  ```
 
 ### Troubleshoot the center
 

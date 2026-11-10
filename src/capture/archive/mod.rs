@@ -1197,6 +1197,9 @@ struct Checkpoint {
     filtered: usize,
     /// `seen_log.len()`.
     seen: usize,
+    /// `entries`: what a failed trial met is not charged to the entry cap,
+    /// or every wrong password would bring a 7z closer to it.
+    entries: usize,
 }
 
 impl<'l> Walker<'l> {
@@ -1250,6 +1253,7 @@ impl<'l> Walker<'l> {
             directories: self.out.directories,
             filtered: self.out.filtered,
             seen: self.seen_log.len(),
+            entries: self.entries,
         }
     }
 
@@ -1279,6 +1283,7 @@ impl<'l> Walker<'l> {
         for label in self.seen_log.drain(mark.seen..) {
             self.seen.remove(&label);
         }
+        self.entries = mark.entries;
     }
 
     /// The extraction directory, created on first use.

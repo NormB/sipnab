@@ -30,8 +30,22 @@
 //! the power. `sevenz-rust2` refuses a power above 24, 7-Zip's own ceiling
 //! (its default is 19), so a crafted archive cannot make one attempt take
 //! hours. A refusal is `bound_exceeded (7z key derivation)` (Invariant "Every attacker-keyed map has a bound and a stated eviction policy").
+//!
+//! # A walk that stops reads no further
+//!
+//! A walk stops at the inflation ceiling, at the entry cap, at a member that
+//! cannot be written, and when a pointer has found its member. The read of
+//! the archive ends there: no later block is decoded, no later member is
+//! counted, extracted or reported, and no nested archive in a later block is
+//! opened or asked a password for. `sevenz-rust2` has two calls that look
+//! alike here. `for_each_entries` reads `false` as "skip the rest of this
+//! block" and goes on with the next block; an archive written one member at a
+//! time has one block per member, so that call never stopped. The reader uses
+//! `for_each_entries_with_decision` and [`EntryDecision::Stop`].
 
 use std::io::{self, Read, Seek};
+
+use sevenz_rust2::EntryDecision;
 
 use super::password::{Container, Trial, Unlock};
 use super::{Encryption, Flow, Inflating, Layer, SkipReason, Stop, Walker, member_name};
@@ -305,31 +319,45 @@ impl Walker<'_> {
             ));
         }
         let mut flow = Flow::Continue;
-        reader.for_each_entries(|entry, data| {
+        // `for_each_entries_with_decision`, not `for_each_entries`: that one
+        // takes `false` to mean "skip the rest of this BLOCK" and goes on to
+        // the next block, and an archive made one member at a time has one
+        // block per member. A walk that had stopped then met every later
+        // member (SEVENZ-READ-STOP). `Stop` ends the read of the archive.
+        reader.for_each_entries_with_decision(|entry, data| {
+            self.entries += 1;
+            if self.entries > self.limits.max_entries {
+                // The cap counts every container of one input together, so a
+                // 7z inside another container can pass it part-way through.
+                self.out.stops.push(Stop::EntryCap {
+                    limit: self.limits.max_entries,
+                });
+                flow = Flow::Abort;
+                return Ok(EntryDecision::Stop);
+            }
             if entry.is_directory() {
                 if self.wanted.is_none() {
                     self.out.directories += 1;
                 }
-                return Ok(true);
+                return Ok(EntryDecision::Continue);
             }
-            self.entries += 1;
             let child = format!("{label}/{}", member_name(entry.name().as_bytes()));
             if !self.leads_to_wanted(&child) {
                 // Solid blocks must be read through in order: drain, never skip.
                 io::copy(data, &mut io::sink()).map_err(sevenz_rust2::Error::from)?;
-                return Ok(true);
+                return Ok(EntryDecision::Continue);
             }
             if !self.claim(&child) {
                 self.skip(&child, SkipReason::DuplicateName);
                 io::copy(data, &mut io::sink()).map_err(sevenz_rust2::Error::from)?;
-                return Ok(true);
+                return Ok(EntryDecision::Continue);
             }
             if let Some(keep) = self.keep {
                 let file_name = child.rsplit('/').next().unwrap_or(&child);
                 if !keep(file_name) {
                     self.out.filtered += 1;
                     io::copy(data, &mut io::sink()).map_err(sevenz_rust2::Error::from)?;
-                    return Ok(true);
+                    return Ok(EntryDecision::Continue);
                 }
             }
             let mut inner = Inflating {
@@ -343,9 +371,9 @@ impl Walker<'_> {
             let _ = io::copy(&mut inner, &mut io::sink());
             if step == Flow::Abort || (self.wanted.is_some() && !self.out.members.is_empty()) {
                 flow = Flow::Abort;
-                return Ok(false);
+                return Ok(EntryDecision::Stop);
             }
-            Ok(true)
+            Ok(EntryDecision::Continue)
         })?;
         Ok(flow)
     }
@@ -360,7 +388,9 @@ pub(crate) mod testutil {
     pub type TestError = Box<dyn std::error::Error>;
 
     /// A 7z of `entries`, LZMA2, AES-256 with `password` when given; the
-    /// member list encrypted too when `encrypt_header`.
+    /// member list encrypted too when `encrypt_header`. Each file is its own
+    /// block. A name that ends in `/` is a directory entry, and its data is
+    /// not used.
     pub fn build(
         entries: &[(&str, &[u8])],
         password: Option<&str>,
@@ -383,8 +413,11 @@ pub(crate) mod testutil {
             }
         }
         for (name, data) in entries {
-            w.push_archive_entry(ArchiveEntry::new_file(name), Some(*data))
-                .map_err(|e| format!("entry: {e:?}"))?;
+            match name.strip_suffix('/') {
+                Some(dir) => w.push_archive_entry::<&[u8]>(ArchiveEntry::new_directory(dir), None),
+                None => w.push_archive_entry(ArchiveEntry::new_file(name), Some(*data)),
+            }
+            .map_err(|e| format!("entry: {e:?}"))?;
         }
         Ok(w.finish()
             .map_err(|e| format!("finish: {e:?}"))?
@@ -429,6 +462,56 @@ pub(crate) mod testutil {
         refresh_checksums(archive)
     }
 
+    /// A solid 7z of `entries`: one block holding every member, LZMA2.
+    pub fn build_solid(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, TestError> {
+        use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderMethod, SourceReader};
+        let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new()))
+            .map_err(|e| format!("writer: {e:?}"))?;
+        w.set_content_methods(vec![EncoderMethod::LZMA2.into()]);
+        let (names, readers) = entries
+            .iter()
+            .map(|(name, data)| (ArchiveEntry::new_file(name), SourceReader::new(*data)))
+            .unzip();
+        w.push_archive_entries(names, readers)
+            .map_err(|e| format!("entries: {e:?}"))?;
+        Ok(w.finish()
+            .map_err(|e| format!("finish: {e:?}"))?
+            .into_inner())
+    }
+
+    /// `archive` with block `block` damaged: the last 8 bytes of the block's
+    /// first packed stream are inverted, which the member's CRC (or the
+    /// decoder before it) catches when that block is read and nothing else
+    /// notices. `password` reads the member list when it is encrypted. No
+    /// checksum is redone: a packed stream is covered by its member's CRC
+    /// only.
+    pub fn with_damaged_block(
+        mut archive: Vec<u8>,
+        password: Option<&str>,
+        block: usize,
+    ) -> Result<Vec<u8>, TestError> {
+        use sevenz_rust2::{Archive, Password};
+        let password = password.map_or_else(Password::empty, Password::from);
+        let listed = Archive::read(&mut std::io::Cursor::new(&archive), &password)
+            .map_err(|e| format!("list: {e:?}"))?;
+        let stream = *listed
+            .stream_map
+            .block_first_pack_stream_index()
+            .get(block)
+            .ok_or_else(|| format!("no block {block}"))?;
+        let offset = listed.stream_map.pack_stream_offsets()[stream];
+        let size = listed.pack_sizes()[stream];
+        let end = usize::try_from(32 + listed.pack_pos() + offset + size)
+            .map_err(|e| format!("offset: {e:?}"))?;
+        if size < 8 || end > archive.len() {
+            return Err(format!("block {block} has no 8 bytes to damage").into());
+        }
+        for b in &mut archive[end - 8..end] {
+            *b = !*b;
+        }
+        Ok(archive)
+    }
+
     /// Redo the next-header CRC and the start header's CRC after a patch.
     fn refresh_checksums(mut archive: Vec<u8>) -> Result<Vec<u8>, TestError> {
         let next_offset = u64::from_le_bytes(
@@ -465,11 +548,15 @@ pub(crate) mod testutil {
 
 #[cfg(test)]
 mod tests {
-    use super::super::password::{ArchivePassword, Candidate, Keyring, Source};
+    use super::super::password::{
+        ArchivePassword, Candidate, Keyring, PromptAnswer, PromptRequest, Prompter, Source,
+    };
     use super::super::tar::testutil::{Spec, build as build_tar};
     use super::super::*;
     use super::Declared;
-    use super::testutil::{build, with_cycles_power, with_iv_first_byte};
+    use super::testutil::{
+        build, build_solid, with_cycles_power, with_damaged_block, with_iv_first_byte,
+    };
     use std::io::{Read, Write};
 
     type TestError = Box<dyn std::error::Error>;
@@ -765,6 +852,724 @@ mod tests {
             exp.members[0].layers,
             vec![Layer::Gzip, Layer::Tar, Layer::SevenZip]
         );
+        Ok(())
+    }
+
+    // ── SEVENZ-READ-STOP: a stopped walk reads no later block ───────────
+    //
+    // `build` writes one block per member, which is the layout the defect
+    // needed: the crate's `for_each_entries` treats `false` as "skip the rest
+    // of this block", so a walk that had stopped still met every later block.
+
+    /// What one walk of the archive at a path did.
+    struct Walked {
+        /// Archive entries the walk met, of every kind.
+        entries: usize,
+        /// What it found.
+        out: Expansion,
+    }
+
+    /// Walk `path` the way [`expand_filtered_with`] and [`extract_member_with`]
+    /// do, and keep the walker's entry count, which neither returns.
+    fn walk_file(
+        path: &std::path::Path,
+        wanted: Option<&str>,
+        lim: &Limits,
+        keyring: Option<&mut Keyring>,
+    ) -> Result<Walked, TestError> {
+        let mut file =
+            std::io::BufReader::new(std::fs::File::open(path).map_err(|e| format!("open: {e:?}"))?);
+        let root = path.display().to_string();
+        let mut w = Walker::new(lim, wanted, path, &root);
+        w.keyring = keyring;
+        let _ = w.walk(&mut file, &root, &[], 0);
+        if let Some(e) = w.fatal.take() {
+            return Err(format!("walk: {e:?}").into());
+        }
+        Ok(Walked {
+            entries: w.entries,
+            out: w.out,
+        })
+    }
+
+    /// The limits of [`limits`] with `max_entries` and `max_inflated_bytes`
+    /// replaced.
+    fn limits_of(max_entries: usize, max_inflated_bytes: u64) -> Limits {
+        Limits {
+            max_inflated_bytes,
+            max_entries,
+            ..limits()
+        }
+    }
+
+    /// Three captures, each in its own block.
+    fn three() -> [(&'static str, Vec<u8>); 3] {
+        [
+            ("a.pcap", pcap_bytes(b"alpha-alpha-alpha")),
+            ("b.pcap", pcap_bytes(b"bravo-bravo-bravo")),
+            ("c.pcap", pcap_bytes(b"charlie-charlie-charlie")),
+        ]
+    }
+
+    /// `members` as [`build`] takes them.
+    fn refs<'a>(members: &'a [(&'a str, Vec<u8>)]) -> Vec<(&'a str, &'a [u8])> {
+        members.iter().map(|(n, d)| (*n, d.as_slice())).collect()
+    }
+
+    /// The label of member `name` of the archive at `path`.
+    fn label_of(path: &std::path::Path, name: &str) -> String {
+        format!("{}/{name}", path.display())
+    }
+
+    /// The labels of the members a walk wrote, less the archive's path.
+    fn names(path: &std::path::Path, out: &Expansion) -> Vec<String> {
+        let prefix = format!("{}/", path.display());
+        out.members
+            .iter()
+            .map(|m| m.label.trim_start_matches(&prefix).to_string())
+            .collect()
+    }
+
+    /// A prompter that records every request and answers none.
+    struct Recording(std::sync::Arc<parking_lot::Mutex<Vec<PromptRequest>>>);
+
+    impl Prompter for Recording {
+        fn ask(&mut self, request: &PromptRequest) -> PromptAnswer {
+            self.0.lock().push(request.clone());
+            PromptAnswer::Skip
+        }
+    }
+
+    /// A tar of `count` small captures named `t0.pcap`, `t1.pcap` and so on.
+    fn tar_of(count: usize) -> Vec<u8> {
+        let files: Vec<(String, Vec<u8>)> = (0..count)
+            .map(|i| {
+                (
+                    format!("t{i}.pcap"),
+                    pcap_bytes(format!("tar-{i}").as_bytes()),
+                )
+            })
+            .collect();
+        let specs: Vec<Spec<'_>> = files.iter().map(|(n, d)| Spec::file(n, d)).collect();
+        build_tar(&specs)
+    }
+
+    #[test]
+    fn a_pointer_to_the_first_member_reads_one_block() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let path = write(tmp.path(), "set.7z", &build(&refs(&members), None, false)?)?;
+        let walked = walk_file(&path, Some(&label_of(&path, "a.pcap")), &limits(), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["a.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(walked.entries, 1, "blocks after the found member were read");
+        assert!(walked.out.stops.is_empty(), "{:?}", walked.out.stops);
+        Ok(())
+    }
+
+    #[test]
+    fn a_pointer_to_a_middle_member_reads_up_to_it_and_no_further() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let path = write(tmp.path(), "set.7z", &build(&refs(&members), None, false)?)?;
+        let walked = walk_file(&path, Some(&label_of(&path, "b.pcap")), &limits(), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["b.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(walked.entries, 2, "the archive entries this walk met");
+        Ok(())
+    }
+
+    #[test]
+    fn a_pointer_to_the_last_member_reads_every_block() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let path = write(tmp.path(), "set.7z", &build(&refs(&members), None, false)?)?;
+        let walked = walk_file(&path, Some(&label_of(&path, "c.pcap")), &limits(), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["c.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(walked.entries, 3, "the archive entries this walk met");
+        assert_eq!(
+            std::fs::read(&walked.out.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+            members[2].1,
+            "the extracted file holds the member's bytes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_pointer_to_no_member_reads_every_block_and_finds_nothing() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let path = write(tmp.path(), "set.7z", &build(&refs(&members), None, false)?)?;
+        let walked = walk_file(&path, Some(&label_of(&path, "z.pcap")), &limits(), None)?;
+        assert!(walked.out.members.is_empty(), "no member is written");
+        assert_eq!(walked.entries, 3, "the archive entries this walk met");
+        assert!(walked.out.stops.is_empty(), "{:?}", walked.out.stops);
+        Ok(())
+    }
+
+    #[test]
+    fn an_expansion_reads_every_block_in_order() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let path = write(tmp.path(), "set.7z", &build(&refs(&members), None, false)?)?;
+        let walked = walk_file(&path, None, &limits(), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["a.pcap", "b.pcap", "c.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(walked.entries, 3, "the archive entries this walk met");
+        for (member, (_, bytes)) in walked.out.members.iter().zip(&members) {
+            assert_eq!(
+                &std::fs::read(&member.path).map_err(|e| format!("read: {e:?}"))?,
+                bytes,
+                "the extracted file holds the member's bytes"
+            );
+        }
+        Ok(())
+    }
+
+    /// The found member's block is whole; a later block is damaged. Before
+    /// the fix the later block was still decoded, so the walk reported the
+    /// archive broken beside the member it had found.
+    #[test]
+    fn damage_after_the_found_member_is_never_read() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let whole = build(&refs(&members), None, false)?;
+        let path = write(tmp.path(), "set.7z", &with_damaged_block(whole, None, 2)?)?;
+        let walked = walk_file(&path, Some(&label_of(&path, "a.pcap")), &limits(), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["a.pcap"],
+            "the members written, in archive order"
+        );
+        assert!(walked.out.stops.is_empty(), "{:?}", walked.out.stops);
+        assert_eq!(
+            std::fs::read(&walked.out.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+            members[0].1,
+            "the extracted file holds the member's bytes"
+        );
+        Ok(())
+    }
+
+    /// With a password every error is taken as "wrong password", so the
+    /// damaged later block un-found the member: the pointer answered that the
+    /// archive held no such member, with the right password in the keyring.
+    #[test]
+    fn a_locked_7z_gives_the_found_member_whatever_follows_it() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        for encrypt_header in [false, true] {
+            for wanted in ["a.pcap", "b.pcap"] {
+                let whole = build(&refs(&members), Some(secret("7z-stop")), encrypt_header)?;
+                let path = write(
+                    tmp.path(),
+                    "locked.7z",
+                    &with_damaged_block(whole, Some(secret("7z-stop")), 2)?,
+                )?;
+                let mut ring = ring_of(&[secret("7z-stop")])?;
+                let found = extract_member_with(
+                    &path,
+                    &label_of(&path, wanted),
+                    &limits(),
+                    Some(&mut ring),
+                )
+                .map_err(|e| format!("header {encrypt_header}, {wanted}: {e}"))?;
+                let Some((member, _dir)) = found else {
+                    return Err(format!("header {encrypt_header}: {wanted} not found").into());
+                };
+                let bytes = &members
+                    .iter()
+                    .find(|(n, _)| *n == wanted)
+                    .ok_or("member")?
+                    .1;
+                assert_eq!(
+                    &std::fs::read(&member.path).map_err(|e| format!("read: {e:?}"))?,
+                    bytes,
+                    "the extracted file holds the member's bytes"
+                );
+                assert_eq!(
+                    member.encryption,
+                    Encryption::SevenZipAes256,
+                    "the member carries the archive's encryption"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn damage_before_the_wanted_member_is_still_reported() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let path = write(
+            tmp.path(),
+            "set.7z",
+            &with_damaged_block(build(&refs(&members), None, false)?, None, 0)?,
+        )?;
+        let label = label_of(&path, "c.pcap");
+        let Err(e) = extract_member_with(&path, &label, &limits(), None) else {
+            return Err("a member behind a damaged block was returned".into());
+        };
+        assert!(e.to_string().contains("set.7z"), "{e}");
+        Ok(())
+    }
+
+    #[test]
+    fn an_expansion_reports_a_damaged_last_block_and_keeps_what_came_before()
+    -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let whole = build(&refs(&members), None, false)?;
+        let path = write(tmp.path(), "set.7z", &with_damaged_block(whole, None, 2)?)?;
+        let walked = walk_file(&path, None, &limits(), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["a.pcap", "b.pcap"],
+            "the members written, in archive order"
+        );
+        assert!(
+            matches!(walked.out.stops.as_slice(), [Stop::Broken { container, .. }]
+                if *container == label_of(&path, "c.pcap")),
+            "{:?}",
+            walked.out.stops
+        );
+        Ok(())
+    }
+
+    /// The first member alone passes the inflation ceiling. One stop, naming
+    /// that member, and no later block read.
+    #[test]
+    fn the_inflation_ceiling_is_reported_once_and_ends_the_read() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let big = pcap_bytes(&[0x5a; 8192]);
+        let small = three();
+        let mut members = vec![("big.pcap", big)];
+        members.extend(small);
+        let path = write(tmp.path(), "cap.7z", &build(&refs(&members), None, false)?)?;
+        let lim = limits_of(MAX_ENTRIES, 4096);
+        let walked = walk_file(&path, None, &lim, None)?;
+        assert!(
+            walked.out.members.is_empty(),
+            "{:?}",
+            names(&path, &walked.out)
+        );
+        assert_eq!(
+            walked.out.stops,
+            vec![Stop::InflationCap {
+                limit: 4096,
+                at: label_of(&path, "big.pcap"),
+            }],
+            "the walk reports this one stop and no other"
+        );
+        assert_eq!(walked.entries, 1, "blocks after the ceiling were read");
+        Ok(())
+    }
+
+    #[test]
+    fn the_inflation_ceiling_in_the_last_member_keeps_the_earlier_ones() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let mut members = three().to_vec();
+        members.push(("big.pcap", pcap_bytes(&[0x5a; 8192])));
+        let path = write(tmp.path(), "cap.7z", &build(&refs(&members), None, false)?)?;
+        let lim = limits_of(MAX_ENTRIES, 4096);
+        let walked = walk_file(&path, None, &lim, None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["a.pcap", "b.pcap", "c.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(
+            walked.out.stops,
+            vec![Stop::InflationCap {
+                limit: 4096,
+                at: label_of(&path, "big.pcap"),
+            }],
+            "the walk reports this one stop and no other"
+        );
+        Ok(())
+    }
+
+    /// A tar inside the 7z passes the entry cap, which stops the walk. The
+    /// capture in the next block was still extracted: a member past the cap.
+    #[test]
+    fn no_member_is_extracted_after_the_entry_cap() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let tar = tar_of(4);
+        let after = pcap_bytes(b"after-the-cap");
+        let path = write(
+            tmp.path(),
+            "cap.7z",
+            &build(&[("four.tar", &tar), ("after.pcap", &after)], None, false)?,
+        )?;
+        let lim = limits_of(3, 64 * 1024 * 1024);
+        let walked = walk_file(&path, None, &lim, None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["four.tar/t0.pcap", "four.tar/t1.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(
+            walked.out.stops,
+            vec![Stop::EntryCap { limit: 3 }],
+            "the walk reports this one stop and no other"
+        );
+        Ok(())
+    }
+
+    /// The walk has stopped at the entry cap; the next block is a locked 7z.
+    /// Before the fix it was opened and the operator was asked for its
+    /// password, for an archive whose members could not be kept.
+    #[test]
+    fn no_password_is_asked_for_after_the_walk_has_stopped() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let tar = tar_of(4);
+        let locked = build(
+            &[("in.pcap", &pcap_bytes(b"locked"))],
+            Some(secret("7z-after-stop")),
+            false,
+        )?;
+        let path = write(
+            tmp.path(),
+            "cap.7z",
+            &build(&[("four.tar", &tar), ("locked.7z", &locked)], None, false)?,
+        )?;
+        let asked = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut ring = Keyring::default();
+        ring.set_prompter(Some(Box::new(Recording(asked.clone()))));
+        let lim = limits_of(3, 64 * 1024 * 1024);
+        let walked = walk_file(&path, None, &lim, Some(&mut ring))?;
+        assert_eq!(
+            walked.out.stops,
+            vec![Stop::EntryCap { limit: 3 }],
+            "the walk reports this one stop and no other"
+        );
+        assert!(asked.lock().is_empty(), "asked: {:?}", asked.lock());
+        assert!(walked.out.skipped.is_empty(), "{:?}", walked.out.skipped);
+        Ok(())
+    }
+
+    /// The same archive under a cap it does not reach: the locked 7z is
+    /// reached, and its password is asked for. This is what shows the test
+    /// above is able to see a prompt.
+    #[test]
+    fn a_locked_7z_in_a_walk_that_goes_on_is_asked_about() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let tar = tar_of(4);
+        let locked = build(
+            &[("in.pcap", &pcap_bytes(b"locked"))],
+            Some(secret("7z-after-stop")),
+            false,
+        )?;
+        let path = write(
+            tmp.path(),
+            "cap.7z",
+            &build(&[("four.tar", &tar), ("locked.7z", &locked)], None, false)?,
+        )?;
+        let asked = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let mut ring = Keyring::default();
+        ring.set_prompter(Some(Box::new(Recording(asked.clone()))));
+        let walked = walk_file(&path, None, &limits(), Some(&mut ring))?;
+        assert!(walked.out.stops.is_empty(), "{:?}", walked.out.stops);
+        assert_eq!(asked.lock().len(), 1, "asked: {:?}", asked.lock());
+        assert_eq!(walked.out.members.len(), 4, "the number of members written");
+        Ok(())
+    }
+
+    /// The entry cap counts every archive of one input together. A 7z's
+    /// members were counted and never compared with the cap, so a 7z inside
+    /// another container could take the walk past it.
+    #[test]
+    fn a_7z_member_past_the_entry_cap_stops_the_walk() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let inner = build(&refs(&members), None, false)?;
+        let after = pcap_bytes(b"after");
+        let path = write(
+            tmp.path(),
+            "outer.tar",
+            &build_tar(&[
+                Spec::file("inner.7z", &inner),
+                Spec::file("after.pcap", &after),
+            ]),
+        )?;
+        // The tar entry is 1; a.pcap is 2, b.pcap is 3, c.pcap is 4. The
+        // tar's second entry is never met: the stop is the tar's too.
+        let walked = walk_file(&path, None, &limits_of(3, 64 * 1024 * 1024), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["inner.7z/a.pcap", "inner.7z/b.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(
+            walked.out.stops,
+            vec![Stop::EntryCap { limit: 3 }],
+            "the walk reports this one stop and no other"
+        );
+        assert_eq!(walked.entries, 4, "the archive entries this walk met");
+        Ok(())
+    }
+
+    /// The cap is passed with blocks of the 7z still to come. It is reported
+    /// once, and the later blocks are not met.
+    #[test]
+    fn the_entry_cap_inside_a_7z_is_reported_once() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let mut members = three().to_vec();
+        members.push(("d.pcap", pcap_bytes(b"delta-delta-delta")));
+        let inner = build(&refs(&members), None, false)?;
+        let (x, y) = (pcap_bytes(b"x-ray"), pcap_bytes(b"yankee"));
+        let path = write(
+            tmp.path(),
+            "outer.tar",
+            &build_tar(&[
+                Spec::file("x.pcap", &x),
+                Spec::file("y.pcap", &y),
+                Spec::file("inner.7z", &inner),
+            ]),
+        )?;
+        // x.pcap is 1, y.pcap is 2, the 7z is 3; a.pcap is 4, b.pcap is 5,
+        // c.pcap is 6. d.pcap, in the block after it, is never counted.
+        let walked = walk_file(&path, None, &limits_of(5, 64 * 1024 * 1024), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["x.pcap", "y.pcap", "inner.7z/a.pcap", "inner.7z/b.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(
+            walked.out.stops,
+            vec![Stop::EntryCap { limit: 5 }],
+            "the walk reports this one stop and no other"
+        );
+        assert_eq!(walked.entries, 6, "the archive entries this walk met");
+        Ok(())
+    }
+
+    #[test]
+    fn a_7z_that_ends_exactly_at_the_entry_cap_is_read_whole() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let inner = build(&refs(&members), None, false)?;
+        let path = write(
+            tmp.path(),
+            "outer.tar",
+            &build_tar(&[Spec::file("inner.7z", &inner)]),
+        )?;
+        let walked = walk_file(&path, None, &limits_of(4, 64 * 1024 * 1024), None)?;
+        assert_eq!(walked.out.members.len(), 3, "the number of members written");
+        assert!(walked.out.stops.is_empty(), "{:?}", walked.out.stops);
+        Ok(())
+    }
+
+    /// A 7z that lists more entries than the cap is refused from its member
+    /// list, before any block is decoded.
+    #[test]
+    fn a_7z_listing_more_entries_than_the_cap_is_refused_unread() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let path = write(tmp.path(), "set.7z", &build(&refs(&members), None, false)?)?;
+        let walked = walk_file(&path, None, &limits_of(2, 64 * 1024 * 1024), None)?;
+        assert!(walked.out.members.is_empty(), "no member is written");
+        assert_eq!(
+            walked.out.stops,
+            vec![Stop::EntryCap { limit: 2 }],
+            "the walk reports this one stop and no other"
+        );
+        assert_eq!(walked.entries, 0, "the archive entries this walk met");
+        Ok(())
+    }
+
+    /// A stop inside a 7z stops the container that holds it too.
+    #[test]
+    fn a_stop_inside_a_nested_7z_stops_the_outer_tar() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let big = pcap_bytes(&[0x5a; 8192]);
+        let inner = build(&[("big.pcap", &big)], None, false)?;
+        let after = pcap_bytes(b"after");
+        let path = write(
+            tmp.path(),
+            "outer.tar",
+            &build_tar(&[
+                Spec::file("inner.7z", &inner),
+                Spec::file("after.pcap", &after),
+            ]),
+        )?;
+        let walked = walk_file(&path, None, &limits_of(MAX_ENTRIES, 4096), None)?;
+        assert!(
+            walked.out.members.is_empty(),
+            "{:?}",
+            names(&path, &walked.out)
+        );
+        assert_eq!(walked.out.stops.len(), 1, "{:?}", walked.out.stops);
+        assert_eq!(walked.entries, 2, "the tar went on after its 7z stopped");
+        Ok(())
+    }
+
+    /// Members with no bytes sit outside every block, and the crate visits
+    /// them after the last block. A stopped walk does not meet them either.
+    #[test]
+    fn an_empty_member_after_the_found_one_is_not_visited() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let a = pcap_bytes(b"alpha");
+        let path = write(
+            tmp.path(),
+            "set.7z",
+            &build(&[("a.pcap", &a), ("empty.txt", b"")], None, false)?,
+        )?;
+        let walked = walk_file(&path, Some(&label_of(&path, "a.pcap")), &limits(), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["a.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(walked.entries, 1, "the archive entries this walk met");
+        Ok(())
+    }
+
+    #[test]
+    fn an_expansion_passes_over_an_empty_member() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let (a, c) = (pcap_bytes(b"alpha"), pcap_bytes(b"charlie"));
+        let path = write(
+            tmp.path(),
+            "set.7z",
+            &build(
+                &[("a.pcap", &a), ("empty.txt", b""), ("c.pcap", &c)],
+                None,
+                false,
+            )?,
+        )?;
+        let walked = walk_file(&path, None, &limits(), None)?;
+        assert_eq!(
+            names(&path, &walked.out),
+            ["a.pcap", "c.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(walked.entries, 3, "the archive entries this walk met");
+        assert!(walked.out.stops.is_empty(), "{:?}", walked.out.stops);
+        Ok(())
+    }
+
+    /// One block holding every member, the layout the old call handled.
+    #[test]
+    fn a_solid_7z_stops_at_the_found_member_and_expands_whole() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        let path = write(tmp.path(), "solid.7z", &build_solid(&refs(&members))?)?;
+        let first = walk_file(&path, Some(&label_of(&path, "a.pcap")), &limits(), None)?;
+        assert_eq!(
+            names(&path, &first.out),
+            ["a.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(first.entries, 1, "the archive entries this walk met");
+        let last = walk_file(&path, Some(&label_of(&path, "c.pcap")), &limits(), None)?;
+        assert_eq!(
+            names(&path, &last.out),
+            ["c.pcap"],
+            "the members written, in archive order"
+        );
+        assert_eq!(last.entries, 3, "the archive entries this walk met");
+        let all = walk_file(&path, None, &limits(), None)?;
+        assert_eq!(
+            names(&path, &all.out),
+            ["a.pcap", "b.pcap", "c.pcap"],
+            "the members written, in archive order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_solid_7z_reports_the_inflation_ceiling_once() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let big = pcap_bytes(&[0x5a; 8192]);
+        let small = three();
+        let mut members = vec![("big.pcap", big)];
+        members.extend(small);
+        let path = write(tmp.path(), "solid.7z", &build_solid(&refs(&members))?)?;
+        let walked = walk_file(&path, None, &limits_of(MAX_ENTRIES, 4096), None)?;
+        assert!(walked.out.members.is_empty(), "no member is written");
+        assert_eq!(walked.out.stops.len(), 1, "{:?}", walked.out.stops);
+        assert_eq!(walked.entries, 1, "the archive entries this walk met");
+        Ok(())
+    }
+
+    /// A directory is an entry, as it is in a tar and a ZIP: it counts toward
+    /// the entry cap. The crate visits directories after the last block.
+    #[test]
+    fn a_directory_in_a_7z_counts_toward_the_entry_cap() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let (a, b) = (pcap_bytes(b"alpha"), pcap_bytes(b"bravo"));
+        let inner = build(&[("a.pcap", &a), ("b.pcap", &b), ("d/", b"")], None, false)?;
+        let path = write(
+            tmp.path(),
+            "outer.tar",
+            &build_tar(&[Spec::file("inner.7z", &inner)]),
+        )?;
+        // The tar entry is 1; a.pcap is 2, b.pcap is 3, the directory is 4.
+        let at_cap = walk_file(&path, None, &limits_of(4, 64 * 1024 * 1024), None)?;
+        assert_eq!(at_cap.entries, 4, "the archive entries this walk met");
+        assert_eq!(
+            at_cap.out.directories, 1,
+            "the directory entries counted as read"
+        );
+        assert!(at_cap.out.stops.is_empty(), "{:?}", at_cap.out.stops);
+        let past = walk_file(&path, None, &limits_of(3, 64 * 1024 * 1024), None)?;
+        assert_eq!(
+            past.out.stops,
+            vec![Stop::EntryCap { limit: 3 }],
+            "the walk reports this one stop and no other"
+        );
+        assert_eq!(
+            past.out.directories, 0,
+            "the entry past the cap is not counted as read"
+        );
+        assert_eq!(past.out.members.len(), 2, "the number of members written");
+        Ok(())
+    }
+
+    /// A password that fails is tried on the whole archive and rolled back.
+    /// The entries its trial met are not charged to the cap: three members
+    /// under a cap of three open with the fourth password tried.
+    #[test]
+    fn entries_met_by_a_wrong_password_do_not_count_toward_the_cap() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let members = three();
+        for encrypt_header in [false, true] {
+            let path = write(
+                tmp.path(),
+                "locked.7z",
+                &build(&refs(&members), Some(secret("7z-cap")), encrypt_header)?,
+            )?;
+            let mut ring = ring_of(&[
+                secret("7z-cap-wrong-1"),
+                secret("7z-cap-wrong-2"),
+                secret("7z-cap-wrong-3"),
+                secret("7z-cap"),
+            ])?;
+            let lim = limits_of(3, 64 * 1024 * 1024);
+            let walked = walk_file(&path, None, &lim, Some(&mut ring))?;
+            assert_eq!(
+                names(&path, &walked.out),
+                ["a.pcap", "b.pcap", "c.pcap"],
+                "header {encrypt_header}: {:?} {:?}",
+                walked.out.skipped,
+                walked.out.stops
+            );
+            assert!(walked.out.stops.is_empty(), "{:?}", walked.out.stops);
+            assert_eq!(walked.entries, 3, "header {encrypt_header}");
+        }
         Ok(())
     }
 }

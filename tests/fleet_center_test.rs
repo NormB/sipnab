@@ -126,16 +126,38 @@ impl Drop for Center {
 
 /// `sipnab fleet serve` with `args` that should be refused: its exit code
 /// and its log.
+///
+/// A center that starts when it should refuse would serve until stopped, so
+/// the wait is bounded: past it the center is killed and the test fails with
+/// what happened, where an unbounded wait would hang the suite.
 fn refused(args: &[&str]) -> Result<(i32, String), TestError> {
-    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sipnab"))
         .args(["fleet", "serve"])
         .args(args)
         .env("NO_COLOR", "1")
-        .output()?;
-    Ok((
-        out.status.code().unwrap_or(-1),
-        String::from_utf8(out.stderr)?,
-    ))
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .tied_to_test()
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill()?;
+            child.wait()?;
+            return Err("the center kept running when it should have refused to start".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut log = String::new();
+    child
+        .stderr
+        .take()
+        .ok_or("piped stderr")?
+        .read_to_string(&mut log)?;
+    Ok((status.code().unwrap_or(-1), log))
 }
 
 /// One HTTP exchange on `addr`: status and body.
@@ -210,11 +232,14 @@ fn row<'a>(v: &'a serde_json::Value, member: &str) -> Option<&'a serde_json::Val
 fn center(dir: &std::path::Path, extra: &[&str]) -> Result<Center, TestError> {
     let key = private_file(dir, "center.signing", KEY)?;
     let store = dir.join("center.store");
+    let store_key = store_key_file(dir)?;
     let mut args = vec![
         "--listen".to_string(),
         "127.0.0.1:0".to_string(),
         "--store".to_string(),
         store.to_string_lossy().into_owned(),
+        "--store-key-file".to_string(),
+        store_key.to_string_lossy().into_owned(),
         "--signing-key-file".to_string(),
         key.to_string_lossy().into_owned(),
     ];
@@ -456,6 +481,7 @@ fn the_ingest_and_the_members_list_take_only_their_scopes() -> Result<(), TestEr
     Ok(())
 }
 
+/// A store an earlier release wrote in clear is imported and sealed at start.
 /// The store is created 0600, a store other users can read is refused, and
 /// retention removes a member past it at start, from the answer and the file.
 #[cfg(unix)]
@@ -464,6 +490,7 @@ fn the_store_is_private_and_retention_is_enforced() -> Result<(), TestError> {
     use std::os::unix::fs::PermissionsExt as _;
     let dir = tempfile::tempdir()?;
     let store = dir.path().join("center.store");
+    let store_key = store_key_file(dir.path())?;
     let old = serde_json::json!({
         "member": "edge-gone",
         "received_at": (chrono::Utc::now() - chrono::Duration::hours(100)).to_rfc3339(),
@@ -487,11 +514,10 @@ fn the_store_is_private_and_retention_is_enforced() -> Result<(), TestError> {
     let m = members(&c.addr)?;
     assert!(row(&m, "edge-gone").is_none(), "past retention: {m}");
     assert!(row(&m, "edge-kept").is_some(), "inside retention: {m}");
-    let text = std::fs::read_to_string(&store)?;
-    assert!(
-        !text.contains("edge-gone"),
-        "removed from the file too: {text}"
-    );
+    assert!(sealed(&store)?, "the store written in clear is sealed now");
+    for name in ["edge-gone", "edge-kept"] {
+        assert!(!holds(&store, name)?, "{name} is not in the file in clear");
+    }
     assert_eq!(
         std::fs::metadata(&store)?.permissions().mode() & 0o777,
         0o600,
@@ -506,6 +532,8 @@ fn the_store_is_private_and_retention_is_enforced() -> Result<(), TestError> {
         "127.0.0.1:0",
         "--store",
         store.to_str().ok_or("utf-8")?,
+        "--store-key-file",
+        store_key.to_str().ok_or("utf-8")?,
         "--signing-key-file",
         key.to_str().ok_or("utf-8")?,
     ])?;
@@ -518,6 +546,8 @@ fn the_store_is_private_and_retention_is_enforced() -> Result<(), TestError> {
         "127.0.0.1:0",
         "--store",
         fresh.to_str().ok_or("utf-8")?,
+        "--store-key-file",
+        store_key.to_str().ok_or("utf-8")?,
         "--signing-key-file",
         key.to_str().ok_or("utf-8")?,
     ])?;
@@ -537,11 +567,14 @@ fn plain_http_is_refused_off_loopback_and_https_serves() -> Result<(), TestError
     let dir = tempfile::tempdir()?;
     let key = private_file(dir.path(), "center.signing", KEY)?;
     let store = dir.path().join("center.store");
+    let store_key = store_key_file(dir.path())?;
     let (code, log) = refused(&[
         "--listen",
         "0.0.0.0:0",
         "--store",
         store.to_str().ok_or("utf-8")?,
+        "--store-key-file",
+        store_key.to_str().ok_or("utf-8")?,
         "--signing-key-file",
         key.to_str().ok_or("utf-8")?,
     ])?;
@@ -558,6 +591,8 @@ fn plain_http_is_refused_off_loopback_and_https_serves() -> Result<(), TestError
         "127.0.0.1:0",
         "--store",
         store.to_str().ok_or("utf-8")?,
+        "--store-key-file",
+        store_key.to_str().ok_or("utf-8")?,
         "--signing-key-file",
         key.to_str().ok_or("utf-8")?,
         "--tls-cert",
@@ -595,6 +630,7 @@ fn a_client_ca_makes_the_center_require_a_member_certificate() -> Result<(), Tes
     let dir = tempfile::tempdir()?;
     let key = private_file(dir.path(), "center.signing", KEY)?;
     let store = dir.path().join("center.store");
+    let store_key = store_key_file(dir.path())?;
     let store_arg = store.to_str().ok_or("utf-8")?;
     let key_arg = key.to_str().ok_or("utf-8")?;
     let pki = tls_pki::test_pki("fleet-mtls")?;
@@ -604,6 +640,8 @@ fn a_client_ca_makes_the_center_require_a_member_certificate() -> Result<(), Tes
         "127.0.0.1:0",
         "--store",
         store_arg,
+        "--store-key-file",
+        store_key.to_str().ok_or("utf-8")?,
         "--signing-key-file",
         key_arg,
     ];
@@ -686,6 +724,7 @@ fn an_optional_center_serves_no_certificate_but_refuses_a_bad_one() -> Result<()
     let dir = tempfile::tempdir()?;
     let key = private_file(dir.path(), "center.signing", KEY)?;
     let store = dir.path().join("center.store");
+    let store_key = store_key_file(dir.path())?;
     let pki = tls_pki::test_pki("fleet-mtls-opt")?;
     let ca = tls_pki::client_ca("fleet-mtls-opt")?;
     let c = Center::start(&[
@@ -693,6 +732,8 @@ fn an_optional_center_serves_no_certificate_but_refuses_a_bad_one() -> Result<()
         "127.0.0.1:0",
         "--store",
         store.to_str().ok_or("utf-8")?,
+        "--store-key-file",
+        store_key.to_str().ok_or("utf-8")?,
         "--signing-key-file",
         key.to_str().ok_or("utf-8")?,
         "--tls-cert",
@@ -733,6 +774,564 @@ fn an_optional_center_serves_no_certificate_but_refuses_a_bad_one() -> Result<()
         send(Some(&stranger)).is_err(),
         "optional still refuses another CA's certificate"
     );
+    Ok(())
+}
+
+/// A store key file in `dir` for a test center: mode 0600, a fixed key.
+fn store_key_file(dir: &std::path::Path) -> Result<std::path::PathBuf, TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let path = dir.join("center.storekey");
+    std::fs::write(&path, "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=\n")?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(path)
+}
+
+/// Whether the file at `path` starts as a sealed file does.
+fn sealed(path: &std::path::Path) -> Result<bool, TestError> {
+    Ok(std::fs::read(path)?.starts_with(b"SNFS"))
+}
+
+/// Whether the file at `path` holds `text` in clear.
+fn holds(path: &std::path::Path, text: &str) -> Result<bool, TestError> {
+    Ok(std::fs::read(path)?
+        .windows(text.len())
+        .any(|w| w == text.as_bytes()))
+}
+
+/// `sipnab fleet keygen --out path`: exit code, stdout, stderr.
+fn keygen(path: &std::path::Path) -> Result<(i32, String, String), TestError> {
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["fleet", "keygen", "--out"])
+        .arg(path)
+        .env("NO_COLOR", "1")
+        .output()?;
+    Ok((
+        out.status.code().unwrap_or(-1),
+        String::from_utf8(out.stdout)?,
+        String::from_utf8(out.stderr)?,
+    ))
+}
+
+/// The key id a `keygen` line names: `<path>: key id <id>`.
+fn key_id_in(line: &str) -> Result<String, TestError> {
+    Ok(line
+        .trim()
+        .rsplit(' ')
+        .next()
+        .ok_or("a key id")?
+        .to_string())
+}
+
+/// The arguments of a center on loopback over `store`, with the store key
+/// file `store_key` and the signing key in `dir`.
+fn serve_args(
+    dir: &std::path::Path,
+    store: &std::path::Path,
+    store_key: Option<&std::path::Path>,
+    extra: &[&str],
+) -> Result<Vec<String>, TestError> {
+    let signing = private_file(dir, "center.signing", KEY)?;
+    let mut args = vec![
+        "--listen".to_string(),
+        "127.0.0.1:0".to_string(),
+        "--store".to_string(),
+        store.to_string_lossy().into_owned(),
+        "--signing-key-file".to_string(),
+        signing.to_string_lossy().into_owned(),
+    ];
+    if let Some(key) = store_key {
+        args.push("--store-key-file".to_string());
+        args.push(key.to_string_lossy().into_owned());
+    }
+    args.extend(extra.iter().map(|s| (*s).to_string()));
+    Ok(args)
+}
+
+/// A center started with [`serve_args`].
+fn serve(
+    dir: &std::path::Path,
+    store: &std::path::Path,
+    store_key: &std::path::Path,
+    extra: &[&str],
+) -> Result<Center, TestError> {
+    let args = serve_args(dir, store, Some(store_key), extra)?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    Center::start(&args)
+}
+
+/// A center that should refuse to start, with [`serve_args`]: its exit code
+/// and its log.
+fn serve_refused(
+    dir: &std::path::Path,
+    store: &std::path::Path,
+    store_key: Option<&std::path::Path>,
+    extra: &[&str],
+) -> Result<(i32, String), TestError> {
+    let args = serve_args(dir, store, store_key, extra)?;
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    refused(&args)
+}
+
+/// A store in `dir` under a new key, holding one heartbeat from each of
+/// `nodes`, with its center stopped: the store, the key file and the key id.
+fn stored(
+    dir: &std::path::Path,
+    nodes: &[&str],
+) -> Result<(std::path::PathBuf, std::path::PathBuf, String), TestError> {
+    let store = dir.join("center.store");
+    let key = dir.join("first.key");
+    let (code, out, err) = keygen(&key)?;
+    assert_eq!(code, 0, "{err}");
+    let c = serve(dir, &store, &key, &[])?;
+    for node in nodes {
+        let (status, body) = ingest(
+            &c.addr,
+            &token(node, sipnab::auth::SCOPE_FLEET_REPORT),
+            &heartbeat(node, "s-1", 1, 30),
+        )?;
+        assert_eq!(status, 200, "{body}");
+    }
+    drop(c);
+    Ok((store, key, key_id_in(&out)?))
+}
+
+/// The members a center lists, by name, in order.
+fn member_names(addr: &str) -> Result<Vec<String>, TestError> {
+    let m = members(addr)?;
+    let mut names: Vec<String> = m["members"]
+        .as_array()
+        .ok_or("members")?
+        .iter()
+        .filter_map(|r| r["member"].as_str().map(str::to_string))
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// A center without a store key does not start, creates no store, and says
+/// which flag is missing and the command that makes a key.
+#[test]
+fn failure_a_center_without_a_store_key_refuses_to_start_and_names_the_fix() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
+    let store = dir.path().join("center.store");
+    let (code, log) = serve_refused(dir.path(), &store, None, &[])?;
+    assert_eq!(code, 2, "{log}");
+    assert!(log.contains("--store-key-file is required"), "{log}");
+    assert!(log.contains("sipnab fleet keygen --out"), "{log}");
+    assert!(!log.contains("  "), "one line, single spaces: {log}");
+    assert!(!store.exists(), "no store was written without a key");
+    Ok(())
+}
+
+/// `sipnab fleet keygen` writes a private key file and prints its id, a
+/// center starts with it, and a second run on the same path changes nothing.
+#[cfg(unix)]
+#[test]
+fn success_keygen_makes_a_key_a_center_starts_with_and_never_overwrites_it() -> Result<(), TestError>
+{
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir()?;
+    let key = dir.path().join("store.key");
+    let (code, out, err) = keygen(&key)?;
+    assert_eq!(code, 0, "{err}");
+    let id = key_id_in(&out)?;
+    assert!(out.contains("store.key: key id "), "{out}");
+    assert!(
+        id.len() == 16 && id.chars().all(|c| c.is_ascii_hexdigit()),
+        "{out}"
+    );
+    assert_eq!(
+        std::fs::metadata(&key)?.permissions().mode() & 0o777,
+        0o600,
+        "the key file is for its owner only"
+    );
+    let text = std::fs::read_to_string(&key)?;
+    assert!(!out.contains(text.trim()), "the key itself is not printed");
+
+    let c = serve(dir.path(), &dir.path().join("center.store"), &key, &[])?;
+    assert_eq!(
+        member_names(&c.addr)?,
+        Vec::<String>::new(),
+        "a new store has no members"
+    );
+    drop(c);
+
+    let (code, out, err) = keygen(&key)?;
+    assert_eq!(code, 2, "{out}{err}");
+    assert!(err.contains("store.key"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(&key)?,
+        text,
+        "the key file is as it was"
+    );
+    Ok(())
+}
+
+/// Three members report to a real center. Its store file is sealed and
+/// holds none of their names, node names or addresses in clear, and a new
+/// center process on the same store and key lists all three.
+#[test]
+fn success_three_members_are_stored_sealed_and_survive_a_restart() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let nodes = ["edge-alpha", "edge-bravo", "edge-charlie"];
+    let (store, key, _) = stored(dir.path(), &nodes)?;
+    assert!(sealed(&store)?, "the store is a sealed file");
+    for needle in nodes
+        .iter()
+        .copied()
+        .chain(["127.0.0.1", "node_name", "heartbeat"])
+    {
+        assert!(!holds(&store, needle)?, "{needle} is in the store in clear");
+    }
+    let c = serve(dir.path(), &store, &key, &[])?;
+    assert_eq!(
+        member_names(&c.addr)?,
+        nodes.map(str::to_string).to_vec(),
+        "the three members, read from the store"
+    );
+    Ok(())
+}
+
+/// A heartbeat the center acknowledged is still there after the center is
+/// killed without warning and started again.
+#[test]
+fn edge_an_acknowledged_heartbeat_survives_a_killed_center() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let store = dir.path().join("center.store");
+    let key = store_key_file(dir.path())?;
+    let c = serve(dir.path(), &store, &key, &[])?;
+    let (status, body) = ingest(
+        &c.addr,
+        &token("edge-a", sipnab::auth::SCOPE_FLEET_REPORT),
+        &heartbeat("edge-a", "s-1", 1, 30),
+    )?;
+    assert_eq!(status, 200, "{body}");
+    // Dropping the center kills it (SIGKILL): there is no rewrite on exit,
+    // so the file is the base and one append.
+    drop(c);
+    let c = serve(dir.path(), &store, &key, &[])?;
+    assert_eq!(
+        member_names(&c.addr)?,
+        vec!["edge-a".to_string()],
+        "the member whose heartbeat was acknowledged"
+    );
+    Ok(())
+}
+
+/// A store under one key, started with another: the center refuses, names
+/// the sealed layer, the file, the id of the key the file needs and the
+/// flag that takes it, and leaves the file as it was.
+#[test]
+fn failure_a_store_under_another_key_refuses_the_start_and_names_the_key() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
+    let (store, _, first_id) = stored(dir.path(), &["edge-a"])?;
+    let before = std::fs::read(&store)?;
+    let other = dir.path().join("second.key");
+    assert_eq!(keygen(&other)?.0, 0, "a second key was made");
+    let (code, log) = serve_refused(dir.path(), &store, Some(&other), &[])?;
+    assert_eq!(code, 2, "{log}");
+    for want in [
+        "sealed layer",
+        "center.store",
+        first_id.as_str(),
+        "--store-old-key-file",
+    ] {
+        assert!(log.contains(want), "wants {want}: {log}");
+    }
+    let key_text = std::fs::read_to_string(&other)?;
+    assert!(!log.contains(key_text.trim()), "no key in the log");
+    assert_eq!(
+        std::fs::read(&store)?,
+        before,
+        "the refused store is untouched"
+    );
+    Ok(())
+}
+
+/// Key rotation: a center started with a new key and the old one listed
+/// reads the store and rewrites it under the new key, so the next start
+/// needs the new key only, and the old key alone no longer opens it.
+#[test]
+fn success_a_rotated_key_reads_the_store_once_with_the_old_key_listed() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (store, old, _) = stored(dir.path(), &["edge-a", "edge-b"])?;
+    let new = dir.path().join("second.key");
+    assert_eq!(keygen(&new)?.0, 0, "a second key was made");
+    let old_arg = old.to_string_lossy().into_owned();
+    let c = serve(
+        dir.path(),
+        &store,
+        &new,
+        &["--store-old-key-file", &old_arg],
+    )?;
+    assert_eq!(member_names(&c.addr)?.len(), 2, "read under the old key");
+    drop(c);
+    let c = serve(dir.path(), &store, &new, &[])?;
+    assert_eq!(
+        member_names(&c.addr)?.len(),
+        2,
+        "now under the new key alone"
+    );
+    drop(c);
+    let (code, log) = serve_refused(dir.path(), &store, Some(&old), &[])?;
+    assert_eq!(code, 2, "the old key no longer opens it: {log}");
+    Ok(())
+}
+
+/// One changed byte in the store between two runs: the center refuses to
+/// start, names the sealed layer and the file, and does not rewrite it.
+#[test]
+fn failure_a_modified_store_refuses_the_start() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (store, key, _) = stored(dir.path(), &["edge-a", "edge-b"])?;
+    let good = std::fs::read(&store)?;
+    for at in [8, good.len() / 2, good.len() - 1] {
+        let mut bad = good.clone();
+        bad[at] ^= 0x80;
+        std::fs::write(&store, &bad)?;
+        let (code, log) = serve_refused(dir.path(), &store, Some(&key), &[])?;
+        assert_eq!(code, 2, "byte {at}: {log}");
+        assert!(
+            log.contains("sealed layer") && log.contains("center.store"),
+            "byte {at}: {log}"
+        );
+        assert_eq!(std::fs::read(&store)?, bad, "byte {at}: left as found");
+    }
+    Ok(())
+}
+
+/// A store cut short inside the records it was written with refuses the
+/// start as truncated.
+#[test]
+fn failure_a_truncated_store_refuses_the_start() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (store, key, _) = stored(dir.path(), &["edge-a", "edge-b"])?;
+    // A clean start rewrites the store as one base, with no appends after.
+    drop(serve(dir.path(), &store, &key, &[])?);
+    let good = std::fs::read(&store)?;
+    std::fs::write(&store, &good[..good.len() - 40])?;
+    let (code, log) = serve_refused(dir.path(), &store, Some(&key), &[])?;
+    assert_eq!(code, 2, "{log}");
+    assert!(
+        log.contains("sealed layer") && log.contains("truncated"),
+        "{log}"
+    );
+    Ok(())
+}
+
+/// One center's store put in the place of another's, under the other's key:
+/// refused, because the file names the key it was written under.
+#[test]
+fn failure_a_store_swapped_in_from_another_center_is_refused() -> Result<(), TestError> {
+    let (a, b) = (tempfile::tempdir()?, tempfile::tempdir()?);
+    let (store_a, _, id_a) = stored(a.path(), &["edge-a"])?;
+    let (store_b, key_b, _) = stored(b.path(), &["edge-b"])?;
+    std::fs::copy(&store_a, &store_b)?;
+    let (code, log) = serve_refused(b.path(), &store_b, Some(&key_b), &[])?;
+    assert_eq!(code, 2, "{log}");
+    assert!(log.contains("sealed layer") && log.contains(&id_a), "{log}");
+    Ok(())
+}
+
+/// `--store-encryption modular` and `both` are refused at start with a
+/// message that names the value and the one that works; no store is made.
+#[test]
+fn failure_modular_and_both_are_refused_at_start_until_this_build_has_them() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
+    let store = dir.path().join("center.store");
+    let key = store_key_file(dir.path())?;
+    for mode in ["modular", "both"] {
+        let (code, log) = serve_refused(
+            dir.path(),
+            &store,
+            Some(&key),
+            &["--store-encryption", mode],
+        )?;
+        assert_eq!(code, 2, "{mode}: {log}");
+        assert!(
+            log.contains(&format!("--store-encryption {mode}")) && log.contains("`sealed`"),
+            "{mode}: {log}"
+        );
+        assert!(
+            !log.contains("  "),
+            "{mode}: one line, single spaces: {log}"
+        );
+        assert!(!store.exists(), "{mode}: no store was written");
+    }
+    Ok(())
+}
+
+/// `--store-encryption sealed` is the default spelled out, and there is no
+/// value that turns encryption off.
+#[test]
+fn edge_sealed_can_be_named_and_no_value_turns_encryption_off() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let store = dir.path().join("center.store");
+    let key = store_key_file(dir.path())?;
+    let c = serve(dir.path(), &store, &key, &["--store-encryption", "sealed"])?;
+    assert!(sealed(&store)?, "the store is a sealed file");
+    drop(c);
+    for off in ["none", "off", "plain", ""] {
+        let (code, log) =
+            serve_refused(dir.path(), &store, Some(&key), &["--store-encryption", off])?;
+        assert_eq!(code, 2, "{off:?}: {log}");
+        assert!(
+            log.contains("sealed") && log.contains("both"),
+            "{off:?}: {log}"
+        );
+    }
+    Ok(())
+}
+
+/// A store key file other users can read is refused, by the rule every
+/// private file follows.
+#[cfg(unix)]
+#[test]
+fn failure_a_store_key_others_can_read_is_refused() -> Result<(), TestError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = tempfile::tempdir()?;
+    let key = store_key_file(dir.path())?;
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o640))?;
+    let (code, log) = serve_refused(
+        dir.path(),
+        &dir.path().join("center.store"),
+        Some(&key),
+        &[],
+    )?;
+    assert_eq!(code, 2, "{log}");
+    assert!(
+        log.contains("--store-key-file") && log.contains("chmod 600"),
+        "{log}"
+    );
+    Ok(())
+}
+
+/// A store key file that holds something else is refused by what is wrong
+/// with it, and its contents are not repeated.
+#[test]
+fn failure_a_store_key_file_that_is_not_a_key_is_refused_without_its_contents()
+-> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    for (text, want) in [
+        ("correct-horse-battery\n", "not standard base64"),
+        ("c2hvcnQ=\n", "5 bytes"),
+        ("", "0 bytes"),
+    ] {
+        let key = private_file(dir.path(), "bad.key", text)?;
+        let (code, log) = serve_refused(
+            dir.path(),
+            &dir.path().join("center.store"),
+            Some(&key),
+            &[],
+        )?;
+        assert_eq!(code, 2, "{text:?}: {log}");
+        assert!(
+            log.contains("bad.key") && log.contains(want),
+            "{text:?}: {log}"
+        );
+        if !text.is_empty() {
+            assert!(!log.contains(text.trim()), "{text:?} is repeated: {log}");
+        }
+    }
+    Ok(())
+}
+
+/// An old key file that does not exist is refused by its own flag, with
+/// the store untouched.
+#[test]
+fn failure_a_missing_old_key_file_is_named_by_its_flag() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (store, key, _) = stored(dir.path(), &["edge-a"])?;
+    let before = std::fs::read(&store)?;
+    let absent = dir.path().join("absent.key").to_string_lossy().into_owned();
+    let (code, log) = serve_refused(
+        dir.path(),
+        &store,
+        Some(&key),
+        &["--store-old-key-file", &absent],
+    )?;
+    assert_eq!(code, 2, "{log}");
+    assert!(
+        log.contains("--store-old-key-file") && log.contains("absent.key"),
+        "{log}"
+    );
+    assert_eq!(std::fs::read(&store)?, before, "the store is untouched");
+    Ok(())
+}
+
+/// An old key that the store is not under is harmless: the store opens
+/// under the current key.
+#[test]
+fn edge_an_old_key_the_store_does_not_need_changes_nothing() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (store, key, _) = stored(dir.path(), &["edge-a"])?;
+    let spare = dir.path().join("spare.key");
+    assert_eq!(keygen(&spare)?.0, 0, "a spare key was made");
+    let spare_arg = spare.to_string_lossy().into_owned();
+    let c = serve(
+        dir.path(),
+        &store,
+        &key,
+        &["--store-old-key-file", &spare_arg],
+    )?;
+    assert_eq!(
+        member_names(&c.addr)?,
+        vec!["edge-a".to_string()],
+        "the member is read under the current key"
+    );
+    Ok(())
+}
+
+/// A center started on a path with no store makes a sealed one before it
+/// takes a heartbeat, and leaves no staged file beside it.
+#[test]
+fn edge_a_new_store_is_sealed_before_the_first_heartbeat() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let sub = dir.path().join("data");
+    std::fs::create_dir(&sub)?;
+    let store = sub.join("center.store");
+    let key = store_key_file(dir.path())?;
+    let c = serve(dir.path(), &store, &key, &[])?;
+    assert!(sealed(&store)?, "sealed before any heartbeat");
+    let names: Vec<String> = std::fs::read_dir(&sub)?
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["center.store".to_string()],
+        "the store, and no staged file beside it"
+    );
+    drop(c);
+    Ok(())
+}
+
+/// `keygen` into a directory that does not exist is refused, names the
+/// path, and prints no key id.
+#[test]
+fn failure_keygen_into_a_missing_directory_is_refused() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (code, out, err) = keygen(&dir.path().join("no-such-dir/store.key"))?;
+    assert_eq!(code, 2, "{out}{err}");
+    assert!(
+        err.contains("sipnab fleet keygen") && err.contains("no-such-dir"),
+        "{err}"
+    );
+    assert!(out.is_empty(), "{out}");
+    Ok(())
+}
+
+/// Two keys from `keygen` differ, and so do their ids.
+#[test]
+fn edge_two_generated_keys_and_their_ids_differ() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (a, b) = (dir.path().join("a.key"), dir.path().join("b.key"));
+    let (out_a, out_b) = (keygen(&a)?.1, keygen(&b)?.1);
+    assert_ne!(std::fs::read(&a)?, std::fs::read(&b)?, "two keys differ");
+    assert_ne!(key_id_in(&out_a)?, key_id_in(&out_b)?, "two key ids differ");
     Ok(())
 }
 
