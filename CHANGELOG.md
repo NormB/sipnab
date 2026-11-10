@@ -29,6 +29,7 @@ entry that carries them.
   - The site's accessibility check now runs the WCAG 2.1 and 2.2 rules, and scans a notes page, the notes list and the CLA page.
 - **The home page's "print a report" step prints the report.** `sipnab -N -I sample-call.pcap --report` printed every SIP message of the sample first: 88 lines, with the report at the end. The step now adds `--no-cli-print`, and prints the report's 15 lines.
 - **The troubleshooting page names the release that fixed two signal defects.** "A terminal interface that outlives its terminal" and "A run that ignores SIGTERM while it waits for input" said to upgrade to "a later release". That release is 0.5.235.
+- **`demos/mcp-stdio.sh` runs on bash 3.2, the bash macOS ships (DEMO-MCP-STDIO-BASH32).** The script talked to the server through `coproc`, which bash gained in 4.0, so on macOS it ended with a syntax error at that line. It also expanded empty arrays under `set -u`, which bash before 4.4 refuses. A call with no arguments sent `{\}` as the tool's arguments, because bash 3.2 keeps a backslash that later versions drop, so the server never answered it. The script now uses two named pipes, guarded expansions and a default written without the backslash. It also names a missing `jq` and a `SIPNAB_BIN` that names no program at once, where it reported `no initialize reply` after 20 seconds. `tests/demo_mcp_stdio_test.rs` runs the script, and the macOS leg of CI runs it on bash 3.2.
 
 ## [0.5.244] - 2026-11-10
 

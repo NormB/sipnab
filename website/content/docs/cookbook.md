@@ -5145,6 +5145,10 @@ your rules, and which bytes prove a finding.
 Each call below runs the tool once over MCP stdio against a sample capture,
 with [`demos/mcp-stdio.sh`](https://github.com/NormB/sipnab/blob/main/demos/mcp-stdio.sh),
 and selects a few fields with `jq`. An agent sends the same arguments.
+
+The script needs `jq` and bash 3.2 or later, so it runs with the bash macOS
+ships. It names what is missing: `jq`, the capture, or the binary.
+
 Point `SIPNAB_BIN` at the binary you run:
 
 ```bash
