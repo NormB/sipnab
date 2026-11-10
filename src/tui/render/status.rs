@@ -399,6 +399,11 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         )
     };
 
+    // Every case is cut the same way: `…` in the last column. Only the view
+    // filter was; the call flow's mode line, a long error and a long search
+    // prompt stopped at the edge with nothing to say they went on. Spans that
+    // fit come back as they are.
+    let spans = fit_spans_to_cols(spans, w);
     let line3 = Paragraph::new(Line::from(spans)).style(status_bar_style(&app.theme));
     frame.render_widget(line3, area);
 }
@@ -518,6 +523,7 @@ pub(in crate::tui) fn fkey_bar_items(
     if let Some(p) = popup {
         match p {
             Popup::QuitConfirm => vec![("Y", "Quit"), ("N/Esc", "Cancel")],
+            Popup::ClearConfirm(_) => vec![("Y", "Discard"), ("N/Esc/Enter", "Keep")],
             Popup::G729Install => vec![("Y", "Download"), ("N/Esc", "Not now")],
             Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],
             Popup::UnsavedNotes => vec![("Y", "Open"), ("N/Esc", "Keep")],
@@ -1134,6 +1140,233 @@ mod tests {
             .cell((1, 0))
             .ok_or("cell() returned None")?
             .fg)
+    }
+
+    /// Success: while the clear confirmation is open the key bar names its
+    /// two answers.
+    #[test]
+    fn the_key_bar_names_the_clear_confirmation_answers() {
+        let popup = Some(Popup::ClearConfirm(crate::tui::ClearKind::Calls));
+        let items = fkey_bar_items(&View::CallList, &popup, 120, false);
+        let text: Vec<String> = items.iter().map(|(k, l)| format!("{k} {l}")).collect();
+        assert_eq!(text, ["Y Discard", "N/Esc/Enter Keep"], "the two answers");
+    }
+
+    /// Status line 3 drawn `cols` wide, as text with trailing spaces removed.
+    fn line3_text(app: &App, cols: u16) -> Result<String, TestError> {
+        let mut terminal = Terminal::new(TestBackend::new(cols, 1))?;
+        terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, cols, 1), app))?;
+        let buf = terminal.backend().buffer();
+        let row: String = (0..cols)
+            .filter_map(|x| buf.cell((x, 0)).map(ratatui::buffer::Cell::symbol))
+            .collect();
+        Ok(row.trim_end().to_string())
+    }
+
+    /// An app showing a call flow with the detail pane open.
+    fn app_in_a_call_flow() -> App {
+        let mut app = App::new_test();
+        app.current_view = View::CallFlow("call-1@test".to_string());
+        app.flow.raw_preview = true;
+        app
+    }
+
+    /// Failure: the call flow's mode line is wider than 60 columns, and the
+    /// cut is marked. It stopped at the edge with nothing to say it went on.
+    #[test]
+    fn the_call_flow_mode_line_marks_its_cut() -> Result<(), TestError> {
+        let row = line3_text(&app_in_a_call_flow(), 60)?;
+        assert!(row.ends_with('\u{2026}'), "no ellipsis: {row:?}");
+        assert_eq!(row.chars().count(), 60, "the mark is in the last column");
+        Ok(())
+    }
+
+    /// Success: where the call flow's mode line fits, it is whole and
+    /// carries no mark.
+    #[test]
+    fn the_call_flow_mode_line_is_whole_where_it_fits() -> Result<(), TestError> {
+        let row = line3_text(&app_in_a_call_flow(), 200)?;
+        assert!(row.contains("Focus: Ladder (Tab)"), "{row:?}");
+        assert!(
+            !row.contains('\u{2026}'),
+            "an ellipsis on a line that fits: {row:?}"
+        );
+        Ok(())
+    }
+
+    /// Edge: an error wider than the row is cut with the mark.
+    #[test]
+    fn a_long_error_marks_its_cut() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.set_status_error(format!("Save failed: {}", "x".repeat(200)));
+        let row = line3_text(&app, 60)?;
+        assert!(row.ends_with('\u{2026}'), "no ellipsis: {row:?}");
+        Ok(())
+    }
+
+    /// Edge: a search prompt wider than the row is cut with the mark.
+    #[test]
+    fn a_long_search_prompt_marks_its_cut() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.search_active = true;
+        app.search_query = "q".repeat(200);
+        let row = line3_text(&app, 60)?;
+        assert!(row.ends_with('\u{2026}'), "no ellipsis: {row:?}");
+        Ok(())
+    }
+
+    /// Edge: an error exactly as wide as the row is whole and carries no
+    /// mark; the mark is only for a real cut.
+    #[test]
+    fn an_error_that_exactly_fills_the_row_carries_no_mark() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        // " Error: " is 8 columns, so 52 more fill a 60-column row.
+        app.set_status_error("x".repeat(52));
+        let row = line3_text(&app, 60)?;
+        assert_eq!(row.chars().count(), 60, "the row is full: {row:?}");
+        assert!(row.ends_with('x'), "no mark on a line that fits: {row:?}");
+        Ok(())
+    }
+
+    /// Edge: one column more than the row holds is cut, and the mark
+    /// replaces the last column that would have shown text.
+    #[test]
+    fn an_error_one_column_too_wide_is_marked() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.set_status_error("x".repeat(53));
+        let row = line3_text(&app, 60)?;
+        assert_eq!(row.chars().count(), 60, "the row is full: {row:?}");
+        assert!(row.ends_with("x\u{2026}"), "{row:?}");
+        Ok(())
+    }
+
+    /// Edge: the mouse-capture reminder is cut with the mark on a row
+    /// narrower than it.
+    #[test]
+    fn the_mouse_capture_reminder_marks_its_cut() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.mouse_capture_enabled = false;
+        let row = line3_text(&app, 30)?;
+        assert!(row.starts_with(" Mouse capture OFF"), "{row:?}");
+        assert!(row.ends_with('\u{2026}'), "no ellipsis: {row:?}");
+        Ok(())
+    }
+
+    /// Edge: an error in double-width characters is cut on a character
+    /// boundary and never drawn wider than the row.
+    #[test]
+    fn a_double_width_error_is_cut_inside_the_row() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.set_status_error("\u{9519}".repeat(100));
+        let mut terminal = Terminal::new(TestBackend::new(61, 1))?;
+        terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, 61, 1), &app))?;
+        let buf = terminal.backend().buffer();
+        let marks = (0..61)
+            .filter_map(|x| buf.cell((x, 0)))
+            .filter(|c| c.symbol() == "\u{2026}")
+            .count();
+        assert_eq!(marks, 1, "one mark inside the row");
+        Ok(())
+    }
+
+    /// Failure: under NO_COLOR the mark of a cut error carries no color.
+    #[test]
+    fn the_mark_of_a_cut_error_has_no_color_under_no_color() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.theme = Theme::monochrome();
+        app.set_status_error("x".repeat(200));
+        let mut terminal = Terminal::new(TestBackend::new(60, 1))?;
+        terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, 60, 1), &app))?;
+        let cell = terminal
+            .backend()
+            .buffer()
+            .cell((59, 0))
+            .ok_or("cell() returned None")?
+            .clone();
+        assert_eq!(cell.symbol(), "\u{2026}", "the mark is in the last column");
+        assert_eq!(cell.fg, ratatui::style::Color::Reset, "no text color");
+        assert_eq!(cell.bg, ratatui::style::Color::Reset, "no background color");
+        Ok(())
+    }
+
+    /// Success: the mark of a cut error is drawn in the error's own color,
+    /// so it reads as part of the message.
+    #[test]
+    fn the_mark_of_a_cut_error_takes_the_error_color() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.set_status_error("x".repeat(200));
+        let mut terminal = Terminal::new(TestBackend::new(60, 1))?;
+        terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, 60, 1), &app))?;
+        let fg = terminal
+            .backend()
+            .buffer()
+            .cell((59, 0))
+            .ok_or("cell() returned None")?
+            .fg;
+        assert_eq!(
+            fg,
+            crate::tui::theme::legible_on(app.theme.bad, app.theme.status_bg),
+            "the mark is part of the error"
+        );
+        Ok(())
+    }
+
+    /// Failure: a status row of no width draws nothing and does not panic.
+    #[test]
+    fn a_status_row_of_no_width_draws_nothing() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.set_status_error("File not found");
+        let mut terminal = Terminal::new(TestBackend::new(10, 1))?;
+        terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, 0, 1), &app))?;
+        let row: String = (0..10)
+            .filter_map(|x| terminal.backend().buffer().cell((x, 0)))
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert_eq!(row.trim(), "", "nothing drawn outside a zero-width area");
+        Ok(())
+    }
+
+    /// Success: under NO_COLOR the view filter on line 3 is drawn in the
+    /// terminal's own text color. The `selected` slot was gray there.
+    #[test]
+    fn the_view_filter_has_no_color_under_no_color() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.theme = Theme::monochrome();
+        let mut terminal = Terminal::new(TestBackend::new(60, 1))?;
+        terminal.draw(|frame| render_status_line3(frame, Rect::new(0, 0, 60, 1), &app))?;
+        let buf = terminal.backend().buffer();
+        for x in 0..60 {
+            let cell = buf.cell((x, 0)).ok_or("cell() returned None")?;
+            assert_eq!(cell.fg, ratatui::style::Color::Reset, "column {x}");
+        }
+        Ok(())
+    }
+
+    /// Success: under NO_COLOR the capture filter on line 2 is drawn in the
+    /// terminal's own text color.
+    #[test]
+    fn the_capture_filter_has_no_color_under_no_color() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.theme = Theme::monochrome();
+        app.bpf_filter = "udp port 5060".to_string();
+        let mut terminal = Terminal::new(TestBackend::new(60, 1))?;
+        terminal.draw(|frame| render_status_line2(frame, Rect::new(0, 0, 60, 1), &app))?;
+        let buf = terminal.backend().buffer();
+        for x in 0..60 {
+            let cell = buf.cell((x, 0)).ok_or("cell() returned None")?;
+            assert_eq!(cell.fg, ratatui::style::Color::Reset, "column {x}");
+        }
+        Ok(())
+    }
+
+    /// Edge: a short error on a wide row carries no mark.
+    #[test]
+    fn a_short_error_carries_no_mark() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.set_status_error("File not found");
+        let row = line3_text(&app, 60)?;
+        assert_eq!(row, " Error: File not found", "drawn whole");
+        Ok(())
     }
 
     /// Success: an error is labeled in words. Color was the only thing that

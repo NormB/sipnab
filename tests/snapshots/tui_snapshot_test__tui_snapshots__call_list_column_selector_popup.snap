@@ -5,10 +5,10 @@ expression: output
  Live capture: any    Dialogs: 3 shown of 3    Autoscroll: on
  Capture filter (BPF): none
  View filter: none
-  # ▲    Method    From       To         State      Msgs +Prev    PDD    Duratio
-> [ ] 1  INVITE   ┌ Columns ─────────────────────────────────┐0s  1000ms 1m2s
-  [ ] 2  INVITE   │> [x] #                                   │0s         1.0s
-  [ ] 3  INVITE   │  [x] Method                              │0s         2.0s
+  # ▲    Method    From      To         State      Msgs +Prev    PDD    Duration
+> [ ] 1  INVITE   ┌ Columns ─────────────────────────────────┐s  1000ms 1m2s
+  [ ] 2  INVITE   │> [x] #                                   │s         1.0s
+  [ ] 3  INVITE   │  [x] Method                              │s         2.0s
                   │  [x] From                                │
                   │  [x] To                                  │
                   │  [x] Source                              │

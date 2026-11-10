@@ -1760,7 +1760,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // links to its own page's key, authentication, TLS and Host sections and
     // to mtls.md; cli-reference.md +1 and config-reference.md +1, the
     // `--api-console` row and the `[api] console` row linking that section.
-    const EXPECTED_WIKI_LINKS: usize = 2512;
+    // 2512 -> 2513 (TUI-HELP-FLOW-S): keybindings.md +1, the Call flow
+    // table's new `S` row links to #relay-statistics.
+    // 2513 -> 2516 (TUI-CLEAR-CONFIRM): keybindings.md +3, the `Ctrl+L`, `i`
+    // and `I` rows link to #clear-confirmation.
+    const EXPECTED_WIKI_LINKS: usize = 2516;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

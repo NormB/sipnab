@@ -11,8 +11,8 @@ expression: output
 │                                                                                                                                │
 │    MOS   Rating   Jitter   Loss%   Packets  Codec    Stream                                                                    │
 │                                                                                                                                │
-│                                                                                                                                │
-│                                                                                                                                │
+│  A stream appears here once RTP packets are seen.                                                                              │
+│  Esc returns to the call list.                                                                                                 │
 │                                                                                                                                │
 │                                                                                                                                │
 │                                                                                                                                │

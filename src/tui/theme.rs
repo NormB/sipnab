@@ -114,14 +114,15 @@ impl Theme {
     }
 
     /// NO_COLOR theme: every color collapses to the terminal default.
-    /// `selected` keeps a gray band so the selection highlight stays
-    /// visible without emitting real colors.
+    /// Nothing here is a color, `selected` included: gray is a color, and
+    /// it was drawn as gray text and a gray band. A selection is marked
+    /// with reverse video where [`Self::no_color`] is set.
     pub fn monochrome() -> Self {
         Self {
             background: Color::Reset,
             foreground: Color::Reset,
             header: Color::Reset,
-            selected: Color::Gray,
+            selected: Color::Reset,
             accent: Color::Reset,
             good: Color::Reset,
             warning: Color::Reset,
@@ -714,6 +715,58 @@ mod keymap_collision_tests {
 #[cfg(test)]
 mod no_color_tests {
     use super::*;
+
+    /// Failure: the NO_COLOR theme holds no color in any slot. `selected`
+    /// was gray, which drew gray text and a gray band under NO_COLOR.
+    #[test]
+    fn the_no_color_theme_holds_no_color_in_any_slot() {
+        let t = Theme::monochrome();
+        for (name, color) in [
+            ("background", t.background),
+            ("foreground", t.foreground),
+            ("header", t.header),
+            ("selected", t.selected),
+            ("accent", t.accent),
+            ("good", t.good),
+            ("warning", t.warning),
+            ("bad", t.bad),
+            ("muted", t.muted),
+            ("border", t.border),
+            ("status_bg", t.status_bg),
+        ] {
+            assert_eq!(color, Color::Reset, "{name}");
+        }
+    }
+
+    /// Failure: a `selected` color in the config is ignored under NO_COLOR,
+    /// like every other configured color.
+    #[test]
+    fn a_configured_selected_color_is_ignored_under_no_color() {
+        let config = crate::config::ThemeConfig {
+            selected: Some("yellow".to_string()),
+            ..Default::default()
+        };
+        let t = Theme::from_config_with_no_color(&config, true);
+        assert_eq!(t.selected, Color::Reset, "config ignored");
+    }
+
+    /// Edge: the legacy `highlight` alias is ignored under NO_COLOR too.
+    #[test]
+    fn the_highlight_alias_is_ignored_under_no_color() {
+        let config = crate::config::ThemeConfig {
+            highlight: Some("yellow".to_string()),
+            ..Default::default()
+        };
+        let t = Theme::from_config_with_no_color(&config, true);
+        assert_eq!(t.selected, Color::Reset, "alias ignored");
+    }
+
+    /// Success: a color theme keeps its yellow `selected`; only the
+    /// NO_COLOR theme changed.
+    #[test]
+    fn the_default_theme_keeps_its_selected_color() {
+        assert_eq!(Theme::default().selected, Color::Yellow, "unchanged");
+    }
 
     /// The NO_COLOR theme says so, so a view with colors of its own (not
     /// theme slots) can leave them out. The default theme does not.

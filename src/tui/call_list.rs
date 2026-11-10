@@ -359,13 +359,17 @@ pub struct CallListDisplay<'a> {
     /// empty-state hint: an empty list over a full store is a filter, not a
     /// quiet network.
     pub hidden: usize,
+    /// A file load is in progress. Selects the empty-state hint: an empty
+    /// list during a load is not a file without SIP.
+    pub loading: bool,
 }
 
 /// What the call list says while it has no rows, by case: every dialog is
-/// hidden by the view filter or search (`hidden > 0`), a file that held no
-/// SIP (`offline`), or a live capture still waiting. Each names the key that
+/// hidden by the view filter or search (`hidden > 0`), a file still being
+/// read (`loading`), a file that held no SIP (`offline`), or a live capture
+/// still waiting. Each names the key that
 /// moves the operator on. Pure.
-pub(crate) fn empty_list_hint(offline: bool, hidden: usize) -> String {
+pub(crate) fn empty_list_hint(offline: bool, hidden: usize, loading: bool) -> String {
     if hidden > 0 {
         format!(
             "\n  No dialog matches the view filter or search.\n\n  {} {} hidden. \
@@ -373,6 +377,10 @@ pub(crate) fn empty_list_hint(offline: bool, hidden: usize) -> String {
             crate::tui::count_noun(hidden, "dialog", "dialogs"),
             if hidden == 1 { "is" } else { "are" }
         )
+    } else if loading {
+        "\n  Reading the file\u{2026}\n\n  Dialogs appear here as sipnab finds them. The line above \
+         counts the packets read.\n  F1 shows help, q quits."
+            .to_string()
     } else if offline {
         "\n  No SIP dialogs found.\n\n  The pcap file may not contain SIP traffic.\n  O opens \
          another file, F1 shows help, q quits."
@@ -810,7 +818,7 @@ pub fn render_call_list(
                 width: table_area.width,
                 height: table_area.height - 1,
             };
-            let hint = empty_list_hint(display.offline, display.hidden);
+            let hint = empty_list_hint(display.offline, display.hidden, display.loading);
             frame.render_widget(
                 Paragraph::new(hint).style(Style::default().fg(theme.muted)),
                 msg_area,
@@ -1100,30 +1108,49 @@ fn layout_overhead(columns: u16) -> u16 {
 ///
 /// `fixed` is `[#, Method, State, Msgs, Date, PDD, Duration]` — the fixed
 /// columns in their own order, which is not their display order because the
-/// four flex columns sit between Method and State.
+/// four flex columns sit between Method and State. `None` is a column the
+/// width cannot carry.
 fn assemble_widths(
-    fixed: [u16; 7],
+    fixed: [Option<u16>; 7],
     from: Option<u16>,
     to: Option<u16>,
     addr: Option<u16>,
 ) -> [Option<Constraint>; 11] {
+    let length = |w: Option<u16>| w.map(Constraint::Length);
     [
-        Some(Constraint::Length(fixed[0])),
-        Some(Constraint::Length(fixed[1])),
-        from.map(Constraint::Length),
-        to.map(Constraint::Length),
-        addr.map(Constraint::Length),
-        addr.map(Constraint::Length),
-        Some(Constraint::Length(fixed[2])),
-        Some(Constraint::Length(fixed[3])),
-        Some(Constraint::Length(fixed[4])),
-        Some(Constraint::Length(fixed[5])),
-        Some(Constraint::Length(fixed[6])),
+        length(fixed[0]),
+        length(fixed[1]),
+        length(from),
+        length(to),
+        length(addr),
+        length(addr),
+        length(fixed[2]),
+        length(fixed[3]),
+        length(fixed[4]),
+        length(fixed[5]),
+        length(fixed[6]),
     ]
 }
 
+/// The order in which whole columns are dropped once Source and Destination
+/// are gone and the row still does not fit: indexes into the fixed-width
+/// array `[#, Method, State, Msgs, Date, PDD, Duration]`, first dropped
+/// first.
+///
+/// | Dropped below | Column | Why this early or late |
+/// |---|---|---|
+/// | 85 columns | Source and Destination | the call flow shows them, one key away |
+/// | 69 columns | Duration | describes a call already picked |
+/// | 60 columns | Date (the timing column) | the list is already in time order |
+/// | 51 columns | PDD | a measurement of one call, not a way to pick one |
+/// | 44 columns | Msgs | the last hint of how much a call holds |
+///
+/// `#`, Method, From, To and State are never dropped at or above the
+/// 40-column floor: they are what a call is picked by.
+const NARROW_DROP_ORDER: [usize; 4] = [6, 4, 5, 3];
+
 /// Compute dynamic column widths for the available terminal width, dropping
-/// any identity column the width cannot show legibly.
+/// whole columns the width cannot show legibly, in a fixed order.
 ///
 /// Fixed-width columns (#, Method, State, Msgs, Date, PDD, Duration) keep
 /// their sizes at a given breakpoint. The four identity columns — From, To,
@@ -1133,11 +1160,11 @@ fn assemble_widths(
 /// and the cells it would have consumed — its own width plus the spacing cell
 /// that followed it — go to the columns that remain.
 ///
-/// The two pairs are dropped as pairs, richest layout first: addresses go
-/// before identities. Source without Destination is half a fact, and in
-/// triage the parties are the primary scan key while their transport
-/// addresses are the follow-up question — one that the call flow answers with
-/// room to spare, one keystroke away.
+/// The address pair is dropped as a pair, and first: Source without
+/// Destination is half a fact, and in triage the parties are the primary
+/// scan key while their transport addresses are the follow-up question — one
+/// that the call flow answers with room to spare, one keystroke away. After
+/// it, whole fixed columns go in [`NARROW_DROP_ORDER`]; From and To stay.
 ///
 /// # Arguments
 ///
@@ -1149,8 +1176,9 @@ fn assemble_widths(
 /// of the user's visibility choices). `Some(Constraint::Length(n))` with
 /// `n > 0` for a column to lay out; `None` for a column the width cannot
 /// carry. The measured thresholds, at the default full visibility:
-/// Source/Destination appear from 84 cols, From/To from 68, and below 68 the
-/// row is the fixed columns alone. At 120 and above the wider breakpoint
+/// Source/Destination appear from 85 cols; below 69 the timing and count
+/// columns go one at a time, as [`NARROW_DROP_ORDER`] lists them, and From/To
+/// stay down to the 40-column floor. At 120 and above the wider breakpoint
 /// applies, where the pool is large enough that nothing is ever dropped.
 fn compute_column_widths(total_width: u16) -> [Option<Constraint>; 11] {
     // Fixed columns in `assemble_widths` order, and how much of the flex pool
@@ -1161,11 +1189,13 @@ fn compute_column_widths(total_width: u16) -> [Option<Constraint>; 11] {
     // 15 cells a full IPv4 literal needs, with room for a short resolved name.
     // Narrow: #(6) holds "[ ] " plus a 2-digit index, and Method is 9 so the
     // longest common method (SUBSCRIBE) never truncates. Addresses want 2/5.
+    // Duration is 8 at both breakpoints: its header is 8 letters, and at 7
+    // the narrow layout drew it as "Duratio".
     let wide = total_width >= 120;
     let fixed: [u16; 7] = if wide {
         [7, 10, 12, 5, 8, 8, 8]
     } else {
-        [6, 9, 10, 4, 8, 6, 7]
+        [6, 9, 10, 4, 8, 6, 8]
     };
     let fixed_sum: u16 = fixed.iter().sum();
     let preferred_addr = |flex: u16| if wide { 21.min(flex / 4) } else { flex * 2 / 5 };
@@ -1191,23 +1221,36 @@ fn compute_column_widths(total_width: u16) -> [Option<Constraint>; 11] {
     // the remainder is what is genuinely left over.
     let identity_pool = flex - addr * 2;
     let (from, to) = (identity_pool / 2, identity_pool - identity_pool / 2);
+    let mut kept = fixed.map(Some);
     if addr >= MIN_ADDRESS_WIDTH && from >= MIN_IDENTITY_WIDTH {
-        return assemble_widths(fixed, Some(from), Some(to), Some(addr));
+        return assemble_widths(kept, Some(from), Some(to), Some(addr));
     }
 
-    // The address pair cannot be shown. Drop both and re-budget against nine
-    // columns: the two widths AND the two spacing cells they cost come back.
-    let flex = total_width.saturating_sub(fixed_sum + layout_overhead(9));
-    let (from, to) = (flex / 2, flex - flex / 2);
-    // `to` is the larger half by construction, so testing `from` tests both.
-    if from >= MIN_IDENTITY_WIDTH {
-        return assemble_widths(fixed, Some(from), Some(to), None);
+    // The address pair cannot be shown. Drop both, and then whole fixed
+    // columns in `NARROW_DROP_ORDER`, re-budgeting each time: a dropped
+    // column returns its width AND the spacing cell that followed it. The
+    // first set that leaves From and To their minimum is the answer.
+    //
+    // The row must never claim more cells than the terminal has. When it did
+    // (below 59 columns), ratatui's solver took the deficit out of whichever
+    // columns it chose, and the choice differed from run to run.
+    let mut drops = NARROW_DROP_ORDER.iter();
+    loop {
+        let fixed_sum: u16 = kept.iter().flatten().sum();
+        let columns = u16::try_from(kept.iter().flatten().count() + 2).unwrap_or(u16::MAX);
+        let flex = total_width.saturating_sub(fixed_sum + layout_overhead(columns));
+        let (from, to) = (flex / 2, flex - flex / 2);
+        // `to` is the larger half by construction, so testing `from` tests both.
+        if from >= MIN_IDENTITY_WIDTH {
+            return assemble_widths(kept, Some(from), Some(to), None);
+        }
+        match drops.next() {
+            Some(&i) => kept[i] = None,
+            // Below the 40-column floor `render_app` draws no call list. The
+            // three columns left are the answer for any caller that asks.
+            None => return assemble_widths(kept, None, None, None),
+        }
     }
-
-    // Nothing identity-shaped fits: the row is the fixed columns alone. The
-    // caller can still read state, message count and timing, and Enter still
-    // opens the call flow, where the parties are named in full.
-    assemble_widths(fixed, None, None, None)
 }
 
 /// Format a dialog duration for the call list: sub-second in ms, under a
@@ -1539,10 +1582,13 @@ mod tests {
             wide[2].is_some() && wide[3].is_some(),
             "From and To must be present at 120 columns: {wide:?}"
         );
-        let narrow = super::compute_column_widths(60);
+        // From and To now stay down to the 40-column floor (the timing and
+        // count columns go first), so the width that cannot pay for them is
+        // 38, below anything `render_app` draws a call list into.
+        let narrow = super::compute_column_widths(38);
         assert!(
             narrow[2].is_none() && narrow[3].is_none(),
-            "From and To must be DROPPED at 60 columns, not rendered empty: {narrow:?}"
+            "From and To must be DROPPED at 38 columns, not rendered empty: {narrow:?}"
         );
     }
 
@@ -1553,18 +1599,65 @@ mod tests {
     /// hides every dialog the store holds (which the old hint reported as
     /// "No SIP dialogs found" over a full capture).
     #[test]
+    fn an_empty_list_during_a_load_says_the_file_is_being_read() {
+        // Success: the hint names the load and the keys that still work.
+        let hint = empty_list_hint(true, 0, true);
+        assert!(hint.contains("Reading the file"), "{hint}");
+        assert!(hint.contains("F1 shows help, q quits"), "{hint}");
+    }
+
+    /// Failure: during a load the hint does not say the file holds no SIP,
+    /// nor that a live capture is waiting. It said the first.
+    #[test]
+    fn an_empty_list_during_a_load_does_not_blame_the_file() {
+        for offline in [true, false] {
+            let hint = empty_list_hint(offline, 0, true);
+            assert!(!hint.contains("may not contain SIP traffic"), "{hint}");
+            assert!(!hint.contains("Waiting for SIP traffic"), "{hint}");
+        }
+    }
+
+    /// Edge: dialogs hidden by the filter are the reason even during a
+    /// load, because clearing the filter is what shows them.
+    #[test]
+    fn hidden_dialogs_are_named_even_during_a_load() {
+        let hint = empty_list_hint(true, 2, true);
+        assert!(hint.contains("2 dialogs"), "{hint}");
+        assert!(hint.contains("F9"), "{hint}");
+    }
+
+    /// Edge: a file opened during a live capture is also being read; the
+    /// hint says so and not that the capture is waiting.
+    #[test]
+    fn a_load_during_a_live_capture_says_the_file_is_being_read() {
+        let hint = empty_list_hint(false, 0, true);
+        assert!(hint.contains("Reading the file"), "{hint}");
+    }
+
+    /// Edge: one hidden dialog during a load reads in the singular.
+    #[test]
+    fn one_hidden_dialog_during_a_load_reads_in_the_singular() {
+        let hint = empty_list_hint(true, 1, true);
+        assert!(hint.contains("1 dialog is hidden"), "{hint}");
+    }
+
+    /// What the call list says while it has no rows, by case.
+    #[test]
     fn the_empty_list_hint_names_the_case_and_the_next_step() {
-        let live = empty_list_hint(false, 0);
+        let live = empty_list_hint(false, 0, false);
         assert!(live.contains("Waiting for SIP traffic"), "{live}");
         assert!(live.contains("F1"), "{live}");
-        let file = empty_list_hint(true, 0);
+        let file = empty_list_hint(true, 0, false);
         assert!(file.contains("may not contain SIP traffic"), "{file}");
         assert!(file.contains("O opens another file"), "{file}");
-        let hidden = empty_list_hint(false, 3);
+        let hidden = empty_list_hint(false, 3, false);
         assert!(hidden.contains("3 dialogs"), "{hidden}");
         assert!(hidden.contains("F9"), "{hidden}");
         assert!(!hidden.contains("No SIP dialogs found"), "{hidden}");
-        assert!(empty_list_hint(true, 1).contains("1 dialog "), "singular");
+        assert!(
+            empty_list_hint(true, 1, false).contains("1 dialog "),
+            "singular"
+        );
     }
 
     /// Regression: below 120 cols the Method column was `Length(8)`, which
@@ -1810,12 +1903,14 @@ mod tests {
     /// The overhead is charged per laid-out column, not as a flat 12: a
     /// dropped column returns the spacing cell that followed it as well as
     /// its own width. With the four identity columns dropped, the fixed
-    /// seven (50) plus their overhead (8) fit from 58 cols up — which is why
-    /// this sweep starts at 58 (57 before the index column grew a cell for
-    /// the space in `[ ] 1`, 61 before that).
+    /// seven (51) plus their overhead (8) fit from 59 cols up. This sweep
+    /// started there, and below it the row claimed more than the terminal
+    /// had: the solver then chose which column to shorten, differently from
+    /// run to run. Columns are now dropped whole, in a fixed order, so the
+    /// sweep starts at the 40-column floor.
     #[test]
     fn column_widths_never_oversubscribe_the_terminal() -> Result<(), TestError> {
-        for width in 58u16..=200 {
+        for width in 40u16..=200 {
             let widths = compute_column_widths(width);
             let (sum, count) = laid_out(&widths, width)?;
             let overhead = layout_overhead(count);
@@ -1919,22 +2014,114 @@ mod tests {
     /// column grew a cell to put a space between the checkbox and the number
     /// (`[ ] 1`, which read as `[ ]1`).
     #[test]
-    fn identity_columns_appear_only_at_the_widths_that_can_carry_them() {
-        let present = |width: u16, i: usize| compute_column_widths(width)[i].is_some();
-        // Source/Destination (4, 5): the pair arrives together at 84.
-        assert!(!present(83, 4) && !present(83, 5), "addresses absent at 83");
-        assert!(present(84, 4) && present(84, 5), "addresses present at 84");
-        // From/To (2, 3): the pair arrives together at 68.
-        assert!(!present(67, 2) && !present(67, 3), "From/To absent at 67");
-        assert!(present(68, 2) && present(68, 3), "From/To present at 68");
-        // The fixed columns are unconditional: they are what is left at the
-        // 40-column floor, and they are still there at the widest layout.
-        for width in [40u16, 66, 82, 120, 200] {
+    fn every_laid_out_fixed_column_holds_its_whole_header() {
+        // Success: at every width the fixed columns are at least as wide as
+        // their header label. Duration was 7 cells below 120 columns, so its
+        // 8-letter header drew as "Duratio".
+        for width in 40u16..=200 {
             let widths = compute_column_widths(width);
-            for i in [0usize, 1, 6, 7, 8, 9, 10] {
+            for i in [1usize, 6, 7, 9, 10] {
+                let Some(Constraint::Length(w)) = widths[i] else {
+                    continue;
+                };
                 assert!(
+                    usize::from(w) >= COLUMN_LABELS[i].len(),
+                    "at {width} cols the {} column is {w} cells",
+                    COLUMN_LABELS[i]
+                );
+            }
+        }
+    }
+
+    /// Edge: the Duration column is 8 cells on both sides of the 120-column
+    /// breakpoint.
+    #[test]
+    fn the_duration_column_is_eight_cells_at_both_breakpoints() {
+        for width in [80u16, 119, 120] {
+            assert_eq!(
+                compute_column_widths(width)[10],
+                Some(Constraint::Length(8)),
+                "at {width} cols"
+            );
+        }
+    }
+
+    /// The narrowest width at which each column is laid out, by index in
+    /// `ALL_COLUMNS` order. `#`, Method, From, To and State are never
+    /// dropped at or above the 40-column floor.
+    const FIRST_WIDTH: [u16; 11] = [40, 40, 40, 40, 85, 85, 40, 44, 60, 51, 69];
+
+    /// Success: each column is laid out from its documented width up and at
+    /// no narrower width, so a column that is dropped never comes back on a
+    /// narrower terminal.
+    #[test]
+    fn each_column_is_laid_out_exactly_from_its_documented_width() {
+        for width in 40u16..=200 {
+            let widths = compute_column_widths(width);
+            for (i, first) in FIRST_WIDTH.iter().enumerate() {
+                assert_eq!(
                     widths[i].is_some(),
-                    "the {} column is fixed and must be laid out at {width} cols",
+                    width >= *first,
+                    "the {} column at {width} cols (laid out from {first})",
+                    COLUMN_LABELS[i]
+                );
+            }
+        }
+    }
+
+    /// Success: From and To are laid out at every width from the floor up,
+    /// each at least as wide as the shortest identity. They were dropped
+    /// below 69 columns, before any timing column.
+    #[test]
+    fn from_and_to_are_laid_out_at_every_width_from_the_floor() {
+        for width in 40u16..=200 {
+            let widths = compute_column_widths(width);
+            for i in [2usize, 3] {
+                // An absent column counts as zero cells, below any minimum.
+                let w = match widths[i] {
+                    Some(Constraint::Length(w)) => w,
+                    _ => 0,
+                };
+                assert!(
+                    w >= MIN_IDENTITY_WIDTH,
+                    "the {} column is {w} cells at {width} cols (0 is absent)",
+                    COLUMN_LABELS[i]
+                );
+            }
+        }
+    }
+
+    /// Edge: the columns go in the documented order as the terminal
+    /// narrows: Duration, then the timing column, then PDD, then Msgs.
+    #[test]
+    fn narrow_columns_are_dropped_in_the_documented_order() {
+        let dropped_at = |i: usize| {
+            (40u16..=200)
+                .rev()
+                .find(|w| compute_column_widths(*w)[i].is_none())
+                .unwrap_or(0)
+        };
+        let (duration, date, pdd, msgs) =
+            (dropped_at(10), dropped_at(8), dropped_at(9), dropped_at(7));
+        assert!(
+            duration > date && date > pdd && pdd > msgs,
+            "Duration goes at {duration}, the timing column at {date}, PDD at {pdd}, Msgs at {msgs}"
+        );
+    }
+
+    /// Failure: below 39 columns, narrower than `render_app` ever draws a
+    /// call list (its floor is 40), From and To are absent and the three
+    /// columns that are never dropped are still laid out. Nothing panics
+    /// down to zero.
+    #[test]
+    fn below_the_floor_only_the_three_kept_columns_are_laid_out() {
+        for width in 0u16..39 {
+            let widths = compute_column_widths(width);
+            for i in 0..11 {
+                assert_eq!(
+                    widths[i].is_some(),
+                    matches!(i, 0 | 1 | 6),
+                    "the {} column at {width} cols",
                     COLUMN_LABELS[i]
                 );
             }

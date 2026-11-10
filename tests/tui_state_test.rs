@@ -978,6 +978,8 @@ mod tui_state {
     #[test]
     fn f5_clears_all_dialogs() -> Result<(), TestError> {
         let mut app = app_with_three_dialogs()?;
+        // From a file a clear is immediate; during a live capture it asks first.
+        app.set_capture_mode("Offline (calls.pcap)".to_string());
         assert_eq!(app.visible_dialog_count(), 3);
         app.handle_key(KeyCode::F(5));
         assert_eq!(app.visible_dialog_count(), 0);
@@ -988,6 +990,8 @@ mod tui_state {
     #[test]
     fn ctrl_l_clears_all_dialogs() -> Result<(), TestError> {
         let mut app = app_with_three_dialogs()?;
+        // From a file a clear is immediate; during a live capture it asks first.
+        app.set_capture_mode("Offline (calls.pcap)".to_string());
         assert_eq!(app.visible_dialog_count(), 3);
         app.handle_key_with_modifiers(KeyCode::Char('l'), crossterm::event::KeyModifiers::CONTROL);
         assert_eq!(app.visible_dialog_count(), 0);
@@ -998,6 +1002,8 @@ mod tui_state {
     #[test]
     fn f5_clears_only_selected_dialogs() -> Result<(), TestError> {
         let mut app = app_with_three_dialogs()?;
+        // From a file a clear is immediate; during a live capture it asks first.
+        app.set_capture_mode("Offline (calls.pcap)".to_string());
         assert_eq!(app.visible_dialog_count(), 3);
         // Select first dialog (row 0)
         app.handle_key(KeyCode::Char(' ')); // toggle select row 0
@@ -1193,6 +1199,8 @@ mod tui_state {
     #[test]
     fn i_uppercase_clears_matching_dialogs() -> Result<(), TestError> {
         let mut app = app_with_three_dialogs()?;
+        // From a file a clear is immediate; during a live capture it asks first.
+        app.set_capture_mode("Offline (calls.pcap)".to_string());
         assert_eq!(app.visible_dialog_count(), 3);
 
         // Apply filter via SIP From field: match dialog with From=1003
@@ -1392,6 +1400,8 @@ mod tui_state {
     #[test]
     fn multi_select_survives_reordering() -> Result<(), TestError> {
         let mut app = app_with_three_dialogs()?;
+        // From a file a clear is immediate; during a live capture it asks first.
+        app.set_capture_mode("Offline (calls.pcap)".to_string());
         app.handle_key(KeyCode::Char(' ')); // check row 0 = call-1
         app.handle_key(KeyCode::Char('Z')); // reverse sort: call-3 now on top
         app.handle_key(KeyCode::F(5)); // clear the checked calls

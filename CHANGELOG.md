@@ -8,6 +8,24 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Clearing calls during a live capture asks first (TUI-CLEAR-CONFIRM).** `F5`, `Ctrl+L`, `i` and `I` discarded dialogs and their RTP streams on one keypress, and a live capture cannot read those packets again. During a live capture sipnab now opens a dialog that names what the clear discards and how much. `Y` discards; `N`, `Esc`, `q` and Enter keep, and No is the default. From a capture file the clear still runs at once, and with nothing to discard sipnab does not ask. See [Clear confirmation](docs/keybindings.md#clear-confirmation).
+- **Below 69 columns the call list keeps From and To and drops timing columns first (TUI-NARROW-COLUMNS).** It dropped From and To at 68 columns and kept every timing column. The order is now Source and Destination below 85 columns, Duration below 69, Date below 60, PDD below 51 and Msgs below 44; `#`, Method, From, To and State stay down to 40.
+
+### Fixed
+
+- **Every text view with nothing to show says how to leave (TUI-TEXT-VIEW-EMPTY).** Top talkers and carrier metrics ended with `Press Esc to return.`; the call volume view, the SDP timeline, a clean RFC conformance report, a comparison whose calls are gone, the TFPS ban and drop lists and an empty relay call list did not. They now end with the same line.
+- **The call list draws the same columns on every run below 59 columns (TUI-NARROW-LAYOUT-FLAKY).** The row claimed more cells than the terminal had, and the layout solver chose which column to shorten: in 30 runs at 40 columns, 13 cut `Method`. Columns are now dropped whole in a fixed order, so the row always fits.
+- **The call list's `Duration` header is whole below 120 columns (TUI-DURATION-HEADER-CUT).** The column was 7 cells there and the header is 8 letters, so an 80-column terminal showed `Duratio`. The column is now 8 cells at every width it is shown. Source and Destination now appear from 85 columns, one column later than before.
+- **Status line 3 marks every cut with an ellipsis (TUI-STATUS-LINE-CUT).** Only the view filter was marked. The call flow's mode line, a long error and a long search prompt stopped at the edge of the terminal with nothing to say they went on; at 80 columns the call flow's line ended at `Focus:`.
+- **Popups draw no color under `NO_COLOR`, and their selected item meets WCAG 2.2 AA (TUI-POPUP-SELECTION).** The `NO_COLOR` theme kept `selected` gray, so the file browser's selected entry, the Name Address popup's selected endpoint and its cursor drew a gray band with black text, and text in the `selected` slot drew gray. The theme now holds no color in any slot, and a selected item is bold reverse video. With a color theme the item's text was always black, 4.0:1 on the default yellow band; it is now whichever of black and white contrasts more, 5.25:1 there. The Name Address popup's cursor is the cursor every other text field draws.
+- **An empty call list during a file load says the file is being read (TUI-EMPTY-WHILE-LOADING).** It said the file might not contain SIP traffic.
+- **An empty quality dashboard says when a stream appears and how to leave (TUI-DASHBOARD-EMPTY).** It drew a table header over nothing.
+- **The F1 help and the key bindings page list `S` for the call flow (TUI-HELP-FLOW-S).** The call flow opens the relay statistics on `S`; neither named it there.
+
 ## [0.5.243] - 2026-11-10
 
 ### Added
