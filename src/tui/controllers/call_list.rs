@@ -5,8 +5,8 @@
 //! clear-calls actions.
 
 use crate::tui::{
-    App, AtomicOrdering, KeyCode, KeyEvent, KeyModifiers, Keymap, Popup, RelayStatsMode, View,
-    checked_displayed_call_ids, filtered_dialog_count, get_selected_call_id,
+    App, AtomicOrdering, ClearKind, KeyCode, KeyEvent, KeyModifiers, Keymap, Popup, RelayStatsMode,
+    View, checked_displayed_call_ids, filtered_dialog_count, get_selected_call_id,
     get_selected_dialog_endpoints, open_file_dialog, open_name_dialog_for, open_save_popup,
     tfps_observe,
 };
@@ -261,7 +261,7 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             // Keep the existing query so it can be refined.
             app.search_active = true;
         }
-        CallListAction::ClearCalls => clear_calls(app),
+        CallListAction::ClearCalls => crate::tui::controllers::request_clear(app, ClearKind::Calls),
         CallListAction::OpenRaw => {
             // Raw view for the selected dialog's first message
             if let Some(call_id) = get_selected_call_id(app) {
@@ -296,8 +296,12 @@ fn execute_call_list_action(app: &mut App, action: CallListAction) {
             app.paused = !app.paused;
             app.paused_flag.store(app.paused, AtomicOrdering::Relaxed);
         }
-        CallListAction::ClearNonMatching => clear_non_matching(app),
-        CallListAction::ClearMatching => clear_matching(app),
+        CallListAction::ClearNonMatching => {
+            crate::tui::controllers::request_clear(app, ClearKind::NonMatching)
+        }
+        CallListAction::ClearMatching => {
+            crate::tui::controllers::request_clear(app, ClearKind::Matching)
+        }
         CallListAction::Help => app.current_view = View::Help,
         CallListAction::OpenSaveDialog => open_save_popup(app),
         CallListAction::OpenExtendedFlow => {
@@ -937,6 +941,9 @@ mod tests {
     #[test]
     fn call_list_ctrl_l_clears() -> Result<(), TestError> {
         let mut app = app_with_dialogs()?;
+        // From a file the clear is immediate. During a live capture it asks
+        // first (controllers::clear_confirm).
+        app.set_capture_mode("Offline (calls.pcap)".to_string());
         handle_call_list_key(&mut app, key_mod(KeyCode::Char('l'), KeyModifiers::CONTROL));
         assert_eq!(app.dialog_store.read().len(), 0);
         Ok(())

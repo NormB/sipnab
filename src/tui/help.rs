@@ -28,12 +28,12 @@ CALL LIST:
   A                Toggle autoscroll
   p                Pause/resume capture
   /                Search (arrows/Space work while typing; Enter opens)
-  i                Clear non-matching dialogs
-  I                Clear matching dialogs
+  i                Clear non-matching dialogs (asks first during a live capture)
+  I                Clear matching dialogs (asks first during a live capture)
   F1, ?            This help (? works in every view)
   F2               Save capture: PCAP, PCAP-NG, TXT, SIPp, JSON, NDJSON, CSV, HTML (Mermaid ladder), Markdown, WAV, RTP JSON, NOTES (Tab cycles)
   F3               Search (same as /)
-  F5, Ctrl+L       Clear calls
+  F5, Ctrl+L       Clear calls (asks first during a live capture)
   r, F6            Show raw SIP message
   F7               Filter dialog
   F8               Settings

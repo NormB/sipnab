@@ -523,6 +523,7 @@ pub(in crate::tui) fn fkey_bar_items(
     if let Some(p) = popup {
         match p {
             Popup::QuitConfirm => vec![("Y", "Quit"), ("N/Esc", "Cancel")],
+            Popup::ClearConfirm(_) => vec![("Y", "Discard"), ("N/Esc/Enter", "Keep")],
             Popup::G729Install => vec![("Y", "Download"), ("N/Esc", "Not now")],
             Popup::NoteEditor => vec![("Enter", "Keep"), ("Esc", "Cancel")],
             Popup::UnsavedNotes => vec![("Y", "Open"), ("N/Esc", "Keep")],
@@ -1139,6 +1140,16 @@ mod tests {
             .cell((1, 0))
             .ok_or("cell() returned None")?
             .fg)
+    }
+
+    /// Success: while the clear confirmation is open the key bar names its
+    /// two answers.
+    #[test]
+    fn the_key_bar_names_the_clear_confirmation_answers() {
+        let popup = Some(Popup::ClearConfirm(crate::tui::ClearKind::Calls));
+        let items = fkey_bar_items(&View::CallList, &popup, 120, false);
+        let text: Vec<String> = items.iter().map(|(k, l)| format!("{k} {l}")).collect();
+        assert_eq!(text, ["Y Discard", "N/Esc/Enter Keep"], "the two answers");
     }
 
     /// Status line 3 drawn `cols` wide, as text with trailing spaces removed.

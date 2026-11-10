@@ -1108,30 +1108,49 @@ fn layout_overhead(columns: u16) -> u16 {
 ///
 /// `fixed` is `[#, Method, State, Msgs, Date, PDD, Duration]` — the fixed
 /// columns in their own order, which is not their display order because the
-/// four flex columns sit between Method and State.
+/// four flex columns sit between Method and State. `None` is a column the
+/// width cannot carry.
 fn assemble_widths(
-    fixed: [u16; 7],
+    fixed: [Option<u16>; 7],
     from: Option<u16>,
     to: Option<u16>,
     addr: Option<u16>,
 ) -> [Option<Constraint>; 11] {
+    let length = |w: Option<u16>| w.map(Constraint::Length);
     [
-        Some(Constraint::Length(fixed[0])),
-        Some(Constraint::Length(fixed[1])),
-        from.map(Constraint::Length),
-        to.map(Constraint::Length),
-        addr.map(Constraint::Length),
-        addr.map(Constraint::Length),
-        Some(Constraint::Length(fixed[2])),
-        Some(Constraint::Length(fixed[3])),
-        Some(Constraint::Length(fixed[4])),
-        Some(Constraint::Length(fixed[5])),
-        Some(Constraint::Length(fixed[6])),
+        length(fixed[0]),
+        length(fixed[1]),
+        length(from),
+        length(to),
+        length(addr),
+        length(addr),
+        length(fixed[2]),
+        length(fixed[3]),
+        length(fixed[4]),
+        length(fixed[5]),
+        length(fixed[6]),
     ]
 }
 
+/// The order in which whole columns are dropped once Source and Destination
+/// are gone and the row still does not fit: indexes into the fixed-width
+/// array `[#, Method, State, Msgs, Date, PDD, Duration]`, first dropped
+/// first.
+///
+/// | Dropped below | Column | Why this early or late |
+/// |---|---|---|
+/// | 85 columns | Source and Destination | the call flow shows them, one key away |
+/// | 69 columns | Duration | describes a call already picked |
+/// | 60 columns | Date (the timing column) | the list is already in time order |
+/// | 51 columns | PDD | a measurement of one call, not a way to pick one |
+/// | 44 columns | Msgs | the last hint of how much a call holds |
+///
+/// `#`, Method, From, To and State are never dropped at or above the
+/// 40-column floor: they are what a call is picked by.
+const NARROW_DROP_ORDER: [usize; 4] = [6, 4, 5, 3];
+
 /// Compute dynamic column widths for the available terminal width, dropping
-/// any identity column the width cannot show legibly.
+/// whole columns the width cannot show legibly, in a fixed order.
 ///
 /// Fixed-width columns (#, Method, State, Msgs, Date, PDD, Duration) keep
 /// their sizes at a given breakpoint. The four identity columns — From, To,
@@ -1141,11 +1160,11 @@ fn assemble_widths(
 /// and the cells it would have consumed — its own width plus the spacing cell
 /// that followed it — go to the columns that remain.
 ///
-/// The two pairs are dropped as pairs, richest layout first: addresses go
-/// before identities. Source without Destination is half a fact, and in
-/// triage the parties are the primary scan key while their transport
-/// addresses are the follow-up question — one that the call flow answers with
-/// room to spare, one keystroke away.
+/// The address pair is dropped as a pair, and first: Source without
+/// Destination is half a fact, and in triage the parties are the primary
+/// scan key while their transport addresses are the follow-up question — one
+/// that the call flow answers with room to spare, one keystroke away. After
+/// it, whole fixed columns go in [`NARROW_DROP_ORDER`]; From and To stay.
 ///
 /// # Arguments
 ///
@@ -1157,8 +1176,9 @@ fn assemble_widths(
 /// of the user's visibility choices). `Some(Constraint::Length(n))` with
 /// `n > 0` for a column to lay out; `None` for a column the width cannot
 /// carry. The measured thresholds, at the default full visibility:
-/// Source/Destination appear from 85 cols, From/To from 69, and below 69 the
-/// row is the fixed columns alone. At 120 and above the wider breakpoint
+/// Source/Destination appear from 85 cols; below 69 the timing and count
+/// columns go one at a time, as [`NARROW_DROP_ORDER`] lists them, and From/To
+/// stay down to the 40-column floor. At 120 and above the wider breakpoint
 /// applies, where the pool is large enough that nothing is ever dropped.
 fn compute_column_widths(total_width: u16) -> [Option<Constraint>; 11] {
     // Fixed columns in `assemble_widths` order, and how much of the flex pool
@@ -1201,23 +1221,36 @@ fn compute_column_widths(total_width: u16) -> [Option<Constraint>; 11] {
     // the remainder is what is genuinely left over.
     let identity_pool = flex - addr * 2;
     let (from, to) = (identity_pool / 2, identity_pool - identity_pool / 2);
+    let mut kept = fixed.map(Some);
     if addr >= MIN_ADDRESS_WIDTH && from >= MIN_IDENTITY_WIDTH {
-        return assemble_widths(fixed, Some(from), Some(to), Some(addr));
+        return assemble_widths(kept, Some(from), Some(to), Some(addr));
     }
 
-    // The address pair cannot be shown. Drop both and re-budget against nine
-    // columns: the two widths AND the two spacing cells they cost come back.
-    let flex = total_width.saturating_sub(fixed_sum + layout_overhead(9));
-    let (from, to) = (flex / 2, flex - flex / 2);
-    // `to` is the larger half by construction, so testing `from` tests both.
-    if from >= MIN_IDENTITY_WIDTH {
-        return assemble_widths(fixed, Some(from), Some(to), None);
+    // The address pair cannot be shown. Drop both, and then whole fixed
+    // columns in `NARROW_DROP_ORDER`, re-budgeting each time: a dropped
+    // column returns its width AND the spacing cell that followed it. The
+    // first set that leaves From and To their minimum is the answer.
+    //
+    // The row must never claim more cells than the terminal has. When it did
+    // (below 59 columns), ratatui's solver took the deficit out of whichever
+    // columns it chose, and the choice differed from run to run.
+    let mut drops = NARROW_DROP_ORDER.iter();
+    loop {
+        let fixed_sum: u16 = kept.iter().flatten().sum();
+        let columns = u16::try_from(kept.iter().flatten().count() + 2).unwrap_or(u16::MAX);
+        let flex = total_width.saturating_sub(fixed_sum + layout_overhead(columns));
+        let (from, to) = (flex / 2, flex - flex / 2);
+        // `to` is the larger half by construction, so testing `from` tests both.
+        if from >= MIN_IDENTITY_WIDTH {
+            return assemble_widths(kept, Some(from), Some(to), None);
+        }
+        match drops.next() {
+            Some(&i) => kept[i] = None,
+            // Below the 40-column floor `render_app` draws no call list. The
+            // three columns left are the answer for any caller that asks.
+            None => return assemble_widths(kept, None, None, None),
+        }
     }
-
-    // Nothing identity-shaped fits: the row is the fixed columns alone. The
-    // caller can still read state, message count and timing, and Enter still
-    // opens the call flow, where the parties are named in full.
-    assemble_widths(fixed, None, None, None)
 }
 
 /// Format a dialog duration for the call list: sub-second in ms, under a
@@ -1549,10 +1582,13 @@ mod tests {
             wide[2].is_some() && wide[3].is_some(),
             "From and To must be present at 120 columns: {wide:?}"
         );
-        let narrow = super::compute_column_widths(60);
+        // From and To now stay down to the 40-column floor (the timing and
+        // count columns go first), so the width that cannot pay for them is
+        // 38, below anything `render_app` draws a call list into.
+        let narrow = super::compute_column_widths(38);
         assert!(
             narrow[2].is_none() && narrow[3].is_none(),
-            "From and To must be DROPPED at 60 columns, not rendered empty: {narrow:?}"
+            "From and To must be DROPPED at 38 columns, not rendered empty: {narrow:?}"
         );
     }
 
@@ -1867,13 +1903,14 @@ mod tests {
     /// The overhead is charged per laid-out column, not as a flat 12: a
     /// dropped column returns the spacing cell that followed it as well as
     /// its own width. With the four identity columns dropped, the fixed
-    /// seven (51) plus their overhead (8) fit from 59 cols up — which is why
-    /// this sweep starts at 59 (58 before the Duration column grew a cell to
-    /// hold its header, 57 before the index column grew a cell for the space
-    /// in `[ ] 1`, 61 before that).
+    /// seven (51) plus their overhead (8) fit from 59 cols up. This sweep
+    /// started there, and below it the row claimed more than the terminal
+    /// had: the solver then chose which column to shorten, differently from
+    /// run to run. Columns are now dropped whole, in a fixed order, so the
+    /// sweep starts at the 40-column floor.
     #[test]
     fn column_widths_never_oversubscribe_the_terminal() -> Result<(), TestError> {
-        for width in 59u16..=200 {
+        for width in 40u16..=200 {
             let widths = compute_column_widths(width);
             let (sum, count) = laid_out(&widths, width)?;
             let overhead = layout_overhead(count);
@@ -2009,25 +2046,82 @@ mod tests {
         }
     }
 
-    /// Each breakpoint moved one more column right when the Duration column
-    /// grew a cell to hold its header.
+    /// The narrowest width at which each column is laid out, by index in
+    /// `ALL_COLUMNS` order. `#`, Method, From, To and State are never
+    /// dropped at or above the 40-column floor.
+    const FIRST_WIDTH: [u16; 11] = [40, 40, 40, 40, 85, 85, 40, 44, 60, 51, 69];
+
+    /// Success: each column is laid out from its documented width up and at
+    /// no narrower width, so a column that is dropped never comes back on a
+    /// narrower terminal.
     #[test]
-    fn identity_columns_appear_only_at_the_widths_that_can_carry_them() {
-        let present = |width: u16, i: usize| compute_column_widths(width)[i].is_some();
-        // Source/Destination (4, 5): the pair arrives together at 85.
-        assert!(!present(84, 4) && !present(84, 5), "addresses absent at 84");
-        assert!(present(85, 4) && present(85, 5), "addresses present at 85");
-        // From/To (2, 3): the pair arrives together at 69.
-        assert!(!present(68, 2) && !present(68, 3), "From/To absent at 68");
-        assert!(present(69, 2) && present(69, 3), "From/To present at 69");
-        // The fixed columns are unconditional: they are what is left at the
-        // 40-column floor, and they are still there at the widest layout.
-        for width in [40u16, 66, 82, 120, 200] {
+    fn each_column_is_laid_out_exactly_from_its_documented_width() {
+        for width in 40u16..=200 {
             let widths = compute_column_widths(width);
-            for i in [0usize, 1, 6, 7, 8, 9, 10] {
-                assert!(
+            for (i, first) in FIRST_WIDTH.iter().enumerate() {
+                assert_eq!(
                     widths[i].is_some(),
-                    "the {} column is fixed and must be laid out at {width} cols",
+                    width >= *first,
+                    "the {} column at {width} cols (laid out from {first})",
+                    COLUMN_LABELS[i]
+                );
+            }
+        }
+    }
+
+    /// Success: From and To are laid out at every width from the floor up,
+    /// each at least as wide as the shortest identity. They were dropped
+    /// below 69 columns, before any timing column.
+    #[test]
+    fn from_and_to_are_laid_out_at_every_width_from_the_floor() {
+        for width in 40u16..=200 {
+            let widths = compute_column_widths(width);
+            for i in [2usize, 3] {
+                // An absent column counts as zero cells, below any minimum.
+                let w = match widths[i] {
+                    Some(Constraint::Length(w)) => w,
+                    _ => 0,
+                };
+                assert!(
+                    w >= MIN_IDENTITY_WIDTH,
+                    "the {} column is {w} cells at {width} cols (0 is absent)",
+                    COLUMN_LABELS[i]
+                );
+            }
+        }
+    }
+
+    /// Edge: the columns go in the documented order as the terminal
+    /// narrows: Duration, then the timing column, then PDD, then Msgs.
+    #[test]
+    fn narrow_columns_are_dropped_in_the_documented_order() {
+        let dropped_at = |i: usize| {
+            (40u16..=200)
+                .rev()
+                .find(|w| compute_column_widths(*w)[i].is_none())
+                .unwrap_or(0)
+        };
+        let (duration, date, pdd, msgs) =
+            (dropped_at(10), dropped_at(8), dropped_at(9), dropped_at(7));
+        assert!(
+            duration > date && date > pdd && pdd > msgs,
+            "Duration goes at {duration}, the timing column at {date}, PDD at {pdd}, Msgs at {msgs}"
+        );
+    }
+
+    /// Failure: below 39 columns, narrower than `render_app` ever draws a
+    /// call list (its floor is 40), From and To are absent and the three
+    /// columns that are never dropped are still laid out. Nothing panics
+    /// down to zero.
+    #[test]
+    fn below_the_floor_only_the_three_kept_columns_are_laid_out() {
+        for width in 0u16..39 {
+            let widths = compute_column_widths(width);
+            for i in 0..11 {
+                assert_eq!(
+                    widths[i].is_some(),
+                    matches!(i, 0 | 1 | 6),
+                    "the {} column at {width} cols",
                     COLUMN_LABELS[i]
                 );
             }

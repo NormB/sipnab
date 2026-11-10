@@ -657,6 +657,7 @@ pub(in crate::tui) fn render_app(
             Popup::QuitConfirm => {
                 render_quit_confirm_popup(frame, area, app);
             }
+            Popup::ClearConfirm(kind) => render_clear_confirm_popup(frame, area, app, *kind),
             Popup::NoteEditor => render_note_editor_popup(frame, area, app),
             Popup::UnsavedNotes => render_unsaved_notes_popup(frame, area, app),
             Popup::ArchivePassword => render_archive_password_popup(frame, area, app),
@@ -2706,13 +2707,41 @@ mod tests {
         Ok(())
     }
 
-    /// Edge: at 59 columns, where only the fixed columns fit, the header
-    /// still shows `Duration` whole.
+    /// Edge: at 69 columns, the narrowest width that carries it, the header
+    /// shows `Duration` whole beside From and To.
     #[test]
-    fn the_call_list_header_shows_duration_whole_at_59_columns() -> Result<(), TestError> {
-        let header = call_list_header(59)?;
+    fn the_call_list_header_shows_duration_whole_at_69_columns() -> Result<(), TestError> {
+        let header = call_list_header(69)?;
         assert!(header.contains("Duration"), "{header:?}");
-        assert!(!header.contains("From"), "no identity column: {header:?}");
+        assert!(header.contains("From"), "{header:?}");
+        Ok(())
+    }
+
+    /// Edge: at 68 columns the Duration column is dropped whole; no part of
+    /// its header is drawn.
+    #[test]
+    fn the_call_list_header_has_no_part_of_duration_at_68_columns() -> Result<(), TestError> {
+        let header = call_list_header(68)?;
+        assert!(!header.contains("Dur"), "{header:?}");
+        assert!(header.contains("PDD"), "{header:?}");
+        Ok(())
+    }
+
+    /// Success: from 40 to 60 columns the header row is the same on every
+    /// one of 30 draws, and names the columns that are never dropped. Below
+    /// 59 columns the row used to claim more cells than the terminal had and
+    /// the solver cut a different column from run to run.
+    #[test]
+    fn the_narrow_call_list_header_is_the_same_on_every_draw() -> Result<(), TestError> {
+        for cols in 40u16..=60 {
+            let first = call_list_header(cols)?;
+            for name in ["Method", "From", "To", "State"] {
+                assert!(first.contains(name), "{name} missing at {cols}: {first:?}");
+            }
+            for draw in 1..30 {
+                assert_eq!(call_list_header(cols)?, first, "draw {draw} at {cols} cols");
+            }
+        }
         Ok(())
     }
 
@@ -2737,18 +2766,21 @@ mod tests {
         Ok(())
     }
 
-    /// Failure: at the 40-column floor the fixed columns no longer fit (they
-    /// need 59), and the frame is still drawn: the status rows are there and
-    /// the "too small" notice is not. The header row is not asserted: below
-    /// 59 columns ratatui's solver takes the deficit out of the columns and
-    /// which ones it shortens differs from run to run (measured: 13 of 30
-    /// runs cut `Method`).
+    /// Failure: at the 40-column floor the frame is drawn, not the "too
+    /// small" notice, and the row has the five columns that are never
+    /// dropped and none of the four that are.
     #[test]
     fn the_call_list_draws_at_the_40_column_floor() -> Result<(), TestError> {
         let mut app = app_with_dialog()?;
         let out = render_to_string(&mut app, 40, 24)?;
-        assert!(out.contains("Dialogs: 1"), "{out}");
         assert!(!out.contains("too small"), "{out}");
+        let header = call_list_header(40)?;
+        for name in ["Method", "From", "To", "State"] {
+            assert!(header.contains(name), "{name} missing: {header:?}");
+        }
+        for name in ["Msgs", "PDD", "Dur", "Prev"] {
+            assert!(!header.contains(name), "{name} drawn: {header:?}");
+        }
         Ok(())
     }
 

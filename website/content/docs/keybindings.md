@@ -42,7 +42,7 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 | Key | Action |
 |-----|--------|
 | Ctrl+C | Force quit (skips the confirmation) |
-| Ctrl+L | Clear calls — Call List only, same as F5 there |
+| Ctrl+L | Clear calls — Call List only, same as F5 there. During a live capture it asks first: see [Clear confirmation](#clear-confirmation) |
 | v | Show version (with git commit) in the status line |
 | n | Cycle name resolution (Off / Static / DNS) |
 | N | Name the selected address (map IP → host/FQDN) |
@@ -65,6 +65,22 @@ Annotated screenshots of every view are in the [TUI visual tour](#tui-views) at 
 
 Any other key leaves the question on screen. A stray keypress must not dismiss
 the dialog, and it certainly must not answer it.
+
+### Clear confirmation
+
+`F5`, `Ctrl+L`, `i` and `I` discard dialogs and their RTP streams.
+
+- From a capture file the clear runs at once. `O` reads the file again.
+- During a live capture sipnab asks first, because it cannot read those packets
+  again. The dialog names what the clear discards and how much.
+- With nothing to discard, sipnab does not ask.
+
+| Key | Action |
+|-----|--------|
+| Y | Discard |
+| N, Esc, q, Enter | Keep everything. No is the default, so Enter keeps |
+
+Any other key leaves the question on screen.
 
 `v`, `n`, and `F12` ship as fallbacks.
 
@@ -119,8 +135,8 @@ To start every session with capture off, set `mouse_capture = false` under
 | A | Toggle autoscroll **(configurable: `autoscroll`)** |
 | p | Pause/resume capture **(configurable: `pause`)** |
 | / | Activate search **(configurable: `search`)** — while typing, ↑/↓/PgUp/PgDn/Home/End move the highlight in the narrowed list, Space stars rows, and Enter commits the query and opens the selection in one press |
-| i | Clear non-matching dialogs |
-| I | Clear matching dialogs |
+| i | Clear non-matching dialogs. During a live capture it asks first: see [Clear confirmation](#clear-confirmation) |
+| I | Clear matching dialogs. During a live capture it asks first: see [Clear confirmation](#clear-confirmation) |
 | t | Cycle timestamp mode (absolute / delta from previous / delta from first / scaled) |
 | u | Cycle From/To column display (default / host:port / user / user@host:port) |
 | r / F6 | Show raw SIP message for selected dialog |
@@ -920,6 +936,20 @@ section of [config-reference.md](@/docs/config.md#names).
 ### Call list view
 
 The call list is the main view when sipnab starts. It shows all tracked SIP dialogs with their state, timing, and quality metrics.
+
+On a narrow terminal the call list drops whole columns, in a fixed order, and
+never draws part of one. The same width always gives the same columns.
+
+| Terminal width | Column dropped below it |
+|---|---|
+| 85 columns | Source and Destination |
+| 69 columns | Duration |
+| 60 columns | Date (the timing column) |
+| 51 columns | PDD |
+| 44 columns | Msgs |
+
+`#`, Method, From, To and State stay down to 40 columns, the narrowest terminal
+sipnab draws into.
 
 <div class="terminal">
 <div class="terminal-bar">

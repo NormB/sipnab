@@ -463,6 +463,76 @@ pub(in crate::tui) fn render_quit_confirm_popup(frame: &mut ratatui::Frame, area
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
+/// The question before a clear during a live capture: what would be
+/// discarded, why it asks, and the two answers.
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup); no state is
+/// mutated.
+pub(in crate::tui) fn render_clear_confirm_popup(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    app: &App,
+    kind: crate::tui::ClearKind,
+) {
+    let summary = crate::tui::controllers::clear_summary(
+        kind,
+        app.dialog_store.read().len(),
+        app.stream_store.read().len(),
+        app.call_list.selected_rows().len(),
+    );
+    // The answers are the second line, straight under the question, so a
+    // terminal too short for the whole popup still shows how to answer: at
+    // the 6-row floor two lines are all that fit.
+    let lines: Vec<Line<'_>> = vec![
+        Line::from(Span::styled(
+            format!("  {summary}"),
+            Style::default().fg(app.theme.header),
+        )),
+        Line::from(vec![
+            Span::styled("  Y", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" discard", Style::default().fg(app.theme.muted)),
+            Span::styled(
+                "    N/Esc/Enter",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" keep (default)", Style::default().fg(app.theme.muted)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  They came from a live capture and cannot be read again.",
+            Style::default().fg(app.theme.muted),
+        )),
+    ];
+
+    // Sized to what it says, as `render_quit_confirm_popup` is: `Paragraph`
+    // truncates in silence and the line that would go names the way out.
+    let title = " Discard captured calls? ";
+    let content = lines
+        .iter()
+        .map(ratatui::text::Line::width)
+        .max()
+        .unwrap_or(0);
+    let desired = u16::try_from(content.max(title.len()).saturating_add(3)).unwrap_or(u16::MAX);
+    let popup_width = desired.clamp(20, area.width.saturating_sub(4).max(20));
+    let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let popup_height = rows
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2))
+        .max(3);
+    let popup_area = centered_popup(area, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(app.theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 /// The offer to install the G.729 tables: the question, where the tables
 /// come from, and the two answers.
 ///
@@ -1756,6 +1826,58 @@ mod tests {
         Ok(())
     }
 
+    /// The clear confirmation drawn over an app holding one dialog, with
+    /// `theme`, at `cols` x `rows`.
+    fn clear_confirm_buffer(
+        theme: Theme,
+        cols: u16,
+        rows: u16,
+    ) -> Result<ratatui::buffer::Buffer, TestError> {
+        let mut app = app_with_dialog()?;
+        app.theme = theme;
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;
+        terminal.draw(|frame| {
+            render_clear_confirm_popup(frame, frame.area(), &app, crate::tui::ClearKind::Calls);
+        })?;
+        Ok(terminal.backend().buffer().clone())
+    }
+
+    /// Success: the clear confirmation says what is discarded, why it asks,
+    /// both answers and which is the default.
+    #[test]
+    fn the_clear_confirmation_says_what_is_discarded_and_the_default() -> Result<(), TestError> {
+        let text = frame_text(&clear_confirm_buffer(Theme::default(), 80, 24)?)?;
+        for part in [
+            "Discard the 1 dialog and 0 RTP streams?",
+            "cannot be read again",
+            "Y discard",
+            "N/Esc/Enter keep (default)",
+        ] {
+            assert!(text.contains(part), "{part:?} missing:\n{text}");
+        }
+        Ok(())
+    }
+
+    /// Failure: under NO_COLOR the clear confirmation paints no color.
+    #[test]
+    fn the_clear_confirmation_paints_no_color_under_no_color() -> Result<(), TestError> {
+        for cell in clear_confirm_buffer(Theme::monochrome(), 80, 24)?.content() {
+            assert_eq!(cell.fg, Color::Reset, "text color of {:?}", cell.symbol());
+            assert_eq!(cell.bg, Color::Reset, "background of {:?}", cell.symbol());
+        }
+        Ok(())
+    }
+
+    /// Edge: at the 40x6 floor the clear confirmation still shows how to
+    /// answer. With the answers on the last line they were cut off.
+    #[test]
+    fn the_clear_confirmation_shows_its_answers_at_the_floor() -> Result<(), TestError> {
+        let text = frame_text(&clear_confirm_buffer(Theme::default(), 40, 6)?)?;
+        assert!(text.contains("Y discard"), "{text}");
+        assert!(text.contains("N/Esc/Enter keep"), "{text}");
+        Ok(())
+    }
+
     /// Failure: under NO_COLOR the text cursor paints no color. It painted a
     /// fixed white block with black text.
     #[test]
@@ -1977,6 +2099,10 @@ mod tests {
             }),
             ("quit_confirm", |f, a, app| {
                 render_quit_confirm_popup(f, a, app);
+                Ok(())
+            }),
+            ("clear_confirm", |f, a, app| {
+                render_clear_confirm_popup(f, a, app, crate::tui::ClearKind::Calls);
                 Ok(())
             }),
             ("g729_install", |f, a, app| {
