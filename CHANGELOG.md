@@ -10,6 +10,17 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The call list's `Duration` header is whole below 120 columns (TUI-DURATION-HEADER-CUT).** The column was 7 cells there and the header is 8 letters, so an 80-column terminal showed `Duratio`. The column is now 8 cells at every width. Source and Destination now appear from 85 columns and From and To from 69, one column later than before.
+- **Status line 3 marks every cut with an ellipsis (TUI-STATUS-LINE-CUT).** Only the view filter was marked. The call flow's mode line, a long error and a long search prompt stopped at the edge of the terminal with nothing to say they went on; at 80 columns the call flow's line ended at `Focus:`.
+- **Popups draw no color under `NO_COLOR`, and their selected item meets WCAG 2.2 AA (TUI-POPUP-SELECTION).** The `NO_COLOR` theme kept `selected` gray, so the file browser's selected entry, the Name Address popup's selected endpoint and its cursor drew a gray band with black text, and text in the `selected` slot drew gray. The theme now holds no color in any slot, and a selected item is bold reverse video. With a color theme the item's text was always black, 4.0:1 on the default yellow band; it is now whichever of black and white contrasts more, 5.25:1 there. The Name Address popup's cursor is the cursor every other text field draws.
+- **An empty call list during a file load says the file is being read (TUI-EMPTY-WHILE-LOADING).** It said the file might not contain SIP traffic.
+- **An empty quality dashboard says when a stream appears and how to leave (TUI-DASHBOARD-EMPTY).** It drew a table header over nothing.
+- **The F1 help and the key bindings page list `S` for the call flow (TUI-HELP-FLOW-S).** The call flow opens the relay statistics on `S`; neither named it there.
+
+## [0.5.243] - 2026-11-10
+
 ### Added
 
 - **The REST API can serve a web console at `/console/` (`--api-console`, `[api] console`).** The console is a read-only page for a browser: the dialogs sipnab holds, one dialog with its SDP offers and answers, its RTP streams and every call leg reachable from it, and the runtime status.
@@ -27,12 +38,6 @@ entry that carries them.
 
 ### Fixed
 
-- **The call list's `Duration` header is whole below 120 columns (TUI-DURATION-HEADER-CUT).** The column was 7 cells there and the header is 8 letters, so an 80-column terminal showed `Duratio`. The column is now 8 cells at every width. Source and Destination now appear from 85 columns and From and To from 69, one column later than before.
-- **Status line 3 marks every cut with an ellipsis (TUI-STATUS-LINE-CUT).** Only the view filter was marked. The call flow's mode line, a long error and a long search prompt stopped at the edge of the terminal with nothing to say they went on; at 80 columns the call flow's line ended at `Focus:`.
-- **Popups draw no color under `NO_COLOR`, and their selected item meets WCAG 2.2 AA (TUI-POPUP-SELECTION).** The `NO_COLOR` theme kept `selected` gray, so the file browser's selected entry, the Name Address popup's selected endpoint and its cursor drew a gray band with black text, and text in the `selected` slot drew gray. The theme now holds no color in any slot, and a selected item is bold reverse video. With a color theme the item's text was always black, 4.0:1 on the default yellow band; it is now whichever of black and white contrasts more, 5.25:1 there. The Name Address popup's cursor is the cursor every other text field draws.
-- **An empty call list during a file load says the file is being read (TUI-EMPTY-WHILE-LOADING).** It said the file might not contain SIP traffic.
-- **An empty quality dashboard says when a stream appears and how to leave (TUI-DASHBOARD-EMPTY).** It drew a table header over nothing.
-- **The F1 help and the key bindings page list `S` for the call flow (TUI-HELP-FLOW-S).** The call flow opens the relay statistics on `S`; neither named it there.
 - **Colored text on the TUI status rows meets WCAG 2.2 AA contrast (TUI-STATUS-BAND-CONTRAST).** The status rows paint their own background, `status_bg`, and drew error, capture-source, search and filter text on it in the theme colors as configured. Against the default band `#303040` the default `bad` red measured 1.7:1 and the default `selected` yellow 2.5:1; level AA asks 4.5:1 for text. Each such color is now checked against `status_bg` and, when it is below 4.5:1, moved toward white or black until it reaches it. A color that already passes is drawn as configured, and the `NO_COLOR` theme is unchanged. See the [theme guide](docs/theme-guide.md).
 - **The call flow draws no color under `NO_COLOR`, and its selected row is readable on a light terminal (TUI-FLOW-NO-COLOR).** Six message classes took a fixed RGB color that was not a theme slot, and the selected row painted a fixed dark band, so `NO_COLOR=1` still drew both. On a light terminal the band hid the terminal's own dark text. Under `NO_COLOR` the call flow now draws no color and marks the selected row with reverse video. With a color theme, text on the selected row is moved to 4.5:1 against the band when it is below it.
 - **The rest of the TUI's fixed colors are gone under `NO_COLOR` (TUI-FIXED-COLORS-NO-COLOR).** The raw-message search match (black on yellow), the text-field cursor (black on white), the call-flow delta badge background and the Call-ID/CSeq color rotation were fixed colors, not theme slots, so `NO_COLOR=1` still drew them. Under `NO_COLOR` a search match is now bold reverse video, the cursor is reverse video, and the badge and the rotation draw no color.
