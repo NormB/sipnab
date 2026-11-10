@@ -2089,6 +2089,187 @@ fn the_console_config_key_turns_it_on_and_the_flag_overrides_it() -> Result<(), 
     Ok(())
 }
 
+// CONSOLE-FLAG-WITHOUT-API: the console has no listener of its own, so
+// `--api-console` on a run that starts no REST API is refused before anything
+// is read. `[api] console = true` on such a run is unused, not refused.
+
+/// The whole refusal, as `docs/errors.md` lists it.
+const CONSOLE_WITHOUT_API: &str = "--api-console needs the REST API, and this run does \
+     not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or remove --api-console";
+
+/// How long a run that should be refused at startup may take.
+const REFUSAL_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A capture for the runs below.
+const CONSOLE_PCAP: &str = "tests/fixtures/sip_call.pcap";
+
+/// A config file holding `body`, and the directory that keeps it.
+fn console_config(body: &str) -> Result<(tempfile::TempDir, String), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cfg = dir.path().join("sipnab.toml");
+    std::fs::write(&cfg, body)?;
+    let path = cfg.to_str().ok_or("utf-8 path")?.to_string();
+    Ok((dir, path))
+}
+
+/// `--api-console` with no `--api`: exit 2, the message alone on stderr, and
+/// nothing on stdout, where the dialogs of the capture would have gone.
+#[test]
+fn the_console_flag_without_the_api_is_refused() -> Result<(), TestError> {
+    for flag in ["--api-console", "--api-console=true"] {
+        let args = ["--no-config", "-N", "-I", CONSOLE_PCAP, flag];
+        let run = server::run_to_exit(&args, "off", REFUSAL_WAIT)?;
+        assert_eq!(run.code, Some(2), "{flag}: {}", run.stderr);
+        assert_eq!(run.stderr.trim_end(), CONSOLE_WITHOUT_API, "{flag}");
+        assert_eq!(run.stdout, "", "{flag}: nothing is read after a refusal");
+    }
+    Ok(())
+}
+
+/// `[api] console = true` with no `--api` is not a refusal: the key means
+/// "serve the console whenever the API is on", and a run with the API off
+/// reads its capture and says nothing about the console, as it does with
+/// every other `[api]` key.
+#[test]
+fn the_console_key_alone_runs_without_the_api() -> Result<(), TestError> {
+    let (_dir, cfg) = console_config("[api]\nconsole = true\n")?;
+    let args = ["--config", &cfg, "-N", "-I", CONSOLE_PCAP];
+    let run = server::run_to_exit(&args, "info", REFUSAL_WAIT)?;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert!(
+        run.stdout.contains(" INVITE "),
+        "the capture was read: {}",
+        run.stdout
+    );
+    assert!(
+        !run.stderr.contains("console"),
+        "nothing is said about the console: {}",
+        run.stderr
+    );
+    Ok(())
+}
+
+/// The flag beside the key is the command line's request: exit 2, whichever
+/// value the key holds.
+#[test]
+fn the_console_flag_beside_the_key_is_refused_with_exit_2() -> Result<(), TestError> {
+    for key in ["true", "false"] {
+        let (_dir, cfg) = console_config(&format!("[api]\nconsole = {key}\n"))?;
+        let args = ["--config", &cfg, "-N", "-I", CONSOLE_PCAP, "--api-console"];
+        let run = server::run_to_exit(&args, "off", REFUSAL_WAIT)?;
+        assert_eq!(run.code, Some(2), "console = {key}: {}", run.stderr);
+        assert_eq!(
+            run.stderr.trim_end(),
+            CONSOLE_WITHOUT_API,
+            "console = {key}"
+        );
+    }
+    Ok(())
+}
+
+/// `--api-console=false` over a file that turns the console on asks for
+/// nothing: the run is not refused, and it reads the capture.
+#[test]
+fn the_flag_set_to_false_runs_without_the_api_over_the_key() -> Result<(), TestError> {
+    let (_dir, cfg) = console_config("[api]\nconsole = true\n")?;
+    let args = [
+        "--config",
+        &cfg,
+        "-N",
+        "-I",
+        CONSOLE_PCAP,
+        "--api-console=false",
+    ];
+    let run = server::run_to_exit(&args, "off", REFUSAL_WAIT)?;
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert!(
+        run.stdout.contains(" INVITE "),
+        "the capture was read: {}",
+        run.stdout
+    );
+    assert!(!run.stderr.contains("--api-console"), "{}", run.stderr);
+    Ok(())
+}
+
+/// A console that is off needs nothing: with no key, with the key off, and
+/// with the flag off, a run without the API reads its capture.
+#[test]
+fn a_console_that_is_off_is_not_refused_without_the_api() -> Result<(), TestError> {
+    let (_dir, cfg) = console_config("[api]\nconsole = false\n")?;
+    let runs: [&[&str]; 3] = [
+        &["--no-config", "-N", "-I", CONSOLE_PCAP],
+        &[
+            "--no-config",
+            "-N",
+            "-I",
+            CONSOLE_PCAP,
+            "--api-console=false",
+        ],
+        &["--config", &cfg, "-N", "-I", CONSOLE_PCAP],
+    ];
+    for args in runs {
+        let run = server::run_to_exit(args, "off", REFUSAL_WAIT)?;
+        assert_eq!(run.code, Some(0), "{args:?}: {}", run.stderr);
+        assert!(run.stdout.contains(" INVITE "), "{args:?}: {}", run.stdout);
+    }
+    Ok(())
+}
+
+/// The refusal comes before the terminal UI starts: without `-N` the run
+/// ends the same way and draws nothing.
+#[test]
+fn the_console_without_the_api_is_refused_before_the_terminal_ui() -> Result<(), TestError> {
+    let args = ["--no-config", "-I", CONSOLE_PCAP, "--api-console"];
+    let run = server::run_to_exit(&args, "off", REFUSAL_WAIT)?;
+    assert_eq!(run.code, Some(2), "{}", run.stderr);
+    assert_eq!(
+        run.stderr.trim_end(),
+        CONSOLE_WITHOUT_API,
+        "the refusal is the only line on stderr"
+    );
+    assert_eq!(run.stdout, "", "no screen was drawn");
+    Ok(())
+}
+
+/// A command that prints and exits without planning a capture reads the same
+/// file without being refused: `-D` prints the configuration, console key
+/// included, and `--version` and `--help` print what they always print.
+#[test]
+fn a_command_that_plans_no_capture_reads_the_console_key_unrefused() -> Result<(), TestError> {
+    let (_dir, cfg) = console_config("[api]\nconsole = true\n")?;
+    let dump = server::run_to_exit(&["--config", &cfg, "-D"], "off", REFUSAL_WAIT)?;
+    assert_eq!(dump.code, Some(0), "{}", dump.stderr);
+    assert!(dump.stdout.contains("console = true"), "{}", dump.stdout);
+    for (flag, shown) in [("--version", "sipnab "), ("--help", "--api-console")] {
+        let run = server::run_to_exit(&["--config", &cfg, flag], "off", REFUSAL_WAIT)?;
+        assert_eq!(run.code, Some(0), "{flag}: {}", run.stderr);
+        assert!(run.stdout.contains(shown), "{flag}: {}", run.stdout);
+        assert_eq!(run.stderr, "", "{flag}");
+    }
+    Ok(())
+}
+
+/// The message does not depend on the log level: it is the same line at
+/// `info`, with the level's own lines beside it at most.
+#[test]
+fn the_console_refusal_is_printed_at_every_log_level() -> Result<(), TestError> {
+    for level in ["off", "error", "info", "debug"] {
+        let args = ["--no-config", "-N", "-I", CONSOLE_PCAP, "--api-console"];
+        let run = server::run_to_exit(&args, level, REFUSAL_WAIT)?;
+        assert_eq!(run.code, Some(2), "{level}: {}", run.stderr);
+        assert_eq!(
+            run.stderr
+                .lines()
+                .filter(|l| *l == CONSOLE_WITHOUT_API)
+                .count(),
+            1,
+            "{level}: {}",
+            run.stderr
+        );
+    }
+    Ok(())
+}
+
 /// On a server with a key, the page needs no token and every data route
 /// still does: the console is no way around the credential.
 #[test]

@@ -958,7 +958,10 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // in clear lose their `--store` prefix (two removed, two added).
 // src/app/fleet_seal.rs +2: a key file of the wrong length and a record over
 // the sealed record bound.
-const EXPECTED_TEMPLATES: usize = 605;
+// 605 -> 607 (CONSOLE-FLAG-WITHOUT-API): src/app/bootstrap.rs, the refusal
+// of `--api-console` on a run with no `--api` (+1) and `--api-console
+// requires the 'api' feature (not compiled in)` (+1).
+const EXPECTED_TEMPLATES: usize = 607;
 
 // ---------------------------------------------------------------------------
 // The page gates

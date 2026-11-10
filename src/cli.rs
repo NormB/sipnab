@@ -3359,7 +3359,8 @@ pub struct ListenerArgs {
     pub api_allowed_host: Vec<String>,
 
     /// Serve the web console at `/console/` on the REST API listener
-    /// (`[api] console`, default off). Needs `--api`. The console is static
+    /// (`[api] console`, default off). Needs `--api`: this flag without
+    /// `--api` is refused. The console is static
     /// files that call `/v1/` with the bearer token you paste into the page;
     /// it adds no listener and no access of its own.
     /// `--api-console=false` turns it off over a config that turns it on.
@@ -7153,6 +7154,20 @@ impl Cli {
             .unwrap_or(false)
     }
 
+    /// Whether `--api-console` asked for the web console on a run with no
+    /// `--api`.
+    ///
+    /// The REST API listener serves the console, which has no listener of
+    /// its own, so the flag without `--api` asks for something this run
+    /// cannot give. `[api] console = true` is not asked about: the key says
+    /// to serve the console whenever the API is on, and with the API off it
+    /// is unused, as every other `[api]` key is. `--api-console=false` asks
+    /// for nothing.
+    #[must_use]
+    pub fn console_flag_without_api(&self) -> bool {
+        self.listener_args.api_console == Some(true) && self.listener_args.api.is_none()
+    }
+
     /// The REST API's `Host` allowlist additions: `--api-allowed-host`, else
     /// `[api] allowed_hosts`, else none. The flag REPLACES the key's list
     /// rather than adding to it, as `--mcp-tools` replaces `[mcp] tools`: a
@@ -10768,6 +10783,43 @@ mod tests {
         let plain = Cli::try_parse_from(["sipnab"])?;
         let e = plain.mcp_tool_selection(&config).err().ok_or("config")?;
         assert!(e.contains("[mcp] tools"), "{e}");
+        Ok(())
+    }
+
+    /// CONSOLE-FLAG-WITHOUT-API: the flag without `--api` is found; the flag
+    /// set to false, the flag beside `--api`, and no flag are not.
+    #[test]
+    fn the_console_flag_without_the_api_is_found() -> Result<(), TestError> {
+        let cases: [(&[&str], bool); 7] = [
+            (&[], false),
+            (&["--api-console"], true),
+            (&["--api-console=true"], true),
+            (&["--api-console=false"], false),
+            (&["--api", "127.0.0.1:0"], false),
+            (&["--api", "127.0.0.1:0", "--api-console"], false),
+            (&["--api", "127.0.0.1:0", "--api-console=false"], false),
+        ];
+        for (args, want) in cases {
+            let cli = Cli::try_parse_from(["sipnab"].iter().chain(args))?;
+            assert_eq!(cli.console_flag_without_api(), want, "{args:?}");
+        }
+        Ok(())
+    }
+
+    /// The other listeners do not stand in for the REST API: the console is
+    /// served by `--api` alone.
+    #[test]
+    fn no_other_listener_serves_the_console() -> Result<(), TestError> {
+        for other in [
+            &["--metrics", "127.0.0.1:0"][..],
+            &["--mcp"],
+            &["--mcp", "--mcp-transport", "http"],
+            &["--api-key", "k"],
+            &["--api-allowed-host", "console.example.com"],
+        ] {
+            let cli = Cli::try_parse_from(["sipnab", "--api-console"].iter().chain(other))?;
+            assert!(cli.console_flag_without_api(), "{other:?}");
+        }
         Ok(())
     }
 

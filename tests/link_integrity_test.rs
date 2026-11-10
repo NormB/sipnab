@@ -1772,7 +1772,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // errors.md +1, each a link to "Encrypt the center's store".
     // 2521 -> 2522: fleet.md +1, the prerequisite's link to "Upgrade a center
     // that stored in clear".
-    const EXPECTED_WIKI_LINKS: usize = 2522;
+    // 2522 -> 2525 (CONSOLE-FLAG-WITHOUT-API): rest-api.md +2, "What the
+    // console needs" and the troubleshooting table link to
+    // #the-console-without-the-api; errors.md +1, the refusal's entry links
+    // to the same section.
+    const EXPECTED_WIKI_LINKS: usize = 2525;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

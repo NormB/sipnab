@@ -2950,6 +2950,26 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 **Exit code:** 2.
 
+### `--api-console requires the 'api' feature (not compiled in)`
+
+`--api-console` serves the web console on the REST API listener. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture. `--api-console=false` is not refused.
+
+**What to do:** Use a sipnab build that includes the `api` feature, or remove `--api-console`.
+
+**Exit code:** 2.
+
+### `--api-console needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or remove --api-console`
+
+The command line has `--api-console` and no `--api`. The REST API listener serves the web console, and the console has no listener of its own. sipnab refuses the run before it reads a capture or opens a device.
+
+`console = true` in the `[api]` section of the config file does not cause this message. With no `--api`, sipnab does not use that key.
+
+**What to do:** To use the console, add `--api` with the address to listen on, such as `--api 127.0.0.1:8080`. To run without it, remove `--api-console`.
+
+[The console without the API](rest-api.md#the-console-without-the-api) has an example.
+
+**Exit code:** 2.
+
 ### `--api-key requires the 'api' feature (not compiled in)`
 
 `--api-key` sets the key that the REST API server accepts. This sipnab build does not include the `api` feature, so it has no REST API server. sipnab refuses the run before it opens the capture.

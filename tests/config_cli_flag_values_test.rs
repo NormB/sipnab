@@ -1927,7 +1927,9 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     ("mcp-output-schemas", Kind::Choice, &[]),
-    ("api-console", Kind::Choice, &[]),
+    // `--api-console`: true or false. Turned on, it needs `--api`, which
+    // serves it; without `--api` the run is refused.
+    ("api-console", Kind::Choice, &["--api", "127.0.0.1:0"]),
     (
         "one-way-delay",
         Kind::Real {
