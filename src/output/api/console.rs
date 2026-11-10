@@ -133,9 +133,11 @@ pub(super) fn mount(router: Router<ApiState>) -> Router<ApiState> {
                 ),
             );
     }
-    // A layer covers the routes it is added after, the `405` a route answers
-    // to another method included, and none of the API routes.
-    router.merge(console.layer(axum::middleware::map_response(with_security_headers)))
+    // `route_layer`, not `layer`: it covers the console routes, the `405` a
+    // route answers to another method included, and leaves the fallback
+    // alone. A `layer` here also wraps the fallback, and the merged router
+    // then answers every unknown path on the listener with the page policy.
+    router.merge(console.route_layer(axum::middleware::map_response(with_security_headers)))
 }
 
 /// One embedded file, after the request is charged to the rate limiter.
@@ -553,6 +555,49 @@ mod tests {
         Ok(())
     }
 
+    /// A path the console does not have is charged to the rate limiter as a
+    /// file is: guessing file names is not free.
+    #[tokio::test]
+    async fn an_unknown_path_over_the_rate_limit_is_refused() -> Result<(), TestError> {
+        let mut state = make_state();
+        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::new(1, 1024)));
+        let app = build_router_with_console(state);
+        let first = send(app.clone(), test_request("/console/missing.js")?).await?;
+        assert_eq!(
+            first.status(),
+            StatusCode::NOT_FOUND,
+            "the first request is inside the budget"
+        );
+        let second = send(app, test_request("/console/missing.js")?).await?;
+        assert_eq!(
+            second.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the second request is over the budget"
+        );
+        Ok(())
+    }
+
+    /// The redirect is charged to the rate limiter too.
+    #[tokio::test]
+    async fn the_redirect_over_the_rate_limit_is_refused() -> Result<(), TestError> {
+        let mut state = make_state();
+        state.rate_limiter = Arc::new(Mutex::new(RateLimiter::new(1, 1024)));
+        let app = build_router_with_console(state);
+        let first = send(app.clone(), test_request("/console")?).await?;
+        assert_eq!(
+            first.status(),
+            StatusCode::PERMANENT_REDIRECT,
+            "the first request is inside the budget"
+        );
+        let second = send(app, test_request("/console")?).await?;
+        assert_eq!(
+            second.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the second request is over the budget"
+        );
+        Ok(())
+    }
+
     /// A `Host` the allowlist does not hold is refused before the page.
     #[tokio::test]
     async fn a_foreign_host_does_not_get_the_page() -> Result<(), TestError> {
@@ -691,6 +736,41 @@ mod tests {
         assert!(
             resp.headers().get("content-security-policy").is_none(),
             "the page policy is for console responses only"
+        );
+        Ok(())
+    }
+
+    /// A path that is not under `/console` and not an API route answers as
+    /// it does with the console off: the listener's own `404`, without the
+    /// page policy.
+    #[tokio::test]
+    async fn a_path_outside_the_console_answers_as_without_it() -> Result<(), TestError> {
+        for path in ["/nope", "/consolex", "/v1/nope"] {
+            let on = get_console(path).await?;
+            let off = send(build_router(make_state()), test_request(path)?).await?;
+            assert_eq!(on.status(), off.status(), "{path}");
+            assert_eq!(
+                on.headers().get("content-security-policy"),
+                off.headers().get("content-security-policy"),
+                "{path}"
+            );
+            assert_eq!(
+                on.headers().get("cache-control"),
+                off.headers().get("cache-control"),
+                "{path}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A `404` under `/console/` is the API's problem document, not a page.
+    #[tokio::test]
+    async fn a_not_found_is_a_problem_document() -> Result<(), TestError> {
+        let resp = get_console("/console/missing.js").await?;
+        assert_eq!(
+            header_value(&resp, "content-type")?,
+            "application/problem+json",
+            "the console answers an unknown path as the API does"
         );
         Ok(())
     }
