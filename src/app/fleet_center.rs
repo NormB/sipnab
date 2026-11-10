@@ -587,12 +587,17 @@ fn write_sealed<'a>(
             .map_err(std::io::Error::other)?;
         let mut file = create_private(&staged)?;
         file.write_all(&header)?;
+        let mut count = 0usize;
         for record in records {
             let line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
             file.write_all(&sealer.record(&line).map_err(std::io::Error::other)?)?;
+            count += 1;
         }
         file.write_all(&sealer.base_end().map_err(std::io::Error::other)?)?;
         file.sync_all()?;
+        // The store, which may still be the one an earlier release wrote in
+        // clear, is replaced only by a file that is on disk and reads back.
+        staged_reads_back(&std::fs::read(&staged)?, keys, count)?;
         std::fs::rename(&staged, path)?;
         Ok(sealer)
     })();
@@ -600,6 +605,29 @@ fn write_sealed<'a>(
         let _ = std::fs::remove_file(&staged);
     }
     result
+}
+
+/// Check that the staged bytes of a rewrite open under `keys` and hold
+/// `count` records, before the staged file replaces the store.
+///
+/// # Errors
+///
+/// The bytes do not open as a sealed store, or hold another number of
+/// records.
+fn staged_reads_back(
+    bytes: &[u8],
+    keys: &crate::app::fleet_seal::Keys,
+    count: usize,
+) -> std::io::Result<()> {
+    let log = crate::app::fleet_seal::open_log(bytes, keys, crate::app::fleet_seal::Kind::Registry)
+        .map_err(|e| std::io::Error::other(format!("the staged store {e}")))?;
+    if log.records.len() != count || log.torn_tail {
+        return Err(std::io::Error::other(format!(
+            "the staged store holds {} record(s), not the {count} written",
+            log.records.len()
+        )));
+    }
+    Ok(())
 }
 
 /// The member records a sealed store's records hold.
@@ -2149,6 +2177,37 @@ mod behavior_tests {
             members_of(&path, test_keys(1))?,
             vec!["a".to_string(), "b".to_string()],
             "the rewritten member and the one appended after"
+        );
+        Ok(())
+    }
+
+    /// A staged rewrite that does not read back is refused before it can
+    /// replace the store: changed bytes, a missing end, or a record short.
+    #[test]
+    fn failure_a_staged_rewrite_that_does_not_read_back_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a", "b"])?;
+        let (mut store, records) = Store::open(&path, test_keys(1))?;
+        store.compact(&Registry::from_records(records))?;
+        let good = std::fs::read(&path)?;
+        let keys = test_keys(1);
+        assert!(
+            staged_reads_back(&good, &keys, 2).is_ok(),
+            "the rewrite reads back"
+        );
+        let mut changed = good.clone();
+        changed[good.len() / 2] ^= 1;
+        assert!(
+            staged_reads_back(&changed, &keys, 2).is_err(),
+            "a changed byte"
+        );
+        assert!(
+            staged_reads_back(&good[..good.len() - 29], &keys, 2).is_err(),
+            "no end of the base"
+        );
+        assert!(
+            staged_reads_back(&good, &keys, 3).is_err(),
+            "a record short"
         );
         Ok(())
     }

@@ -40371,9 +40371,8 @@ development build after 0.5.243 and the files in one working directory.
   holds the key file can read the store. Without the key file nobody can.
 - **A center from 0.5.237 to 0.5.243** wrote its store in clear and took no
   key. After the upgrade it does not start until you give it
-  `--store-key-file`. On the first start with a key it reads the old store,
-  writes it encrypted and replaces the file. The old bytes may stay on the
-  disk's free space until the file system reuses it.
+  `--store-key-file`. [Upgrade a center that stored in clear](#upgrade-a-center-that-stored-in-clear)
+  has the steps and the way back.
 
 **Steps.**
 
@@ -40417,6 +40416,39 @@ development build after 0.5.243 and the files in one working directory.
    next start on, leave `--store-old-key-file` out, back up the new key file
    and destroy the old one.
 
+#### Upgrade a center that stored in clear
+
+Releases 0.5.237 to 0.5.243 wrote the store in clear. To upgrade such a
+center:
+
+1. **[center]** Stop the center. To keep a way back that loses no member,
+   copy the store aside, and treat the copy as every member's inventory in
+   clear:
+
+   ```bash
+   cp -p /var/lib/sipnab/center.store /var/lib/sipnab/center.store.clear
+   ```
+
+2. **[center]** Install the new sipnab, create the key as in step 1 above and
+   back it up.
+3. **[center]** Add `--store-key-file /etc/sipnab/center.storekey` to the
+   center's command line or service unit, and start it. On this first start
+   the center reads the clear store, writes a sealed copy beside it, waits
+   until that copy is on disk, reads it back, and only then puts it in the
+   store's place. A stop or a failure before that leaves the clear store as
+   it was. The center logs one warning that the store `held <n> member(s) in
+   clear` and `is sealed now`. The old bytes may stay in the disk's free
+   space until the file system reuses it.
+4. **[center]** When the members list is right, delete the copy from step 1.
+
+**To go back** to 0.5.243 or earlier: stop the center, and put the copy from
+step 1 back as the store, or move the sealed store away to start with an
+empty one. Do this before the older release starts: it cannot read a sealed
+store, and it either stops at start or starts with no members and writes
+over the file. Then install the older sipnab and start it without
+`--store-key-file`. With an empty store, the center lists each member again
+at its next heartbeat, and does not list a member that is silent then.
+
 **Verify.**
 
 - The center's first log line names the key id that `keygen` printed.
@@ -40441,9 +40473,12 @@ the file it stages a rewrite in, and writes no other file. It authenticates
 each record with the record's position in the file, so a changed byte, a
 moved record or a store cut short inside the records of its last rewrite
 stops the center at start. Two things it cannot detect: someone deleting the
-whole store, and someone removing records from the end of the file that the
-center appended after its last rewrite. The center rewrites the store at
-start and every minute. `--store-encryption` names how the center encrypts
+whole store, and someone removing whole records from the end of the file
+that the center appended after its last rewrite. A file that the center may
+stop writing at any moment cannot tell a removed last record from one it
+never wrote, unless it keeps a count somewhere else, and this release keeps
+none. The center rewrites the store at start and every minute, so the
+records this applies to are the heartbeats of at most the last minute. `--store-encryption` names how the center encrypts
 the store. This release has one mechanism, `sealed`, and refuses the values
 `modular` and `both`.
 

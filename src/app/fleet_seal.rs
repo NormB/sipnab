@@ -1632,6 +1632,25 @@ mod tests {
     }
 
     #[test]
+    fn whole_appended_records_removed_from_the_end_are_not_detected() -> TestResult {
+        // The known limit: an append-only file that can stop mid-write
+        // cannot tell a record that was removed from one never written
+        // without a count kept elsewhere. Records before the base end are
+        // counted by it; records appended after it are not.
+        let bytes = sealed(&key(1), &[b"base"], &[b"kept", b"removed"])?;
+        let last = 4 + 1 + b"removed".len() + TAG_BYTES;
+        let cut = &bytes[..bytes.len() - last];
+        let log = open_log(cut, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
+        assert_eq!(
+            log.records,
+            vec![b"base".to_vec(), b"kept".to_vec()],
+            "the file opens without its last appended record"
+        );
+        assert!(!log.torn_tail, "and nothing marks it as cut");
+        Ok(())
+    }
+
+    #[test]
     fn the_system_source_fills_and_two_draws_differ() -> TestResult {
         let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
         system_fill(&mut a)?;
