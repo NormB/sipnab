@@ -44,8 +44,9 @@ const RELEASED_SUBCOMMANDS: &[&str] = &[
 /// Flags a released `tfps_ctl` accepts, from the same source.
 ///
 /// `--json` joined on 2026-09-18, when sippulse/tfps#6 merged into `master`.
-/// No tag carries it yet (v0.2.1 is the newest and rejects it), so every page
-/// that tells a reader to use it also says to build TFPS from `master`.
+/// TFPS v0.3.0 is the first release that carries it
+/// (`sipnab::security::tfps::JSON_MODE_SINCE`), so every page that tells a
+/// reader to use it names that release.
 /// `--a` and `--config` were accepted by v0.2.1 already and had been missing
 /// from this list.
 const RELEASED_FLAGS: &[&str] = &[
@@ -216,4 +217,186 @@ fn no_cli_help_instructs_a_tfps_command_the_released_peer_lacks() {
         "sipnab's --help instructs peer commands no released TFPS has:\n{}",
         problems.join("\n")
     );
+}
+
+/// The JSON mode's release: sipnab's hint and every page say which TFPS
+/// release has `tfps_ctl --json`. The hint lives in a module the `native`
+/// feature builds, so these tests build with it.
+#[cfg(feature = "native")]
+mod json_mode_release {
+    use super::docs;
+
+    /// Wording that says no TFPS release has the JSON mode, in lower case.
+    ///
+    /// Each was on a docs page, or in sipnab's own hint, on 2026-11-10, ten days
+    /// after TFPS v0.3.0 shipped the mode. A reader on a release that works was
+    /// told to build from `master`.
+    const NO_RELEASE_HAS_JSON: &[&str] = &[
+        "no tagged release",
+        "in no release yet",
+        "no release carries it",
+        "until a tagged release",
+        "until the next release",
+        "the latest release, v0.2.1",
+        "v0.2.1, the newest",
+        "the tfps in use is a release",
+    ];
+
+    /// Whether a line of text says no TFPS release has the JSON mode.
+    fn says_no_release_has_json(line: &str) -> bool {
+        let line = line.to_lowercase();
+        NO_RELEASE_HAS_JSON.iter().any(|p| line.contains(p))
+    }
+
+    /// The pages that state which TFPS a reader needs: every docs page that names
+    /// the release without the mode.
+    fn pages_naming_the_release_without_json() -> Vec<(String, String)> {
+        docs()
+            .into_iter()
+            .filter(|(path, body)| !path.contains("/design/") && body.contains("v0.2.1"))
+            .collect()
+    }
+
+    #[test]
+    fn the_hint_names_the_release_that_has_the_json_mode() {
+        use sipnab::security::tfps::{JSON_MODE_HINT, JSON_MODE_SINCE};
+        assert!(
+            JSON_MODE_HINT.contains(JSON_MODE_SINCE),
+            "an operator whose tfps_ctl rejects --json is not told which TFPS \
+             release accepts it ({JSON_MODE_SINCE}): {JSON_MODE_HINT}"
+        );
+        assert!(
+            !says_no_release_has_json(JSON_MODE_HINT),
+            "the hint still says no TFPS release has --json: {JSON_MODE_HINT}"
+        );
+        assert!(
+            !JSON_MODE_HINT.contains("build TFPS from master"),
+            "the hint sends the operator to a source build although a release \
+             has the mode: {JSON_MODE_HINT}"
+        );
+    }
+
+    #[test]
+    fn the_hint_still_says_which_releases_lack_the_mode_and_where_tfps_lives() {
+        use sipnab::security::tfps::JSON_MODE_HINT;
+        for needle in [
+            "no JSON mode",
+            "v0.2.1",
+            "sippulse/tfps#6",
+            "https://github.com/sippulse/tfps",
+        ] {
+            assert!(
+                JSON_MODE_HINT.contains(needle),
+                "hint lost `{needle}`: {JSON_MODE_HINT}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_first_release_with_json_is_a_version_tag() -> Result<(), Box<dyn std::error::Error>> {
+        use sipnab::security::tfps::JSON_MODE_SINCE;
+        let digits = JSON_MODE_SINCE
+            .strip_prefix('v')
+            .ok_or("a TFPS tag starts with v")?;
+        let parts: Vec<&str> = digits.split('.').collect();
+        assert_eq!(parts.len(), 3, "{JSON_MODE_SINCE} is not vX.Y.Z");
+        assert!(
+            parts.iter().all(|p| p.parse::<u32>().is_ok()),
+            "{JSON_MODE_SINCE} is not vX.Y.Z"
+        );
+        assert_ne!(JSON_MODE_SINCE, "v0.2.1", "v0.2.1 rejects --json");
+        Ok(())
+    }
+
+    #[test]
+    fn no_document_says_no_tfps_release_has_the_json_mode() {
+        let mut problems = Vec::new();
+        let mut scanned = 0usize;
+        for (path, body) in docs() {
+            if path.contains("/design/") {
+                continue;
+            }
+            scanned += 1;
+            // Joined, so a phrase a line break splits is still one phrase.
+            let lines: Vec<&str> = body.lines().collect();
+            for (n, pair) in lines.windows(2).enumerate() {
+                let joined = format!(
+                    "{} {}",
+                    pair[0].trim_start_matches(['>', ' ']),
+                    pair[1].trim_start_matches(['>', ' '])
+                );
+                if says_no_release_has_json(pair[0])
+                    || (!says_no_release_has_json(pair[1]) && says_no_release_has_json(&joined))
+                {
+                    problems.push(format!("{path}:{}: {}", n + 1, pair[0].trim()));
+                }
+            }
+            if let Some(last) = lines.last()
+                && says_no_release_has_json(last)
+            {
+                problems.push(format!("{path}:{}: {}", lines.len(), last.trim()));
+            }
+        }
+        assert!(
+            scanned > 80,
+            "read {scanned} docs pages; the walk is broken"
+        );
+        assert!(
+            problems.is_empty(),
+            "these lines say no TFPS release has `tfps_ctl --json`. {} has it; \
+             name that release:\n{}",
+            sipnab::security::tfps::JSON_MODE_SINCE,
+            problems.join("\n")
+        );
+    }
+
+    #[test]
+    fn every_page_that_names_the_release_without_json_names_the_one_with_it() {
+        use sipnab::security::tfps::JSON_MODE_SINCE;
+        let pages = pages_naming_the_release_without_json();
+        assert!(
+            pages.len() >= 5,
+            "{} pages name v0.2.1; the peer notes on the TFPS guides, the tool \
+             page, the config reference and the REST reference all did",
+            pages.len()
+        );
+        let missing: Vec<&str> = pages
+            .iter()
+            .filter(|(_, body)| !body.contains(JSON_MODE_SINCE))
+            .map(|(path, _)| path.as_str())
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "these pages say v0.2.1 rejects `--json` and never say {JSON_MODE_SINCE} \
+             accepts it:\n{}",
+            missing.join("\n")
+        );
+    }
+
+    /// POSITIVE CONTROL for the wording reader: it reports each stale phrase, in
+    /// any case, and leaves a true statement about the releases alone.
+    #[test]
+    fn the_wording_reader_reports_stale_claims_and_leaves_true_ones_alone() {
+        for stale in [
+            "- No tagged release carries it yet. v0.2.1, the newest, rejects `--json`.",
+            "- It is in no release yet. v0.2.1 answers `unknown option: --json`.",
+            "- Master has it, merged on 2026-09-18. No release carries it yet.",
+            "> rejects `--json`. Until a tagged release carries it, build from `master`.",
+            "> Until the next release, build TFPS from its `master` branch.",
+            "- The latest release, v0.2.1, has no `--json` option.",
+            "- **`unknown option: --json`.** The TFPS in use is a release. Build master.",
+            "NO TAGGED RELEASE has it",
+        ] {
+            assert!(says_no_release_has_json(stale), "not reported: {stale}");
+        }
+        for fine in [
+            "- TFPS v0.3.0 and later have it. v0.2.1 and earlier reject `--json`.",
+            "- TFPS came from a build of master at `984577dc`.",
+            "no TFPS build has a dropped subcommand yet, released or on master",
+            "Ask TFPS to release a source sipnab banned.",
+            "",
+        ] {
+            assert!(!says_no_release_has_json(fine), "wrongly reported: {fine}");
+        }
+    }
 }

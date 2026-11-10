@@ -682,7 +682,7 @@ no-open-port property of SSH stdio.
 
 ### Which remote setup should I use?
 
-| | SSH stdio | HTTP+token | SSH tunnel |
+| Property | SSH stdio | HTTP+token | SSH tunnel |
 |---|---|---|---|
 | Server setup | install only | unit + token | unit |
 | Open port | none | 8731 | none |

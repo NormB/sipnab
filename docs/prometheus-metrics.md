@@ -27,7 +27,7 @@ It is also different from HEP, the Homer Encapsulation Protocol:
 
 A deployment can use both.
 
-### Scrape the metrics of a capture file
+## Scrape the metrics of a capture file
 
 With `--api`, sipnab keeps serving after it has read a file, until you stop
 it. On a loopback address with no API key, `/metrics` needs no token. Start
@@ -69,7 +69,7 @@ exits with the run, so on a file run it is reachable only while sipnab reads
 the file.
 
 
-### GET /metrics
+## GET /metrics
 
 Prometheus-compatible metrics endpoint. It returns metrics in the Prometheus
 text exposition format (`text/plain; version=0.0.4`).
@@ -230,7 +230,7 @@ and is absent from the scrape until the first alert. An absent series means
 no alert of that type has fired since the process started.
 
 
-### Choose a scrape target
+## Choose a scrape target
 
 sipnab serves the same metrics on two ports. Scrape whichever one the run
 already has:
@@ -245,7 +245,7 @@ Both publish the same series with the same values, so a rule or dashboard
 built against one works against the other. Every series in the table above is
 on both.
 
-### Prometheus scrape config
+## Prometheus scrape config
 
 ```yaml
 # prometheus.yml

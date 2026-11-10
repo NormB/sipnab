@@ -24,9 +24,12 @@
   <div class="analyze-dropzone" id="dropzone">
     <div class="dropzone-inner">
       <span class="dropzone-kicker">sipnab &middot; in-browser analyzer</span>
-      <h2 class="dropzone-title">Drop a capture file here to analyze</h2>
+      <h2 class="dropzone-title" id="dropzone-title">Drop a capture file here to analyze</h2>
+      {# Named by the heading above it and then its own text, so the name
+           holds everything the button shows (WCAG 2.5.3, label in name). It
+           had an aria-label, which replaced that text as the name. #}
       <div class="dropzone-box" id="dropzone-box" role="button" tabindex="0"
-           aria-label="Drop a capture file here, or press Enter or Space to browse for one">
+           aria-labelledby="dropzone-title dropzone-box">
         <div class="dropzone-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
             <path d="M14 3v4a1 1 0 0 0 1 1h4"/>

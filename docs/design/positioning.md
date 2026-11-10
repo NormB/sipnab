@@ -31,7 +31,7 @@ and a deployment project before the first packet.
 
 The middle wants three properties at once that neither provides:
 
-| | the terminal viewer | **the gap** | Homer |
+| Property | the terminal viewer | **the gap** | Homer |
 |---|---|---|---|
 | reach | one box you are on | **many nodes, no agent to deploy** | many nodes |
 | infrastructure | none | **none** | collector + DB + UI |

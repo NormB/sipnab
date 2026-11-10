@@ -68,7 +68,7 @@ into sipnab. Three constraints shape the design:
 
 ### 2.2 Two operations
 
-| | **A. Save-with-names** | **B. Annotate / convert original** |
+| Property | **A. Save-with-names** | **B. Annotate / convert original** |
 |---|---|---|
 | Packet source | in-memory dialogs (synthetic packets) | original file on disk, copied **verbatim** |
 | Fidelity | lossy re-encode (today's F2 save) | forensically faithful |

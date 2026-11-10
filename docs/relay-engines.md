@@ -87,7 +87,7 @@ it. To read another engine's names, name that engine with
 
 The examples use these addresses. Replace them with yours.
 
-| | Media address in SDP | Ports | `listen-ng` |
+| Engine | Media address in SDP | Ports | `listen-ng` |
 |---|---|---|---|
 | Engine A | `203.0.113.5` | 30000-39999 | `192.0.2.5:2223` |
 | Engine B | `203.0.113.5` | 40000-49999 | `192.0.2.6:2223` |
