@@ -479,7 +479,7 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
         crate::cli::fleet_args::FleetCommand::Keygen { out } => {
             return match super::fleet_seal::write_new_key_file(
                 &out,
-                &super::fleet_seal::system_fill,
+                &super::fleet_seal::system_draw,
             ) {
                 Ok(id) => {
                     let line = format!("{}: key id {id}\n", out.display());

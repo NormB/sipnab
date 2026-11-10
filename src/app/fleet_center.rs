@@ -576,14 +576,26 @@ fn write_sealed<'a>(
     keys: &crate::app::fleet_seal::Keys,
     records: impl Iterator<Item = &'a MemberRecord>,
 ) -> std::io::Result<crate::app::fleet_seal::LogSealer> {
-    use crate::app::fleet_seal::{Kind, LogSealer, system_fill};
+    write_sealed_reading(path, keys, records, &|staged| std::fs::read(staged))
+}
+
+/// [`write_sealed`], with the read of the staged file as an argument:
+/// `read` returns what the disk holds at the staged path, and the store at
+/// `path` is replaced only when those bytes open and hold every record.
+fn write_sealed_reading<'a>(
+    path: &Path,
+    keys: &crate::app::fleet_seal::Keys,
+    records: impl Iterator<Item = &'a MemberRecord>,
+    read: &dyn Fn(&Path) -> std::io::Result<Vec<u8>>,
+) -> std::io::Result<crate::app::fleet_seal::LogSealer> {
+    use crate::app::fleet_seal::{Kind, LogSealer, system_draw};
     let name = path
         .file_name()
         .map_or_else(|| "store".into(), |n| n.to_string_lossy().into_owned());
     let staged = path.with_file_name(format!(".{name}.partial"));
     let _ = std::fs::remove_file(&staged);
     let result = (|| {
-        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Registry, &system_fill)
+        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Registry, &system_draw)
             .map_err(std::io::Error::other)?;
         let mut file = create_private(&staged)?;
         file.write_all(&header)?;
@@ -597,7 +609,7 @@ fn write_sealed<'a>(
         file.sync_all()?;
         // The store, which may still be the one an earlier release wrote in
         // clear, is replaced only by a file that is on disk and reads back.
-        staged_reads_back(&std::fs::read(&staged)?, keys, count)?;
+        staged_reads_back(&read(&staged)?, keys, count)?;
         std::fs::rename(&staged, path)?;
         Ok(sealer)
     })();
@@ -2085,11 +2097,11 @@ mod behavior_tests {
     /// A sealed file of another kind, put where the store is, is refused.
     #[test]
     fn failure_an_intake_file_in_the_stores_place_is_refused() -> Result<(), TestError> {
-        use crate::app::fleet_seal::{Kind, LogSealer, system_fill};
+        use crate::app::fleet_seal::{Kind, LogSealer, system_draw};
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store");
         let keys = test_keys(1);
-        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Intake, &system_fill)?;
+        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Intake, &system_draw)?;
         let mut bytes = header.to_vec();
         bytes.extend(sealer.base_end()?);
         std::fs::write(&path, bytes)?;
@@ -2107,11 +2119,11 @@ mod behavior_tests {
     /// refused by its position.
     #[test]
     fn failure_a_sealed_record_that_is_not_a_member_record_is_refused() -> Result<(), TestError> {
-        use crate::app::fleet_seal::{Kind, LogSealer, system_fill};
+        use crate::app::fleet_seal::{Kind, LogSealer, system_draw};
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store");
         let keys = test_keys(1);
-        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Registry, &system_fill)?;
+        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Registry, &system_draw)?;
         let mut bytes = header.to_vec();
         bytes.extend(sealer.record(b"{\"not\":\"a member\"}")?);
         bytes.extend(sealer.base_end()?);
@@ -2209,6 +2221,38 @@ mod behavior_tests {
             staged_reads_back(&good, &keys, 3).is_err(),
             "a record short"
         );
+        Ok(())
+    }
+
+    /// A store an earlier release wrote in clear is still there, byte for
+    /// byte, when the sealed copy staged beside it does not read back.
+    #[test]
+    fn failure_a_clear_store_is_kept_when_its_sealed_copy_does_not_read_back()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let reg = Registry::default();
+        let at = "2026-11-07T12:00:00Z";
+        let p = reg.plan("edge-old", "192.0.2.7", t(at)?, &[hb("s", 1, at)?]);
+        let clear = format!(
+            "{}\n",
+            serde_json::to_string(p.record.as_ref().ok_or("r")?)?
+        );
+        std::fs::write(&path, &clear)?;
+        let records = plaintext_records(clear.as_bytes())?;
+        let damaged = |staged: &Path| {
+            let mut bytes = std::fs::read(staged)?;
+            let middle = bytes.len() / 2;
+            bytes[middle] ^= 1;
+            Ok(bytes)
+        };
+        let e = write_sealed_reading(&path, &test_keys(1), records.iter(), &damaged)
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(e.starts_with("the staged store "), "refused: '{e}'");
+        assert_eq!(std::fs::read(&path)?, clear.as_bytes(), "the clear store");
+        assert_eq!(std::fs::read_dir(dir.path())?.count(), 1, "no staged file");
         Ok(())
     }
 

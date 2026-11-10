@@ -30,7 +30,7 @@
 //!
 //! [`MasterKey::parse`], [`wrap`], [`unwrap`], [`LogSealer`] and
 //! [`open_log`] work on bytes and take their randomness as an argument.
-//! [`read_key_file`], [`write_new_key_file`] and [`system_fill`] are the
+//! [`read_key_file`], [`write_new_key_file`] and [`system_draw`] are the
 //! three functions that touch the file system or the system random source.
 
 use std::path::Path;
@@ -88,19 +88,50 @@ const ID_DOMAIN: &[u8] = b"sipnab fleet store key id v1\0";
 /// What a wrapped data key's associated data starts with.
 const WRAP_DOMAIN: &[u8] = b"sipnab fleet store wrap v1\0";
 
-/// Fills a buffer with random bytes, or says why it could not.
-pub type Fill<'a> = &'a dyn Fn(&mut [u8]) -> Result<(), String>;
+/// A source of random bytes: asked for a count, it returns that many new
+/// bytes, or says why it could not.
+///
+/// The bytes are returned and never written into a buffer the caller
+/// prepared, so a source that gives nothing cannot leave a prepared value
+/// in use as a key or a nonce. [`draw`] refuses any other count.
+pub type Draw<'a> = &'a dyn Fn(usize) -> Result<Zeroizing<Vec<u8>>, String>;
 
-/// Fill `out` from the system random source.
+/// `len` bytes from the system random source.
 ///
 /// # Errors
 ///
 /// The source failed. There is no weaker fallback.
-pub fn system_fill(out: &mut [u8]) -> Result<(), String> {
-    use ring::rand::SecureRandom as _;
-    ring::rand::SystemRandom::new()
-        .fill(out)
-        .map_err(|_| "the system random source failed".to_string())
+pub fn system_draw(len: usize) -> Result<Zeroizing<Vec<u8>>, String> {
+    let rng = ring::rand::SystemRandom::new();
+    // Sized before it is filled, so the bytes are never moved and left
+    // behind by a growing buffer.
+    let mut out = Zeroizing::new(Vec::with_capacity(len));
+    while out.len() < len {
+        let block = ring::rand::generate::<[u8; KEY_BYTES]>(&rng)
+            .map(|block| Zeroizing::new(block.expose()))
+            .map_err(|_| "the system random source failed".to_string())?;
+        let take = (len - out.len()).min(block.len());
+        out.extend_from_slice(&block[..take]);
+    }
+    Ok(out)
+}
+
+/// Exactly `N` bytes from `source`.
+///
+/// # Errors
+///
+/// `source` failed, or returned another count of bytes than `N`. A short
+/// answer is never completed with other bytes.
+pub fn draw<const N: usize>(source: Draw<'_>) -> Result<Zeroizing<[u8; N]>, String> {
+    let bytes = source(N)?;
+    <[u8; N]>::try_from(bytes.as_slice())
+        .map(Zeroizing::new)
+        .map_err(|_| {
+            format!(
+                "the random source returned {} bytes where {N} were asked for",
+                bytes.len()
+            )
+        })
 }
 
 /// The public name of a master key: 8 bytes of a SHA-256 over the key,
@@ -451,8 +482,8 @@ pub fn unwrap(
     if wrapped[0] != FORMAT {
         return Err(SealError::Header);
     }
-    let mut nonce = [0u8; NONCE_BYTES];
-    nonce.copy_from_slice(&wrapped[1..=NONCE_BYTES]);
+    let nonce =
+        <[u8; NONCE_BYTES]>::try_from(&wrapped[1..=NONCE_BYTES]).map_err(|_| SealError::Header)?;
     let wrapping = master.wrapping_key(layer).map_err(|_| SealError::Cipher)?;
     let mut sealed = Zeroizing::new(wrapped[1 + NONCE_BYTES..].to_vec());
     let opened = cipher(&wrapping)?
@@ -462,12 +493,9 @@ pub fn unwrap(
             &mut sealed,
         )
         .map_err(|_| SealError::Header)?;
-    let mut key = Zeroizing::new([0u8; KEY_BYTES]);
-    if opened.len() != KEY_BYTES {
-        return Err(SealError::Header);
-    }
-    key.copy_from_slice(opened);
-    Ok(key)
+    <[u8; KEY_BYTES]>::try_from(&*opened)
+        .map(Zeroizing::new)
+        .map_err(|_| SealError::Header)
 }
 
 /// Seals the records of one new file. Its data key is used for this file
@@ -494,23 +522,21 @@ impl std::fmt::Debug for LogSealer {
 
 impl LogSealer {
     /// A sealer for a new file of `kind` under `master`, and the header the
-    /// file starts with. `fill` supplies the file id, the data key and the
-    /// wrap nonce.
+    /// file starts with. `source` supplies the file id, the data key and
+    /// the wrap nonce.
     ///
     /// # Errors
     ///
-    /// `fill` or the cipher failed.
+    /// `source` failed or returned another count of bytes than it was
+    /// asked for, or the cipher failed.
     pub fn new(
         master: &MasterKey,
         kind: Kind,
-        fill: Fill<'_>,
+        source: Draw<'_>,
     ) -> Result<(Self, [u8; HEADER_BYTES]), String> {
-        let mut file_id = [0u8; FILE_ID_BYTES];
-        fill(&mut file_id)?;
-        let mut data_key = Zeroizing::new([0u8; KEY_BYTES]);
-        fill(&mut *data_key)?;
-        let mut nonce = [0u8; NONCE_BYTES];
-        fill(&mut nonce)?;
+        let file_id = *draw::<FILE_ID_BYTES>(source)?;
+        let data_key = draw::<KEY_BYTES>(source)?;
+        let nonce = *draw::<NONCE_BYTES>(source)?;
         let wrapped = wrap(master, Layer::Sealed, kind, &file_id, &data_key, nonce)
             .map_err(|e| e.to_string())?;
         let mut header = [0u8; HEADER_BYTES];
@@ -712,20 +738,19 @@ pub fn read_key_file(path: &Path, flag: &str) -> Result<MasterKey, String> {
 }
 
 /// Create the file `path`, readable by this user only, holding a new master
-/// key from `fill`, and return the key's id.
+/// key from `source`, and return the key's id.
 ///
 /// # Errors
 ///
-/// `path` exists, cannot be created or written, or `fill` failed. An
-/// existing file is never overwritten: it may be the only copy of a key.
-pub fn write_new_key_file(path: &Path, fill: Fill<'_>) -> Result<KeyId, String> {
+/// `path` exists, cannot be created or written, or `source` failed or
+/// returned another count of bytes than a key has. An existing file is
+/// never overwritten: it may be the only copy of a key.
+pub fn write_new_key_file(path: &Path, source: Draw<'_>) -> Result<KeyId, String> {
     use std::io::Write as _;
     let shown = path.display();
     // The key is drawn first: a random source that fails leaves no file.
-    let mut bytes = [0u8; KEY_BYTES];
-    fill(&mut bytes).map_err(|e| format!("--out '{shown}': {e}"))?;
-    let key = MasterKey::from_bytes(bytes);
-    zeroize::Zeroize::zeroize(&mut bytes);
+    let bytes = draw::<KEY_BYTES>(source).map_err(|e| format!("--out '{shown}': {e}"))?;
+    let key = MasterKey::from_bytes(*bytes);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -757,24 +782,22 @@ mod tests {
         MasterKey::from_bytes([b; KEY_BYTES])
     }
 
-    /// A fill that writes a counter, so every call gives different bytes
-    /// and a test is repeatable.
-    fn counting() -> impl Fn(&mut [u8]) -> Result<(), String> {
+    /// A source that returns a counter, so every call gives different
+    /// bytes and a test is repeatable.
+    fn counting() -> impl Fn(usize) -> Result<Zeroizing<Vec<u8>>, String> {
         let next = std::cell::Cell::new(1u8);
-        move |out: &mut [u8]| {
-            for byte in out.iter_mut() {
-                *byte = next.get();
-                next.set(next.get().wrapping_add(1));
-            }
-            Ok(())
+        move |len: usize| {
+            Ok(Zeroizing::new(
+                (0..len)
+                    .map(|_| next.replace(next.get().wrapping_add(1)))
+                    .collect(),
+            ))
         }
     }
 
     /// Twelve bytes from [`counting`], for a wrap that needs a nonce.
-    fn drawn() -> [u8; NONCE_BYTES] {
-        let mut out = [0u8; NONCE_BYTES];
-        let _ = counting()(&mut out);
-        out
+    fn drawn() -> Result<[u8; NONCE_BYTES], String> {
+        draw::<NONCE_BYTES>(&counting()).map(|nonce| *nonce)
     }
 
     /// A sealed registry file under `master` holding `records`, then
@@ -784,8 +807,8 @@ mod tests {
         records: &[&[u8]],
         appended: &[&[u8]],
     ) -> Result<Vec<u8>, String> {
-        let fill = counting();
-        let (mut sealer, header) = LogSealer::new(master, Kind::Registry, &fill)?;
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(master, Kind::Registry, &source)?;
         let mut out = header.to_vec();
         for r in records {
             out.extend(sealer.record(r)?);
@@ -835,7 +858,7 @@ mod tests {
     #[test]
     fn a_wrapped_data_key_unwraps_to_itself() -> TestResult {
         let (m, id, dek) = (key(1), [3; FILE_ID_BYTES], [9; KEY_BYTES]);
-        let w = wrap(&m, Layer::Sealed, Kind::Registry, &id, &dek, drawn())
+        let w = wrap(&m, Layer::Sealed, Kind::Registry, &id, &dek, drawn()?)
             .map_err(|e| e.to_string())?;
         assert_eq!(w[0], FORMAT, "the envelope starts with its format byte");
         let back = unwrap(&m, Layer::Sealed, Kind::Registry, &id, &w).map_err(|e| e.to_string())?;
@@ -970,9 +993,9 @@ mod tests {
 
     #[test]
     fn two_files_of_the_same_records_share_no_sealed_bytes() -> TestResult {
-        let fill = counting();
-        let (mut a, ha) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
-        let (mut b, hb) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
+        let source = counting();
+        let (mut a, ha) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let (mut b, hb) = LogSealer::new(&key(1), Kind::Registry, &source)?;
         assert_ne!(ha, hb, "a file id and a data key each");
         assert_ne!(
             a.record(b"same")?,
@@ -1091,7 +1114,7 @@ mod tests {
     fn keygen_reports_a_random_source_that_failed_and_leaves_no_file() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("store.key");
-        let failing = |_: &mut [u8]| Err("no entropy".to_string());
+        let failing = |_: usize| Err("no entropy".to_string());
         let e = write_new_key_file(&path, &failing)
             .err()
             .unwrap_or_default();
@@ -1186,8 +1209,8 @@ mod tests {
 
     #[test]
     fn a_file_of_another_kind_is_refused_by_kind() -> TestResult {
-        let fill = counting();
-        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Intake, &fill)?;
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Intake, &source)?;
         let mut bytes = header.to_vec();
         bytes.extend(sealer.base_end()?);
         let e = open_log(&bytes, &only(key(1)), Kind::Registry).err();
@@ -1209,8 +1232,8 @@ mod tests {
 
     #[test]
     fn a_kind_byte_changed_to_pass_the_check_fails_the_header() -> TestResult {
-        let fill = counting();
-        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Intake, &fill)?;
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Intake, &source)?;
         let mut bytes = header.to_vec();
         bytes.extend(sealer.base_end()?);
         bytes[5] = Kind::Registry.byte();
@@ -1240,9 +1263,9 @@ mod tests {
 
     #[test]
     fn a_header_from_another_file_does_not_open_this_files_records() -> TestResult {
-        let fill = counting();
-        let (mut a, _) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
-        let (_, header_b) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
+        let source = counting();
+        let (mut a, _) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let (_, header_b) = LogSealer::new(&key(1), Kind::Registry, &source)?;
         let mut bytes = header_b.to_vec();
         bytes.extend(a.record(b"moved")?);
         bytes.extend(a.base_end()?);
@@ -1260,17 +1283,16 @@ mod tests {
         // the system random source never gives: only the file id in the
         // record's associated data tells their records apart.
         let next = std::cell::Cell::new(1u8);
-        let fill = |out: &mut [u8]| {
-            if out.len() == KEY_BYTES {
-                out.fill(0x42);
+        let source = |len: usize| {
+            let byte = if len == KEY_BYTES {
+                0x42
             } else {
-                out.fill(next.get());
-                next.set(next.get() + 1);
-            }
-            Ok(())
+                next.replace(next.get() + 1)
+            };
+            Ok(Zeroizing::new(vec![byte; len]))
         };
-        let (mut a, header_a) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
-        let (mut b, header_b) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
+        let (mut a, header_a) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let (mut b, header_b) = LogSealer::new(&key(1), Kind::Registry, &source)?;
         assert_ne!(header_a[14..30], header_b[14..30], "two file ids");
         let mut bytes = header_b.to_vec();
         bytes.extend(a.record(b"from file a")?);
@@ -1286,7 +1308,7 @@ mod tests {
     #[test]
     fn a_wrapped_key_does_not_unwrap_for_another_file_layer_or_kind() -> TestResult {
         let (m, id, dek) = (key(1), [3; FILE_ID_BYTES], [9; KEY_BYTES]);
-        let w = wrap(&m, Layer::Sealed, Kind::Registry, &id, &dek, drawn())
+        let w = wrap(&m, Layer::Sealed, Kind::Registry, &id, &dek, drawn()?)
             .map_err(|e| e.to_string())?;
         let other = [4; FILE_ID_BYTES];
         assert!(
@@ -1311,7 +1333,7 @@ mod tests {
     #[test]
     fn a_wrapped_key_of_an_unknown_envelope_format_is_refused() -> TestResult {
         let (m, id, dek) = (key(1), [3; FILE_ID_BYTES], [9; KEY_BYTES]);
-        let mut w = wrap(&m, Layer::Sealed, Kind::Registry, &id, &dek, drawn())
+        let mut w = wrap(&m, Layer::Sealed, Kind::Registry, &id, &dek, drawn()?)
             .map_err(|e| e.to_string())?;
         w[0] = 2;
         assert_eq!(
@@ -1353,8 +1375,8 @@ mod tests {
 
     #[test]
     fn a_record_over_the_bound_is_refused_when_sealing() -> TestResult {
-        let fill = counting();
-        let (mut sealer, _) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
+        let source = counting();
+        let (mut sealer, _) = LogSealer::new(&key(1), Kind::Registry, &source)?;
         let e = sealer
             .record(&vec![0u8; MAX_RECORD_BYTES + 1])
             .err()
@@ -1556,8 +1578,8 @@ mod tests {
 
     #[test]
     fn the_same_record_twice_seals_to_different_bytes() -> TestResult {
-        let fill = counting();
-        let (mut sealer, _) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
+        let source = counting();
+        let (mut sealer, _) = LogSealer::new(&key(1), Kind::Registry, &source)?;
         assert_ne!(
             sealer.record(b"same")?,
             sealer.record(b"same")?,
@@ -1570,8 +1592,8 @@ mod tests {
     fn a_base_end_moved_earlier_is_refused() -> TestResult {
         // The base end says how many records came before it, so cutting
         // records out and keeping the end does not pass.
-        let fill = counting();
-        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
         let _dropped = sealer.record(b"gone")?;
         let end = sealer.base_end()?;
         let mut bytes = header.to_vec();
@@ -1588,8 +1610,8 @@ mod tests {
     fn a_base_end_that_counts_wrong_is_refused() -> TestResult {
         // Sealed with the real key at its real position, so only the count
         // it carries is wrong: one record came before it, and it says two.
-        let fill = counting();
-        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
         let mut bytes = header.to_vec();
         bytes.extend(sealer.record(b"one")?);
         bytes.extend(sealer.frame(FRAME_BASE_END, &2u64.to_be_bytes())?);
@@ -1603,8 +1625,8 @@ mod tests {
 
     #[test]
     fn a_second_base_end_is_refused() -> TestResult {
-        let fill = counting();
-        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
         let mut bytes = header.to_vec();
         bytes.extend(sealer.base_end()?);
         bytes.extend(sealer.base_end()?);
@@ -1618,8 +1640,8 @@ mod tests {
 
     #[test]
     fn a_record_of_an_unknown_type_is_refused() -> TestResult {
-        let fill = counting();
-        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &fill)?;
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
         let mut bytes = header.to_vec();
         bytes.extend(sealer.frame(9, b"what")?);
         bytes.extend(sealer.base_end()?);
@@ -1650,11 +1672,100 @@ mod tests {
         Ok(())
     }
 
+    /// A source that returns `given(asked)` bytes of 0xA5 whatever it is
+    /// asked for.
+    fn giving(given: fn(usize) -> usize) -> impl Fn(usize) -> Result<Zeroizing<Vec<u8>>, String> {
+        move |asked: usize| Ok(Zeroizing::new(vec![0xA5; given(asked)]))
+    }
+
+    #[test]
+    fn a_source_that_returns_nothing_is_an_error_and_never_a_zero_value() {
+        let e = draw::<NONCE_BYTES>(&giving(|_| 0)).map(|nonce| *nonce);
+        assert_eq!(
+            e,
+            Err("the random source returned 0 bytes where 12 were asked for".to_string()),
+            "no nonce is made from a source that gave nothing"
+        );
+    }
+
+    #[test]
+    fn a_source_that_returns_fewer_bytes_than_asked_is_an_error() {
+        let e = draw::<KEY_BYTES>(&giving(|asked| asked - 1)).map(|key| *key);
+        assert_eq!(
+            e,
+            Err("the random source returned 31 bytes where 32 were asked for".to_string()),
+            "no key is completed with bytes the source did not give"
+        );
+    }
+
+    #[test]
+    fn a_source_that_returns_more_bytes_than_asked_is_an_error() {
+        let e = draw::<FILE_ID_BYTES>(&giving(|asked| asked + 1)).map(|id| *id);
+        assert_eq!(
+            e,
+            Err("the random source returned 17 bytes where 16 were asked for".to_string()),
+            "a source that does not do what it is asked is not used"
+        );
+    }
+
+    #[test]
+    fn a_new_file_is_refused_when_any_of_its_three_draws_comes_back_short() {
+        // The draws of a new file, in order: file id, data key, wrap nonce.
+        for short in 0..3 {
+            let (calls, good) = (std::cell::Cell::new(0), counting());
+            let source = |asked: usize| {
+                if calls.replace(calls.get() + 1) == short {
+                    good(asked - 1)
+                } else {
+                    good(asked)
+                }
+            };
+            let e = LogSealer::new(&key(1), Kind::Registry, &source)
+                .err()
+                .unwrap_or_default();
+            assert!(
+                e.starts_with("the random source returned "),
+                "draw {short} came back short and the file was still made: '{e}'"
+            );
+            assert_eq!(calls.get(), short + 1, "nothing is drawn after the refusal");
+        }
+    }
+
+    #[test]
+    fn keygen_refuses_a_source_that_returns_too_few_bytes_and_leaves_no_file() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("store.key");
+        let e = write_new_key_file(&path, &giving(|_| 0))
+            .err()
+            .unwrap_or_default();
+        assert!(
+            e.ends_with("the random source returned 0 bytes where 32 were asked for"),
+            "{e}"
+        );
+        assert!(!path.exists(), "no file holding a key that was never drawn");
+        Ok(())
+    }
+
+    #[test]
+    fn the_system_source_returns_the_count_asked_for_across_its_block_size() -> TestResult {
+        for len in [
+            0,
+            1,
+            NONCE_BYTES,
+            KEY_BYTES,
+            KEY_BYTES + 1,
+            2 * KEY_BYTES,
+            100,
+        ] {
+            assert_eq!(system_draw(len)?.len(), len, "a draw of {len} bytes");
+        }
+        Ok(())
+    }
+
     #[test]
     fn the_system_source_fills_and_two_draws_differ() -> TestResult {
-        let (mut a, mut b) = ([0u8; 32], [0u8; 32]);
-        system_fill(&mut a)?;
-        system_fill(&mut b)?;
+        let (a, b) = (system_draw(32)?, system_draw(32)?);
+        assert_eq!((a.len(), b.len()), (32, 32), "each draw has its length");
         assert_ne!(a, b, "two draws of 32 bytes are not equal");
         Ok(())
     }
