@@ -83566,11 +83566,14 @@ Every run reads where the release is from GitHub and git, so a re-run after a cr
 - `heavy-run`, `land-queue`, `required-checks` and `cla-owner-exempt` are on `PATH`, or in the directory `--bin` names.
 - The prerequisites of [After the release](#after-the-release) hold.
 
-**Steps.** From a checkout of `main` with the tags fetched:
+**Steps.** From a checkout with the tags fetched and no uncommitted changes to tracked files:
 
 ```sh
 python3 scripts/release-train.py <version> --host <user>@<host>
 ```
+
+The checkout can be at any commit when the train starts.
+The train moves it to the merge commit before the tag. See [Before the tag](#before-the-tag).
 
 It runs these stages, each only when the facts say it is due:
 
@@ -83578,7 +83581,7 @@ It runs these stages, each only when the facts say it is due:
 |---|---|---|
 | `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last few checks |
 | `land` | Lands the pull request through `land-queue` and `required-checks`. | Open |
-| `tag` | Makes the signed tag on the merge commit and pushes it in the lane. | Open |
+| `tag` | Moves the checkout to the merge commit, waits for GitHub's proof of that commit, then makes the signed tag and pushes it in the lane. | Open |
 | `release-wait` | Waits for `release.yml` on the tag. | Closed |
 | `post` | Runs `scripts/post-release.py run <version> --host <user>@<host>`. | Closed |
 
@@ -83591,6 +83594,33 @@ So it has to be open for about one hook's length before a local step, and it mus
 - It closes its window on every exit, and leaves another owner's window alone.
 - On 0.5.239 there was no window, and the tag push waited 769 s behind an ordinary job that had started 7 s before it.
 - On 0.5.240 the window stayed closed for all of CI, an ordinary hook started in the same second, and the tag queued 434 s behind it.
+
+#### Before the tag
+
+The `tag` stage does two things before it makes or pushes the tag.
+Both come from the 0.5.243 release, where the train pushed the tag one second after the pull request merged, and the pre-push hook refused it twice.
+That cost about six minutes.
+
+1. **It puts the checkout at the merge commit.**
+   - The pre-push hook runs `release_delivery_test`, and that test reads the files and the `HEAD` of the checkout it runs in.
+   - The train starts before the merge commit exists, so its checkout is at an older commit.
+   - After `git fetch origin main`, the train runs `git checkout --detach <merge commit>` and then reads `HEAD` back.
+   - It moves nothing when tracked files have uncommitted changes. It stops and prints the command to run.
+   - It stops when the checkout does not end at the merge commit.
+2. **It waits for GitHub's proof of the merge commit.**
+   - The hook's fast path needs GitHub to list the merged pull request for the merge commit. GitHub does that some time after the merge.
+   - The train runs `python3 scripts/tag-push-proof.py --ready <merge commit>` every 10 seconds, for at most 300 seconds.
+   - That command makes the hook's two queries: the one that skips the tree gates, and the tag CI gate. It exits 0 when both pass.
+   - When the proof does not resolve in that time, the train stops before it makes the tag, and prints the command's last answer.
+   - `--proof-wait <seconds>` changes the limit.
+
+The hook names the same two causes itself.
+
+- When GitHub lists no merged pull request for the tagged commit, the hook's `tag-only push` line says `the proof is not found yet`.
+- When `release_delivery_test` then refuses a tag push, the hook says that the proof is pending, or that the checkout is at another commit than the tag, or both.
+  - It prints the `git checkout --detach` command for the second cause.
+  - It names `CHANGELOG.md` only for a push of branches.
+- [`test_tag_proof_pending.py`](../../scripts/tests/test_tag_proof_pending.py) and the pre-push scenarios hold these messages.
 
 To open the window by hand:
 
@@ -83626,6 +83656,10 @@ To close it by hand:
 - `ci-failed: <names>`: fix the checks, push, and run the train again.
 - After an exit of 3 or 4 the train does not run the post checks again. To retry them, add `--retry-post`.
 - `the local tag v<version> is on <sha>, not the merge commit <sha>`: delete the stale local tag, then run the train again.
+- `this checkout is at <sha>, not the merge commit <sha>, and it has uncommitted changes`: commit the changes or set them aside, run the printed `git checkout --detach` command, then run the train again.
+- `GitHub's proof for the merge commit <sha> did not resolve in 300 s`: read the answer the train printed.
+  - `the proof is not found yet` means GitHub still lists no merged pull request for the commit. Run the printed `tag-push-proof.py --ready` command until it exits 0, then run the train again.
+  - A failed or running workflow on the pull request's head needs that run fixed or finished first.
 - [`scripts/tests/test_release_train.py`](../../scripts/tests/test_release_train.py) runs a whole release on a fake clock.
 
 ### After the release

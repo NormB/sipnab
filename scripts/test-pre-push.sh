@@ -1058,6 +1058,10 @@ make_gh_world() { # $1 own runs json, $2 head runs json, $3 head tree
 	printf '%s' "$1" >"$TMP/gh-own.json"
 	printf '%s' "$2" >"$TMP/gh-head.json"
 	printf '%s\n' "$3" >"$TMP/gh-head-tree"
+	# What GitHub lists as the merged pull request of the tagged commit. A
+	# scenario empties this file to stand for the seconds after a merge in
+	# which GitHub lists none (RELEASE-TRAIN-TAG-RACE).
+	printf '701\t%s\n' "$PRHEAD" >"$TMP/gh-pulls"
 	cat >"$STUB_BIN/gh" <<EOF_GH_WORLD
 #!/bin/sh
 if [ "\$1" = run ]; then
@@ -1071,7 +1075,7 @@ case "\$2" in
 repos/*/rules/branches/main) printf 'CI success\nlicense/cla\n' ;;
 repos/*/branches/main/protection) echo 'gh: Branch not protected (HTTP 404)' >&2; exit 1 ;;
 repos/*/compare/*) echo behind ;;
-repos/*/commits/$TAGGED/pulls) printf '701\t%s\n' "$PRHEAD" ;;
+repos/*/commits/$TAGGED/pulls) cat "$TMP/gh-pulls" ;;
 repos/*/git/commits/$TAGGED) echo 6644a32b9 ;;
 repos/*/git/commits/$PRHEAD) cat "$TMP/gh-head-tree" ;;
 repos/*/commits/$PRHEAD/check-runs*) printf 'CI success\t2026-11-08T13:50:00Z\tsuccess\n' ;;
@@ -1191,6 +1195,109 @@ elif ! blocked_for "PR head proof not used: origin is not a GitHub repository"; 
 else
 	ok "an origin that is not GitHub gets no head proof"
 fi
+( cd "$CRATE" && git remote remove origin )
+
+# -- What the hook says when the release-delivery test refuses a tag ----------
+# SCENARIO: RELEASE-TRAIN-TAG-RACE
+#   The v0.5.243 tag push was refused twice by the release-delivery test, and
+#   both times the hook said "Usually the fix is an [Unreleased] section in
+#   CHANGELOG.md". Neither cause was the changelog: GitHub did not yet list
+#   the merged pull request for the merge commit, and the checkout was at the
+#   main before the release, which is the commit that test read.
+#   Given a tag push the release-delivery test refuses, then the hook names
+#     the pending proof, the checkout that is not at the tagged commit, both,
+#     or the test itself, and never the changelog.
+#   Given a branch push it refuses, then the changelog text stays.
+DELIVERY_RS="$CRATE/tests/release_delivery_test.rs"
+refuse_delivery() {
+	printf '#[test]\nfn refuses() {\n    panic!("the fixture refuses");\n}\n' >"$DELIVERY_RS"
+}
+CHANGELOG_HINT="Usually the fix is an [Unreleased] section in CHANGELOG.md"
+if [ "$( cd "$CRATE" && git rev-parse HEAD )" != "$TAGGED" ]; then
+	bad "fixture: the crate is not at the tagged commit, so the release-delivery scenarios cannot run"
+fi
+code_scanning_says 0
+refuse_delivery
+# The scenario before this one leaves the crate with no origin, and without a
+# GitHub origin no proof is looked for at all.
+( cd "$CRATE" && { git remote remove origin 2>/dev/null || true; } \
+	&& git remote add origin https://github.com/example/sipnab.git )
+
+# AT THE TAGGED COMMIT, PROOF FOUND: names the test, not the changelog. The
+# proof still skips the tree gates (clippy is one of them).
+make_gh_world "$OWN_PENDING" "$HEAD_GREEN" 6644a32b9
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "a tag push the release-delivery test refuses was ALLOWED"
+elif blocked_for "Push blocked: the release-delivery test refused the tagged commit." \
+	&& ! blocked_for "cargo clippy --workspace --all-features" \
+	&& ! blocked_for "$CHANGELOG_HINT"; then
+	ok "a refused tag push at the tagged commit names the test, not the changelog"
+else
+	bad "a refused tag push at the tagged commit did not name the test, or named the changelog"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# PROOF NOT FOUND YET: GitHub lists no merged pull request for the commit.
+# Every gate still runs (clippy is one the fast path skips).
+make_gh_world "$OWN_PENDING" "$HEAD_GREEN" 6644a32b9
+: >"$TMP/gh-pulls"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "a tag push the release-delivery test refuses was ALLOWED while its proof was pending"
+elif blocked_for "the proof is not found yet: GitHub lists no merged pull request" \
+	&& blocked_for "cargo clippy --workspace --all-features" \
+	&& blocked_for "Push blocked: the release-delivery test failed, and the tag's proof is not found yet." \
+	&& ! blocked_for "$CHANGELOG_HINT"; then
+	ok "a refused tag push with a pending proof says the proof is not found yet, not the changelog"
+else
+	bad "a refused tag push with a pending proof did not say so, or named the changelog"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# THE CHECKOUT IS NOT AT THE TAGGED COMMIT: names both commits and the command.
+( cd "$CRATE" && git -c gpg.format=ssh -c "user.signingkey=$TMP/trusted.pub" \
+	commit -S -q --allow-empty -m "a commit past the tag" ) >/dev/null 2>&1
+ELSEWHERE=$( cd "$CRATE" && git rev-parse HEAD )
+if [ "$ELSEWHERE" = "$TAGGED" ]; then
+	bad "fixture: the commit past the tag was not made, so the checkout scenarios cannot run"
+fi
+make_gh_world "$OWN_PENDING" "$HEAD_GREEN" 6644a32b9
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "a tag push from a checkout at another commit was ALLOWED though the release-delivery test refused"
+elif blocked_for "Push blocked: this checkout is at $(printf '%s' "$ELSEWHERE" | cut -c1-9), and the pushed tag marks $(printf '%s' "$TAGGED" | cut -c1-9)." \
+	&& blocked_for "    git checkout --detach $TAGGED" \
+	&& ! blocked_for "proof is not found yet" && ! blocked_for "$CHANGELOG_HINT"; then
+	ok "a refused tag push from another checkout names both commits and the checkout command"
+else
+	bad "a refused tag push from another checkout did not name the commits and the command"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+
+# BOTH AT ONCE, as on v0.5.243's first attempt.
+make_gh_world "$OWN_PENDING" "$HEAD_GREEN" 6644a32b9
+: >"$TMP/gh-pulls"
+if PATH="$STUB_BIN:$PATH" run_hook "" "$REFLINE"; then
+	bad "a tag push with a pending proof from another checkout was ALLOWED"
+elif blocked_for "Push blocked: this checkout is at" \
+	&& blocked_for "The tag's proof is not found yet as well" && ! blocked_for "$CHANGELOG_HINT"; then
+	ok "a refused tag push names the other checkout and the pending proof together"
+else
+	bad "a refused tag push did not name the other checkout and the pending proof together"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+( cd "$CRATE" && git reset -q --soft "$TAGGED" )
+
+# A BRANCH PUSH: the changelog text is still the answer.
+make_gh "[]"
+if PATH="$STUB_BIN:$PATH" run_hook "" "refs/heads/topic $TAGGED refs/heads/topic $ZERO"; then
+	bad "a branch push the release-delivery test refuses was ALLOWED"
+elif blocked_for "Push blocked: work sits past the last tag and the tree does not say so." \
+	&& blocked_for "$CHANGELOG_HINT"; then
+	ok "a refused branch push still points at the changelog"
+else
+	bad "a refused branch push did not point at the changelog"
+	sed 's/^/    /' "$TMP/out.log"
+fi
+rm -f "$DELIVERY_RS"
 ( cd "$CRATE" && git remote remove origin )
 
 # -- A push of release-only commits skips the tree gates ----------------------

@@ -32,6 +32,7 @@ rt = load("release-train")
 VERSION = "0.5.242"
 HEAD = "a" * 40
 MERGE = "b" * 40
+PRE = "d" * 40  # main before the release: where the train's checkout starts
 MIN = 60
 T0 = 1_800_000_000
 
@@ -84,6 +85,13 @@ class World:
         self.log = []
         self.window_log = []
         self.overrides = []
+        # The train's own checkout, and how long after the merge GitHub takes
+        # to list the pull request for the merge commit (RELEASE-TRAIN-TAG-RACE).
+        self.checkout = PRE
+        self.dirty = ""
+        self.merged_at = None
+        self.proof_lag = 20
+        self.proof_asks = []
 
     def sleep(self, s):
         self.now += s
@@ -148,9 +156,23 @@ class World:
             self.event("land")
             self.pr["state"] = "MERGED"
             self.pr["mergeCommit"] = {"oid": MERGE}
+            self.merged_at = self.now
             return rt.Result(0, "")
         if "fetch origin" in j:
             return rt.Result(0, "")
+        if "rev-parse HEAD" in j:
+            return rt.Result(0, self.checkout + "\n")
+        if "status --porcelain" in j:
+            return rt.Result(0, self.dirty)
+        if "checkout --detach" in j:
+            self.event("checkout")
+            self.checkout = argv[-1]
+            return rt.Result(0, "")
+        if "tag-push-proof.py --ready" in j:
+            self.proof_asks.append(self.now)
+            if self.merged_at is None or self.now - self.merged_at >= self.proof_lag:
+                return rt.Result(0, "tag-only push: proven\ntag CI gate: head\n")
+            return rt.Result(1, "tag-only push: the full gates run -- the proof is not found yet\n")
         if "rev-parse" in j:
             return rt.Result(0 if self.local_tag else 128, (self.local_tag or "") + "\n")
         if "tag -s" in j:
@@ -161,6 +183,7 @@ class World:
             return rt.Result(0, "Good\n")
         if "push origin" in j:
             self.event("tag-push")
+            self.pushed_from = self.checkout
             self.tag = True
             self.release_end = self.now + self.release_minutes * MIN
             return rt.Result(0, "")
@@ -318,7 +341,7 @@ def test_edge_no_check_started_yet_means_the_whole_estimate(cfg):
 def test_success_a_clean_release_runs_end_to_end(cfg):
     w = World()
     assert drive(cfg, w) == 0
-    assert w.names() == ["cla", "land", "tag", "tag-push", "post"]
+    assert w.names() == ["cla", "land", "checkout", "tag", "tag-push", "post"]
 
 
 def test_success_no_remote_wait_holds_the_window(cfg):
@@ -721,3 +744,260 @@ def test_edge_the_state_file_holds_only_the_post_result(cfg):
     w = World()
     drive(cfg, w)
     assert json.loads(cfg.state_file.read_text()) == {"post_rc": 0, "cla_head": HEAD}
+
+
+# ---------------------------------------------------------------------------
+# RELEASE-TRAIN-TAG-RACE: the checkout and the proof, before the tag
+# ---------------------------------------------------------------------------
+#
+# Measured on 0.5.243: #734 merged at 07:27:34Z and the train pushed the tag at
+# 07:27:35Z. The pre-push hook refused it twice, about six minutes in all.
+# (1) GitHub did not yet list #734 for the merge commit 88f46bb83, so
+# scripts/tag-push-proof.py found no proof and every gate ran. (2) The train's
+# checkout was still at 4fae9a255, the main before the release, and the hook's
+# release-delivery test reads the checkout it runs in.
+
+
+def test_success_the_tag_is_pushed_from_a_checkout_at_the_merge_commit(cfg):
+    w = World()
+    assert drive(cfg, w) == 0
+    assert w.pushed_from == MERGE
+
+
+def test_failure_a_checkout_with_uncommitted_changes_is_not_moved_and_the_train_stops(cfg, capsys):
+    w = World()
+    w.dirty = " M src/main.rs\n"
+    assert drive(cfg, w) == 1
+    assert "checkout" not in w.names() and "tag" not in w.names() and "tag-push" not in w.names()
+    out = capsys.readouterr().out
+    assert "uncommitted changes" in out and f"git -C {rt.REPO} checkout --detach {MERGE}" in out, out
+
+
+def test_failure_a_status_that_cannot_be_read_does_not_move_the_checkout(cfg, capsys):
+    w = World()
+    w.overrides.append(("status --porcelain", (128, "fatal: not a git repository\n")))
+    assert drive(cfg, w) == 1
+    assert "checkout" not in w.names() and "tag-push" not in w.names()
+    assert "could not be read" in capsys.readouterr().out
+
+
+def test_failure_a_head_that_cannot_be_read_stops_before_any_tag(cfg, capsys):
+    w = World()
+    w.overrides.append(("rev-parse HEAD", (128, "fatal: bad HEAD\n")))
+    assert drive(cfg, w) == 1
+    assert "checkout" not in w.names() and "tag" not in w.names()
+    assert "could not be read: fatal: bad HEAD" in capsys.readouterr().out
+
+
+def test_failure_a_checkout_that_git_refuses_stops_with_the_command_to_run(cfg, capsys):
+    w = World()
+    w.overrides.append(("checkout --detach", (1, "error: unable to create file\n")))
+    assert drive(cfg, w) == 1
+    assert "tag" not in w.names() and "tag-push" not in w.names()
+    out = capsys.readouterr().out
+    assert "unable to create file" in out and f"checkout --detach {MERGE}" in out, out
+
+
+def test_failure_a_checkout_that_reports_success_but_lands_elsewhere_is_refused(cfg, capsys):
+    # The check is the commit HEAD names afterwards, not git's exit status.
+    w = World()
+    real = w.__call__
+
+    def lying(argv, timeout):
+        if "checkout" in argv and "--detach" in argv:
+            return rt.Result(0, "")
+        return real(argv, timeout)
+
+    assert rt.train(cfg, lying, sleep=w.sleep, clock=w.clock) == 1
+    assert "tag" not in w.names() and "tag-push" not in w.names()
+    assert "is still at ddddddddd" in capsys.readouterr().out
+
+
+def test_success_a_checkout_already_at_the_merge_commit_is_left_alone(cfg):
+    w = World()
+    w.checkout = MERGE
+    assert drive(cfg, w) == 0
+    assert "checkout" not in w.names() and w.pushed_from == MERGE
+
+
+def test_success_the_move_is_reported_with_both_commits(cfg, capsys):
+    drive(cfg, World())
+    assert "checkout: moved from ddddddddd to the merge commit bbbbbbbbb" in capsys.readouterr().out
+
+
+def test_edge_a_dirty_checkout_already_at_the_merge_commit_is_not_refused(cfg):
+    # Nothing has to move, so uncommitted changes are not the train's concern.
+    w = World()
+    w.checkout = MERGE
+    w.dirty = " M notes.txt\n"
+    assert drive(cfg, w) == 0
+
+
+def test_edge_untracked_files_do_not_stop_the_move(cfg):
+    w = World()
+    calls = []
+    real = w.__call__
+
+    def spy(argv, timeout):
+        calls.append(argv)
+        return real(argv, timeout)
+
+    assert rt.train(cfg, spy, sleep=w.sleep, clock=w.clock) == 0
+    status = next(c for c in calls if "--porcelain" in c)
+    assert "--untracked-files=no" in status
+
+
+def test_edge_the_fetch_comes_before_the_checkout_and_the_checkout_before_the_tag(cfg):
+    w = World()
+    order = []
+    real = w.__call__
+
+    def spy(argv, timeout):
+        j = " ".join(argv)
+        for key in ("fetch origin", "checkout --detach", "tag -s", "push origin"):
+            if key in j:
+                order.append(key)
+        return real(argv, timeout)
+
+    assert rt.train(cfg, spy, sleep=w.sleep, clock=w.clock) == 0
+    assert order == ["fetch origin", "checkout --detach", "tag -s", "push origin"]
+
+
+def test_edge_a_resume_with_the_local_tag_made_still_moves_the_checkout_before_the_push(cfg):
+    # 0.5.243's second attempt: the local tag existed and the checkout was at
+    # the main before the release.
+    w = World()
+    w.now = T0 + 40 * MIN
+    w.pr["state"] = "MERGED"
+    w.pr["mergeCommit"] = {"oid": MERGE}
+    w.local_tag = MERGE
+    assert drive(cfg, w) == 0
+    assert w.pushed_from == MERGE and "tag" not in w.names()
+
+
+# The proof: the hook's own query, polled before the tag exists.
+
+
+def test_success_the_tag_is_not_pushed_before_github_can_prove_the_merge_commit(cfg):
+    w = World()
+    assert drive(cfg, w) == 0
+    assert w.at("tag-push")[0] - w.merged_at >= w.proof_lag
+
+
+def test_failure_a_proof_that_never_resolves_stops_the_train_within_the_bound(cfg, capsys):
+    w = World()
+    w.proof_lag = 10**9
+    assert drive(cfg, w) == 1
+    assert "tag" not in w.names() and "tag-push" not in w.names()
+    waited = w.proof_asks[-1] - w.proof_asks[0]
+    assert cfg.proof_wait_s <= waited < cfg.proof_wait_s + cfg.proof_poll_s, waited
+    out = capsys.readouterr().out
+    assert f"did not resolve in {cfg.proof_wait_s} s" in out and "the proof is not found yet" in out, out
+    assert "re-run" in out, out
+
+
+def test_success_a_wait_for_the_proof_is_reported_once_with_how_long_it_took(cfg, capsys):
+    w = World()
+    assert drive(cfg, w) == 0
+    out = capsys.readouterr().out
+    assert out.count("tag: waiting for GitHub's proof") == 1 and "tag: the proof resolved after 20 s" in out, out
+
+
+def test_success_a_proof_there_at_the_first_ask_costs_one_query_and_no_wait(cfg, capsys):
+    w = World()
+    w.proof_lag = 0
+    assert drive(cfg, w) == 0
+    assert len(w.proof_asks) == 1 and w.at("tag-push")[0] == w.merged_at
+    assert "waiting for GitHub's proof" not in capsys.readouterr().out
+
+
+def test_success_the_query_is_the_hooks_own_script_on_the_merge_commit(cfg):
+    w = World()
+    calls = []
+    real = w.__call__
+
+    def spy(argv, timeout):
+        calls.append(argv)
+        return real(argv, timeout)
+
+    assert rt.train(cfg, spy, sleep=w.sleep, clock=w.clock) == 0
+    ask = next(c for c in calls if "--ready" in c)
+    assert ask[1] == str(rt.SCRIPTS / "tag-push-proof.py") and ask[2:] == ["--ready", MERGE]
+
+
+def test_success_the_proof_is_asked_for_before_the_tag_is_made(cfg):
+    w = World()
+    assert drive(cfg, w) == 0
+    assert w.proof_asks[-1] <= w.at("tag")[0] and w.at("tag")[0] - w.merged_at >= w.proof_lag
+
+
+def test_failure_a_proof_script_that_fails_every_time_stops_with_its_output(cfg, capsys):
+    w = World()
+    w.overrides.append(("tag-push-proof.py --ready", (2, "usage: tag-push-proof.py\n")))
+    assert drive(cfg, w) == 1
+    assert "tag-push" not in w.names() and "usage: tag-push-proof.py" in capsys.readouterr().out
+
+
+def test_failure_the_window_is_closed_when_the_proof_never_resolves(cfg):
+    w = World()
+    w.proof_lag = 10**9
+    drive(cfg, w)
+    assert w.window is None
+
+
+def test_edge_a_proof_that_resolves_at_the_last_ask_inside_the_bound_is_used(cfg):
+    w = World()
+    w.proof_lag = cfg.proof_wait_s
+    assert drive(cfg, w) == 0
+    assert "tag-push" in w.names()
+
+
+def test_edge_a_proof_one_poll_past_the_bound_is_not_waited_for(cfg):
+    w = World()
+    w.proof_lag = cfg.proof_wait_s + cfg.proof_poll_s
+    assert drive(cfg, w) == 1
+    assert "tag-push" not in w.names()
+
+
+def test_edge_the_window_stays_open_while_the_train_waits_for_the_proof(cfg):
+    w = World()
+    assert drive(cfg, w) == 0
+    assert w.at("tag-push")[2] and w.at("tag")[2]
+
+
+def test_edge_a_resume_after_the_bound_asks_again_and_pushes_when_the_proof_is_there(cfg):
+    w = World()
+    w.proof_lag = 400
+    assert drive(cfg, w) == 1
+    assert drive(cfg, w) == 0
+    assert w.names().count("tag-push") == 1 and w.pushed_from == MERGE
+
+
+def test_edge_the_bound_is_settable_on_the_command_line(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(rt, "train", lambda cfg, run: seen.update(wait=cfg.proof_wait_s) or 0)
+    monkeypatch.setattr(rt, "git_dir", lambda: tmp_path)
+    assert rt.main(["0.5.244", "--host", "releaser@vm.example.invalid", "--proof-wait", "45"]) == 0
+    assert seen == {"wait": 45}
+
+
+def test_edge_the_bound_defaults_to_five_minutes(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(rt, "train", lambda cfg, run: seen.update(wait=cfg.proof_wait_s) or 0)
+    monkeypatch.setattr(rt, "git_dir", lambda: tmp_path)
+    assert rt.main(["0.5.244", "--host", "releaser@vm.example.invalid"]) == 0
+    assert seen == {"wait": 300}
+
+
+def test_failure_a_negative_bound_is_a_usage_error(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(rt, "train", lambda cfg, run: 0)
+    monkeypatch.setattr(rt, "git_dir", lambda: tmp_path)
+    assert rt.main(["0.5.244", "--host", "releaser@vm.example.invalid", "--proof-wait", "-1"]) == 2
+    assert "--proof-wait" in capsys.readouterr().err
+
+
+def test_edge_a_bound_of_zero_asks_once_and_stops_if_the_proof_is_not_there(cfg):
+    w = World()
+    cfg.proof_wait_s = 0
+    assert drive(cfg, w) == 1
+    assert len(w.proof_asks) == 1 and "tag-push" not in w.names()
