@@ -26,6 +26,9 @@ mod fleet_center;
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
 
+#[path = "support/ports.rs"]
+mod ports;
+
 use fleet_center::{Center, TestError, http, store_key_file};
 use server::ApiServer;
 
@@ -402,11 +405,11 @@ fn a_pushed_record_equals_the_members_rest_answer_and_survives_a_killed_center()
 fn records_wait_sealed_while_the_center_is_away_and_drain_when_it_comes() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
     let pcap = capture(dir.path(), 2, 0)?;
-    // The center runs once, so the member has an address that was a
-    // center's, and is stopped before the member starts.
-    let first = center(dir.path(), "127.0.0.1:0")?;
-    let addr = first.addr.clone();
-    drop(first);
+    // The center's port is held, bound and not listening, for as long as
+    // the center is away, so no other test is handed the number. It is let
+    // go only where the center takes it.
+    let away = ports::refused_tcp_port()?;
+    let addr = away.addr().to_string();
     let m = member(dir.path(), "edge-a", &addr, &pcap, "")?;
     let sealed = |spool: &Path| -> Result<usize, TestError> {
         Ok(files_under(spool)?
@@ -425,6 +428,7 @@ fn records_wait_sealed_while_the_center_is_away_and_drain_when_it_comes() -> Res
             assert!(!holds(&bytes, clear), "{clear} is in {}", path.display());
         }
     }
+    drop(away);
     let c = center(dir.path(), &addr)?;
     let drained = wait_until(PUSH_WAIT, || {
         Ok(row(&c.addr, "edge-a")?["verified"]["call_records"] == 2 && sealed(&m.spool)? == 0)
