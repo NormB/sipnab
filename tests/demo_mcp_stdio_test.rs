@@ -222,9 +222,11 @@ fn executable(dir: &Path, name: &str, body: &str) -> Result<PathBuf, TestError> 
 /// (default `true`), and answers any other tool with `$FAKE_ANSWER` as the
 /// text. With `FAKE_SILENT=1` it reads and answers nothing. With
 /// `FAKE_NOISE=1` it writes a notification and a reply to another request
-/// before each answer.
+/// before each answer. With `FAKE_LOG=<file>` it appends every line it reads
+/// to that file.
 const FAKE_SERVER: &str = r#"#!/bin/sh
 while IFS= read -r line; do
+  [ -n "${FAKE_LOG:-}" ] && printf '%s\n' "$line" >> "$FAKE_LOG"
   [ "${FAKE_SILENT:-0}" = 1 ] && continue
   id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
   [ -n "$id" ] || continue
@@ -376,6 +378,60 @@ fn unset_variables_add_no_argument() -> Result<(), TestError> {
         argv,
         ["--mcp", "-N", "-I", CAPTURE, "--quiet"],
         "the server's whole command line"
+    );
+    Ok(())
+}
+
+/// The requests the stand-in server read in a run of the script with `args`,
+/// each parsed as JSON.
+fn requests_sent(args: &[&str]) -> Result<Vec<serde_json::Value>, TestError> {
+    let dir = tempfile::tempdir()?;
+    let fake = executable(dir.path(), "fake", FAKE_SERVER)?;
+    let log = dir.path().join("requests");
+    let run = Run::new(args)?
+        .bin(&fake)
+        .env("FAKE_LOG", &log.display().to_string());
+    let done = run.finish(run_wait())?;
+    assert_eq!(done.code, Some(0), "stderr: {}", done.stderr);
+    std::fs::read_to_string(&log)?.lines().map(json).collect()
+}
+
+/// A call with no third argument sends an empty object as the tool's
+/// arguments, in a request that is JSON. bash 3.2 expands the default the
+/// script used to write, `${3:-{\}}`, to `{\}`: the request was not JSON,
+/// the server answered nothing the script could match, and the run ended
+/// 20 seconds later with "no reply". bash 4 and later drop the backslash,
+/// so only the macOS leg saw it.
+#[test]
+fn a_call_without_arguments_sends_an_empty_object() -> Result<(), TestError> {
+    let sent = requests_sent(&[CAPTURE, "some_tool"])?;
+    let call = sent.last().ok_or("the server read no request")?;
+    assert_eq!(
+        call["params"]["name"], "some_tool",
+        "the last request is the tool call: {call}"
+    );
+    assert_eq!(
+        call["params"]["arguments"],
+        serde_json::json!({}),
+        "no third argument means no arguments: {call}"
+    );
+    Ok(())
+}
+
+/// The third argument is sent as the tool's arguments, unchanged, and every
+/// line the script sends is JSON.
+#[test]
+fn given_arguments_are_sent_unchanged() -> Result<(), TestError> {
+    let sent = requests_sent(&[CAPTURE, "some_tool", r#"{"by":"ip","nested":{"n":[1,2]}}"#])?;
+    assert!(
+        sent.len() >= 4,
+        "initialize, initialized, a poll and the call: {sent:?}"
+    );
+    let call = sent.last().ok_or("the server read no request")?;
+    assert_eq!(
+        call["params"]["arguments"],
+        serde_json::json!({"by": "ip", "nested": {"n": [1, 2]}}),
+        "the arguments as given: {call}"
     );
     Ok(())
 }
@@ -644,6 +700,10 @@ fn code_lines(script: &str) -> Vec<(usize, String)> {
 /// What bash 3.2 does not have, as (text to look for, what it is).
 const NOT_IN_BASH_32: &[(&str, &str)] = &[
     ("coproc", "coprocesses are bash 4.0"),
+    (
+        "{\\}",
+        "bash 3.2 keeps the backslash of \\} inside ${var:-...}, so the default is not {}",
+    ),
     ("mapfile", "mapfile is bash 4.0"),
     ("readarray", "readarray is bash 4.0"),
     ("declare -A", "associative arrays are bash 4.0"),

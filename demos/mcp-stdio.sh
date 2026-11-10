@@ -52,7 +52,11 @@ SIPNAB_BIN="${SIPNAB_BIN:-sipnab}"
 
 CAPTURE="${1:?usage: mcp-stdio.sh <capture> <tool> [json-arguments]}"
 TOOL="${2:?usage: mcp-stdio.sh <capture> <tool> [json-arguments]}"
-ARGS="${3:-{\}}"
+# Not `${3:-{\}}`: bash 3.2 keeps that backslash and the default becomes
+# `{\}`, which is not JSON, so the server never answers the call. bash 4 and
+# later drop it, which is how the line went unnoticed.
+ARGS="${3:-}"
+[ -n "$ARGS" ] || ARGS='{}'
 
 # MCP_FILE_ROOT=<dir> enables the file-reading tools, which are OFF by default:
 # show_evidence answers "file tools are disabled" until a root is named. That
