@@ -156,32 +156,13 @@
   </article>
 </div>
 
-<script>
-// Copy buttons on every doc code block — the docs are mostly shell commands.
-// `:not(.mermaid)` is load-bearing, not tidiness: this runs before the
-// deferred diagram viewer, which reads the block's textContent as diagram
-// source. A copy button appended here put the literal word "copy" inside
-// every diagram, and mermaid failed to parse it.
-(function () {
-  document.querySelectorAll(".doc-body pre:not(.mermaid)").forEach(function (pre) {
-    var btn = document.createElement("button");
-    btn.className = "doc-copy-btn";
-    btn.type = "button";
-    btn.setAttribute("aria-label", "Copy code");
-    btn.textContent = "copy";
-    btn.addEventListener("click", function () {
-      var code = pre.querySelector("code");
-      var text = (code ? code.innerText : pre.innerText).replace(/\n$/, "");
-      navigator.clipboard.writeText(text).then(function () {
-        btn.textContent = "copied";
-        btn.classList.add("copied");
-        setTimeout(function () { btn.textContent = "copy"; btn.classList.remove("copied"); }, 1600);
-      });
-    });
-    pre.appendChild(btn);
-  });
-})();
-</script>
+{# Copy buttons on every code block, from one file that note.html loads too.
+   It was an inline script here, and the notes template had none: a notes
+   page's code blocks scrolled sideways with nothing focusable inside, so a
+   keyboard could not reach the end of a long line.
+   docs_and_notes_pages_load_the_one_copy_button_script in
+   tests/site_accessibility_test.rs holds both templates to the file. #}
+<script src="{{ get_url(path='js/code-copy.js', cachebust=true) }}" defer></script>
 
 {% if page.toc | length > 0 %}
 <script>

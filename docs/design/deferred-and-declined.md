@@ -116,7 +116,7 @@ the same traffic collected on two interfaces, mixed into one directory."*
 Measured, not assumed. Two byte-identical copies of
 [`tests/pcap-samples/sip-rtp-g711.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-rtp-g711.pcap) read as one `-I` set:
 
-| | one file | the same file twice |
+| Count | one file | the same file twice |
 |---|---|---|
 | dialogs | 2 | 2 |
 | `1-1966@10.0.2.20` messages | 6 | **12** |

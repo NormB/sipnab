@@ -26,7 +26,7 @@ sipnab can show you SIP that only ever exists encrypted on the wire. It needs:
   - at the moment that process hands the bytes to its TLS library;
   - before any encryption happens.
 
-|  | |
+| Question | Answer |
 |---|---|
 | **What it needs** | `root` on the machine running the SIP daemon |
 | **What it reads** | memory of processes on that machine |

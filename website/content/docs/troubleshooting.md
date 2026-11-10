@@ -1816,8 +1816,8 @@ away keeps running. You closed the window, the SSH session dropped, or
 something killed the tmux server, and `sipnab` still shows in `ps` in state `R`, using
 CPU. It does not stop on `SIGTERM`.
 
-- **Fix:** upgrade. A later release stops on its own within a second of
-  losing its terminal, and exits 129.
+- **Fix:** upgrade to 0.5.235 or later. From 0.5.235, sipnab stops on its
+  own within a second of losing its terminal, and exits 129.
 - **On 0.5.234:** end the process with `SIGKILL`. First check that the pid
   is that run. Replace 12345 with its pid:
 
@@ -1831,8 +1831,8 @@ CPU. It does not stop on `SIGTERM`.
   kill -KILL 12345
   ```
 
-The same later release makes a terminal interface whose terminal is still
-there stop on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
+From 0.5.235, a terminal interface whose terminal is still
+there also stops on `SIGTERM`, `SIGINT` and `SIGHUP`. 0.5.234 ignored all three.
 0.5.233 and earlier ignored `SIGTERM` and `SIGINT`, and `SIGHUP` ended the
 process at once, with no end-of-run summary.
 
@@ -1844,8 +1844,8 @@ standard input stays open with nothing to read keeps waiting. `SIGTERM`,
 (`-I /dev/stdin`, a process substitution, a named pipe) can wait the same way, and such
 an input never worked.
 
-- **Fix:** upgrade. A later release stops `--vcon-fetch -` within a second of
-  the signal. It fetches nothing and exits 0, or 129 after `SIGHUP`. It
+- **Fix:** upgrade to 0.5.235 or later. From 0.5.235, sipnab stops
+  `--vcon-fetch -` within a second of the signal. It fetches nothing and exits 0, or 129 after `SIGHUP`. It
   refuses a FIFO, a pipe or a device given to `-I` at startup, with exit
   status 1. Save the capture to a file and give that file instead.
 - **On 0.5.234 or earlier:** end the input. Close the program that writes to

@@ -803,7 +803,7 @@ set, rather than as an identifier match.
 
 Both work. Choose by where packet data may live.
 
-| | Federated (this section) | Centralized (HEP) |
+| Property | Federated (this section) | Centralized (HEP) |
 |---|---|---|
 | Setup | Register N servers with the client | `--hep-send` on each node into one `--hep-listen` collector |
 | Packet data | Never leaves the node | Concentrates on the collector |

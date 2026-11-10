@@ -81,10 +81,13 @@ it.
 Build TFPS from its master branch, at
 [`984577dc`](https://github.com/sippulse/tfps/commit/984577dc).
 
-- The latest release, v0.2.1, has no `--json` option.
-  [Let sipnab see and control TFPS](@/docs/tfps-sipnab.md) needs that option.
-- Master has it, merged on 2026-09-18. No release carries it yet.
-- When one does, install that release instead.
+- [Let sipnab see and control TFPS](@/docs/tfps-sipnab.md) needs the `--json`
+  option of `tfps_ctl`.
+- TFPS v0.2.1 and earlier have no `--json` option.
+- Master has it, merged on 2026-09-18. TFPS v0.3.0, released on 2026-10-31,
+  is the first release that has it.
+- The steps below ran on the master build named above. They were not run
+  again on a release.
 
 The installer compiles the XDP program on this machine.
 

@@ -8,6 +8,29 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **The home page tile for Asterisk and FreeSWITCH is titled "Telephony platform".** It was titled "PBX". The README's voice-stack section now lists both guides under that title; it listed them under "PBX" and "Softswitch".
+
+### Fixed
+
+- **The hint for a `tfps_ctl` without `--json` names the TFPS release that has it.** When `tfps_ctl` rejects `--json`, sipnab said no tagged TFPS release had the JSON mode and told the operator to build TFPS from `master`. TFPS v0.3.0, published on 2026-10-31, has it. The hint now says so, and so do the TFPS guides, the TFPS tool page, the `[tfps]` section of the configuration reference and the REST reference.
+- **The installer names the libpcap package for each package manager.** On a glibc host it printed `needs libpcap: apt/dnf install libpcap`. Debian and Ubuntu have no package named `libpcap`, and `apt install libpcap` fails. It now prints `apt install libpcap0.8, or dnf install libpcap`, the names the install page gives.
+- **sipnab.com meets more of WCAG 2.2 level AA.** A scan of all 145 pages with axe-core found these, and each is fixed:
+  - The "Sign the CLA" button's text had a contrast of 1.15:1 against the button.
+  - Code blocks on 22 notes pages scrolled sideways and could not be reached from the keyboard. They now have the copy button the docs pages have.
+  - Links in the "Reading paths by role" lists of the docs index were closer together than 24px.
+  - The Prometheus metrics page went from its title to third-level headings, so its sections were missing from the page's table of contents.
+  - Nine tables had a header cell with no text.
+  - The button that opens the navigation on a narrow screen did not say whether the navigation was open, and the search field had no label.
+  - The analyzer's drop zone and the diagram viewer's buttons had a name that did not hold their visible text (label in name, 2.5.3).
+  - The site's accessibility check now runs the WCAG 2.1 and 2.2 rules, and scans a notes page, the notes list and the CLA page.
+- **The home page's "print a report" step prints the report.** `sipnab -N -I sample-call.pcap --report` printed every SIP message of the sample first: 88 lines, with the report at the end. The step now adds `--no-cli-print`, and prints the report's 15 lines.
+- **The troubleshooting page names the release that fixed two signal defects.** "A terminal interface that outlives its terminal" and "A run that ignores SIGTERM while it waits for input" said to upgrade to "a later release". That release is 0.5.235.
+- **`demos/mcp-stdio.sh` runs on bash 3.2, the bash macOS ships (DEMO-MCP-STDIO-BASH32).** The script talked to the server through `coproc`, which bash gained in 4.0, so on macOS it ended with a syntax error at that line. It also expanded empty arrays under `set -u`, which bash before 4.4 refuses. A call with no arguments sent `{\}` as the tool's arguments, because bash 3.2 keeps a backslash that later versions drop, so the server never answered it. The script now uses two named pipes, guarded expansions and a default written without the backslash. It also names a missing `jq` and a `SIPNAB_BIN` that names no program at once, where it reported `no initialize reply` after 20 seconds. `tests/demo_mcp_stdio_test.rs` runs the script, and the macOS leg of CI runs it on bash 3.2.
+
 ## [0.5.244] - 2026-11-10
 
 ### Changed

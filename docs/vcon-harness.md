@@ -57,7 +57,7 @@ Two nodes exist for the case that cannot cover: a relay on separate hardware.
 - Attribution then has to come from the rtpengine `ng` control plane instead.
 - That carries four requirements with it.
 
-|  | Single node (co-located) | Two nodes (separate relay) |
+| Property | Single node (co-located) | Two nodes (separate relay) |
 |---|---|---|
 | Stream attribution | SDP in the signaling | rtpengine ng control plane |
 | `hep` build feature | Not needed | Required |
