@@ -1,0 +1,215 @@
+/* SPDX-License-Identifier: MIT OR Apache-2.0 */
+/* SPDX-FileCopyrightText: The sipnab contributors */
+
+/* Colors are chosen for at least 4.5:1 against their background (WCAG 2.2
+   AA, 1.4.3) in both schemes. No state is shown by color alone. */
+:root {
+  color-scheme: light dark;
+  --bg: #ffffff;
+  --panel: #f3f4f6;
+  --text: #1a1c1e;
+  --muted: #4a4f57;
+  --accent: #0b4fb3;
+  --border: #6b7280;
+  --error: #9b1c0c;
+  --focus: #0b4fb3;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111418;
+    --panel: #1c2026;
+    --text: #e8eaed;
+    --muted: #b4bac2;
+    --accent: #9cc2ff;
+    --border: #8b93a0;
+    --error: #ffb4a8;
+    --focus: #9cc2ff;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 0 1rem 2rem;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, sans-serif;
+  font-size: 1rem;
+  line-height: 1.5;
+}
+
+header,
+main,
+footer {
+  max-width: 80rem;
+  margin: 0 auto;
+}
+
+header {
+  border-bottom: 1px solid var(--border);
+  padding: 0.5rem 0;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0.5rem 0;
+}
+
+h2 {
+  font-size: 1.25rem;
+}
+
+h3 {
+  font-size: 1.1rem;
+  margin-top: 2rem;
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.skip {
+  position: absolute;
+  left: -100rem;
+  color: var(--accent);
+}
+
+.skip:focus {
+  position: static;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+}
+
+input {
+  display: block;
+  width: 100%;
+  max-width: 32rem;
+  min-height: 2.75rem;
+  margin: 0.25rem 0;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+button {
+  min-height: 2.75rem;
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+button.call-id {
+  min-height: 1.5rem;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-align: left;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+
+#token-help,
+caption,
+footer {
+  color: var(--muted);
+}
+
+#error {
+  color: var(--error);
+  font-weight: 600;
+}
+
+#error:empty,
+#status:empty {
+  margin: 0;
+}
+
+#error:not(:empty) {
+  border-left: 0.25rem solid var(--error);
+  padding-left: 0.75rem;
+}
+
+#runtime {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2rem;
+  margin: 0.5rem 0;
+}
+
+dt {
+  font-weight: 600;
+}
+
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+#detail-fields {
+  display: grid;
+  grid-template-columns: minmax(8rem, max-content) 1fr;
+  gap: 0.25rem 1rem;
+}
+
+.scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+caption {
+  text-align: left;
+  padding: 0.25rem 0;
+}
+
+th,
+td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.4rem 0.75rem 0.4rem 0;
+  text-align: left;
+  vertical-align: top;
+}
+
+td,
+tbody th {
+  overflow-wrap: anywhere;
+  font-weight: 400;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (max-width: 40rem) {
+  #detail-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

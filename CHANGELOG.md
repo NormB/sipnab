@@ -10,6 +10,21 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The REST API can serve a web console at `/console/` (`--api-console`, `[api] console`).** The console is a read-only page for a browser: the dialogs sipnab holds, one dialog with its SDP offers and answers, its RTP streams and every call leg reachable from it, and the runtime status.
+  - It is off by default, and it needs `--api`.
+  - It is static files compiled into the binary. It loads nothing from another site.
+  - It adds no listener and no access. The page sends the bearer token you paste into it, and keeps that token in memory only.
+  - The `Host` allowlist, TLS, client certificates, the routable-bind refusal and the rate limit apply to it as to `/v1/`.
+  - Every console response carries a Content-Security-Policy that allows only the console's own scripts, styles and requests.
+  - Captured text, such as a Call-ID or a SIP header, is written to the page as text only.
+  - See [Web console](docs/rest-api.md#web-console).
+
+### Changed
+
+- **7z archives are read with `sevenz-rust2` 0.25.0, up from 0.24.2.** The release rejects a member whose decoded data ends before or runs past its declared size, a block whose decoded size differs from its declared size, and an archive whose count of files with data differs from its count of sub-streams. It also checks the CRC of the data a reader leaves unread in the last member of a block. sipnab reports such an archive as broken, or as a wrong password when the archive is encrypted. `lzma-rust2` moves from 0.23.0 to 0.25.0 with it.
+
 ### Fixed
 
 - **The call list's `Duration` header is whole below 120 columns (TUI-DURATION-HEADER-CUT).** The column was 7 cells there and the header is 8 letters, so an 80-column terminal showed `Duratio`. The column is now 8 cells at every width. Source and Destination now appear from 85 columns and From and To from 69, one column later than before.

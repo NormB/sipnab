@@ -6153,7 +6153,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1445 -> 1449 (RELEASE-FAST E): the stage table and the exit-status
     // table of "The release train" in docs/internals/build-ci-release.md,
     // and their site mirror (+4).
-    const EXPECTED_TABLES: usize = 1449;
+    // 1449 -> 1451 (web console): the "When the console does not work" table
+    // in docs/rest-api.md and in its site mirror, website/content/docs/api.md.
+    const EXPECTED_TABLES: usize = 1451;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

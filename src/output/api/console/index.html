@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<!-- The two statements below are in the form the source-header gate reads.
+{# SPDX-License-Identifier: MIT OR Apache-2.0 #}
+{# SPDX-FileCopyrightText: The sipnab contributors #}
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>sipnab console</title>
+<link rel="stylesheet" href="console.css">
+<script type="module" src="console.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header>
+  <h1>sipnab console</h1>
+  <p id="connection">Not connected.</p>
+  <dl id="runtime" hidden>
+    <div><dt>Uptime</dt><dd id="runtime-uptime"></dd></div>
+    <div><dt>Dialogs held</dt><dd id="runtime-dialogs"></dd></div>
+    <div><dt>RTP streams held</dt><dd id="runtime-streams"></dd></div>
+    <div><dt>Packets captured</dt><dd id="runtime-packets"></dd></div>
+  </dl>
+  <button id="disconnect" type="button" hidden>Disconnect</button>
+</header>
+<main id="main" tabindex="-1">
+  <p id="status" role="status" aria-live="polite"></p>
+  <p id="error" role="alert"></p>
+
+  <section id="view-connect" aria-labelledby="connect-heading">
+    <h2 id="connect-heading" tabindex="-1">Connect</h2>
+    <form id="connect-form" method="post" novalidate>
+      <label for="token">API token</label>
+      <input id="token" name="token" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="token-help">
+      <p id="token-help">Paste the bearer token the REST API requires. The page keeps it in memory only: it is not saved, and it is gone when you reload or close the page. Leave the field empty when the API runs on loopback without authentication.</p>
+      <button type="submit">Connect</button>
+    </form>
+  </section>
+
+  <section id="view-list" aria-labelledby="list-heading" hidden>
+    <h2 id="list-heading" tabindex="-1">Dialogs</h2>
+    <p><button id="refresh" type="button">Refresh</button></p>
+    <p id="list-state"></p>
+    <div class="scroll" role="region" aria-labelledby="list-caption" tabindex="0">
+      <table id="dialogs">
+        <caption id="list-caption">SIP dialogs, in the order they last changed. Times are UTC (+00:00).</caption>
+        <thead>
+          <tr>
+            <th scope="col">Call-ID</th>
+            <th scope="col">State</th>
+            <th scope="col">Method</th>
+            <th scope="col">From</th>
+            <th scope="col">To</th>
+            <th scope="col">Messages</th>
+            <th scope="col">Final status</th>
+            <th scope="col">Last changed</th>
+          </tr>
+        </thead>
+        <tbody id="dialog-rows"></tbody>
+      </table>
+    </div>
+    <p><button id="more" type="button" hidden>Load more</button></p>
+  </section>
+
+  <section id="view-detail" aria-labelledby="detail-heading" hidden>
+    <h2 id="detail-heading" tabindex="-1">Dialog</h2>
+    <p><button id="back" type="button">Back to dialogs</button></p>
+    <p id="detail-state"></p>
+    <dl id="detail-fields"></dl>
+
+    <h3 id="sdp-heading">SDP offers and answers</h3>
+    <p id="sdp-state"></p>
+    <div class="scroll" role="region" aria-labelledby="sdp-heading" tabindex="0">
+      <table id="sdp">
+        <caption>Each SDP body in the dialog, oldest first. Times are UTC (+00:00).</caption>
+        <thead>
+          <tr>
+            <th scope="col">Time</th>
+            <th scope="col">Direction</th>
+            <th scope="col">Codecs</th>
+            <th scope="col">Media address</th>
+            <th scope="col">Mode</th>
+          </tr>
+        </thead>
+        <tbody id="sdp-rows"></tbody>
+      </table>
+    </div>
+
+    <h3 id="streams-heading">RTP streams</h3>
+    <p id="streams-state"></p>
+    <div class="scroll" role="region" aria-labelledby="streams-heading" tabindex="0">
+      <table id="streams">
+        <caption>The RTP streams sipnab matched to this dialog.</caption>
+        <thead>
+          <tr>
+            <th scope="col">SSRC</th>
+            <th scope="col">Codec</th>
+            <th scope="col">Source</th>
+            <th scope="col">Destination</th>
+            <th scope="col">Packets</th>
+            <th scope="col">Loss (%)</th>
+            <th scope="col">Jitter (ms)</th>
+          </tr>
+        </thead>
+        <tbody id="stream-rows"></tbody>
+      </table>
+    </div>
+
+    <h3 id="legs-heading">Call legs</h3>
+    <p id="legs-state"></p>
+    <div class="scroll" role="region" aria-labelledby="legs-heading" tabindex="0">
+      <table id="legs">
+        <caption>Every leg reachable from this dialog. Depth 0 is this dialog.</caption>
+        <thead>
+          <tr>
+            <th scope="col">Call-ID</th>
+            <th scope="col">Depth</th>
+            <th scope="col">Parent Call-ID</th>
+            <th scope="col">Matched by</th>
+            <th scope="col">Score</th>
+            <th scope="col">Followed</th>
+          </tr>
+        </thead>
+        <tbody id="leg-rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<footer>
+  <p>Read-only view of the sipnab REST API. Every value shown is captured network data.</p>
+</footer>
+</body>
+</html>

@@ -568,6 +568,157 @@ npx --yes @redocly/cli lint website/static/openapi.json
 
 You can also paste it into <https://editor.swagger.io/>, or feed it to a client generator. That is the point of publishing it.
 
+## Web console
+
+The web console is a page the REST API listener serves at `/console/`. It
+shows the dialogs sipnab holds, one dialog in detail, and the runtime status,
+in a browser.
+
+- It is off by default. `--api-console` or `[api] console = true` turns it on.
+- It only reads. It calls `GET` routes under `/v1/` and nothing else.
+- It is static files compiled into the binary. It loads nothing from another
+  site, and it needs no build step.
+- It adds no listener and no access. The page sends the same bearer token
+  `curl` sends, and the API checks it the same way.
+
+### What the console needs
+
+On the sipnab host:
+
+- A binary with the `api` feature
+  ([Check your binary has the API](#check-your-binary-has-the-api)).
+- The REST API started with `--api`. The console has no listener of its own.
+- A credential, as for any API client: the static key or a signed token
+  ([Authentication](#authentication)). An API on a loopback address without a
+  key takes an empty token field.
+
+On other systems:
+
+- **A browser that reaches the API address.** On the sipnab host itself, use
+  `http://127.0.0.1:8080/console/`. From another machine, forward the port
+  with `ssh -L 8080:127.0.0.1:8080 <host>` and use the same URL, or serve the
+  API over HTTPS ([API TLS](#api-tls)).
+- **HTTPS for any address that is not loopback.** The page sends the token on
+  every request. Over plain HTTP anyone on the path reads it.
+- **Name a reverse proxy, if you use one.** sipnab answers
+  only the `Host` names it knows. Add the proxy's public name with
+  `--api-allowed-host`
+  ([Which `Host` names the API answers](#which-host-names-the-api-answers)).
+  The proxy must forward `/console/` and `/v1/` to the same sipnab, and must
+  pass the `Authorization` header through.
+- **Client certificates, if the API requires them.** Import the client
+  certificate into the browser first. See
+  [Require client certificates](mtls.md).
+
+### Open the console
+
+1. Choose a key, as for any API client
+   ([Choose an API key](#choose-an-api-key)):
+
+   ```bash
+   export SIPNAB_API_KEY="$(openssl rand -hex 32)"
+   ```
+
+2. Start the API with the console on:
+
+   ```bash
+   sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --api 127.0.0.1:8080 --api-console
+   ```
+
+3. Open `http://127.0.0.1:8080/console/` in a browser.
+4. Print the key with `echo "$SIPNAB_API_KEY"`, paste it into **API token**,
+   and select **Connect**.
+5. The header shows the uptime, the dialogs and RTP streams held, and the
+   packets captured. The table lists the dialogs in the order they last
+   changed.
+6. Select a Call-ID to see that dialog: its fields, its SDP offers and
+   answers, its RTP streams, and every call leg reachable from it. Select a
+   leg's Call-ID to move to that leg.
+7. Select **Load more** for the next page, **Refresh** to start the list
+   again, and **Disconnect** to clear the token.
+
+To turn the console on in the config file instead:
+
+```toml
+[api]
+console = true
+```
+
+`--api-console=false` turns it off for one run over a config file that turns
+it on.
+
+### What the console does with the token
+
+- The token stays in the page's memory. The page does not write it to browser
+  storage, a cookie or the URL.
+- A reload, a closed tab or **Disconnect** clears it. Paste it again to
+  continue.
+- The page empties the token field as soon as you select **Connect**.
+- Do not let the browser's password manager save it, on a shared machine.
+
+### Check that it works
+
+The page and its files need no token. Every route with data does:
+
+```bash
+# Run all of these, in order.
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/console/
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/v1/dialogs/tail
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs/tail
+```
+
+```text
+200
+401
+200
+```
+
+Without `--api-console` the first line is `404`.
+
+### How sipnab protects the console
+
+- **sipnab serves the files before authentication.** A browser cannot send an
+  `Authorization` header when it opens a page, so no browser could open a
+  page behind the token. The files hold no captured data and are the same in
+  every copy of a release.
+- **Every other rule of the listener applies to the console unchanged.** That
+  covers the `Host` allowlist, TLS and client certificates, the refusal of a
+  routable bind without a credential, the per-address rate limit and the
+  in-flight cap.
+- **Each console response carries a Content-Security-Policy.** The policy is
+  `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`.
+  The browser then runs only the console's own scripts, sends requests only
+  to the address that served the page, and refuses to show the page in a
+  frame.
+- **Each console response also carries** `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+- **The page shows captured text as text.** A SIP header, a URI, a Call-ID and a
+  user agent are all chosen by whoever sent the packet. The page writes each
+  one as text, never as markup, a link or a style.
+
+### What the console does not do yet
+
+- Play or download call audio.
+- Change anything: persistence, bans, reverts and vCon export stay with the
+  API routes and the command line.
+- Show the media relay views.
+- Filter or sort the dialog list.
+
+### When the console does not work
+
+| What you see | Cause and fix |
+|---|---|
+| `404` at `/console/` | The console is off. Start sipnab with `--api-console`, or set `[api] console = true`. |
+| The browser cannot connect | Nothing listens there, or the address is loopback on another machine. Check `--api`, then forward the port or use HTTPS. |
+| `/console` shows a redirect to `/console/` | Expected. The page loads its files by relative name, so it lives under `/console/`. |
+| "The API refused the token (401)" | The token is wrong, expired or revoked, or its scope does not cover reading. The page clears it. Paste a valid one. |
+| "the API forbids this request (403)" naming the `Host` header | You reach sipnab by a name it was not given. Add `--api-allowed-host <name>`. |
+| A `403` page before the console appears | The same `Host` check, on the page itself. Add `--api-allowed-host <name>`. |
+| "the API is busy or is limiting requests" | Over the per-address rate or the in-flight cap. Wait a few seconds and select **Refresh**. |
+| "no answer from the API" | sipnab stopped, the tunnel closed, or a proxy forwards `/console/` but not `/v1/`. |
+| The page has no styling or does nothing | Something between the browser and sipnab rewrites the page or strips its headers. Open the browser's developer console and read the Content-Security-Policy message. |
+| The page asks for the token again after a reload | Expected. The page keeps it in memory only. |
+
 ## Endpoint reference
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Data endpoints use a `/v1/` prefix. Utility endpoints (`/health`, `/metrics`) have no prefix.

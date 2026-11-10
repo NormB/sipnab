@@ -961,7 +961,7 @@ jobs:
       # font half of the Lighthouse CLS budget.
       - name: Browser journeys (smoke, demo disclosure, web fonts)
         working-directory: e2e
-        run: npx playwright test ./tests/smoke.spec.js ./tests/demo-disclosure.spec.js ./tests/web-fonts.spec.js
+        run: npx playwright test ./tests/smoke.spec.js ./tests/demo-disclosure.spec.js ./tests/web-fonts.spec.js ./tests/console.spec.js
 
       # A failed accessibility run should say WHICH element on WHICH page, and
       # the trace is how that is read without reproducing the run locally.
