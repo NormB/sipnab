@@ -5,7 +5,7 @@ expression: output
  Live capture: any    Dialogs: 0 shown of 0    Autoscroll: on
  Capture filter (BPF): none
  View filter: none
-  # ▲    Method    From       To         State      Msgs +Prev    PDD    Duratio
+  # ▲    Method    From      To         State      Msgs +Prev    PDD    Duration
 
   No SIP dialogs found.
 

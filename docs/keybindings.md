@@ -190,6 +190,7 @@ active filter.
 | C | Write, amend or remove your note on the selected message. The note is yours, never sipnab's analysis: sipnab shows it in a pane titled so, marks the row with `✎`, writes it as a packet comment when you save PCAP-NG, and saves it to a notes file with the NOTES save format. See [Operator notes](#operator-notes) |
 | x / F4 | Toggle extended multi-leg flow **(configurable: `extended_flow`)** — shows related B2BUA/SBC call legs together, for tracing a call through proxies and back-to-back user agents |
 | r | Open RTP Streams narrowed to this call's streams (in a merged or extended flow, every call the flow shows). `a` there switches to every stream and back, and `Esc` returns here with the selected message kept |
+| S | Open the **Relay statistics** view, which asks the live relay for its own counters. See [Relay statistics](#relay-statistics) |
 | N | Name endpoints (map IP → host/FQDN, and Tab/Shift+Tab switch between the offered participants) |
 | F1 / ? | Help **(configurable: `help`)** |
 | F2 | Save **(configurable: `save`)** |

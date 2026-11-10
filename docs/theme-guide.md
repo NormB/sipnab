@@ -61,6 +61,7 @@ NO_COLOR=1 sipnab -I capture.pcap
 - The Call-ID and CSeq color modes of the call flow (`c`) draw no color.
 - A search match in the raw message is bold reverse video.
 - The cursor of a text field is reverse video.
+- The selected item of a popup list is bold reverse video.
 
 sipnab does not rely on color alone for an error. An error on the status line
 starts with `Error:`, with or without `NO_COLOR`.

@@ -1756,7 +1756,9 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // 2502 -> 2504 (RELEASE-FAST E): build-ci-release.md's pointer to "The
     // release train" (#the-release-train) and that section's prerequisite
     // link to #after-the-release.
-    const EXPECTED_WIKI_LINKS: usize = 2504;
+    // 2504 -> 2505 (TUI-HELP-FLOW-S): keybindings.md +1, the Call flow
+    // table's new `S` row links to #relay-statistics.
+    const EXPECTED_WIKI_LINKS: usize = 2505;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

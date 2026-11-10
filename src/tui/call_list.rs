@@ -359,13 +359,17 @@ pub struct CallListDisplay<'a> {
     /// empty-state hint: an empty list over a full store is a filter, not a
     /// quiet network.
     pub hidden: usize,
+    /// A file load is in progress. Selects the empty-state hint: an empty
+    /// list during a load is not a file without SIP.
+    pub loading: bool,
 }
 
 /// What the call list says while it has no rows, by case: every dialog is
-/// hidden by the view filter or search (`hidden > 0`), a file that held no
-/// SIP (`offline`), or a live capture still waiting. Each names the key that
+/// hidden by the view filter or search (`hidden > 0`), a file still being
+/// read (`loading`), a file that held no SIP (`offline`), or a live capture
+/// still waiting. Each names the key that
 /// moves the operator on. Pure.
-pub(crate) fn empty_list_hint(offline: bool, hidden: usize) -> String {
+pub(crate) fn empty_list_hint(offline: bool, hidden: usize, loading: bool) -> String {
     if hidden > 0 {
         format!(
             "\n  No dialog matches the view filter or search.\n\n  {} {} hidden. \
@@ -373,6 +377,10 @@ pub(crate) fn empty_list_hint(offline: bool, hidden: usize) -> String {
             crate::tui::count_noun(hidden, "dialog", "dialogs"),
             if hidden == 1 { "is" } else { "are" }
         )
+    } else if loading {
+        "\n  Reading the file\u{2026}\n\n  Dialogs appear here as sipnab finds them. The line above \
+         counts the packets read.\n  F1 shows help, q quits."
+            .to_string()
     } else if offline {
         "\n  No SIP dialogs found.\n\n  The pcap file may not contain SIP traffic.\n  O opens \
          another file, F1 shows help, q quits."
@@ -810,7 +818,7 @@ pub fn render_call_list(
                 width: table_area.width,
                 height: table_area.height - 1,
             };
-            let hint = empty_list_hint(display.offline, display.hidden);
+            let hint = empty_list_hint(display.offline, display.hidden, display.loading);
             frame.render_widget(
                 Paragraph::new(hint).style(Style::default().fg(theme.muted)),
                 msg_area,
@@ -1149,7 +1157,7 @@ fn assemble_widths(
 /// of the user's visibility choices). `Some(Constraint::Length(n))` with
 /// `n > 0` for a column to lay out; `None` for a column the width cannot
 /// carry. The measured thresholds, at the default full visibility:
-/// Source/Destination appear from 84 cols, From/To from 68, and below 68 the
+/// Source/Destination appear from 85 cols, From/To from 69, and below 69 the
 /// row is the fixed columns alone. At 120 and above the wider breakpoint
 /// applies, where the pool is large enough that nothing is ever dropped.
 fn compute_column_widths(total_width: u16) -> [Option<Constraint>; 11] {
@@ -1161,11 +1169,13 @@ fn compute_column_widths(total_width: u16) -> [Option<Constraint>; 11] {
     // 15 cells a full IPv4 literal needs, with room for a short resolved name.
     // Narrow: #(6) holds "[ ] " plus a 2-digit index, and Method is 9 so the
     // longest common method (SUBSCRIBE) never truncates. Addresses want 2/5.
+    // Duration is 8 at both breakpoints: its header is 8 letters, and at 7
+    // the narrow layout drew it as "Duratio".
     let wide = total_width >= 120;
     let fixed: [u16; 7] = if wide {
         [7, 10, 12, 5, 8, 8, 8]
     } else {
-        [6, 9, 10, 4, 8, 6, 7]
+        [6, 9, 10, 4, 8, 6, 8]
     };
     let fixed_sum: u16 = fixed.iter().sum();
     let preferred_addr = |flex: u16| if wide { 21.min(flex / 4) } else { flex * 2 / 5 };
@@ -1553,18 +1563,65 @@ mod tests {
     /// hides every dialog the store holds (which the old hint reported as
     /// "No SIP dialogs found" over a full capture).
     #[test]
+    fn an_empty_list_during_a_load_says_the_file_is_being_read() {
+        // Success: the hint names the load and the keys that still work.
+        let hint = empty_list_hint(true, 0, true);
+        assert!(hint.contains("Reading the file"), "{hint}");
+        assert!(hint.contains("F1 shows help, q quits"), "{hint}");
+    }
+
+    /// Failure: during a load the hint does not say the file holds no SIP,
+    /// nor that a live capture is waiting. It said the first.
+    #[test]
+    fn an_empty_list_during_a_load_does_not_blame_the_file() {
+        for offline in [true, false] {
+            let hint = empty_list_hint(offline, 0, true);
+            assert!(!hint.contains("may not contain SIP traffic"), "{hint}");
+            assert!(!hint.contains("Waiting for SIP traffic"), "{hint}");
+        }
+    }
+
+    /// Edge: dialogs hidden by the filter are the reason even during a
+    /// load, because clearing the filter is what shows them.
+    #[test]
+    fn hidden_dialogs_are_named_even_during_a_load() {
+        let hint = empty_list_hint(true, 2, true);
+        assert!(hint.contains("2 dialogs"), "{hint}");
+        assert!(hint.contains("F9"), "{hint}");
+    }
+
+    /// Edge: a file opened during a live capture is also being read; the
+    /// hint says so and not that the capture is waiting.
+    #[test]
+    fn a_load_during_a_live_capture_says_the_file_is_being_read() {
+        let hint = empty_list_hint(false, 0, true);
+        assert!(hint.contains("Reading the file"), "{hint}");
+    }
+
+    /// Edge: one hidden dialog during a load reads in the singular.
+    #[test]
+    fn one_hidden_dialog_during_a_load_reads_in_the_singular() {
+        let hint = empty_list_hint(true, 1, true);
+        assert!(hint.contains("1 dialog is hidden"), "{hint}");
+    }
+
+    /// What the call list says while it has no rows, by case.
+    #[test]
     fn the_empty_list_hint_names_the_case_and_the_next_step() {
-        let live = empty_list_hint(false, 0);
+        let live = empty_list_hint(false, 0, false);
         assert!(live.contains("Waiting for SIP traffic"), "{live}");
         assert!(live.contains("F1"), "{live}");
-        let file = empty_list_hint(true, 0);
+        let file = empty_list_hint(true, 0, false);
         assert!(file.contains("may not contain SIP traffic"), "{file}");
         assert!(file.contains("O opens another file"), "{file}");
-        let hidden = empty_list_hint(false, 3);
+        let hidden = empty_list_hint(false, 3, false);
         assert!(hidden.contains("3 dialogs"), "{hidden}");
         assert!(hidden.contains("F9"), "{hidden}");
         assert!(!hidden.contains("No SIP dialogs found"), "{hidden}");
-        assert!(empty_list_hint(true, 1).contains("1 dialog "), "singular");
+        assert!(
+            empty_list_hint(true, 1, false).contains("1 dialog "),
+            "singular"
+        );
     }
 
     /// Regression: below 120 cols the Method column was `Length(8)`, which
@@ -1810,12 +1867,13 @@ mod tests {
     /// The overhead is charged per laid-out column, not as a flat 12: a
     /// dropped column returns the spacing cell that followed it as well as
     /// its own width. With the four identity columns dropped, the fixed
-    /// seven (50) plus their overhead (8) fit from 58 cols up — which is why
-    /// this sweep starts at 58 (57 before the index column grew a cell for
-    /// the space in `[ ] 1`, 61 before that).
+    /// seven (51) plus their overhead (8) fit from 59 cols up — which is why
+    /// this sweep starts at 59 (58 before the Duration column grew a cell to
+    /// hold its header, 57 before the index column grew a cell for the space
+    /// in `[ ] 1`, 61 before that).
     #[test]
     fn column_widths_never_oversubscribe_the_terminal() -> Result<(), TestError> {
-        for width in 58u16..=200 {
+        for width in 59u16..=200 {
             let widths = compute_column_widths(width);
             let (sum, count) = laid_out(&widths, width)?;
             let overhead = layout_overhead(count);
@@ -1919,14 +1977,49 @@ mod tests {
     /// column grew a cell to put a space between the checkbox and the number
     /// (`[ ] 1`, which read as `[ ]1`).
     #[test]
+    fn every_laid_out_fixed_column_holds_its_whole_header() {
+        // Success: at every width the fixed columns are at least as wide as
+        // their header label. Duration was 7 cells below 120 columns, so its
+        // 8-letter header drew as "Duratio".
+        for width in 40u16..=200 {
+            let widths = compute_column_widths(width);
+            for i in [1usize, 6, 7, 9, 10] {
+                let Some(Constraint::Length(w)) = widths[i] else {
+                    continue;
+                };
+                assert!(
+                    usize::from(w) >= COLUMN_LABELS[i].len(),
+                    "at {width} cols the {} column is {w} cells",
+                    COLUMN_LABELS[i]
+                );
+            }
+        }
+    }
+
+    /// Edge: the Duration column is 8 cells on both sides of the 120-column
+    /// breakpoint.
+    #[test]
+    fn the_duration_column_is_eight_cells_at_both_breakpoints() {
+        for width in [80u16, 119, 120] {
+            assert_eq!(
+                compute_column_widths(width)[10],
+                Some(Constraint::Length(8)),
+                "at {width} cols"
+            );
+        }
+    }
+
+    /// Each breakpoint moved one more column right when the Duration column
+    /// grew a cell to hold its header.
+    #[test]
     fn identity_columns_appear_only_at_the_widths_that_can_carry_them() {
         let present = |width: u16, i: usize| compute_column_widths(width)[i].is_some();
-        // Source/Destination (4, 5): the pair arrives together at 84.
-        assert!(!present(83, 4) && !present(83, 5), "addresses absent at 83");
-        assert!(present(84, 4) && present(84, 5), "addresses present at 84");
-        // From/To (2, 3): the pair arrives together at 68.
-        assert!(!present(67, 2) && !present(67, 3), "From/To absent at 67");
-        assert!(present(68, 2) && present(68, 3), "From/To present at 68");
+        // Source/Destination (4, 5): the pair arrives together at 85.
+        assert!(!present(84, 4) && !present(84, 5), "addresses absent at 84");
+        assert!(present(85, 4) && present(85, 5), "addresses present at 85");
+        // From/To (2, 3): the pair arrives together at 69.
+        assert!(!present(68, 2) && !present(68, 3), "From/To absent at 68");
+        assert!(present(69, 2) && present(69, 3), "From/To present at 69");
         // The fixed columns are unconditional: they are what is left at the
         // 40-column floor, and they are still there at the widest layout.
         for width in [40u16, 66, 82, 120, 200] {

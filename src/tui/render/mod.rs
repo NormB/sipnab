@@ -179,6 +179,7 @@ pub(in crate::tui) fn render_app(
                     hidden: app
                         .cached_dialog_count
                         .saturating_sub(app.cached_displayed_count),
+                    loading: app.pcap_load.is_some(),
                 },
             );
         }
@@ -2671,6 +2672,85 @@ mod tests {
     use crate::tui::SaveFormat;
     use crate::tui::render::test_support::*;
     type TestError = Box<dyn std::error::Error>;
+
+    /// Success: an empty call list drawn during a file load says the file
+    /// is being read.
+    #[test]
+    fn an_empty_call_list_during_a_load_says_so() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.pcap_load = Some(std::sync::Arc::new(
+            crate::tui::state::PcapLoadProgress::new("big.pcap"),
+        ));
+        let out = render_to_string(&mut app, 80, 24)?;
+        assert!(out.contains("Reading the file"), "{out}");
+        Ok(())
+    }
+
+    /// The call list's header row drawn at `cols` columns.
+    fn call_list_header(cols: u16) -> Result<String, TestError> {
+        let mut app = app_with_dialog()?;
+        let out = render_to_string(&mut app, cols, 24)?;
+        Ok(out
+            .lines()
+            .find(|l| l.contains("Method"))
+            .ok_or("no header row")?
+            .to_string())
+    }
+
+    /// Success: at 80 columns the call list's header shows `Duration`
+    /// whole. It showed `Duratio`.
+    #[test]
+    fn the_call_list_header_shows_duration_whole_at_80_columns() -> Result<(), TestError> {
+        let header = call_list_header(80)?;
+        assert!(header.contains("Duration"), "{header:?}");
+        Ok(())
+    }
+
+    /// Edge: at 59 columns, where only the fixed columns fit, the header
+    /// still shows `Duration` whole.
+    #[test]
+    fn the_call_list_header_shows_duration_whole_at_59_columns() -> Result<(), TestError> {
+        let header = call_list_header(59)?;
+        assert!(header.contains("Duration"), "{header:?}");
+        assert!(!header.contains("From"), "no identity column: {header:?}");
+        Ok(())
+    }
+
+    /// Edge: at 120 columns, the wide layout, the header shows every
+    /// column name whole.
+    #[test]
+    fn the_call_list_header_shows_every_name_at_120_columns() -> Result<(), TestError> {
+        let header = call_list_header(120)?;
+        for name in [
+            "Method",
+            "From",
+            "To",
+            "Source",
+            "Destination",
+            "State",
+            "Msgs",
+            "PDD",
+        ] {
+            assert!(header.contains(name), "{name} missing: {header:?}");
+        }
+        assert!(header.contains("Duration"), "{header:?}");
+        Ok(())
+    }
+
+    /// Failure: at the 40-column floor the fixed columns no longer fit (they
+    /// need 59), and the frame is still drawn: the status rows are there and
+    /// the "too small" notice is not. The header row is not asserted: below
+    /// 59 columns ratatui's solver takes the deficit out of the columns and
+    /// which ones it shortens differs from run to run (measured: 13 of 30
+    /// runs cut `Method`).
+    #[test]
+    fn the_call_list_draws_at_the_40_column_floor() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
+        let out = render_to_string(&mut app, 40, 24)?;
+        assert!(out.contains("Dialogs: 1"), "{out}");
+        assert!(!out.contains("too small"), "{out}");
+        Ok(())
+    }
 
     /// Empty app renders the chrome; a populated one shows "Dialogs: 1".
     #[test]

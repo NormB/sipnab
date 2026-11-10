@@ -277,6 +277,20 @@ pub fn render_dashboard(frame: &mut ratatui::Frame, area: ratatui::layout::Rect,
         Style::default().fg(theme.muted),
     ));
 
+    // With no rows the table would be a header over nothing. Say when a
+    // row appears and how to leave.
+    if snap.rows.is_empty() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(
+            "  A stream appears here once RTP packets are seen.",
+            Style::default().fg(theme.muted),
+        ));
+        lines.push(Line::styled(
+            "  Esc returns to the call list.",
+            Style::default().fg(theme.muted),
+        ));
+    }
+
     // Fixed overhead: 4 lines above + MOS/jitter/loss trend + legend + borders.
     let visible = (area.height as usize).saturating_sub(13).max(1);
     // Keep the selection in view with context above and below rather than
@@ -453,6 +467,55 @@ mod tests {
             store.insert_for_test(s);
         }
         store
+    }
+
+    /// Success: a dashboard with no streams says when one appears and how
+    /// to leave. It drew a table header over nothing.
+    #[test]
+    fn an_empty_dashboard_says_what_happens_next() -> Result<(), TestError> {
+        let out = render_snapshot(DashboardSnapshot::default(), 0, 80, 24)?;
+        assert!(
+            out.contains("A stream appears here once RTP packets are seen."),
+            "{out}"
+        );
+        assert!(out.contains("Esc returns to the call list."), "{out}");
+        Ok(())
+    }
+
+    /// Success: an empty dashboard keeps its summary line as well.
+    #[test]
+    fn an_empty_dashboard_keeps_its_summary() -> Result<(), TestError> {
+        let out = render_snapshot(DashboardSnapshot::default(), 0, 80, 24)?;
+        assert!(out.contains("No RTP streams yet"), "{out}");
+        Ok(())
+    }
+
+    /// Edge: the empty hint is drawn below the table header, where the
+    /// rows would be.
+    #[test]
+    fn the_empty_hint_is_below_the_table_header() -> Result<(), TestError> {
+        let out = render_snapshot(DashboardSnapshot::default(), 0, 80, 24)?;
+        let header = out.find("Jitter").ok_or("no table header")?;
+        let hint = out.find("A stream appears here").ok_or("no hint")?;
+        assert!(header < hint, "header at {header}, hint at {hint}");
+        Ok(())
+    }
+
+    /// Edge: an empty dashboard on a terminal 8 rows high draws what fits
+    /// and does not panic.
+    #[test]
+    fn an_empty_dashboard_draws_on_a_short_terminal() -> Result<(), TestError> {
+        let out = render_snapshot(DashboardSnapshot::default(), 0, 80, 8)?;
+        assert!(out.contains("No RTP streams yet"), "{out}");
+        Ok(())
+    }
+
+    /// Failure: a dashboard with a stream does not carry the empty hint.
+    #[test]
+    fn a_dashboard_with_streams_has_no_empty_hint() -> Result<(), TestError> {
+        let out = render_snapshot(snapshot_with_rows(1)?, 0, 80, 24)?;
+        assert!(!out.contains("A stream appears here"), "{out}");
+        Ok(())
     }
 
     /// An empty store yields zeroed totals, `None` MOS aggregates, and

@@ -91,6 +91,7 @@ CALL FLOW:
   F4, x            Extended multi-leg flow
   F6, Ctrl+R       RTP streams in the ladder (one arrow each)
   r                RTP Streams of this call (Esc comes back here)
+  S                Relay statistics view (asks the relay)
   N                Name endpoints (Tab/Shift+Tab between participants)
 
 RAW MESSAGE:
@@ -480,6 +481,59 @@ mod tests {
             let l = l.trim_start();
             l.find("  ").is_some_and(|gap| l[..gap].contains(key))
         })
+    }
+
+    /// Whether a line of `heading`'s section binds exactly the key `token`.
+    fn section_binds(heading: &str, token: &str) -> bool {
+        section(heading).iter().any(|l| {
+            let l = l.trim_start();
+            l.find("  ")
+                .is_some_and(|gap| l[..gap].split([',', ' ', '/']).any(|t| t == token))
+        })
+    }
+
+    /// Success: the call flow opens the relay statistics on `S` and its
+    /// help says so.
+    #[test]
+    fn the_call_flow_help_names_the_relay_statistics_key() {
+        assert!(section_binds("CALL FLOW:", "S"), "CALL FLOW lacks S");
+    }
+
+    /// Success: the relay statistics line reaches the rendered help at 80
+    /// columns, whole.
+    #[test]
+    fn the_rendered_help_shows_the_call_flow_relay_line() {
+        let theme = crate::tui::Theme::default();
+        let rendered: Vec<String> = build_help_lines(&theme, "v", "libpcap", 76)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        let flow = rendered
+            .iter()
+            .position(|l| l.contains("CALL FLOW:"))
+            .unwrap_or(usize::MAX);
+        let raw = rendered
+            .iter()
+            .position(|l| l.contains("RAW MESSAGE:"))
+            .unwrap_or(0);
+        assert!(flow < raw, "CALL FLOW comes before RAW MESSAGE");
+        assert!(
+            rendered[flow..raw]
+                .iter()
+                .any(|l| l.contains("Relay statistics view (asks the relay)")),
+            "the line is in the rendered CALL FLOW section"
+        );
+    }
+
+    /// Failure: a key that is only part of another key's name is not bound.
+    /// `Space` is in the call flow help; that does not bind `p`.
+    #[test]
+    fn part_of_a_key_name_is_not_a_binding() {
+        assert!(section_binds("CALL FLOW:", "Space"), "Space is bound");
+        assert!(
+            !section_binds("CALL FLOW:", "p"),
+            "p is not a call flow key"
+        );
     }
 
     /// Success: the call flow accepts j/k and its help says so.
