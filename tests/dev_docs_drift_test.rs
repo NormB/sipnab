@@ -1006,7 +1006,11 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // links scripts/release-train.py and scripts/tests/test_release_train.py.
     // 833 -> 834 (RELEASE-TRAIN-TAG-RACE): build-ci-release.md's "Before the
     // tag" links scripts/tests/test_tag_proof_pending.py (+1).
-    const EXPECTED_CODE_LINKS: usize = 834;
+    // 834 -> 838 (PAGES-SAME-SHA-REDEPLOY-NOT-LIVE): build-ci-release.md's
+    // live check links scripts/pages-live.py, scripts/verify-site-advertises.sh,
+    // scripts/tests/test_pages_live.py and
+    // scripts/tests/test_pages_live_workflow.py (+4).
+    const EXPECTED_CODE_LINKS: usize = 838;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
