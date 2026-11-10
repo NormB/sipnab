@@ -3743,7 +3743,7 @@ pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
     let flag_or_key = |flag: &Option<PathBuf>, key: &Option<PathBuf>| flag.clone().or(key.clone());
     let signer_ca = flag_or_key(&fetch.vcon_fetch_signer_ca, &config.vcon_fetch.signer_ca)
         .filter(|p| p.as_os_str() != crate::config::SIGNER_CA_SYSTEM);
-    let advance: [(&str, Option<PathBuf>); 27] = [
+    let advance: [(&str, Option<PathBuf>); 28] = [
         (
             "--api-signing-key-file",
             cli.listener_args
@@ -3793,6 +3793,11 @@ pub fn secret_files(cli: &Cli, config: &Config) -> Vec<SecretFile> {
                 .fleet_report_token_file
                 .clone()
                 .or(config.fleet.report_token_file.clone()),
+        ),
+        // And its spool key, which seals the call records that wait.
+        (
+            "[fleet] spool_key_file",
+            config.fleet.spool_key_file.clone(),
         ),
         // `--api-allow-vcon-fetch` and `--mcp-allow-vcon-fetch` build their
         // fetcher when the servers start, after the drop.

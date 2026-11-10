@@ -961,7 +961,16 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 605 -> 607 (CONSOLE-FLAG-WITHOUT-API): src/app/bootstrap.rs, the refusal
 // of `--api-console` on a run with no `--api` (+1) and `--api-console
 // requires the 'api' feature (not compiled in)` (+1).
-const EXPECTED_TEMPLATES: usize = 607;
+// 607 -> 618 (fleet call records): src/app/fleet_calls.rs +1 (an unknown
+// call_push), src/app/fleet_member.rs +5 (call_push with no spool key, the
+// exception cap's range, a spool key file other users can read, call records
+// not written to the spool, and a delivery that does not open),
+// src/app/fleet_intake.rs +4 (the intake's mode, its read or write error, its
+// torn last record, and the records removed at start) and
+// src/app/fleet_center.rs +1 (the intake not rewritten). Reworded, count
+// unchanged: the center's refusal of an unknown kind now names both kinds,
+// and the spool cap's warning says files, since it removes deliveries too.
+const EXPECTED_TEMPLATES: usize = 618;
 
 // ---------------------------------------------------------------------------
 // The page gates

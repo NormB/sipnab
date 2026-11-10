@@ -1776,7 +1776,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // console needs" and the troubleshooting table link to
     // #the-console-without-the-api; errors.md +1, the refusal's entry links
     // to the same section.
-    const EXPECTED_WIKI_LINKS: usize = 2525;
+    // 2525 -> 2529 (fleet call records): fleet.md +2, the center's
+    // introduction linking "Push call records to the center" and that
+    // section's prerequisite linking "Make an instance a fleet member";
+    // config-reference.md +1 and errors.md +1, each a link to "Push call
+    // records to the center".
+    const EXPECTED_WIKI_LINKS: usize = 2529;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

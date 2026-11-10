@@ -4264,6 +4264,59 @@ async fn list_dialogs(
     })))
 }
 
+/// The streams of `streams` that the Call-ID `call_id` claims, and the
+/// media and asymmetry diagnosis of `dialog` over them, computed now.
+/// `call_id` is the one the dialog was asked for by.
+pub fn diagnose_dialog<'a>(
+    dialog: &crate::sip::dialog::SipDialog,
+    call_id: &'a str,
+    streams: &'a StreamStore,
+) -> (
+    Vec<&'a crate::rtp::stream::RtpStream>,
+    crate::rtp::diagnosis::MediaDiagnosis,
+) {
+    let claimed: Vec<&crate::rtp::stream::RtpStream> = streams.streams_for(call_id).collect();
+    let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(streams));
+    let mut diagnosis = diagnose_media(&claimed, &media);
+    diagnose_asymmetry(
+        &mut diagnosis,
+        Some(dialog),
+        &claimed,
+        &AsymmetryThresholds::default(),
+    );
+    (claimed, diagnosis)
+}
+
+/// The dialog in full, as `GET /v1/dialogs/{call_id}` answers it before the
+/// capture's identity is stamped on: the one projection the REST API and a
+/// fleet member's call record ([`crate::app::fleet_calls`]) both send.
+#[must_use]
+pub fn dialog_answer(
+    dialog: &crate::sip::dialog::SipDialog,
+    call_id: &str,
+    streams: &StreamStore,
+) -> String {
+    let (claimed, diagnosis) = diagnose_dialog(dialog, call_id, streams);
+    dialog_answer_of(dialog, &claimed, &diagnosis, streams)
+}
+
+/// [`dialog_answer`] for a dialog whose streams and diagnosis the caller
+/// already took from [`diagnose_dialog`].
+#[must_use]
+pub fn dialog_answer_of(
+    dialog: &crate::sip::dialog::SipDialog,
+    claimed: &[&crate::rtp::stream::RtpStream],
+    diagnosis: &crate::rtp::diagnosis::MediaDiagnosis,
+    streams: &StreamStore,
+) -> String {
+    output::json::dialog_to_json(
+        dialog,
+        claimed,
+        diagnosis,
+        quality::MosDelay::from_capture(streams),
+    )
+}
+
 /// `GET /v1/dialogs/:call_id` — get a single dialog with full detail.
 ///
 /// # Arguments
@@ -4319,22 +4372,7 @@ async fn get_dialog(
     let dialog = ds
         .get(&call_id)
         .ok_or(Problem::new(StatusCode::NOT_FOUND))?;
-    let streams: Vec<&crate::rtp::stream::RtpStream> = ss.streams_for(&call_id).collect();
-
-    let media = MediaContext::for_dialog(dialog, CaptureMedia::of_store(&ss));
-    let mut diagnosis = diagnose_media(&streams, &media);
-    diagnose_asymmetry(
-        &mut diagnosis,
-        Some(dialog),
-        &streams,
-        &AsymmetryThresholds::default(),
-    );
-    let json_str = output::json::dialog_to_json(
-        dialog,
-        &streams,
-        &diagnosis,
-        quality::MosDelay::from_capture(&ss),
-    );
+    let json_str = dialog_answer(dialog, &call_id, &ss);
     let capture_identity = capture_etag(capture.as_deref(), &ds, &ss);
     drop(ss);
     drop(ds);

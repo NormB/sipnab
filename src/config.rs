@@ -78,6 +78,9 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "spool_dir",
             "heartbeat_secs",
             "spool_max_files",
+            "call_push",
+            "exception_max_per_sec",
+            "spool_key_file",
         ]
         .as_slice(),
     );
@@ -628,6 +631,17 @@ pub struct FleetConfig {
     /// The most heartbeats the spool keeps while the center is away; the
     /// oldest go first. Default 2880, a day at the default interval.
     pub spool_max_files: Option<u64>,
+    /// Which ended calls the member pushes to the center: `exceptions`
+    /// (calls that failed, were degraded or raised a finding), `all` or
+    /// `none`. Default `exceptions` when `spool_key_file` is set, else
+    /// `none`.
+    pub call_push: Option<String>,
+    /// The most exception records pushed a second, 1 to 10000. Default 10.
+    pub exception_max_per_sec: Option<u32>,
+    /// The key file call records are sealed under while they wait in the
+    /// spool, readable by this user only (`sipnab fleet keygen`). Call
+    /// records are pushed only when it is set.
+    pub spool_key_file: Option<PathBuf>,
 }
 
 /// `[relay]`: the engines sipnab may ask about a call, chosen from the call's

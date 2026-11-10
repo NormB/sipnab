@@ -35,13 +35,23 @@ const STOP_POLL_STEP: Duration = Duration::from_millis(100);
 ///
 /// The directory cannot be read.
 pub fn pending(spool: &Path) -> std::io::Result<Vec<String>> {
+    pending_with(spool, |name| name.ends_with(".json"))
+}
+
+/// [`pending`] for a spool whose waiting files are the ones `waits` names:
+/// the same rules, with `waits` in the place of the `.json` ending.
+///
+/// # Errors
+///
+/// The directory cannot be read.
+pub fn pending_with(spool: &Path, waits: impl Fn(&str) -> bool) -> std::io::Result<Vec<String>> {
     let mut names = Vec::new();
     for entry in std::fs::read_dir(spool)? {
         let entry = entry?;
         let Ok(name) = entry.file_name().into_string() else {
             continue;
         };
-        if name.starts_with('.') || !name.ends_with(".json") {
+        if name.starts_with('.') || !waits(&name) {
             continue;
         }
         if entry.file_type()?.is_file() {

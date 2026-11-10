@@ -1296,14 +1296,22 @@ fn edge_a_new_store_is_sealed_before_the_first_heartbeat() -> Result<(), TestErr
     let key = store_key_file(dir.path())?;
     let c = serve(dir.path(), &store, &key, &[])?;
     assert!(sealed(&store)?, "sealed before any heartbeat");
-    let names: Vec<String> = std::fs::read_dir(&sub)?
+    let mut names: Vec<String> = std::fs::read_dir(&sub)?
         .filter_map(Result::ok)
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
+    names.sort();
     assert_eq!(
         names,
-        vec!["center.store".to_string()],
-        "the store, and no staged file beside it"
+        vec![
+            "center.store".to_string(),
+            "center.store.intake".to_string()
+        ],
+        "the store and its intake, and no staged file beside them"
+    );
+    assert!(
+        sealed(&sub.join("center.store.intake"))?,
+        "the intake is sealed before any call record"
     );
     drop(c);
     Ok(())

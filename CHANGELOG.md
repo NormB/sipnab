@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **A fleet member pushes a record of each call that ended badly to the center (`[fleet] call_push`).** The record's `call` is the member's own answer to `GET /v1/dialogs/{call_id}`, built by the same code, without the capture identity the REST API stamps on.
+  - `call_push = "exceptions"` sends a call that ended on a final error response or whose media diagnosis found something; `all` sends every ended call; `none` sends none. With no `call_push`, a member pushes `exceptions` when `[fleet] spool_key_file` is set and nothing otherwise, so a member set up for heartbeats runs as it did.
+  - `[fleet] exception_max_per_sec` (default 10) caps the exceptions. The member counts what the cap refused and reports the count in its heartbeat.
+  - Records wait on the member's disk only in sealed files, under the key in `[fleet] spool_key_file` (`sipnab fleet keygen`). A delivery is deleted when the center acknowledges it. A delivery that does not open moves to `failed/` and is never sent.
+  - The center appends each new record to a sealed file beside its store, `<store>.intake`, before it acknowledges it, so an acknowledged record survives a killed center. A record sent again is counted as a duplicate and not stored twice, also after a restart. The intake keeps records for `--retention-hours` and holds at most 64 MiB; the oldest go first.
+  - `GET /v1/fleet/members` gains `intake` (records, bytes, removed), `verified.call_records` per member, and the member's own counts in `self_reported.calls`. The ingest answer gains `calls`.
+  - Upgrade the center before the members: a center from 0.5.244 or earlier refuses a call record with `400`.
+  - How-to: [Push call records to the center](docs/fleet.md#push-call-records-to-the-center).
+
 ## [0.5.244] - 2026-11-10
 
 ### Changed
