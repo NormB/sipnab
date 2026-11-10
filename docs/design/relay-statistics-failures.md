@@ -118,7 +118,7 @@ arise there. A surface must not present the two as one behavior.
 
 Measured either side of `docker restart rtpproxy`:
 
-| | Before | After |
+| Counter | Before | After |
 |---|---:|---:|
 | `sessions created` | 1 | 0 |
 | `packets received` | 9000 | 0 |

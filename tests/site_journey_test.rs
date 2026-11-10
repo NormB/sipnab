@@ -5030,8 +5030,10 @@ fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
 
     const PINNED: &[(&str, &str)] = &[
         (
+            // Re-pinned for the navigation button's state (WCAG 4.1.2): the
+            // click handler now sets aria-expanded to match the open class.
             "base.html",
-            "sha256-J1UbBOogoXxCXnxiSeI0gyXiVXXoOpudQyXbBuS54aI=",
+            "sha256-Yf4i/5xp2w0iUBGkbqMD/BuMPq0r1td798jleqqg6R0=",
         ),
         (
             // Two scripts since 2026-09-17. Platform detection moved out of the
@@ -5094,12 +5096,9 @@ fn inline_script_edits_require_csp_hash_refresh() -> Result<(), TestError> {
             "page.html",
             "sha256-UOwnn7uXvW/gl+mP2NGmMuxif0eKdH7ocCwmMTGCjcY=",
         ),
-        (
-            // Re-pinned in 0.5.44: the copy-button script now skips
-            // `pre.mermaid`, which it was appending the word "copy" into.
-            "page.html",
-            "sha256-VEhaYG0u0qZoYQzwk4PgncTbqmZXsFNRY5GJxNQt7UI=",
-        ),
+        // page.html had a second inline script here, the copy buttons. It is
+        // now website/static/js/code-copy.js, which note.html loads too, and
+        // a script the site serves needs no hash.
     ];
 
     // Same extraction semantics as refresh_csp_hashes.py: inline, executable.
@@ -10932,7 +10931,7 @@ fn website_gates_measure_a_page_that_actually_rendered() -> Result<(), TestError
     let spec = read("e2e/tests/accessibility.spec.js")?;
     let code: String = spec.chars().filter(|c| !c.is_whitespace()).collect();
     for decl in [
-        "constWCAG_TAGS=['wcag2a','wcag2aa'];",
+        "constWCAG_TAGS=['wcag2a','wcag2aa','wcag21a','wcag21aa','wcag22aa'];",
         "constBLOCKING_IMPACTS=['serious','critical'];",
         "constINCOMPLETE_NOT_GATED=['color-contrast'];",
     ] {
@@ -12396,13 +12395,17 @@ fn the_opensips_and_kamailio_tile_is_headed_sip_proxy() -> Result<(), TestError>
     Ok(())
 }
 
-/// The Asterisk and FreeSWITCH guides share a tile headed "PBX" (Norm,
-/// 2026-10-11): both are PBXs that answer and bridge calls, a different role
-/// from the SIP proxies on the "SIP proxy" tile, which links neither. Each
-/// gets the pair of links every voice-stack tile gives: use it, then run
-/// sipnab beside it.
+/// The Asterisk and FreeSWITCH guides share a tile headed "Telephony
+/// platform": both answer and bridge calls, a different role from the SIP
+/// proxies on the "SIP proxy" tile, which links neither. Each gets the pair of
+/// links every voice-stack tile gives: use it, then run sipnab beside it.
+///
+/// The tile was headed "PBX" from 2026-10-12 to 2026-11-10. The owner's
+/// recorded choice of title (2026-09-28) is "Telephony platform", over "PBX",
+/// because both projects do more than a PBX does.
 #[test]
-fn the_pbx_tile_pairs_asterisk_and_freeswitch_with_their_sipnab_guides() -> Result<(), TestError> {
+fn the_telephony_platform_tile_pairs_asterisk_and_freeswitch_with_their_sipnab_guides()
+-> Result<(), TestError> {
     let page = read("website/templates/index.html")?;
     let tiles: Vec<&str> = page
         .split("class=\"feature-card")
@@ -12415,8 +12418,8 @@ fn the_pbx_tile_pairs_asterisk_and_freeswitch_with_their_sipnab_guides() -> Resu
     );
     let tile = tiles[0];
     assert!(
-        tile.contains("<h3>PBX</h3>"),
-        "the tile's heading is not \"PBX\":\n{tile}"
+        tile.contains("<h3>Telephony platform</h3>"),
+        "the tile's heading is not \"Telephony platform\":\n{tile}"
     );
     for (href, text) in [
         ("@/docs/asterisk.md", "Use Asterisk"),

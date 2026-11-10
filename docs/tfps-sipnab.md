@@ -55,16 +55,17 @@ is the blocks in
 
 sipnab reads `tfps_ctl`'s answers as JSON. It asks with `--json`.
 
-- That option is on TFPS's master branch, merged 2026-09-18 as
+- TFPS gained that option on its master branch, merged 2026-09-18 as
   [`984577dc`](https://github.com/sippulse/tfps/commit/984577dc).
-- It is in no release yet. v0.2.1 answers `unknown option: --json`.
+- TFPS v0.3.0 is the first release that has it. v0.2.1 and earlier answer
+  `unknown option: --json`.
 - sipnab needs a TFPS built at or after the JSON contract, which landed on
   2026-09-16 (`e7ee57a`). A `tfps_ctl` that predates the JSON contract can
   answer `--json` and still not in that form: a build installed on 2026-09-03
   answered `status`, but its `ban` gave `expires` as a date string, which
   sipnab cannot read. Build `984577dc` or later.
 - [Add TFPS to your voice stack](tfps.md) builds that commit.
-- If your TFPS is a release, run its
+- If your TFPS is v0.2.1 or earlier, run its
   [Install TFPS](tfps.md#install-tfps) step.
   - The installer builds from the checkout and upgrades the release in place.
   - It keeps `/etc/tfps/config.json` and what TFPS has learned.
@@ -418,8 +419,9 @@ The `curl` commands from the same-machine section work unchanged.
 
 ## When something does not work
 
-- **`unknown option: --json`.** The TFPS in use is a release. Build master, as
-  in the "Check that TFPS answers in JSON" step.
+- **`unknown option: --json`.** The TFPS in use is v0.2.1 or earlier. Build
+  master, as in the "Check that TFPS answers in JSON" step, or install TFPS
+  v0.3.0 or later.
 - **``no loaded eBPF map called `blocked` — is tfps running, and are you root?``**
   Either TFPS is not running, or sipnab lacks `CAP_BPF` and `CAP_SYS_ADMIN`.
 - **`reading /etc/tfps/config.json: Permission denied`.** Give the file to the

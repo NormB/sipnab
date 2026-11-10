@@ -33,4 +33,8 @@
     {{ page.content | safe }}
   </article>
 </div>
+
+{# The copy button on each code block, from the file page.html loads. See the
+   comment there. #}
+<script src="{{ get_url(path='js/code-copy.js', cachebust=true) }}" defer></script>
 {% endblock content %}

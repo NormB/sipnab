@@ -88,7 +88,7 @@ there.
 
 So the two regimes need opposite treatment:
 
-| | Proxy / SBC (transparent) | B2BUA |
+| Property | Proxy / SBC (transparent) | B2BUA |
 |---|---|---|
 | Call-ID across captures | identical | different |
 | Failure of a Call-ID key | **silent merge** — two rows become one | **silent miss** — one call becomes two unpaired rows |

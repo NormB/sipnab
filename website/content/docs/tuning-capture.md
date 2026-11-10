@@ -484,7 +484,7 @@ packets.
 
 ### Side by side
 
-| | `any` (the default) | Named — `-d eth0` / `-d eth0,eth1 --multi-device` |
+| Property | `any` (the default) | Named — `-d eth0` / `-d eth0,eth1 --multi-device` |
 |---|---|---|
 | **Loopback / container legs** | Captured | **Missed unless you name those interfaces too** |
 | **Link type** | `LINUX_SLL2` | `EN10MB` |

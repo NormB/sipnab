@@ -1167,8 +1167,8 @@ the second line of `sipnab --version` and REST `GET /v1/capabilities`.
 ### TFPS JSON-mode provenance
 
 `tfps_ctl --json` arrived in sippulse/tfps#6, merged into `master` on
-2026-09-18 (commit `984577dc`). v0.2.1, the newest tag at that date, rejects
-`--json`. [`tests/peer_release_honesty_test.rs`](../../tests/peer_release_honesty_test.rs) and
+2026-09-18 (commit `984577dc`). v0.2.1 rejects `--json`. v0.3.0, published
+on 2026-10-31, is the first tag with it. [`tests/peer_release_honesty_test.rs`](../../tests/peer_release_honesty_test.rs) and
 [`tests/tfps_contract_test.rs`](../../tests/tfps_contract_test.rs) record the same facts.
 
 ## Notes for [tls bundle](../mcp-tools-tls.md)
