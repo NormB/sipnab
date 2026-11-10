@@ -85,6 +85,7 @@ pub fn compose_tfps_banned(result: Result<Reply<Vec<TfpsBanned>>, TfpsError>) ->
     };
     if rows.is_empty() {
         let _ = writeln!(out, "  Nothing is banned right now.");
+        let _ = writeln!(out, "\n  {}", crate::tui::render::PRESS_ESC_TO_RETURN);
         return out;
     }
     let plural = if rows.len() == 1 { "" } else { "s" };
@@ -130,6 +131,7 @@ pub fn compose_tfps_dropped(result: Result<Reply<Vec<TfpsDropped>>, TfpsError>) 
     };
     if rows.is_empty() {
         let _ = writeln!(out, "  Nothing has been dropped.");
+        let _ = writeln!(out, "\n  {}", crate::tui::render::PRESS_ESC_TO_RETURN);
         return out;
     }
     let plural = if rows.len() == 1 { "" } else { "s" };

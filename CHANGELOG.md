@@ -17,6 +17,7 @@ entry that carries them.
 
 ### Fixed
 
+- **Every text view with nothing to show says how to leave (TUI-TEXT-VIEW-EMPTY).** Top talkers and carrier metrics ended with `Press Esc to return.`; the call volume view, the SDP timeline, a clean RFC conformance report, a comparison whose calls are gone, the TFPS ban and drop lists and an empty relay call list did not. They now end with the same line.
 - **The call list draws the same columns on every run below 59 columns (TUI-NARROW-LAYOUT-FLAKY).** The row claimed more cells than the terminal had, and the layout solver chose which column to shorten: in 30 runs at 40 columns, 13 cut `Method`. Columns are now dropped whole in a fixed order, so the row always fits.
 - **The call list's `Duration` header is whole below 120 columns (TUI-DURATION-HEADER-CUT).** The column was 7 cells there and the header is 8 letters, so an 80-column terminal showed `Duratio`. The column is now 8 cells at every width it is shown. Source and Destination now appear from 85 columns, one column later than before.
 - **Status line 3 marks every cut with an ellipsis (TUI-STATUS-LINE-CUT).** Only the view filter was marked. The call flow's mode line, a long error and a long search prompt stopped at the edge of the terminal with nothing to say they went on; at 80 columns the call flow's line ended at `Focus:`.
