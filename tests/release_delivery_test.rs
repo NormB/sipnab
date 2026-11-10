@@ -31,6 +31,8 @@ use std::process::Command;
 
 #[path = "support/release_logic.rs"]
 mod release_logic;
+#[path = "../src/test_scratch.rs"]
+mod test_scratch;
 
 use release_logic::{
     ADVERTISEMENT_PATHS, is_advertisement, is_advertisement_beside_dependency_bumps,
@@ -66,12 +68,12 @@ fn local_backlog() -> Option<String> {
 /// and a git that could not run look identical to a caller that folds them
 /// together, and every gate below would then pass by examining nothing.
 fn git(args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo())
-        .args(args)
-        .output()
-        .ok()?;
+    git_stdout(Command::new("git").arg("-C").arg(repo()).args(args))
+}
+
+/// The trimmed stdout of a git command, or `None` when it could not answer.
+fn git_stdout(cmd: &mut Command) -> Option<String> {
+    let out = cmd.output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -174,16 +176,35 @@ fn commits_since_newest_tag() -> Option<u32> {
 /// matters, rather than a documentation tidy-up.
 const SHIPPABLE: &[&str] = &["src/", "Cargo.toml", "Cargo.lock"];
 
-/// Files changed between the newest tag and `HEAD`.
+/// The git arguments that list the files differing from a tag.
+///
+/// The tag is compared with the working tree, not with `HEAD`. Every other
+/// gate in this file reads the working tree (`CHANGELOG.md`, `Cargo.toml`,
+/// the site configuration), and the pre-commit hook runs these tests before
+/// the commit exists. With `<tag>..HEAD`, a merge of the release into a
+/// branch from before it was judged by the commit before the merge, and the
+/// hook refused it on 2026-11-10: every file of the release counted as code
+/// changed since the tag. In a clean checkout the two comparisons agree.
+fn changed_since_args(tag: &str) -> Vec<String> {
+    vec![
+        "diff".to_string(),
+        "--name-only".to_string(),
+        tag.to_string(),
+    ]
+}
+
+/// The lines of a `git diff --name-only` answer.
+fn name_lines(out: &str) -> Vec<String> {
+    out.lines().map(str::to_string).collect()
+}
+
+/// Files that differ between the newest tag and the working tree.
 fn changed_since_newest_tag() -> Option<Vec<String>> {
     let t = newest_tag()?;
     let tag = format!("v{}.{}.{}", t.0, t.1, t.2);
-    Some(
-        git(&["diff", "--name-only", &format!("{tag}..HEAD")])?
-            .lines()
-            .map(str::to_string)
-            .collect(),
-    )
+    let args = changed_since_args(&tag);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    Some(name_lines(&git(&args)?))
 }
 
 /// Whether anything shippable changed since the newest tag.
@@ -980,4 +1001,204 @@ fn a_gate_that_cannot_tell_skips_when_git_may_be_limited() -> Result<(), TestErr
 fn a_gate_that_cannot_tell_fails_at_push_time() -> Result<(), TestError> {
     assert_eq!(cannot_tell_verdict(true), CannotTell::Fail);
     Ok(())
+}
+
+// ── The changed-file list is taken from the tree the gates read ─────
+
+/// The variables `git commit` exports to a hook. A fixture's git must not
+/// inherit them, or it reads and writes the repository being committed to.
+const HOOK_GIT_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_WORK_TREE",
+    "GIT_PREFIX",
+    "GIT_COMMON_DIR",
+];
+
+/// A git command in a fixture directory, without the hook's environment and
+/// without the user's or the system's configuration.
+fn fixture_git(dir: &std::path::Path) -> Command {
+    let mut c = Command::new("git");
+    c.current_dir(dir);
+    for var in HOOK_GIT_ENV {
+        c.env_remove(var);
+    }
+    c.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    c
+}
+
+/// A fixture repository: `main` holds a release tagged `v1.0.0`, and the
+/// checkout is on `topic`, which branched before the release.
+struct TagFixture(test_scratch::ScratchDir);
+
+impl TagFixture {
+    fn new(name: &str) -> Result<Self, TestError> {
+        let dir = test_scratch::ScratchDir::new(&format!("sipnab-delivery-{name}-"))?;
+        let f = Self(dir);
+        f.run(&["init", "-q", "-b", "main"])?;
+        f.run(&["config", "user.email", "t@example.invalid"])?;
+        f.run(&["config", "user.name", "t"])?;
+        std::fs::create_dir_all(f.0.join("src"))?;
+        f.write("src/lib.rs", "// base\n")?;
+        f.write("README.md", "base\n")?;
+        f.commit("base")?;
+        f.run(&["branch", "topic"])?;
+        f.write("src/released.rs", "// in the release\n")?;
+        f.commit("released code")?;
+        f.run(&["tag", "v1.0.0"])?;
+        f.run(&["checkout", "-q", "topic"])?;
+        f.write("docs.md", "topic work\n")?;
+        f.commit("topic work, no shippable file")?;
+        Ok(f)
+    }
+    fn run(&self, args: &[&str]) -> Result<(), TestError> {
+        let out = fixture_git(&self.0).args(args).output()?;
+        if !out.status.success() {
+            return Err(format!(
+                "git {args:?} failed in the fixture: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )
+            .into());
+        }
+        Ok(())
+    }
+    fn write(&self, rel: &str, body: &str) -> Result<(), TestError> {
+        std::fs::write(self.0.join(rel), body)?;
+        Ok(())
+    }
+    fn commit(&self, subject: &str) -> Result<(), TestError> {
+        self.run(&["add", "-A"])?;
+        self.run(&["commit", "-qm", subject])
+    }
+    /// What the gate's own arguments answer in this fixture.
+    fn changed(&self) -> Result<Vec<String>, TestError> {
+        let args = changed_since_args("v1.0.0");
+        let out = git_stdout(fixture_git(&self.0).args(&args))
+            .ok_or("git could not list the changes in the fixture")?;
+        Ok(name_lines(&out))
+    }
+}
+
+/// The comparison names no commit of its own, so git compares the tag with
+/// the working tree: the files every other gate in this file reads.
+#[test]
+fn the_changed_list_compares_the_tag_with_the_working_tree() {
+    let args = changed_since_args("v9.8.7");
+    assert_eq!(
+        args,
+        ["diff", "--name-only", "v9.8.7"],
+        "the comparison is the tag against the working tree"
+    );
+    assert!(
+        args.iter().all(|a| !a.contains("HEAD")),
+        "an argument names HEAD, so a merge in progress is judged by the \
+         commit before it: {args:?}"
+    );
+}
+
+/// A branch from before the release, with the release merged and not yet
+/// committed, holds every released file. Nothing shippable differs.
+///
+/// On 2026-11-10 the pre-commit hook refused exactly this merge: `HEAD` was
+/// still the commit before the merge, so every file of the release counted as
+/// code changed since the tag.
+#[test]
+fn a_merge_of_the_release_in_progress_changes_nothing_shippable() -> Result<(), TestError> {
+    let f = TagFixture::new("merge")?;
+    f.run(&["merge", "--no-commit", "--no-ff", "-q", "main"])?;
+    let changed = f.changed()?;
+    assert_eq!(changed, ["docs.md"], "only the topic's own file differs");
+    assert!(
+        !changed
+            .iter()
+            .any(|c| SHIPPABLE.iter().any(|p| c.starts_with(p))),
+        "a merge in progress counts released code as unreleased: {changed:?}"
+    );
+    Ok(())
+}
+
+/// The same merge once committed gives the same answer.
+#[test]
+fn a_committed_merge_of_the_release_changes_nothing_shippable() -> Result<(), TestError> {
+    let f = TagFixture::new("merged")?;
+    f.run(&["merge", "--no-ff", "-q", "-m", "merge", "main"])?;
+    assert_eq!(
+        f.changed()?,
+        ["docs.md"],
+        "a committed merge of the release differs by the topic's file only"
+    );
+    Ok(())
+}
+
+/// A shippable file committed after the tag is listed.
+#[test]
+fn a_committed_change_after_the_tag_is_listed() -> Result<(), TestError> {
+    let f = TagFixture::new("committed")?;
+    f.run(&["merge", "--no-ff", "-q", "-m", "merge", "main"])?;
+    f.write("src/new.rs", "// after the tag\n")?;
+    f.commit("new code")?;
+    assert_eq!(
+        f.changed()?,
+        ["docs.md", "src/new.rs"],
+        "a file committed after the tag is missing from the list"
+    );
+    Ok(())
+}
+
+/// A shippable change that is staged and not committed is listed: the commit
+/// being made is judged, not the one before it.
+#[test]
+fn a_staged_change_after_the_tag_is_listed() -> Result<(), TestError> {
+    let f = TagFixture::new("staged")?;
+    f.run(&["merge", "--no-ff", "-q", "-m", "merge", "main"])?;
+    f.write("src/lib.rs", "// edited\n")?;
+    f.run(&["add", "src/lib.rs"])?;
+    assert_eq!(
+        f.changed()?,
+        ["docs.md", "src/lib.rs"],
+        "a staged change is missing: the commit before it was judged"
+    );
+    Ok(())
+}
+
+/// A branch that has not merged the release differs by the release's files,
+/// so the gate still sees a tree that lacks released code.
+#[test]
+fn a_branch_behind_the_tag_lists_the_released_files() -> Result<(), TestError> {
+    let f = TagFixture::new("behind")?;
+    assert_eq!(
+        f.changed()?,
+        ["docs.md", "src/released.rs"],
+        "a branch without the release must differ by the released file"
+    );
+    Ok(())
+}
+
+/// A tag git does not have gives no answer, which the gates treat as
+/// "cannot tell" and never as "nothing changed".
+#[test]
+fn an_unknown_tag_gives_no_answer() -> Result<(), TestError> {
+    let f = TagFixture::new("unknown")?;
+    let args = changed_since_args("v7.7.7");
+    assert_eq!(
+        git_stdout(fixture_git(&f.0).args(&args)),
+        None,
+        "a tag git does not have must not read as an empty change list"
+    );
+    Ok(())
+}
+
+/// The fixture's git drops the hook's variables, or it would read the
+/// repository being committed to.
+#[test]
+fn the_fixture_git_drops_the_hook_environment() {
+    let c = fixture_git(std::path::Path::new("."));
+    for var in HOOK_GIT_ENV {
+        assert!(
+            c.get_envs()
+                .any(|(k, v)| k == std::ffi::OsStr::new(var) && v.is_none()),
+            "{var} is inherited by the fixture's git"
+        );
+    }
 }
