@@ -52,6 +52,30 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/internals/build-ci-release.md",
         ],
     ),
+    // "Before the tag" (RELEASE-TRAIN-TAG-RACE) names
+    // `scripts/release-train.py --proof-wait`, `scripts/tag-push-proof.py
+    // --ready` and git's `checkout --detach`.
+    (
+        "proof-wait",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "ready",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
+    (
+        "detach",
+        &[
+            "docs/internals/build-ci-release.md",
+            "website/content/docs/internals/build-ci-release.md",
+        ],
+    ),
     // "After the release" runs `scripts/post-release.py run --host`.
     (
         "host",

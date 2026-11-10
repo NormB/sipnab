@@ -1004,7 +1004,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // developer page unchanged.
     // 831 -> 833 (RELEASE-FAST E): build-ci-release.md's "The release train"
     // links scripts/release-train.py and scripts/tests/test_release_train.py.
-    const EXPECTED_CODE_LINKS: usize = 833;
+    // 833 -> 834 (RELEASE-TRAIN-TAG-RACE): build-ci-release.md's "Before the
+    // tag" links scripts/tests/test_tag_proof_pending.py (+1).
+    const EXPECTED_CODE_LINKS: usize = 834;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

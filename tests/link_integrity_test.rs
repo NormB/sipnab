@@ -1764,13 +1764,15 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // table's new `S` row links to #relay-statistics.
     // 2513 -> 2516 (TUI-CLEAR-CONFIRM): keybindings.md +3, the `Ctrl+L`, `i`
     // and `I` rows link to #clear-confirmation.
-    // 2516 -> 2520 (fleet center store encrypted at rest): fleet.md +2, the
+    // 2516 -> 2517 (RELEASE-TRAIN-TAG-RACE): build-ci-release.md's release
+    // train steps link the new "Before the tag" section (#before-the-tag).
+    // 2517 -> 2521 (fleet center store encrypted at rest): fleet.md +2, the
     // center prerequisite's link to "Encrypt the center's store" and that
     // section's link to "Step 1: start the center"; cli-reference.md +1 and
     // errors.md +1, each a link to "Encrypt the center's store".
-    // 2520 -> 2521: fleet.md +1, the prerequisite's link to "Upgrade a center
+    // 2521 -> 2522: fleet.md +1, the prerequisite's link to "Upgrade a center
     // that stored in clear".
-    const EXPECTED_WIKI_LINKS: usize = 2521;
+    const EXPECTED_WIKI_LINKS: usize = 2522;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -4,6 +4,9 @@
 """May a push of tags only skip the pre-push hook's tree gates?
 
     tag-push-proof.py < <pre-push stdin>
+    tag-push-proof.py --tag-ci <commit>
+    tag-push-proof.py --ready <commit>
+    tag-push-proof.py --delivery-hint <0|1> <HEAD> < <pre-push stdin>
 
 The 0.5.237 tag push (heavy-run job 2-1794110542899233376-466881, 04:03:43Z
 to 04:24:52Z) took 1,269 s. Its pre-push hook re-ran clippy, rustdoc, the fuzz
@@ -40,6 +43,21 @@ release-delivery test and the tag's CI-status and code-scanning checks.
 Exit 0 and one line naming the proof (each commit, the number of required
 checks, and that origin/main contains it) when the tree gates may be skipped;
 exit 1 and one line saying why not otherwise.
+
+NOT FOUND YET (RELEASE-TRAIN-TAG-RACE). GitHub lists a merged pull request
+for its merge commit some time after the merge. The v0.5.243 tag was pushed
+one second after PR #734 merged as 88f46bb83, and the answer was "CI success:
+missing, ... license/cla: missing"; five minutes later the same query found
+the proof. A commit on main that its own checks do not prove, with no merged
+pull request listed, is `pending`: the line says the proof is not found yet,
+and the exit status is 3. Every gate still runs.
+
+`--ready <commit>` asks both of the hook's questions about a commit before
+any tag exists (this rule and `--tag-ci`), for scripts/release-train.py to
+poll: exit 0 when a tag on the commit would take the fast path now.
+
+`--delivery-hint` prints what the hook says when the release-delivery test
+refuses a push (`delivery_hint`).
 """
 
 from __future__ import annotations
@@ -51,6 +69,7 @@ import re
 import subprocess
 import sys
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 ZERO = "0" * 40
 MAIN = "main"
 TAG_PREFIX = "refs/tags/"
@@ -78,8 +97,23 @@ class Checks:
 
 @dataclasses.dataclass(frozen=True)
 class Proof:
+    """`pending` marks a refusal that waiting can cure: GitHub does not yet
+    list the merged pull request whose head would prove the commit."""
+
     skip: bool
     line: str
+    pending: bool = False
+
+
+# Exit status of the hook's query for a refusal that is `pending`.
+PENDING_EXIT = 3
+
+
+def exit_status(proof: Proof) -> int:
+    """0 the tree gates may be skipped; 3 not yet (`pending`); 1 no."""
+    if proof.skip:
+        return 0
+    return PENDING_EXIT if proof.pending else 1
 
 
 def _short(sha: str) -> str:
@@ -102,6 +136,15 @@ def _verdict(checks: Checks, context: str) -> str:
     if "success" in states:
         return "success"
     return run_result or (states[0] if states else "missing")
+
+
+def _not_yet(commit: str) -> str:
+    """What `decide` and `tag_ci` say when no merged pull request is listed
+    for a commit. On 0.5.243 GitHub listed PR #734 for its merge commit
+    88f46bb83 some time after the merge: not one second after it, and by the
+    time the query was made again five minutes later."""
+    return (f"the proof is not found yet: GitHub lists no merged pull request for {_short(commit)}, "
+            "which it can take some seconds after a merge to do (wait, then push again)")
 
 
 def _unmet(got: Checks | None, required: list[str]) -> list[str] | None:
@@ -163,6 +206,8 @@ def decide(
             continue
         if bad is None:
             return Proof(False, f"{full} the checks of {_short(c)} could not be read")
+        if not heads.get(c):
+            return Proof(False, f"{full} {_not_yet(c)}; on {_short(c)} itself, {', '.join(bad)}", pending=True)
         return Proof(False, f"{full} on {_short(c)}, {', '.join(bad)}")
     named = ", ".join(proven[c] for c in commits)
     return Proof(
@@ -300,6 +345,8 @@ def _head_refusal(commit, own, contains, required, heads, checks, head_runs):
     red = [r for r in latest_runs(own or [], commit) if r.status == "completed" and r.conclusion in RED]
     if red:
         return f"red on {_short(commit)} itself: {', '.join(_describe(r) for r in red)}"
+    if not heads:
+        return _not_yet(commit)
     same = [(n, h) for n, h, same_tree in heads if same_tree]
     if not same:
         return f"no merged pull request head has the tree of {_short(commit)}"
@@ -521,6 +568,70 @@ def main_decision(refs: list[Ref], env: dict, repo: str | None, gh) -> Proof:
     return decide(refs, contains, checks, required, heads)
 
 
+def ready(repo: str | None, commit: str, env: dict, gh, run_list) -> tuple[bool, list[str]]:
+    """Would the hook's fast path carry a tag on `commit` now? Both of the
+    hook's queries, through the functions the hook's own calls end in:
+    `main_decision` (the tree gates are skipped) and `gather_tag_ci` (the tag
+    CI gate passes, on the commit's runs or its pull request head's).
+    scripts/release-train.py polls this before it pushes the tag."""
+    ref = Ref("refs/tags/ready", commit, "refs/tags/ready", ZERO, commit)
+    proof = main_decision([ref], env, repo, gh)
+    ci = gather_tag_ci(repo, commit, gh, run_list)
+    return proof.skip and ci.state in ("green", "head"), [proof.line.strip(), f"tag CI gate: {ci.line}"]
+
+
+# ── What the hook says when the release-delivery test refuses a push ───────
+
+REPRODUCE = ["Reproduce with:", "    cargo test --features full --test release_delivery_test"]
+
+
+def delivery_hint(tag_commits: list[str], pending: bool, head: str) -> list[str]:
+    """The lines .githooks/pre-push prints under FAIL; the first is the
+    headline. `tag_commits` is the commits the pushed tags mark (none for a
+    push of branches), `pending` whether this push's proof was `pending`,
+    `head` the commit the checkout is at ("" when unknown).
+
+    For a tag, CHANGELOG.md is not the answer. On 0.5.243 the test failed
+    because the checkout was at 4fae9a255, the main before the release, while
+    the tag marked 88f46bb83: the test reads the files and the HEAD of the
+    checkout it runs in."""
+    elsewhere = [c for c in tag_commits if head and c != head]
+    if elsewhere:
+        also = [
+            "The tag's proof is not found yet as well (the `tag-only push` line above):",
+            "after the checkout, wait some seconds before the push.",
+        ]
+        return [
+            f"Push blocked: this checkout is at {_short(head)}, and the pushed tag marks {_short(elsewhere[0])}.",
+            "The release-delivery test reads the checkout it runs in, its files and its HEAD,",
+            "so it judged a commit that is not the tagged one. Check out the tagged commit,",
+            "then push again:",
+            f"    git checkout --detach {elsewhere[0]}",
+            *(also if pending else []),
+        ]
+    if tag_commits and pending:
+        return [
+            "Push blocked: the release-delivery test failed, and the tag's proof is not found yet.",
+            "GitHub did not yet list the merged pull request for the tagged commit (the",
+            "`tag-only push` line above), so every gate ran. Wait some seconds and push again:",
+            "with the proof the tree gates are skipped. If this test fails again:",
+            *REPRODUCE[1:],
+        ]
+    if tag_commits and not head:
+        return ["Push blocked: the release-delivery test refused this tag push.", *REPRODUCE]
+    if tag_commits:
+        return [
+            "Push blocked: the release-delivery test refused the tagged commit.",
+            "The checkout is at that commit, so the test's own output says what it found.",
+            *REPRODUCE,
+        ]
+    return [
+        "Push blocked: work sits past the last tag and the tree does not say so.",
+        *REPRODUCE,
+        "Usually the fix is an [Unreleased] section in CHANGELOG.md naming what changed.",
+    ]
+
+
 def _git(*args) -> str | None:
     out = subprocess.run(["git", *args], capture_output=True, text=True, check=False)
     return out.stdout.strip() if out.returncode == 0 else None
@@ -535,12 +646,48 @@ def main_tag_ci(commit: str) -> int:
     return TAG_CI_EXIT[v.state]
 
 
+USAGE = """usage: tag-push-proof.py < <pre-push stdin>
+       tag-push-proof.py --tag-ci <40-hex commit>
+       tag-push-proof.py --ready <40-hex commit>
+       tag-push-proof.py --delivery-hint <0|1: the proof was pending> <HEAD or ""> < <pre-push stdin>"""
+
+
+def pushed_tag_commits(text: str, resolve) -> list[str]:
+    """The commits the pushed tags mark, in order and once each; `resolve`
+    maps a pushed sha to its commit, or None. A push that also updates a
+    branch, or that cannot be read, has none: the branch text applies."""
+    raw = parse_refs(text)
+    if not raw or any(not remote.startswith(TAG_PREFIX) for _l, _s, remote, _r in raw):
+        return []
+    return list(dict.fromkeys(resolve(sha) or sha for _l, sha, _remote, _r in raw if sha != ZERO))
+
+
+def main_ready(commit: str) -> int:
+    """`--ready <commit>`: print both answers; exit 0 when a tag on the
+    commit would take the hook's fast path now, 1 when not. The hook runs
+    this script from the repository; the release train runs it from whatever
+    directory the operator is in, and both git and `gh run list` take the
+    repository from the directory, so this moves to the script's checkout."""
+    os.chdir(HERE)
+    url = _git("remote", "get-url", "origin") or ""
+    ok, lines = ready(github_repo(url), commit, dict(os.environ), gh_api, gh_run_list)
+    print("\n".join(lines))
+    return 0 if ok else 1
+
+
 def main() -> int:
-    if len(sys.argv) > 1:
-        if len(sys.argv) == 3 and sys.argv[1] == "--tag-ci" and re.fullmatch(r"[0-9a-f]{40}", sys.argv[2]):
-            return main_tag_ci(sys.argv[2])
-        print("usage: tag-push-proof.py < <pre-push stdin>\n       tag-push-proof.py --tag-ci <40-hex commit>",
-              file=sys.stderr)
+    args = sys.argv[1:]
+    if args:
+        full_sha = len(args) == 2 and re.fullmatch(r"[0-9a-f]{40}", args[1])
+        if full_sha and args[0] == "--tag-ci":
+            return main_tag_ci(args[1])
+        if full_sha and args[0] == "--ready":
+            return main_ready(args[1])
+        if len(args) == 3 and args[0] == "--delivery-hint" and args[1] in ("0", "1"):
+            commits = pushed_tag_commits(sys.stdin.read(), lambda sha: _git("rev-list", "-n", "1", sha))
+            print("\n".join(delivery_hint(commits, args[1] == "1", args[2])))
+            return 0
+        print(USAGE, file=sys.stderr)
         return 2
     raw = parse_refs(sys.stdin.read())
     if raw is None:
@@ -553,7 +700,7 @@ def main() -> int:
     url = _git("remote", "get-url", "origin") or ""
     proof = main_decision(refs, dict(os.environ), github_repo(url), gh_api)
     print(proof.line)
-    return 0 if proof.skip else 1
+    return exit_status(proof)
 
 
 if __name__ == "__main__":
