@@ -10,6 +10,12 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`demos/mcp-stdio.sh` runs on bash 3.2, the bash macOS ships (DEMO-MCP-STDIO-BASH32).** The script talked to the server through `coproc`, which bash gained in 4.0, so on macOS it ended with a syntax error at that line. It also expanded empty arrays under `set -u`, which bash before 4.4 refuses. It now uses two named pipes and guarded expansions. It also names a missing `jq` and a `SIPNAB_BIN` that names no program at once, where it reported `no initialize reply` after 20 seconds. `tests/demo_mcp_stdio_test.rs` runs the script, and the macOS leg of CI runs it on bash 3.2.
+
+## [0.5.244] - 2026-11-10
+
 ### Changed
 
 - **`--api-console` without `--api` is refused at startup (CONSOLE-FLAG-WITHOUT-API).** The flag on a run with no `--api` started, served no console and said nothing: the REST API listener serves the console, and the console has no listener of its own. sipnab now refuses such a run before it reads a capture or opens a device, with exit code 2 and a message that names both flags and says to add `--api ADDR`. `[api] console = true` is not refused on a run with no `--api`: the key means "serve the console whenever the API is on", and a run without the API does not use it, as with the other `[api]` keys. A build without the `api` feature refuses `--api-console` as it refuses `--api`. See [The console without the API](docs/rest-api.md#the-console-without-the-api).
@@ -19,7 +25,6 @@ entry that carries them.
 
 ### Fixed
 
-- **`demos/mcp-stdio.sh` runs on bash 3.2, the bash macOS ships (DEMO-MCP-STDIO-BASH32).** The script talked to the server through `coproc`, which bash gained in 4.0, so on macOS it ended with a syntax error at that line. It also expanded empty arrays under `set -u`, which bash before 4.4 refuses. It now uses two named pipes and guarded expansions. It also names a missing `jq` and a `SIPNAB_BIN` that names no program at once, where it reported `no initialize reply` after 20 seconds. `tests/demo_mcp_stdio_test.rs` runs the script, and the macOS leg of CI runs it on bash 3.2.
 - **A 7z read that stops reads no later member (SEVENZ-READ-STOP).** In a 7z written one member at a time, each member is its own block, and a walk that stopped still met every later block. The 7z reader told the decoder to stop with a call that only skips the rest of the current block.
   - A run that reached `--max-gunzip-bytes` decoded every later member and reported the ceiling once for each of them. It now reports the ceiling once, for the member that reached it.
   - A capture in a block after the entry cap was reached was still extracted and read. Nothing after the cap is read now.
