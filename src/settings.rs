@@ -140,6 +140,7 @@ pub const FLAGS: &[(&str, Link)] = &[
         "api-allowed-host",
         Link::Key("api", "allowed_hosts", Merge::Override),
     ),
+    ("api-console", Link::Key("api", "console", Merge::Override)),
     ("api-file-root", Link::Pending),
     ("api-key", Link::Secret),
     ("api-max-conn", Link::Pending),

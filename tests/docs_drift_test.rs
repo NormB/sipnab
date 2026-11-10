@@ -6142,7 +6142,9 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/least-privilege.md and its site mirror (+2).
     // 1443 -> 1445 (RELEASE-FAST D): the exit-status table of "After the
     // release" in docs/internals/build-ci-release.md and its site mirror.
-    const EXPECTED_TABLES: usize = 1445;
+    // 1445 -> 1447 (web console): the "When the console does not work" table
+    // in docs/rest-api.md and in its site mirror, website/content/docs/api.md.
+    const EXPECTED_TABLES: usize = 1447;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

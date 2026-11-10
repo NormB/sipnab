@@ -1927,6 +1927,7 @@ static SPECS: &[Spec] = &[
         &[],
     ),
     ("mcp-output-schemas", Kind::Choice, &[]),
+    ("api-console", Kind::Choice, &[]),
     (
         "one-way-delay",
         Kind::Real {
@@ -4089,6 +4090,7 @@ fn fingerprint(cli: &sipnab::cli::Cli, config: &sipnab::config::Config) -> Strin
         format!("{:?}", cli.metrics_conn_cap(config)),
         format!("{:?}", cli.api_row_cap(config)),
         format!("{:?}", cli.api_allowed_hosts(config)),
+        format!("{:?}", cli.api_console(config)),
         format!("{:?}", cli.tls_settings_problem(config)),
         format!("{:?}", cli.api_peer_rate_limit(config)),
         format!("{:?}", cli.tracked_peer_capacity(config)),

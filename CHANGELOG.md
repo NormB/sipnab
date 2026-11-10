@@ -8,6 +8,19 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Added
+
+- **The REST API can serve a web console at `/console/` (`--api-console`, `[api] console`).** The console is a read-only page for a browser: the dialogs sipnab holds, one dialog with its SDP offers and answers, its RTP streams and every call leg reachable from it, and the runtime status.
+  - It is off by default, and it needs `--api`.
+  - It is static files compiled into the binary. It loads nothing from another site.
+  - It adds no listener and no access. The page sends the bearer token you paste into it, and keeps that token in memory only.
+  - The `Host` allowlist, TLS, client certificates, the routable-bind refusal and the rate limit apply to it as to `/v1/`.
+  - Every console response carries a Content-Security-Policy that allows only the console's own scripts, styles and requests.
+  - Captured text, such as a Call-ID or a SIP header, is written to the page as text only.
+  - See [Web console](docs/rest-api.md#web-console).
+
 ## [0.5.242] - 2026-11-09
 
 ### Changed

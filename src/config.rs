@@ -311,6 +311,7 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
         "api",
         [
             "allowed_hosts",
+            "console",
             "tls_cert",
             "tls_key",
             "tls_client_ca",
@@ -666,6 +667,10 @@ pub struct ApiConfig {
     /// `127.0.0.1`, `::1` and the bound address, against DNS rebinding.
     /// `"*"` disables the check. `--api-allowed-host` replaces the list.
     pub allowed_hosts: Option<Vec<String>>,
+    /// Serve the web console at `/console/` on the REST API listener
+    /// (default: false). The console is static files that call `/v1/` with
+    /// the bearer token pasted into the page. `--api-console` overrides it.
+    pub console: Option<bool>,
     /// PEM certificate chain the REST API serves HTTPS with. Needs
     /// `tls_key`. `--api-tls-cert` replaces it.
     pub tls_cert: Option<String>,

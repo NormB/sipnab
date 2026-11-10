@@ -49,6 +49,10 @@ pub struct Selection {
     /// `[api] allowed_hosts`). Resolved by the caller with
     /// `cli.api_allowed_hosts(config)`, for the reason `mcp_row_cap` is.
     pub api_allowed_hosts: Vec<String>,
+    /// Whether the REST API serves the web console (`--api-console` /
+    /// `[api] console`, default off). Resolved by the caller with
+    /// `cli.api_console(config)`.
+    pub api_console: bool,
     /// The REST API's certificate and key, resolved by the caller with
     /// `cli.api_tls_files(config)` (`--api-tls-cert` / `[api] tls_cert` and
     /// the key's pair).
@@ -816,6 +820,7 @@ pub fn start_servers(
             tls_key: selection.api_tls.1.clone(),
             client_auth: selection.api_client_auth.clone(),
             allowed_hosts: selection.api_allowed_hosts.clone(),
+            console: selection.api_console,
         };
         // Vet the config and bind NOW, on the caller's thread: a bind failure
         // (port already in use) logged from the detached servers thread is
@@ -1275,6 +1280,7 @@ mod tests {
             mcp_tools: crate::mcp_profile::ToolSelection::Full,
             mcp_output_schemas: false,
             api_allowed_hosts: Vec::new(),
+            api_console: false,
             api_tls: (None, None),
             mcp_tls: (None, None),
             metrics_tls: (None, None),

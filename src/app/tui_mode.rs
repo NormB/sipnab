@@ -1086,6 +1086,7 @@ fn start_tui_servers(
             mcp_tools: cli.mcp_tool_selection(config).unwrap_or_default(),
             mcp_output_schemas: cli.mcp_output_schemas(config),
             api_allowed_hosts: cli.api_allowed_hosts(config),
+            api_console: cli.api_console(config),
             api_tls: cli.api_tls_files(config),
             mcp_tls: cli.mcp_tls_files(config),
             metrics_tls: cli.metrics_tls_files(config),
