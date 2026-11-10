@@ -13,6 +13,7 @@ use super::{
 
 mod call_flow;
 mod call_list;
+mod clear_confirm;
 mod dashboard;
 mod file_open;
 mod filter_dialog;
@@ -39,6 +40,7 @@ pub(in crate::tui) use call_flow::{
 };
 pub(in crate::tui) use call_list::handle_call_list_key;
 pub use call_list::{CallListAction, call_list_action};
+pub(in crate::tui) use clear_confirm::*;
 pub use dashboard::{DashboardAction, dashboard_action};
 pub(in crate::tui) use file_open::*;
 pub(in crate::tui) use filter_dialog::*;
@@ -470,6 +472,7 @@ pub(in crate::tui) fn handle_popup_key(app: &mut App, key: KeyEvent) {
         Popup::FileOpenDialog => handle_file_open_popup_key(app, key),
         Popup::NameAddress => handle_name_popup_key(app, key),
         Popup::QuitConfirm => handle_quit_confirm_key(app, key),
+        Popup::ClearConfirm(_) => handle_clear_confirm_key(app, key),
         Popup::NoteEditor => handle_note_editor_key(app, key),
         Popup::UnsavedNotes => handle_unsaved_notes_key(app, key),
         Popup::ArchivePassword => handle_archive_password_key(app, key),

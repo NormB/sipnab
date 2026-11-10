@@ -214,6 +214,7 @@ pub fn compose_holdings(
     let _ = writeln!(out);
     if e.call_ids.is_empty() {
         let _ = writeln!(out, "The relay holds no calls.");
+        let _ = writeln!(out, "\n{}", crate::tui::render::PRESS_ESC_TO_RETURN);
     } else {
         let plural = if e.call_ids.len() == 1 { "" } else { "s" };
         let _ = writeln!(out, "Holding {} call{plural}:", e.call_ids.len());
@@ -674,6 +675,10 @@ mod tests {
             at()?,
         );
         assert!(none.contains("The relay holds no calls."), "{none}");
+        assert!(
+            none.contains("Press Esc to return."),
+            "an empty list says how to leave: {none}"
+        );
         assert!(!none.contains("Holding"), "{none}");
 
         let one = compose_holdings(

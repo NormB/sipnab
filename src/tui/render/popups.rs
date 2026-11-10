@@ -20,6 +20,23 @@ pub(in crate::tui) fn centered_popup(area: Rect, width: u16, height: u16) -> Rec
     Rect::new(x, y, w, h)
 }
 
+/// The style of the selected item in a popup list: bold on the `selected`
+/// band, in whichever of black and white contrasts more with the band, or
+/// bold reverse video under NO_COLOR, where no band may be painted.
+///
+/// The text was always black. On the default yellow band that is 4.0:1;
+/// white is 5.25:1 (WCAG AA asks 4.5:1).
+fn selected_item_style(theme: &Theme) -> Style {
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    if theme.no_color {
+        return bold.add_modifier(Modifier::REVERSED);
+    }
+    match crate::tui::call_list::header_foreground(theme.selected) {
+        Some(fg) => bold.bg(theme.selected).fg(fg),
+        None => bold.add_modifier(Modifier::REVERSED),
+    }
+}
+
 /// The style of the block cursor in a text field: black on a white block,
 /// or reverse video under NO_COLOR. The block is a fixed color, not a theme
 /// slot, so the NO_COLOR theme cannot blank it. Every text field uses this.
@@ -285,10 +302,7 @@ pub(in crate::tui) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, 
         )];
         for (i, t) in app.name_dialog.targets.iter().enumerate() {
             let style = if i == app.name_dialog.active {
-                Style::default()
-                    .bg(app.theme.selected)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD)
+                selected_item_style(&app.theme)
             } else {
                 Style::default().fg(app.theme.muted)
             };
@@ -317,13 +331,10 @@ pub(in crate::tui) fn render_name_popup(frame: &mut ratatui::Frame, area: Rect, 
     let mut rest = after.chars();
     match rest.next() {
         Some(c) => {
-            field.push(Span::styled(
-                c.to_string(),
-                Style::default().bg(app.theme.selected).fg(Color::Black),
-            ));
+            field.push(Span::styled(c.to_string(), cursor_style(&app.theme)));
             field.push(Span::raw(rest.as_str().to_string()));
         }
-        None => field.push(Span::styled(" ", Style::default().bg(app.theme.selected))),
+        None => field.push(Span::styled(" ", cursor_style(&app.theme))),
     }
     lines.push(Line::from(field));
     // Inline validation error: the popup stays open on failure so the typed
@@ -427,6 +438,76 @@ pub(in crate::tui) fn render_quit_confirm_popup(frame: &mut ratatui::Frame, area
     // `Paragraph` truncates in silence here, and the line that would go is the
     // one naming the way out.
     let title = " Quit sipnab? ";
+    let content = lines
+        .iter()
+        .map(ratatui::text::Line::width)
+        .max()
+        .unwrap_or(0);
+    let desired = u16::try_from(content.max(title.len()).saturating_add(3)).unwrap_or(u16::MAX);
+    let popup_width = desired.clamp(20, area.width.saturating_sub(4).max(20));
+    let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let popup_height = rows
+        .saturating_add(2)
+        .min(area.height.saturating_sub(2))
+        .max(3);
+    let popup_area = centered_popup(area, popup_width, popup_height);
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(app.theme.background));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The question before a clear during a live capture: what would be
+/// discarded, why it asks, and the two answers.
+///
+/// # Side effects
+/// Draws to `frame` (clearing the cells behind the popup); no state is
+/// mutated.
+pub(in crate::tui) fn render_clear_confirm_popup(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    app: &App,
+    kind: crate::tui::ClearKind,
+) {
+    let summary = crate::tui::controllers::clear_summary(
+        kind,
+        app.dialog_store.read().len(),
+        app.stream_store.read().len(),
+        app.call_list.selected_rows().len(),
+    );
+    // The answers are the second line, straight under the question, so a
+    // terminal too short for the whole popup still shows how to answer: at
+    // the 6-row floor two lines are all that fit.
+    let lines: Vec<Line<'_>> = vec![
+        Line::from(Span::styled(
+            format!("  {summary}"),
+            Style::default().fg(app.theme.header),
+        )),
+        Line::from(vec![
+            Span::styled("  Y", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(" discard", Style::default().fg(app.theme.muted)),
+            Span::styled(
+                "    N/Esc/Enter",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" keep (default)", Style::default().fg(app.theme.muted)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "  They came from a live capture and cannot be read again.",
+            Style::default().fg(app.theme.muted),
+        )),
+    ];
+
+    // Sized to what it says, as `render_quit_confirm_popup` is: `Paragraph`
+    // truncates in silence and the line that would go names the way out.
+    let title = " Discard captured calls? ";
     let content = lines
         .iter()
         .map(ratatui::text::Line::width)
@@ -802,10 +883,7 @@ pub(in crate::tui) fn render_file_open_browser(frame: &mut ratatui::Frame, inner
             let selected = idx == app.file_open.selected;
             let prefix = if entry.is_dir { "  [DIR] " } else { "        " };
             let style = if selected {
-                Style::default()
-                    .bg(app.theme.selected)
-                    .fg(Color::Black)
-                    .add_modifier(Modifier::BOLD)
+                selected_item_style(&app.theme)
             } else if entry.is_dir {
                 Style::default()
                     .fg(app.theme.accent)
@@ -1494,6 +1572,312 @@ mod tests {
 
     type TestError = Box<dyn std::error::Error>;
 
+    /// Every cell of the Name Address popup drawn with `theme` at 80x24.
+    fn name_popup_cells(theme: Theme) -> Result<Vec<ratatui::buffer::Cell>, TestError> {
+        let mut app = app_naming_two();
+        app.theme = theme;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|frame| render_name_popup(frame, frame.area(), &app))?;
+        Ok(terminal.backend().buffer().content().to_vec())
+    }
+
+    /// Failure: under NO_COLOR the Name Address popup paints no color. Its
+    /// selected endpoint and its cursor painted a gray band with black text.
+    #[test]
+    fn the_name_popup_paints_no_color_under_no_color() -> Result<(), TestError> {
+        for cell in name_popup_cells(Theme::monochrome())? {
+            assert_eq!(cell.bg, Color::Reset, "background of {:?}", cell.symbol());
+            assert_eq!(cell.fg, Color::Reset, "text color of {:?}", cell.symbol());
+        }
+        Ok(())
+    }
+
+    /// Success: under NO_COLOR the selected endpoint and the cursor of the
+    /// Name Address popup are reverse video, so both are still visible.
+    #[test]
+    fn the_name_popup_marks_its_selection_in_reverse_under_no_color() -> Result<(), TestError> {
+        let reversed = name_popup_cells(Theme::monochrome())?
+            .iter()
+            .filter(|c| c.modifier.contains(Modifier::REVERSED))
+            .count();
+        // " 192.0.2.10 " is 12 cells and the cursor is 1.
+        assert_eq!(reversed, 13, "the selected endpoint and the cursor");
+        Ok(())
+    }
+
+    /// Failure: under NO_COLOR a selected popup item paints no color.
+    #[test]
+    fn a_selected_item_paints_no_color_under_no_color() {
+        let style = selected_item_style(&Theme::monochrome());
+        assert_eq!(style.bg, None, "no background color: {style:?}");
+        assert_eq!(style.fg, None, "no text color: {style:?}");
+    }
+
+    /// Success: the text of a selected popup item meets WCAG AA on the
+    /// selection band of the default theme. Black on the default yellow was
+    /// 4.0:1.
+    #[test]
+    fn a_selected_item_meets_aa_with_the_default_theme() -> Result<(), TestError> {
+        let style = selected_item_style(&Theme::default());
+        let (fg, bg) = (
+            style.fg.ok_or("a text color")?,
+            style.bg.ok_or("a band color")?,
+        );
+        let ratio = crate::tui::theme::contrast_ratio(fg, bg).ok_or("measurable colors")?;
+        assert!(
+            ratio >= crate::tui::theme::AA_TEXT_CONTRAST,
+            "{fg:?} on {bg:?} is {ratio}:1"
+        );
+        Ok(())
+    }
+
+    /// Edge: on a light selection band the text of a selected item is black.
+    #[test]
+    fn a_selected_item_is_black_on_a_light_band() {
+        let theme = Theme {
+            selected: Color::LightYellow,
+            ..Theme::default()
+        };
+        let style = selected_item_style(&theme);
+        assert_eq!(style.fg, Some(Color::Black), "text: {style:?}");
+        assert_eq!(style.bg, Some(Color::LightYellow), "band: {style:?}");
+    }
+
+    /// Success: on a dark selection band the text of a selected item is
+    /// white.
+    #[test]
+    fn a_selected_item_is_white_on_a_dark_band() {
+        let theme = Theme {
+            selected: Color::Blue,
+            ..Theme::default()
+        };
+        let style = selected_item_style(&theme);
+        assert_eq!(style.fg, Some(Color::White), "text: {style:?}");
+        assert_eq!(style.bg, Some(Color::Blue), "band: {style:?}");
+    }
+
+    /// Failure: an indexed band cannot be measured, so its text falls back
+    /// to white and the band is still painted.
+    #[test]
+    fn a_selected_item_on_an_indexed_band_falls_back_to_white() {
+        let theme = Theme {
+            selected: Color::Indexed(24),
+            ..Theme::default()
+        };
+        let style = selected_item_style(&theme);
+        assert_eq!(style.fg, Some(Color::White), "text: {style:?}");
+        assert_eq!(style.bg, Some(Color::Indexed(24)), "band: {style:?}");
+    }
+
+    /// Edge: a color theme whose `selected` is the terminal default has no
+    /// band to paint, so the selected item is reverse video.
+    #[test]
+    fn a_selected_item_without_a_band_is_reversed() {
+        let theme = Theme {
+            selected: Color::Reset,
+            ..Theme::default()
+        };
+        let style = selected_item_style(&theme);
+        assert_eq!(style.bg, None, "no band: {style:?}");
+        assert!(
+            style.add_modifier.contains(Modifier::REVERSED),
+            "reverse video: {style:?}"
+        );
+    }
+
+    /// Success: a selected item is bold with a color theme and without one.
+    #[test]
+    fn a_selected_item_is_bold_in_every_theme() {
+        for theme in [Theme::default(), Theme::monochrome()] {
+            let style = selected_item_style(&theme);
+            assert!(
+                style.add_modifier.contains(Modifier::BOLD),
+                "bold: {style:?}"
+            );
+        }
+    }
+
+    /// Every cell of the file browser listing two files, the first
+    /// selected, drawn with `theme` at 100x24.
+    fn file_browser_cells(theme: Theme) -> Result<Vec<ratatui::buffer::Cell>, TestError> {
+        let mut app = App::new_test();
+        app.theme = theme;
+        app.file_open.entries = ["first.pcap", "second.pcap"]
+            .iter()
+            .map(|name| crate::tui::state::FileEntry {
+                name: (*name).to_string(),
+                path: std::path::PathBuf::from(name),
+                is_dir: false,
+            })
+            .collect();
+        app.file_open.selected = 0;
+        let mut terminal = Terminal::new(TestBackend::new(100, 24))?;
+        terminal.draw(|frame| {
+            let inner = centered_popup(frame.area(), 80, 22);
+            render_file_open_browser(frame, inner, &app);
+        })?;
+        Ok(terminal.backend().buffer().content().to_vec())
+    }
+
+    /// Success: under NO_COLOR the file browser's selected entry is reverse
+    /// video and the other entry is not.
+    #[test]
+    fn the_selected_file_is_reversed_under_no_color() -> Result<(), TestError> {
+        let cells = file_browser_cells(Theme::monochrome())?;
+        let text = |reversed: bool| -> String {
+            cells
+                .iter()
+                .filter(|c| c.modifier.contains(Modifier::REVERSED) == reversed)
+                .map(ratatui::buffer::Cell::symbol)
+                .collect()
+        };
+        assert!(text(true).contains("first.pcap"), "the selected entry");
+        assert!(text(false).contains("second.pcap"), "the other entry");
+        assert!(!text(true).contains("second.pcap"), "only one is selected");
+        Ok(())
+    }
+
+    /// Failure: under NO_COLOR the file browser paints no color.
+    #[test]
+    fn the_file_browser_paints_no_color_under_no_color() -> Result<(), TestError> {
+        for cell in file_browser_cells(Theme::monochrome())? {
+            assert_eq!(cell.bg, Color::Reset, "background of {:?}", cell.symbol());
+            assert_eq!(cell.fg, Color::Reset, "text color of {:?}", cell.symbol());
+        }
+        Ok(())
+    }
+
+    /// Edge: with the default theme the file browser's selected entry is
+    /// on the `selected` band in the text color that meets WCAG AA on it.
+    #[test]
+    fn the_selected_file_meets_aa_with_the_default_theme() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let band = theme.selected;
+        let cells = file_browser_cells(theme)?;
+        let on_band: Vec<_> = cells.iter().filter(|c| c.bg == band).collect();
+        let text: String = on_band.iter().map(|c| c.symbol()).collect();
+        assert!(
+            text.contains("first.pcap"),
+            "the band holds the entry: {text:?}"
+        );
+        for cell in on_band {
+            let ratio =
+                crate::tui::theme::contrast_ratio(cell.fg, band).ok_or("measurable colors")?;
+            assert!(
+                ratio >= crate::tui::theme::AA_TEXT_CONTRAST,
+                "{:?} on the band is {ratio}:1",
+                cell.fg
+            );
+        }
+        Ok(())
+    }
+
+    /// Edge: with a name typed and the cursor inside it, the cursor is the
+    /// one cell holding the character under it.
+    #[test]
+    fn the_name_popup_cursor_sits_on_the_character_under_it() -> Result<(), TestError> {
+        let mut app = app_naming_two();
+        app.name_dialog.targets[0].name = "edge".to_string();
+        app.name_dialog.cursor = 1;
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|frame| render_name_popup(frame, frame.area(), &app))?;
+        let cursor: Vec<String> = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|c| c.bg == Color::White)
+            .map(|c| c.symbol().to_string())
+            .collect();
+        assert_eq!(cursor, ["d"], "the cursor is on the second letter");
+        Ok(())
+    }
+
+    /// Failure: under NO_COLOR a rejected name's error line carries no
+    /// color either.
+    #[test]
+    fn a_name_error_has_no_color_under_no_color() -> Result<(), TestError> {
+        let mut app = app_naming_two();
+        app.theme = Theme::monochrome();
+        app.name_dialog.error = Some("a name may not contain a space".to_string());
+        let mut terminal = Terminal::new(TestBackend::new(80, 24))?;
+        terminal.draw(|frame| render_name_popup(frame, frame.area(), &app))?;
+        let buf = terminal.backend().buffer();
+        assert!(
+            frame_text(buf)?.contains("a name may not contain a space"),
+            "the error is drawn"
+        );
+        for cell in buf.content() {
+            assert_eq!(cell.fg, Color::Reset, "text color of {:?}", cell.symbol());
+            assert_eq!(cell.bg, Color::Reset, "background of {:?}", cell.symbol());
+        }
+        Ok(())
+    }
+
+    /// Edge: the Name Address popup's cursor is the cursor every other text
+    /// field draws, a white block with the default theme.
+    #[test]
+    fn the_name_popup_cursor_is_the_shared_cursor() -> Result<(), TestError> {
+        let white = name_popup_cells(Theme::default())?
+            .iter()
+            .filter(|c| c.bg == Color::White)
+            .count();
+        assert_eq!(white, 1, "one cursor cell, drawn as the shared white block");
+        Ok(())
+    }
+
+    /// The clear confirmation drawn over an app holding one dialog, with
+    /// `theme`, at `cols` x `rows`.
+    fn clear_confirm_buffer(
+        theme: Theme,
+        cols: u16,
+        rows: u16,
+    ) -> Result<ratatui::buffer::Buffer, TestError> {
+        let mut app = app_with_dialog()?;
+        app.theme = theme;
+        let mut terminal = Terminal::new(TestBackend::new(cols, rows))?;
+        terminal.draw(|frame| {
+            render_clear_confirm_popup(frame, frame.area(), &app, crate::tui::ClearKind::Calls);
+        })?;
+        Ok(terminal.backend().buffer().clone())
+    }
+
+    /// Success: the clear confirmation says what is discarded, why it asks,
+    /// both answers and which is the default.
+    #[test]
+    fn the_clear_confirmation_says_what_is_discarded_and_the_default() -> Result<(), TestError> {
+        let text = frame_text(&clear_confirm_buffer(Theme::default(), 80, 24)?)?;
+        for part in [
+            "Discard the 1 dialog and 0 RTP streams?",
+            "cannot be read again",
+            "Y discard",
+            "N/Esc/Enter keep (default)",
+        ] {
+            assert!(text.contains(part), "{part:?} missing:\n{text}");
+        }
+        Ok(())
+    }
+
+    /// Failure: under NO_COLOR the clear confirmation paints no color.
+    #[test]
+    fn the_clear_confirmation_paints_no_color_under_no_color() -> Result<(), TestError> {
+        for cell in clear_confirm_buffer(Theme::monochrome(), 80, 24)?.content() {
+            assert_eq!(cell.fg, Color::Reset, "text color of {:?}", cell.symbol());
+            assert_eq!(cell.bg, Color::Reset, "background of {:?}", cell.symbol());
+        }
+        Ok(())
+    }
+
+    /// Edge: at the 40x6 floor the clear confirmation still shows how to
+    /// answer. With the answers on the last line they were cut off.
+    #[test]
+    fn the_clear_confirmation_shows_its_answers_at_the_floor() -> Result<(), TestError> {
+        let text = frame_text(&clear_confirm_buffer(Theme::default(), 40, 6)?)?;
+        assert!(text.contains("Y discard"), "{text}");
+        assert!(text.contains("N/Esc/Enter keep"), "{text}");
+        Ok(())
+    }
+
     /// Failure: under NO_COLOR the text cursor paints no color. It painted a
     /// fixed white block with black text.
     #[test]
@@ -1715,6 +2099,10 @@ mod tests {
             }),
             ("quit_confirm", |f, a, app| {
                 render_quit_confirm_popup(f, a, app);
+                Ok(())
+            }),
+            ("clear_confirm", |f, a, app| {
+                render_clear_confirm_popup(f, a, app, crate::tui::ClearKind::Calls);
                 Ok(())
             }),
             ("g729_install", |f, a, app| {

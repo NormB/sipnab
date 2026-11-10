@@ -5,7 +5,7 @@ expression: output
  Live captur┌ Filter ──────────────────────────────────────────────┐
  Capture fil│  From user:       [                               ]  │
  View filter│  To user:         [                               ]  │
-  # ▲    Met│  Source IP:       [                               ]  │D    Duratio
+  # ▲    Met│  Source IP:       [                               ]  │    Duration
             │  Destination IP:  [                               ]  │
   No SIP dia│  Text in message: [                               ]  │
             │  Header:          [Name: text                     ]  │

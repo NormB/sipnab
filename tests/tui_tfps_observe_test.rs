@@ -103,3 +103,25 @@ fn dropped_lists_sources_and_counts() {
     assert!(text.contains("10.0.0.7"), "the source is listed:\n{text}");
     assert!(text.contains("4200"), "the drop count renders:\n{text}");
 }
+
+/// Success: an empty ban list says how to leave the view.
+#[test]
+fn an_empty_ban_list_says_how_to_leave() {
+    let text = compose_tfps_banned(Ok(Reply::Answered {
+        ctl: PathBuf::from("/usr/bin/tfps_ctl"),
+        value: Vec::new(),
+    }));
+    assert!(text.contains("Nothing is banned right now."), "{text}");
+    assert!(text.contains("Press Esc to return."), "{text}");
+}
+
+/// Success: an empty drop list says how to leave the view.
+#[test]
+fn an_empty_drop_list_says_how_to_leave() {
+    let text = compose_tfps_dropped(Ok(Reply::Answered {
+        ctl: PathBuf::from("/usr/bin/tfps_ctl"),
+        value: Vec::new(),
+    }));
+    assert!(text.contains("Nothing has been dropped."), "{text}");
+    assert!(text.contains("Press Esc to return."), "{text}");
+}

@@ -533,7 +533,9 @@ mod tui_snapshots {
         // all zero. 80 is the default terminal, where the address pair was
         // five cells wide — enough to draw `10.0.` and no more.
         // Indices are COLUMN_LABELS order: 2 From, 3 To, 4 Source, 5 Dest.
-        for (width, unshowable) in [(62u16, &[2usize, 3, 4, 5][..]), (80, &[4usize, 5][..])] {
+        // At 62 the row now keeps From and To and drops Duration with the
+        // address pair (the fixed drop order in `compute_column_widths`).
+        for (width, unshowable) in [(62u16, &[4usize, 5, 10][..]), (80, &[4usize, 5][..])] {
             let laid_out_by_width = render_call_list_at(width, &[])?;
             let hidden_by_user = render_call_list_at(width, unshowable)?;
             assert_eq!(
@@ -553,14 +555,15 @@ mod tui_snapshots {
     /// gain the space.
     ///
     /// The buffer-equality gate above proves the columns cost nothing; this
-    /// one names what the reader sees. At 62 cols no identity column is
-    /// drawn at all. At 80 the address pair is gone and From/To inherit its
+    /// one names what the reader sees. At 62 cols the address pair and the
+    /// Duration column are not drawn at all, and From and To are. At 80 the
+    /// address pair is gone and From/To inherit its
     /// cells, so the fixture user parts render whole instead of as the
     /// four-cell stubs the old layout allowed.
     #[test]
     fn dropped_columns_leave_no_header_and_the_survivors_take_the_space() -> Result<(), TestError> {
         let narrow = render_call_list_at(62, &[])?;
-        for label in ["From", "Source", "Destination"] {
+        for label in ["Source", "Destination", "Dur"] {
             assert!(
                 !narrow.contains(label),
                 "at 62 cols the {label} column cannot be shown and must not print a \
@@ -568,8 +571,8 @@ mod tui_snapshots {
             );
         }
         assert!(
-            narrow.contains("State") && narrow.contains("Duratio"),
-            "the fixed columns must still be drawn at 62 cols:\n{narrow}"
+            narrow.contains("From") && narrow.contains("State") && narrow.contains("PDD"),
+            "From, State and PDD must still be drawn at 62 cols:\n{narrow}"
         );
 
         let default_width = render_call_list_at(80, &[])?;

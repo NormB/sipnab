@@ -179,6 +179,7 @@ pub(in crate::tui) fn render_app(
                     hidden: app
                         .cached_dialog_count
                         .saturating_sub(app.cached_displayed_count),
+                    loading: app.pcap_load.is_some(),
                 },
             );
         }
@@ -656,6 +657,7 @@ pub(in crate::tui) fn render_app(
             Popup::QuitConfirm => {
                 render_quit_confirm_popup(frame, area, app);
             }
+            Popup::ClearConfirm(kind) => render_clear_confirm_popup(frame, area, app, *kind),
             Popup::NoteEditor => render_note_editor_popup(frame, area, app),
             Popup::UnsavedNotes => render_unsaved_notes_popup(frame, area, app),
             Popup::ArchivePassword => render_archive_password_popup(frame, area, app),
@@ -841,7 +843,8 @@ pub(in crate::tui) fn statistics_text(ds: &DialogStore, ss: &StreamStore) -> Str
         }
     }
 
-    text.push_str("\nPress Esc to return.");
+    text.push('\n');
+    text.push_str(PRESS_ESC_TO_RETURN);
     text
 }
 
@@ -936,7 +939,8 @@ pub(in crate::tui) fn talkers_text(ds: &DialogStore) -> String {
             "A participant is credited for every dialog it took part in, so shares overlap.\n",
         );
     }
-    text.push_str("\nPress Esc to return.");
+    text.push('\n');
+    text.push_str(PRESS_ESC_TO_RETURN);
     text
 }
 
@@ -1049,7 +1053,8 @@ pub(in crate::tui) fn carrier_metrics_text(ds: &DialogStore, ss: &StreamStore) -
              no call attempt in that group did.\n",
         );
     }
-    text.push_str("\nPress Esc to return.");
+    text.push('\n');
+    text.push_str(PRESS_ESC_TO_RETURN);
     text
 }
 
@@ -1090,6 +1095,10 @@ pub(in crate::tui) fn render_carrier_metrics(
     )
 }
 
+/// The line a text view with nothing to show ends with: the key that
+/// leaves it. One wording for every such view.
+pub(in crate::tui) const PRESS_ESC_TO_RETURN: &str = "Press Esc to return.";
+
 /// Build the two-call comparison table over the shared
 /// [`crate::sip::dialog::compare_dialogs`] rule, so this view names the same
 /// differences `GET /v1/dialogs/compare` and the MCP `compare_dialogs` tool do.
@@ -1115,6 +1124,7 @@ pub(in crate::tui) fn compare_dialogs_text(ds: &DialogStore, a_id: &str, b_id: &
         if ds.get(b_id).is_none() {
             let _ = writeln!(out, "  Call B ({b_id}) is no longer in the capture.");
         }
+        let _ = writeln!(out, "\n  {PRESS_ESC_TO_RETURN}");
         return out;
     };
 
@@ -1349,6 +1359,7 @@ pub(in crate::tui) fn sdp_timeline_text(
     let mut out = String::new();
     if exchanges.is_empty() {
         let _ = writeln!(out, "  No SDP offers or answers in this call.");
+        let _ = writeln!(out, "\n  {PRESS_ESC_TO_RETURN}");
         return out;
     }
     for x in exchanges {
@@ -1399,6 +1410,7 @@ pub(in crate::tui) fn conformance_text(
     let mut out = String::new();
     if outcome.findings.is_empty() {
         let _ = writeln!(out, "  No RFC conformance findings — this call is clean.");
+        let _ = writeln!(out, "\n  {PRESS_ESC_TO_RETURN}");
         return out;
     }
     let _ = writeln!(
@@ -1648,6 +1660,7 @@ pub(in crate::tui) fn volume_histogram_text(ds: &DialogStore, width_seconds: u64
     };
     if buckets.is_empty() {
         let _ = writeln!(out, "  No calls in the capture.");
+        let _ = writeln!(out, "\n  {PRESS_ESC_TO_RETURN}");
         return out;
     }
     // Scale every bar against the busiest bucket, which fills the width.
@@ -2671,6 +2684,198 @@ mod tests {
     use crate::tui::SaveFormat;
     use crate::tui::render::test_support::*;
     type TestError = Box<dyn std::error::Error>;
+
+    /// Success: an empty call list drawn during a file load says the file
+    /// is being read.
+    #[test]
+    fn an_empty_call_list_during_a_load_says_so() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.pcap_load = Some(std::sync::Arc::new(
+            crate::tui::state::PcapLoadProgress::new("big.pcap"),
+        ));
+        let out = render_to_string(&mut app, 80, 24)?;
+        assert!(out.contains("Reading the file"), "{out}");
+        Ok(())
+    }
+
+    /// The call list's header row drawn at `cols` columns.
+    fn call_list_header(cols: u16) -> Result<String, TestError> {
+        let mut app = app_with_dialog()?;
+        let out = render_to_string(&mut app, cols, 24)?;
+        Ok(out
+            .lines()
+            .find(|l| l.contains("Method"))
+            .ok_or("no header row")?
+            .to_string())
+    }
+
+    /// Success: at 80 columns the call list's header shows `Duration`
+    /// whole. It showed `Duratio`.
+    #[test]
+    fn the_call_list_header_shows_duration_whole_at_80_columns() -> Result<(), TestError> {
+        let header = call_list_header(80)?;
+        assert!(header.contains("Duration"), "{header:?}");
+        Ok(())
+    }
+
+    /// Edge: at 69 columns, the narrowest width that carries it, the header
+    /// shows `Duration` whole beside From and To.
+    #[test]
+    fn the_call_list_header_shows_duration_whole_at_69_columns() -> Result<(), TestError> {
+        let header = call_list_header(69)?;
+        assert!(header.contains("Duration"), "{header:?}");
+        assert!(header.contains("From"), "{header:?}");
+        Ok(())
+    }
+
+    /// Edge: at 68 columns the Duration column is dropped whole; no part of
+    /// its header is drawn.
+    #[test]
+    fn the_call_list_header_has_no_part_of_duration_at_68_columns() -> Result<(), TestError> {
+        let header = call_list_header(68)?;
+        assert!(!header.contains("Dur"), "{header:?}");
+        assert!(header.contains("PDD"), "{header:?}");
+        Ok(())
+    }
+
+    /// Success: from 40 to 60 columns the header row is the same on every
+    /// one of 30 draws, and names the columns that are never dropped. Below
+    /// 59 columns the row used to claim more cells than the terminal had and
+    /// the solver cut a different column from run to run.
+    #[test]
+    fn the_narrow_call_list_header_is_the_same_on_every_draw() -> Result<(), TestError> {
+        for cols in 40u16..=60 {
+            let first = call_list_header(cols)?;
+            for name in ["Method", "From", "To", "State"] {
+                assert!(first.contains(name), "{name} missing at {cols}: {first:?}");
+            }
+            for draw in 1..30 {
+                assert_eq!(call_list_header(cols)?, first, "draw {draw} at {cols} cols");
+            }
+        }
+        Ok(())
+    }
+
+    /// Edge: at 120 columns, the wide layout, the header shows every
+    /// column name whole.
+    #[test]
+    fn the_call_list_header_shows_every_name_at_120_columns() -> Result<(), TestError> {
+        let header = call_list_header(120)?;
+        for name in [
+            "Method",
+            "From",
+            "To",
+            "Source",
+            "Destination",
+            "State",
+            "Msgs",
+            "PDD",
+        ] {
+            assert!(header.contains(name), "{name} missing: {header:?}");
+        }
+        assert!(header.contains("Duration"), "{header:?}");
+        Ok(())
+    }
+
+    /// Failure: at the 40-column floor the frame is drawn, not the "too
+    /// small" notice, and the row has the five columns that are never
+    /// dropped and none of the four that are.
+    #[test]
+    fn the_call_list_draws_at_the_40_column_floor() -> Result<(), TestError> {
+        let mut app = app_with_dialog()?;
+        let out = render_to_string(&mut app, 40, 24)?;
+        assert!(!out.contains("too small"), "{out}");
+        let header = call_list_header(40)?;
+        for name in ["Method", "From", "To", "State"] {
+            assert!(header.contains(name), "{name} missing: {header:?}");
+        }
+        for name in ["Msgs", "PDD", "Dur", "Prev"] {
+            assert!(!header.contains(name), "{name} drawn: {header:?}");
+        }
+        Ok(())
+    }
+
+    /// How many times `text` holds the way-out line.
+    fn way_out_lines(text: &str) -> usize {
+        text.matches(PRESS_ESC_TO_RETURN).count()
+    }
+
+    /// Success: the call volume view over no calls says how to leave.
+    #[test]
+    fn an_empty_call_volume_view_says_how_to_leave() {
+        let text = volume_histogram_text(&DialogStore::new(10, false), 60);
+        assert!(text.contains("No calls in the capture."), "{text}");
+        assert_eq!(way_out_lines(&text), 1, "{text}");
+    }
+
+    /// Success: the SDP timeline of a call with no SDP says how to leave.
+    #[test]
+    fn an_empty_sdp_timeline_says_how_to_leave() {
+        let text = sdp_timeline_text(&[]);
+        assert!(
+            text.contains("No SDP offers or answers in this call."),
+            "{text}"
+        );
+        assert_eq!(way_out_lines(&text), 1, "{text}");
+    }
+
+    /// Success: a clean conformance report says how to leave.
+    #[test]
+    fn a_clean_conformance_report_says_how_to_leave() {
+        use crate::sip::lint::{LintOutcome, WithheldCounts};
+        let outcome = LintOutcome {
+            findings: Vec::new(),
+            withheld: WithheldCounts::default(),
+        };
+        let text = conformance_text(&outcome, 4);
+        assert!(text.contains("this call is clean"), "{text}");
+        assert_eq!(way_out_lines(&text), 1, "{text}");
+    }
+
+    /// Failure: a comparison whose calls are both gone names each and says
+    /// how to leave, once.
+    #[test]
+    fn a_comparison_of_two_gone_calls_says_how_to_leave_once() {
+        let text = compare_dialogs_text(
+            &DialogStore::new(10, false),
+            "a@example.com",
+            "b@example.com",
+        );
+        assert!(
+            text.contains("Call A (a@example.com) is no longer in the capture."),
+            "{text}"
+        );
+        assert!(
+            text.contains("Call B (b@example.com) is no longer in the capture."),
+            "{text}"
+        );
+        assert_eq!(way_out_lines(&text), 1, "{text}");
+    }
+
+    /// Edge: the views that already said how to leave say it once, in the
+    /// same words.
+    #[test]
+    fn the_talkers_and_carrier_views_keep_one_way_out_line() {
+        let ds = DialogStore::new(10, false);
+        assert_eq!(way_out_lines(&talkers_text(&ds)), 1, "talkers");
+        let ss = StreamStore::new(64);
+        assert_eq!(
+            way_out_lines(&carrier_metrics_text(&ds, &ss)),
+            1,
+            "carrier metrics"
+        );
+    }
+
+    /// Edge: a call volume view with a call in it draws the histogram and
+    /// no way-out line; the line is for an empty view.
+    #[test]
+    fn a_call_volume_view_with_calls_has_no_way_out_line() -> Result<(), TestError> {
+        let app = app_with_dialog()?;
+        let text = volume_histogram_text(&app.dialog_store.read(), 60);
+        assert!(!text.contains("No calls in the capture."), "{text}");
+        assert_eq!(way_out_lines(&text), 0, "{text}");
+        Ok(())
+    }
 
     /// Empty app renders the chrome; a populated one shows "Dialogs: 1".
     #[test]

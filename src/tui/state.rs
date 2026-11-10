@@ -1743,6 +1743,17 @@ pub enum View {
     StreamLossMap(crate::rtp::stream::StreamKey),
 }
 
+/// Which clear a [`Popup::ClearConfirm`] is asking about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClearKind {
+    /// `F5`/`Ctrl+L`: the checked dialogs, or every dialog and stream.
+    Calls,
+    /// `i`: the dialogs the view filter does not match.
+    NonMatching,
+    /// `I`: the dialogs the view filter matches.
+    Matching,
+}
+
 /// Modal popup dialogs that overlay the current view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Popup {
@@ -1763,6 +1774,10 @@ pub enum Popup {
     /// [issue #283](https://github.com/NormB/sipnab/issues/283). `Ctrl-C`
     /// bypasses it entirely.
     QuitConfirm,
+    /// "Discard captured calls?" before a clear during a live capture,
+    /// whose packets cannot be read again. Names the clear it is asking
+    /// about.
+    ClearConfirm(ClearKind),
     /// The one-line editor for an operator note on the selected message,
     /// opened with `C` in the call flow and the raw-message view.
     NoteEditor,
