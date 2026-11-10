@@ -8,6 +8,14 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **Colored text on the TUI status rows meets WCAG 2.2 AA contrast (TUI-STATUS-BAND-CONTRAST).** The status rows paint their own background, `status_bg`, and drew error, capture-source, search and filter text on it in the theme colors as configured. Against the default band `#303040` the default `bad` red measured 1.7:1 and the default `selected` yellow 2.5:1; level AA asks 4.5:1 for text. Each such color is now checked against `status_bg` and, when it is below 4.5:1, moved toward white or black until it reaches it. A color that already passes is drawn as configured, and the `NO_COLOR` theme is unchanged. See the [theme guide](docs/theme-guide.md).
+
+- **The call flow draws no color under `NO_COLOR`, and its selected row is readable on a light terminal (TUI-FLOW-NO-COLOR).** Six message classes took a fixed RGB color that was not a theme slot, and the selected row painted a fixed dark band, so `NO_COLOR=1` still drew both. On a light terminal the band hid the terminal's own dark text. Under `NO_COLOR` the call flow now draws no color and marks the selected row with reverse video. With a color theme, text on the selected row is moved to 4.5:1 against the band when it is below it.
+
 ## [0.5.242] - 2026-11-09
 
 ### Changed

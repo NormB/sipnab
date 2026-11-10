@@ -27,6 +27,38 @@ sipnab's TUI uses 11 semantic color slots. There is also `highlight`, a legacy a
 `status_bg` is configurable like every other color above. Its dark blue-gray
 default stays readable on both dark and light terminals.
 
+### Contrast on the status band
+
+sipnab draws the text of the status rows on `status_bg`, not on the terminal
+background. It checks each color it draws there against `status_bg` with the
+WCAG 2.2 contrast formula.
+
+- sipnab draws a color that reaches 4.5:1 (level AA for text) as configured.
+- sipnab moves a color below 4.5:1 toward white on a dark band, or toward black
+  on a light band, until it reaches 4.5:1. The hue stays the same.
+
+With the default theme, `bad` (red) reaches 1.7:1 on `#303040` as configured,
+and `selected` (yellow) reaches 2.5:1. sipnab draws both lighter on the status
+rows. To keep a color exactly as configured, pick one that reaches 4.5:1 against
+your `status_bg`.
+
+The selected row of the call flow has its own dark band. sipnab checks the text
+on that row against the band in the same way.
+
+### `NO_COLOR`
+
+With a non-empty `NO_COLOR` environment variable, sipnab ignores `[theme]` and
+draws without color:
+
+```bash
+NO_COLOR=1 sipnab -r capture.pcap
+```
+
+- sipnab paints no status band and adjusts no color.
+- The call flow draws every message in the terminal's own text color. A 5xx
+  response stays bold.
+- The call flow marks the selected row with reverse video in place of the band.
+
 ## Supported color syntax
 
 ### Named colors

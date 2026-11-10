@@ -1386,6 +1386,15 @@ pub fn classify_message(msg: &SipMessage) -> MessageClass {
 /// Responses: amber for provisional, green for success, yellow for redirect,
 /// orange for client error, bold red for server error.
 pub fn class_style(class: MessageClass, theme: &Theme) -> Style {
+    // Six of the colors below are fixed values, not theme slots, so the
+    // NO_COLOR theme cannot blank them. Under NO_COLOR no class takes a
+    // color; a server error keeps its bold, and every row keeps its label.
+    if theme.no_color {
+        return match class {
+            MessageClass::ServerError => Style::default().add_modifier(Modifier::BOLD),
+            _ => Style::default(),
+        };
+    }
     match class {
         MessageClass::SessionRequest => Style::default().fg(Color::Rgb(95, 175, 175)), // Teal
         MessageClass::TeardownRequest => Style::default().fg(Color::Rgb(215, 95, 95)), // Coral
@@ -1462,6 +1471,64 @@ fn first_sdp_codec(session: &sdp::SdpSession) -> Option<String> {
 
 /// Tests for the data-preparation stage: layout/style split, folding,
 /// RTP bars, SDP badges, selection, and codec extraction.
+/// Tests for the colors `class_style` emits under the NO_COLOR theme.
+#[cfg(test)]
+mod class_style_no_color_tests {
+    use super::*;
+
+    const ALL: [MessageClass; 11] = [
+        MessageClass::SessionRequest,
+        MessageClass::TeardownRequest,
+        MessageClass::AckRequest,
+        MessageClass::RegisterRequest,
+        MessageClass::OtherRequest,
+        MessageClass::Provisional,
+        MessageClass::Success,
+        MessageClass::Redirect,
+        MessageClass::ClientError,
+        MessageClass::ServerError,
+        MessageClass::Other,
+    ];
+
+    /// Failure: under NO_COLOR no message class may emit a color. Six of
+    /// them carried a fixed RGB value that ignored the theme.
+    #[test]
+    fn no_class_emits_a_color_under_no_color() {
+        let theme = Theme::monochrome();
+        for class in ALL {
+            let style = class_style(class, &theme);
+            assert!(
+                matches!(style.fg, None | Some(Color::Reset)),
+                "{class:?} emits {:?}",
+                style.fg
+            );
+            assert_eq!(style.bg, None, "{class:?}");
+        }
+    }
+
+    /// Edge: a server error is still bold under NO_COLOR, so it is told
+    /// apart from other rows without color.
+    #[test]
+    fn a_server_error_stays_bold_under_no_color() {
+        let style = class_style(MessageClass::ServerError, &Theme::monochrome());
+        assert!(
+            style.add_modifier.contains(Modifier::BOLD),
+            "a server error is bold: {style:?}"
+        );
+    }
+
+    /// Success: the default theme keeps the fixed session-request color.
+    #[test]
+    fn the_default_theme_keeps_the_session_request_color() {
+        let style = class_style(MessageClass::SessionRequest, &Theme::default());
+        assert_eq!(
+            style.fg,
+            Some(Color::Rgb(95, 175, 175)),
+            "the session-request teal"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};

@@ -167,9 +167,9 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
     // Determine if online (live capture) or offline (pcap file)
     let is_online = app.capture_mode.starts_with("Online");
     let mode_style = if is_online {
-        Style::default().fg(app.theme.good)
+        band_text(&app.theme, app.theme.good)
     } else {
-        Style::default().fg(app.theme.bad)
+        band_text(&app.theme, app.theme.bad)
     };
 
     // Discrete spans, so the styled capture-source segment is placed by
@@ -194,18 +194,14 @@ pub(in crate::tui) fn render_status_line1(frame: &mut ratatui::Frame, area: Rect
         spans.push(Span::raw(L1_GAP));
         spans.push(Span::styled(
             VCON_RULES_UNRUN_MARKER,
-            Style::default()
-                .fg(app.theme.bad)
-                .add_modifier(Modifier::BOLD),
+            band_text(&app.theme, app.theme.bad).add_modifier(Modifier::BOLD),
         ));
     }
     if app.paused {
         spans.push(Span::raw(L1_GAP));
         spans.push(Span::styled(
             "PAUSED",
-            Style::default()
-                .fg(app.theme.bad)
-                .add_modifier(Modifier::BOLD),
+            band_text(&app.theme, app.theme.bad).add_modifier(Modifier::BOLD),
         ));
     }
 
@@ -225,6 +221,18 @@ fn status_bar_style(theme: &Theme) -> Style {
     }
 }
 
+/// The style of text drawn in the theme color `color` on the status band.
+///
+/// The band is painted `status_bg`, so the color is the one
+/// [`crate::tui::theme::legible_on`] returns for that pair: `color` itself
+/// when it meets WCAG AA (4.5:1) on the band, and otherwise `color` moved
+/// toward black or white until it does. The default error color is about
+/// 1.7:1 on the default band as configured. With no band (the NO_COLOR
+/// theme) the color is used unchanged.
+fn band_text(theme: &Theme, color: ratatui::style::Color) -> Style {
+    Style::default().fg(crate::tui::theme::legible_on(color, theme.status_bg))
+}
+
 /// Render status line 2: `Capture filter (BPF): <bpf>`.
 ///
 /// Only the capture filter lives here; the view filter is on line 3. Both
@@ -238,7 +246,7 @@ fn status_bar_style(theme: &Theme) -> Style {
 /// # Side effects
 /// Draws to `frame` only; no state is mutated.
 pub(in crate::tui) fn render_status_line2(frame: &mut ratatui::Frame, area: Rect, app: &App) {
-    let yellow = Style::default().fg(app.theme.selected);
+    let yellow = band_text(&app.theme, app.theme.selected);
 
     // `app.bpf_filter` is the expression this session's capture was compiled
     // with, so on a live capture it is populated even when the operator typed
@@ -293,7 +301,7 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         let content = format!(" /{}", app.search_query);
         vec![Span::styled(
             format!("{:<width$}", content, width = w),
-            Style::default().fg(app.theme.selected),
+            band_text(&app.theme, app.theme.selected),
         )]
     } else if let Some(ref err) = app.status_error {
         let content = format!(" {}", err);
@@ -302,7 +310,7 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         // nothing, so "File not found" is an error and "Cleared 3 failed
         // dialogs" is not.
         let style = if app.status_is_error() {
-            Style::default().fg(app.theme.bad)
+            band_text(&app.theme, app.theme.bad)
         } else {
             Style::default()
         };
@@ -317,11 +325,11 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         let content = " Mouse capture OFF — drag selects text, F12 to re-enable";
         vec![Span::styled(
             format!("{:<width$}", content, width = w),
-            Style::default().fg(app.theme.selected),
+            band_text(&app.theme, app.theme.selected),
         )]
     } else if let View::CallFlow(_) = app.current_view {
         // In call flow: show current display modes so user knows what t/d/c do
-        let cyan = Style::default().fg(app.theme.header);
+        let cyan = band_text(&app.theme, app.theme.header);
         // Show focused pane (Tab to switch) only when the split is visible.
         let focus = if app.flow.raw_preview {
             if app.flow.detail_focused {
@@ -352,7 +360,7 @@ pub(in crate::tui) fn render_status_line3(frame: &mut ratatui::Frame, area: Rect
         );
         vec![Span::styled(content, cyan)]
     } else {
-        let yellow = Style::default().fg(app.theme.selected);
+        let yellow = band_text(&app.theme, app.theme.selected);
         let (filter_text, detail_hint) = view_filter_text(app);
         // A search query persisted with Enter keeps narrowing the list, so
         // it must stay visible here — an invisible query makes the view
@@ -1111,6 +1119,56 @@ mod tests {
             .fg)
     }
 
+    /// The contrast of `fg` against the default status band.
+    fn band_ratio(app: &App, fg: ratatui::style::Color) -> Result<f64, TestError> {
+        Ok(crate::tui::theme::contrast_ratio(fg, app.theme.status_bg)
+            .ok_or("the default band and its text have sRGB values")?)
+    }
+
+    /// An error on the status band meets WCAG AA (4.5:1). The default error
+    /// color, drawn as is, was about 1.7:1 on the default band.
+    #[test]
+    fn a_raised_error_meets_aa_on_the_status_band() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.set_status_error("File not found: /nope.pcap");
+        let r = band_ratio(&app, status_message_fg(&app)?)?;
+        assert!(r >= crate::tui::theme::AA_TEXT_CONTRAST, "{r}:1");
+        Ok(())
+    }
+
+    /// The search prompt on the status band meets WCAG AA. It was drawn in
+    /// the selection color as is, about 2.5:1 on the default band.
+    #[test]
+    fn the_search_prompt_meets_aa_on_the_status_band() -> Result<(), TestError> {
+        let mut app = App::new_test();
+        app.search_active = true;
+        app.search_query = "alice".to_string();
+        let r = band_ratio(&app, status_message_fg(&app)?)?;
+        assert!(r >= crate::tui::theme::AA_TEXT_CONTRAST, "{r}:1");
+        Ok(())
+    }
+
+    /// The capture source on status line 1 meets WCAG AA for both of its
+    /// states: a file (the error color) and a live capture (the good color).
+    #[test]
+    fn the_capture_source_meets_aa_on_the_status_band() -> Result<(), TestError> {
+        for mode in ["Offline", "Online"] {
+            let mut app = App::new_test();
+            app.capture_mode = mode.to_string();
+            let mut terminal = Terminal::new(TestBackend::new(80, 1))?;
+            terminal.draw(|frame| render_status_line1(frame, Rect::new(0, 0, 80, 1), &app))?;
+            let fg = terminal
+                .backend()
+                .buffer()
+                .cell((L1_INDENT.len() as u16, 0))
+                .ok_or("cell() returned None")?
+                .fg;
+            let r = band_ratio(&app, fg)?;
+            assert!(r >= crate::tui::theme::AA_TEXT_CONTRAST, "{mode}: {r}:1");
+        }
+        Ok(())
+    }
+
     /// A message raised as an error draws in the error color, whatever its
     /// words. "File not found" contains neither "error" nor "fail", and the
     /// old substring test drew it as plain information.
@@ -1118,7 +1176,10 @@ mod tests {
     fn a_raised_error_draws_in_the_error_color() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.set_status_error("File not found: /nope.pcap");
-        assert_eq!(status_message_fg(&app)?, app.theme.bad);
+        assert_eq!(
+            status_message_fg(&app)?,
+            crate::tui::theme::legible_on(app.theme.bad, app.theme.status_bg)
+        );
         Ok(())
     }
 
@@ -1128,7 +1189,10 @@ mod tests {
     fn information_that_mentions_failure_is_not_drawn_as_an_error() -> Result<(), TestError> {
         let mut app = App::new_test();
         app.status_error = Some("Cleared 3 failed dialogs".to_string());
-        assert_ne!(status_message_fg(&app)?, app.theme.bad);
+        assert_ne!(
+            status_message_fg(&app)?,
+            crate::tui::theme::legible_on(app.theme.bad, app.theme.status_bg)
+        );
         Ok(())
     }
 
@@ -1139,7 +1203,10 @@ mod tests {
         let mut app = App::new_test();
         app.set_status_error("Save failed: disk full");
         app.status_error = Some("Saved 3 packets".to_string());
-        assert_ne!(status_message_fg(&app)?, app.theme.bad);
+        assert_ne!(
+            status_message_fg(&app)?,
+            crate::tui::theme::legible_on(app.theme.bad, app.theme.status_bg)
+        );
         Ok(())
     }
 
@@ -1284,7 +1351,11 @@ mod tests {
         let src_col = L1_INDENT.len() as u16;
         let cell = buf.cell((src_col, 0)).ok_or("cell() returned None")?;
         assert_eq!(cell.symbol(), "F", "source span misaligned: {row:?}");
-        assert_eq!(cell.fg, app.theme.bad, "source span not styled");
+        assert_eq!(
+            cell.fg,
+            crate::tui::theme::legible_on(app.theme.bad, app.theme.status_bg),
+            "source span not styled"
+        );
         Ok(())
     }
 
