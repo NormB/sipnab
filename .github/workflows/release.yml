@@ -1225,6 +1225,12 @@ jobs:
   # push that superseded the pending run (the `pages` group keeps one pending
   # run). Re-run the job; any later deploy advertises the release too.
   #
+  # The dispatched run also fails when its `live` job does: the deploy
+  # reported success and the site is not that deploy, even after the second
+  # deploy scripts/pages-live.py makes, or the live download page does not
+  # name this release (PAGES-SAME-SHA-REDEPLOY-NOT-LIVE). The site is stale
+  # then, and this run is red rather than green.
+  #
   # Dispatched on main rather than called from the tag: the github-pages
   # environment takes deployments from `main` only, and that stays.
   advertise:
@@ -1262,7 +1268,10 @@ jobs:
             exit 1
           fi
           echo "Waiting for pages.yml run $run (expect=$version)"
-          gh run watch "$run" --repo "$GITHUB_REPOSITORY" --exit-status --interval 30
+          if ! gh run watch "$run" --repo "$GITHUB_REPOSITORY" --exit-status --interval 30; then
+            echo "::error::pages.yml run $run failed, so the site is not known to advertise $version. If its 'live' job failed (scripts/pages-live.py), the deploy reported success and the site is stale or could not be read; its annotations say which. Re-run this job."
+            exit 1
+          fi
 
   # The binary-ceiling record, measured from the PUBLISHED x86_64-musl
   # tarball once SHA256SUMS.txt vouches for it, the way phase two measured it

@@ -83694,6 +83694,63 @@ RELEASE-FAST C removes that pull request.
   finished without the artifact means its suite failed, and no head stands in for it.
   On 0.5.238 this wait was 39 minutes.
 
+**The live site judges every deploy.**
+
+A Pages deploy can report success and leave the site unchanged.
+On 0.5.242 two `workflow_dispatch` runs of `pages.yml` on one `main` commit built artifacts that named 0.5.242, and
+`actions/deploy-pages` reported success for both. The site kept serving the earlier push deploy of that commit.
+The same kind of re-deploy went live on 0.5.241 and on 0.5.243.
+
+- What the runs show: `actions/deploy-pages` sends the commit as `pages_build_version`, and GitHub names the
+  Pages deployment by that string. A second deploy of one commit therefore reads the status of a deployment
+  that already says `succeed`, so its success says nothing about the new artifact.
+- What they do not show: why GitHub did not publish those two artifacts.
+
+So the `live` job of `pages.yml` reads the site back, with [`scripts/pages-live.py`](../../scripts/pages-live.py).
+
+Purpose: a run of `pages.yml` ends green only when the site is that run's artifact.
+
+Prerequisites:
+
+- The `live` job has `pages: write`, `id-token: write` and `actions: read`, and runs in the `github-pages` environment.
+  A second deploy needs all four.
+- The CDN lets the client `sipnab-release-check` read the site.
+
+Steps, all inside the workflow:
+
+1. The build writes `deploy-stamp.txt` into the site: the commit, the run ID and the run attempt.
+2. After the deploy, `pages-live.py verify` reads `https://sipnab.com/deploy-stamp.txt` every 15 seconds for at most 300 seconds.
+   Each read carries a new query string, because the CDN caches `.txt` files.
+3. When the stamp is not this run's, the script prints a warning and deploys the same artifact again through the Pages API,
+   under the build version `<commit>-<run ID>-<attempt>`, which GitHub has not seen.
+   It waits for GitHub's status of that deployment, then reads the stamp again.
+4. With `expect`, it then runs [`verify-site-advertises.sh`](../../scripts/verify-site-advertises.sh) for that release.
+
+Verify: the job's log ends with `live: https://sipnab.com/deploy-stamp.txt carries this run's stamp`.
+The exit status of `pages-live.py verify` says how the check ended:
+
+| Exit | Meaning |
+|---|---|
+| 0 | The site is this run's artifact, and it names the release that `expect` gives. |
+| 1 | The site is stale after the second deploy, or the second deploy failed. |
+| 2 | The script could not read the site, so the run knows nothing about the deploy. |
+| 3 | The site is this run's artifact, and the download page does not name the expected release. |
+
+- A `workflow_dispatch` run enforces the verdict (`--enforce`). A release advertises itself through such a run, and a withdrawal redeploys through one.
+  The `advertise` job of `release.yml` waits for that run, so a stale site makes the release run red.
+- A push run prints the same annotations and passes.
+  The pre-push tag gate refuses a release tag while a run on its merge commit has failed, and a push deploys a commit GitHub has not seen.
+
+Troubleshooting:
+
+- `The site is still stale after the second deploy`: land any commit on `main`. A deploy of a new commit went live each time on 0.5.241, 0.5.242 and 0.5.243.
+- `The site is stale and the second deploy failed`: the message carries GitHub's answer. Re-run the `live` job.
+- `The live site could not be read`: read the stamp URL by hand and compare it with the stamp in the message.
+  A 403 means the CDN refused the client.
+- A warning `the second deploy is live` on a green run means the first deploy did not go live. Record the run in the backlog entry.
+- [`test_pages_live.py`](../../scripts/tests/test_pages_live.py) holds the script, and
+  [`test_pages_live_workflow.py`](../../scripts/tests/test_pages_live_workflow.py) holds the workflow text.
+
 **The records are artifacts, and the next release pull request commits them.**
 
 - The `records` job downloads the published x86_64-musl tarball and `SHA256SUMS.txt`, and
