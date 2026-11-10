@@ -5394,10 +5394,12 @@ or directory (os error 2)` for a directory that does not exist.
 
 **Exit code:** 2.
 
-### `--store '{shown}': line {} is not a member record: {e}`
+### `line {} is not a member record: {e}`
 
-A line of the store file, before its last line, is not a record the center
-wrote. Someone edited the file, or `--store` names another file.
+Printed after `--store '<file>':`. The store is one that a release from
+0.5.237 to 0.5.243 wrote in clear, and a line of it, before its last line, is
+not a record that center wrote. Someone edited the file, or `--store` names
+another file.
 
 **What to do:** Check that `--store` names the center's store. To start again
 with no members, move the file away. Members reappear with their next
@@ -5405,13 +5407,93 @@ heartbeat.
 
 **Exit code:** 2.
 
-### `--store '{shown}': line {} is incomplete, from a write the center did not finish; it is dropped`
+### `the store's line {} is incomplete, from a write the center did not finish; it is dropped`
 
-A warning. The last line of the store is incomplete, because the center
-stopped while writing it. The center never acknowledged that heartbeat, so the
-member sends it again.
+A warning. The store is one that a release from 0.5.237 to 0.5.243 wrote in
+clear, and its last line is incomplete, because that center stopped while
+writing it. The center never acknowledged that heartbeat, so the member sends
+it again.
 
 **What to do:** Nothing.
+
+### `--store '{shown}' held {} member(s) in clear, written by a release before encryption at rest; it is sealed now`
+
+A warning, once, on the first start after an upgrade. A release from 0.5.237
+to 0.5.243 wrote the store in clear. The center read it, wrote it encrypted
+under `--store-key-file` and replaced the file.
+
+**What to do:** Nothing for the center. The old bytes may remain in the free
+space of the disk until the file system reuses it. Treat a copy or a snapshot
+of the old file as holding every member's inventory in clear.
+
+### `--store '{shown}': the last record is incomplete, from a write the center did not finish; it is dropped`
+
+A warning. The center stopped while it appended a heartbeat to the store. The
+center never acknowledged that heartbeat, so the member sends it again.
+
+**What to do:** Nothing.
+
+### `--store '{shown}': sealed layer: the file {e}; give that key's file with --store-old-key-file`
+
+The center encrypted the store under another key than `--store-key-file`
+holds. `{e}`
+is `was written under key id <id>, which is not loaded`, and `<id>` is the id
+`sipnab fleet keygen` printed for the key the store needs. The center leaves
+the store as it found it.
+
+**What to do:** Start the center with the file of that key as
+`--store-key-file`. To move the store to a new key, give the new key as
+`--store-key-file` and the old one as `--store-old-key-file` for one start.
+[Encrypt the center's store](fleet.md#encrypt-the-centers-store) has the steps.
+
+**Exit code:** 2.
+
+### `--store '{shown}': sealed layer: the file {e}`
+
+The center could not open its encrypted store, and leaves it as it found it.
+`{e}` is the reason:
+
+- `has a header that did not authenticate (the file was modified, or the key
+  is wrong)` or `has a record <n> that did not authenticate (the file was
+  modified, or its records were moved)`: a byte of the file changed after the
+  center wrote it.
+- `was truncated: it ends before its records do`: the file is shorter than
+  the center wrote it.
+- `is a sealed intake file, not a registry file`: another of the center's files
+  is in the store's place.
+- `has sealed format <n>, and this build reads format 1`: a later sipnab wrote
+  the store.
+- `record <n> is not a member record: <reason>`: the record is intact and is not one
+  this build reads.
+
+**What to do:** Check that `--store` names this center's store. Restore the
+file from a copy, or move it away and start with an empty store: members
+reappear with their next heartbeat, and the list loses only a member that is
+silent now. For a store from a later sipnab, run that sipnab.
+
+**Exit code:** 2.
+
+### `is not a key: it holds {} bytes, and a key is {KEY_BYTES}`
+
+Printed after `--store-key-file '<file>'` or `--store-old-key-file '<file>'`.
+The file decodes to another length than a key's 32 bytes: it is empty, cut
+short, or is not a file `sipnab fleet keygen` wrote. The message gives the
+length and never the contents.
+
+**What to do:** Use the file `sipnab fleet keygen --out <FILE>` wrote,
+unchanged, or restore it from your backup. A new key cannot read a store
+written under the lost one.
+
+**Exit code:** 2.
+
+### `a record of {} bytes is over the {MAX_RECORD_BYTES} a sealed file holds`
+
+Printed after `fleet center: the store could not be written:`. One member's
+record is larger than 8 MiB, the most the center seals as one record. The
+center's request limit is 4 MiB, so a record this large comes from no member
+sipnab ships.
+
+**What to do:** Report it as a defect, with the member's version.
 
 ### `fleet center: the store could not be written: {e}`
 

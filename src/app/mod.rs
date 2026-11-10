@@ -14,6 +14,8 @@ pub mod fleet;
 pub mod fleet_center;
 #[cfg(feature = "api")]
 pub mod fleet_member;
+#[cfg(feature = "api")]
+pub mod fleet_seal;
 #[cfg(feature = "g729")]
 pub mod g729_install;
 #[cfg(any(feature = "vcon", feature = "g729", feature = "api"))]

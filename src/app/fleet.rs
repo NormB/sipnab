@@ -476,24 +476,46 @@ pub fn main(args: impl IntoIterator<Item = std::ffi::OsString>) -> i32 {
             json,
             timeout,
         } => (hosts, json, timeout),
-        crate::cli::fleet_args::FleetCommand::Serve {
-            listen,
-            store,
-            signing_key_file,
-            revoked_file,
-            tls_cert,
-            tls_key,
-            tls_client_ca,
-            tls_client_auth,
-            retention_hours,
-            silent_after_missed,
-            allowed_host,
-            rate_limit_per_peer,
-        } => {
+        crate::cli::fleet_args::FleetCommand::Keygen { out } => {
+            return match super::fleet_seal::write_new_key_file(
+                &out,
+                &super::fleet_seal::system_draw,
+            ) {
+                Ok(id) => {
+                    let line = format!("{}: key id {id}\n", out.display());
+                    i32::from(std::io::stdout().write_all(line.as_bytes()).is_err())
+                }
+                Err(e) => {
+                    let _ = writeln!(std::io::stderr(), "sipnab fleet keygen: {e}");
+                    2
+                }
+            };
+        }
+        crate::cli::fleet_args::FleetCommand::Serve(flags) => {
+            let crate::cli::fleet_args::ServeFlags {
+                listen,
+                store,
+                store_key_file,
+                store_old_key_file,
+                store_encryption,
+                signing_key_file,
+                revoked_file,
+                tls_cert,
+                tls_key,
+                tls_client_ca,
+                tls_client_auth,
+                retention_hours,
+                silent_after_missed,
+                allowed_host,
+                rate_limit_per_peer,
+            } = *flags;
             crate::app::bootstrap::init_logging_at("info");
             return super::fleet_center::serve(super::fleet_center::ServeArgs {
                 listen,
                 store,
+                store_key_file,
+                store_old_key_files: store_old_key_file,
+                store_encryption,
                 signing_key_file,
                 revoked_file,
                 tls_cert,
