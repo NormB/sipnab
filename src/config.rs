@@ -670,8 +670,8 @@ pub struct ApiConfig {
     /// Serve the web console at `/console/` on the REST API listener
     /// (default: false). The console is static files that call `/v1/` with
     /// the bearer token pasted into the page. `--api-console` overrides it.
-    /// A capture run that reads `true` here and has no `--api` is refused;
-    /// `--api-console=false` is how such a run reads this file.
+    /// `true` means "serve the console whenever the API is on": a run with
+    /// no `--api` does not use it, as it does not use the other `[api]` keys.
     pub console: Option<bool>,
     /// PEM certificate chain the REST API serves HTTPS with. Needs
     /// `tls_key`. `--api-tls-cert` replaces it.

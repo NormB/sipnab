@@ -754,7 +754,7 @@ fn a_tui_without_the_api_refuses_the_console_before_it_draws() -> Result<(), Tes
     let status = run.wait_for_exit(test_timeout(60), "the refusal")?;
     assert_exit(status, 2, "the console without the API is invalid usage");
     assert!(
-        run.wrote(b"--api-console (or [api] console = true) needs the REST API"),
+        run.wrote(b"--api-console needs the REST API"),
         "the refusal is on the terminal"
     );
     assert!(run.wrote(b"Add --api ADDR"), "it says what to add");

@@ -596,7 +596,7 @@ On the sipnab host:
 - A binary with the `api` feature
   ([Check your binary has the API](#check-your-binary-has-the-api)).
 - The REST API started with `--api`. The console has no listener of its own,
-  so sipnab refuses a run that turns the console on without `--api`
+  so sipnab refuses `--api-console` on a run without `--api`
   ([The console without the API](#the-console-without-the-api)).
 - A credential, as for any API client: the static key or a signed token
   ([Authentication](#authentication)). An API on a loopback address without a
@@ -659,33 +659,38 @@ it on.
 
 ### The console without the API
 
-sipnab refuses a run that turns the console on and has no `--api`. sipnab
-0.5.243 started such a run, served no console, and said nothing.
+The flag and the key differ on a run that has no `--api`.
+
+**sipnab refuses the flag.** `--api-console` asks this run for the console, and a
+run with no `--api` cannot serve it. sipnab 0.5.243 started such a run, served
+no console, and said nothing.
 
 ```sh
 sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --api-console
 ```
 
 ```text
---api-console (or [api] console = true) needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or turn the console off with --api-console=false
+--api-console needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or remove --api-console
 ```
 
-- The exit code is 2 when `--api-console` turned the console on.
-- The exit code is 1 when `[api] console = true` did and the command line has
-  no `--api-console`.
+- The exit code is 2.
 - sipnab refuses before it reads the capture or opens a device, so the run
   prints nothing else.
+- `--api-console=false` asks for nothing, so sipnab does not refuse it.
 
-`--api` has no config key, so a config file with `console = true` turns the
-console on for every run that reads the file. For a run with no API that reads
-that file, add `--api-console=false`:
+**sipnab does not use the key.** `console = true` in the `[api]` section means: serve
+the console whenever the API is on. `--api` has no config key, so one config
+file serves runs with the API and runs without it. A run with no `--api`
+reads the file, does not use the key, and says nothing about it. The other
+`[api]` keys work the same way.
 
 ```sh
-sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config sipnab.toml --api-console=false
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config sipnab.toml
 ```
 
-A command that prints and exits without a capture is not refused. `-D`,
-`--version` and `--help` are three.
+That run prints the capture's messages and serves nothing. Add
+`--api 127.0.0.1:8080` to the same command, and the console is at
+`http://127.0.0.1:8080/console/`.
 
 A build without the `api` feature refuses `--api-console` as it refuses
 `--api`, and ignores `[api] console` as it ignores the other `[api]` keys.
@@ -752,7 +757,8 @@ Without `--api-console` the first line is `404`.
 | What you see | Cause and fix |
 |---|---|
 | `404` at `/console/` | The console is off. Start sipnab with `--api-console`, or set `[api] console = true`. |
-| sipnab exits with `--api-console (or [api] console = true) needs the REST API` | The console is on and the run has no `--api`. Add `--api ADDR`, or add `--api-console=false` ([The console without the API](#the-console-without-the-api)). |
+| sipnab exits with `--api-console needs the REST API` | The command line has `--api-console` and no `--api`. Add `--api ADDR`, or remove `--api-console` ([The console without the API](#the-console-without-the-api)). |
+| The config file has `[api] console = true` and nothing serves the console | The run has no `--api`, so it does not use the key. Add `--api ADDR`. |
 | The browser cannot connect | Nothing listens there, or the address is loopback on another machine. Check `--api`, then forward the port or use HTTPS. |
 | `/console` shows a redirect to `/console/` | Expected. The page loads its files by relative name, so it lives under `/console/`. |
 | "The API refused the token (401)" | The token is wrong, expired or revoked, or its scope does not cover reading. The page clears it. Paste a valid one. |

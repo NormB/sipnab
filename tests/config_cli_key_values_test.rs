@@ -2267,20 +2267,7 @@ struct Loaded {
     dumped: Option<toml::Value>,
 }
 
-/// The flags `[section] key` needs on the command line for a value of it to
-/// be accepted, when it needs any.
-fn key_flags(section: &str, key: &str) -> &'static [&'static str] {
-    match (section, key) {
-        // `console = true` turns on a page the REST API serves, and `--api`
-        // has no key: without the flag the run is refused, which
-        // `the_console_key_without_the_api_is_refused` in api_test.rs holds.
-        ("api", "console") => &["--api", "127.0.0.1:0"],
-        _ => &[],
-    }
-}
-
-/// Write `[section]\n{ctx}\n{key} = {literal}` and run the pipeline on it,
-/// with the flags [`key_flags`] gives the key.
+/// Write `[section]\n{ctx}\n{key} = {literal}` and run the pipeline on it.
 fn load(section: &str, key: &str, literal: &str, ctx: &str) -> Result<Loaded, TestError> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("sipnab.toml");
@@ -2290,7 +2277,7 @@ fn load(section: &str, key: &str, literal: &str, ctx: &str) -> Result<Loaded, Te
         format!("[{section}]\n{ctx}\n{key} = {literal}\n")
     };
     std::fs::write(&path, body)?;
-    let outcome = run(&argv(key_flags(section, key)), Some(&path));
+    let outcome = run(&argv(&[]), Some(&path));
     let dumped = if outcome.accepted() {
         let loaded = sipnab::config::Config::load(Some(&path.display().to_string()), false)?;
         let text = loaded.config.dump()?;

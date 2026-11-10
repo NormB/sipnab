@@ -2966,18 +2966,17 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 **Exit code:** 2.
 
-### `--api-console (or [api] console = true) needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or turn the console off with --api-console=false`
+### `--api-console needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or remove --api-console`
 
-`--api-console`, or `console = true` in the `[api]` section of the config file, turns the web console on, and the command line has no `--api`. The REST API listener serves the console, and the console has no listener of its own. sipnab refuses the run before it reads a capture or opens a device.
+The command line has `--api-console` and no `--api`. The REST API listener serves the web console, and the console has no listener of its own. sipnab refuses the run before it reads a capture or opens a device.
 
-**What to do:** Do one of these:
+`console = true` in the `[api]` section of the config file does not cause this message. With no `--api`, sipnab does not use that key.
 
-- To use the console, add `--api` with the address to listen on, such as `--api 127.0.0.1:8080`.
-- To run without it, remove `--api-console`. When the config file turns it on, add `--api-console=false` to this run.
+**What to do:** To use the console, add `--api` with the address to listen on, such as `--api 127.0.0.1:8080`. To run without it, remove `--api-console`.
 
-[The console without the API](@/docs/api.md#the-console-without-the-api) has an example of each.
+[The console without the API](@/docs/api.md#the-console-without-the-api) has an example.
 
-**Exit code:** 2 when `--api-console` turned the console on, and 1 when `[api] console` did.
+**Exit code:** 2.
 
 ### `--api-key requires the 'api' feature (not compiled in)`
 

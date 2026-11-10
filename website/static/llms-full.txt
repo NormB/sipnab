@@ -7649,7 +7649,7 @@ On the sipnab host:
 - A binary with the `api` feature
   ([Check your binary has the API](#check-your-binary-has-the-api)).
 - The REST API started with `--api`. The console has no listener of its own,
-  so sipnab refuses a run that turns the console on without `--api`
+  so sipnab refuses `--api-console` on a run without `--api`
   ([The console without the API](#the-console-without-the-api)).
 - A credential, as for any API client: the static key or a signed token
   ([Authentication](#authentication)). An API on a loopback address without a
@@ -7712,33 +7712,38 @@ it on.
 
 ### The console without the API
 
-sipnab refuses a run that turns the console on and has no `--api`. sipnab
-0.5.243 started such a run, served no console, and said nothing.
+The flag and the key differ on a run that has no `--api`.
+
+**sipnab refuses the flag.** `--api-console` asks this run for the console, and a
+run with no `--api` cannot serve it. sipnab 0.5.243 started such a run, served
+no console, and said nothing.
 
 ```sh
 sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --api-console
 ```
 
 ```text
---api-console (or [api] console = true) needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or turn the console off with --api-console=false
+--api-console needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or remove --api-console
 ```
 
-- The exit code is 2 when `--api-console` turned the console on.
-- The exit code is 1 when `[api] console = true` did and the command line has
-  no `--api-console`.
+- The exit code is 2.
 - sipnab refuses before it reads the capture or opens a device, so the run
   prints nothing else.
+- `--api-console=false` asks for nothing, so sipnab does not refuse it.
 
-`--api` has no config key, so a config file with `console = true` turns the
-console on for every run that reads the file. For a run with no API that reads
-that file, add `--api-console=false`:
+**sipnab does not use the key.** `console = true` in the `[api]` section means: serve
+the console whenever the API is on. `--api` has no config key, so one config
+file serves runs with the API and runs without it. A run with no `--api`
+reads the file, does not use the key, and says nothing about it. The other
+`[api]` keys work the same way.
 
 ```sh
-sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config sipnab.toml --api-console=false
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --config sipnab.toml
 ```
 
-A command that prints and exits without a capture is not refused. `-D`,
-`--version` and `--help` are three.
+That run prints the capture's messages and serves nothing. Add
+`--api 127.0.0.1:8080` to the same command, and the console is at
+`http://127.0.0.1:8080/console/`.
 
 A build without the `api` feature refuses `--api-console` as it refuses
 `--api`, and ignores `[api] console` as it ignores the other `[api]` keys.
@@ -7805,7 +7810,8 @@ Without `--api-console` the first line is `404`.
 | What you see | Cause and fix |
 |---|---|
 | `404` at `/console/` | The console is off. Start sipnab with `--api-console`, or set `[api] console = true`. |
-| sipnab exits with `--api-console (or [api] console = true) needs the REST API` | The console is on and the run has no `--api`. Add `--api ADDR`, or add `--api-console=false` ([The console without the API](#the-console-without-the-api)). |
+| sipnab exits with `--api-console needs the REST API` | The command line has `--api-console` and no `--api`. Add `--api ADDR`, or remove `--api-console` ([The console without the API](#the-console-without-the-api)). |
+| The config file has `[api] console = true` and nothing serves the console | The run has no `--api`, so it does not use the key. Add `--api ADDR`. |
 | The browser cannot connect | Nothing listens there, or the address is loopback on another machine. Check `--api`, then forward the port or use HTTPS. |
 | `/console` shows a redirect to `/console/` | Expected. The page loads its files by relative name, so it lives under `/console/`. |
 | "The API refused the token (401)" | The token is wrong, expired or revoked, or its scope does not cover reading. The page clears it. Paste a valid one. |
@@ -22430,7 +22436,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-tls-client-auth` | `<off\|optional\|required>` | `required` with `--api-tls-client-ca`, else `off` | 0.5.237 | When the REST API asks for a client certificate. `optional` verifies one when the client sends it and still serves a client that sends none; `required` refuses that handshake. `optional` or `required` without `--api-tls-client-ca` stops sipnab at startup. `off` wins over a client CA, so this flag can turn off what `[api] tls_client_ca` asks for; sipnab then logs at warn that it does not read the CA. Feature: `api`. How-to: [Require client certificates](mtls.md). Config: `[api] tls_client_auth` |
 | `--api-max-conn` | `<N>` | `100` | 0.3.0 | Maximum API requests handled at once; sipnab answers 503 to a request past it. `0` means no limit. Feature: `api` |
 | `--api-allowed-host` | `<HOST>` | -- | 0.5.198 | Additional `Host` header values the REST API accepts (repeatable), against DNS rebinding: a web page that points its own name at `127.0.0.1` and reads a loopback API with no key from your browser. Accepted by default: `localhost`, `127.0.0.1`, `::1` and the address `--api` binds, on any port, and any IP address when `--api` binds `0.0.0.0` or `::`. Add the name clients use, such as a reverse proxy's public name; `name:port` accepts that port only. Any other `Host` gets `403`, and a request with no `Host` gets `400`. `*` disables the check (not recommended). See [Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers). Config: `[api] allowed_hosts`, which the flag replaces Feature: `api` |
-| `--api-console` | `[=BOOL]` | off | 0.5.243 | Serve the web console at `/console/` on the REST API listener. Needs `--api`: sipnab refuses a run that turns the console on and starts no REST API, before it reads anything, with exit code 2 when the flag turned it on and 1 when `[api] console` did. The console is static files compiled into the binary: a read-only page that calls `/v1/` with the bearer token you paste into it. It adds no listener and no access of its own, and the `Host` allowlist, TLS and the rate limit apply to it as to the API. `--api-console=false` turns it off over a config file that turns it on. Config: `[api] console`. Feature: `api`. How-to: [Web console](rest-api.md#web-console) |
+| `--api-console` | `[=BOOL]` | off | 0.5.243 | Serve the web console at `/console/` on the REST API listener. Needs `--api`: sipnab refuses `--api-console` on a run with no `--api`, before it reads anything, with exit code 2. The console is static files compiled into the binary: a read-only page that calls `/v1/` with the bearer token you paste into it. It adds no listener and no access of its own, and the `Host` allowlist, TLS and the rate limit apply to it as to the API. `--api-console=false` turns it off over a config file that turns it on. Config: `[api] console`. Feature: `api`. How-to: [Web console](rest-api.md#web-console) |
 | `--api-signing-key` | `<KEY>` | -- | 0.4.3 | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY`; `--help` names the variable and never shows its value. See [`auth.md`](./auth.md). Feature: `api` |
 | `--api-signing-key-file` | `<FILE>` | -- | 0.4.3 | Read an API signing key from a file (contents trimmed); it becomes the minting key. Feature: `api` |
 | `--api-revoked-file` | `<FILE>` | -- | 0.4.3 | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
@@ -22491,7 +22497,6 @@ This applies to root runs and to unprivileged runs set up with
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-allowed-host sipnab.example.com` — behind a reverse proxy that forwards `Host: sipnab.example.com` unchanged: sipnab serves that name, while a page that rebinds any other name to `127.0.0.1` gets `403`
 - `sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-console` — serve the read-only web console at `http://127.0.0.1:8080/console/` beside the API; paste the API key into the page to list the dialogs
 - `sipnab -N -I capture.pcap --config sipnab.toml --api 127.0.0.1:8080 --api-console=false` — a host config that sets `[api] console = true`, overridden for one run that serves the API without the console
-- `sipnab -N -I capture.pcap --config sipnab.toml --api-console=false` — the same host config read by a run with no `--api`; without `--api-console=false` sipnab refuses this run, because the console it turns on has no listener
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-allowed-host capture.example.com:8443` — a public-facing HTTPS API reached by name on port 8443 only: sipnab serves `Host: capture.example.com:8443` and refuses the same name on any other port. Clients reaching it by IP address need no entry on a wildcard bind
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-tls-client-ca /etc/sipnab/clients-ca.pem` — an HTTPS API that refuses the handshake of any client without a certificate from `clients-ca.pem`; each request still needs its token ([Require client certificates](mtls.md))
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-tls-client-ca /etc/sipnab/clients-ca.pem --api-tls-client-auth optional` — the same while client certificates roll out: sipnab verifies a client that sends one and names it in the log, and still serves one that sends none
@@ -26291,18 +26296,17 @@ You gave `--mcp-transport http`, but this sipnab binary does not include the `mc
 
 **Exit code:** 2.
 
-### `--api-console (or [api] console = true) needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or turn the console off with --api-console=false`
+### `--api-console needs the REST API, and this run does not start one. Add --api ADDR (for example --api 127.0.0.1:8080), or remove --api-console`
 
-`--api-console`, or `console = true` in the `[api]` section of the config file, turns the web console on, and the command line has no `--api`. The REST API listener serves the console, and the console has no listener of its own. sipnab refuses the run before it reads a capture or opens a device.
+The command line has `--api-console` and no `--api`. The REST API listener serves the web console, and the console has no listener of its own. sipnab refuses the run before it reads a capture or opens a device.
 
-**What to do:** Do one of these:
+`console = true` in the `[api]` section of the config file does not cause this message. With no `--api`, sipnab does not use that key.
 
-- To use the console, add `--api` with the address to listen on, such as `--api 127.0.0.1:8080`.
-- To run without it, remove `--api-console`. When the config file turns it on, add `--api-console=false` to this run.
+**What to do:** To use the console, add `--api` with the address to listen on, such as `--api 127.0.0.1:8080`. To run without it, remove `--api-console`.
 
-[The console without the API](rest-api.md#the-console-without-the-api) has an example of each.
+[The console without the API](rest-api.md#the-console-without-the-api) has an example.
 
-**Exit code:** 2 when `--api-console` turned the console on, and 1 when `[api] console` did.
+**Exit code:** 2.
 
 ### `--api-key requires the 'api' feature (not compiled in)`
 
@@ -35013,7 +35017,7 @@ bind).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `allowed_hosts` | list of strings | `[]` | Extra `Host` values to serve, such as a reverse proxy's public name. `name:port` accepts that port only. `"*"` turns the check off. `--api-allowed-host` replaces the list |
-| `console` | boolean | `false` | Serve the web console at `/console/` on the REST API listener: a read-only page that calls `/v1/` with the bearer token you paste into it. Needs `--api`: sipnab refuses a capture run that reads `true` here and starts no REST API, with exit code 1. Give such a run `--api-console=false`. See [Web console](rest-api.md#web-console). `--api-console` overrides it |
+| `console` | boolean | `false` | Serve the web console at `/console/` on the REST API listener: a read-only page that calls `/v1/` with the bearer token you paste into it. `true` means: serve the console whenever `--api` starts the API. A run with no `--api` does not use the key and says nothing about it, as with the other `[api]` keys, so one file can serve runs with and without the API. See [Web console](rest-api.md#web-console). `--api-console` overrides it |
 | `tls_cert` | string | -- | PEM certificate chain the REST API serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only when `--api` starts the API. See [API TLS](rest-api.md#api-tls). An empty string fails validation and names the key. `--api-tls-cert` overrides it |
 | `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--api-tls-key` overrides it |
 | `tls_client_ca` | string | -- | CA certificates (PEM) a client certificate must chain to: the REST API then asks each client for a certificate (mutual TLS). The bearer token is still checked. Needs `tls_cert` and `tls_key`. sipnab refuses a file any user can write. See [Require client certificates](mtls.md). An empty string fails validation and names the key. `--api-tls-client-ca` overrides it |

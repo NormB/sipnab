@@ -3359,8 +3359,8 @@ pub struct ListenerArgs {
     pub api_allowed_host: Vec<String>,
 
     /// Serve the web console at `/console/` on the REST API listener
-    /// (`[api] console`, default off). Needs `--api`: a run that turns the
-    /// console on and starts no REST API is refused. The console is static
+    /// (`[api] console`, default off). Needs `--api`: this flag without
+    /// `--api` is refused. The console is static
     /// files that call `/v1/` with the bearer token you paste into the page;
     /// it adds no listener and no access of its own.
     /// `--api-console=false` turns it off over a config that turns it on.
@@ -7154,25 +7154,18 @@ impl Cli {
             .unwrap_or(false)
     }
 
-    /// Where the web console was turned on for a run that starts no REST
-    /// API, or `None` when the console is off or `--api` is given.
+    /// Whether `--api-console` asked for the web console on a run with no
+    /// `--api`.
     ///
-    /// The console has no listener of its own, so without `--api` the setting
-    /// would do nothing. The origin is the command line when `--api-console`
-    /// turned it on, else the config file (`[api] console = true`).
-    /// `--api-console=false` turns the console off over the key, and then
-    /// there is nothing to refuse.
+    /// The REST API listener serves the console, which has no listener of
+    /// its own, so the flag without `--api` asks for something this run
+    /// cannot give. `[api] console = true` is not asked about: the key says
+    /// to serve the console whenever the API is on, and with the API off it
+    /// is unused, as every other `[api]` key is. `--api-console=false` asks
+    /// for nothing.
     #[must_use]
-    pub fn console_without_api(
-        &self,
-        config: &crate::config::Config,
-    ) -> Option<crate::settings::Origin> {
-        if self.listener_args.api.is_some() || !self.api_console(config) {
-            return None;
-        }
-        Some(crate::settings::Origin::of(
-            self.listener_args.api_console == Some(true),
-        ))
+    pub fn console_flag_without_api(&self) -> bool {
+        self.listener_args.api_console == Some(true) && self.listener_args.api.is_none()
     }
 
     /// The REST API's `Host` allowlist additions: `--api-allowed-host`, else
@@ -10793,40 +10786,22 @@ mod tests {
         Ok(())
     }
 
-    /// A [`Config`](crate::config::Config) whose `[api] console` is `value`.
-    fn console_key(value: Option<bool>) -> crate::config::Config {
-        let mut config = crate::config::Config::default();
-        config.api.console = value;
-        config
-    }
-
-    /// CONSOLE-FLAG-WITHOUT-API: every way of turning the console on with no
-    /// `--api`, and where the setting came from.
+    /// CONSOLE-FLAG-WITHOUT-API: the flag without `--api` is found; the flag
+    /// set to false, the flag beside `--api`, and no flag are not.
     #[test]
-    fn the_console_without_the_api_is_found_whichever_source_set_it() -> Result<(), TestError> {
-        use crate::settings::Origin;
-        // (arguments, [api] console, the origin of the refused setting)
-        let cases: [(&[&str], Option<bool>, Option<Origin>); 12] = [
-            (&[], None, None),
-            (&[], Some(false), None),
-            (&[], Some(true), Some(Origin::ConfigFile)),
-            (&["--api-console"], None, Some(Origin::CommandLine)),
-            (&["--api-console=true"], None, Some(Origin::CommandLine)),
-            (&["--api-console"], Some(false), Some(Origin::CommandLine)),
-            (&["--api-console"], Some(true), Some(Origin::CommandLine)),
-            (&["--api-console=false"], None, None),
-            (&["--api-console=false"], Some(true), None),
-            (&["--api", "127.0.0.1:0"], Some(true), None),
-            (&["--api", "127.0.0.1:0", "--api-console"], None, None),
-            (&["--api", "127.0.0.1:0", "--api-console"], Some(true), None),
+    fn the_console_flag_without_the_api_is_found() -> Result<(), TestError> {
+        let cases: [(&[&str], bool); 7] = [
+            (&[], false),
+            (&["--api-console"], true),
+            (&["--api-console=true"], true),
+            (&["--api-console=false"], false),
+            (&["--api", "127.0.0.1:0"], false),
+            (&["--api", "127.0.0.1:0", "--api-console"], false),
+            (&["--api", "127.0.0.1:0", "--api-console=false"], false),
         ];
-        for (args, key, want) in cases {
+        for (args, want) in cases {
             let cli = Cli::try_parse_from(["sipnab"].iter().chain(args))?;
-            assert_eq!(
-                cli.console_without_api(&console_key(key)),
-                want,
-                "{args:?} with [api] console = {key:?}"
-            );
+            assert_eq!(cli.console_flag_without_api(), want, "{args:?}");
         }
         Ok(())
     }
@@ -10835,7 +10810,6 @@ mod tests {
     /// served by `--api` alone.
     #[test]
     fn no_other_listener_serves_the_console() -> Result<(), TestError> {
-        use crate::settings::Origin;
         for other in [
             &["--metrics", "127.0.0.1:0"][..],
             &["--mcp"],
@@ -10844,11 +10818,7 @@ mod tests {
             &["--api-allowed-host", "console.example.com"],
         ] {
             let cli = Cli::try_parse_from(["sipnab", "--api-console"].iter().chain(other))?;
-            assert_eq!(
-                cli.console_without_api(&crate::config::Config::default()),
-                Some(Origin::CommandLine),
-                "{other:?}"
-            );
+            assert!(cli.console_flag_without_api(), "{other:?}");
         }
         Ok(())
     }
