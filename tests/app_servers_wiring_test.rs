@@ -46,6 +46,7 @@ fn metrics_only() -> Selection {
         mcp_tools: sipnab::mcp_profile::ToolSelection::Full,
         mcp_output_schemas: false,
         api_allowed_hosts: Vec::new(),
+        api_console: false,
         api_tls: (None, None),
         mcp_tls: (None, None),
         metrics_tls: (None, None),

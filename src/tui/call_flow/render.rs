@@ -37,6 +37,18 @@ use super::{
 /// row — a subtle highlight that marks the cursor without shifting content.
 const SELECTION_BG: Color = Color::Rgb(40, 40, 60);
 
+/// The highlight of the selected row: the [`SELECTION_BG`] band, or reverse
+/// video under NO_COLOR, where no color may be painted. The band is a fixed
+/// dark color; painted under NO_COLOR it hid the terminal's own dark text on
+/// a light terminal.
+fn selection_style(theme: &Theme) -> Style {
+    if theme.no_color {
+        Style::default().add_modifier(Modifier::REVERSED)
+    } else {
+        Style::default().bg(SELECTION_BG)
+    }
+}
+
 /// Column span available for each ladder arrow at a given terminal width.
 ///
 /// Subtracts the timestamp and both endpoint columns (plus fixed inter-column
@@ -580,6 +592,19 @@ fn min_pipe_gap(pipes: &[u16]) -> u16 {
         .unwrap_or(0)
 }
 
+/// The style of the mark-to-selection delta badge: bold accent text on a
+/// dark background, or bold alone under NO_COLOR. The background is a fixed
+/// color, not a theme slot, so the NO_COLOR theme cannot blank it.
+fn mark_badge_style(theme: &Theme) -> Style {
+    if theme.no_color {
+        return Style::default().add_modifier(Modifier::BOLD);
+    }
+    Style::default()
+        .fg(theme.accent)
+        .bg(Color::Rgb(40, 35, 20))
+        .add_modifier(Modifier::BOLD)
+}
+
 /// Mark + Delta badge (Feature 1): the time from the marked row to the
 /// selected one, in the top-right corner of the pipe row.
 fn draw_mark_badge(
@@ -610,10 +635,7 @@ fn draw_mark_badge(
     // one column left of its flush-right position.
     let badge_len = UnicodeWidthStr::width(badge.as_str()) as u16;
     let badge_x = (area.x + area.width).saturating_sub(badge_len + 1);
-    let badge_style = Style::default()
-        .fg(theme.accent)
-        .bg(Color::Rgb(40, 35, 20))
-        .add_modifier(Modifier::BOLD);
+    let badge_style = mark_badge_style(theme);
     // Render on row 1 (pipe row) at the far right — avoids overlapping endpoint labels
     crate::tui::render::set_string_clipped(buf, area, badge_x, area.y + 1, &badge, badge_style);
 }
@@ -717,10 +739,25 @@ impl Ladder<'_> {
         // across the whole row (content keeps its own fg). This marks the
         // cursor without shifting any content horizontally.
         if msg.selection_state == SelectionState::Selected {
-            buf.set_style(
-                Rect::new(area.x, y, area.width, 1),
-                Style::default().bg(SELECTION_BG),
-            );
+            let row = Rect::new(area.x, y, area.width, 1).intersection(buf.area);
+            buf.set_style(row, selection_style(self.theme));
+            if !self.theme.no_color {
+                // Each character keeps its hue but must read on the band
+                // (WCAG AA): the default text color is dark on a light
+                // terminal. Runs of one color are computed once.
+                let mut last = None;
+                for x in row.left()..row.right() {
+                    let Some(cell) = buf.cell_mut((x, y)) else {
+                        continue;
+                    };
+                    let shown = match last {
+                        Some((fg, shown)) if fg == cell.fg => shown,
+                        _ => crate::tui::theme::legible_on(cell.fg, SELECTION_BG),
+                    };
+                    last = Some((cell.fg, shown));
+                    cell.fg = shown;
+                }
+            }
         }
     }
 
@@ -732,7 +769,10 @@ impl Ladder<'_> {
         let bar_width = right_pipe.saturating_sub(left_pipe).saturating_sub(1) as usize;
         let padded = rtp_channel_bar(&msg.label, bar_width);
         let bar_style = match msg.selection_state {
-            SelectionState::Selected => msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD),
+            SelectionState::Selected => msg
+                .style
+                .patch(selection_style(self.theme))
+                .add_modifier(Modifier::BOLD),
             _ => msg.style,
         };
         crate::tui::render::set_string_clipped(buf, self.area, bar_x, y, &padded, bar_style);
@@ -760,7 +800,10 @@ impl Ladder<'_> {
             // Drawn the way a sequence diagram shows a self-message: a
             // loop glyph against the pipe, then the label.
             let style = match msg.selection_state {
-                SelectionState::Selected => msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD),
+                SelectionState::Selected => msg
+                    .style
+                    .patch(selection_style(self.theme))
+                    .add_modifier(Modifier::BOLD),
                 _ => msg.style,
             };
             let start = src_x.saturating_add(1);
@@ -807,7 +850,10 @@ impl Ladder<'_> {
         };
         let (arrow_str, arrow_x) = format_arrow_with_shaft(shown, src_x, dst_x, shaft);
         let arrow_style = match msg.selection_state {
-            SelectionState::Selected => msg.style.bg(SELECTION_BG).add_modifier(Modifier::BOLD),
+            SelectionState::Selected => msg
+                .style
+                .patch(selection_style(self.theme))
+                .add_modifier(Modifier::BOLD),
             SelectionState::Related => msg.style,
             SelectionState::Normal => msg.style.add_modifier(Modifier::DIM),
         };
@@ -1661,14 +1707,6 @@ fn format_ladder_with_options(
     let mut pdd_done = false;
     let mut in_call = false;
     let mut prev_ts = first_ts;
-    let cid_colors = [
-        Color::Green,
-        Color::Blue,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Cyan,
-        Color::Red,
-    ];
 
     for (mi, msg) in messages.iter().enumerate() {
         let (ts_str, ts_style) = match ts_mode {
@@ -1728,13 +1766,12 @@ fn format_ladder_with_options(
             ColorMode::Method => message_style(msg, theme),
             ColorMode::CallId => {
                 let ci = msg.call_id().unwrap_or("");
-                let i =
-                    ci.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize)) % cid_colors.len();
-                Style::default().fg(cid_colors[i])
+                let i = ci.bytes().fold(0usize, |a, b| a.wrapping_add(b as usize));
+                super::prepare::cid_style(i, theme)
             }
             ColorMode::CSeq => {
                 let cn = msg.cseq().map(|(n, _)| n).unwrap_or(0);
-                Style::default().fg(cid_colors[(cn as usize) % cid_colors.len()])
+                super::prepare::cid_style(cn as usize, theme)
             }
         };
         let sel = selected_msg == Some(mi);
@@ -2533,6 +2570,193 @@ mod tests {
             saw_count_without_ports,
             "a gap too narrow for the ports still shows codec and count"
         );
+        Ok(())
+    }
+
+    /// Failure: under NO_COLOR the delta badge paints no background color.
+    /// It painted a fixed dark RGB background.
+    #[test]
+    fn the_delta_badge_paints_no_color_under_no_color() {
+        let style = mark_badge_style(&Theme::monochrome());
+        assert_eq!(style.bg, None, "no background color: {style:?}");
+        assert!(
+            matches!(style.fg, None | Some(Color::Reset)),
+            "no text color: {style:?}"
+        );
+    }
+
+    /// Success: under NO_COLOR the delta badge is still bold.
+    #[test]
+    fn the_delta_badge_stays_bold_under_no_color() {
+        let style = mark_badge_style(&Theme::monochrome());
+        assert!(
+            style.add_modifier.contains(Modifier::BOLD),
+            "bold: {style:?}"
+        );
+    }
+
+    /// Edge: with a color theme the badge keeps its accent text on the dark
+    /// background, as before.
+    #[test]
+    fn the_delta_badge_keeps_its_colors_with_the_default_theme() {
+        let theme = Theme::default();
+        let style = mark_badge_style(&theme);
+        assert_eq!(style.bg, Some(Color::Rgb(40, 35, 20)), "background");
+        assert_eq!(style.fg, Some(theme.accent), "accent text");
+    }
+
+    /// Two participants and two INVITE rows, the first selected, drawn at
+    /// 80x24 with `theme`. Returns the buffer.
+    fn selected_row_buffer(theme: &Theme) -> Result<ratatui::buffer::Buffer, TestError> {
+        let parts = vec![
+            Participant {
+                addr: "192.0.2.1:5060".into(),
+                label: "192.0.2.1:5060".into(),
+            },
+            Participant {
+                addr: "192.0.2.2:5060".into(),
+                label: "192.0.2.2:5060".into(),
+            },
+        ];
+        let msgs = vec![
+            fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1)?,
+            fmt_msg("12:00:00.100", SelectionState::Normal, 1, 0)?,
+        ];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+            noted: Vec::new(),
+        };
+        let mut term = terminal(80, 24)?;
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, theme);
+        })?;
+        Ok(term.backend().buffer().clone())
+    }
+
+    /// The rows of `buf` that hold `text`.
+    fn rows_with(buf: &ratatui::buffer::Buffer, text: &str) -> Vec<u16> {
+        (0..buf.area.height)
+            .filter(|&y| {
+                let row: String = (0..buf.area.width)
+                    .filter_map(|x| buf.cell((x, y)).map(ratatui::buffer::Cell::symbol))
+                    .collect();
+                row.contains(text)
+            })
+            .collect()
+    }
+
+    /// Failure: under NO_COLOR the selected row paints no background color.
+    /// It painted a fixed dark RGB band, which hid the terminal's own dark
+    /// text on a light terminal.
+    #[test]
+    fn the_selected_row_paints_no_color_under_no_color() -> Result<(), TestError> {
+        let buf = selected_row_buffer(&Theme::monochrome())?;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = buf.cell((x, y)).ok_or("cell() returned None")?;
+                assert_eq!(cell.bg, Color::Reset, "cell ({x}, {y})");
+            }
+        }
+        Ok(())
+    }
+
+    /// Success: under NO_COLOR the selected row is marked with reverse
+    /// video across its whole width, and no other row is.
+    #[test]
+    fn the_selected_row_is_reversed_under_no_color() -> Result<(), TestError> {
+        let buf = selected_row_buffer(&Theme::monochrome())?;
+        let selected = rows_with(&buf, "12:00:00.000");
+        assert_eq!(selected.len(), 1, "one selected row");
+        for y in 0..buf.area.height {
+            for x in [0, buf.area.width - 1] {
+                let cell = buf.cell((x, y)).ok_or("cell() returned None")?;
+                assert_eq!(
+                    cell.modifier.contains(Modifier::REVERSED),
+                    selected.contains(&y),
+                    "cell ({x}, {y})"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Success: with the default theme every character on the selected row
+    /// meets WCAG AA against the selection band. Its text was the terminal
+    /// default, which is dark on a light terminal, on the dark band.
+    #[test]
+    fn selected_row_text_meets_aa_on_the_selection_band() -> Result<(), TestError> {
+        let buf = selected_row_buffer(&Theme::default())?;
+        let selected = rows_with(&buf, "12:00:00.000");
+        let y = *selected.first().ok_or("no selected row")?;
+        for x in 0..buf.area.width {
+            let cell = buf.cell((x, y)).ok_or("cell() returned None")?;
+            assert_eq!(cell.bg, SELECTION_BG, "cell ({x}, {y})");
+            if cell.symbol().trim().is_empty() {
+                continue;
+            }
+            let r = crate::tui::theme::contrast_ratio(cell.fg, SELECTION_BG)
+                .ok_or_else(|| format!("cell ({x}, {y}) text {:?} is unmeasured", cell.fg))?;
+            assert!(r >= crate::tui::theme::AA_TEXT_CONTRAST, "({x}, {y}) {r}:1");
+        }
+        Ok(())
+    }
+
+    /// Edge: on the selected row a color that already passes on the band is
+    /// kept, next to default-colored text that is replaced: each run of one
+    /// color is judged on its own.
+    #[test]
+    fn a_passing_color_on_the_selected_row_is_kept() -> Result<(), TestError> {
+        let theme = Theme::default();
+        let parts = vec![
+            Participant {
+                addr: "192.0.2.1:5060".into(),
+                label: "192.0.2.1:5060".into(),
+            },
+            Participant {
+                addr: "192.0.2.2:5060".into(),
+                label: "192.0.2.2:5060".into(),
+            },
+        ];
+        let mut selected = fmt_msg("12:00:00.000", SelectionState::Selected, 0, 1)?;
+        selected.style = Style::default().fg(Color::LightGreen);
+        let msgs = vec![selected];
+        let nav = FlowNavigation {
+            scroll_offset: 0,
+            mark_index: None,
+            selected_index: 0,
+            noted: Vec::new(),
+        };
+        let mut term = terminal(80, 24)?;
+        term.draw(|f| {
+            let a = f.area();
+            render_call_flow_direct(f, a, &parts, &msgs, &nav, &theme);
+        })?;
+        let buf = term.backend().buffer().clone();
+        let y = *rows_with(&buf, "12:00:00.000")
+            .first()
+            .ok_or("no selected row")?;
+        let first = buf.cell((0, y)).ok_or("cell() returned None")?;
+        assert_eq!(first.fg, Color::White, "default text is replaced");
+        let arrow = (0..buf.area.width)
+            .filter_map(|x| buf.cell((x, y)))
+            .find(|c| c.symbol() == "\u{2500}")
+            .ok_or("no arrow shaft on the selected row")?;
+        assert_eq!(arrow.fg, Color::LightGreen, "a passing color is kept");
+        Ok(())
+    }
+
+    /// Edge: with the default theme the selected row is not reversed; the
+    /// band alone marks it, as before.
+    #[test]
+    fn the_selected_row_is_not_reversed_with_the_default_theme() -> Result<(), TestError> {
+        let buf = selected_row_buffer(&Theme::default())?;
+        for y in 0..buf.area.height {
+            let cell = buf.cell((0, y)).ok_or("cell() returned None")?;
+            assert!(!cell.modifier.contains(Modifier::REVERSED), "row {y}");
+        }
         Ok(())
     }
 

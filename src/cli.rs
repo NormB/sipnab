@@ -3358,6 +3358,22 @@ pub struct ListenerArgs {
     #[arg(help_heading = "Network listeners", long, value_name = "HOST")]
     pub api_allowed_host: Vec<String>,
 
+    /// Serve the web console at `/console/` on the REST API listener
+    /// (`[api] console`, default off). Needs `--api`. The console is static
+    /// files that call `/v1/` with the bearer token you paste into the page;
+    /// it adds no listener and no access of its own.
+    /// `--api-console=false` turns it off over a config that turns it on.
+    #[arg(
+        help_heading = "Network listeners",
+        long = "api-console",
+        value_name = "BOOL",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_parser = clap::value_parser!(bool)
+    )]
+    pub api_console: Option<bool>,
+
     /// Metrics scrapes served at once before further ones get `503`
     /// (default 16). Config: `[limits] metrics_max_conn`.
     ///
@@ -7127,6 +7143,16 @@ impl Cli {
             .unwrap_or(Self::DEFAULT_API_MAX_ROWS) as usize
     }
 
+    /// Whether the REST API serves the web console: `--api-console`, else
+    /// `[api] console`, else off.
+    #[must_use]
+    pub fn api_console(&self, config: &crate::config::Config) -> bool {
+        self.listener_args
+            .api_console
+            .or(config.api.console)
+            .unwrap_or(false)
+    }
+
     /// The REST API's `Host` allowlist additions: `--api-allowed-host`, else
     /// `[api] allowed_hosts`, else none. The flag REPLACES the key's list
     /// rather than adding to it, as `--mcp-tools` replaces `[mcp] tools`: a
@@ -10742,6 +10768,29 @@ mod tests {
         let plain = Cli::try_parse_from(["sipnab"])?;
         let e = plain.mcp_tool_selection(&config).err().ok_or("config")?;
         assert!(e.contains("[mcp] tools"), "{e}");
+        Ok(())
+    }
+
+    /// `--api-console` is off by default, `[api] console` turns it on, and
+    /// the flag wins over the key in both directions.
+    #[test]
+    fn api_console_default_off_config_then_flag() -> Result<(), TestError> {
+        let mut config = crate::config::Config::default();
+        let plain = Cli::try_parse_from(["sipnab"])?;
+        assert!(!plain.api_console(&config), "off by default");
+        config.api.console = Some(true);
+        assert!(plain.api_console(&config), "the key turns it on");
+        let off = Cli::try_parse_from(["sipnab", "--api-console=false"])?;
+        assert!(!off.api_console(&config), "the flag turns it off");
+        let on = Cli::try_parse_from(["sipnab", "--api-console"])?;
+        assert!(
+            on.api_console(&crate::config::Config::default()),
+            "the bare flag turns it on"
+        );
+        assert!(
+            Cli::try_parse_from(["sipnab", "--api-console=maybe"]).is_err(),
+            "a value that is not a boolean is refused"
+        );
         Ok(())
     }
 

@@ -496,7 +496,7 @@ used.
   INFO sipnab::output::api: REST API listening on 127.0.0.1:8444
   ```
 
-  A center after 0.5.242 also logs the key it encrypts the store under,
+  A center after 0.5.243 also logs the key it encrypts the store under,
   before the store line. This line is from a run on 2026-11-10:
 
   ```text
@@ -756,16 +756,16 @@ a file, and it refuses to start without that key. A center cannot run with
 encryption off.
 
 The outputs below come from a run on 2026-11-10 on one host, with a
-development build after 0.5.242 and the files in one working directory.
+development build after 0.5.243 and the files in one working directory.
 
 **Before you start.**
 
-- **A sipnab after 0.5.242 on the center.** Members need no change, and no
+- **A sipnab after 0.5.243 on the center.** Members need no change, and no
   other system does: OpenSIPS, Kamailio, Homer and any HEP collector keep
   their configuration.
 - **A place to back up one small file**, apart from the center's disk. Whoever
   holds the key file can read the store. Without the key file nobody can.
-- **A center from 0.5.237 to 0.5.242** wrote its store in clear and took no
+- **A center from 0.5.237 to 0.5.243** wrote its store in clear and took no
   key. After the upgrade it does not start until you give it
   `--store-key-file`. On the first start with a key it reads the old store,
   writes it encrypted and replaces the file. The old bytes may stay on the

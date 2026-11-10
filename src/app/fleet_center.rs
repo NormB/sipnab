@@ -868,6 +868,8 @@ fn prepare(
         tls_key: args.tls_key.clone(),
         client_auth: args.client_auth.clone(),
         allowed_hosts: args.allowed_hosts.clone(),
+        // The fleet center serves its own routes, not the capture API's.
+        console: false,
     };
     Ok((addr, state, server_config))
 }

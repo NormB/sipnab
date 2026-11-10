@@ -5385,7 +5385,7 @@ or directory (os error 2)` for a directory that does not exist.
 ### `line {} is not a member record: {e}`
 
 Printed after `--store '<file>':`. The store is one that a release from
-0.5.237 to 0.5.242 wrote in clear, and a line of it, before its last line, is
+0.5.237 to 0.5.243 wrote in clear, and a line of it, before its last line, is
 not a record that center wrote. Someone edited the file, or `--store` names
 another file.
 
@@ -5397,7 +5397,7 @@ heartbeat.
 
 ### `the store's line {} is incomplete, from a write the center did not finish; it is dropped`
 
-A warning. The store is one that a release from 0.5.237 to 0.5.242 wrote in
+A warning. The store is one that a release from 0.5.237 to 0.5.243 wrote in
 clear, and its last line is incomplete, because that center stopped while
 writing it. The center never acknowledged that heartbeat, so the member sends
 it again.
@@ -5407,7 +5407,7 @@ it again.
 ### `--store '{shown}' held {} member(s) in clear, written by a release before encryption at rest; it is sealed now`
 
 A warning, once, on the first start after an upgrade. A release from 0.5.237
-to 0.5.242 wrote the store in clear. The center read it, wrote it encrypted
+to 0.5.243 wrote the store in clear. The center read it, wrote it encrypted
 under `--store-key-file` and replaced the file.
 
 **What to do:** Nothing for the center. The old bytes may remain in the free

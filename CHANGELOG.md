@@ -12,7 +12,32 @@ entry that carries them.
 
 ### Changed
 
-- **Breaking: a fleet center encrypts its store, and needs a key file to start.** `sipnab fleet serve` wrote its store, every member's inventory, in clear. It now seals the store file with AES-256-GCM under a key in a file that only its user can read, and does not start without `--store-key-file <FILE>`. `sipnab fleet keygen --out <FILE>` creates the key and prints its id. A center upgraded from 0.5.237 to 0.5.242 reads its old store on the first start with a key, writes it encrypted and replaces the file. A changed, truncated or swapped store, or a store under a key that is not loaded, stops the center at start with a message that names the file and the key id, and never a key. `--store-old-key-file <FILE>` reads a store under an earlier key once, and the center rewrites it under the current key. `--store-encryption` takes `sealed` (the default), `modular` or `both`; this release runs under `sealed` and refuses the other two. No value turns encryption off. Back the key file up: without it nobody can read the store. How-to: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
+- **Breaking: a fleet center encrypts its store, and needs a key file to start.** `sipnab fleet serve` wrote its store, every member's inventory, in clear. It now seals the store file with AES-256-GCM under a key in a file that only its user can read, and does not start without `--store-key-file <FILE>`. `sipnab fleet keygen --out <FILE>` creates the key and prints its id. A center upgraded from 0.5.237 to 0.5.243 reads its old store on the first start with a key, writes it encrypted and replaces the file. A changed, truncated or swapped store, or a store under a key that is not loaded, stops the center at start with a message that names the file and the key id, and never a key. `--store-old-key-file <FILE>` reads a store under an earlier key once, and the center rewrites it under the current key. `--store-encryption` takes `sealed` (the default), `modular` or `both`; this release runs under `sealed` and refuses the other two. No value turns encryption off. Back the key file up: without it nobody can read the store. How-to: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
+## [0.5.243] - 2026-11-10
+
+### Added
+
+- **The REST API can serve a web console at `/console/` (`--api-console`, `[api] console`).** The console is a read-only page for a browser: the dialogs sipnab holds, one dialog with its SDP offers and answers, its RTP streams and every call leg reachable from it, and the runtime status.
+  - It is off by default, and it needs `--api`.
+  - It is static files compiled into the binary. It loads nothing from another site.
+  - It adds no listener and no access. The page sends the bearer token you paste into it, and keeps that token in memory only.
+  - The `Host` allowlist, TLS, client certificates, the routable-bind refusal and the rate limit apply to it as to `/v1/`.
+  - Every console response carries a Content-Security-Policy that allows only the console's own scripts, styles and requests.
+  - Captured text, such as a Call-ID or a SIP header, is written to the page as text only.
+  - See [Web console](docs/rest-api.md#web-console).
+
+### Changed
+
+- **7z archives are read with `sevenz-rust2` 0.25.0, up from 0.24.2.** The release rejects a member whose decoded data ends before or runs past its declared size, a block whose decoded size differs from its declared size, and an archive whose count of files with data differs from its count of sub-streams. It also checks the CRC of the data a reader leaves unread in the last member of a block. sipnab reports such an archive as broken, or as a wrong password when the archive is encrypted. `lzma-rust2` moves from 0.23.0 to 0.25.0 with it.
+
+### Fixed
+
+- **Colored text on the TUI status rows meets WCAG 2.2 AA contrast (TUI-STATUS-BAND-CONTRAST).** The status rows paint their own background, `status_bg`, and drew error, capture-source, search and filter text on it in the theme colors as configured. Against the default band `#303040` the default `bad` red measured 1.7:1 and the default `selected` yellow 2.5:1; level AA asks 4.5:1 for text. Each such color is now checked against `status_bg` and, when it is below 4.5:1, moved toward white or black until it reaches it. A color that already passes is drawn as configured, and the `NO_COLOR` theme is unchanged. See the [theme guide](docs/theme-guide.md).
+- **The call flow draws no color under `NO_COLOR`, and its selected row is readable on a light terminal (TUI-FLOW-NO-COLOR).** Six message classes took a fixed RGB color that was not a theme slot, and the selected row painted a fixed dark band, so `NO_COLOR=1` still drew both. On a light terminal the band hid the terminal's own dark text. Under `NO_COLOR` the call flow now draws no color and marks the selected row with reverse video. With a color theme, text on the selected row is moved to 4.5:1 against the band when it is below it.
+- **The rest of the TUI's fixed colors are gone under `NO_COLOR` (TUI-FIXED-COLORS-NO-COLOR).** The raw-message search match (black on yellow), the text-field cursor (black on white), the call-flow delta badge background and the Call-ID/CSeq color rotation were fixed colors, not theme slots, so `NO_COLOR=1` still drew them. Under `NO_COLOR` a search match is now bold reverse video, the cursor is reverse video, and the badge and the rotation draw no color.
+- **An error on the TUI status line starts with `Error:` (TUI-ERROR-COLOR-ONLY).** Only its color told an error from a notice, so the two were drawn the same under `NO_COLOR` and for a reader who cannot tell the colors apart. A message that already starts with the word is not labeled twice.
+- **The F1 help lists `j`/`k` for the call flow, raw message, RTP streams and stream detail views, and `Home`/`End` for RTP streams (TUI-HELP-VI-KEYS).** The views accepted the keys and the [key bindings page](docs/keybindings.md) listed them; the help named only the arrow keys.
+- **A release no longer waits in the local queue at its tag push.** `scripts/release-train.py` drives a release from its pull request to the end, and resumes after a crash. It closes the heavy-run release window during remote waits and opens it again before the next local step. On 0.5.240 the tag push queued 434 s behind an ordinary hook.
 
 ## [0.5.242] - 2026-11-09
 

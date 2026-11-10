@@ -7629,6 +7629,157 @@ npx --yes @redocly/cli lint website/static/openapi.json
 
 You can also paste it into <https://editor.swagger.io/>, or feed it to a client generator. That is the point of publishing it.
 
+## Web console
+
+The web console is a page the REST API listener serves at `/console/`. It
+shows the dialogs sipnab holds, one dialog in detail, and the runtime status,
+in a browser.
+
+- It is off by default. `--api-console` or `[api] console = true` turns it on.
+- It only reads. It calls `GET` routes under `/v1/` and nothing else.
+- It is static files compiled into the binary. It loads nothing from another
+  site, and it needs no build step.
+- It adds no listener and no access. The page sends the same bearer token
+  `curl` sends, and the API checks it the same way.
+
+### What the console needs
+
+On the sipnab host:
+
+- A binary with the `api` feature
+  ([Check your binary has the API](#check-your-binary-has-the-api)).
+- The REST API started with `--api`. The console has no listener of its own.
+- A credential, as for any API client: the static key or a signed token
+  ([Authentication](#authentication)). An API on a loopback address without a
+  key takes an empty token field.
+
+On other systems:
+
+- **A browser that reaches the API address.** On the sipnab host itself, use
+  `http://127.0.0.1:8080/console/`. From another machine, forward the port
+  with `ssh -L 8080:127.0.0.1:8080 <host>` and use the same URL, or serve the
+  API over HTTPS ([API TLS](#api-tls)).
+- **HTTPS for any address that is not loopback.** The page sends the token on
+  every request. Over plain HTTP anyone on the path reads it.
+- **Name a reverse proxy, if you use one.** sipnab answers
+  only the `Host` names it knows. Add the proxy's public name with
+  `--api-allowed-host`
+  ([Which `Host` names the API answers](#which-host-names-the-api-answers)).
+  The proxy must forward `/console/` and `/v1/` to the same sipnab, and must
+  pass the `Authorization` header through.
+- **Client certificates, if the API requires them.** Import the client
+  certificate into the browser first. See
+  [Require client certificates](mtls.md).
+
+### Open the console
+
+1. Choose a key, as for any API client
+   ([Choose an API key](#choose-an-api-key)):
+
+   ```bash
+   export SIPNAB_API_KEY="$(openssl rand -hex 32)"
+   ```
+
+2. Start the API with the console on:
+
+   ```bash
+   sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --api 127.0.0.1:8080 --api-console
+   ```
+
+3. Open `http://127.0.0.1:8080/console/` in a browser.
+4. Print the key with `echo "$SIPNAB_API_KEY"`, paste it into **API token**,
+   and select **Connect**.
+5. The header shows the uptime, the dialogs and RTP streams held, and the
+   packets captured. The table lists the dialogs in the order they last
+   changed.
+6. Select a Call-ID to see that dialog: its fields, its SDP offers and
+   answers, its RTP streams, and every call leg reachable from it. Select a
+   leg's Call-ID to move to that leg.
+7. Select **Load more** for the next page, **Refresh** to start the list
+   again, and **Disconnect** to clear the token.
+
+To turn the console on in the config file instead:
+
+```toml
+[api]
+console = true
+```
+
+`--api-console=false` turns it off for one run over a config file that turns
+it on.
+
+### What the console does with the token
+
+- The token stays in the page's memory. The page does not write it to browser
+  storage, a cookie or the URL.
+- A reload, a closed tab or **Disconnect** clears it. Paste it again to
+  continue.
+- The page empties the token field as soon as you select **Connect**.
+- Do not let the browser's password manager save it, on a shared machine.
+
+### Check that it works
+
+The page and its files need no token. Every route with data does:
+
+```bash
+# Run all of these, in order.
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/console/
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/v1/dialogs/tail
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $SIPNAB_API_KEY" http://127.0.0.1:8080/v1/dialogs/tail
+```
+
+```text
+200
+401
+200
+```
+
+Without `--api-console` the first line is `404`.
+
+### How sipnab protects the console
+
+- **sipnab serves the files before authentication.** A browser cannot send an
+  `Authorization` header when it opens a page, so no browser could open a
+  page behind the token. The files hold no captured data and are the same in
+  every copy of a release.
+- **Every other rule of the listener applies to the console unchanged.** That
+  covers the `Host` allowlist, TLS and client certificates, the refusal of a
+  routable bind without a credential, the per-address rate limit and the
+  in-flight cap.
+- **Each console response carries a Content-Security-Policy.** The policy is
+  `default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'`.
+  The browser then runs only the console's own scripts, sends requests only
+  to the address that served the page, and refuses to show the page in a
+  frame.
+- **Each console response also carries** `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+- **The page shows captured text as text.** A SIP header, a URI, a Call-ID and a
+  user agent are all chosen by whoever sent the packet. The page writes each
+  one as text, never as markup, a link or a style.
+
+### What the console does not do yet
+
+- Play or download call audio.
+- Change anything: persistence, bans, reverts and vCon export stay with the
+  API routes and the command line.
+- Show the media relay views.
+- Filter or sort the dialog list.
+
+### When the console does not work
+
+| What you see | Cause and fix |
+|---|---|
+| `404` at `/console/` | The console is off. Start sipnab with `--api-console`, or set `[api] console = true`. |
+| The browser cannot connect | Nothing listens there, or the address is loopback on another machine. Check `--api`, then forward the port or use HTTPS. |
+| `/console` shows a redirect to `/console/` | Expected. The page loads its files by relative name, so it lives under `/console/`. |
+| "The API refused the token (401)" | The token is wrong, expired or revoked, or its scope does not cover reading. The page clears it. Paste a valid one. |
+| "the API forbids this request (403)" naming the `Host` header | You reach sipnab by a name it was not given. Add `--api-allowed-host <name>`. |
+| A `403` page before the console appears | The same `Host` check, on the page itself. Add `--api-allowed-host <name>`. |
+| "the API is busy or is limiting requests" | Over the per-address rate or the in-flight cap. Wait a few seconds and select **Refresh**. |
+| "no answer from the API" | sipnab stopped, the tunnel closed, or a proxy forwards `/console/` but not `/v1/`. |
+| The page has no styling or does nothing | Something between the browser and sipnab rewrites the page or strips its headers. Open the browser's developer console and read the Content-Security-Policy message. |
+| The page asks for the token again after a reload | Expected. The page keeps it in memory only. |
+
 ## Endpoint reference
 
 The base URL is whatever you pass to `--api` (e.g., `http://127.0.0.1:8080`). Data endpoints use a `/v1/` prefix. Utility endpoints (`/health`, `/metrics`) have no prefix.
@@ -13130,7 +13281,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.241 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.242 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13153,7 +13304,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.241` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.242` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13327,7 +13478,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.241) | Plugin | `Recommends` |
+| Artifact (0.5.242) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13367,11 +13518,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.241 for the
+it first, in the same shell, to the release you want, e.g. 0.5.242 for the
 latest:
 
 ```bash
-VERSION=0.5.241
+VERSION=0.5.242
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13498,13 +13649,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.241, as in
+you want, e.g. 0.5.242, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.241
+   VERSION=0.5.242
    ```
 
 - Download the package:
@@ -13615,25 +13766,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.241-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.242-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.241-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.242-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.241-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.242-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.241-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.242-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14118,14 +14269,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.241
+docker pull ghcr.io/normb/sipnab:0.5.242
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.241` | That release |
+| `0.5.242` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `sha-<commit>` | The image built from that commit |
 | `latest` | The newest commit on `main`, which can be ahead of every release |
@@ -14141,7 +14292,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.241 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.242 -N -I /data/capture.pcap
 ```
 
 **Live capture needs `--user root`.** The image runs as the unprivileged user
@@ -14150,7 +14301,7 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 to `nobody`:
 
 ```bash
-docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.241 -N -d eth0
+docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.242 -N -d eth0
 ```
 
 ```text
@@ -14168,7 +14319,7 @@ Permission denied on 'lo'. Grant capture capabilities once (Linux), then re-run 
 The outputs above came from an arm64 image built from the
 [`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
 stage with the 0.5.232 `.deb` binary, capturing `lo`, because the published
-image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.241`
+image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.242`
 shows the same `"User": "sipnab"` for the published image.
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14181,11 +14332,11 @@ shows the same `"User": "sipnab"` for the published image.
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.241 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.242 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.241` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.241`. For `latest` it is
+It names the workflow and the ref that built the image. For `0.5.242` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.242`. For `latest` it is
 `.github/workflows/docker.yml@refs/heads/main`.
 
 ### Build the Docker image locally
@@ -14289,7 +14440,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.242 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.243 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -14472,7 +14623,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.241
+docker pull ghcr.io/normb/sipnab:0.5.242
 ```
 
 Pulling `latest` gives the newest `main` commit, not the newest release. See
@@ -19462,6 +19613,44 @@ sipnab's TUI uses 11 semantic color slots. There is also `highlight`, a legacy a
 `status_bg` is configurable like every other color above. Its dark blue-gray
 default stays readable on both dark and light terminals.
 
+### Contrast on the status band
+
+sipnab draws the text of the status rows on `status_bg`, not on the terminal
+background. It checks each color it draws there against `status_bg` with the
+WCAG 2.2 contrast formula.
+
+- sipnab draws a color that reaches 4.5:1 (level AA for text) as configured.
+- sipnab moves a color below 4.5:1 toward white on a dark band, or toward black
+  on a light band, until it reaches 4.5:1. The hue stays the same.
+
+With the default theme, `bad` (red) reaches 1.7:1 on `#303040` as configured,
+and `selected` (yellow) reaches 2.5:1. sipnab draws both lighter on the status
+rows. To keep a color exactly as configured, pick one that reaches 4.5:1 against
+your `status_bg`.
+
+The selected row of the call flow has its own dark band. sipnab checks the text
+on that row against the band in the same way.
+
+### `NO_COLOR`
+
+With a non-empty `NO_COLOR` environment variable, sipnab ignores `[theme]` and
+draws without color:
+
+```bash
+NO_COLOR=1 sipnab -I capture.pcap
+```
+
+- sipnab paints no status band and adjusts no color.
+- The call flow draws every message in the terminal's own text color. A 5xx
+  response stays bold.
+- The call flow marks the selected row with reverse video in place of the band.
+- The Call-ID and CSeq color modes of the call flow (`c`) draw no color.
+- A search match in the raw message is bold reverse video.
+- The cursor of a text field is reverse video.
+
+sipnab does not rely on color alone for an error. An error on the status line
+starts with `Error:`, with or without `NO_COLOR`.
+
 ## Supported color syntax
 
 ### Named colors
@@ -22173,6 +22362,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-tls-client-auth` | `<off\|optional\|required>` | `required` with `--api-tls-client-ca`, else `off` | 0.5.237 | When the REST API asks for a client certificate. `optional` verifies one when the client sends it and still serves a client that sends none; `required` refuses that handshake. `optional` or `required` without `--api-tls-client-ca` stops sipnab at startup. `off` wins over a client CA, so this flag can turn off what `[api] tls_client_ca` asks for; sipnab then logs at warn that it does not read the CA. Feature: `api`. How-to: [Require client certificates](mtls.md). Config: `[api] tls_client_auth` |
 | `--api-max-conn` | `<N>` | `100` | 0.3.0 | Maximum API requests handled at once; sipnab answers 503 to a request past it. `0` means no limit. Feature: `api` |
 | `--api-allowed-host` | `<HOST>` | -- | 0.5.198 | Additional `Host` header values the REST API accepts (repeatable), against DNS rebinding: a web page that points its own name at `127.0.0.1` and reads a loopback API with no key from your browser. Accepted by default: `localhost`, `127.0.0.1`, `::1` and the address `--api` binds, on any port, and any IP address when `--api` binds `0.0.0.0` or `::`. Add the name clients use, such as a reverse proxy's public name; `name:port` accepts that port only. Any other `Host` gets `403`, and a request with no `Host` gets `400`. `*` disables the check (not recommended). See [Which `Host` names the API answers](rest-api.md#which-host-names-the-api-answers). Config: `[api] allowed_hosts`, which the flag replaces Feature: `api` |
+| `--api-console` | `[=BOOL]` | off | 0.5.243 | Serve the web console at `/console/` on the REST API listener. Needs `--api`. The console is static files compiled into the binary: a read-only page that calls `/v1/` with the bearer token you paste into it. It adds no listener and no access of its own, and the `Host` allowlist, TLS and the rate limit apply to it as to the API. `--api-console=false` turns it off over a config file that turns it on. Config: `[api] console`. Feature: `api`. How-to: [Web console](rest-api.md#web-console) |
 | `--api-signing-key` | `<KEY>` | -- | 0.4.3 | HMAC signing key for self-describing bearer tokens, taken as raw bytes (any string — not hex-decoded). Repeatable: the first mints, verification accepts every one, so keys can rotate with overlap. Also reads `$SIPNAB_API_SIGNING_KEY`; `--help` names the variable and never shows its value. See [`auth.md`](./auth.md). Feature: `api` |
 | `--api-signing-key-file` | `<FILE>` | -- | 0.4.3 | Read an API signing key from a file (contents trimmed); it becomes the minting key. Feature: `api` |
 | `--api-revoked-file` | `<FILE>` | -- | 0.4.3 | Revocation denylist: one revoked token `id` per line; reloaded on mtime change. Feature: `api` |
@@ -22231,6 +22421,8 @@ This applies to root runs and to unprivileged runs set up with
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-file-root /var/lib/sipnab/captures` — a live capture whose REST clients may also diff rotations: `GET /v1/captures/compare?a=yesterday.pcap&b=today.pcap` reads two files from that one directory and nothing outside it, ranking what moved. Off without the flag, when the route answers `503`
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key` — a public-facing API over HTTPS with no reverse proxy: signed tokens, a certificate whose key is `chmod 600`, and no plain-HTTP warning at startup
 - `sudo sipnab -N -d eth0 --api 127.0.0.1:8080 --api-key s3cret --api-allowed-host sipnab.example.com` — behind a reverse proxy that forwards `Host: sipnab.example.com` unchanged: sipnab serves that name, while a page that rebinds any other name to `127.0.0.1` gets `403`
+- `sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-console` — serve the read-only web console at `http://127.0.0.1:8080/console/` beside the API; paste the API key into the page to list the dialogs
+- `sipnab -N -I capture.pcap --config sipnab.toml --api 127.0.0.1:8080 --api-console=false` — a host config that sets `[api] console = true`, overridden for one run that serves the API without the console
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-allowed-host capture.example.com:8443` — a public-facing HTTPS API reached by name on port 8443 only: sipnab serves `Host: capture.example.com:8443` and refuses the same name on any other port. Clients reaching it by IP address need no entry on a wildcard bind
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-tls-client-ca /etc/sipnab/clients-ca.pem` — an HTTPS API that refuses the handshake of any client without a certificate from `clients-ca.pem`; each request still needs its token ([Require client certificates](mtls.md))
 - `sudo sipnab -N -d eth0 --api 0.0.0.0:8443 --api-signing-key-file /etc/sipnab/signing.key --api-tls-cert /etc/sipnab/api.pem --api-tls-key /etc/sipnab/api.key --api-tls-client-ca /etc/sipnab/clients-ca.pem --api-tls-client-auth optional` — the same while client certificates roll out: sipnab verifies a client that sends one and names it in the log, and still serves one that sends none
@@ -28454,7 +28646,7 @@ or directory (os error 2)` for a directory that does not exist.
 ### `line {} is not a member record: {e}`
 
 Printed after `--store '<file>':`. The store is one that a release from
-0.5.237 to 0.5.242 wrote in clear, and a line of it, before its last line, is
+0.5.237 to 0.5.243 wrote in clear, and a line of it, before its last line, is
 not a record that center wrote. Someone edited the file, or `--store` names
 another file.
 
@@ -28466,7 +28658,7 @@ heartbeat.
 
 ### `the store's line {} is incomplete, from a write the center did not finish; it is dropped`
 
-A warning. The store is one that a release from 0.5.237 to 0.5.242 wrote in
+A warning. The store is one that a release from 0.5.237 to 0.5.243 wrote in
 clear, and its last line is incomplete, because that center stopped while
 writing it. The center never acknowledged that heartbeat, so the member sends
 it again.
@@ -28476,7 +28668,7 @@ it again.
 ### `--store '{shown}' held {} member(s) in clear, written by a release before encryption at rest; it is sealed now`
 
 A warning, once, on the first start after an upgrade. A release from 0.5.237
-to 0.5.242 wrote the store in clear. The center read it, wrote it encrypted
+to 0.5.243 wrote the store in clear. The center read it, wrote it encrypted
 under `--store-key-file` and replaced the file.
 
 **What to do:** Nothing for the center. The old bytes may remain in the free
@@ -34818,6 +35010,7 @@ bind).
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `allowed_hosts` | list of strings | `[]` | Extra `Host` values to serve, such as a reverse proxy's public name. `name:port` accepts that port only. `"*"` turns the check off. `--api-allowed-host` replaces the list |
+| `console` | boolean | `false` | Serve the web console at `/console/` on the REST API listener: a read-only page that calls `/v1/` with the bearer token you paste into it. Used only when `--api` starts the API. See [Web console](rest-api.md#web-console). `--api-console` overrides it |
 | `tls_cert` | string | -- | PEM certificate chain the REST API serves HTTPS with, the server's certificate first. Needs `tls_key`. Used only when `--api` starts the API. See [API TLS](rest-api.md#api-tls). An empty string fails validation and names the key. `--api-tls-cert` overrides it |
 | `tls_key` | string | -- | PEM private key for `tls_cert`. sipnab refuses a key any other user on the host can read. An empty string fails validation and names the key. `--api-tls-key` overrides it |
 | `tls_client_ca` | string | -- | CA certificates (PEM) a client certificate must chain to: the REST API then asks each client for a certificate (mutual TLS). The bearer token is still checked. Needs `tls_cert` and `tls_key`. sipnab refuses a file any user can write. See [Require client certificates](mtls.md). An empty string fails validation and names the key. `--api-tls-client-ca` overrides it |
@@ -35930,7 +36123,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.242 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.243 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -36632,7 +36825,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.242"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.243"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -37317,7 +37510,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.242",
+  "version": "0.5.243",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -38259,7 +38452,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.242"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.243"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -39907,7 +40100,7 @@ used.
   INFO sipnab::output::api: REST API listening on 127.0.0.1:8444
   ```
 
-  A center after 0.5.242 also logs the key it encrypts the store under,
+  A center after 0.5.243 also logs the key it encrypts the store under,
   before the store line. This line is from a run on 2026-11-10:
 
   ```text
@@ -40167,16 +40360,16 @@ a file, and it refuses to start without that key. A center cannot run with
 encryption off.
 
 The outputs below come from a run on 2026-11-10 on one host, with a
-development build after 0.5.242 and the files in one working directory.
+development build after 0.5.243 and the files in one working directory.
 
 **Before you start.**
 
-- **A sipnab after 0.5.242 on the center.** Members need no change, and no
+- **A sipnab after 0.5.243 on the center.** Members need no change, and no
   other system does: OpenSIPS, Kamailio, Homer and any HEP collector keep
   their configuration.
 - **A place to back up one small file**, apart from the center's disk. Whoever
   holds the key file can read the store. Without the key file nobody can.
-- **A center from 0.5.237 to 0.5.242** wrote its store in clear and took no
+- **A center from 0.5.237 to 0.5.243** wrote its store in clear and took no
   key. After the upgrade it does not start until you give it
   `--store-key-file`. On the first start with a key it reads the old store,
   writes it encrypted and replaces the file. The old bytes may stay on the
@@ -48104,7 +48297,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.242",
+  "version": "0.5.243",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -83127,26 +83320,7 @@ hook steps, the workflow runs for the CI steps, and the tag and Pages times.
 | `.deb` steps queued for the heavy-run main slot | 10 min | none: 09:27:23 to 09:27:51 over SSH, outside heavy-run |
 | Merge to site | about 3 h | after this table |
 
-On this host, open the heavy-run release window before the release pull request merges,
-and close it once the site advertises the release. To open it:
-
-```sh
-~/Development/bin/heavy-run --release-window open release-<version> 120
-```
-
-To close it:
-
-```sh
-~/Development/bin/heavy-run --release-window close release-<version>
-```
-
-- While the window is open, an ordinary main-slot job waits instead of starting.
-  Lane, urgent and quick jobs start as before, and a job already running is not stopped.
-- The window expires on its own after the minutes given (at most 360), so a crashed release
-  cannot hold the queue.
-- `heavy-report` prints whether the window is open, whose it is and how long it has left.
-- The v0.5.239 tag push waited 769 s in the lane queue behind an ordinary main-slot job that
-  had started 7 s before it.
+Run a release with [the release train](#the-release-train), which opens and closes the heavy-run release window around the local steps.
 
 The order is therefore:
 
@@ -83613,6 +83787,79 @@ The homepage's test count is not a marker.
   - Platform-gated tests mean the macOS leg runs a handful fewer.
   - So one advertised number cannot be true of both.
   - The figure describes the Linux run.
+
+### The release train
+
+[`scripts/release-train.py`](../../scripts/release-train.py) is one entry point from a release pull request to the end of a release.
+Every run reads where the release is from GitHub and git, so a re-run after a crash continues from there.
+
+**Prerequisites.**
+
+- The release commit is on the branch `release/<version>`, and its pull request is open.
+- `heavy-run`, `land-queue`, `required-checks` and `cla-owner-exempt` are on `PATH`, or in the directory `--bin` names.
+- The prerequisites of [After the release](#after-the-release) hold.
+
+**Steps.** From a checkout of `main` with the tags fetched:
+
+```sh
+python3 scripts/release-train.py <version> --host <user>@<host>
+```
+
+It runs these stages, each only when the facts say it is due:
+
+| Stage | What happens | Window |
+|---|---|---|
+| `ci-wait` | Posts the CLA status for the head, then waits for the pull request's checks. | Closed, then open for the last few checks |
+| `land` | Lands the pull request through `land-queue` and `required-checks`. | Open |
+| `tag` | Makes the signed tag on the merge commit and pushes it in the lane. | Open |
+| `release-wait` | Waits for `release.yml` on the tag. | Closed |
+| `post` | Runs `scripts/post-release.py run <version> --host <user>@<host>`. | Closed |
+
+**The window rule.** The release window stops ordinary main-slot jobs from starting, and cannot stop one that is running.
+So it has to be open for about one hook's length before a local step, and it must not hold the slot during a long remote wait.
+
+- During the pull request's CI the train keeps the window closed.
+- It opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+- It keeps the window open through the landing and the tag push, closes it once the tag is on GitHub, and leaves it closed for the release workflow and the post checks, which use no main slot.
+- It closes its window on every exit, and leaves another owner's window alone.
+- On 0.5.239 there was no window, and the tag push waited 769 s behind an ordinary job that had started 7 s before it.
+- On 0.5.240 the window stayed closed for all of CI, an ordinary hook started in the same second, and the tag queued 434 s behind it.
+
+To open the window by hand:
+
+```sh
+~/Development/bin/heavy-run --release-window open release-<version> 120
+```
+
+To close it by hand:
+
+```sh
+~/Development/bin/heavy-run --release-window close release-<version>
+```
+
+- While the window is open, an ordinary main-slot job waits instead of starting.
+  Lane, urgent and quick jobs start as before, and a job already running is not stopped.
+- The window expires on its own after the minutes given (at most 360), so a crashed release
+  cannot hold the queue.
+- `heavy-report` prints whether the window is open, whose it is and how long it has left.
+
+**Verify.** The exit status says how the train ended:
+
+| Exit | Meaning | Next |
+|---|---|---|
+| 0 | The release finished, and every post check passed. | Keep the `ATTACHED:` line for the ledger row. |
+| 1 | The train stopped; the output names the stage and why. | Fix it and run the same command again. |
+| 2 | Usage error. | Give the version as `X.Y.Z` and `--host`. |
+| 3 | The post checks withdrew the release. | Read the verdict. |
+| 4 | The withdrawal did not complete. | Run the printed commands now. |
+
+**Troubleshooting.**
+
+- `no-pr`: GitHub lists no pull request for the branch `release/<version>`, or GitHub closed it without merging.
+- `ci-failed: <names>`: fix the checks, push, and run the train again.
+- After an exit of 3 or 4 the train does not run the post checks again. To retry them, add `--retry-post`.
+- `the local tag v<version> is on <sha>, not the merge commit <sha>`: delete the stale local tag, then run the train again.
+- [`scripts/tests/test_release_train.py`](../../scripts/tests/test_release_train.py) runs a whole release on a fake clock.
 
 ### After the release
 
@@ -86498,6 +86745,7 @@ Each successful run gets a row here.
 | 0.5.239 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-09 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.240 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-09 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.241 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-09 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.242 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it

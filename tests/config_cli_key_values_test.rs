@@ -127,6 +127,7 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    ("api", "console", KeyKind::Bool),
     (
         "api",
         "tls_cert",

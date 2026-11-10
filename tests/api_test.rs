@@ -2032,3 +2032,91 @@ fn the_vcon_route_names_the_other_leg() -> Result<(), TestError> {
     }
     Ok(())
 }
+
+// ── Web console (`--api-console` / `[api] console`) ────────────────────────
+//
+// Static files on the API listener. The in-process tests beside the module
+// (`src/output/api/console.rs`) cover the headers and the routes; these drive
+// the real binary, so they cover the flag, the config key and the wiring
+// between them.
+
+/// `--api-console` serves the page on the API listener, and the API routes
+/// answer beside it.
+#[test]
+fn api_console_serves_the_page() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-console"])?;
+    let page = srv.get("/console/")?;
+    assert_eq!(page.status, 200, "{}", page.body);
+    assert_eq!(
+        page.content_type.as_deref(),
+        Some("text/html; charset=utf-8"),
+        "the page is HTML in UTF-8"
+    );
+    assert!(
+        page.body.contains("<title>sipnab console</title>"),
+        "the page is the console"
+    );
+    assert_eq!(
+        srv.get("/v1/dialogs/tail")?.status,
+        200,
+        "the API answers beside the console"
+    );
+    Ok(())
+}
+
+/// Without the flag the listener has no console path.
+#[test]
+fn the_console_is_not_served_without_the_flag() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&[])?;
+    for path in ["/console", "/console/", "/console/console.js"] {
+        assert_eq!(srv.get(path)?.status, 404, "{path}");
+    }
+    Ok(())
+}
+
+/// `[api] console = true` turns the console on as the flag does, and
+/// `--api-console=false` turns it off for one run over that file.
+#[test]
+fn the_console_config_key_turns_it_on_and_the_flag_overrides_it() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let cfg = dir.path().join("sipnab.toml");
+    std::fs::write(&cfg, "[api]\nconsole = true\n")?;
+    let cfg = cfg.to_str().ok_or("utf-8 path")?;
+    let on = ApiServer::spawn(&["--config", cfg])?;
+    assert_eq!(on.get("/console/")?.status, 200, "the key");
+    let off = ApiServer::spawn(&["--config", cfg, "--api-console=false"])?;
+    assert_eq!(off.get("/console/")?.status, 404, "the flag over the key");
+    Ok(())
+}
+
+/// On a server with a key, the page needs no token and every data route
+/// still does: the console is no way around the credential.
+#[test]
+fn the_console_page_needs_no_token_and_the_data_does() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-key", "s3cret-key", "--api-console"])?;
+    assert_eq!(srv.get("/console/")?.status, 200, "the page");
+    assert_eq!(srv.get("/v1/dialogs/tail")?.status, 401, "no token");
+    assert_eq!(
+        srv.get_bearer("/v1/dialogs/tail", "wrong-key")?.status,
+        401,
+        "wrong token"
+    );
+    assert_eq!(
+        srv.get_bearer("/v1/dialogs/tail", "s3cret-key")?.status,
+        200,
+        "the token the page sends"
+    );
+    Ok(())
+}
+
+/// The `Host` allowlist covers the console: a rebound name gets neither the
+/// page nor a script.
+#[test]
+fn a_rebound_host_does_not_get_the_console() -> Result<(), TestError> {
+    let srv = ApiServer::spawn(&["--api-console"])?;
+    for path in ["/console/", "/console/console.js"] {
+        let resp = srv.get_as_host(path, "evil.example")?;
+        assert_eq!(resp.status, 403, "{path}: {}", resp.body);
+    }
+    Ok(())
+}

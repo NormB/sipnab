@@ -35,6 +35,8 @@
 //! Requests are rate-limited to 100 per second per source IP. Excess
 //! requests return 503 Service Unavailable.
 
+mod console;
+
 use crate::host_allowlist::HostAllowlist;
 use crate::tls_listener::TlsListener;
 #[cfg(test)]
@@ -1072,6 +1074,36 @@ fn percent_decode_lossy(s: &str) -> String {
 ///
 /// * `state` — Shared stores, verifier, and rate limiter for all handlers.
 pub fn build_router(state: ApiState) -> Router {
+    router_for(state, false)
+}
+
+/// [`build_router`], with the web console's static files under `/console/`
+/// (`--api-console` / `[api] console`).
+///
+/// The console routes sit inside the same router, so the request hardening
+/// here and every layer `serve_on` adds (the `Host` allowlist, the in-flight
+/// cap) apply to them as to `/v1/`. The module `console`, beside this file,
+/// holds the files and the reason they need no token.
+///
+/// # Arguments
+///
+/// * `state` — Shared stores, verifier, and rate limiter for all handlers.
+pub fn build_router_with_console(state: ApiState) -> Router {
+    router_for(state, true)
+}
+
+/// The router [`serve_on`] serves: [`build_router`], or
+/// [`build_router_with_console`] when `console` is set, which it logs.
+fn served_router(state: ApiState, console: bool) -> Router {
+    if console {
+        tracing::info!("REST API web console enabled at /console/");
+    }
+    router_for(state, console)
+}
+
+/// The one router both [`build_router`] and [`build_router_with_console`]
+/// return, so the two cannot differ by anything but the console routes.
+fn router_for(state: ApiState, with_console: bool) -> Router {
     let router = Router::new()
         .route("/health", get(health_check))
         .route("/v1/dialogs", get(list_dialogs))
@@ -1125,7 +1157,7 @@ pub fn build_router(state: ApiState) -> Router {
     // registered where the senders roster is, for the same reason.
     #[cfg(feature = "hep")]
     let router = router.route("/v1/th-mappings", get(get_th_mappings));
-    router
+    let router = router
         .route(
             "/v1/persistence",
             get(get_persistence).post(set_persistence),
@@ -1166,7 +1198,13 @@ pub fn build_router(state: ApiState) -> Router {
         .route("/v1/runtime", get(get_runtime))
         .route("/v1/capabilities", get(get_capabilities))
         .route("/v1/inventory", get(get_inventory))
-        .route("/metrics", get(get_metrics))
+        .route("/metrics", get(get_metrics));
+    let router = if with_console {
+        console::mount(router)
+    } else {
+        router
+    };
+    router
         .with_state(state)
         // Request hardening on every route.
         .layer(axum::middleware::from_fn(refuse_password_in_url_mw))
@@ -1216,6 +1254,9 @@ pub struct ApiServerConfig {
     /// beyond the loopback names and the bound address. `*` disables the
     /// check. See [`crate::host_allowlist`].
     pub allowed_hosts: Vec<String>,
+    /// `--api-console` / `[api] console`: serve the web console's static
+    /// files under `/console/` on this listener. Off by default.
+    pub console: bool,
 }
 
 /// How long a connecting client has to finish its TLS handshake. The same
@@ -1418,7 +1459,7 @@ pub async fn serve_on(
     } else {
         tracing::info!("REST API allowed Host headers: {:?}", hosts.describe());
     }
-    let router = build_router(state);
+    let router = served_router(state, server_config.console);
 
     // Wrap with an in-flight-request limiter if the cap is enabled. The
     // semaphore permit is held for the whole request, so it bounds requests
@@ -10439,7 +10480,7 @@ mod tests {
         Ok(())
     }
 
-    fn make_state() -> ApiState {
+    pub(super) fn make_state() -> ApiState {
         ApiState {
             relay_query: Default::default(),
             alias_thresholds: Default::default(),
@@ -11698,7 +11739,7 @@ mod tests {
     }
 
     /// Build an `ApiState` whose verifier accepts only the given static key.
-    fn make_state_with_key(key: &str) -> ApiState {
+    pub(super) fn make_state_with_key(key: &str) -> ApiState {
         ApiState {
             relay_query: Default::default(),
             alias_thresholds: Default::default(),
@@ -11836,6 +11877,7 @@ mod tests {
             tls_key: key.map(|p| p.to_string_lossy().into_owned()),
             client_auth: crate::config::ClientCertAuth::default(),
             allowed_hosts: Vec::new(),
+            console: false,
         }
     }
 
@@ -12421,7 +12463,7 @@ mod tests {
     }
 
     /// Build a test request with the ConnectInfo extension set to localhost.
-    fn test_request(uri: &str) -> Result<Request<Body>, TestError> {
+    pub(super) fn test_request(uri: &str) -> Result<Request<Body>, TestError> {
         let mut req = Request::builder()
             .uri(uri)
             .body(Body::empty())
@@ -12434,7 +12476,7 @@ mod tests {
     }
 
     /// Build a test request with custom headers and ConnectInfo.
-    fn test_request_with_header(
+    pub(super) fn test_request_with_header(
         uri: &str,
         header_name: &str,
         header_value: &str,
@@ -12452,7 +12494,7 @@ mod tests {
     }
 
     /// Collect a response `Body` into a UTF-8 `String`.
-    async fn body_to_string(body: Body) -> Result<String, TestError> {
+    pub(super) async fn body_to_string(body: Body) -> Result<String, TestError> {
         let bytes = body
             .collect()
             .await

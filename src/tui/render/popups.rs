@@ -20,6 +20,16 @@ pub(in crate::tui) fn centered_popup(area: Rect, width: u16, height: u16) -> Rec
     Rect::new(x, y, w, h)
 }
 
+/// The style of the block cursor in a text field: black on a white block,
+/// or reverse video under NO_COLOR. The block is a fixed color, not a theme
+/// slot, so the NO_COLOR theme cannot blank it. Every text field uses this.
+fn cursor_style(theme: &Theme) -> Style {
+    if theme.no_color {
+        return Style::default().add_modifier(Modifier::REVERSED);
+    }
+    Style::default().bg(Color::White).fg(Color::Black)
+}
+
 /// Build the styled spans for an editable path line: a header-colored label
 /// followed by the path text with a reverse-video block cursor.
 ///
@@ -33,7 +43,7 @@ fn path_with_cursor_spans<'a>(
     cursor: usize,
     theme: &Theme,
 ) -> Vec<Span<'a>> {
-    let cursor_style = Style::default().bg(Color::White).fg(Color::Black);
+    let cursor_style = cursor_style(theme);
     let text_style = Style::default()
         .fg(theme.foreground)
         .add_modifier(Modifier::BOLD);
@@ -1019,7 +1029,7 @@ pub(in crate::tui) fn render_filter_text_field(
             content_x + cursor as u16,
             y,
             cursor_char,
-            Style::default().bg(Color::White).fg(Color::Black),
+            cursor_style(theme),
         );
         // After cursor (clipped; the window may end before the cursor does)
         if cursor_end < visible_end {
@@ -1483,6 +1493,50 @@ mod tests {
     use crate::tui::{NameTarget, NoteEditorState, Popup};
 
     type TestError = Box<dyn std::error::Error>;
+
+    /// Failure: under NO_COLOR the text cursor paints no color. It painted a
+    /// fixed white block with black text.
+    #[test]
+    fn the_text_cursor_paints_no_color_under_no_color() {
+        let style = cursor_style(&Theme::monochrome());
+        assert_eq!(style.bg, None, "no background color: {style:?}");
+        assert_eq!(style.fg, None, "no text color: {style:?}");
+    }
+
+    /// Success: under NO_COLOR the text cursor is reverse video.
+    #[test]
+    fn the_text_cursor_is_reversed_under_no_color() {
+        let style = cursor_style(&Theme::monochrome());
+        assert!(
+            style.add_modifier.contains(Modifier::REVERSED),
+            "reverse video: {style:?}"
+        );
+    }
+
+    /// Edge: with a color theme the cursor keeps its white block, as before.
+    #[test]
+    fn the_text_cursor_is_a_white_block_with_the_default_theme() {
+        let style = cursor_style(&Theme::default());
+        assert_eq!(style.bg, Some(Color::White), "the block: {style:?}");
+        assert_eq!(style.fg, Some(Color::Black), "the text: {style:?}");
+    }
+
+    /// Edge: with an empty path under NO_COLOR, the cursor is a reversed
+    /// space after the label, so an empty field still shows where typing goes.
+    #[test]
+    fn an_empty_path_shows_a_reversed_cursor_under_no_color() -> Result<(), TestError> {
+        let theme = Theme::monochrome();
+        let spans = path_with_cursor_spans("  Save to: ", "", 0, &theme);
+        let cursor = spans.last().ok_or("the cursor span")?;
+        assert_eq!(cursor.content, " ", "the cursor is one space");
+        assert!(
+            cursor.style.add_modifier.contains(Modifier::REVERSED),
+            "reverse video: {:?}",
+            cursor.style
+        );
+        assert_eq!(cursor.style.bg, None, "no color: {:?}", cursor.style);
+        Ok(())
+    }
 
     /// Flatten a rendered frame to text, one line per row.
     fn frame_text(buf: &ratatui::buffer::Buffer) -> Result<String, TestError> {

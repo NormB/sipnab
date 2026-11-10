@@ -32,6 +32,10 @@ pub struct Theme {
     pub border: Color,
     /// Status bar background — distinct from terminal bg for visibility.
     pub status_bg: Color,
+    /// NO_COLOR was requested: this is [`Self::monochrome`]. A view that
+    /// draws a color of its own, one that is not a slot above, leaves it out
+    /// when this is set and marks state with a text attribute instead.
+    pub no_color: bool,
 }
 
 impl Default for Theme {
@@ -54,6 +58,7 @@ impl Default for Theme {
             muted: Color::DarkGray,
             border: Color::White,
             status_bg: Color::Rgb(48, 48, 64), // Dark blue-gray, readable on both dark and light
+            no_color: false,
         }
     }
 }
@@ -124,6 +129,7 @@ impl Theme {
             muted: Color::Reset,
             border: Color::Reset,
             status_bg: Color::Reset,
+            no_color: true,
         }
     }
 }
@@ -131,6 +137,115 @@ impl Theme {
 /// NO_COLOR is honored when set to a non-empty value (<https://no-color.org>).
 fn no_color_requested() -> bool {
     std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+}
+
+// ── Contrast ───────────────────────────────────────────────────────
+
+/// The WCAG 2.2 level AA minimum contrast ratio for normal-size text
+/// (success criterion 1.4.3).
+pub(crate) const AA_TEXT_CONTRAST: f64 = 4.5;
+
+/// The sRGB value of `color`, or `None` when it has no portable one.
+///
+/// The named ANSI colors map to their conventional sRGB values. `Reset` is
+/// whatever the terminal uses and an indexed color depends on the terminal's
+/// palette, so neither can be measured.
+pub(crate) fn srgb(color: Color) -> Option<(u8, u8, u8)> {
+    Some(match color {
+        Color::Reset | Color::Indexed(_) => return None,
+        Color::Black => (0, 0, 0),
+        Color::Red => (170, 0, 0),
+        Color::Green => (0, 170, 0),
+        Color::Yellow => (170, 85, 0),
+        Color::Blue => (0, 0, 170),
+        Color::Magenta => (170, 0, 170),
+        Color::Cyan => (0, 170, 170),
+        Color::Gray => (170, 170, 170),
+        Color::DarkGray => (85, 85, 85),
+        Color::LightRed => (255, 85, 85),
+        Color::LightGreen => (85, 255, 85),
+        Color::LightYellow => (255, 255, 85),
+        Color::LightBlue => (85, 85, 255),
+        Color::LightMagenta => (255, 85, 255),
+        Color::LightCyan => (85, 255, 255),
+        Color::White => (255, 255, 255),
+        Color::Rgb(r, g, b) => (r, g, b),
+    })
+}
+
+/// WCAG 2 relative luminance of an sRGB value: linearize each channel, then
+/// weight. 0.0 is black and 1.0 is white.
+pub(crate) fn relative_luminance((r, g, b): (u8, u8, u8)) -> f64 {
+    let channel = |c: u8| {
+        let v = f64::from(c) / 255.0;
+        if v <= 0.040_45 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/// WCAG 2 contrast ratio of two luminances, from 1.0 to 21.0.
+fn luminance_ratio(a: f64, b: f64) -> f64 {
+    (a.max(b) + 0.05) / (a.min(b) + 0.05)
+}
+
+/// WCAG 2 contrast ratio between two colors, from 1.0 (identical) to 21.0
+/// (black and white), or `None` when either has no sRGB value (see [`srgb`]).
+pub(crate) fn contrast_ratio(a: Color, b: Color) -> Option<f64> {
+    Some(luminance_ratio(
+        relative_luminance(srgb(a)?),
+        relative_luminance(srgb(b)?),
+    ))
+}
+
+/// The color to draw `fg`-colored text in on a background painted `bg`, so
+/// that the pair meets [`AA_TEXT_CONTRAST`].
+///
+/// A pair that already passes is returned unchanged. One that fails is mixed
+/// toward black or white, whichever contrasts more with `bg`, in eighths, and
+/// the first mix that passes is used: the hue survives and only the lightness
+/// moves. The last step is black or white itself, which always passes (the
+/// better of the two is never below about 4.58:1).
+///
+/// When `bg` cannot be measured (`Reset`, the NO_COLOR theme, or an indexed
+/// color) `fg` is returned unchanged, so no color is introduced. When only
+/// `fg` cannot be measured, the black-or-white pick is returned: the terminal
+/// default is dark on a light terminal and must not be drawn on a dark band.
+///
+/// Pure arithmetic; allocates nothing.
+pub(crate) fn legible_on(fg: Color, bg: Color) -> Color {
+    let Some(bg_rgb) = srgb(bg) else {
+        return fg;
+    };
+    let bg_l = relative_luminance(bg_rgb);
+    let toward_white = luminance_ratio(1.0, bg_l) >= luminance_ratio(0.0, bg_l);
+    let (target, pick) = if toward_white {
+        (255_u16, Color::White)
+    } else {
+        (0_u16, Color::Black)
+    };
+    let Some((r, g, b)) = srgb(fg) else {
+        return pick;
+    };
+    if contrast_ratio(fg, bg).is_some_and(|ratio| ratio >= AA_TEXT_CONTRAST) {
+        return fg;
+    }
+    for step in 1..8_u16 {
+        // Each channel moves `step` eighths of the way to the target. The
+        // result is between the channel and the target, so it fits a `u8`.
+        let mix = |c: u8| {
+            let c = u16::from(c);
+            u8::try_from((c * (8 - step) + target * step) / 8).unwrap_or(u8::MAX)
+        };
+        let mixed = (mix(r), mix(g), mix(b));
+        if luminance_ratio(relative_luminance(mixed), bg_l) >= AA_TEXT_CONTRAST {
+            return Color::Rgb(mixed.0, mixed.1, mixed.2);
+        }
+    }
+    pick
 }
 
 /// Resolved keymap — all fields are concrete `KeyCode` values.
@@ -600,6 +715,23 @@ mod keymap_collision_tests {
 mod no_color_tests {
     use super::*;
 
+    /// The NO_COLOR theme says so, so a view with colors of its own (not
+    /// theme slots) can leave them out. The default theme does not.
+    #[test]
+    fn only_the_no_color_theme_reports_no_color() {
+        assert!(Theme::monochrome().no_color, "monochrome is NO_COLOR");
+        assert!(!Theme::default().no_color, "the default theme has color");
+        let config = crate::config::ThemeConfig::default();
+        assert!(
+            Theme::from_config_with_no_color(&config, true).no_color,
+            "NO_COLOR requested"
+        );
+        assert!(
+            !Theme::from_config_with_no_color(&config, false).no_color,
+            "NO_COLOR not requested"
+        );
+    }
+
     /// NO_COLOR (<https://no-color.org>) must collapse the theme — including
     /// the hardcoded RGB status-bar background, which ignored both the
     /// terminal palette and the user's no-color request.
@@ -653,6 +785,205 @@ mod status_bg_config_tests {
         // And the parsed config must reach the resolved theme.
         let theme = Theme::from_config_with_no_color(&restored, false);
         assert_eq!(theme.status_bg, Color::Rgb(10, 30, 40));
+        Ok(())
+    }
+}
+
+/// Tests for the WCAG contrast functions and [`legible_on`].
+#[cfg(test)]
+mod contrast_tests {
+    use super::*;
+
+    /// Any error a test can return; `?` converts into it.
+    type TestError = Box<dyn std::error::Error>;
+
+    /// The default status band every status row paints.
+    const BAND: Color = Color::Rgb(48, 48, 64);
+
+    fn ratio(a: Color, b: Color) -> Result<f64, TestError> {
+        Ok(contrast_ratio(a, b).ok_or("both colors have an sRGB value")?)
+    }
+
+    /// Success: white on black is the WCAG maximum, 21:1.
+    #[test]
+    fn white_on_black_is_twenty_one_to_one() -> Result<(), TestError> {
+        let r = ratio(Color::White, Color::Black)?;
+        assert!((r - 21.0).abs() < 1e-9, "{r}");
+        Ok(())
+    }
+
+    /// Success: the ratio does not depend on which color is the text.
+    #[test]
+    fn the_ratio_is_symmetric() -> Result<(), TestError> {
+        let a = ratio(Color::Red, BAND)?;
+        let b = ratio(BAND, Color::Red)?;
+        assert!((a - b).abs() < 1e-12, "{a} vs {b}");
+        Ok(())
+    }
+
+    /// Success: a pair that already meets AA is returned untouched, so a
+    /// theme that is already legible is drawn exactly as configured.
+    #[test]
+    fn a_color_that_already_passes_is_unchanged() -> Result<(), TestError> {
+        assert!(
+            ratio(Color::LightYellow, BAND)? >= AA_TEXT_CONTRAST,
+            "light yellow passes on the band"
+        );
+        assert_eq!(
+            legible_on(Color::LightYellow, BAND),
+            Color::LightYellow,
+            "a passing color is kept"
+        );
+        Ok(())
+    }
+
+    /// Success: the default error color is lifted to AA on the status band.
+    #[test]
+    fn the_error_color_is_lifted_to_aa_on_the_status_band() -> Result<(), TestError> {
+        let fixed = legible_on(Color::Red, BAND);
+        let r = ratio(fixed, BAND)?;
+        assert!(r >= AA_TEXT_CONTRAST, "{fixed:?} is {r}:1");
+        Ok(())
+    }
+
+    /// Success: every text color of the default theme, drawn through
+    /// `legible_on`, meets AA on the default status band.
+    #[test]
+    fn every_default_theme_color_meets_aa_on_the_status_band() -> Result<(), TestError> {
+        let t = Theme::default();
+        for (name, c) in [
+            ("header", t.header),
+            ("selected", t.selected),
+            ("accent", t.accent),
+            ("good", t.good),
+            ("warning", t.warning),
+            ("bad", t.bad),
+            ("muted", t.muted),
+            ("border", t.border),
+        ] {
+            let r = ratio(legible_on(c, t.status_bg), t.status_bg)?;
+            assert!(r >= AA_TEXT_CONTRAST, "{name} is {r}:1");
+        }
+        Ok(())
+    }
+
+    /// Failure: the defect this guards. Unadjusted, the default error color
+    /// is far below AA on the default status band (about 1.7:1).
+    #[test]
+    fn the_raw_error_color_fails_aa_on_the_status_band() -> Result<(), TestError> {
+        let r = ratio(Color::Red, BAND)?;
+        assert!(r < 2.0, "{r}");
+        Ok(())
+    }
+
+    /// Failure: the terminal default has no known sRGB value, so no ratio.
+    #[test]
+    fn reset_has_no_ratio() {
+        assert_eq!(
+            contrast_ratio(Color::Reset, Color::Black),
+            None,
+            "reset as text"
+        );
+        assert_eq!(
+            contrast_ratio(Color::Black, Color::Reset),
+            None,
+            "reset as background"
+        );
+    }
+
+    /// Failure: an indexed color has no portable sRGB value, so no ratio.
+    #[test]
+    fn an_indexed_color_has_no_ratio() {
+        assert_eq!(
+            contrast_ratio(Color::Indexed(100), Color::Black),
+            None,
+            "an indexed color is unmeasured"
+        );
+    }
+
+    /// Failure: on an unpainted background (the NO_COLOR theme) nothing can
+    /// be computed and nothing is changed: no color is introduced.
+    #[test]
+    fn nothing_changes_on_an_unpainted_background() {
+        assert_eq!(
+            legible_on(Color::Reset, Color::Reset),
+            Color::Reset,
+            "default text stays default"
+        );
+        assert_eq!(
+            legible_on(Color::Red, Color::Reset),
+            Color::Red,
+            "a color on no band is kept"
+        );
+    }
+
+    /// Failure: default-colored text on a painted band cannot be measured
+    /// (it is dark on a light terminal), so it takes the black-or-white pick.
+    #[test]
+    fn default_text_on_a_painted_band_takes_the_black_or_white_pick() {
+        assert_eq!(
+            legible_on(Color::Reset, BAND),
+            Color::White,
+            "white on the dark band"
+        );
+        assert_eq!(
+            legible_on(Color::Reset, Color::Cyan),
+            Color::Black,
+            "black on a cyan band"
+        );
+    }
+
+    /// Edge: a color against itself is 1:1.
+    #[test]
+    fn a_color_against_itself_is_one_to_one() -> Result<(), TestError> {
+        let r = ratio(BAND, BAND)?;
+        assert!((r - 1.0).abs() < 1e-12, "{r}");
+        Ok(())
+    }
+
+    /// Edge: on the mid-gray where black and white are nearly tied (the
+    /// worst case for any text), the result still meets AA.
+    #[test]
+    fn the_worst_case_gray_background_still_reaches_aa() -> Result<(), TestError> {
+        let bg = Color::Rgb(118, 118, 118);
+        let r = ratio(legible_on(bg, bg), bg)?;
+        assert!(r >= AA_TEXT_CONTRAST, "{r}");
+        Ok(())
+    }
+
+    /// Edge: an indexed background cannot be measured; the text is unchanged.
+    #[test]
+    fn text_on_an_indexed_background_is_unchanged() {
+        assert_eq!(
+            legible_on(Color::Red, Color::Indexed(17)),
+            Color::Red,
+            "an indexed band cannot be measured"
+        );
+    }
+
+    /// Edge: lifting keeps the hue. Red stays red-dominant, so "bad" still
+    /// reads as red after the adjustment.
+    #[test]
+    fn lifting_keeps_the_hue() -> Result<(), TestError> {
+        let Color::Rgb(r, g, b) = legible_on(Color::Red, BAND) else {
+            return Err("a lifted color is an RGB value".into());
+        };
+        assert!(r > g && r > b, "({r}, {g}, {b})");
+        Ok(())
+    }
+
+    /// Edge: on a light band the adjustment darkens the text.
+    #[test]
+    fn a_light_background_darkens_the_text() -> Result<(), TestError> {
+        let fixed = legible_on(Color::LightYellow, Color::White);
+        assert!(
+            ratio(fixed, Color::White)? >= AA_TEXT_CONTRAST,
+            "{fixed:?} on white"
+        );
+        assert!(
+            ratio(fixed, Color::Black)? < ratio(Color::LightYellow, Color::Black)?,
+            "{fixed:?} is darker than light yellow"
+        );
         Ok(())
     }
 }

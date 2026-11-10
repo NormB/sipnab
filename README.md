@@ -226,6 +226,11 @@ anything.
 - Bundles of your own in the config file also load other sets.
 - See [Choosing which tools load](docs/mcp-tools.md#choosing-which-tools-load).
 
+Add `--api-console` to the REST API command, and sipnab serves a read-only
+web console at `http://127.0.0.1:8080/console/`. Paste the API key into the
+page to list the dialogs and open one. See
+[Web console](docs/rest-api.md#web-console).
+
 Next:
 
 - [REST API and metrics](docs/rest-api.md)
