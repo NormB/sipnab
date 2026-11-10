@@ -24,6 +24,11 @@
 //! - Code blocks on the notes pages scroll sideways and could not be reached
 //!   from the keyboard (success criterion 2.1.1): the docs template gave each
 //!   block a copy button, and the notes template did not.
+//! - Two controls had a label that did not hold their visible text (success
+//!   criterion 2.5.3, axe `label-content-name-mismatch`): the analyzer's drop
+//!   zone, and the diagram viewer's buttons, whose visible text is a symbol.
+//!   A speech-input user says what the control shows, and the name must
+//!   match. axe-core 4.14 reports both once the WCAG 2.1 rules run.
 
 use std::path::{Path, PathBuf};
 
@@ -34,6 +39,9 @@ const BASE: &str = include_str!("../website/templates/base.html");
 const PAGE: &str = include_str!("../website/templates/page.html");
 const NOTE: &str = include_str!("../website/templates/note.html");
 const CODE_COPY: &str = "website/static/js/code-copy.js";
+const ANALYZE: &str = include_str!("../website/templates/analyze.html");
+const DIAGRAM_VIEWER: &str = include_str!("../website/static/js/diagram-viewer.js");
+const STYLE: &str = include_str!("../website/sass/style.scss");
 
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -614,5 +622,112 @@ fn the_copy_button_script_names_its_button_for_a_screen_reader() -> Result<(), T
     ] {
         assert!(script.contains(needle), "{CODE_COPY} lost `{needle}`");
     }
+    Ok(())
+}
+
+// ---------------------------------------------------------- label in name
+
+/// The names of the diagram viewer's button variables whose face is a symbol.
+const SYMBOL_BUTTONS: &[&str] = &[
+    "grip", "zoomOut", "zoomIn", "resetBtn", "collapse", "reopen",
+];
+
+/// The symbol buttons that still carry their symbol as text content.
+fn buttons_with_text(script: &str) -> Vec<&'static str> {
+    SYMBOL_BUTTONS
+        .iter()
+        .copied()
+        .filter(|name| script.contains(&format!("{name}.textContent =")))
+        .collect()
+}
+
+/// The symbol buttons that draw no symbol at all.
+fn buttons_without_symbol(script: &str) -> Vec<&'static str> {
+    SYMBOL_BUTTONS
+        .iter()
+        .copied()
+        .filter(|name| !script.contains(&format!("{name}.dataset.glyph =")))
+        .collect()
+}
+
+#[test]
+fn the_diagram_buttons_draw_their_symbol_outside_the_text() {
+    assert_eq!(
+        buttons_with_text(DIAGRAM_VIEWER),
+        [] as [&str; 0],
+        "these diagram buttons hold a symbol as text and a label in words. \
+         The visible text is then not part of the name (WCAG 2.5.3). Set \
+         `dataset.glyph`; the stylesheet draws it"
+    );
+    assert_eq!(
+        buttons_without_symbol(DIAGRAM_VIEWER),
+        [] as [&str; 0],
+        "these diagram buttons have no `dataset.glyph`, so they draw nothing"
+    );
+    assert!(
+        STYLE.contains("content: attr(data-glyph);"),
+        "the stylesheet no longer draws `data-glyph`, so the diagram buttons \
+         are blank"
+    );
+}
+
+#[test]
+fn every_diagram_button_keeps_a_label_in_words() {
+    for label in [
+        "Move diagram controls",
+        "Zoom out",
+        "Zoom in",
+        "Reset zoom and position",
+        "Hide diagram controls",
+        "Show diagram controls",
+    ] {
+        assert!(
+            DIAGRAM_VIEWER.contains(&format!("setAttribute(\"aria-label\", \"{label}\")")),
+            "a diagram button lost its label \"{label}\"; a symbol alone \
+             names nothing for a screen reader"
+        );
+    }
+}
+
+#[test]
+fn the_symbol_button_readers_tell_text_from_a_glyph() {
+    let old = "grip.textContent = \"x\";\nzoomIn.dataset.glyph = \"+\";";
+    assert_eq!(
+        buttons_with_text(old),
+        ["grip"],
+        "a button whose symbol is text content"
+    );
+    assert_eq!(
+        buttons_without_symbol(old),
+        ["grip", "zoomOut", "resetBtn", "collapse", "reopen"],
+        "every button but the one that sets a glyph"
+    );
+    assert!(
+        buttons_with_text("zoomLabel.textContent = \"100%\";").is_empty(),
+        "the zoom readout is text, not a button"
+    );
+    assert!(
+        buttons_with_text("var shown = grip.textContent;").is_empty(),
+        "reading a button's text is not setting it"
+    );
+}
+
+#[test]
+fn the_drop_zone_is_named_by_the_text_it_shows() -> Result<(), TestError> {
+    let tag = opening_tag(ANALYZE, "dropzone-box").ok_or("analyze.html has no #dropzone-box")?;
+    assert!(
+        tag.contains("aria-labelledby=\"dropzone-title dropzone-box\""),
+        "the drop zone is a button that shows text. Its name must hold that \
+         text (WCAG 2.5.3): the heading above it, then its own content: {tag}"
+    );
+    assert!(
+        !tag.contains("aria-label="),
+        "an aria-label replaces the visible text as the name: {tag}"
+    );
+    let title = opening_tag(ANALYZE, "dropzone-title").ok_or("no #dropzone-title")?;
+    assert!(
+        title.starts_with("<h2"),
+        "#dropzone-title is the heading above the drop zone: {title}"
+    );
     Ok(())
 }

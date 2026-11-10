@@ -25,6 +25,7 @@ entry that carries them.
   - The Prometheus metrics page went from its title to third-level headings, so its sections were missing from the page's table of contents.
   - Nine tables had a header cell with no text.
   - The button that opens the navigation on a narrow screen did not say whether the navigation was open, and the search field had no label.
+  - The analyzer's drop zone and the diagram viewer's buttons had a name that did not hold their visible text (label in name, 2.5.3).
   - The site's accessibility check now runs the WCAG 2.1 and 2.2 rules, and scans a notes page, the notes list and the CLA page.
 - **The home page's "print a report" step prints the report.** `sipnab -N -I sample-call.pcap --report` printed every SIP message of the sample first: 88 lines, with the report at the end. The step now adds `--no-cli-print`, and prints the report's 15 lines.
 - **The troubleshooting page names the release that fixed two signal defects.** "A terminal interface that outlives its terminal" and "A run that ignores SIGTERM while it waits for input" said to upgrade to "a later release". That release is 0.5.235.

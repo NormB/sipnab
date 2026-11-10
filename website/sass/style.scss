@@ -2839,6 +2839,14 @@ input:focus-visible,
   }
 }
 
+// The face of each diagram button: a symbol from `data-glyph`, which
+// website/static/js/diagram-viewer.js sets. Drawn here and not written as the
+// button's text, so the button's only text is its aria-label (WCAG 2.5.3).
+.diagram-controls button[data-glyph]::before,
+.diagram-reopen[data-glyph]::before {
+  content: attr(data-glyph);
+}
+
 .diagram-grip {
   cursor: grab;
   &:active { cursor: grabbing; }
