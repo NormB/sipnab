@@ -38,6 +38,10 @@ entry that carries them.
 
 - Browser analyzer: `js-sys` and `web-sys` 0.3.94 → 0.3.107, `wasm-bindgen` 0.2.117 → 0.2.130 (with its `-macro`, `-macro-support` and `-shared` crates) and `wasm-bindgen-futures` 0.4.67 → 0.4.80. The seven crates pin each other with `=`, so they move together, in `Cargo.lock` and in `fuzz/Cargo.lock`. `website/static/wasm/sipnab.js` is rebuilt with the new `wasm-bindgen`, and the 16 exports the site calls are unchanged. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes. The native binaries do not contain these crates.
 
+### Security
+
+- **rustix 1.1.4 to 1.1.6, for [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486.html) (GHSA-jh2m-fhpj-3vr7), xattr functions that mark unwritten bytes as initialized when given a zero-length buffer.** sipnab's own code calls no xattr function. rustix comes in through crossterm 0.29.0 and, for tests only, tempfile 3.27.0, and neither crate's source calls one. The update changes one entry in `Cargo.lock` and in `fuzz/Cargo.lock`.
+
 ## [0.5.245] - 2026-11-11
 
 ### Added
