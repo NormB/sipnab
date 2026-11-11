@@ -4457,6 +4457,9 @@ fn capture_open_failure_in(e: &str, source: &CaptureSource, env: &CaptureEnviron
     if !crate::capture::live::is_permission_error(e) {
         return format!("Capture source failed to open: {e}");
     }
+    if matches!(source, CaptureSource::Uprobe { .. }) {
+        return tls_probe_permission_hint(env);
+    }
     let target = permission_denied_target(source);
     let mut causes = Vec::new();
     if env.net_raw_outside_bounding {
@@ -4507,6 +4510,30 @@ fn capture_open_failure_in(e: &str, source: &CaptureSource, env: &CaptureEnviron
          sudo sipnab\n  \
          # equivalent manual step:\n  \
          sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)"
+    )
+}
+
+/// The permission hint for a `--uprobe-tls` run in `env`.
+///
+/// Attaching a probe needs root. The interface hint does not apply: the
+/// capabilities `--setup-caps` and `setcap` grant (`cap_net_raw`,
+/// `cap_net_admin`) open a capture on an interface and do not let a process
+/// attach a probe. Under NoNewPrivs `sudo` cannot take effect either, so the
+/// hint then says to start the process as root.
+fn tls_probe_permission_hint(env: &CaptureEnvironment) -> String {
+    const HEAD: &str = "Permission denied attaching TLS probes (--uprobe-tls). \
+         Attaching a probe needs root: the capabilities that sipnab --setup-caps \
+         grants (cap_net_raw, cap_net_admin) do not cover it.";
+    if env.no_new_privs {
+        return format!(
+            "{HEAD} This process runs with NoNewPrivs set (systemd \
+             NoNewPrivileges=yes, or a container started with no-new-privileges), \
+             so sudo cannot take effect. Start the process as root."
+        );
+    }
+    format!(
+        "{HEAD} Run this invocation as root:\n  \
+         sudo sipnab -N --uprobe-tls"
     )
 }
 
@@ -13637,6 +13664,88 @@ mod decision_tests {
         for absent in ["\n  sipnab --setup-caps", "sudo sipnab", "sudo setcap"] {
             assert!(!msg.contains(absent), "{absent} cannot help here: {msg}");
         }
+    }
+
+    fn tls_probes() -> CaptureSource {
+        CaptureSource::Uprobe {
+            targets: Vec::new(),
+            backend: capture::UprobeBackend::Tracefs,
+        }
+    }
+
+    /// Attaching a probe needs root. `--setup-caps` and `setcap` grant
+    /// `cap_net_raw` and `cap_net_admin`, the rights for an interface capture,
+    /// so the hint for a `--uprobe-tls` run names root and offers neither.
+    #[test]
+    fn a_permission_hint_for_tls_probes_names_root_and_not_setup_caps() {
+        let msg = capture_open_failure_in(
+            "Permission denied (os error 13)",
+            &tls_probes(),
+            &CaptureEnvironment::default(),
+        );
+        assert!(
+            msg.starts_with("Permission denied attaching TLS probes (--uprobe-tls)."),
+            "{msg}"
+        );
+        assert!(msg.contains("needs root"), "{msg}");
+        assert!(msg.contains("\n  sudo sipnab"), "{msg}");
+        for absent in [
+            "\n  sipnab --setup-caps",
+            "sudo setcap",
+            "re-run without sudo",
+        ] {
+            assert!(!msg.contains(absent), "{absent} cannot help here: {msg}");
+        }
+        assert!(
+            msg.contains("--setup-caps") && msg.contains("do not cover"),
+            "say why the capture capabilities are not the remedy: {msg}"
+        );
+    }
+
+    /// Under NoNewPrivs `sudo` cannot take effect, so the hint for TLS probes
+    /// says to start the process as root and does not offer `sudo`.
+    #[test]
+    fn a_permission_hint_for_tls_probes_under_no_new_privs_drops_sudo() {
+        let env = CaptureEnvironment::from_status(Some(&status("1", FULL_BOUNDING)), None);
+        let msg = capture_open_failure_in("Operation not permitted", &tls_probes(), &env);
+        assert!(
+            msg.starts_with("Permission denied attaching TLS probes (--uprobe-tls)."),
+            "{msg}"
+        );
+        assert!(msg.contains("NoNewPrivs"), "{msg}");
+        assert!(msg.contains("Start the process as root"), "{msg}");
+        for absent in ["sudo sipnab", "AmbientCapabilities=CAP_NET_RAW"] {
+            assert!(!msg.contains(absent), "{absent} cannot help here: {msg}");
+        }
+    }
+
+    /// A failure of a `--uprobe-tls` run that is not a permission error is
+    /// reported as it came, as for every other source.
+    #[test]
+    fn a_tls_probe_failure_that_is_not_permission_is_reported_as_it_came() {
+        assert_eq!(
+            capture_open_failure_in(
+                "no TLS library is mapped",
+                &tls_probes(),
+                &CaptureEnvironment::default()
+            ),
+            "Capture source failed to open: no TLS library is mapped",
+            "only a permission error gets the root hint"
+        );
+    }
+
+    /// The hint for an interface is the one before: TLS probes changed only
+    /// their own message.
+    #[test]
+    fn a_permission_hint_for_an_interface_still_offers_setup_caps() {
+        let msg = capture_open_failure_in(
+            "Operation not permitted",
+            &eth0(),
+            &CaptureEnvironment::default(),
+        );
+        assert!(msg.starts_with("Permission denied on 'eth0'"), "{msg}");
+        assert!(msg.contains("\n  sipnab --setup-caps"), "{msg}");
+        assert!(!msg.contains("TLS probes"), "{msg}");
     }
 
     /// `NoNewPrivs: 0` is not the cause: the hint stays the one that works.

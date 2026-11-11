@@ -19890,6 +19890,19 @@ sipnab's TUI uses 11 semantic color slots. There is also `highlight`, a legacy a
 - The slots control every visual element.
 - Customize them via the `[theme]` section in your config file.
 
+## Before you start
+
+- **A build with the `tui` feature.** `sipnab --version` prints the list after
+  `features:`, and the release binaries carry `tui`.
+- **A config file you can write.**
+  [File Locations](config-reference.md#file-locations) lists where sipnab
+  looks. The examples use `~/.config/sipnab/sipnab.toml`.
+- **A true-color terminal, for hex values.** A named color needs none.
+- **Over SSH, the terminal on the other system.** The terminal you type at
+  draws the colors, so its true-color support and its palette are what count.
+  The machine that runs sipnab holds the config file. Nothing else changes on
+  any other system.
+
 ## Color slots
 
 | Slot | Default | What It Affects |
@@ -20216,6 +20229,42 @@ border = "white"
   <span style="color:#ff00ff">4  INVITE     +15551234      +15559876      </span><span style="color:#ff0000">Failed</span>
   <span style="color:#ff00ff">5  INVITE     1005           1006           </span><span style="color:#00ff00">Completed</span></pre>
 </div>
+
+## Check that it worked
+
+With this in the config file:
+
+```toml
+[theme]
+header = "#89b4fa"
+```
+
+print the settings sipnab holds:
+
+```bash
+sipnab --dump-config
+```
+
+- The log on standard error names the file: `Loaded config from` and its path.
+- The `[theme]` section of the output holds your value: `header = "#89b4fa"`.
+  It lists the slots the file sets, and no defaults.
+- With an empty `[theme]` and no `Loaded config from` line, sipnab found no
+  config file, or read another one.
+
+This check ran on Ubuntu 24.04 (Linux 6.8, aarch64) with that file and
+printed both lines. Then open a capture in the terminal UI and look at the
+header row: `sipnab -I capture.pcap`. No test draws the terminal UI on a real
+terminal, so check the colors by eye.
+
+## When something does not work
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| A message that starts `invalid config value: [theme] header = "bluish" is not a color`, exit 1 | The value is not a name or a hex value from [Supported color syntax](#supported-color-syntax) | Correct the value. sipnab does not start until every color parses |
+| A warning `Unknown config key: theme.headr`, and the slot keeps its default | The slot name has a spelling error | Use a name from [Color slots](#color-slots) |
+| `--dump-config` prints an empty `[theme]` | sipnab loaded another config file, or none | Read the `Loaded config from` line, and compare it with [File Locations](config-reference.md#file-locations) |
+| The terminal UI has no color at all | The environment holds a non-empty `NO_COLOR` | Unset it: [`NO_COLOR`](#no_color) |
+| Hex colors look wrong, and named colors look right | The terminal has no true-color support | Use named colors, or a terminal from the list under [Tips](#tips) |
 
 ## Tips
 
@@ -36517,7 +36566,7 @@ when sipnab exits.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `Permission denied on 'capture source'.`, exit 1, from `sipnab -N --uprobe-tls` | sipnab was not root when it attached | Run it with `sudo`. The hint under the message names `sipnab --setup-caps`, which grants the rights for a capture on an interface; attaching a probe needs root, as [Root, at the moment sipnab attaches a probe](#root-at-the-moment-sipnab-attaches-a-probe) says |
+| `Permission denied attaching TLS probes (--uprobe-tls).`, exit 1, from `sipnab -N --uprobe-tls` | sipnab was not root when it attached | Run it with `sudo`, as the message says. `sipnab --setup-caps` grants the rights for a capture on an interface; attaching a probe needs root, as [Root, at the moment sipnab attaches a probe](#root-at-the-moment-sipnab-attaches-a-probe) says. Releases through 0.5.245 printed `Permission denied on 'capture source'.` and named `sipnab --setup-caps` here |
 | `--uprobe-list` finds no TLS library | Unprivileged, so `/proc/<pid>/maps` opens only for your own processes | Re-run as root before concluding the host uses no TLS |
 | `no kernel programs` from a binary you built | `--features bpf` compiled the loader, and the inner nightly build found no `bpf-linker` | Rebuild on a host carrying `bpf-linker`, with `SIPNAB_BPF_REQUIRED=1` so the gap fails the build |
 | Capture attaches, reports 0 messages | Almost always the wrong symbol | `nm -D --undefined-only <binary> \| grep -i ssl_write`, then `--uprobe-symbol` |
@@ -52413,6 +52462,22 @@ Every other decision on this page depends on that number, and sipnab reports it.
 
 ---
 
+## Before you start
+
+- **sipnab on the machine that captures,** as [Install](install.md) says.
+- **Capture rights on the interface.** Run sipnab with `sudo`, or grant the
+  rights once with `sipnab --setup-caps`. The examples use `sudo`.
+- **Linux, for the ring and driver sections.** The kernel capture buffer, the
+  ring formats and the `ethtool` steps describe Linux.
+- **`ethtool` and `ip`,** for
+  [Interface and driver drops](#interface-and-driver-drops). On Debian and
+  Ubuntu the `ethtool` and `iproute2` packages have them.
+- **The name of the interface that carries the calls.** `ip -brief link` lists
+  the interfaces. The examples use `eth0`.
+- **Nothing on any other system.** Every setting on this page changes the
+  machine that captures: the flags of one sipnab run, and in one section the
+  offload settings of one interface.
+
 ## Are you dropping packets?
 
 sipnab polls libpcap's kernel counters once a second and reports two numbers.
@@ -53210,6 +53275,45 @@ Then read the drop line at the end.
   - [Give sipnab less work](#give-sipnab-less-work)
   - [Interface and driver drops](#interface-and-driver-drops)
 - Re-measure after each change rather than applying all of them at once.
+
+---
+
+## Check that it worked
+
+Run the capture for a fixed time under real load, then read its last line:
+
+```bash
+sudo sipnab -N -d eth0 --duration 60 \
+  -B 256 \
+  --snaplen 1600 \
+  "port 5060 or port 5061"
+```
+
+A run that kept up ends with an info line such as
+`Live capture on 'eth0' finished: 0 packets, no drops`, with the packet count
+of the run in place of `0`.
+
+A run that fell behind ends with a warning that holds both counters and
+`THIS ANALYSIS IS INCOMPLETE`. Change one setting and run the check again.
+
+This check ran as `root` in a container with no network (Ubuntu 24.04,
+Linux 6.8, aarch64) on the interface `lo` for 2 seconds. It printed
+`Capturing on 'lo' (link_type=1, snaplen=1600)` and
+`Live capture on 'lo' finished: 0 packets, no drops`, and exited 0. Not run
+for this section: a capture under load, and the `ethtool` steps, which change
+a network interface.
+
+## When something does not work
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| `Permission denied on 'eth0'.`, exit 1 | The run has no capture rights. A run without them gets this message for an interface that does not exist as well | Run with `sudo`, or run `sipnab --setup-caps` once |
+| `Failed to activate capture on 'eth0': libpcap error: No such device exists`, then `Available devices:` and a list, exit 1 | No interface has that name | Take a name from the list |
+| `error: invalid value '0' for '--buffer <MIB>'`, exit 2 | `-B 0` and `--snaplen 0` would capture nothing | Give a value of 1 or more |
+| `Failed to compile BPF filter`, exit 1 | The capture filter after the options is not valid BPF | Correct the filter. [Capture less: BPF filters](#capture-less-bpf-filters) has filters that compile |
+| A warning that starts `'eth0': the kernel refused a` | The kernel had no memory for the buffer `-B` asked for, and sipnab took a smaller one | Free memory or ask for less, as [It degrades rather than failing](#it-degrades-rather-than-failing) says |
+| The last line still counts drops by the kernel buffer | sipnab read slower than packets arrived | Work down the list in [A worked starting point](#a-worked-starting-point) |
+| The last line counts drops by the interface | The interface or its driver dropped them before libpcap saw them. A larger `-B` does not change this count | [Interface and driver drops](#interface-and-driver-drops) |
 
 ---
 
@@ -77871,6 +77975,30 @@ only topic.**
 - Every method below is one of those two. They differ only in what access each
   demands.
 
+## Before you start
+
+On the machine that runs sipnab:
+
+- A build with the `tls` feature. `sipnab --version` prints the list after
+  `features:`, and the release binaries carry `tls`. A build without it stops
+  with a message such as `--keylog requires the 'tls' feature (not compiled in)`.
+- For a live capture, capture rights on the interface:
+  [Install](install.md) sets them up. Reading a capture file needs none.
+- For the two probe methods, Linux and `root` at the moment sipnab attaches.
+
+On the other system, the one that ends the TLS session (a phone, a
+proxy, a session border controller), each method asks for one change:
+
+| Method | Change on the other system |
+|---|---|
+| The endpoint writes a key log | Set `SSLKEYLOGFILE` in the environment of the phone or daemon and restart it. Give sipnab read access to that file, or copy the file to the machine that reads the capture |
+| No keys at all, and plaintext with the peer address | Nothing changes in the daemon. sipnab itself runs on that machine, as `root`, so that machine needs sipnab installed |
+| Lift keys from a daemon you cannot restart | Install eCapture on that machine and run it as `root`. The daemon keeps running |
+| The old RSA case | Copy the private key of the server to the machine that runs sipnab |
+
+A key log opens every session it holds keys for. Store it with the same care
+as a private key, and delete it when the work ends.
+
 ## Which method can you use?
 
 Answer these in order.
@@ -78351,10 +78479,48 @@ Stated plainly, because time spent here is time people lose:
   - Traffic that went past before the capture started is not in the capture.
     Nothing recovers it.
 
-## Still stuck?
+## Check that it worked
+
+Before a probe method, list what sipnab can attach to:
+
+```sh
+sudo sipnab --uprobe-list
+```
+
+Expect a table under the header `FLAVOR        INODE  PIDS  LIBRARY`, one row
+for each TLS library. A host with none in view prints
+`No TLS library is mapped by any process sipnab can see.`
+
+After a key method, read the capture with its keys:
+
+```sh
+sipnab -N -I tls-capture.pcap --keylog /tmp/sip-keys.log
+```
+
+Expect three things:
+
+- One line for each decrypted message, ending in `TLS`:
+  `22:13:20.004 10.9.0.1:40111 -> 10.9.0.2:5061 INVITE TLS`.
+- `TLS session decrypted` in the log on standard error.
+- A totals line that counts the messages: `6 packets captured, 2 SIP messages`
+  for a call of one INVITE and one 180.
+
+This check ran on Ubuntu 24.04 (Linux 6.8, aarch64) against the TLS 1.3 call
+that the test suite builds with its keys, an INVITE and a 180 Ringing, and
+printed the lines above. The listing ran there without `root` and printed the
+header and its rows. Not run for this section: the two probe methods and the
+eCapture method, which need `root` on a machine that runs a SIP daemon. A
+probe run labels each dialog `uprobe:<process>/<pid>`.
+
+## When decryption does not work
 
 | Symptom | Likely cause |
 |---|---|
+| `No SIP traffic found.` and a totals line with `0 SIP messages`, from a capture of port 5061 | The run had no `--keylog`, so sipnab read no TLS record. Pass the key log |
+| `sipnab could not decrypt 2 TLS application-data record(s): it holds no key material for any session in this capture` (the number varies) | The key log is empty or holds no key line. Check that the key source attached to the TLS library and the process the daemon uses, and that it started before the connection opened |
+| `sipnab loaded 1 keylog line(s) and built no session from any of them` (the number varies) | No line of the key log matches a handshake in the capture. Either the capture started after the connection opened and holds no handshake, or the key log comes from other connections. The text under the message names the first cause only; check the second as well |
+| `Failed to load --keylog <path>:` with `No such file or directory`, exit 1 | The path is wrong, or the user that runs sipnab cannot reach the file |
+| `Permission denied attaching TLS probes (--uprobe-tls).`, exit 1 | sipnab was not `root` when it attached. Run it with `sudo`. `sipnab --setup-caps` grants the rights for a capture on an interface, and they do not cover a probe |
 | `--uprobe-list` finds no TLS library | It reads `/proc/<pid>/maps`, and an unprivileged run sees only its own processes. Re-run with `sudo` |
 | `--uprobe-list` marks a library `(UNREACHABLE)` | The path lives in another mount namespace, almost always a container. Run as root |
 | Attaches, reports 0 messages | Wrong symbol — try `--uprobe-symbol SSL_write_ex` (see [No keys at all](#no-keys-at-all-read-the-plaintext-in-the-process)) |

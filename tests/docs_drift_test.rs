@@ -6224,7 +6224,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // docs/least-privilege.md's "Check that it worked" and the table of
     // failures in docs/g729.md's "When a run does not find the tables", each
     // with its site mirror (+4).
-    const EXPECTED_TABLES: usize = 1464;
+    // 1464 -> 1470 (DOCS-HOWTO-GAP, third batch): the table of changes on
+    // the other system in docs/tls-capture.md's "Before you start", and the
+    // troubleshooting tables of docs/tuning-capture.md and
+    // docs/theme-guide.md, each with its site mirror (+6).
+    const EXPECTED_TABLES: usize = 1470;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

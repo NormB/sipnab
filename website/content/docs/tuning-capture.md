@@ -20,6 +20,22 @@ Every other decision on this page depends on that number, and sipnab reports it.
 
 ---
 
+## Before you start
+
+- **sipnab on the machine that captures,** as [Install](@/docs/install.md) says.
+- **Capture rights on the interface.** Run sipnab with `sudo`, or grant the
+  rights once with `sipnab --setup-caps`. The examples use `sudo`.
+- **Linux, for the ring and driver sections.** The kernel capture buffer, the
+  ring formats and the `ethtool` steps describe Linux.
+- **`ethtool` and `ip`,** for
+  [Interface and driver drops](#interface-and-driver-drops). On Debian and
+  Ubuntu the `ethtool` and `iproute2` packages have them.
+- **The name of the interface that carries the calls.** `ip -brief link` lists
+  the interfaces. The examples use `eth0`.
+- **Nothing on any other system.** Every setting on this page changes the
+  machine that captures: the flags of one sipnab run, and in one section the
+  offload settings of one interface.
+
 ## Are you dropping packets?
 
 sipnab polls libpcap's kernel counters once a second and reports two numbers.
@@ -817,6 +833,45 @@ Then read the drop line at the end.
   - [Give sipnab less work](#give-sipnab-less-work)
   - [Interface and driver drops](#interface-and-driver-drops)
 - Re-measure after each change rather than applying all of them at once.
+
+---
+
+## Check that it worked
+
+Run the capture for a fixed time under real load, then read its last line:
+
+```bash
+sudo sipnab -N -d eth0 --duration 60 \
+  -B 256 \
+  --snaplen 1600 \
+  "port 5060 or port 5061"
+```
+
+A run that kept up ends with an info line such as
+`Live capture on 'eth0' finished: 0 packets, no drops`, with the packet count
+of the run in place of `0`.
+
+A run that fell behind ends with a warning that holds both counters and
+`THIS ANALYSIS IS INCOMPLETE`. Change one setting and run the check again.
+
+This check ran as `root` in a container with no network (Ubuntu 24.04,
+Linux 6.8, aarch64) on the interface `lo` for 2 seconds. It printed
+`Capturing on 'lo' (link_type=1, snaplen=1600)` and
+`Live capture on 'lo' finished: 0 packets, no drops`, and exited 0. Not run
+for this section: a capture under load, and the `ethtool` steps, which change
+a network interface.
+
+## When something does not work
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| `Permission denied on 'eth0'.`, exit 1 | The run has no capture rights. A run without them gets this message for an interface that does not exist as well | Run with `sudo`, or run `sipnab --setup-caps` once |
+| `Failed to activate capture on 'eth0': libpcap error: No such device exists`, then `Available devices:` and a list, exit 1 | No interface has that name | Take a name from the list |
+| `error: invalid value '0' for '--buffer <MIB>'`, exit 2 | `-B 0` and `--snaplen 0` would capture nothing | Give a value of 1 or more |
+| `Failed to compile BPF filter`, exit 1 | The capture filter after the options is not valid BPF | Correct the filter. [Capture less: BPF filters](#capture-less-bpf-filters) has filters that compile |
+| A warning that starts `'eth0': the kernel refused a` | The kernel had no memory for the buffer `-B` asked for, and sipnab took a smaller one | Free memory or ask for less, as [It degrades rather than failing](#it-degrades-rather-than-failing) says |
+| The last line still counts drops by the kernel buffer | sipnab read slower than packets arrived | Work down the list in [A worked starting point](#a-worked-starting-point) |
+| The last line counts drops by the interface | The interface or its driver dropped them before libpcap saw them. A larger `-B` does not change this count | [Interface and driver drops](#interface-and-driver-drops) |
 
 ---
 
