@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn success_a_format_1_intake_is_read_and_written_again_as_format_2() -> TestResult {
-        // The intake a center of release 0.5.244 left: the first start of
+        // The intake a center of release 0.5.245 left: the first start of
         // this build reads it and writes it again with its counts.
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store.intake");

@@ -1070,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn edge_a_delivery_release_0_5_244_left_in_the_spool_still_opens() -> TestResult {
+    fn edge_a_delivery_release_0_5_245_left_in_the_spool_still_opens() -> TestResult {
         // A member upgraded with deliveries waiting: they are format 1
         // files, and are delivered as they are.
         let lines = two_lines();
@@ -1087,7 +1087,7 @@ mod tests {
         assert_eq!(
             String::from_utf8(body)?,
             lines.concat(),
-            "edge a delivery release 0.5.244 left in the spool still opens"
+            "edge a delivery release 0.5.245 left in the spool still opens"
         );
         Ok(())
     }
