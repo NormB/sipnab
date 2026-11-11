@@ -11,7 +11,11 @@ pub mod bootstrap;
 #[cfg(feature = "api")]
 pub mod fleet;
 #[cfg(feature = "api")]
+pub mod fleet_calls;
+#[cfg(feature = "api")]
 pub mod fleet_center;
+#[cfg(feature = "api")]
+pub mod fleet_intake;
 #[cfg(feature = "api")]
 pub mod fleet_member;
 #[cfg(feature = "api")]

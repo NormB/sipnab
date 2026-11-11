@@ -536,6 +536,20 @@ static KEY_SPECS: &[KeySpec] = &[
             ctx: "",
         },
     ),
+    (
+        "fleet",
+        "call_push",
+        KeyKind::Literal {
+            accept: &["\"exceptions\"", "\"all\"", "\"none\""],
+            reject: &["\"\"", "\"x\"", "\"ALL\""],
+            ctx: "spool_key_file = \"x\"",
+        },
+    ),
+    (
+        "fleet",
+        "exception_max_per_sec",
+        KeyKind::Int { lo: 1, hi: 10_000 },
+    ),
     ("fleet", "heartbeat_secs", KeyKind::Int { lo: 1, hi: 3600 }),
     (
         "fleet",
@@ -567,6 +581,15 @@ static KEY_SPECS: &[KeySpec] = &[
     (
         "fleet",
         "spool_dir",
+        KeyKind::Literal {
+            accept: &["\"x\"", "\" \"", "\"0\""],
+            reject: &["\"\""],
+            ctx: "",
+        },
+    ),
+    (
+        "fleet",
+        "spool_key_file",
         KeyKind::Literal {
             accept: &["\"x\"", "\" \"", "\"0\""],
             reject: &["\"\""],
