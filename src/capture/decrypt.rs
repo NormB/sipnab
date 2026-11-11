@@ -1272,10 +1272,6 @@ impl TlsDecryptor {
                 return None;
             }
         };
-        if pm.len() != 48 {
-            tracing::debug!("RSA pre-master has unexpected length {}", pm.len());
-            return None;
-        }
 
         // master_secret = PRF(pre_master, "master secret", client_random ‖ server_random)[..48]
         let seed = [cr.as_slice(), sr.as_slice()].concat();

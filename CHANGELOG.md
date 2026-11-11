@@ -29,6 +29,17 @@ entry that carries them.
   - A citation of a file on `main` carries a phrase, an HTML comment directly after the link that quotes the start of the first cited line. The gate fails when the phrase does not begin on that line, and `--apply` moves the label and the link to the line where it now begins, when that is one line. A citation that describes code that has since changed is pinned to the commit that had it. Of the 649 line citations under `docs/` and `website/content/`, 458 carry a phrase and 191 are pinned.
   - A link to a line that is not such a citation (a prose label, a bare URL, a branch of another project, a short hash) is reported as `unpinned`: it names a commit by its full hash, or, in another project, a version tag. The tree had none.
   - [Cite a line of code in a doc](docs/internals/walkthroughs.md#cite-a-line-of-code-in-a-doc) has the steps. No change to the `sipnab` binary.
+### Dependencies
+
+- `rsa` 0.9.10 → 0.10.0 in `Cargo.lock` and `fuzz/Cargo.lock` (RSA-0.10.0-CANARY). sipnab no longer depends on the `sha1` 0.10 that only `rsa` 0.9's OAEP needed. `Cargo.lock` gains one crate (`crypto-primes` 0.7.2), moves four with `rsa` (`crypto-bigint` 0.7.6 → 0.7.11, `ctutils` 0.4.5 → 0.4.8, `pem-rfc7468` 0.7.0 → 1.0.0, `pkcs1` 0.7.5 → 0.8.0) and loses eleven: `num-bigint-dig`, `sha1` 0.10.7, `signature` 2.2.0, `rand_chacha`, `ppv-lite86`, and the older `const-oid`, `der`, `pkcs8` and `spki` lines among them. `scripts/check-dependency-canaries.py` waited for this release and now awaits none.
+
+### Security
+
+- **sipnab uses `rsa` 0.10.0, the release that fixes [RUSTSEC-2023-0071](https://rustsec.org/advisories/RUSTSEC-2023-0071.html), the "Marvin" timing side channel in RSA decryption.** Releases through 0.5.247 use `rsa` 0.9, which has no fix. sipnab uses an RSA private key in two places: `--tls-key` decrypts the pre-master secret of a captured TLS 1.2 RSA key exchange, and `--vcon-key` or `--vcon-fetch-decrypt-key` opens an encrypted vCon. The second mattered: `POST /v1/vcon/validate`, `POST /v1/vcon/analyze` and the MCP vCon tools open a container the caller sends, so a client holding the API key could time how long sipnab took to decrypt ciphertext it chose. With `rsa` 0.10.0, private-key operations run in constant time and sipnab blinds each one with system randomness.
+  - `cargo audit` in CI now runs with no `--ignore`, on both lock files. `deny.toml`, `osv-scanner.toml` and `vex/sipnab.openvex.json` no longer carry an exception for this advisory.
+  - They no longer carry one for GHSA-qwgh-2vcv-g2f7 (`block-buffer`) either: the advisory's affected range now starts at 0.11.0, and `rsa` 0.10.0 no longer brings in the `digest` 0.10 line that the exception covered.
+  - [The vCon guide](docs/vcon.md) keeps its advice for the older releases: an EC P-256 recipient key.
+- **A damaged or foreign TLS 1.2 RSA key exchange still yields no keys with `--tls-key`.** `rsa` 0.10.0 answers bad PKCS #1 v1.5 padding with a made-up plaintext of a pseudo-random length instead of an error, so that timing does not tell the two apart. sipnab now refuses, in one place, any decrypted pre-master secret that is not 48 octets. A 512-bit key from old equipment still loads.
 
 ## [0.5.247] - 2026-11-11
 

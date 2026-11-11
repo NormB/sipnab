@@ -51,7 +51,7 @@ Files copied into the repository unmodified from another project's release. None
 | `tests/schemas/publisher/vcon_json_schema.json` | vCon JSON schema: `vcon_json_schema.json` of the IETF vCon working group's draft-ietf-vcon-vcon-core repository, unmodified. Test fixture only; it is in no release artifact. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 | `tests/schemas/vcon.schema.json` | vCon JSON schema: the same file as tests/schemas/publisher/vcon_json_schema.json, byte for byte, under the name sipnab's validator reads. Compiled into the binary as the schema the validate_vcon tool and the REST validate route check against. | commit 99589dd0b474d95c2feed52165fc2c95b1191d3d, tag draft-ietf-vcon-vcon-core-04 (2026-09-07) | <https://github.com/ietf-wg-vcon/draft-ietf-vcon-vcon-core> | IETF Trust Legal Provisions; code components under the Simplified BSD License, as the repository's CONTRIBUTING.md states | `b3c1ae28041dea304c978a0e9e04da18253fa58517ad3472a6adf1167c01a8d9` |
 
-## Rust crates (437)
+## Rust crates (427)
 
 | Crate | Version | License |
 |---|---|---|
@@ -115,7 +115,6 @@ Files copied into the repository unmodified from another project's release. None
 | colorchoice | 1.0.5 | MIT OR Apache-2.0 |
 | compact_str | 0.9.0 | MIT |
 | const-oid | 0.10.2 | Apache-2.0 OR MIT |
-| const-oid | 0.9.6 | Apache-2.0 OR MIT |
 | constant_time_eq | 0.6.1 | CC0-1.0 OR MIT-0 OR Apache-2.0 |
 | convert_case | 0.10.0 | MIT |
 | core-foundation-sys | 0.8.7 | MIT OR Apache-2.0 |
@@ -128,11 +127,12 @@ Files copied into the repository unmodified from another project's release. None
 | crossbeam-utils | 0.8.21 | MIT OR Apache-2.0 |
 | crossterm | 0.29.0 | MIT |
 | crossterm_winapi | 0.9.1 | MIT |
-| crypto-bigint | 0.7.6 | Apache-2.0 OR MIT |
+| crypto-bigint | 0.7.11 | Apache-2.0 OR MIT |
 | crypto-common | 0.1.7 | MIT OR Apache-2.0 |
 | crypto-common | 0.2.2 | MIT OR Apache-2.0 |
+| crypto-primes | 0.7.2 | Apache-2.0 OR MIT |
 | csscolorparser | 0.6.2 | MIT OR Apache-2.0 |
-| ctutils | 0.4.5 | Apache-2.0 OR MIT |
+| ctutils | 0.4.8 | Apache-2.0 OR MIT |
 | darling | 0.23.0 | MIT |
 | darling | 0.24.0 | MIT |
 | darling_core | 0.23.0 | MIT |
@@ -140,7 +140,6 @@ Files copied into the repository unmodified from another project's release. None
 | darling_macro | 0.23.0 | MIT |
 | darling_macro | 0.24.0 | MIT |
 | deltae | 0.3.2 | MIT |
-| der | 0.7.10 | Apache-2.0 OR MIT |
 | der | 0.8.2 | Apache-2.0 OR MIT |
 | deranged | 0.5.8 | MIT OR Apache-2.0 |
 | derive-into-owned | 0.2.0 | MIT |
@@ -256,11 +255,8 @@ Files copied into the repository unmodified from another project's release. None
 | nom | 7.1.3 | MIT |
 | nom | 8.0.0 | MIT |
 | nu-ansi-term | 0.50.3 | MIT |
-| num-bigint-dig | 0.8.6 | MIT/Apache-2.0 |
 | num-conv | 0.2.1 | MIT OR Apache-2.0 |
 | num-derive | 0.4.2 | MIT OR Apache-2.0 |
-| num-integer | 0.1.46 | MIT OR Apache-2.0 |
-| num-iter | 0.1.45 | MIT OR Apache-2.0 |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 |
 | num_threads | 0.1.7 | MIT OR Apache-2.0 |
 | object | 0.40.0 | Apache-2.0 OR MIT |
@@ -281,7 +277,7 @@ Files copied into the repository unmodified from another project's release. None
 | pbkdf2 | 0.13.0 | MIT OR Apache-2.0 |
 | pcap | 2.5.0 | MIT OR Apache-2.0 |
 | pcap-file | 2.0.0 | MIT |
-| pem-rfc7468 | 0.7.0 | Apache-2.0 OR MIT |
+| pem-rfc7468 | 1.0.0 | Apache-2.0 OR MIT |
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 |
 | pest | 2.8.6 | MIT OR Apache-2.0 |
 | pest_derive | 2.8.6 | MIT OR Apache-2.0 |
@@ -293,14 +289,12 @@ Files copied into the repository unmodified from another project's release. None
 | phf_macros | 0.11.3 | MIT |
 | phf_shared | 0.11.3 | MIT |
 | pin-project-lite | 0.2.17 | Apache-2.0 OR MIT |
-| pkcs1 | 0.7.5 | Apache-2.0 OR MIT |
-| pkcs8 | 0.10.2 | Apache-2.0 OR MIT |
+| pkcs1 | 0.8.0 | Apache-2.0 OR MIT |
 | pkcs8 | 0.11.0 | Apache-2.0 OR MIT |
 | pkg-config | 0.3.32 | MIT OR Apache-2.0 |
 | portable-atomic | 1.13.1 | Apache-2.0 OR MIT |
 | portable-atomic-util | 0.2.6 | Apache-2.0 OR MIT |
 | powerfmt | 0.2.0 | MIT OR Apache-2.0 |
-| ppv-lite86 | 0.2.21 | MIT OR Apache-2.0 |
 | primefield | 0.14.0 | Apache-2.0 OR MIT |
 | primeorder | 0.14.0 | Apache-2.0 OR MIT |
 | proc-macro2 | 1.0.106 | MIT OR Apache-2.0 |
@@ -309,7 +303,6 @@ Files copied into the repository unmodified from another project's release. None
 | r-efi | 6.0.0 | MIT OR Apache-2.0 OR LGPL-2.1-or-later |
 | rand | 0.10.1 | MIT OR Apache-2.0 |
 | rand | 0.8.6 | MIT OR Apache-2.0 |
-| rand_chacha | 0.3.1 | MIT OR Apache-2.0 |
 | rand_core | 0.10.1 | MIT OR Apache-2.0 |
 | rand_core | 0.6.4 | MIT OR Apache-2.0 |
 | ratatui | 0.30.2 | MIT |
@@ -329,7 +322,7 @@ Files copied into the repository unmodified from another project's release. None
 | ring | 0.17.14 | Apache-2.0 AND ISC |
 | rmcp | 3.9.0 | Apache-2.0 |
 | rmcp-macros | 3.9.0 | Apache-2.0 |
-| rsa | 0.9.10 | MIT OR Apache-2.0 |
+| rsa | 0.10.0 | MIT OR Apache-2.0 |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 |
 | rustix | 1.1.6 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT |
 | rustls | 0.23.46 | Apache-2.0 OR ISC OR MIT |
@@ -353,7 +346,6 @@ Files copied into the repository unmodified from another project's release. None
 | serde_urlencoded | 0.7.1 | MIT/Apache-2.0 |
 | serdect | 0.4.3 | Apache-2.0 OR MIT |
 | sevenz-rust2 | 0.25.0 | Apache-2.0 |
-| sha1 | 0.10.7 | MIT OR Apache-2.0 |
 | sha1 | 0.11.0 | MIT OR Apache-2.0 |
 | sha2 | 0.10.9 | MIT OR Apache-2.0 |
 | sha2 | 0.11.1 | MIT OR Apache-2.0 |
@@ -362,7 +354,6 @@ Files copied into the repository unmodified from another project's release. None
 | signal-hook | 0.3.18 | Apache-2.0/MIT |
 | signal-hook-mio | 0.2.5 | MIT OR Apache-2.0 |
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 |
-| signature | 2.2.0 | Apache-2.0 OR MIT |
 | signature | 3.0.0 | Apache-2.0 OR MIT |
 | simd-adler32 | 0.3.9 | MIT |
 | siphasher | 1.0.2 | MIT/Apache-2.0 |
@@ -370,7 +361,6 @@ Files copied into the repository unmodified from another project's release. None
 | smallvec | 1.16.5 | MIT OR Apache-2.0 |
 | socket2 | 0.6.5 | MIT OR Apache-2.0 |
 | spin | 0.9.9 | MIT |
-| spki | 0.7.3 | Apache-2.0 OR MIT |
 | spki | 0.8.1 | Apache-2.0 OR MIT |
 | sse-stream | 0.2.5 | MIT OR Apache-2.0 |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 |

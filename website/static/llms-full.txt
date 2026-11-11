@@ -14276,7 +14276,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | `metrics` | Standalone Prometheus `/metrics` server on a plain TCP listener and threads. Needs neither the `api` feature nor an async runtime. Included by default. | `native`, `base64`, `rustls` |
 | `plugins` | WASM plugin host (`--plugin`): runs third-party dialog detections in a sandbox that has no access to the sipnab process. | `native`, `wasmi` |
 | `bpf` | eBPF TLS capture (`--uprobe-backend bpf`): reads SIP plaintext **and the peer addresses** with no key material. Needs a nightly toolchain and `bpf-linker` to build, and a kernel with `CONFIG_DEBUG_INFO_BTF` to run — without the linker the binary still builds, and `--uprobe-backend bpf` refuses at run time. | `native`, `aya`, `sipnab-bpf-types/pod` |
-| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Not in the default build. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1_oaep`, `sha1`, `webpki`, `p256` |
+| `vcon` | vCon export: one observed dialog as an IETF conversation container, with the audio inline when the run retained it, or signed and encrypted when a `[[vcon.rule]]` sets `encrypt_to`. Not in the default build. Adds `--export-vcon`/`--vcon-out`, the `export_vcon` MCP tool and `GET /v1/dialogs/{call_id}/vcon`. | `native`, `sha2`, `hmac`, `base64`, `rustls`, `rsa`, `ring`, `aes`, `cbc`, `sha1`, `webpki`, `p256` |
 | `opus` | Ogg Opus recordings in vCon containers (`audio_format = "opus"` on a `[[vcon.rule]]`). Compiles libopus from the source `opusic-sys` vendors and links it statically, so building it needs `cmake` and a C compiler; the binary needs no system libopus. In `full`; not in the static musl builds, which have no vCon export. | `vcon`, `opus` |
 | `archive` | Password-protected ZIP and 7z input: `-I evidence.zip` reads the captures inside, stored, deflated, WinZip AES or ZipCrypto, and `-I evidence.7z` reads LZMA or LZMA2, AES-256 or not, without leaving a decrypted copy on disk. Adds `--archive-password-file`, `--archive-password-command`, `--archive-password-stdin`, `--archive-password` and `--archive-password-encoding`, and reads `SIPNAB_ARCHIVE_PASSWORD` and the systemd credential `archive-password`. | `native`, `zip`, `sevenz-rust2`, `zeroize`, `unicode-normalization` |
 | `g729` | G.729 Annex A decoding, with Annex B comfort noise, for WAV export, vCon recordings, the live audio route and the dead-air measurement. Adds `--g729-tables`, `[g729]`, and the `sipnab g729 install` and `sipnab g729 status` commands. sipnab ships no ITU-T table values: each host installs them with `sipnab g729 install`, described on the G.729 decoding page. Pure Rust, so in `full` and in the static musl builds. | `native`, `g729` (crates/g729), `sha2`, `rustls`, `base64` |
@@ -57233,12 +57233,14 @@ beside the container as its own JWE:
   sipnab refuses an `alg` that is not that algorithm.
 - `--vcon-key` and `--vcon-fetch-decrypt-key` take an RSA or an EC P-256
   private key, and open the entry for that key.
-- **Use an EC P-256 key for `encrypt_to`.** An RSA recipient key works, but
-  sipnab opens a container with its private key (`--vcon-key`,
-  `--vcon-fetch-decrypt-key`) through the `rsa` crate, in
+- **On sipnab 0.5.247 or earlier, use an EC P-256 key for `encrypt_to`.** An
+  RSA recipient key works, but sipnab opens a container with its private key
+  (`--vcon-key`, `--vcon-fetch-decrypt-key`) through the `rsa` crate, in
   [`src/output/vcon_jose.rs`](https://github.com/NormB/sipnab/blob/main/src/output/vcon_jose.rs).
-  - That crate has the advisory RUSTSEC-2023-0071, a timing side channel in
-    RSA decryption, and no release that fixes it.
+  - Releases through 0.5.247 use `rsa` 0.9, which has the advisory
+    RUSTSEC-2023-0071, a timing side channel in RSA decryption. Later
+    releases use `rsa` 0.10.0, the release that fixes it, and the rest of
+    this list does not apply to them.
   - The attack needs the attacker to choose the ciphertext of many
     decryption calls and time each one. A file read with `-I` gives nobody that, and a store read by
     `--vcon-fetch` sees only when the next request comes.
@@ -57246,7 +57248,7 @@ beside the container as its own JWE:
     open a container the caller sends. With an RSA `--vcon-key`, a client
     holding the API key or MCP access can send ciphertext of its choosing and
     time the answers, at the rate limit.
-  - The risk is low, not zero. With an RSA key, give the API key and MCP
+  - The risk is low, not zero. With an RSA key on those releases, give the API key and MCP
     access only to clients you would trust with what the key decrypts, and
     fetch only from a store you trust.
   - An EC P-256 recipient key uses `ECDH-ES+A256KW` and no `rsa` private-key
@@ -79927,8 +79929,8 @@ request when a crate breaks one.
 - **It has no open security advisory.**
   - The advisories come from the [RustSec database](https://rustsec.org/).
   - The project accepts an advisory that does not apply to sipnab only with a
-    written reason. The one `rsa` exception in [`deny.toml`](deny.toml) shows
-    this.
+    written reason, next to the entry in [`deny.toml`](deny.toml) or
+    [`osv-scanner.toml`](osv-scanner.toml).
 
 The reviewer checks the rest:
 
@@ -79979,8 +79981,8 @@ push. Install the tools once with `cargo install cargo-audit cargo-deny`.
 
 ```bash
 # Run all of these, in order.
-cargo audit --ignore RUSTSEC-2023-0071
-cargo audit --file fuzz/Cargo.lock --ignore RUSTSEC-2023-0071
+cargo audit
+cargo audit --file fuzz/Cargo.lock
 cargo deny check
 python3 scripts/check-lockfile-drift.py
 ```
