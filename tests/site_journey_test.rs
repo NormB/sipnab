@@ -6689,7 +6689,17 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `packaging/deb/build-deb.sh` and `packaging/rpm/build-rpm.sh` name the
     // harness that runs them, `packaging/deb/test-build-deb.sh` and
     // `packaging/rpm/test-build-rpm.sh` (+1 each).
-    const EXPECTED_REFERENCES: usize = 270;
+    // 270 -> 271: `.github/workflows/docker.yml`'s IMAGE_TAGS comment names
+    // `tests/container_image_test.rs`, which holds the `latest` rule (OPS-2).
+    // 271 -> 275: docker.yml's `pull_request` trigger: its comment names
+    // `tests/container_image_test.rs`, and its `paths:` list names the files
+    // the image and this workflow's rules are read from (+4 in all).
+    // Measurement: the scan read 271 before the trigger was added, 273 with
+    // its first five paths, and 275 with Cargo.lock and the two test files.
+    // 275 -> 276: docker.yml's IMAGE_TAGS comment on one writer per tag names
+    // `tests/container_image_test.rs` once more. Measurement: the scan read
+    // 275 on the commit before that comment and 276 with it.
+    const EXPECTED_REFERENCES: usize = 276;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

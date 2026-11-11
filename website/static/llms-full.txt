@@ -13352,7 +13352,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.244 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.245 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13375,7 +13375,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.244` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.245` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13564,7 +13564,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.244) | Plugin | `Recommends` |
+| Artifact (0.5.245) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13604,11 +13604,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.244 for the
+it first, in the same shell, to the release you want, e.g. 0.5.245 for the
 latest:
 
 ```bash
-VERSION=0.5.244
+VERSION=0.5.245
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13748,13 +13748,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.244, as in
+you want, e.g. 0.5.245, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.244
+   VERSION=0.5.245
    ```
 
 - Download the package:
@@ -13865,25 +13865,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.245-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.245-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.245-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.245-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14368,68 +14368,53 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.244
+docker pull ghcr.io/normb/sipnab:0.5.245
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.244` | That release |
+| `0.5.245` | That release |
 | `0.5` | The newest release in the 0.5 series |
-| `sha-<commit>` | The image built from that commit |
-| `latest` | The newest commit on `main`, which can be ahead of every release |
+| `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
+| `edge` | The newest commit on `main`, which can be ahead of every release |
+| `sha-<commit>` | The image the push of that commit to `main` built |
 
-`latest` is not a release. On 2026-11-03 it was the image of main commit
-`0d8eea1`, which the workflow built after the 0.5.232 tag.
+Until the release after 0.5.245, `latest` followed `main`, as `edge` does
+now. The first release built by the changed workflow moves `latest` to a
+release.
 
-**The image is `linux/amd64` only.** On an arm64 host `docker pull` fails with
-`no matching manifest for linux/arm64/v8 in the manifest list entries`. Use a
-[release tarball](#download-a-release-binary-yourself) or a package there.
+Each tag has one writer. A release is two pushes of one commit, the merge to
+`main` and then the `v*` tag, and each push builds an image of its own. The
+tag push writes the version tags and `latest`. The push to `main` writes
+`edge` and `sha-<commit>`. So `latest` and the version tag of the newest
+release name the same digest, and `sha-<commit>` of that commit names the
+other build. Up to 0.5.245 both pushes wrote `latest` and `sha-<commit>`, and
+for 0.5.245 `latest` and `0.5.245` name different digests.
+
+Every tag names a manifest list with a `linux/amd64` image and a
+`linux/arm64` image. `docker pull` takes the one for the host. Check what a
+tag holds, with `TAG` set to the tag:
+
+```bash
+# Run all of these, in order.
+TAG=edge
+docker buildx imagetools inspect "ghcr.io/normb/sipnab:$TAG"
+```
+
+The output lists a `Platform: linux/amd64` and a `Platform: linux/arm64`
+manifest. Releases up to 0.5.245 are `linux/amd64` only: on an arm64 host
+`docker pull` of one of them fails with `no matching manifest for
+linux/arm64/v8 in the manifest list entries`. Use a newer tag, or a
+[release tarball](#download-a-release-binary-yourself) or a package.
 
 Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.244 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.245 -N -I /data/capture.pcap
 ```
-
-**Live capture needs `--user root`.** The image runs as the unprivileged user
-`sipnab`, and a non-root user in a container gets no capabilities, whatever
-`--cap-add` grants. Started as root, sipnab opens the capture and then drops
-to `nobody`:
-
-```bash
-docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.244 -N -d eth0
-```
-
-```text
-INFO sipnab::capture::live: Capturing on 'lo' (link_type=1, snaplen=65535)
-INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
-```
-
-Without `--user root`, with or without `--cap-add NET_RAW --cap-add
-NET_ADMIN`, the capture fails and the container exits with status 1. sipnab
-finds `/.dockerenv` and says what to change:
-
-```text
-Permission denied on 'lo'. This process runs in a container (/.dockerenv), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:
-  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>
-```
-
-A container started with `--cap-drop=NET_RAW` gets `CAP_NET_RAW is not in
-this process's capability bounding set (container: /.dockerenv)` instead,
-even as root. A non-root container started with
-`--security-opt no-new-privileges` gets `This process runs with NoNewPrivs
-set`. As root, that container captures.
-These permission lines come from a development build of sipnab run in a
-`debian:13` container on `lo`.
-
-The outputs above came from an arm64 image built from the
-[`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
-stage with the 0.5.232 `.deb` binary, capturing `lo`, because the published
-image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.244`
-shows the same `"User": "sipnab"` for the published image.
 
 - `--net=host` lets the container see the host's interfaces.
 - A listener (`-L`, `--metrics`, `--api`) needs its port published, for
@@ -14441,12 +14426,100 @@ shows the same `"User": "sipnab"` for the published image.
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.244 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.245 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.244` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.244`. For `latest` it is
-`.github/workflows/docker.yml@refs/heads/main`.
+It names the workflow and the ref that built the image. For `0.5.245` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.245`, and for `latest` the tag of
+the newest release. For `edge` it is
+`.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
+attestation for the digest of the manifest list, which is what the tag names.
+
+#### Capture live traffic in the container
+
+The image runs as the unprivileged user `sipnab`, and that user captures:
+`docker run` with `--cap-add NET_RAW --cap-add NET_ADMIN` is enough, with no
+`--user root`.
+
+**Prerequisites:**
+
+- An image newer than 0.5.245. In 0.5.245 and earlier the user `sipnab` cannot
+  capture whatever `--cap-add` grants, and only `--user root` works (see
+  Troubleshooting below).
+- `--net=host`, to capture the host's interfaces rather than the container's
+  own.
+
+**Steps:**
+
+Set `TAG` to the image tag, and start the container under the name `sipnab`:
+
+```bash
+# Run all of these, in order.
+TAG=edge
+docker run --rm --name sipnab --net=host --cap-add NET_RAW --cap-add NET_ADMIN \
+  "ghcr.io/normb/sipnab:$TAG" -N -d eth0
+```
+
+How it works: `--cap-add` puts a capability in the container's bounding
+set, but a process that is not root loses its permitted and effective
+capabilities when it starts a program, unless the program file carries file
+capabilities. The image's binary carries `cap_net_raw` and `cap_net_admin` as
+permitted file capabilities (`setcap cap_net_raw,cap_net_admin+p`), so it
+starts permitted whichever of the two the bounding set holds, and sipnab moves
+them into its effective set before it does anything else. Without the
+effective bit in the file, the image also starts when the bounding set lacks
+one of them, so `docker run <image> --version` works under the default set
+of a Docker container and under `--cap-drop ALL`.
+
+**Verify:**
+
+The log names the device the capture opened, here for `-d lo`:
+
+```text
+INFO sipnab::capture::live: Capturing on 'lo' (link_type=1, snaplen=65535)
+```
+
+The process's capability sets show both capabilities effective. From a second shell, while the capture runs:
+
+```bash
+docker exec sipnab grep -E '^Cap(Prm|Eff)' /proc/1/status
+```
+
+```text
+CapPrm:	0000000000003000
+CapEff:	0000000000003000
+```
+
+`0x3000` is `CAP_NET_ADMIN` (bit 12) and `CAP_NET_RAW` (bit 13). Under the
+default set, with no `--cap-add`, both lines read `0000000000002000`: Docker
+grants `CAP_NET_RAW` by default, which is enough to open the capture.
+
+The output and the values above came from an arm64 image built from this
+[`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime stage with a locally built binary, capturing `lo`.
+
+**Troubleshooting:**
+
+- **The capture fails with `Permission denied on 'lo'` and exit status 1.**
+  The line after it names the cause sipnab found ([Live capture says
+  Permission denied](troubleshooting.md#live-capture-says-permission-denied)
+  lists each one):
+
+  - The container runs with `--cap-drop ALL`, or another policy that
+    leaves `CAP_NET_RAW` out of the bounding set. Add `--cap-add NET_RAW`.
+  - The image is 0.5.245 or earlier, whose binary has no file capabilities.
+    Use a newer tag, or `--user root`: started as root, sipnab opens the
+    capture and then drops to `nobody`.
+  - A shell starts sipnab (`--entrypoint sh`)
+    under `--security-opt no-new-privileges`. With no-new-privileges the
+    shell holds no capabilities to pass on and the file capabilities cannot
+    add any. Make sipnab the entrypoint. Started directly, it captures under
+    no-new-privileges as well.
+- **`--user root` still works.** sipnab then opens the capture and drops to
+  `nobody`:
+
+  ```text
+  INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+  ```
 
 ### Build the Docker image locally
 
@@ -14456,8 +14529,14 @@ docker build -t sipnab .
 
 The multi-stage Dockerfile uses `rust:1.99-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image.
 
-- The runtime image adds `libpcap0.8t64` and `libasound2t64`.
-- It runs as a non-root `sipnab` user.
+- The runtime image adds `libpcap0.8t64`, `libasound2t64` and
+  `ca-certificates`. The last puts Debian's CA bundle at
+  `/etc/ssl/certs/ca-certificates.crt`, where sipnab looks for one, so a TLS
+  client in the image trusts public certificate authorities without a CA
+  file.
+- It runs as a non-root `sipnab` user, and the binary carries
+  `cap_net_raw,cap_net_admin+p` file capabilities so that user can capture
+  (see [Capture live traffic in the container](#capture-live-traffic-in-the-container)).
 - It builds for the host's own architecture, so this is also how to get an
   arm64 image.
 
@@ -14549,7 +14628,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.245 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.246 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -14773,10 +14852,10 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.244
+docker pull ghcr.io/normb/sipnab:0.5.245
 ```
 
-Pulling `latest` gives the newest `main` commit, not the newest release. See
+`latest` is the newest release, and `edge` is the newest `main` commit. See
 [Run from a pre-built image](#run-from-a-pre-built-image).
 
 ### What an upgrade keeps, and what to redo
@@ -17370,7 +17449,8 @@ under the message name the cause it found:
 |---|---|---|
 | From a shell, as your user | The binary has no file capabilities, or an upgrade replaced it and cleared them | `sudo sipnab --setup-caps` |
 | Under systemd with `NoNewPrivileges=true` | `NoNewPrivileges` stops file capabilities taking effect, so `setcap` cannot help | `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` in the unit ([Write a unit of your own](run-as-a-service.md#write-a-unit-of-your-own)) |
-| In the release container image | The image runs as the non-root user `sipnab`, which gets no capabilities, even with `--cap-add` | `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
+| In the container image, newer than 0.5.245 | The container's bounding set lacks `CAP_NET_RAW` (`--cap-drop ALL`, or a policy that drops it), or a shell starts sipnab under `--security-opt no-new-privileges` | `docker run --cap-add NET_RAW --cap-add NET_ADMIN`, with sipnab as the entrypoint ([Capture live traffic in the container](install.md#capture-live-traffic-in-the-container)) |
+| In the container image, 0.5.245 or earlier, or in another container as a non-root user | The sipnab binary has no file capabilities, so its user gets no capabilities, even with `--cap-add` | A newer tag, or `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
 | In a container or unit whose bounding set lacks `CAP_NET_RAW` | Nothing inside the process, root included, can gain a capability missing from its bounding set | `docker run --cap-add=NET_RAW`, or `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN` in the unit |
 
 Each cause has its own first line after `Permission denied on '<dev>'.`:
@@ -17379,7 +17459,7 @@ Each cause has its own first line after `Permission denied on '<dev>'.`:
 |---|---|
 | `NoNewPrivs: 1` at startup | `This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or a container started with no-new-privileges)`, then the `AmbientCapabilities=` lines |
 | `CAP_NET_RAW` missing from `CapBnd` | `CAP_NET_RAW is not in this process's capability bounding set`, then `docker run --cap-add=NET_RAW` and `CapabilityBoundingSet=` |
-| A container marker, and neither of the above | `This process runs in a container (/.dockerenv)`, then `docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>` |
+| A container marker, and neither of the above | `This process runs in a container (/.dockerenv) as a user that holds no capture capability`, then `docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>` |
 | None of these | `Grant capture capabilities once (Linux), then re-run without sudo:`, then `sipnab --setup-caps`, `sudo` and `setcap` |
 
 To check which cause applies, read the same two lines sipnab reads:
@@ -17472,9 +17552,10 @@ to read the `WWW-Authenticate` challenge MCP adds to a `401`.
   The sender does not trust the collector's issuer. Name it with
   `--hep-tls-ca`. The listener logs nothing for the failed handshake at the
   default level, so this line on the sender is the evidence.
-- **A HEP sender in the release container image stops with `no system CA
-  bundle found; name the collector's issuer with --hep-tls-ca`.** The image
-  has no CA bundle. Mount the issuer's certificate and name it.
+- **A HEP sender in the container image stops with `no system CA bundle
+  found; name the collector's issuer with --hep-tls-ca`.** Images up to
+  0.5.245 have no CA bundle. Pull a newer tag, which carries Debian's bundle,
+  or mount the issuer's certificate and name it with `--hep-tls-ca`.
 
 [API TLS](rest-api.md#api-tls), [MCP TLS](mcp-deploy.md#mcp-tls) and
 [Carry the feed over TCP and TLS](examples.md#carry-the-feed-over-tcp-and-tls)
@@ -29087,10 +29168,19 @@ The center could not open its encrypted store, and leaves it as it found it.
   center wrote it.
 - `was truncated: it ends before its records do`: the file is shorter than
   the center wrote it.
+- `was cut at its end: it holds <n> of the <m> entries it was written with`:
+  records the center had written and counted are missing from the end of the
+  file. An entry is a record, the end of an append, or the end of the records
+  a rewrite wrote.
+- `has a record count that did not authenticate (the file was modified, or
+  the key is wrong)`: something changed the two counts in the file's header,
+  or changed one of them in a file that is not in the state a center leaves
+  when it stops while it writes a count.
 - `is a sealed intake file, not a registry file`: another of the center's files
   is in the store's place.
-- `has sealed format <n>, and this build reads format 1`: a later sipnab wrote
-  the store.
+- `has sealed format <n>, and this build reads format 2`: a later sipnab wrote
+  the store. This build also reads format 1, which 0.5.244 and 0.5.245
+  wrote, and writes the file again as format 2 at start.
 - `record <n> is not a member record: <reason>`: the record is intact and is not one
   this build reads.
 
@@ -29137,10 +29227,18 @@ the center runs as.
 ### `the intake '{shown}': {e}`
 
 The center could not read its intake, or could not write it again at
-start. The text after the path is the operating system's error.
+start. The text after the path is the operating system's error, or
+`sealed layer:` and the reason the center refused the encrypted file. The
+reasons are those listed above under
+`--store '{shown}': sealed layer: the file {e}`.
+`was cut at its end` means call records the center had acknowledged are
+missing from the end of the intake.
 
-**What to do:** Check that the directory of `--store` is writable by the
-center's user and has free space.
+**What to do:** For an operating system error, check that the directory of
+`--store` is writable by the center's user and has free space. For a
+`sealed layer` reason, restore the intake from a copy, or move it away and
+start with an empty one: the center then holds none of the call records the
+file held, and members do not send them again.
 
 **Exit code:** 2.
 
@@ -29373,11 +29471,11 @@ Part of the permission refusal above: `/proc/self/status` said `NoNewPrivs: 1` w
 
 **Exit code:** 1.
 
-### `Permission denied on '{target}'. This process runs in a container ({marker}), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
+### `Permission denied on '{target}'. This process runs in a container ({marker}) as a user that holds no capture capability. In a container a non-root user gets a capability only through file capabilities on the binary (cap_net_raw,cap_net_admin+p), which the sipnab image's binary carries and this one does not. Run that image, or start this container as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
 
-sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user the container runs as has the capability in its bounding set but not in effect.
+sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user holds no capability: the binary it runs carries no file capabilities. The binary of the sipnab container image newer than 0.5.245 carries `cap_net_raw,cap_net_admin+p`, and its user `sipnab` captures with `--cap-add`.
 
-**What to do:** Start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens.
+**What to do:** Run a sipnab image newer than 0.5.245 with `docker run --cap-add NET_RAW --cap-add NET_ADMIN`. For any other image, start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens. See [Capture live traffic in the container](install.md#capture-live-traffic-in-the-container).
 
 **Exit code:** 1.
 
@@ -29388,6 +29486,17 @@ sipnab lacks the permission to open the capture device, and found neither NoNewP
 **What to do:** Run `sipnab --setup-caps` once and re-run without sudo, run the command under sudo, or run `sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`.
 
 **Exit code:** 1.
+
+### `could not raise the permitted capture capabilities: {e}`
+
+At startup sipnab moves `CAP_NET_RAW` and `CAP_NET_ADMIN` from its permitted capability set into its effective set, when it holds them permitted only. The binary in the container image carries them that way (`cap_net_raw,cap_net_admin+p`). The kernel refused the read (`capget`) or the change (`capset`), and `{e}` is its error. A seccomp profile that denies `capset` is one cause.
+
+- The run continues with the capabilities it had.
+- A live capture then fails with `Permission denied`, unless the process is root.
+
+**What to do:** Allow `capget` and `capset` in the seccomp profile the process runs under, or start sipnab as root. See [Capture live traffic in the container](install.md#capture-live-traffic-in-the-container).
+
+**Exit code:** None. This is a warning, and the run continues.
 
 ### `Processing thread panicked: {}`
 
@@ -36658,7 +36767,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.245 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.246 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -37360,7 +37469,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.245"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.246"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -38045,7 +38154,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.245",
+  "version": "0.5.246",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -38988,7 +39097,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.245"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.246"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -41067,6 +41176,24 @@ development build after 0.5.243 and the files in one working directory.
   key. After the upgrade it does not start until you give it
   `--store-key-file`. [Upgrade a center that stored in clear](#upgrade-a-center-that-stored-in-clear)
   has the steps and the way back.
+- **A center from 0.5.244 or 0.5.245, or a member from 0.5.245** wrote
+  sealed format 1. A later release reads those files once and writes them
+  again as format 2, and neither 0.5.244 nor 0.5.245 reads format 2. To keep
+  a way back, stop the center and copy its store and its intake before the
+  first start of the new release. A center from 0.5.244 has no intake, so
+  only the first command applies to it:
+
+  ```bash
+  # Run all of these, in order.
+  cp -p /var/lib/sipnab/center.store /var/lib/sipnab/center.store.format1
+  cp -p /var/lib/sipnab/center.store.intake /var/lib/sipnab/center.store.intake.format1
+  ```
+
+  To go back, stop the center, put the copies back under their own names
+  and start the release that wrote them. It then knows nothing the newer
+  release stored. A member has nothing to copy: let its spool drain before a
+  downgrade, because 0.5.245 moves a format 2 delivery to `failed/` and does
+  not send it.
 
 **Steps.**
 
@@ -41165,14 +41292,17 @@ at its next heartbeat, and does not list a member that is silent then.
 **What it covers and what it does not.** The center seals the store file and
 the file it stages a rewrite in, and writes no other file. It authenticates
 each record with the record's position in the file, so a changed byte, a
-moved record or a store cut short inside the records of its last rewrite
-stops the center at start. Two things it cannot detect: someone deleting the
-whole store, and someone removing whole records from the end of the file
-that the center appended after its last rewrite. A file that the center may
-stop writing at any moment cannot tell a removed last record from one it
-never wrote, unless it keeps a count somewhere else, and this release keeps
-none. The center rewrites the store at start and every minute, so the
-records this applies to are the heartbeats of at most the last minute. `--store-encryption` names how the center encrypts
+moved record or a store cut short stops the center at start. That includes
+records removed from the end of the file: after each append is on disk the
+center writes an authenticated count of the file's entries into the file's
+header, and the center refuses a file that holds fewer entries than its
+count (`was cut at its end`). The same holds for the intake beside the store
+and for a member's sealed deliveries. Two things it cannot detect: someone
+deleting the whole store, and someone putting back an earlier copy of the
+whole file, which is a valid file with its own valid count. Releases 0.5.244
+and 0.5.245 wrote no count (sealed format 1). This release reads such a file
+once at start and writes it again with one (format 2), and an earlier
+release does not read a format 2 file. `--store-encryption` names how the center encrypts
 the store. This release has one mechanism, `sealed`, and refuses the values
 `modular` and `both`.
 
@@ -41195,14 +41325,23 @@ shows a key.
   sipnab fleet serve: --store 'center.store': sealed layer: the file was written under key id ac7b02adecf75d31, which is not loaded; give that key's file with --store-old-key-file
   ```
 
-- **`did not authenticate`, or `was truncated`.** Something changed the
-  store or cut it short after the center wrote it. The center leaves it as it
-  found it. Restore the store from a copy, or move it away and start with an
-  empty store: the members report again within one heartbeat interval each,
-  and the list loses only a member that is silent now.
+- **`did not authenticate`, `was truncated`, or `was cut at its end`.**
+  Something changed the store or cut it short after the center wrote it. The
+  center leaves it as it found it. Restore the store from a copy, or move it
+  away and start with an empty store: the members report again within one
+  heartbeat interval each, and the list loses only a member that is silent
+  now. When the message names the intake (`center.store.intake`), the same
+  two choices apply to that file. An empty intake holds none of the call
+  records the old one held.
 
   ```text
   sipnab fleet serve: --store 'center.store': sealed layer: the file has a header that did not authenticate (the file was modified, or the key is wrong)
+  ```
+
+  A store with records removed from its end:
+
+  ```text
+  sipnab fleet serve: --store 'center.store': sealed layer: the file was cut at its end: it holds 3 of the 5 entries it was written with
   ```
 
 - **`can be read or written by other users`**, naming the key file. Run
@@ -49025,7 +49164,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.245",
+  "version": "0.5.246",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -62867,9 +63006,11 @@ Failed to create HEP sender: Failed to establish a TLS session with '127.0.0.1:1
 ```
 
 The listener logs nothing for that failed handshake at the default level, so
-read the sender's side. The release container image holds no CA bundle: a
-sender in it needs `--hep-tls-ca` even for a collector with a public
-certificate, and stops with `no system CA bundle found; name the collector's
+read the sender's side. The container image carries Debian's CA bundle at
+`/etc/ssl/certs/ca-certificates.crt`, so a sender in it trusts a collector
+whose certificate a public CA signed with no `--hep-tls-ca`. Images up to
+0.5.245 hold no bundle: a sender in one of them needs `--hep-tls-ca` even for
+a public CA, and stops with `no system CA bundle found; name the collector's
 issuer with --hep-tls-ca` without it.
 
 ### Scrape the HTTPS metrics endpoint from Prometheus
@@ -82609,7 +82750,7 @@ That is exactly why CI has a feature matrix.
 | `codeql.yml` | push to main, PR, weekly cron (Tuesdays 02:34 UTC) | GitHub's static analysis. |
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `clusterfuzzlite.yml` | daily (batch 02:23 UTC, pruning 05:23 UTC), weekly (coverage Sundays 06:23 UTC) + manual | Continuous fuzzing with a corpus that survives between runs, which `fuzz.yml` cannot do: batch fuzzing grows it, pruning keeps it minimal, and the coverage job reports which code it reaches. Builds in the OSS-Fuzz Rust builder image from `.clusterfuzzlite/`, which compiles the targets the way ClusterFuzzLite runs them. No pull-request fuzzing: without continuous builds on every push it would report pre-existing crashes as though the change introduced them. |
-| `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
+| `docker.yml` | push to main, `v*` tags, pull requests that change the Dockerfile, the workflow or the files its `paths:` list names | Builds the image natively on an amd64 and an arm64 runner, smoke-tests and scans each, pushes each by digest, and joins them into one manifest list on GHCR with sigstore provenance. `latest` moves only on a release tag, and `edge` follows main. Each tag has one writing trigger: the tag push writes the version tags and `latest`, the push to main writes `edge` and `sha-<commit>`, and the `manifest` job reads its list back by the run's own tag (`sha-<commit>` on main, the full version on a tag). On a pull request it logs in nowhere and pushes nothing to GHCR: each leg hands its image to the `manifest` job, which assembles and checks the list in a registry it starts on localhost. |
 | `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website, with the homepage test count taken from CI's run of the same commit. |
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |
@@ -82636,7 +82777,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 151 `unsafe` blocks are libc FFI.
+- Most of this crate's 153 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](../../src/privilege.rs)
   and [`process_isolation.rs`](../../src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -87717,6 +87858,7 @@ Each successful run gets a row here.
 | 0.5.242 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.243 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.244 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.245 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-11 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it

@@ -1058,6 +1058,55 @@ mod tests {
     }
 
     #[test]
+    fn success_a_sealed_delivery_is_a_format_2_file() -> TestResult {
+        let bytes = sealed_two()?;
+        assert_eq!(
+            bytes[4],
+            super::super::fleet_seal::FORMAT,
+            "success a sealed delivery is a format 2 file"
+        );
+        assert_eq!(bytes[4], 2, "the format with count slots");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_delivery_release_0_5_245_left_in_the_spool_still_opens() -> TestResult {
+        // A member upgraded with deliveries waiting: they are format 1
+        // files, and are delivered as they are.
+        let lines = two_lines();
+        let records: Vec<&[u8]> = lines.iter().map(String::as_bytes).collect();
+        let old = super::super::fleet_seal::sealed_format_1(
+            super::super::fleet_seal::Kind::Spool,
+            keys(1).current(),
+            &records,
+            &[],
+            &super::super::fleet_seal::system_draw,
+        )?;
+        assert_eq!(old[4], 1, "the file is format 1");
+        let body = open_batch(&old, &keys(1)).map_err(|e| e.to_string())?;
+        assert_eq!(
+            String::from_utf8(body)?,
+            lines.concat(),
+            "edge a delivery release 0.5.245 left in the spool still opens"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_delivery_whose_counts_were_damaged_is_refused() -> TestResult {
+        use super::super::fleet_seal::{COUNT_SLOT_BYTES, KEY_HEADER_BYTES};
+        let mut bytes = sealed_two()?;
+        bytes[KEY_HEADER_BYTES + 2] ^= 1;
+        bytes[KEY_HEADER_BYTES + COUNT_SLOT_BYTES + 2] ^= 1;
+        assert_eq!(
+            open_batch(&bytes, &keys(1)).err(),
+            Some(SealError::Count),
+            "failure a delivery whose counts were damaged is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn success_a_sealed_delivery_holds_no_number_or_host_in_clear() -> TestResult {
         let bytes = sealed_two()?;
         assert!(

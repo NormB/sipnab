@@ -5520,10 +5520,19 @@ The center could not open its encrypted store, and leaves it as it found it.
   center wrote it.
 - `was truncated: it ends before its records do`: the file is shorter than
   the center wrote it.
+- `was cut at its end: it holds <n> of the <m> entries it was written with`:
+  records the center had written and counted are missing from the end of the
+  file. An entry is a record, the end of an append, or the end of the records
+  a rewrite wrote.
+- `has a record count that did not authenticate (the file was modified, or
+  the key is wrong)`: something changed the two counts in the file's header,
+  or changed one of them in a file that is not in the state a center leaves
+  when it stops while it writes a count.
 - `is a sealed intake file, not a registry file`: another of the center's files
   is in the store's place.
-- `has sealed format <n>, and this build reads format 1`: a later sipnab wrote
-  the store.
+- `has sealed format <n>, and this build reads format 2`: a later sipnab wrote
+  the store. This build also reads format 1, which 0.5.244 and 0.5.245
+  wrote, and writes the file again as format 2 at start.
 - `record <n> is not a member record: <reason>`: the record is intact and is not one
   this build reads.
 
@@ -5570,10 +5579,18 @@ the center runs as.
 ### `the intake '{shown}': {e}`
 
 The center could not read its intake, or could not write it again at
-start. The text after the path is the operating system's error.
+start. The text after the path is the operating system's error, or
+`sealed layer:` and the reason the center refused the encrypted file. The
+reasons are those listed above under
+`--store '{shown}': sealed layer: the file {e}`.
+`was cut at its end` means call records the center had acknowledged are
+missing from the end of the intake.
 
-**What to do:** Check that the directory of `--store` is writable by the
-center's user and has free space.
+**What to do:** For an operating system error, check that the directory of
+`--store` is writable by the center's user and has free space. For a
+`sealed layer` reason, restore the intake from a copy, or move it away and
+start with an empty one: the center then holds none of the call records the
+file held, and members do not send them again.
 
 **Exit code:** 2.
 
@@ -5806,11 +5823,11 @@ Part of the permission refusal above: `/proc/self/status` said `NoNewPrivs: 1` w
 
 **Exit code:** 1.
 
-### `Permission denied on '{target}'. This process runs in a container ({marker}), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
+### `Permission denied on '{target}'. This process runs in a container ({marker}) as a user that holds no capture capability. In a container a non-root user gets a capability only through file capabilities on the binary (cap_net_raw,cap_net_admin+p), which the sipnab image's binary carries and this one does not. Run that image, or start this container as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
 
-sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user the container runs as has the capability in its bounding set but not in effect.
+sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user holds no capability: the binary it runs carries no file capabilities. The binary of the sipnab container image newer than 0.5.245 carries `cap_net_raw,cap_net_admin+p`, and its user `sipnab` captures with `--cap-add`.
 
-**What to do:** Start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens.
+**What to do:** Run a sipnab image newer than 0.5.245 with `docker run --cap-add NET_RAW --cap-add NET_ADMIN`. For any other image, start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens. See [Capture live traffic in the container](install.md#capture-live-traffic-in-the-container).
 
 **Exit code:** 1.
 
@@ -5821,6 +5838,17 @@ sipnab lacks the permission to open the capture device, and found neither NoNewP
 **What to do:** Run `sipnab --setup-caps` once and re-run without sudo, run the command under sudo, or run `sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`.
 
 **Exit code:** 1.
+
+### `could not raise the permitted capture capabilities: {e}`
+
+At startup sipnab moves `CAP_NET_RAW` and `CAP_NET_ADMIN` from its permitted capability set into its effective set, when it holds them permitted only. The binary in the container image carries them that way (`cap_net_raw,cap_net_admin+p`). The kernel refused the read (`capget`) or the change (`capset`), and `{e}` is its error. A seccomp profile that denies `capset` is one cause.
+
+- The run continues with the capabilities it had.
+- A live capture then fails with `Permission denied`, unless the process is root.
+
+**What to do:** Allow `capget` and `capset` in the seccomp profile the process runs under, or start sipnab as root. See [Capture live traffic in the container](install.md#capture-live-traffic-in-the-container).
+
+**Exit code:** None. This is a warning, and the run continues.
 
 ### `Processing thread panicked: {}`
 

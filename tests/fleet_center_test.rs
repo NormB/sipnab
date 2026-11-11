@@ -1343,4 +1343,232 @@ fn edge_two_generated_keys_and_their_ids_differ() -> Result<(), TestError> {
     Ok(())
 }
 
+// ---- records removed from the end of a sealed file (sealed format 2) ----
+
+/// One heartbeat from `node` to the center at `addr`, acknowledged.
+fn report(addr: &str, node: &str) -> Result<(), TestError> {
+    let (status, body) = ingest(
+        addr,
+        &token(node, sipnab::auth::SCOPE_FLEET_REPORT),
+        &heartbeat(node, "s-1", 1, 30),
+    )?;
+    assert_eq!(status, 200, "{body}");
+    Ok(())
+}
+
+/// One call record of `node` at `seq`, as a member pushes it.
+fn call_record(seq: u64) -> String {
+    serde_json::json!({
+        "schema_version": 1,
+        "kind": "call",
+        "stream": "s-1",
+        "seq": seq,
+        "sent_at": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+        "selected_by": "failed",
+        "call": {"call_id": format!("call-{seq}@example.com")},
+    })
+    .to_string()
+        + "\n"
+}
+
+/// The size of the file at `path`.
+fn size(path: &std::path::Path) -> Result<usize, TestError> {
+    Ok(usize::try_from(std::fs::metadata(path)?.len())?)
+}
+
+/// The defect FLEET-STORE-TAIL-TRUNCATION, on the real binary: a store
+/// whose last acknowledged heartbeat was removed from the end of the file
+/// used to start with one member fewer and say nothing. The center now
+/// refuses the start, names the layer and the file, and leaves the file.
+#[test]
+fn failure_a_store_with_its_last_heartbeat_removed_refuses_the_start() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let store = dir.path().join("center.store");
+    let key = store_key_file(dir.path())?;
+    let c = serve(dir.path(), &store, &key, &[])?;
+    report(&c.addr, "edge-a")?;
+    let kept = size(&store)?;
+    report(&c.addr, "edge-b")?;
+    // Killed, so the file is the base and the two appends.
+    drop(c);
+    let whole = std::fs::read(&store)?;
+    assert!(whole.len() > kept, "the second heartbeat was appended");
+    std::fs::write(&store, &whole[..kept])?;
+    let (code, log) = serve_refused(dir.path(), &store, Some(&key), &[])?;
+    assert_eq!(code, 2, "{log}");
+    assert!(
+        log.contains("center.store': sealed layer: the file was cut at its end: it holds 3 of the 5 entries it was written with"),
+        "failure a store with its last heartbeat removed refuses the start: {log}"
+    );
+    assert_eq!(
+        std::fs::read(&store)?,
+        whole[..kept],
+        "left as it was found"
+    );
+    Ok(())
+}
+
+/// The same for the intake: a call record the center acknowledged and
+/// that was then removed from the end of the intake refuses the start.
+#[test]
+fn failure_an_intake_with_its_last_call_record_removed_refuses_the_start() -> Result<(), TestError>
+{
+    let dir = tempfile::tempdir()?;
+    let store = dir.path().join("center.store");
+    let intake = dir.path().join("center.store.intake");
+    let key = store_key_file(dir.path())?;
+    let c = serve(dir.path(), &store, &key, &[])?;
+    let member = token("edge-a", sipnab::auth::SCOPE_FLEET_REPORT);
+    let (status, body) = ingest(&c.addr, &member, &call_record(1))?;
+    assert_eq!(status, 200, "{body}");
+    let kept = size(&intake)?;
+    let (status, body) = ingest(&c.addr, &member, &call_record(2))?;
+    assert_eq!(status, 200, "{body}");
+    drop(c);
+    let whole = std::fs::read(&intake)?;
+    assert!(whole.len() > kept, "the second call record was appended");
+    std::fs::write(&intake, &whole[..kept])?;
+    let (code, log) = serve_refused(dir.path(), &store, Some(&key), &[])?;
+    assert_eq!(code, 2, "{log}");
+    assert!(
+        log.contains("center.store.intake': sealed layer: the file was cut at its end: it holds 3 of the 5 entries it was written with"),
+        "failure an intake with its last call record removed refuses the start: {log}"
+    );
+    Ok(())
+}
+
+/// A store whose two record counts were changed refuses the start.
+#[test]
+fn failure_a_store_with_damaged_counts_refuses_the_start() -> Result<(), TestError> {
+    use sipnab::app::fleet_seal::{COUNT_SLOT_BYTES, KEY_HEADER_BYTES};
+    let dir = tempfile::tempdir()?;
+    let (store, key, _) = stored(dir.path(), &["edge-a", "edge-b"])?;
+    let mut bytes = std::fs::read(&store)?;
+    bytes[KEY_HEADER_BYTES + 12] ^= 1;
+    bytes[KEY_HEADER_BYTES + COUNT_SLOT_BYTES + 12] ^= 1;
+    std::fs::write(&store, &bytes)?;
+    let (code, log) = serve_refused(dir.path(), &store, Some(&key), &[])?;
+    assert_eq!(code, 2, "{log}");
+    assert!(
+        log.contains("sealed layer: the file has a record count that did not authenticate"),
+        "failure a store with damaged counts refuses the start: {log}"
+    );
+    Ok(())
+}
+
+/// A killed center leaves a format 2 store, and the next start lists every
+/// member whose heartbeat was acknowledged.
+#[test]
+fn success_a_killed_center_leaves_a_format_2_store_that_restarts_whole() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (store, key, _) = stored(dir.path(), &["edge-a", "edge-b", "edge-c"])?;
+    let bytes = std::fs::read(&store)?;
+    assert_eq!(bytes[4], sipnab::app::fleet_seal::FORMAT, "the format byte");
+    assert_eq!(bytes[4], 2, "the format with record counts");
+    let c = serve(dir.path(), &store, &key, &[])?;
+    assert_eq!(
+        member_names(&c.addr)?,
+        vec![
+            "edge-a".to_string(),
+            "edge-b".to_string(),
+            "edge-c".to_string()
+        ],
+        "success a killed center leaves a format 2 store that restarts whole"
+    );
+    Ok(())
+}
+
+/// A center of this build starts on the store a center of release 0.5.244
+/// left (the fixture, written by that release's own code under the test
+/// key), lists its members, and writes the store again as format 2.
+///
+/// The fixture's heartbeats were received on 2026-11-07, so the test runs
+/// with the longest retention the flag takes, ten years.
+#[test]
+fn success_a_center_starts_on_a_store_release_0_5_244_wrote() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    // Written into a file that is already private: a copy would take the
+    // fixture's own permissions, and the center refuses a store others
+    // can read.
+    let store = private_file(dir.path(), "center.store", "")?;
+    std::fs::write(
+        &store,
+        std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/fleet/center-store-format-1.sealed"
+        ))?,
+    )?;
+    assert_eq!(
+        std::fs::read(&store)?[4],
+        1,
+        "the fixture is a format 1 file"
+    );
+    let key = store_key_file(dir.path())?;
+    let c = serve(dir.path(), &store, &key, &["--retention-hours", "87600"])?;
+    assert_eq!(
+        member_names(&c.addr)?,
+        vec!["edge-a".to_string(), "edge-b".to_string()],
+        "success a center starts on a store release 0.5.244 wrote"
+    );
+    assert_eq!(std::fs::read(&store)?[4], 2, "written again as format 2");
+    Ok(())
+}
+
+/// A part of a record after the acknowledged ones, as a center killed
+/// while it wrote leaves it: the next start drops it and keeps the rest.
+#[test]
+fn edge_a_store_with_an_unfinished_append_starts_with_the_acknowledged_members()
+-> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let (store, key, _) = stored(dir.path(), &["edge-a", "edge-b"])?;
+    let mut bytes = std::fs::read(&store)?;
+    bytes.extend([0, 0, 2, 0, 5, 5, 5, 5, 5]);
+    std::fs::write(&store, &bytes)?;
+    let c = serve(dir.path(), &store, &key, &[])?;
+    assert_eq!(
+        member_names(&c.addr)?,
+        vec!["edge-a".to_string(), "edge-b".to_string()],
+        "edge a store with an unfinished append starts with the acknowledged members"
+    );
+    Ok(())
+}
+
+/// A count that was not written, as a center killed between an append and
+/// its count leaves it: the next start keeps the appended heartbeat.
+#[test]
+fn edge_a_store_whose_last_count_was_not_written_starts_whole() -> Result<(), TestError> {
+    use sipnab::app::fleet_seal::{COUNT_SLOT_BYTES, KEY_HEADER_BYTES};
+    let dir = tempfile::tempdir()?;
+    let store = dir.path().join("center.store");
+    let key = store_key_file(dir.path())?;
+    let c = serve(dir.path(), &store, &key, &[])?;
+    report(&c.addr, "edge-a")?;
+    let before = std::fs::read(&store)?;
+    report(&c.addr, "edge-b")?;
+    drop(c);
+    // Put back the count slots as they were before the second append.
+    let mut bytes = std::fs::read(&store)?;
+    let slots = KEY_HEADER_BYTES..KEY_HEADER_BYTES + 2 * COUNT_SLOT_BYTES;
+    assert_ne!(
+        bytes[slots.clone()],
+        before[slots.clone()],
+        "a count changed"
+    );
+    // The slot the second append wrote is the one that differs: zero it.
+    for slot in 0..2 {
+        let at = KEY_HEADER_BYTES + slot * COUNT_SLOT_BYTES;
+        if bytes[at..at + COUNT_SLOT_BYTES] != before[at..at + COUNT_SLOT_BYTES] {
+            bytes[at..at + COUNT_SLOT_BYTES].fill(0);
+        }
+    }
+    std::fs::write(&store, &bytes)?;
+    let c = serve(dir.path(), &store, &key, &[])?;
+    assert_eq!(
+        member_names(&c.addr)?,
+        vec!["edge-a".to_string(), "edge-b".to_string()],
+        "edge a store whose last count was not written starts whole"
+    );
+    Ok(())
+}
+
 include!("support/child_lifetime.rs");
