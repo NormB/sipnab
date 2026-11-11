@@ -339,7 +339,7 @@ guards, each visible in the code:
    ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut" -->) and only set by `with_shutdown()`
    ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut" -->), which `servers.rs` calls only
    when `cli.mcp_allow_shutdown` is set
-   ([`servers.rs:953-957`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L953-L957)<!-- "let s = if cli.mcp_args.mcp_allow_shutdown" -->). Refusal is the first
+   ([`servers.rs:956-960`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L956-L960)<!-- "let s = if cli.mcp_args.mcp_allow_shutdown" -->). Refusal is the first
    statement of the handler ([`server.rs:9134`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9134)<!-- "if !self.allow_shutdown {" -->).
 2. **Dry run by default.** `params.dry_run.unwrap_or(true)`
    ([`server.rs:9145`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9145)<!-- "let dry_run = params.dry_run.unwrap_or(true);" -->) — an agent that omits the
@@ -530,7 +530,7 @@ claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 socket opened in the privileged window and handed to the worker
 (`RawKillSocket::open`, [`process_isolation.rs:152`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L152)<!-- "/// Open the raw IPv4 and IPv6 send sockets." -->),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
-([`bootstrap.rs:4734-4742`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4734-L4742)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
+([`bootstrap.rs:4782-4790`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4782-L4790)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed
 packet's own destination ([`batch.rs:1775-1776`, `:1816-1817`](../../src/app/batch.rs)),
 so `-K` is a targeted transaction reply and not a general spoofer.
@@ -548,7 +548,7 @@ with the reason stated above it: *"a HEP sender asserts the inner src/dst
 addresses, so absent receiver-side authentication an attacker could steer the
 kill response at a chosen victim (SSRF-style)."* `--hep-allow-kill` is off by
 default and a test pins that it stays off
-([`cli.rs:11753-11758`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L11753-L11758)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
+([`cli.rs:11852-11857`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L11852-L11857)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
 be opt-in (SN-01)"*).
 
 **Field injection into the input of a ban decision.** `fail2ban.rs`'s
@@ -734,7 +734,7 @@ would have to refuse outright when `capture.live`.
 
 **A long read inside a handler stalls every other surface.** The API and MCP
 servers share one thread running one `tokio::runtime::Builder::new_current_thread()`
-([`servers.rs:1104`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L1104)<!-- "let rt = match tokio::runtime::Builder::new_current_thread()" -->). Reading a multi-gigabyte pcap
+([`servers.rs:1107`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L1107)<!-- "let rt = match tokio::runtime::Builder::new_current_thread()" -->). Reading a multi-gigabyte pcap
 inside a tool handler blocks that thread for the duration — every other MCP tool
 call and every REST request behind it. This is not a lock-across-await violation
 (invariant "No lock across `.await`" is enforced by `clippy::await_holding_lock = "deny"` and would not
@@ -747,9 +747,9 @@ to MCP — the real cost of the feature, and it is not small.
 documents *"the tool server; cloned per HTTP session"* and
 [`:728-729`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L728-L729)<!-- "StreamableHttpService::new(" --> does it. `capture: Option<CaptureContext>`
 ([`server.rs:64`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L64)) is a plain field, not an `Arc`,
-built once at startup ([`servers.rs:630-655`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L630-L655)<!-- "let capture_state" -->) with
+built once at startup ([`servers.rs:633-658`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L633-L658)<!-- "let capture_state" -->) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
-argument ([`cli.rs:8506-8508`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8506-L8508)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
+argument ([`cli.rs:8605-8607`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8605-L8607)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
 `capture_status` ([`server.rs:1548`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L1548)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
@@ -865,7 +865,7 @@ rather than `primary_input()`'s first element, with each file's first-packet
 timestamp. `input_set::resolve` already computes that timestamp into
 `ResolvedInput.first_packet` ([`input_set.rs:106-122`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L106-L122)<!-- "pub struct ResolvedInput" -->)
 and `bootstrap` then throws it away —
-[`bootstrap.rs:1184`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1184)<!-- "let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(" --> is
+[`bootstrap.rs:1228`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1228)<!-- "let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(" --> is
 `resolved.into_iter().map(|r| r.path).collect()`. An agent's actual complaint in
 the persistent case is usually *"I do not know what I am holding"*, and that is
 the tool for it. It is Tier 1 by the roadmap's own criterion — *"the agent

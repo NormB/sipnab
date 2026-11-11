@@ -167,6 +167,78 @@ reads each column. A sender that stops while others keep sending gets a log
 line of its own, and another when it comes back. `--hep-silence-warn` sets how
 long it may stay quiet first (30 seconds).
 
+## Keep the listener in the config file
+
+A sipnab that runs as a service, or that you start the same way each time, can
+take the listener's address and its allowlist from the config file, so the
+command line carries neither.
+
+Before you start:
+
+- A sipnab build that has HEP: `sipnab --version` lists `hep` among its
+  features.
+- A config file sipnab reads: the file `-f` names, or one of the places the
+  [Configuration reference](config-reference.md) lists.
+- On each SIP server: HEP sent to this address, as in
+  [Have your SIP server send HEP](#have-your-sip-server-send-hep). Nothing
+  changes there when the listener moves from the command line to the file.
+
+Steps:
+
+1. Put the address and the senders in the file:
+
+   ```toml
+   [hep]
+   listen = "198.51.100.1:9061"
+   allow = ["198.51.100.10", "198.51.100.11"]
+   ```
+
+   - `listen` is the value `-L` takes, a literal `IP:PORT`.
+   - `allow` is a list of the values `--hep-allow` takes: an address, or a
+     range such as `198.51.100.0/24`.
+2. Start sipnab without `-L`:
+
+   ```bash
+   sipnab -N --duration 15 --report --hep-senders --no-cli-print
+   ```
+
+   In a service, remove `-L` and `--hep-allow` from the unit's `ExecStart`
+   line and restart it ([Run sipnab as a service](run-as-a-service.md)).
+
+How the file and the command line combine:
+
+- `-L` on the command line replaces `listen` for that run.
+- `--hep-allow`, given at least once, replaces the whole `allow` list. Its
+  values are not added to the list.
+- With `-d`, `listen` adds the listener to the interface, as `-d` with `-L`
+  does.
+- A run that reads capture files (`-I`) starts no listener and does not use
+  `listen`. It says so in a warning.
+- The other listener flags, such as `--hep-senders` and `--hep-rate-limit`,
+  work with a listener from the file as they do with `-L`.
+
+### Check that it worked
+
+The log names the listener when it starts. A run with
+`listen = "127.0.0.1:19061"` and `allow = ["127.0.0.1"]` logged:
+
+```text
+INFO sipnab::capture::hep: HEP allowlist active: 1 CIDR range(s)
+INFO sipnab::capture::hep: HEP listener started on 127.0.0.1:19061
+```
+
+`sipnab --dump-config` prints the two keys under `[hep]` when the file is the
+one sipnab reads.
+
+### When it does not work
+
+| What you see | Exit status | What to do |
+|---|---|---|
+| `[hep] listen = "192.0.2.10:9060" in the config file is refused. HEP listener refuses to start: --hep-listen 192.0.2.10:9060 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured. Bind to 127.0.0.1, add an allowlist, or set a secret to accept HEP from a routable address. The allowlist can also be given as [hep] allow.` | 1 | Add `allow` to the file, or a shared secret ([Require a shared secret](#require-a-shared-secret)). |
+| `[hep] listen is set in the config file and is not used in this run: a run that reads capture files (-I) starts no HEP listener` | 0 | Nothing: the run read its files. Start the listener in a run without `-I`. |
+| `[hep] allow is set in the config file and does nothing in this run: it applies to the HEP listener (--hep-listen/-L), which this run does not start` | 0 | Set `listen`, or pass `-L`. An allowlist does not start a listener. |
+| `--hep-senders applies to the HEP listener, which this run does not start. Start it with --hep-listen/-L, or with [hep] listen in the config file.` | 2 | The run has no listener from either place. Check that sipnab reads the file you edited: its log says `Loaded config from` and the path. `-F` (`--no-config`) reads none. |
+
 ## Require a shared secret
 
 `--hep-allow` trusts an address. A shared secret also proves the sender holds

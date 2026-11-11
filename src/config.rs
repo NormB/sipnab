@@ -334,6 +334,8 @@ static KNOWN_KEYS: LazyLock<HashMap<&'static str, &'static [&'static str]>> = La
             "tls_key",
             "send_queue_mib",
             "send_timeout_secs",
+            "listen",
+            "allow",
         ]
         .as_slice(),
     );
@@ -805,6 +807,13 @@ pub struct HepConfig {
     /// Seconds one HEP sender TCP dial or stalled write may take, 1 to 300
     /// (default 3). `--hep-send-timeout` replaces it.
     pub send_timeout_secs: Option<u64>,
+    /// Address the HEP listener binds, as `IP:PORT`. `--hep-listen` replaces
+    /// it. Setting it starts the listener in every run that does not read
+    /// capture files (`-I`), as `--hep-listen` on the command line would.
+    pub listen: Option<String>,
+    /// Source addresses the HEP listener admits, each an address or a CIDR
+    /// range. `--hep-allow`, given at least once, replaces the whole list.
+    pub allow: Vec<String>,
 }
 
 impl HepConfig {
@@ -827,6 +836,21 @@ impl HepConfig {
                     "[hep] {key} must be 1-{max}, got {v}"
                 )));
             }
+        }
+        // An address or a range with nothing in it is a typing error, and it
+        // is named here: left for the listener to refuse, an empty `listen`
+        // would read as "no listener" and an empty `allow` entry as no entry.
+        if self.listen.as_deref().is_some_and(|a| a.trim().is_empty()) {
+            return Err(crate::Error::ConfigInvalid(
+                "[hep] listen must be an address such as 127.0.0.1:9060, not an empty string"
+                    .to_string(),
+            ));
+        }
+        if self.allow.iter().any(|entry| entry.trim().is_empty()) {
+            return Err(crate::Error::ConfigInvalid(
+                "[hep] allow must hold addresses or CIDR ranges; one entry is an empty string"
+                    .to_string(),
+            ));
         }
         Ok(())
     }

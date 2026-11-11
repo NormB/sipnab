@@ -428,7 +428,7 @@ The shape, by file:
 Three code-level facts that a naive implementation would get wrong:
 
 **The existing `xcid_headers` knob cannot be repurposed for this.** It is
-tempting: [`config.rs:1510`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1510)<!-- "pub xcid_headers:" --> exposes `[sip] xcid_headers` and
+tempting: [`config.rs:1534`](https://github.com/NormB/sipnab/blob/main/src/config.rs#L1534)<!-- "pub xcid_headers:" --> exposes `[sip] xcid_headers` and
 [`with_xcid_headers`](../../src/sip/dialog_store.rs) at
 [`:1271`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1271)<!-- "pub fn with_xcid_headers(mut self" --> accepts any header name, so
 `xcid_headers = ["P-Charging-Vector"]` looks like a zero-code answer. It is not.

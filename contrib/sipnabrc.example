@@ -97,6 +97,10 @@ max_audio_bytes = 1073741824
 # tls_key = "/etc/sipnab/metrics.key"
 
 # [hep]
+# The HEP listener: the address it binds and the senders it admits. `listen`
+# starts the listener in every run that does not read capture files (-I).
+# listen = "198.51.100.1:9060"
+# allow = ["198.51.100.10", "198.51.100.0/24"]
 # The HEP sender's trust: tls_ca trusts ONLY its file; tls_extra_ca trusts its
 # file in addition to the host's CA bundle. Set one, not both.
 # tls_extra_ca = "/etc/sipnab/collector-ca.pem"

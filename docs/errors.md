@@ -619,13 +619,16 @@ A SIP matching pattern did not compile as a regular expression. The patterns com
 - 2 when the command line includes any of `--match`, `--from`, `--to`, `--contact` or `--ua`;
 - 1 otherwise (patterns from the config file).
 
-### `Invalid --hep-allow CIDR '{cidr}': {e}`
+### `Invalid {name} CIDR '{cidr}': {e}`
 
-A `--hep-allow` value is not a valid address range. `--hep-allow` lists the senders the HEP listener accepts, as CIDR notation (an IP address with an optional `/prefix` length). `{cidr}` is the value and `{e}` the reason: an invalid IP, an invalid prefix length, or a prefix longer than the address family allows (32 for IPv4, 128 for IPv6).
+An entry of the HEP listener's allowlist is not a valid address range. The allowlist names the senders the listener accepts, as CIDR notation (an IP address with an optional `/prefix` length).
+
+- `{name}` is where the entry came from: `--hep-allow`, or `[hep] allow` in the config file.
+- `{cidr}` is the entry and `{e}` the reason: an invalid IP, an invalid prefix length, or a prefix longer than the address family allows (32 for IPv4, 128 for IPv6).
 
 **What to do:** Give an address such as `192.0.2.40` (one host) or a range such as `192.0.2.0/24`.
 
-**Exit code:** 2.
+**Exit code:** 2 for `--hep-allow`, 1 for `[hep] allow`.
 
 ### `Invalid --ws-portrange: {e}`
 
@@ -705,6 +708,14 @@ You cannot combine `--multi-device` with a HEP listener (`-L`). That flag takes 
 **What to do:** Remove `--multi-device` and capture on one interface beside `-L`, or remove `-L`.
 
 **Exit code:** 2.
+
+### `--multi-device and the HEP listener that [hep] listen in the config file starts cannot run together yet: one interface plus one HEP listener is supported, a device list plus a listener is not. Drop --multi-device, or run without the key (--no-config/-F reads no config file).`
+
+The run asks for several capture interfaces (`--multi-device`), and the config file starts a HEP listener with `[hep] listen`. sipnab supports one interface with one listener. It refuses a list of interfaces with a listener, for the reason the entry above gives for `--hep-listen`.
+
+**What to do:** Drop `--multi-device`, remove `listen` from the file, or run this one command with `-F`, which reads no config file.
+
+**Exit code:** 1.
 
 ### `--multi-device and -I/--input cannot run together: --multi-device captures live interfaces (-d), and -I reads a saved capture. Drop --multi-device to read the file, or drop -I to capture the devices.`
 
@@ -1565,6 +1576,45 @@ One entry in the comma-separated `[security] fraud_destination` list is not a de
 **What to do:** Set a whole number of 1 or more, for example the default `10`. To send no responses, leave out `--kill-scanner` and `-K`.
 
 **Exit code:** 1.
+
+### `[hep] listen must be an address such as 127.0.0.1:9060, not an empty string`
+
+The value of `[hep] listen` is an empty string, or only spaces. The key is the address the HEP listener binds.
+
+The printed line starts with `invalid config value: `.
+
+**What to do:** Give a literal address and a port, such as `127.0.0.1:9060`, or remove the key to start no listener from the file.
+
+**Exit code:** 1.
+
+### `[hep] allow must hold addresses or CIDR ranges; one entry is an empty string`
+
+One entry of the `[hep] allow` list is an empty string, or spaces. Each entry names a sender the HEP listener admits.
+
+The printed line starts with `invalid config value: `.
+
+**What to do:** Remove the empty entry, or write it as an address (`198.51.100.10`) or a range (`198.51.100.0/24`).
+
+**Exit code:** 1.
+
+### `[hep] listen = {hep_addr:?} in the config file is refused. {e} The allowlist can also be given as [hep] allow.`
+
+The config file starts a HEP listener, and sipnab refuses its address. `{hep_addr:?}` is the value of `[hep] listen`, and `{e}` is the refusal `--hep-listen` gives for the same value, so it names the flags:
+
+- the value is not an address (`IP:PORT`);
+- the address is routable, or is a host name, and the run has neither an allowlist nor a shared secret.
+
+**What to do:** For a routable address, add `allow` to `[hep]`, or give a shared secret with `--hep-auth-file`. For a value that is not an address, write it as `IP:PORT`, such as `127.0.0.1:9060`.
+
+**Exit code:** 1.
+
+### `[hep] listen in the config file requires the 'hep' feature (not compiled in)`
+
+The config file starts a HEP listener with `[hep] listen`, and this sipnab build does not include the `hep` feature. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `hep` feature, remove the key, or run with `-F`, which reads no config file.
+
+**Exit code:** 2.
 
 ### `[hep] {key} must be 1-{max}, got {v}`
 

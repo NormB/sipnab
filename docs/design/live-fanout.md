@@ -1,7 +1,7 @@
 # Making `PACKET_FANOUT` reachable
 
 **Status:** WIRED. `--cores N` on a live device now asks for N capture sockets
-([`bootstrap.rs:7382`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7382)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->), so the "no caller" table
+([`bootstrap.rs:7430`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7430)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->), so the "no caller" table
 row in [section 1, "What exists, and the one thing that does not"](#1-what-exists-and-the-one-thing-that-does-not)
 and the flag argument in [section 2, "The flag surface"](#2-the-flag-surface)
 are history rather than proposals. What remains open is
@@ -49,7 +49,7 @@ narrower and more interesting:
 | Plan / group id | [`live.rs:223`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L223)<!-- "pub(crate) fn plan_fanout(sockets:" -->, [`:282`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L282)<!-- "pub(crate) fn fanout_group_id()" --> | pure, tested without a device |
 | Kernel probe | [`live.rs:475`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L475)<!-- "fn probe_fanout(device:" --> | throwaway handle, so refusal is discovered once |
 | N-socket driver | `capture_live_fanout`, [`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" --> | complete, joins all threads, first error wins |
-| **A caller** | [`bootstrap.rs:7382`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7382)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->, [`native.rs:511`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L511)<!-- "let sockets = config.fanout_sockets;" --> | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
+| **A caller** | [`bootstrap.rs:7430`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7430)<!-- "fanout_sockets: cli.limits_args.cores.max(1)" -->, [`native.rs:511`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L511)<!-- "let sockets = config.fanout_sockets;" --> | **CT4 shipped it**: `--cores N` becomes `fanout_sockets`, and the `Live` arm calls `capture_live_fanout` |
 
 That last row is the one thing this section got to change. When the page was
 written the `Live` arm spawned exactly one thread running `capture_live`, a
@@ -79,13 +79,13 @@ wrong at once, and one of them is a test that pins the *complement*:
   pcap reconstruction (`-I`) … Advanced features (live capture, per-message
   output ordering, security detectors, SRTP decrypt) use the single-threaded
   path regardless."*
-- `cores_ignored_warning` ([`bootstrap.rs:8021`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8021)<!-- "fn cores_ignored_warning(cli:" -->),
+- `cores_ignored_warning` ([`bootstrap.rs:8069`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8069)<!-- "fn cores_ignored_warning(cli:" -->),
   whose live-capture branch says *"this run captures live rather than reading a
   saved file … parallel reconstruction is offline-only — it shards a capture
   FILE by host pair, which needs the whole capture up front. This run continues
   on ONE core"*.
 - `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it`
-  ([`bootstrap.rs:10010`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L10010)<!-- "fn cores_warning_is_the_exact_complement_of_the_paths_that_honor_it()" -->), which asserts the warning
+  ([`bootstrap.rs:10058`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L10058)<!-- "fn cores_warning_is_the_exact_complement_of_the_paths_that_honor_it()" -->), which asserts the warning
   fires for exactly the four input combinations the parallel path does not take.
 
 And the two meanings really are different resources. Offline, `--cores N` buys N
@@ -123,7 +123,7 @@ that is a log line and a help-text sentence, not a second noun.
    thread either way, live".
 2. **`cores_ignored_warning` loses its live branch and keeps its
    `--multi-device` branch.** The `--multi-device` reason
-   ([`bootstrap.rs:8038`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8038)<!-- "--multi-device opens one capture per" -->) stays true; see [section 2.1, "The resource change nobody would expect"](#21-the-resource-change-nobody-would-expect).
+   ([`bootstrap.rs:8086`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8086)<!-- "--multi-device opens one capture per" -->) stays true; see [section 2.1, "The resource change nobody would expect"](#21-the-resource-change-nobody-would-expect).
    `cores_warning_is_the_exact_complement_of_the_paths_that_honor_it` must be rewritten
    in the same commit, not after — it is currently the gate that would catch the
    two conditions drifting, and a half-updated complement is worse than none.
@@ -203,7 +203,7 @@ speculated about.
 
 `capture_live_fanout` gives every socket the same `tx`
 ([`live.rs:291`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L291)<!-- "/// [`crate::capture::fanout`]" -->), and there is one receiver: the
-`rx.recv_timeout` at [`batch.rs:4519`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4519)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100))" -->. So the shape is
+`rx.recv_timeout` at [`batch.rs:4520`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4520)<!-- "match rx.recv_timeout(std::time::Duration::from_millis(100))" -->. So the shape is
 N producers, one consumer, one pair of stores, one sweep.
 
 **It buys N rings and N drainers.** The overflow CT2 describes is per-socket:
@@ -237,7 +237,7 @@ distinguishable by instruments that already exist:
 instrument, fed from `CaptureMeter`
 ([`channel.rs:157-175`](https://github.com/NormB/sipnab/blob/main/src/capture/channel.rs#L157-L175)<!-- "pub fn in_flight(&self)" -->), and they are scrapeable
 from a headless run — `start_servers` is called with `metrics: true` and the
-real meter from [`batch.rs:4050-4066`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4050-L4066)<!-- "let servers = crate::app::servers::start_servers(" -->.
+real meter from [`batch.rs:4051-4067`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4051-L4067)<!-- "let servers = crate::app::servers::start_servers(" -->.
 
 **One gap worth fixing before the experiment.** `CaptureCounters`, the
 `capture_health` MCP response ([`server.rs:9425`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9425)<!-- "pub async fn capture_health(" -->),
@@ -281,7 +281,7 @@ Three things happen at that EOF, and none of them has a live equivalent:
 Point 3 transfers verbatim to a live worker pool, and it is the one that should
 stop anyone from treating this as CT4's sequel. The live loop already sweeps
 every five seconds of capture time
-([`batch.rs:4360-4366`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4360-L4366)<!-- "/// Periodic sweep of reassembly state and idle-dialog compaction" -->) against one `SweepClock` fed by
+([`batch.rs:4361-4367`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4361-L4367)<!-- "/// Periodic sweep of reassembly state and idle-dialog compaction" -->) against one `SweepClock` fed by
 every packet the single receiver saw. Give each of N workers its own clock and
 the orphan/compaction verdict becomes a function of how the kernel hashed the
 flows. That is a wrong answer that renders as a normal report.
@@ -581,6 +581,6 @@ not mistake them for settled.
   catch it and fall back — the open question is whether the most common
   invocation silently gets no benefit.
 - **Is `immediate_mode` right for N sockets?** `immediate_mode_for`
-  ([`bootstrap.rs:7411`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7411)<!-- "fn immediate_mode_for(mode:" -->) returns true only for the
+  ([`bootstrap.rs:7459`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7459)<!-- "fn immediate_mode_for(mode:" -->) returns true only for the
   TUI. Whether the batched setting interacts with rollover or with N drainers is
   unexamined.

@@ -10,6 +10,18 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Added
+
+- **The HEP listener's address and allowlist have config-file keys (HEP-LISTEN-CONFIG-KEYS).** `--hep-listen` and `--hep-allow` had no key, so a service that receives HEP, including one that receives OpenSIPS `E_SIPNAB_TH_MAP` events, carried both on its command line. `[hep] listen` is the address and `[hep] allow` is the list of admitted sources. [Keep the listener in the config file](docs/hep.md#keep-the-listener-in-the-config-file) has the steps.
+  - `--hep-listen` replaces `listen`. `--hep-allow`, given at least once, replaces the whole `allow` list.
+  - `listen` starts the listener in every run that does not read capture files. With `-d` it adds the listener to the interface, as `-d` with `-L` does. With `-I` the key is not used, and a startup warning names it: `-I` with `-L` typed is still refused.
+  - A value from the file that sipnab refuses exits with status 1 and names the key: an empty `listen` or `allow` entry, a `listen` that is not an address, a routable `listen` with neither an allowlist nor a shared secret, an `allow` entry that is not an address or a range. The same value on the command line still exits with status 2.
+  - `[hep] allow` without a listener does nothing, and a startup warning says so.
+
+### Changed
+
+- **The listener-only HEP flags are checked after the config file is read (HEP-LISTEN-CONFIG-KEYS).** `--hep-allow`, `--hep-listen-transport`, `--hep-hmac-window`, `--hep-silence-warn`, `--hep-senders`, `--th-mappings`, `--hep-rate-limit` and `--hep-rate-limit-per-peer` are refused on a run that starts no HEP listener, and `--hep-auth-file` and `--hep-auth-mode` on a run that starts neither the listener nor the sender. The argument parser made that check from the command line alone, so it would have refused `--hep-senders` beside a listener that `[hep] listen` starts. The refusal still exits with status 2. Its text is now sipnab's own, names every such flag given, and names both ways to start the listener: `--hep-senders applies to the HEP listener, which this run does not start. Start it with --hep-listen/-L, or with [hep] listen in the config file.` `--hep-rate-limit-per-peer off` and `--hep-auth-mode plain`, the defaults written out, are no longer refused without a listener.
+
 ### Fixed
 
 - **The repository's gates read a file in a merge conflict once (LS-FILES-UNMERGED-STAGES).** `git ls-files` lists a path in conflict once for each index stage, up to three times. The gates and scripts that take their file list from it read such a file once per stage: a count of tracked Markdown pages read 350 against a real 346 with two pages in conflict, each finding in such a file was reported three times, and `scripts/check-rustfmt.sh --fix` could give one file to several rustfmt processes at the same time. One reader per language now returns each path once: `tests/support/tracked.rs` for the test suite (47 call sites in 27 files) and `scripts/lib_tracked.py` for the scripts (`add-source-headers.py`, `no-itu-values.py`, `rfc-links.py`, `check-line-drift.py`, `fix-line-anchors.py`, `link-repo-paths.py`). `scripts/check-rustfmt.sh` sorts its list and drops repeats, and its new `--list` prints that list without running rustfmt. A test refuses a direct `git ls-files` listing anywhere else under `tests/` and `scripts/`. No change to the `sipnab` binary.

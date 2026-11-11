@@ -47,6 +47,7 @@ fn metrics_only() -> Selection {
         mcp_output_schemas: false,
         api_allowed_hosts: Vec::new(),
         api_console: false,
+        hep_listening: false,
         api_tls: (None, None),
         mcp_tls: (None, None),
         metrics_tls: (None, None),

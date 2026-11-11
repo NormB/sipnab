@@ -521,7 +521,7 @@ credential-file type.
 
 **Evidence:** [`packaging/sipnab.service:9-13`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/packaging/sipnab.service#L9-L13) runs as root and comments about
 `--user sipnab`, but does not pass it. The documented default internal drop target
-is `nobody` ([`docs/install.md:417-420`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L417-L420); [`docs/config-reference.md:1192`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md#L1192)<!-- "User to drop privileges" -->). Package
+is `nobody` ([`docs/install.md:417-420`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L417-L420); [`docs/config-reference.md:1207`](https://github.com/NormB/sipnab/blob/main/docs/config-reference.md#L1207)<!-- "User to drop privileges" -->). Package
 scripts create a dedicated `sipnab` user
 ([`packaging/deb/build-deb.sh:137-140`](https://github.com/NormB/sipnab/blob/main/packaging/deb/build-deb.sh#L137-L140)<!-- "# Create sipnab user for privilege drop" -->; [`packaging/rpm/build-rpm.sh:215-218`](https://github.com/NormB/sipnab/blob/main/packaging/rpm/build-rpm.sh#L215-L218)<!-- "# Create sipnab user" -->).
 

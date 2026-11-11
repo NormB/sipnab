@@ -6247,7 +6247,10 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1470 -> 1474 (DOCS-HOWTO-GAP, fourth batch): the table of changes on
     // each other system in docs/mcp-deploy.md's "Before you start" and the
     // troubleshooting table of docs/auth.md, each with its site mirror (+4).
-    const EXPECTED_TABLES: usize = 1474;
+    // 1474 -> 1476 (HEP-LISTEN-CONFIG-KEYS): the table of messages in
+    // docs/hep.md's "When it does not work" under "Keep the listener in the
+    // config file", with its site mirror (+2).
+    const EXPECTED_TABLES: usize = 1476;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let files = tracked::ls_files(repo, &["--", "*.md"])?;

@@ -65,7 +65,7 @@ process-level isolation" — until R3 below made it true
 
 The REST API became a tokio task on a shared thread reading the same
 `Arc<RwLock<..>>` stores as the capture loop
-([`src/app/servers.rs:694-705`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L694-L705)<!-- "let api_door = if selection.api" -->).
+([`src/app/servers.rs:697-708`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L697-L708)<!-- "let api_door = if selection.api" -->).
 
 **This is the honest finding for "is there a documented rationale?"** — there is
 not. The design demanded processes, the implementation substituted threads, and
@@ -198,7 +198,7 @@ Elsewhere, contention is **asserted but never measured**. The oldest claim,
 [`implementation-plan-v6.md:368`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/docs/design/implementation-plan-v6.md#L368), says the store
 lock is *"read-heavy, write-rare, so RwLock contention is minimal"* — which is
 simply stale: the batch loop takes `dialog_store.write()` **once per packet**
-([`batch.rs:4808`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4808)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
+([`batch.rs:4809`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4809)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
 most frequent operation in the process, not a rare one. No benchmark in
 `benches/` acquires a lock; no metric reports contention. *We do not know what
 it costs, and neither does anyone else.*
@@ -211,7 +211,7 @@ Specific to this codebase, not in general.
 
 **The stores are the product, and four surfaces read them in-process.** The
 same `Arc<RwLock<DialogStore>>` / `Arc<RwLock<StreamStore>>` is held by the
-capture loop ([`batch.rs:3987-3992`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3987-L3992)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
+capture loop ([`batch.rs:3988-3993`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3988-L3993)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
 every MCP tool ([`mcp/server.rs`](../../src/mcp/server.rs)), the Prometheus
 exporter and the TUI. Forking the capture away from the servers turns every one
 of those reads into IPC. That is not a refactor; it is a new wire protocol,

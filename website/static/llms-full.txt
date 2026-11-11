@@ -22823,7 +22823,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-accept-archive-passwords` | -- | off | 0.5.187 | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: making sure it does is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`, also when `--api-tls-cert` serves HTTPS. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | 0.5.177 | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..`, an absolute prefix or a control character before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | 0.5.100 | Metrics scrapes served at once before further ones get `503`. Sixteen suits one Prometheus server; raise it when an HA pair, a federating parent, `remote_write` shards or sidecars scrape the same endpoint. A refused scrape leaves a gap in the series. Config: `[limits] metrics_max_conn` Feature: `metrics` |
-| `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. `ADDR` is a literal address and a port, `IP:PORT`, for example `127.0.0.1:9060` or `[::1]:9060`. Port `0` takes a free port, which the start line of the log names. A literal loopback address needs nothing else. A routable address, and a host name with a port such as `localhost:9060`, need `--hep-allow` or `--hep-auth`/`--hep-auth-file`: sipnab does not resolve a name to decide whether it is loopback. sipnab refuses a value that is not an address (no port, no address, a port above 65535) with exit `2` and `--hep-listen "<value>" is not an address`, with or without an allowlist or a secret. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling; an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](examples.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). A UDP listener also takes the OpenSIPS `E_SIPNAB_TH_MAP` event, a change to the OpenSIPS script only, from a sender `--hep-allow` lists ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Steps for each SIP server, a shared secret, TCP and TLS: [Collect and forward HEP](hep.md). Feature: `hep` |
+| `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. `ADDR` is a literal address and a port, `IP:PORT`, for example `127.0.0.1:9060` or `[::1]:9060`. Port `0` takes a free port, which the start line of the log names. A literal loopback address needs nothing else. A routable address, and a host name with a port such as `localhost:9060`, need `--hep-allow` or `--hep-auth`/`--hep-auth-file`: sipnab does not resolve a name to decide whether it is loopback. sipnab refuses a value that is not an address (no port, no address, a port above 65535) with exit `2` and `--hep-listen "<value>" is not an address`, with or without an allowlist or a secret. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling; an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](examples.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). A UDP listener also takes the OpenSIPS `E_SIPNAB_TH_MAP` event, a change to the OpenSIPS script only, from a sender `--hep-allow` lists ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Steps for each SIP server, a shared secret, TCP and TLS: [Collect and forward HEP](hep.md). Feature: `hep`. Config: `[hep] listen` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | 0.3.0 | Send captured packets via HEP to a remote collector: SIP as protocol type 1, and RTCP as type 5 in the JSON form heplify sends, carrying the Call-ID of the call whose SDP set up that media. RTCP for a call whose SDP sipnab never saw is not sent, since Homer stores none of it. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message sipnab reads out of the capture goes to `<ADDR>` as recorded, and every RTCP report of a call in it as JSON, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). **A headless run ends with one line saying what it exported**: packets sent, queued, replayed after an outage, dropped by reason (`queue_full`, `stopped`, `unsent_at_exit`), still queued, failed attempts by kind (`connect`, `tls_handshake`, `write`) and reconnects, at `warn` when anything failed or sipnab dropped a packet. Over UDP "sent" means handed to the kernel, and a collector that is down produces no failure; the line says so. `runtime_stats`, `GET /v1/runtime` (`hep_export`) and the Prometheus `sipnab_hep_export_*` series carry the same counts while it runs. Steps for each SIP server, a shared secret, TCP and TLS: [Collect and forward HEP](hep.md). Feature: `hep` |
 | `--hep-send-transport` | `<udp\|tcp\|tls>` | `udp` | 0.5.150 | Transport `--hep-send` uses to reach the collector. Homer's collectors accept all three. HEP v3 carries its own total length, so a `tcp` or `tls` feed is packets laid end to end with no extra framing, and sipnab sets `TCP_NODELAY` because these are small packets whose value is timeliness. sipnab opens the first connection at startup: when the collector refuses it, or it does not complete within `--hep-send-timeout` (default 3 seconds), sipnab stops with exit `2` and names the error, such as `Failed to connect HEP sender to '127.0.0.1:9061' over TCP: Connection refused (os error 111)`. After that, a write that fails keeps its packet queued and drops the connection, and the sending thread dials again with backoff, never in a tight loop. Each dial gives up after `--hep-send-timeout` and counts as a `connect` failure, as a refused one does. See [When the `--hep-send` collector goes away](#when-the---hep-send-collector-goes-away). Refused without `--hep-send`, which is the side it governs. Feature: `hep` |
 | `--hep-send-queue` | `<MIB>` | `64` | 0.5.226 | How many MiB of HEP packets `--hep-send` holds while the collector is unreachable, 1 to 4096. Sending runs on its own thread behind this queue, so a slow or dead collector never slows the capture, and sipnab replays the queue in capture order when the collector answers. At the bound sipnab drops the **oldest** packet and counts it as `queue_full`. A stop (SIGINT/SIGTERM) discards the queue and counts it as `stopped`: sipnab flushes nothing at shutdown. Refused without `--hep-send`; `[hep] send_queue_mib` on a run without `--hep-send` gets a startup warning naming it instead. Config: `[hep] send_queue_mib`. Feature: `hep` |
@@ -22843,7 +22843,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--th-mappings` | -- | off | 0.5.233 | At the end of a headless (`-N`) run, print the OpenSIPS topology-hiding mappings the `--hep-listen` listener received in `E_SIPNAB_TH_MAP` events: a line with the event counts, a line with the hidden legs by status (`decoded`, `no_secret`, `undecodable`, `unmatched`, `mapped`, `conflict`), then one row per mapping with its caller-side and callee-side Call-IDs, its state (`conflict`, `pending` or `joined`) and whether sipnab captured each leg, conflicts first. A `pending` row names the leg whose SIP did not arrive. With `--json`, the same as one JSON object on the last line of stdout, the shape `GET /v1/th-mappings` and the MCP `th_mappings` tool return. Refused without `--hep-listen`, where the events arrive. How-to: [Find why a call through topology hiding did not join](rest-api.md#find-why-a-call-through-topology-hiding-did-not-join). Feature: `hep` |
 | `-E`, `--hep-parse` | -- | off | 0.3.0 | Parse incoming HEP packets (enable HEP decoding): sipnab unwraps a HEP datagram on the wire or in a capture file and reads its message with the addresses the HEP chunks carry and the time the HEP packet carries, as `-L` does, not the time sipnab sniffed the wrapper. A HEP packet that carries no time (a HEP v3 packet without a `TS_SEC` chunk, or a HEP v1 packet) keeps the time sipnab sniffed the wrapper; a HEP v2 packet carries its time in its time header. Sniffing a HEP port that no process listens on loses messages from some senders: see the note under [`[capture]` in the configuration reference](config-reference.md#capture). The transport comes from the IP protocol chunk by the same rule `--hep-listen` uses, so a TLS, WS or WSS leg an OpenSIPS or Kamailio tracer sends reads the same from a file as from a socket, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). `--portrange` does not apply to the HEP messages it unwraps. It still gates SIP that sipnab captures directly. It applies wherever sipnab reads packets: a headless run, `--cores N`, the TUI's own capture, and a capture opened or re-scanned inside the TUI. `--no-hep-parse` turns it off again when the config file sets `[capture] hep_parse = true`. Config: `[capture] hep_parse`. Feature: `hep` |
 | `--no-hep-parse` | -- | off | 0.5.204 | Do not unwrap HEP found in the capture, even when `[capture] hep_parse = true`. The last of `-E` / `--no-hep-parse` typed wins. Config: `[capture] hep_parse`. Feature: `hep` |
-| `--hep-allow` | `<ADDR>` | -- | 0.3.0 | Allowed source addresses for HEP input (repeatable). Takes CIDR (`192.0.2.0/8`, `2001:db8::/32`) or a **bare address** (`192.0.2.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `192.0.2.0` is one host, not `192.0.2.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. It is also the only check on an OpenSIPS `E_SIPNAB_TH_MAP` event, which carries no HEP authentication: the listener accepts an event only from an address listed here, and with no list it refuses every event, counted as `event_sender_not_listed`. List the address OpenSIPS sends the event from: `127.0.0.1` when OpenSIPS and sipnab share a machine ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). Refused without `--hep-listen`, the side it governs, exit `2`; `-E` reads no allowlist. Feature: `hep` |
+| `--hep-allow` | `<ADDR>` | -- | 0.3.0 | Allowed source addresses for HEP input (repeatable). Takes CIDR (`192.0.2.0/8`, `2001:db8::/32`) or a **bare address** (`192.0.2.40`), which means that host alone — `/32` for IPv4, `/128` for IPv6. A missing prefix always narrows, never widens: `192.0.2.0` is one host, not `192.0.2.0/8`. sipnab **refuses** a non-loopback `--hep-listen` bind unless you pass either this or `--hep-auth`/`--hep-auth-file`. It is also the only check on an OpenSIPS `E_SIPNAB_TH_MAP` event, which carries no HEP authentication: the listener accepts an event only from an address listed here, and with no list it refuses every event, counted as `event_sender_not_listed`. List the address OpenSIPS sends the event from: `127.0.0.1` when OpenSIPS and sipnab share a machine ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). Refused without `--hep-listen`, the side it governs, exit `2`; `-E` reads no allowlist. Feature: `hep`. Config: `[hep] allow` |
 | `--hep-rate-limit` | `<N>` | `50000` | 0.3.0 | Maximum HEP packets per second (global ceiling across all senders); `0` disables the global ceiling, consistent with `off` on the per-peer knob. Refused without `--hep-listen`, the side it governs, exit `2`; a `[limits] hep_rate_limit` on a run without `--hep-listen` gets a startup warning naming it instead, because one config file serves runs with and without a listener. Feature: `hep`. Config: `[limits] hep_rate_limit` |
 | `--hep-rate-limit-per-peer` | `<N\|auto\|off>` | `off` | 0.5.28 | Maximum HEP packets/second from any single source IP: a number, `off` (the default), or `auto`. Adds fairness so one flooding peer cannot exhaust the global `--hep-rate-limit`. `auto` divides the global ceiling evenly across the `--hep-allow` sources (stays off without an allowlist). The listener logs its active limiters at startup. Refused without `--hep-listen`, the side it governs, exit `2`. Feature: `hep` |
 | `--hep-allow-kill` | -- | off | 0.5.28 | Allow scanner-kill to send active responses for packets received via HEP, and admit HEP-carried detections to the `--fail2ban` jail log. **Off by default**: a HEP sender asserts the inner src/dst, so absent `--hep-auth` an attacker could aim the kill at a victim of their choosing, or have the jail ban an address of their choosing. Only enable with authenticated, trusted HEP input. Feature: `hep` |
@@ -24337,13 +24337,16 @@ A SIP matching pattern did not compile as a regular expression. The patterns com
 - 2 when the command line includes any of `--match`, `--from`, `--to`, `--contact` or `--ua`;
 - 1 otherwise (patterns from the config file).
 
-### `Invalid --hep-allow CIDR '{cidr}': {e}`
+### `Invalid {name} CIDR '{cidr}': {e}`
 
-A `--hep-allow` value is not a valid address range. `--hep-allow` lists the senders the HEP listener accepts, as CIDR notation (an IP address with an optional `/prefix` length). `{cidr}` is the value and `{e}` the reason: an invalid IP, an invalid prefix length, or a prefix longer than the address family allows (32 for IPv4, 128 for IPv6).
+An entry of the HEP listener's allowlist is not a valid address range. The allowlist names the senders the listener accepts, as CIDR notation (an IP address with an optional `/prefix` length).
+
+- `{name}` is where the entry came from: `--hep-allow`, or `[hep] allow` in the config file.
+- `{cidr}` is the entry and `{e}` the reason: an invalid IP, an invalid prefix length, or a prefix longer than the address family allows (32 for IPv4, 128 for IPv6).
 
 **What to do:** Give an address such as `192.0.2.40` (one host) or a range such as `192.0.2.0/24`.
 
-**Exit code:** 2.
+**Exit code:** 2 for `--hep-allow`, 1 for `[hep] allow`.
 
 ### `Invalid --ws-portrange: {e}`
 
@@ -24423,6 +24426,14 @@ You cannot combine `--multi-device` with a HEP listener (`-L`). That flag takes 
 **What to do:** Remove `--multi-device` and capture on one interface beside `-L`, or remove `-L`.
 
 **Exit code:** 2.
+
+### `--multi-device and the HEP listener that [hep] listen in the config file starts cannot run together yet: one interface plus one HEP listener is supported, a device list plus a listener is not. Drop --multi-device, or run without the key (--no-config/-F reads no config file).`
+
+The run asks for several capture interfaces (`--multi-device`), and the config file starts a HEP listener with `[hep] listen`. sipnab supports one interface with one listener. It refuses a list of interfaces with a listener, for the reason the entry above gives for `--hep-listen`.
+
+**What to do:** Drop `--multi-device`, remove `listen` from the file, or run this one command with `-F`, which reads no config file.
+
+**Exit code:** 1.
 
 ### `--multi-device and -I/--input cannot run together: --multi-device captures live interfaces (-d), and -I reads a saved capture. Drop --multi-device to read the file, or drop -I to capture the devices.`
 
@@ -25283,6 +25294,45 @@ One entry in the comma-separated `[security] fraud_destination` list is not a de
 **What to do:** Set a whole number of 1 or more, for example the default `10`. To send no responses, leave out `--kill-scanner` and `-K`.
 
 **Exit code:** 1.
+
+### `[hep] listen must be an address such as 127.0.0.1:9060, not an empty string`
+
+The value of `[hep] listen` is an empty string, or only spaces. The key is the address the HEP listener binds.
+
+The printed line starts with `invalid config value: `.
+
+**What to do:** Give a literal address and a port, such as `127.0.0.1:9060`, or remove the key to start no listener from the file.
+
+**Exit code:** 1.
+
+### `[hep] allow must hold addresses or CIDR ranges; one entry is an empty string`
+
+One entry of the `[hep] allow` list is an empty string, or spaces. Each entry names a sender the HEP listener admits.
+
+The printed line starts with `invalid config value: `.
+
+**What to do:** Remove the empty entry, or write it as an address (`198.51.100.10`) or a range (`198.51.100.0/24`).
+
+**Exit code:** 1.
+
+### `[hep] listen = {hep_addr:?} in the config file is refused. {e} The allowlist can also be given as [hep] allow.`
+
+The config file starts a HEP listener, and sipnab refuses its address. `{hep_addr:?}` is the value of `[hep] listen`, and `{e}` is the refusal `--hep-listen` gives for the same value, so it names the flags:
+
+- the value is not an address (`IP:PORT`);
+- the address is routable, or is a host name, and the run has neither an allowlist nor a shared secret.
+
+**What to do:** For a routable address, add `allow` to `[hep]`, or give a shared secret with `--hep-auth-file`. For a value that is not an address, write it as `IP:PORT`, such as `127.0.0.1:9060`.
+
+**Exit code:** 1.
+
+### `[hep] listen in the config file requires the 'hep' feature (not compiled in)`
+
+The config file starts a HEP listener with `[hep] listen`, and this sipnab build does not include the `hep` feature. sipnab refuses the run before it opens the capture.
+
+**What to do:** Use a sipnab build that includes the `hep` feature, remove the key, or run with `-F`, which reads no config file.
+
+**Exit code:** 2.
 
 ### `[hep] {key} must be 1-{max}, got {v}`
 
@@ -35821,6 +35871,7 @@ tls_key = "/etc/sipnab/api.key"
 
 - The listener itself still starts on the command line (`--api`,
   `--mcp --mcp-transport http`, `--metrics`, `--hep-send`, `--hep-listen`).
+  The HEP listener also starts from [`[hep] listen`](#hep).
 - The keys say what it serves with when it starts.
 
 How the flags and keys combine:
@@ -35856,8 +35907,12 @@ tls_key = "/etc/sipnab/metrics.key"
 
 ### [hep]
 
-TLS for HEP, and the HEP sender's queue:
+The HEP listener's address and allowlist, TLS for HEP, and the HEP sender's
+queue:
 
+- the address the listener binds and the sources it admits, so a service
+  that receives HEP needs neither on its command line
+  ([Keep the listener in the config file](hep.md#keep-the-listener-in-the-config-file));
 - the CA the sender (`--hep-send-transport tls`) checks the collector's
   certificate against;
 - the certificate a TLS listener (`--hep-listen-transport tls`) presents;
@@ -35866,6 +35921,8 @@ TLS for HEP, and the HEP sender's queue:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
+| `listen` | string | -- | Address the HEP listener binds, as `IP:PORT`, for example `127.0.0.1:9060` or `[::1]:9060`. Setting it starts the listener, as `--hep-listen` does, in every run that does not read capture files. With `-I` the key is not used, and sipnab says so in a startup warning naming the key. With `-d` it adds the listener to the interface. A routable address needs `allow`, `--hep-allow` or a shared secret, as the flag does; sipnab refuses one without, with exit status 1, naming the key. An empty string fails validation and names the key. `--hep-listen` overrides it |
+| `allow` | list of strings | `[]` | Source addresses the HEP listener admits, each an address (`198.51.100.10`) or a CIDR range (`198.51.100.0/24`, `2001:db8::/32`). They are also the only senders whose OpenSIPS `E_SIPNAB_TH_MAP` events the listener accepts. An entry that is empty or is not an address or a range stops sipnab at startup, naming the key. On a run that starts no HEP listener it does nothing, and sipnab says so in a startup warning naming the key. `--hep-allow`, given at least once, replaces the whole list: its values are not added to the key's. `--hep-allow` overrides it |
 | `tls_ca` | path | -- | CA (PEM) the sender checks the collector's certificate against. It **replaces** the host's CA bundle: the sender accepts only certificates this file issued. Set this or `tls_extra_ca`, not both. An empty string fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-ca` overrides it |
 | `tls_extra_ca` | path | -- | CA (PEM) the sender trusts **in addition to** the host's CA bundle. Set this or `tls_ca`, not both. The host must have a CA bundle; without one sipnab refuses at startup. An empty string fails validation and names the key. On a run without `--hep-send` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-extra-ca` overrides it |
 | `tls_cert` | path | -- | PEM certificate chain a TLS HEP listener presents, the server's certificate first. A TLS listener needs this and `tls_key`, from here or from the flags. An empty string fails validation and names the key. On a run without `--hep-listen` it does nothing, and sipnab says so in a startup warning naming the key. `--hep-tls-cert` overrides it |
@@ -35885,6 +35942,14 @@ The sender's trust is one setting.
 tls_extra_ca = "/etc/sipnab/collector-ca.pem"
 send_queue_mib = 256
 send_timeout_secs = 5
+```
+
+A listener that two SIP servers feed:
+
+```toml
+[hep]
+listen = "198.51.100.1:9060"
+allow = ["198.51.100.10", "198.51.100.11"]
 ```
 
 ### `[vcon_forward]`
@@ -54127,6 +54192,78 @@ are sending, which stopped, and which send while the listener turns them away.
 reads each column. A sender that stops while others keep sending gets a log
 line of its own, and another when it comes back. `--hep-silence-warn` sets how
 long it may stay quiet first (30 seconds).
+
+## Keep the listener in the config file
+
+A sipnab that runs as a service, or that you start the same way each time, can
+take the listener's address and its allowlist from the config file, so the
+command line carries neither.
+
+Before you start:
+
+- A sipnab build that has HEP: `sipnab --version` lists `hep` among its
+  features.
+- A config file sipnab reads: the file `-f` names, or one of the places the
+  [Configuration reference](config-reference.md) lists.
+- On each SIP server: HEP sent to this address, as in
+  [Have your SIP server send HEP](#have-your-sip-server-send-hep). Nothing
+  changes there when the listener moves from the command line to the file.
+
+Steps:
+
+1. Put the address and the senders in the file:
+
+   ```toml
+   [hep]
+   listen = "198.51.100.1:9061"
+   allow = ["198.51.100.10", "198.51.100.11"]
+   ```
+
+   - `listen` is the value `-L` takes, a literal `IP:PORT`.
+   - `allow` is a list of the values `--hep-allow` takes: an address, or a
+     range such as `198.51.100.0/24`.
+2. Start sipnab without `-L`:
+
+   ```bash
+   sipnab -N --duration 15 --report --hep-senders --no-cli-print
+   ```
+
+   In a service, remove `-L` and `--hep-allow` from the unit's `ExecStart`
+   line and restart it ([Run sipnab as a service](run-as-a-service.md)).
+
+How the file and the command line combine:
+
+- `-L` on the command line replaces `listen` for that run.
+- `--hep-allow`, given at least once, replaces the whole `allow` list. Its
+  values are not added to the list.
+- With `-d`, `listen` adds the listener to the interface, as `-d` with `-L`
+  does.
+- A run that reads capture files (`-I`) starts no listener and does not use
+  `listen`. It says so in a warning.
+- The other listener flags, such as `--hep-senders` and `--hep-rate-limit`,
+  work with a listener from the file as they do with `-L`.
+
+### Check that it worked
+
+The log names the listener when it starts. A run with
+`listen = "127.0.0.1:19061"` and `allow = ["127.0.0.1"]` logged:
+
+```text
+INFO sipnab::capture::hep: HEP allowlist active: 1 CIDR range(s)
+INFO sipnab::capture::hep: HEP listener started on 127.0.0.1:19061
+```
+
+`sipnab --dump-config` prints the two keys under `[hep]` when the file is the
+one sipnab reads.
+
+### When it does not work
+
+| What you see | Exit status | What to do |
+|---|---|---|
+| `[hep] listen = "192.0.2.10:9060" in the config file is refused. HEP listener refuses to start: --hep-listen 192.0.2.10:9060 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured. Bind to 127.0.0.1, add an allowlist, or set a secret to accept HEP from a routable address. The allowlist can also be given as [hep] allow.` | 1 | Add `allow` to the file, or a shared secret ([Require a shared secret](#require-a-shared-secret)). |
+| `[hep] listen is set in the config file and is not used in this run: a run that reads capture files (-I) starts no HEP listener` | 0 | Nothing: the run read its files. Start the listener in a run without `-I`. |
+| `[hep] allow is set in the config file and does nothing in this run: it applies to the HEP listener (--hep-listen/-L), which this run does not start` | 0 | Set `listen`, or pass `-L`. An allowlist does not start a listener. |
+| `--hep-senders applies to the HEP listener, which this run does not start. Start it with --hep-listen/-L, or with [hep] listen in the config file.` | 2 | The run has no listener from either place. Check that sipnab reads the file you edited: its log says `Loaded config from` and the path. `-F` (`--no-config`) reads none. |
 
 ## Require a shared secret
 
