@@ -114,6 +114,47 @@ pub fn parse_tls_records(data: &[u8]) -> Vec<TlsRecord> {
     parse_tls_records_with_consumed(data).0
 }
 
+/// The record header at `offset` in `data`: content type byte, version and
+/// declared length; `None` when the bytes there are not a record header.
+///
+/// The one rule for where a record begins, read by
+/// [`parse_tls_records_with_consumed`] and [`application_data_headers`].
+fn record_header_at(data: &[u8], offset: usize) -> Option<(u8, u16, u16)> {
+    let header = data.get(offset..offset.checked_add(TLS_RECORD_HEADER_LEN)?)?;
+    let content_type_byte = header[0];
+    if !TlsContentType::is_valid(content_type_byte) {
+        return None;
+    }
+
+    let version = u16::from_be_bytes([header[1], header[2]]);
+    if !TlsVersion::is_plausible(version) {
+        return None;
+    }
+
+    let length = u16::from_be_bytes([header[3], header[4]]);
+    if length > MAX_TLS_RECORD_LENGTH {
+        return None;
+    }
+    // RFC 5246 §6.2.1: "Implementations MUST NOT send zero-length
+    // fragments of Handshake, Alert, or ChangeCipherSpec content types."
+    // RFC 8446 §5.1 repeats it for Handshake and says an Alert record
+    // "MUST contain exactly one message".
+    //
+    // Three types, not four, and the omission is the RFC's: "Zero-length
+    // fragments of Application data MAY be sent as they are potentially
+    // useful as a traffic analysis countermeasure." Applying the rule to
+    // all four would discard a countermeasure the specification invites.
+    //
+    // Worth refusing rather than merely recording, because this walk has
+    // to decide where one record ends and the next begins from the header
+    // alone. A shape no conformant peer emits is the only evidence
+    // available at that offset.
+    if length == 0 && matches!(content_type_byte, 20..=22) {
+        return None;
+    }
+    Some((content_type_byte, version, length))
+}
+
 /// Same as [`parse_tls_records`], but also returns how many leading bytes of
 /// `data` were consumed by the complete records returned. `data[consumed..]`
 /// is either empty or the start of a record that hasn't fully arrived yet
@@ -123,39 +164,7 @@ pub fn parse_tls_records_with_consumed(data: &[u8]) -> (Vec<TlsRecord>, usize) {
     let mut records = Vec::new();
     let mut offset = 0;
 
-    while offset + TLS_RECORD_HEADER_LEN <= data.len() {
-        let content_type_byte = data[offset];
-        if !TlsContentType::is_valid(content_type_byte) {
-            break;
-        }
-
-        let version = u16::from_be_bytes([data[offset + 1], data[offset + 2]]);
-        if !TlsVersion::is_plausible(version) {
-            break;
-        }
-
-        let length = u16::from_be_bytes([data[offset + 3], data[offset + 4]]);
-        if length > MAX_TLS_RECORD_LENGTH {
-            break;
-        }
-        // RFC 5246 §6.2.1: "Implementations MUST NOT send zero-length
-        // fragments of Handshake, Alert, or ChangeCipherSpec content types."
-        // RFC 8446 §5.1 repeats it for Handshake and says an Alert record
-        // "MUST contain exactly one message".
-        //
-        // Three types, not four, and the omission is the RFC's: "Zero-length
-        // fragments of Application data MAY be sent as they are potentially
-        // useful as a traffic analysis countermeasure." Applying the rule to
-        // all four would discard a countermeasure the specification invites.
-        //
-        // Worth refusing rather than merely recording, because this walk has
-        // to decide where one record ends and the next begins from the header
-        // alone. A shape no conformant peer emits is the only evidence
-        // available at that offset.
-        if length == 0 && matches!(content_type_byte, 20..=22) {
-            break;
-        }
-
+    while let Some((content_type_byte, version, length)) = record_header_at(data, offset) {
         let payload_start = offset + TLS_RECORD_HEADER_LEN;
         let payload_end = payload_start + length as usize;
 
@@ -453,6 +462,33 @@ pub fn is_tls(data: &[u8]) -> bool {
 
     let length = u16::from_be_bytes([data[3], data[4]]);
     length <= MAX_TLS_RECORD_LENGTH
+}
+
+/// Count the ApplicationData record headers in one TCP segment.
+///
+/// For a run with no TLS key, which installs no decryptor and holds no
+/// stream state: it lets the run say that the capture holds TLS records it
+/// did not read. The walk starts at the first byte of the segment and follows
+/// the declared lengths, so the count is a lower bound: a record that begins
+/// in the middle of a segment, after the tail of a record from an earlier
+/// segment, is not seen. A record whose header is in the segment and whose
+/// body runs past its end is counted, because the header is the evidence.
+///
+/// # Returns
+///
+/// The number of ApplicationData headers found; 0 for a segment that does
+/// not begin with a TLS record header.
+#[must_use]
+pub fn application_data_headers(segment: &[u8]) -> u64 {
+    let mut count = 0;
+    let mut offset = 0usize;
+    while let Some((content_type_byte, _, length)) = record_header_at(segment, offset) {
+        if TlsContentType::from_byte(content_type_byte) == TlsContentType::ApplicationData {
+            count += 1;
+        }
+        offset += TLS_RECORD_HEADER_LEN + usize::from(length);
+    }
+    count
 }
 
 // ---------------------------------------------------------------------------
@@ -883,6 +919,196 @@ mod tests {
         // Implausible version
         assert!(!is_tls(&[0x16, 0x05, 0x00, 0x00, 0x05]));
         Ok(())
+    }
+
+    /// SUCCESS: one ApplicationData record in a segment counts as one.
+    #[test]
+    fn one_application_data_record_counts_as_one() {
+        assert_eq!(
+            application_data_headers(&record(23, 40)),
+            1,
+            "a segment that is one ApplicationData record"
+        );
+    }
+
+    /// SUCCESS: records that follow each other in one segment are each
+    /// counted; the walk follows the declared lengths.
+    #[test]
+    fn records_that_share_a_segment_are_each_counted() {
+        let mut segment = record(23, 40);
+        segment.extend(record(23, 7));
+        segment.extend(record(23, 1));
+        assert_eq!(
+            application_data_headers(&segment),
+            3,
+            "three ApplicationData records in one segment"
+        );
+    }
+
+    /// SUCCESS: the walk passes over the other content types and counts only
+    /// ApplicationData.
+    #[test]
+    fn other_content_types_are_passed_over_and_not_counted() {
+        let mut segment = record(22, 12);
+        segment.extend(record(20, 1));
+        segment.extend(record(23, 30));
+        segment.extend(record(21, 2));
+        segment.extend(record(23, 5));
+        assert_eq!(
+            application_data_headers(&segment),
+            2,
+            "handshake, change-cipher-spec and alert records are not application data"
+        );
+    }
+
+    /// SUCCESS: every record-layer version sipnab accepts is counted.
+    #[test]
+    fn each_plausible_record_version_is_counted() {
+        for version in [0x0300u16, 0x0301, 0x0302, 0x0303, 0x0304] {
+            assert_eq!(
+                application_data_headers(&make_tls_record(23, version, &[0u8; 9])),
+                1,
+                "record-layer version {version:#06x}"
+            );
+        }
+    }
+
+    /// FAILURE: a segment that holds only handshake records has no
+    /// ApplicationData header.
+    #[test]
+    fn a_handshake_only_segment_counts_as_zero() {
+        assert_eq!(
+            application_data_headers(&record(22, 90)),
+            0,
+            "a ClientHello segment holds no application data"
+        );
+    }
+
+    /// FAILURE: SIP text, an empty segment and a segment shorter than a
+    /// record header are not TLS.
+    #[test]
+    fn segments_that_are_not_tls_count_as_zero() {
+        let cases: [(&str, &[u8]); 4] = [
+            ("SIP text", b"INVITE sip:bob@example.com SIP/2.0\r\n"),
+            ("empty", b""),
+            ("four bytes", &[23, 0x03, 0x03, 0x00]),
+            ("unknown content type", &[24, 0x03, 0x03, 0x00, 0x01, 0x00]),
+        ];
+        for (name, segment) in cases {
+            assert_eq!(application_data_headers(segment), 0, "{name}");
+        }
+    }
+
+    /// FAILURE: a header with a version no record layer uses, or a length
+    /// above the record limit, is not a record header.
+    #[test]
+    fn an_implausible_version_or_length_counts_as_zero() {
+        assert_eq!(
+            application_data_headers(&make_tls_record(23, 0x0500, &[0u8; 4])),
+            0,
+            "version 0x0500"
+        );
+        let mut oversized = vec![23, 0x03, 0x03];
+        oversized.extend_from_slice(&(MAX_TLS_RECORD_LENGTH + 1).to_be_bytes());
+        assert_eq!(
+            application_data_headers(&oversized),
+            0,
+            "a declared length above the record limit"
+        );
+    }
+
+    /// EDGE: a record whose body runs past the end of the segment is counted
+    /// by its header, and the walk ends there.
+    #[test]
+    fn a_record_cut_off_by_the_segment_end_is_counted_by_its_header() {
+        let mut segment = record(23, 20);
+        segment.extend(record(23, 300));
+        segment.truncate(segment.len() - 250);
+        assert_eq!(
+            application_data_headers(&segment),
+            2,
+            "one whole record and one header with part of its body"
+        );
+    }
+
+    /// EDGE: the walk stops at the first bytes that are not a record header;
+    /// what was counted before them stands.
+    #[test]
+    fn the_walk_stops_at_bytes_that_are_not_a_record_header() {
+        let mut segment = record(23, 8);
+        segment.extend_from_slice(b"garbage that is not a record");
+        segment.extend(record(23, 8));
+        assert_eq!(
+            application_data_headers(&segment),
+            1,
+            "the record after the garbage is not reached"
+        );
+    }
+
+    /// EDGE: a trailing piece shorter than a header is not counted.
+    #[test]
+    fn a_trailing_partial_header_is_not_counted() {
+        let mut segment = record(23, 8);
+        segment.extend_from_slice(&[23, 0x03, 0x03]);
+        assert_eq!(
+            application_data_headers(&segment),
+            1,
+            "three bytes are not a record header"
+        );
+    }
+
+    /// EDGE: a zero-length ApplicationData record is a record (RFC 8446
+    /// section 5.1 allows it); a zero-length handshake record ends the walk,
+    /// as it does in `parse_tls_records`.
+    #[test]
+    fn zero_length_records_follow_the_rule_of_the_parser() {
+        let mut segment = record(23, 0);
+        segment.extend(record(23, 4));
+        assert_eq!(
+            application_data_headers(&segment),
+            2,
+            "a zero-length ApplicationData record, then another"
+        );
+        let mut refused = record(22, 0);
+        refused.extend(record(23, 4));
+        assert_eq!(
+            application_data_headers(&refused),
+            0,
+            "a zero-length handshake record is not a record header"
+        );
+    }
+
+    /// EDGE: a record of exactly the largest length the parser accepts is
+    /// counted.
+    #[test]
+    fn a_record_of_the_largest_accepted_length_is_counted() {
+        assert_eq!(
+            application_data_headers(&record(23, MAX_TLS_RECORD_LENGTH)),
+            1,
+            "the largest record the parser accepts"
+        );
+    }
+
+    /// The header walk of the counter and the parser are one rule: for a
+    /// segment of whole records the counter equals the ApplicationData
+    /// records the parser returns.
+    #[test]
+    fn the_counter_agrees_with_the_parser_on_whole_records() {
+        let mut segment = record(22, 33);
+        segment.extend(record(23, 100));
+        segment.extend(record(23, 0));
+        segment.extend(record(21, 2));
+        segment.extend(record(23, 61));
+        let parsed = parse_tls_records(&segment)
+            .iter()
+            .filter(|r| r.content_type == TlsContentType::ApplicationData)
+            .count() as u64;
+        assert_eq!(parsed, 3, "the parser finds three ApplicationData records");
+        assert_eq!(
+            application_data_headers(&segment),
+            parsed,
+            "the counter and the parser read the same headers"
+        );
     }
 
     /// A record whose declared length exceeds available data is dropped, not

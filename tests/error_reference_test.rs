@@ -987,7 +987,10 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // counts, the match count, what a session needs, and the remedy). +7.
 // Reworded, count unchanged: the missing-handshake line and its remedy now
 // also say what a TLS 1.3 key log needs.
-const EXPECTED_TEMPLATES: usize = 631;
+// 631 -> 633 (TLS-CAPTURE-NO-KEYLOG-SILENT): src/app/batch.rs, the two lines
+// `no_sip_guidance` prints for a capture with TLS records read without a TLS
+// key (the count and the cause, and the command with --keylog). +2.
+const EXPECTED_TEMPLATES: usize = 633;
 
 // ---------------------------------------------------------------------------
 // The page gates

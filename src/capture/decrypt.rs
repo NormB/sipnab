@@ -893,6 +893,8 @@ impl TlsDecryptor {
             client_hellos_seen: self.handshake_tally.client_hellos,
             server_hellos_seen: self.handshake_tally.server_hellos,
             keylog_unmatched_entries: self.handshake_tally.unmatched(&self.keylog_entries),
+            // This report comes from a decryptor, so the run has a key source.
+            unkeyed_app_data_records: 0,
         }
     }
 

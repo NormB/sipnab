@@ -8,6 +8,12 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A capture with TLS records, read without a TLS key, is no longer reported as holding no SIP (TLS-CAPTURE-NO-KEYLOG-SILENT).** `sipnab -N -I tls-capture.pcap` on a capture of SIP over TLS, with no `--keylog`, `--keylog-fd` or `--tls-key`, exited 0 and printed `No SIP traffic found. Check that the capture contains SIP packets (typically UDP port 5060-5061).` and a tip to use `--hexdump`. Nothing named the TLS records or the flag that reads them. A run with no TLS key installed no decryptor, and only the decryptor counted records. Such a run now counts the application-data record headers at the start of each TCP segment, and when it finds no SIP it prints `No SIP traffic was decoded. This capture holds at least 2 TLS application-data record(s) and this run was given no TLS key (--keylog, --keylog-fd or --tls-key), so sipnab decrypted none of them: this is not a finding that the capture contains no SIP.` (the number varies), then the command with `--keylog`. A run that finds SIP prints nothing new, and a capture with no TLS record keeps the earlier sentence. [When decryption does not work](docs/tls-capture.md#when-decryption-does-not-work) quotes the new message, and [the error reference](docs/errors.md) lists both lines.
+
 ## [0.5.247] - 2026-11-11
 
 ### Changed

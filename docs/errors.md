@@ -6132,6 +6132,22 @@ sipnab decoded no SIP, and it could not decrypt TLS traffic in the capture, so S
 
 **Exit code:** None. This is a warning, and the run continues.
 
+### `No SIP traffic was decoded. This capture holds at least {} TLS application-data record(s) and this run was given no TLS key (--keylog, --keylog-fd or --tls-key), so sipnab decrypted none of them: this is not a finding that the capture contains no SIP.`
+
+sipnab decoded no SIP, the capture holds TLS records, and the run had no key to decrypt them with, so SIP may be inside those records. The number is a lower bound: sipnab counts a record header that begins a TCP segment or follows a record that ends in the same segment.
+
+**What to do:** Pass the key log of the connections with `--keylog`, as [Capture SIP over TLS](tls-capture.md) describes. If the capture carries no SIP over TLS, the records belong to other traffic and the run has nothing more to read.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `To read SIP carried over TLS, pass the key log that the endpoint wrote during this capture: sipnab -N -I file.pcap --keylog keys.log`
+
+The remedy for a capture with TLS records read without a TLS key. sipnab prints it after the line that counts the records.
+
+**What to do:** Run the command with your capture and the key log that the TLS endpoint wrote while the capture ran.
+
+**Exit code:** None. This is a warning, and the run continues.
+
 ### `NOT ANALYZED: {} further SIP message(s) were seen on ports outside --portrange and are in none of the totals above. Busiest: {}. Re-run with --portrange 1-65535 to include them.`
 
 When sipnab reads a capture file, `--portrange` selects which ports carry SIP signaling.

@@ -634,6 +634,17 @@ pub struct TlsDecryptReport {
     /// once it has dropped one it can no longer say that an entry matches
     /// none. A reader must not treat `None` as zero.
     pub keylog_unmatched_entries: Option<usize>,
+    /// ApplicationData record headers a run with no TLS key saw.
+    ///
+    /// A run with no `--keylog`, `--keylog-fd` or `--tls-key` installs no
+    /// decryptor, so `app_data_records` stays zero whatever the capture
+    /// holds. This count is what lets such a run say that it saw TLS records
+    /// and read none, where it used to print the sentence of a capture with
+    /// no SIP in it. A lower bound: only a header that begins a TCP segment,
+    /// or follows a record that ends inside the same segment, is counted
+    /// (see `capture::tls::application_data_headers`). Zero whenever a
+    /// decryptor is installed.
+    pub unkeyed_app_data_records: u64,
 }
 
 /// ClientHello client randoms the TLS decryptor remembers for
@@ -798,6 +809,8 @@ pub fn published_tls_decrypt() -> Option<TlsDecryptReport> {
         client_hellos_seen: 0,
         server_hellos_seen: 0,
         keylog_unmatched_entries: None,
+        // A decryptor is installed, so the run has a key source.
+        unkeyed_app_data_records: 0,
     })
 }
 

@@ -2638,7 +2638,9 @@ fn unread_guidance(tls: &crate::capture::TlsDecryptReport, mapped_libs: &[String
 /// * `frames_read` — frames handed to the parser.
 /// * `tls` — what TLS decryption achieved. Ciphertext this run could not read
 ///   is the same disclaimer one layer up: SIP may well have been present and
-///   simply unreadable, so the plain sentence has no basis.
+///   simply unreadable, so the plain sentence has no basis. That holds for a
+///   run with no TLS key too: its `unkeyed_app_data_records` counts the
+///   records no decryptor was there to try.
 ///
 /// # Returns
 ///
@@ -2696,6 +2698,24 @@ fn no_sip_guidance(
             "No SIP traffic was decoded, but TLS application data in this capture could \
              not be decrypted (see above), so this is not a finding that the capture \
              contains no SIP."
+                .to_string(),
+        ];
+    }
+
+    // TLS records were seen and the run had no key, so no decryptor counted
+    // or tried them. SIP may be inside them: the plain sentence below has no
+    // basis here either, and the remedy is a flag this run did not pass.
+    if tls.unkeyed_app_data_records > 0 {
+        return vec![
+            format!(
+                "No SIP traffic was decoded. This capture holds at least {} TLS \
+                 application-data record(s) and this run was given no TLS key (--keylog, \
+                 --keylog-fd or --tls-key), so sipnab decrypted none of them: this is not a \
+                 finding that the capture contains no SIP.",
+                tls.unkeyed_app_data_records
+            ),
+            "To read SIP carried over TLS, pass the key log that the endpoint wrote \
+             during this capture: sipnab -N -I file.pcap --keylog keys.log"
                 .to_string(),
         ];
     }
@@ -3121,6 +3141,11 @@ pub struct BatchRunner {
     /// see [`crate::capture::tls::TlsRecordReassembler`].
     #[cfg(feature = "tls")]
     tls_reassembler: crate::capture::tls::TlsRecordReassembler,
+    /// TLS ApplicationData record headers seen while no decryptor is
+    /// installed (see [`unkeyed_tls_records`]). It reaches the operator
+    /// through [`no_sip_guidance`] when the run found no SIP.
+    #[cfg(feature = "tls")]
+    unkeyed_tls_records: u64,
     /// SRTP media decryption context (`--srtp-keys` + learned SDES keys).
     #[cfg(feature = "tls")]
     srtp_context: Option<crate::rtp::srtp::SrtpContext>,
@@ -4100,6 +4125,8 @@ impl BatchRunner {
             #[cfg(feature = "tls")]
             tls_reassembler,
             #[cfg(feature = "tls")]
+            unkeyed_tls_records: 0,
+            #[cfg(feature = "tls")]
             srtp_context,
             #[cfg(feature = "tls")]
             dtls_extractor,
@@ -4761,6 +4788,9 @@ impl BatchRunner {
         lp: &mut ReceiveLoop,
         pp: &'p ParsedPacket,
     ) -> SmallVec<[std::borrow::Cow<'p, ParsedPacket>; 1]> {
+        if self.tls_decryptor.is_none() {
+            self.unkeyed_tls_records += unkeyed_tls_records(pp);
+        }
         let tls_yield = try_tls_decrypt(pp, &mut self.tls_decryptor, &mut self.tls_reassembler);
         if let Some(x) = lp.decrypted_export.as_mut() {
             for d in tls_yield.recovered.iter().chain(tls_yield.decrypted.iter()) {
@@ -5247,11 +5277,12 @@ impl BatchRunner {
         }
 
         #[cfg(feature = "tls")]
-        let tls_report = self
-            .tls_decryptor
-            .as_ref()
-            .map(crate::capture::decrypt::TlsDecryptor::report)
-            .unwrap_or_default();
+        let tls_report = end_of_run_tls_report(
+            self.tls_decryptor
+                .as_ref()
+                .map(crate::capture::decrypt::TlsDecryptor::report),
+            self.unkeyed_tls_records,
+        );
         #[cfg(not(feature = "tls"))]
         let tls_report = crate::capture::TlsDecryptReport::default();
         for line in tls_decrypt_guidance(&tls_report, &mapped_tls_libraries()) {
@@ -6726,6 +6757,61 @@ fn packets_after_tls(
     out
 }
 
+/// Whether a packet can carry TLS records sipnab has not seen in the clear.
+///
+/// TLS runs over TCP. A HEP message is plaintext a proxy already decrypted,
+/// whatever transport its sender named, and a message rebuilt from a stored
+/// vCon is plaintext for the same reason: the container stored the decoded
+/// message. One rule, read by [`try_tls_decrypt`] and by
+/// [`unkeyed_tls_records`].
+#[cfg(feature = "tls")]
+fn may_carry_tls(pp: &ParsedPacket) -> bool {
+    pp.transport == TransportProto::Tcp
+        && !matches!(
+            pp.input_origin,
+            crate::capture::parse::InputOrigin::Hep | crate::capture::parse::InputOrigin::Vcon
+        )
+}
+
+/// The TLS ApplicationData record headers in one packet, for a run that has
+/// no decryptor.
+///
+/// Pure, so the count is tested from a packet alone. A lower bound: see
+/// [`tls::application_data_headers`].
+#[cfg(feature = "tls")]
+fn unkeyed_tls_records(pp: &ParsedPacket) -> u64 {
+    if !may_carry_tls(pp) {
+        return 0;
+    }
+    tls::application_data_headers(&pp.payload)
+}
+
+/// The TLS report the end-of-run guidance reads.
+///
+/// # Arguments
+///
+/// * `decryptor` — the report of the installed decryptor, or `None` for a
+///   run with no TLS key.
+/// * `unkeyed_records` — ApplicationData record headers counted while no
+///   decryptor was installed.
+///
+/// # Returns
+///
+/// The decryptor's report unchanged when there is one. Otherwise a report of
+/// zeroes whose `unkeyed_app_data_records` is `unkeyed_records`, so that
+/// [`no_sip_guidance`] can tell a capture with unread TLS records from a
+/// capture with none.
+#[cfg(feature = "tls")]
+fn end_of_run_tls_report(
+    decryptor: Option<crate::capture::TlsDecryptReport>,
+    unkeyed_records: u64,
+) -> crate::capture::TlsDecryptReport {
+    decryptor.unwrap_or_else(|| crate::capture::TlsDecryptReport {
+        unkeyed_app_data_records: unkeyed_records,
+        ..Default::default()
+    })
+}
+
 /// If the payload looks like TLS, reassembles it against any tail held from
 /// a previous call on the same stream direction (a TLS record routinely
 /// spans more than one TCP segment / captured packet — see
@@ -6760,13 +6846,7 @@ fn try_tls_decrypt(
     // TLS checks below meant a session whose keys arrived last could wait for
     // the next TLS-looking packet on that same connection -- which on a quiet
     // trunk may never come, and at end of capture never does.
-    if pp.transport != TransportProto::Tcp {
-        return TlsYield {
-            recovered,
-            decrypted: out,
-        };
-    }
-
+    //
     // A HEP message is plaintext a proxy already decrypted, whatever transport
     // its sender named, so it has nothing to give TLS decryption. It must also
     // take nothing: under `-d any --keylog <file> -L` the wire leg and the
@@ -6777,10 +6857,7 @@ fn try_tls_decrypt(
     //
     // A message rebuilt from a stored vCon is plaintext for the same reason:
     // the container stored the decoded message.
-    if matches!(
-        pp.input_origin,
-        crate::capture::parse::InputOrigin::Hep | crate::capture::parse::InputOrigin::Vcon
-    ) {
+    if !may_carry_tls(pp) {
         return TlsYield {
             recovered,
             decrypted: out,
@@ -17011,6 +17088,307 @@ mod tests {
         assert!(
             joined.contains("could not decrypt") || joined.contains("not a finding"),
             "the run must disclaim the zero: {joined}"
+        );
+    }
+
+    /// A report of a run with no TLS key that saw `records` ApplicationData
+    /// record headers.
+    fn unkeyed_report(records: u64) -> crate::capture::TlsDecryptReport {
+        crate::capture::TlsDecryptReport {
+            unkeyed_app_data_records: records,
+            ..Default::default()
+        }
+    }
+
+    /// The guidance of a run with no SIP, no RTP, a clean decode and `tls`.
+    fn no_sip_lines(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
+        no_sip_guidance(0, 0, false, &undecodable_of(0, &[]), 6, tls)
+    }
+
+    /// SUCCESS, the reported case (TLS-CAPTURE-NO-KEYLOG-SILENT): a capture
+    /// with TLS records read without a key names the records and the flags,
+    /// and does not print the sentence of a capture with no SIP in it.
+    #[test]
+    fn tls_records_read_without_a_key_are_named_with_their_count() {
+        let lines = no_sip_lines(&unkeyed_report(2));
+        assert_eq!(
+            lines.first().map(String::as_str),
+            Some(
+                "No SIP traffic was decoded. This capture holds at least 2 TLS \
+                 application-data record(s) and this run was given no TLS key (--keylog, \
+                 --keylog-fd or --tls-key), so sipnab decrypted none of them: this is not a \
+                 finding that the capture contains no SIP."
+            ),
+            "the first line states the count and the cause: {lines:?}"
+        );
+    }
+
+    /// SUCCESS: the second line gives the command that reads the records.
+    #[test]
+    fn tls_records_read_without_a_key_get_the_keylog_command() {
+        let lines = no_sip_lines(&unkeyed_report(2));
+        assert_eq!(
+            lines.get(1).map(String::as_str),
+            Some(
+                "To read SIP carried over TLS, pass the key log that the endpoint wrote \
+                 during this capture: sipnab -N -I file.pcap --keylog keys.log"
+            ),
+            "the second line is the remedy: {lines:?}"
+        );
+        assert_eq!(lines.len(), 2, "two lines and no more: {lines:?}");
+    }
+
+    /// SUCCESS: the count printed is the count carried by the report.
+    #[test]
+    fn the_unkeyed_count_is_printed_as_counted() {
+        for count in [1u64, 7, 40_000] {
+            let joined = no_sip_lines(&unkeyed_report(count)).join("\n");
+            assert!(
+                joined.contains(&format!("at least {count} TLS application-data record(s)")),
+                "count {count}: {joined}"
+            );
+        }
+    }
+
+    /// FAILURE: the plain sentence and the hexdump tip are for a capture with
+    /// no TLS record; a run that saw unread records prints neither.
+    #[test]
+    fn unread_tls_records_are_never_reported_as_no_sip_traffic() {
+        let joined = no_sip_lines(&unkeyed_report(1)).join("\n");
+        assert!(
+            !joined.contains("No SIP traffic found."),
+            "the unqualified finding must not appear: {joined}"
+        );
+        assert!(
+            !joined.contains("--hexdump"),
+            "the tip of the plain sentence must not appear: {joined}"
+        );
+    }
+
+    /// FAILURE: a run with no TLS key and no TLS record keeps the plain
+    /// sentence. The count is what selects the other message.
+    #[test]
+    fn no_unkeyed_record_keeps_the_plain_sentence() {
+        let lines = no_sip_lines(&unkeyed_report(0));
+        assert!(
+            lines.iter().any(|l| l.starts_with("No SIP traffic found.")),
+            "a capture with no TLS record: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("TLS")),
+            "nothing about TLS is said of a capture without it: {lines:?}"
+        );
+    }
+
+    /// EDGE: parsed RTP proves the capture was read, so the media-only
+    /// message stands whatever TLS records the capture also holds.
+    #[test]
+    fn parsed_rtp_outranks_unkeyed_tls_records() {
+        let lines = no_sip_guidance(
+            120,
+            2,
+            false,
+            &undecodable_of(0, &[]),
+            126,
+            &unkeyed_report(3),
+        );
+        let joined = lines.join("\n");
+        assert!(
+            joined.starts_with("No SIP signaling found, but 120 RTP packets"),
+            "the media-only message: {joined}"
+        );
+        assert!(
+            !joined.contains("TLS"),
+            "the media-only message says nothing about TLS: {joined}"
+        );
+    }
+
+    /// EDGE: frames that did not decode are reported first; the count of TLS
+    /// records in the frames that did decode does not replace that message.
+    #[test]
+    fn undecodable_frames_outrank_unkeyed_tls_records() {
+        let lines = no_sip_guidance(
+            0,
+            0,
+            false,
+            &undecodable_of(
+                4,
+                &[(
+                    crate::capture::UndecodableReason::UnsupportedLinkType(999),
+                    4,
+                )],
+            ),
+            10,
+            &unkeyed_report(3),
+        );
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("could not be decoded at all"),
+            "the undecodable message: {joined}"
+        );
+        assert!(
+            !joined.contains("this run was given no TLS key"),
+            "the undecodable message stands alone: {joined}"
+        );
+    }
+
+    /// A TCP packet of the wire with `payload`, from `origin` over
+    /// `transport`.
+    #[cfg(feature = "tls")]
+    fn tls_test_packet(
+        payload: &[u8],
+        transport: TransportProto,
+        origin: crate::capture::parse::InputOrigin,
+    ) -> ParsedPacket {
+        ParsedPacket {
+            frame: None,
+            frame_bytes: None,
+            timestamp: chrono::Utc::now(),
+            src_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 10)),
+            dst_addr: IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)),
+            src_port: 40111,
+            dst_port: 5061,
+            transport,
+            payload: bytes::Bytes::copy_from_slice(payload),
+            ip_id: None,
+            tcp_seq: None,
+            tcp_flags: None,
+            fragment_offset: None,
+            more_fragments: false,
+            ip_protocol: 6,
+            dscp: None,
+            input_origin: origin,
+            hep: None,
+        }
+    }
+
+    /// Two ApplicationData records of 16 and 3 bytes, one after the other.
+    #[cfg(feature = "tls")]
+    fn two_application_data_records() -> Vec<u8> {
+        let mut segment = vec![0x17, 0x03, 0x03, 0x00, 0x10];
+        segment.extend_from_slice(&[0xAA; 16]);
+        segment.extend_from_slice(&[0x17, 0x03, 0x03, 0x00, 0x03, 1, 2, 3]);
+        segment
+    }
+
+    /// SUCCESS: a TCP segment of the wire that holds two ApplicationData
+    /// records counts as two.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_wire_tcp_segment_counts_its_application_data_records() {
+        let pp = tls_test_packet(
+            &two_application_data_records(),
+            TransportProto::Tcp,
+            crate::capture::parse::InputOrigin::Wire,
+        );
+        assert_eq!(unkeyed_tls_records(&pp), 2, "two records in the segment");
+        assert!(
+            may_carry_tls(&pp),
+            "a TCP segment of the wire can carry TLS"
+        );
+    }
+
+    /// FAILURE: the same bytes over UDP are not TLS records; TLS runs over
+    /// TCP.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_udp_datagram_counts_no_tls_record() {
+        let pp = tls_test_packet(
+            &two_application_data_records(),
+            TransportProto::Udp,
+            crate::capture::parse::InputOrigin::Wire,
+        );
+        assert_eq!(unkeyed_tls_records(&pp), 0, "UDP carries no TLS record");
+        assert!(!may_carry_tls(&pp), "a UDP datagram cannot carry TLS");
+    }
+
+    /// FAILURE: a HEP message and a message rebuilt from a vCon are plaintext
+    /// already, whatever their bytes look like.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn hep_and_vcon_input_count_no_tls_record() {
+        for origin in [
+            crate::capture::parse::InputOrigin::Hep,
+            crate::capture::parse::InputOrigin::Vcon,
+        ] {
+            let pp = tls_test_packet(&two_application_data_records(), TransportProto::Tcp, origin);
+            assert_eq!(unkeyed_tls_records(&pp), 0, "{origin:?} input is plaintext");
+            assert!(!may_carry_tls(&pp), "{origin:?} input cannot carry TLS");
+        }
+    }
+
+    /// FAILURE: SIP text over TCP holds no TLS record.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn sip_text_over_tcp_counts_no_tls_record() {
+        let pp = tls_test_packet(
+            b"OPTIONS sip:bob@example.com SIP/2.0\r\n\r\n",
+            TransportProto::Tcp,
+            crate::capture::parse::InputOrigin::Wire,
+        );
+        assert_eq!(unkeyed_tls_records(&pp), 0, "plain SIP is not a TLS record");
+    }
+
+    /// EDGE: a handshake segment (a ClientHello) counts no ApplicationData
+    /// record, and an empty TCP segment (an ACK) counts none.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn handshake_and_empty_segments_count_no_application_data() {
+        let hello = [0x16, 0x03, 0x01, 0x00, 0x04, 1, 0, 0, 0];
+        for (name, payload) in [("ClientHello", &hello[..]), ("empty", &[][..])] {
+            let pp = tls_test_packet(
+                payload,
+                TransportProto::Tcp,
+                crate::capture::parse::InputOrigin::Wire,
+            );
+            assert_eq!(unkeyed_tls_records(&pp), 0, "{name}");
+        }
+    }
+
+    /// SUCCESS: with no decryptor the end-of-run report carries the unkeyed
+    /// count and is otherwise a report of zeroes.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_run_without_a_decryptor_reports_its_unkeyed_count() {
+        let report = end_of_run_tls_report(None, 5);
+        assert_eq!(report, unkeyed_report(5), "only the unkeyed count is set");
+        assert!(
+            !report.read_nothing(),
+            "no record was offered to a decryptor, so the keyed guidance stays silent"
+        );
+        assert!(
+            tls_decrypt_guidance(&report, &[]).is_empty(),
+            "the keyed guidance prints nothing for a run without a key"
+        );
+    }
+
+    /// EDGE: a decryptor's report is passed through unchanged; a count taken
+    /// before a decryptor existed does not alter it.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_decryptor_report_is_passed_through_unchanged() {
+        let keyed = tls_report(1, 9, 0);
+        assert_eq!(
+            end_of_run_tls_report(Some(keyed), 5),
+            keyed,
+            "the decryptor's report stands"
+        );
+    }
+
+    /// EDGE: a keyed run that read nothing keeps the keyed sentence, which
+    /// refers to the counts printed above it.
+    #[test]
+    fn a_keyed_run_that_read_nothing_keeps_the_keyed_sentence() {
+        let mut report = tls_report(1, 9, 0);
+        report.unkeyed_app_data_records = 4;
+        let joined = no_sip_lines(&report).join("\n");
+        assert!(
+            joined.contains("could not be decrypted (see above)"),
+            "the keyed sentence: {joined}"
+        );
+        assert!(
+            !joined.contains("this run was given no TLS key"),
+            "a key was given: {joined}"
         );
     }
 

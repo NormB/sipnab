@@ -29850,6 +29850,22 @@ sipnab decoded no SIP, and it could not decrypt TLS traffic in the capture, so S
 
 **Exit code:** None. This is a warning, and the run continues.
 
+### `No SIP traffic was decoded. This capture holds at least {} TLS application-data record(s) and this run was given no TLS key (--keylog, --keylog-fd or --tls-key), so sipnab decrypted none of them: this is not a finding that the capture contains no SIP.`
+
+sipnab decoded no SIP, the capture holds TLS records, and the run had no key to decrypt them with, so SIP may be inside those records. The number is a lower bound: sipnab counts a record header that begins a TCP segment or follows a record that ends in the same segment.
+
+**What to do:** Pass the key log of the connections with `--keylog`, as [Capture SIP over TLS](tls-capture.md) describes. If the capture carries no SIP over TLS, the records belong to other traffic and the run has nothing more to read.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `To read SIP carried over TLS, pass the key log that the endpoint wrote during this capture: sipnab -N -I file.pcap --keylog keys.log`
+
+The remedy for a capture with TLS records read without a TLS key. sipnab prints it after the line that counts the records.
+
+**What to do:** Run the command with your capture and the key log that the TLS endpoint wrote while the capture ran.
+
+**Exit code:** None. This is a warning, and the run continues.
+
 ### `NOT ANALYZED: {} further SIP message(s) were seen on ports outside --portrange and are in none of the totals above. Busiest: {}. Re-run with --portrange 1-65535 to include them.`
 
 When sipnab reads a capture file, `--portrange` selects which ports carry SIP signaling.
@@ -78853,7 +78869,7 @@ probe run labels each dialog `uprobe:<process>/<pid>`.
 
 | Symptom | Likely cause |
 |---|---|
-| `No SIP traffic found.` and a totals line with `0 SIP messages`, from a capture of port 5061 | The run had no `--keylog`, so sipnab read no TLS record. Pass the key log |
+| `This capture holds at least 2 TLS application-data record(s) and this run was given no TLS key` (the number varies) after a totals line with `0 SIP messages` | The run had no `--keylog`, `--keylog-fd` or `--tls-key`, so sipnab decrypted no TLS record. Pass the key log: `sipnab -N -I tls-capture.pcap --keylog /tmp/sip-keys.log` |
 | `sipnab could not decrypt 2 TLS application-data record(s): it holds no key material for any session in this capture` (the number varies) | The key log is empty or holds no key line. Check that the key source attached to the TLS library and the process the daemon uses, and that it started before the connection opened |
 | `sipnab loaded 1 keylog line(s) and built no session from any of them` (the numbers vary), then `No key in the key log belongs to a handshake in this capture` | The capture holds the handshake, and the key log comes from other connections: another process, another run, or a log rotated after these connections began. sipnab prints the remedy: `Use the key log that the endpoint of these connections wrote during this capture.` |
 | `sipnab loaded 1 keylog line(s) and built no session from any of them`, then `The handshake is missing: this capture holds no ClientHello and no ServerHello.` | The capture started after the connection opened. For TLS 1.2, restart the connection while the capture runs. For TLS 1.3, use a key log that holds both traffic secret lines of the connection |

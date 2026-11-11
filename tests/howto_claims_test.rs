@@ -986,20 +986,73 @@ fn the_tls_check_shows_the_decrypted_messages_and_the_log_line() -> Result<(), T
     Ok(())
 }
 
-/// Without `--keylog` sipnab looks at no TLS record: the run prints no
-/// message and the sentence the page quotes.
+/// What a run with no TLS key prints about the two application-data records
+/// of the test call. The page quotes it and the binary prints it.
+#[cfg(feature = "tls")]
+const NO_TLS_KEY: &str = "This capture holds at least 2 TLS application-data record(s) and this \
+                          run was given no TLS key";
+
+/// Without a TLS key sipnab decrypts no record: the run prints no message
+/// line, counts the records it saw and names the flag that reads them. It
+/// does not print the sentence of a capture that holds no SIP.
 #[cfg(feature = "tls")]
 #[test]
-fn a_tls_capture_read_without_keys_prints_what_the_page_quotes() -> Result<(), TestError> {
-    let message = "No SIP traffic found.";
-    page_says(section(TLS, TLS_TROUBLESHOOT)?, message, "tls-capture");
+fn a_tls_capture_read_without_keys_names_the_records_and_the_flag() -> Result<(), TestError> {
     let dir = tempfile::tempdir()?;
     let (capture, _) = tls_call(dir.path())?;
     let run = sipnab(&["-N", "-I", &capture])?;
     exited(&run, 0);
     assert_eq!(stdout(&run), "", "nothing decrypted, so no message line");
-    printed(&stderr(&run), message);
-    printed(&stderr(&run), "0 SIP messages");
+    let printed_text = stderr(&run);
+    printed(&printed_text, "0 SIP messages");
+    printed(&printed_text, NO_TLS_KEY);
+    printed(
+        &printed_text,
+        "this is not a finding that the capture contains no SIP",
+    );
+    printed(&printed_text, "--keylog keys.log");
+    assert!(
+        !printed_text.contains("No SIP traffic found."),
+        "a capture with unread TLS records is not reported as holding no SIP:\n{printed_text}"
+    );
+    assert!(
+        !printed_text.contains("--hexdump"),
+        "the hexdump tip belongs to a capture with no TLS record:\n{printed_text}"
+    );
+    Ok(())
+}
+
+/// The troubleshooting table of the page quotes the message of a run with no
+/// TLS key, in the words `a_tls_capture_read_without_keys_names_the_records_and_the_flag`
+/// reads from the binary.
+#[cfg(feature = "tls")]
+#[test]
+fn the_tls_page_quotes_the_message_of_a_run_without_keys() -> Result<(), TestError> {
+    let table = section(TLS, TLS_TROUBLESHOOT)?;
+    page_says(table, NO_TLS_KEY, "tls-capture");
+    page_says(table, "0 SIP messages", "tls-capture");
+    assert!(
+        !table.contains("No SIP traffic found."),
+        "the page still quotes the sentence a run without a TLS key no longer prints"
+    );
+    Ok(())
+}
+
+/// A capture with no TLS record and no SIP still gets the plain sentence:
+/// the count of records is what selects the other message.
+#[test]
+fn a_capture_with_no_tls_record_and_no_sip_keeps_the_plain_sentence() -> Result<(), TestError> {
+    let dir = tempfile::tempdir()?;
+    let capture = dir.path().join("empty.pcap");
+    pcap_build::write_pcap(&capture, &[])?;
+    let run = sipnab(&["-N", "-I", &capture.display().to_string()])?;
+    exited(&run, 0);
+    let printed_text = stderr(&run);
+    printed(&printed_text, "No SIP traffic found.");
+    assert!(
+        !printed_text.contains("TLS application-data"),
+        "no TLS record is in the capture:\n{printed_text}"
+    );
     Ok(())
 }
 
