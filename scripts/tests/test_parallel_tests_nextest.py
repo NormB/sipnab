@@ -163,13 +163,41 @@ def test_only_the_test_measured_past_the_deadline_gets_a_longer_one():
     # under cargo test (run 42188622852, on 86a902663), and nextest stopped it
     # at 180 s on this branch's first macOS run. One override, for that test
     # alone, doubles its deadline; every other test keeps three periods.
+    #
+    # The second override is for the two tests of
+    # tests/hook_test_scripts_git_env_test.rs that each run a whole hook
+    # harness, one short process after another. Alone at a load average of 12
+    # to 17 on 14 cores they took 42.48 s and 36.30 s (2026-11-11). In the
+    # suite at a load average of 44 to 50, nextest stopped both at 180 s
+    # (180.405 s and 180.259 s, the hook run that ended 03:46:27Z that day).
+    # Six periods is about twice what that load made of them.
     overrides = suite_profile()["profile"][pt.PROFILE].get("overrides", [])
     assert overrides == [
         {
             "filter": "test(=every_documented_command_runs_or_says_why_not)",
             "slow-timeout": {"period": "60s", "terminate-after": 6},
-        }
+        },
+        {
+            "filter": (
+                "binary(=hook_test_scripts_git_env_test) & ("
+                "test(=test_pre_commit_sh_leaves_the_hooks_repository_alone) | "
+                "test(=test_pre_push_sh_leaves_the_hooks_repository_alone))"
+            ),
+            "slow-timeout": {"period": "60s", "terminate-after": 6},
+        },
     ]
+
+
+def test_every_test_given_a_longer_deadline_exists():
+    """An override for a test that was renamed away protects nothing."""
+    overrides = suite_profile()["profile"][pt.PROFILE].get("overrides", [])
+    names = [n for o in overrides for n in re.findall(r"test\(=([a-z0-9_]+)\)", o["filter"])]
+    assert len(names) == 3, names
+    sources = "".join(p.read_text() for p in sorted((REPO / "tests").glob("*.rs")))
+    for name in names:
+        assert f"fn {name}(" in sources, f"no test named {name} in tests/*.rs"
+    for binary in [b for o in overrides for b in re.findall(r"binary\(=([a-z0-9_]+)\)", o["filter"])]:
+        assert (REPO / "tests" / f"{binary}.rs").is_file(), f"no test binary tests/{binary}.rs"
 
 
 def test_the_report_is_read_from_the_store_the_config_names():

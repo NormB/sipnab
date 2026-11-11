@@ -59,6 +59,20 @@ path = "junit.xml"
 filter = "test(=every_documented_command_runs_or_says_why_not)"
 slow-timeout = { period = "60s", terminate-after = 6 }
 
+# Two more, measured as well. Each of these runs a whole hook harness
+# (scripts/test-pre-commit.sh, scripts/test-pre-push.sh): one short process
+# after another, dozens of hook runs. Alone, at a load average of 12 to 17 on
+# 14 cores, they took 42.48 s and 36.30 s (2026-11-11). In the suite, at a
+# load average of 44 to 50, nextest stopped both at 180 s (180.405 s and
+# 180.259 s, the commit hook run that ended 03:46:27Z on 2026-11-11), and two
+# more commit hooks failed the same way that day. Six periods is about twice
+# what that load made of them. The pre-commit hook's own share of each hook
+# run was cut first, from 2.24 s to 1.28 s in a sandbox (its suite watch slept
+# a whole second).
+[[profile.suite.overrides]]
+filter = "binary(=hook_test_scripts_git_env_test) & (test(=test_pre_commit_sh_leaves_the_hooks_repository_alone) | test(=test_pre_push_sh_leaves_the_hooks_repository_alone))"
+slow-timeout = { period = "60s", terminate-after = 6 }
+
 # PTY / terminal E2E tests (tests/tui_e2e_test.rs) can be timing-flaky; allow a
 # couple of retries here ONLY. Per spec §13.4 they must also pass a no-retry
 # stability check before the `continue-on-error` CI shim is removed.
