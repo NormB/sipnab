@@ -29165,7 +29165,11 @@ The center could not open its encrypted store, and leaves it as it found it.
 - `has a header that did not authenticate (the file was modified, or the key
   is wrong)` or `has a record <n> that did not authenticate (the file was
   modified, or its records were moved)`: a byte of the file changed after the
-  center wrote it.
+  center wrote it. Releases 0.5.244 to 0.5.246 also left a file that gives
+  the second message, with no one changing it: an append failed, for example
+  on a full disk, and a later append worked before the center wrote the file
+  again. [Encrypt the center's store](fleet.md#encrypt-the-centers-store)
+  has what the center loses and how to start again.
 - `was truncated: it ends before its records do`: the file is shorter than
   the center wrote it.
 - `was cut at its end: it holds <n> of the <m> entries it was written with`:
@@ -29270,12 +29274,33 @@ free space.
 
 ### `fleet center: the store could not be written: {e}`
 
-The center could not append a heartbeat to its store, for the system's reason
-in the message, such as a full disk. It answers the member `503` and counts
-nothing, so the member sends the batch again.
+The center could not append a heartbeat to its store, or call records to its
+intake, for the system's reason in the message, such as a full disk. It
+answers the member `503`, so the member sends the batch again. The intake
+holds once each call record it took before the store failed: the center
+answers those records as duplicates when they arrive again.
+
+Before the next append to the file that failed, the center reads that file
+and writes it again without what the failed append left in it. While the
+center cannot do that, every append to the file fails with this message and
+the reason: the system's error, or `sealed layer:` and why the file did not
+open.
 
 **What to do:** Free space on the store's file system, or fix its
-permissions.
+permissions. The rewrite creates a file beside the one it rewrites, so the
+directory needs space and write permission too.
+
+### `sealed layer: the file holds {} record(s) where {} were written; it was changed while the center ran`
+
+Printed after `fleet center: the store could not be written:`. An append had
+failed, and when the center read the file to write it again, the file held
+fewer records than the center had written to it. Something replaced the
+store or the intake with an earlier copy while the center ran. The center
+appends nothing to that file while it is in this state.
+
+**What to do:** Stop the center. Put back the file the center was writing,
+or start the center on the file that is there: it then holds what that file
+holds.
 
 ### `fleet center: the store was not rewritten: {e}`
 
@@ -41343,6 +41368,40 @@ shows a key.
   ```text
   sipnab fleet serve: --store 'center.store': sealed layer: the file was cut at its end: it holds 3 of the 5 entries it was written with
   ```
+
+- **`has a record <n> that did not authenticate`, on a file no one
+  changed.** A center from 0.5.244, 0.5.245 or 0.5.246 left this state when
+  an append failed, for example on a full disk, and a later append worked.
+  The center logged `fleet center: the store could not be written:` at the
+  time and kept running. The center sealed the record after the failure for
+  a position the file does not reach, so the file does not open at the next
+  start. This release does not leave a file in that state. It does not read
+  one that is in it:
+
+  ```text
+  sipnab fleet serve: --store 'center.store': sealed layer: the file has a record 4 that did not authenticate (the file was modified, or its records were moved)
+  ```
+
+  Which file the message names decides what the center loses.
+
+  - The store (`--store '<file>'`). Those releases wrote the store again
+    in each minute in which a heartbeat arrived and when the center stopped
+    on a signal, and that removed the state. A store is in it only when the
+    center stopped another way before the next rewrite. Move the store away
+    and start the center. It starts with an empty store. Each member
+    reports again within one heartbeat interval, and the list loses only a
+    member that is silent now.
+  - The intake (`the intake '<file>.intake'`, from 0.5.245 or 0.5.246).
+    Those releases wrote the intake again only to remove records past the
+    retention or the intake's size, and that rewrite failed on a file in
+    this state, with the warning `fleet center: the intake was not
+    rewritten:`. Move the intake away and start the center. It starts with
+    an empty intake and holds none of the call records the old file held.
+    The members do not send them again.
+
+  Keep the file you moved away until you have checked the center: start it,
+  wait one heartbeat interval, and read `GET /v1/fleet/members`. No sipnab
+  command reads a part of a sealed file that does not open.
 
 - **`can be read or written by other users`**, naming the key file. Run
   `chmod 600` on it:

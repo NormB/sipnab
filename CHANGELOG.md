@@ -8,6 +8,17 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Fixed
+
+- **A fleet center's store and intake open again after an append that failed.** In 0.5.244 to 0.5.246 (the store) and 0.5.245 and 0.5.246 (the intake), an append sealed its record for the file's next position and then wrote it. When the write failed, for example on a full disk, and a later append worked, the later record was sealed for a position the file did not reach. The center kept running, and at its next start refused the file with `sealed layer: the file has a record <n> that did not authenticate`.
+  - After a failed append the center now reads the file and writes it again under a new data key before the next append, without what the failed append left in it. No position is sealed twice under one data key. While the file cannot be read and written again, appends to it fail and the member gets `503`.
+  - Tested with a file that fails at each byte of an append, at each of its two syncs, and at the open, with the errors of a full disk (`ENOSPC`) and of a failing device (`EIO`).
+  - The store of those releases was written again in each minute in which a heartbeat arrived and when the center stopped on a signal, which removed the state. The intake was written again only to remove records past the retention or the intake's size.
+  - **A file already in that state is still refused**, and no command reads a part of it. [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store) has what the center loses and how to start again.
+- **A call record is in the center's intake once when the store fails after the intake took it.** In 0.5.245 and 0.5.246 the center answered `503` and left the member's position where it was, so the member sent the record again and the intake held it twice. The position now moves past the records the intake took, as it does when a center starts after a stop at that point, and the center answers them as duplicates.
+
 ## [0.5.246] - 2026-11-11
 
 ### Changed

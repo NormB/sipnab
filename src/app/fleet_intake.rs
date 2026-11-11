@@ -26,7 +26,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::fleet_center::{CallRecord, Registry};
-use super::fleet_seal::{Keys, Kind, LogSealer, SealError};
+use super::fleet_log::AppendLog;
+use super::fleet_seal::{Keys, Kind, SealError};
 
 /// The most bytes of records the intake holds.
 ///
@@ -113,12 +114,8 @@ pub fn first_kept(
 
 /// The center's intake file.
 pub struct Intake {
-    /// The file.
-    path: PathBuf,
-    /// The keys the file is sealed under.
-    keys: Arc<Keys>,
-    /// Seals the appends to the file as it is now.
-    sealer: LogSealer,
+    /// The file, open for appends.
+    log: AppendLog,
     /// When each record the file holds was received, and its size, oldest
     /// first.
     held: Vec<(DateTime<Utc>, usize)>,
@@ -129,7 +126,7 @@ pub struct Intake {
 impl std::fmt::Debug for Intake {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Intake")
-            .field("path", &self.path)
+            .field("path", &self.log.path())
             .field("records", &self.held.len())
             .finish_non_exhaustive()
     }
@@ -162,7 +159,8 @@ impl Intake {
             .map(|(record, line)| (record.received_at, line.len()))
             .collect();
         let first = first_kept(&held, now, retention, max_bytes);
-        let sealer = rewrite(path, &keys, &lines[first..])
+        let kept = lines[first..].iter().cloned().map(Ok);
+        let log = AppendLog::create(path, keys, Kind::Intake, kept)
             .map_err(|e| format!("the intake '{}': {e}", path.display()))?;
         if first > 0 {
             tracing::warn!(
@@ -174,9 +172,7 @@ impl Intake {
         records.drain(..first);
         Ok((
             Self {
-                path: path.to_path_buf(),
-                keys,
-                sealer,
+                log,
                 held: held[first..].to_vec(),
                 dropped: first as u64,
             },
@@ -194,15 +190,17 @@ impl Intake {
         if records.is_empty() {
             return Ok(());
         }
-        let mut sealed = Vec::new();
-        let mut held = Vec::with_capacity(records.len());
-        for record in records {
-            let line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-            sealed.extend(self.sealer.record(&line).map_err(std::io::Error::other)?);
-            held.push((record.received_at, line.len()));
-        }
-        super::fleet_seal::append_counted(&self.path, &mut self.sealer, &sealed)?;
-        self.held.extend(held);
+        let lines = records
+            .iter()
+            .map(|record| serde_json::to_vec(record).map_err(std::io::Error::other))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        self.log.append(&lines)?;
+        self.held.extend(
+            records
+                .iter()
+                .zip(&lines)
+                .map(|(record, line)| (record.received_at, line.len())),
+        );
         Ok(())
     }
 
@@ -223,10 +221,15 @@ impl Intake {
         if first == 0 {
             return Ok(0);
         }
-        let (lines, _) = read(&self.path, &self.keys)?;
+        let shown = self.log.path().display().to_string();
+        let lines = self
+            .log
+            .held_lines()
+            .map_err(|e| format!("the intake '{shown}': {e}"))?;
         let from = first.min(lines.len());
-        self.sealer = rewrite(&self.path, &self.keys, &lines[from..])
-            .map_err(|e| format!("the intake '{}': {e}", self.path.display()))?;
+        self.log
+            .rewrite(lines[from..].iter().cloned().map(Ok))
+            .map_err(|e| format!("the intake '{shown}': {e}"))?;
         self.held.drain(..first);
         self.dropped = self.dropped.saturating_add(first as u64);
         Ok(first)
@@ -248,6 +251,12 @@ impl Intake {
     #[must_use]
     pub fn dropped(&self) -> u64 {
         self.dropped
+    }
+
+    /// The file, for a test that makes its appends fail.
+    #[cfg(test)]
+    pub(super) fn log_mut(&mut self) -> &mut AppendLog {
+        &mut self.log
     }
 }
 
@@ -305,17 +314,6 @@ fn check_private(path: &Path) -> Result<(), String> {
     #[cfg(not(unix))]
     let _ = path;
     Ok(())
-}
-
-/// Write the intake at `path` to hold exactly `lines`, under a new data key.
-fn rewrite(path: &Path, keys: &Keys, lines: &[Vec<u8>]) -> std::io::Result<LogSealer> {
-    super::fleet_center::write_sealed_reading(
-        path,
-        keys,
-        Kind::Intake,
-        lines.iter().cloned().map(Ok),
-        &|staged| std::fs::read(staged),
-    )
 }
 
 /// Move each member's position in `registry` past the records the intake
@@ -389,6 +387,175 @@ mod tests {
     /// tests' bounds.
     fn open(path: &Path) -> Result<(Intake, Vec<IntakeRecord>), String> {
         Intake::open(path, keys(1), at(100), KEEP, MAX_INTAKE_BYTES)
+    }
+
+    /// An intake in a new directory that took records 1 and 2 of `edge-a`
+    /// and then failed to take `batch` through a file `open` made, with
+    /// the real file back in place after.
+    fn intake_after_a_failure(
+        files: crate::app::fleet_log::OpenFile,
+        batch: &[IntakeRecord],
+    ) -> Result<(tempfile::TempDir, PathBuf, Intake), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store.intake");
+        let (mut intake, _) = open(&path)?;
+        intake.append(&[rec("edge-a", 1), rec("edge-a", 2)])?;
+        intake.log_mut().open_with(files);
+        if intake.append(batch).is_ok() {
+            return Err("the append did not fail".into());
+        }
+        intake
+            .log_mut()
+            .open_with(crate::app::fleet_log::faults::real());
+        Ok((dir, path, intake))
+    }
+
+    /// The sequence numbers of the records the intake at `path` holds at
+    /// the next start.
+    fn seqs_at(path: &Path) -> Result<Vec<u64>, String> {
+        open(path).map(|(_, records)| records.iter().map(|r| r.seq).collect())
+    }
+
+    #[test]
+    fn success_an_intake_append_after_the_file_was_away_reopens() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store.intake");
+        let away = dir.path().join("away");
+        let (mut intake, _) = open(&path)?;
+        intake.append(&[rec("edge-a", 1)])?;
+        std::fs::rename(&path, &away)?;
+        assert!(
+            intake.append(&[rec("edge-a", 2)]).is_err(),
+            "the append fails while the file is away"
+        );
+        std::fs::rename(&away, &path)?;
+        intake.append(&[rec("edge-a", 3)])?;
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path),
+            Ok(vec![1, 3]),
+            "success an intake append after the file was away reopens"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_an_intake_append_after_a_full_disk_part_way_reopens() -> TestResult {
+        use crate::app::fleet_log::faults::stop_at;
+        let (_dir, path, mut intake) =
+            intake_after_a_failure(stop_at(50, libc::ENOSPC), &[rec("edge-a", 3)])?;
+        intake.append(&[rec("edge-a", 4)])?;
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path),
+            Ok(vec![1, 2, 4]),
+            "success an intake append after a full disk part way reopens"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_failed_intake_append_is_not_held() -> TestResult {
+        use crate::app::fleet_log::faults::sync_fails;
+        let (_dir, _path, mut intake) = intake_after_a_failure(sync_fails(1), &[rec("edge-a", 3)])?;
+        assert_eq!(intake.records(), 2, "the failed record is not counted");
+        let bytes = intake.bytes();
+        intake.append(&[rec("edge-a", 4)])?;
+        assert_eq!(intake.records(), 3, "the next record is counted");
+        assert!(
+            intake.bytes() > bytes,
+            "failure a failed intake append is not held: {} then {bytes}",
+            intake.bytes()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_trim_after_a_failed_append_removes_what_the_append_left() -> TestResult {
+        use crate::app::fleet_log::faults::sync_fails;
+        // The second sync failed: record 3 is whole in the file, and the
+        // center never acknowledged it.
+        let (_dir, path, mut intake) = intake_after_a_failure(sync_fails(1), &[rec("edge-a", 3)])?;
+        let gone = intake.trim(at(3602), chrono::Duration::hours(1), MAX_INTAKE_BYTES)?;
+        assert_eq!(gone, 1, "the trim removes the record past the retention");
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path),
+            Ok(vec![2]),
+            "failure a trim after a failed append removes what the append left"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_intake_batch_that_failed_part_way_leaves_none_of_its_records() -> TestResult {
+        use crate::app::fleet_log::faults::sync_fails;
+        let batch = [rec("edge-a", 3), rec("edge-a", 4), rec("edge-a", 5)];
+        let (_dir, path, mut intake) = intake_after_a_failure(sync_fails(0), &batch)?;
+        intake.append(&[rec("edge-a", 6)])?;
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path),
+            Ok(vec![1, 2, 6]),
+            "edge an intake batch that failed part way leaves none of its records"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_intake_stopped_after_a_failed_append_starts_with_the_records_before_it() -> TestResult
+    {
+        use crate::app::fleet_log::faults::stop_at;
+        let (_dir, path, intake) =
+            intake_after_a_failure(stop_at(9, libc::EIO), &[rec("edge-a", 3)])?;
+        drop(intake);
+        assert_eq!(
+            seqs_at(&path),
+            Ok(vec![1, 2]),
+            "edge an intake stopped after a failed append starts with the records before it"
+        );
+        Ok(())
+    }
+
+    /// The intake releases 0.5.245 and 0.5.246 left when an append failed
+    /// and a later one worked: the record after the failure is sealed for
+    /// a position the file does not reach. It is refused, by file and
+    /// layer, and left as found.
+    #[test]
+    fn failure_an_intake_an_earlier_release_wrote_past_a_failed_append_is_refused() -> TestResult {
+        use crate::app::fleet_seal::append_counted;
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store.intake");
+        let mut sealer = crate::app::fleet_center::write_sealed_reading(
+            &path,
+            &keys(1),
+            Kind::Intake,
+            std::iter::empty(),
+            &|staged| std::fs::read(staged),
+        )?;
+        let first = sealer.record(&serde_json::to_vec(&rec("edge-a", 1))?)?;
+        append_counted(&path, &mut sealer, &first)?;
+        // The append of record 2 failed after it was sealed; nothing was
+        // written.
+        let _ = sealer.record(&serde_json::to_vec(&rec("edge-a", 2))?)?;
+        let third = sealer.record(&serde_json::to_vec(&rec("edge-a", 3))?)?;
+        append_counted(&path, &mut sealer, &third)?;
+        let before = std::fs::read(&path)?;
+        assert_eq!(
+            open(&path).map(|_| ()),
+            Err(format!(
+                "the intake '{}': sealed layer: the file has a record 4 that did not \
+                 authenticate (the file was modified, or its records were moved)",
+                path.display()
+            )),
+            "failure an intake an earlier release wrote past a failed append is refused"
+        );
+        assert_eq!(
+            std::fs::read(&path)?,
+            before,
+            "the refused intake is left as found"
+        );
+        Ok(())
     }
 
     /// An intake file in a new directory holding records 1 to `n` of
@@ -784,7 +951,8 @@ mod tests {
     fn failure_a_sealed_record_that_is_not_a_call_record_is_refused() -> TestResult {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store.intake");
-        rewrite(&path, &keys(1), &[b"{\"member\":1}".to_vec()])?;
+        let line = b"{\"member\":1}".to_vec();
+        AppendLog::create(&path, keys(1), Kind::Intake, std::iter::once(Ok(line)))?;
         let e = open(&path).err().unwrap_or_default();
         assert!(
             e.contains("sealed layer: record 1 is not a call record"),

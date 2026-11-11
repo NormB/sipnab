@@ -1095,6 +1095,40 @@ shows a key.
   sipnab fleet serve: --store 'center.store': sealed layer: the file was cut at its end: it holds 3 of the 5 entries it was written with
   ```
 
+- **`has a record <n> that did not authenticate`, on a file no one
+  changed.** A center from 0.5.244, 0.5.245 or 0.5.246 left this state when
+  an append failed, for example on a full disk, and a later append worked.
+  The center logged `fleet center: the store could not be written:` at the
+  time and kept running. The center sealed the record after the failure for
+  a position the file does not reach, so the file does not open at the next
+  start. This release does not leave a file in that state. It does not read
+  one that is in it:
+
+  ```text
+  sipnab fleet serve: --store 'center.store': sealed layer: the file has a record 4 that did not authenticate (the file was modified, or its records were moved)
+  ```
+
+  Which file the message names decides what the center loses.
+
+  - The store (`--store '<file>'`). Those releases wrote the store again
+    in each minute in which a heartbeat arrived and when the center stopped
+    on a signal, and that removed the state. A store is in it only when the
+    center stopped another way before the next rewrite. Move the store away
+    and start the center. It starts with an empty store. Each member
+    reports again within one heartbeat interval, and the list loses only a
+    member that is silent now.
+  - The intake (`the intake '<file>.intake'`, from 0.5.245 or 0.5.246).
+    Those releases wrote the intake again only to remove records past the
+    retention or the intake's size, and that rewrite failed on a file in
+    this state, with the warning `fleet center: the intake was not
+    rewritten:`. Move the intake away and start the center. It starts with
+    an empty intake and holds none of the call records the old file held.
+    The members do not send them again.
+
+  Keep the file you moved away until you have checked the center: start it,
+  wait one heartbeat interval, and read `GET /v1/fleet/members`. No sipnab
+  command reads a part of a sealed file that does not open.
+
 - **`can be read or written by other users`**, naming the key file. Run
   `chmod 600` on it:
 
