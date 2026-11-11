@@ -618,31 +618,12 @@ fn harden(run_as: &str) -> Result<(), String> {
 /// does not empty it.
 #[cfg(target_os = "linux")]
 fn clear_capabilities() -> Result<(), String> {
-    /// `struct __user_cap_header_struct`.
-    #[repr(C)]
-    struct CapHeader {
-        version: u32,
-        pid: libc::c_int,
-    }
-    /// `struct __user_cap_data_struct`.
-    #[repr(C)]
-    #[derive(Clone, Copy)]
-    struct CapData {
-        effective: u32,
-        permitted: u32,
-        inheritable: u32,
-    }
-    /// `_LINUX_CAPABILITY_VERSION_3`: two data structs, 64 capability bits.
-    const VERSION_3: u32 = 0x2008_0522;
+    use crate::privilege::{CAP_VERSION_3, CapData, CapHeader};
     let mut header = CapHeader {
-        version: VERSION_3,
+        version: CAP_VERSION_3,
         pid: 0,
     };
-    let data = [CapData {
-        effective: 0,
-        permitted: 0,
-        inheritable: 0,
-    }; 2];
+    let data = [CapData::default(); 2];
     // SAFETY: capset(2) reads one header and, for version 3, exactly two data
     // structs, laid out here as the kernel declares them (repr(C), u32 and
     // int fields). Both live on this frame for the duration of the call.

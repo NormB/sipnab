@@ -1791,16 +1791,21 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // Permission denied"), first-cli-triage.md +6, tui-walkthrough.md +6,
     // expectations.md +1; follow-a-call.md +1 -1 (its link to "Make the match
     // exact" was reworded, not added).
-    // 2552 -> 2559 (DOCS-HOWTO-GAP, second batch): uprobe-walkthrough.md +4
+    // 2552 -> 2557 (OPS batch 5): install.md +2 (the local-build list's
+    // link to "Capture live traffic in the container", and that section's
+    // link to troubleshooting.md's "Live capture says Permission
+    // denied"); troubleshooting.md +1 and errors.md +2, each a
+    // link to install.md's "Capture live traffic in the container".
+    // 2557 -> 2564 (DOCS-HOWTO-GAP, second batch): uprobe-walkthrough.md +4
     // (its "Before you start", "Check that it worked" and the new
     // troubleshooting row link four of its own sections), plugins.md +1,
     // g729.md +1, least-privilege.md +1 (to install.md).
-    // 2559 -> 2572 (DOCS-HOWTO-GAP, third batch): tuning-capture.md +6 (its
+    // 2564 -> 2577 (DOCS-HOWTO-GAP, third batch): tuning-capture.md +6 (its
     // "Before you start" links install.md and one of its sections, and its
     // troubleshooting table four of its sections), theme-guide.md +6 (two
     // links to config-reference.md and four to its own sections),
     // tls-capture.md +1 (to install.md).
-    const EXPECTED_WIKI_LINKS: usize = 2572;
+    const EXPECTED_WIKI_LINKS: usize = 2577;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

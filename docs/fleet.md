@@ -919,6 +919,24 @@ development build after 0.5.243 and the files in one working directory.
   key. After the upgrade it does not start until you give it
   `--store-key-file`. [Upgrade a center that stored in clear](#upgrade-a-center-that-stored-in-clear)
   has the steps and the way back.
+- **A center from 0.5.244 or 0.5.245, or a member from 0.5.245** wrote
+  sealed format 1. A later release reads those files once and writes them
+  again as format 2, and neither 0.5.244 nor 0.5.245 reads format 2. To keep
+  a way back, stop the center and copy its store and its intake before the
+  first start of the new release. A center from 0.5.244 has no intake, so
+  only the first command applies to it:
+
+  ```bash
+  # Run all of these, in order.
+  cp -p /var/lib/sipnab/center.store /var/lib/sipnab/center.store.format1
+  cp -p /var/lib/sipnab/center.store.intake /var/lib/sipnab/center.store.intake.format1
+  ```
+
+  To go back, stop the center, put the copies back under their own names
+  and start the release that wrote them. It then knows nothing the newer
+  release stored. A member has nothing to copy: let its spool drain before a
+  downgrade, because 0.5.245 moves a format 2 delivery to `failed/` and does
+  not send it.
 
 **Steps.**
 
@@ -1017,14 +1035,17 @@ at its next heartbeat, and does not list a member that is silent then.
 **What it covers and what it does not.** The center seals the store file and
 the file it stages a rewrite in, and writes no other file. It authenticates
 each record with the record's position in the file, so a changed byte, a
-moved record or a store cut short inside the records of its last rewrite
-stops the center at start. Two things it cannot detect: someone deleting the
-whole store, and someone removing whole records from the end of the file
-that the center appended after its last rewrite. A file that the center may
-stop writing at any moment cannot tell a removed last record from one it
-never wrote, unless it keeps a count somewhere else, and this release keeps
-none. The center rewrites the store at start and every minute, so the
-records this applies to are the heartbeats of at most the last minute. `--store-encryption` names how the center encrypts
+moved record or a store cut short stops the center at start. That includes
+records removed from the end of the file: after each append is on disk the
+center writes an authenticated count of the file's entries into the file's
+header, and the center refuses a file that holds fewer entries than its
+count (`was cut at its end`). The same holds for the intake beside the store
+and for a member's sealed deliveries. Two things it cannot detect: someone
+deleting the whole store, and someone putting back an earlier copy of the
+whole file, which is a valid file with its own valid count. Releases 0.5.244
+and 0.5.245 wrote no count (sealed format 1). This release reads such a file
+once at start and writes it again with one (format 2), and an earlier
+release does not read a format 2 file. `--store-encryption` names how the center encrypts
 the store. This release has one mechanism, `sealed`, and refuses the values
 `modular` and `both`.
 
@@ -1047,14 +1068,23 @@ shows a key.
   sipnab fleet serve: --store 'center.store': sealed layer: the file was written under key id ac7b02adecf75d31, which is not loaded; give that key's file with --store-old-key-file
   ```
 
-- **`did not authenticate`, or `was truncated`.** Something changed the
-  store or cut it short after the center wrote it. The center leaves it as it
-  found it. Restore the store from a copy, or move it away and start with an
-  empty store: the members report again within one heartbeat interval each,
-  and the list loses only a member that is silent now.
+- **`did not authenticate`, `was truncated`, or `was cut at its end`.**
+  Something changed the store or cut it short after the center wrote it. The
+  center leaves it as it found it. Restore the store from a copy, or move it
+  away and start with an empty store: the members report again within one
+  heartbeat interval each, and the list loses only a member that is silent
+  now. When the message names the intake (`center.store.intake`), the same
+  two choices apply to that file. An empty intake holds none of the call
+  records the old one held.
 
   ```text
   sipnab fleet serve: --store 'center.store': sealed layer: the file has a header that did not authenticate (the file was modified, or the key is wrong)
+  ```
+
+  A store with records removed from its end:
+
+  ```text
+  sipnab fleet serve: --store 'center.store': sealed layer: the file was cut at its end: it holds 3 of the 5 entries it was written with
   ```
 
 - **`can be read or written by other users`**, naming the key file. Run

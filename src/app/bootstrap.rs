@@ -4496,9 +4496,12 @@ fn capture_open_failure_in(e: &str, source: &CaptureSource, env: &CaptureEnviron
     if let Some(marker) = env.container.as_deref() {
         return format!(
             "Permission denied on '{target}'. This process runs in a container \
-             ({marker}), where a non-root user gets no capabilities even with \
-             --cap-add. Start it as root with the capabilities granted. sipnab \
-             drops to nobody once the capture is open:\n  \
+             ({marker}) as a user that holds no capture capability. In a \
+             container a non-root user gets a capability only through file \
+             capabilities on the binary (cap_net_raw,cap_net_admin+p), which the \
+             sipnab image's binary carries and this one does not. Run that \
+             image, or start this container as root with the capabilities \
+             granted. sipnab drops to nobody once the capture is open:\n  \
              docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>"
         );
     }
@@ -13834,6 +13837,31 @@ mod decision_tests {
             "{msg}"
         );
         assert!(!msg.contains("sudo sipnab"), "{msg}");
+    }
+
+    /// The container hint says why `--cap-add` did not reach the user (the
+    /// binary carries no file capabilities) and no longer says a non-root
+    /// user never gets capabilities: the sipnab image's user does (OPS-4).
+    #[test]
+    fn the_container_hint_names_file_capabilities_not_an_impossibility() {
+        let env = CaptureEnvironment::from_status(
+            Some(&status("0", DOCKER_DEFAULT)),
+            Some("/.dockerenv".into()),
+        );
+        let msg = capture_open_failure_in("Operation not permitted", &eth0(), &env);
+        assert!(msg.contains("file capabilities"), "says why: {msg}");
+        assert!(
+            msg.contains(crate::privilege::CAPTURE_CAP_NAMES),
+            "names the capabilities the binary needs: {msg}"
+        );
+        assert!(
+            !msg.contains("gets no capabilities even with"),
+            "the image's non-root user captures with --cap-add: {msg}"
+        );
+        assert!(
+            msg.contains("docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN"),
+            "root with the capabilities still works: {msg}"
+        );
     }
 
     /// An unreadable status (no `/proc`) or a malformed `CapBnd` claims no

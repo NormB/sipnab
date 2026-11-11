@@ -479,6 +479,7 @@ Each successful run gets a row here.
 | 0.5.242 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.243 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.244 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.245 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-11 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it

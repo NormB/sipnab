@@ -170,19 +170,25 @@ fn dependabot_watches_both_cargo_workspaces_weekly() -> Result<(), TestError> {
     let s = section()?;
     assert!(s.contains("Dependabot") && s.contains("weekly"));
     let cfg = read(".github/dependabot.yml")?;
-    let blocks: Vec<&str> = cfg.split("- package-ecosystem:").skip(1).collect();
-    for dir in ["\"/\"", "\"/fuzz\""] {
-        let b = blocks
-            .iter()
-            .find(|b| {
-                b.trim_start().starts_with("\"cargo\"") && b.contains(&format!("directory: {dir}"))
-            })
-            .ok_or_else(|| format!("dependabot.yml has no cargo entry for directory {dir}"))?;
-        assert!(
-            b.contains("interval: \"weekly\""),
-            "the cargo entry for {dir} is not weekly"
-        );
-    }
+    // One entry lists both directories, so both lock files move in one pull
+    // request; tests/dependabot_cargo_layout_test.rs holds the entry's shape.
+    let both = cfg
+        .split("- package-ecosystem:")
+        .skip(1)
+        .find(|b| {
+            b.trim_start().starts_with("\"cargo\"")
+                && b.lines().any(|l| l.trim() == "- \"/\"")
+                && b.lines().any(|l| l.trim() == "- \"/fuzz\"")
+        })
+        .ok_or("dependabot.yml has no cargo entry that lists both `/` and `/fuzz`")?;
+    assert!(
+        both.contains("interval: \"weekly\""),
+        "the cargo entry for both lock files is not weekly"
+    );
+    assert!(
+        s.contains("one pull request for both lock files"),
+        "the section does not say that both lock files move in one pull request"
+    );
     Ok(())
 }
 

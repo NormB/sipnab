@@ -1,8 +1,37 @@
 version: 2
 updates:
-  # Rust dependencies (Cargo workspace at the repo root)
+  # Rust dependencies: the Cargo workspace at the repo root and the fuzz
+  # workspace, in ONE entry.
+  #
+  # The fuzz workspace is separate: its own Cargo.toml and its own Cargo.lock,
+  # outside the root workspace. A `directory: "/"` does not reach it, and
+  # neither does the root `cargo audit` / `cargo deny`, which read ./Cargo.lock
+  # in the working directory. 194 packages were therefore updated by nobody and
+  # scanned by nobody, and had drifted: 39 crates shared with the root were
+  # pinned at older versions there, `env_filter` a whole major behind.
+  #
+  # These are the fuzz targets that validate the parsers against hostile input.
+  # Running them on a stale, unaudited tree is not a shipping vulnerability, but
+  # it is the security tooling itself going unmaintained.
+  #
+  # One entry for both directories, because the two lockfiles must agree. With
+  # an entry each, Dependabot moved each lockfile in a pull request of its
+  # own. On 2026-11-08 fuzz/Cargo.lock held a different version than
+  # Cargo.lock for 39 of the 214 crates the two share: the fuzz targets fuzzed
+  # dependency code the binary does not ship. scripts/check-lockfile-drift.py
+  # (pre-commit hook, CI Security audit job) fails a tree where a shared
+  # crate's fuzz version is not one Cargo.lock has, so each of those pull
+  # requests failed it on its own, and #722 to #728 were replaced by a batch
+  # combined by hand (#733). With `directories`, a group's updates for both
+  # lockfiles are one pull request. No `group-by: dependency-name`: that
+  # opens one pull request per dependency. If a pull request still fails the
+  # drift check, CONTRIBUTING.md, "Keeping fuzz/Cargo.lock aligned with
+  # Cargo.lock", has the steps. tests/dependabot_cargo_layout_test.rs holds
+  # this entry to both directories and one group.
   - package-ecosystem: "cargo"
-    directory: "/"
+    directories:
+      - "/"
+      - "/fuzz"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
@@ -14,44 +43,6 @@ updates:
           - "patch"
     commit-message:
       prefix: "deps"
-
-  # The fuzz workspace is SEPARATE: its own Cargo.toml and its own Cargo.lock,
-  # outside the root workspace. `directory: "/"` above does not reach it, and
-  # neither does the root `cargo audit` / `cargo deny`, which read ./Cargo.lock
-  # in the working directory. 194 packages were therefore updated by nobody and
-  # scanned by nobody, and had drifted: 39 crates shared with the root were
-  # pinned at older versions there, `env_filter` a whole major behind.
-  #
-  # These are the fuzz targets that validate the parsers against hostile input.
-  # Running them on a stale, unaudited tree is not a shipping vulnerability, but
-  # it is the security tooling itself going unmaintained.
-  #
-  # This entry and the root one update their lockfiles in SEPARATE pull
-  # requests, and on 2026-11-08 fuzz/Cargo.lock held a different version than
-  # Cargo.lock for 39 of the 214 crates the two share: the fuzz targets fuzzed
-  # dependency code the binary does not ship. scripts/check-lockfile-drift.py
-  # (pre-commit hook, CI Security audit job) now fails a tree where a shared
-  # crate's fuzz version is not one Cargo.lock has, so a pull request from
-  # either entry that moves a shared crate fails it on its own. Combine the
-  # root and fuzz pull requests in one branch, take the root's versions, and
-  # align fuzz/Cargo.lock with the `cargo update --precise` lines the script
-  # prints; CONTRIBUTING.md, "Keeping fuzz/Cargo.lock aligned with
-  # Cargo.lock". One entry for both directories with `group-by:
-  # dependency-name` would open one pull request per dependency for both
-  # files, more pull requests on the one self-hosted runner than the two
-  # groups open, and it is not used for that reason.
-  - package-ecosystem: "cargo"
-    directory: "/fuzz"
-    schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
-    groups:
-      fuzz-minor-patch:
-        update-types:
-          - "minor"
-          - "patch"
-    commit-message:
-      prefix: "deps(fuzz)"
 
   # The eBPF programs are a third separate workspace, with their own Cargo.lock
   # that neither entry above reaches: `directory` is not recursive.

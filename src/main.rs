@@ -86,9 +86,24 @@ fn main() {
         std::process::exit(run_fleet_command());
     }
 
+    // 0d. Raise the capture capabilities this process is permitted into its
+    //     effective set. Before any thread starts, because capability sets
+    //     belong to a thread and each new thread copies its creator's. The
+    //     container image's binary carries them permitted only (`+p`), so
+    //     without this its non-root user holds them and cannot use them. See
+    //     `privilege::raise_capture_capabilities`. Logged once logging is up.
+    let raised = sipnab::privilege::raise_capture_capabilities();
+
     // 1. Parse CLI arguments and set up logging.
     let cli = Cli::parse_args();
     bootstrap::init_logging(&cli);
+    match raised {
+        Ok(Some(set)) => tracing::debug!(
+            "raised the permitted capture capabilities into the effective set ({set:#x})"
+        ),
+        Ok(None) => {}
+        Err(e) => tracing::warn!("could not raise the permitted capture capabilities: {e}"),
+    }
 
     // 1b-4. Everything decided by the command line, and the config file read
     //       but not yet applied.

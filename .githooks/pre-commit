@@ -805,7 +805,8 @@ echo -e "${GREEN}OK${NC}"
 
 # ── 3c. The fuzz targets build the dependency versions that ship ──
 # fuzz/Cargo.lock is a second lockfile for the sipnab crate's dependencies,
-# and Dependabot updates it in a pull request of its own. On 2026-11-08 it
+# and Dependabot resolves it on its own (until 2026-11-10 in a pull request
+# of its own; now in the root lockfile's pull request). On 2026-11-08 it
 # held a different version than Cargo.lock for 39 of the 214 crates the two
 # share (clap 4.6.7 against 4.6.3, cc 1.4.0 against 1.2.59), so the fuzz
 # targets fuzzed dependency code the binary does not ship, and no gate said

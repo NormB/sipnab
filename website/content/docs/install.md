@@ -82,7 +82,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.244 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.245 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -105,7 +105,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.244` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.245` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -294,7 +294,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.244) | Plugin | `Recommends` |
+| Artifact (0.5.245) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -334,11 +334,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.244 for the
+it first, in the same shell, to the release you want, e.g. 0.5.245 for the
 latest:
 
 ```bash
-VERSION=0.5.244
+VERSION=0.5.245
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -478,13 +478,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.244, as in
+you want, e.g. 0.5.245, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.244
+   VERSION=0.5.245
    ```
 
 - Download the package:
@@ -595,25 +595,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.245-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.245-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.245-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.245-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -1098,68 +1098,53 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.244
+docker pull ghcr.io/normb/sipnab:0.5.245
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.244` | That release |
+| `0.5.245` | That release |
 | `0.5` | The newest release in the 0.5 series |
-| `sha-<commit>` | The image built from that commit |
-| `latest` | The newest commit on `main`, which can be ahead of every release |
+| `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
+| `edge` | The newest commit on `main`, which can be ahead of every release |
+| `sha-<commit>` | The image the push of that commit to `main` built |
 
-`latest` is not a release. On 2026-11-03 it was the image of main commit
-`0d8eea1`, which the workflow built after the 0.5.232 tag.
+Until the release after 0.5.245, `latest` followed `main`, as `edge` does
+now. The first release built by the changed workflow moves `latest` to a
+release.
 
-**The image is `linux/amd64` only.** On an arm64 host `docker pull` fails with
-`no matching manifest for linux/arm64/v8 in the manifest list entries`. Use a
-[release tarball](#download-a-release-binary-yourself) or a package there.
+Each tag has one writer. A release is two pushes of one commit, the merge to
+`main` and then the `v*` tag, and each push builds an image of its own. The
+tag push writes the version tags and `latest`. The push to `main` writes
+`edge` and `sha-<commit>`. So `latest` and the version tag of the newest
+release name the same digest, and `sha-<commit>` of that commit names the
+other build. Up to 0.5.245 both pushes wrote `latest` and `sha-<commit>`, and
+for 0.5.245 `latest` and `0.5.245` name different digests.
+
+Every tag names a manifest list with a `linux/amd64` image and a
+`linux/arm64` image. `docker pull` takes the one for the host. Check what a
+tag holds, with `TAG` set to the tag:
+
+```bash
+# Run all of these, in order.
+TAG=edge
+docker buildx imagetools inspect "ghcr.io/normb/sipnab:$TAG"
+```
+
+The output lists a `Platform: linux/amd64` and a `Platform: linux/arm64`
+manifest. Releases up to 0.5.245 are `linux/amd64` only: on an arm64 host
+`docker pull` of one of them fails with `no matching manifest for
+linux/arm64/v8 in the manifest list entries`. Use a newer tag, or a
+[release tarball](#download-a-release-binary-yourself) or a package.
 
 Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.244 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.245 -N -I /data/capture.pcap
 ```
-
-**Live capture needs `--user root`.** The image runs as the unprivileged user
-`sipnab`, and a non-root user in a container gets no capabilities, whatever
-`--cap-add` grants. Started as root, sipnab opens the capture and then drops
-to `nobody`:
-
-```bash
-docker run --rm --net=host --user root ghcr.io/normb/sipnab:0.5.244 -N -d eth0
-```
-
-```text
-INFO sipnab::capture::live: Capturing on 'lo' (link_type=1, snaplen=65535)
-INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
-```
-
-Without `--user root`, with or without `--cap-add NET_RAW --cap-add
-NET_ADMIN`, the capture fails and the container exits with status 1. sipnab
-finds `/.dockerenv` and says what to change:
-
-```text
-Permission denied on 'lo'. This process runs in a container (/.dockerenv), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:
-  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>
-```
-
-A container started with `--cap-drop=NET_RAW` gets `CAP_NET_RAW is not in
-this process's capability bounding set (container: /.dockerenv)` instead,
-even as root. A non-root container started with
-`--security-opt no-new-privileges` gets `This process runs with NoNewPrivs
-set`. As root, that container captures.
-These permission lines come from a development build of sipnab run in a
-`debian:13` container on `lo`.
-
-The outputs above came from an arm64 image built from the
-[`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
-stage with the 0.5.232 `.deb` binary, capturing `lo`, because the published
-image has no arm64 variant. `docker image inspect ghcr.io/normb/sipnab:0.5.244`
-shows the same `"User": "sipnab"` for the published image.
 
 - `--net=host` lets the container see the host's interfaces.
 - A listener (`-L`, `--metrics`, `--api`) needs its port published, for
@@ -1171,12 +1156,100 @@ shows the same `"User": "sipnab"` for the published image.
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.244 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.245 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.244` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.244`. For `latest` it is
-`.github/workflows/docker.yml@refs/heads/main`.
+It names the workflow and the ref that built the image. For `0.5.245` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.245`, and for `latest` the tag of
+the newest release. For `edge` it is
+`.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
+attestation for the digest of the manifest list, which is what the tag names.
+
+#### Capture live traffic in the container
+
+The image runs as the unprivileged user `sipnab`, and that user captures:
+`docker run` with `--cap-add NET_RAW --cap-add NET_ADMIN` is enough, with no
+`--user root`.
+
+**Prerequisites:**
+
+- An image newer than 0.5.245. In 0.5.245 and earlier the user `sipnab` cannot
+  capture whatever `--cap-add` grants, and only `--user root` works (see
+  Troubleshooting below).
+- `--net=host`, to capture the host's interfaces rather than the container's
+  own.
+
+**Steps:**
+
+Set `TAG` to the image tag, and start the container under the name `sipnab`:
+
+```bash
+# Run all of these, in order.
+TAG=edge
+docker run --rm --name sipnab --net=host --cap-add NET_RAW --cap-add NET_ADMIN \
+  "ghcr.io/normb/sipnab:$TAG" -N -d eth0
+```
+
+How it works: `--cap-add` puts a capability in the container's bounding
+set, but a process that is not root loses its permitted and effective
+capabilities when it starts a program, unless the program file carries file
+capabilities. The image's binary carries `cap_net_raw` and `cap_net_admin` as
+permitted file capabilities (`setcap cap_net_raw,cap_net_admin+p`), so it
+starts permitted whichever of the two the bounding set holds, and sipnab moves
+them into its effective set before it does anything else. Without the
+effective bit in the file, the image also starts when the bounding set lacks
+one of them, so `docker run <image> --version` works under the default set
+of a Docker container and under `--cap-drop ALL`.
+
+**Verify:**
+
+The log names the device the capture opened, here for `-d lo`:
+
+```text
+INFO sipnab::capture::live: Capturing on 'lo' (link_type=1, snaplen=65535)
+```
+
+The process's capability sets show both capabilities effective. From a second shell, while the capture runs:
+
+```bash
+docker exec sipnab grep -E '^Cap(Prm|Eff)' /proc/1/status
+```
+
+```text
+CapPrm:	0000000000003000
+CapEff:	0000000000003000
+```
+
+`0x3000` is `CAP_NET_ADMIN` (bit 12) and `CAP_NET_RAW` (bit 13). Under the
+default set, with no `--cap-add`, both lines read `0000000000002000`: Docker
+grants `CAP_NET_RAW` by default, which is enough to open the capture.
+
+The output and the values above came from an arm64 image built from this
+[`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime stage with a locally built binary, capturing `lo`.
+
+**Troubleshooting:**
+
+- **The capture fails with `Permission denied on 'lo'` and exit status 1.**
+  The line after it names the cause sipnab found ([Live capture says
+  Permission denied](@/docs/troubleshooting.md#live-capture-says-permission-denied)
+  lists each one):
+
+  - The container runs with `--cap-drop ALL`, or another policy that
+    leaves `CAP_NET_RAW` out of the bounding set. Add `--cap-add NET_RAW`.
+  - The image is 0.5.245 or earlier, whose binary has no file capabilities.
+    Use a newer tag, or `--user root`: started as root, sipnab opens the
+    capture and then drops to `nobody`.
+  - A shell starts sipnab (`--entrypoint sh`)
+    under `--security-opt no-new-privileges`. With no-new-privileges the
+    shell holds no capabilities to pass on and the file capabilities cannot
+    add any. Make sipnab the entrypoint. Started directly, it captures under
+    no-new-privileges as well.
+- **`--user root` still works.** sipnab then opens the capture and drops to
+  `nobody`:
+
+  ```text
+  INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=65534)
+  ```
 
 ### Build the Docker image locally
 
@@ -1186,8 +1259,14 @@ docker build -t sipnab .
 
 The multi-stage Dockerfile uses `rust:1.99-slim-trixie` for the build stage and `debian:trixie-slim` for the runtime image.
 
-- The runtime image adds `libpcap0.8t64` and `libasound2t64`.
-- It runs as a non-root `sipnab` user.
+- The runtime image adds `libpcap0.8t64`, `libasound2t64` and
+  `ca-certificates`. The last puts Debian's CA bundle at
+  `/etc/ssl/certs/ca-certificates.crt`, where sipnab looks for one, so a TLS
+  client in the image trusts public certificate authorities without a CA
+  file.
+- It runs as a non-root `sipnab` user, and the binary carries
+  `cap_net_raw,cap_net_admin+p` file capabilities so that user can capture
+  (see [Capture live traffic in the container](#capture-live-traffic-in-the-container)).
 - It builds for the host's own architecture, so this is also how to get an
   arm64 image.
 
@@ -1279,7 +1358,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.245 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.246 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -1503,10 +1582,10 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.244
+docker pull ghcr.io/normb/sipnab:0.5.245
 ```
 
-Pulling `latest` gives the newest `main` commit, not the newest release. See
+`latest` is the newest release, and `edge` is the newest `main` commit. See
 [Run from a pre-built image](#run-from-a-pre-built-image).
 
 ### What an upgrade keeps, and what to redo

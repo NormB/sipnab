@@ -98,7 +98,7 @@ That is exactly why CI has a feature matrix.
 | `codeql.yml` | push to main, PR, weekly cron (Tuesdays 02:34 UTC) | GitHub's static analysis. |
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `clusterfuzzlite.yml` | daily (batch 02:23 UTC, pruning 05:23 UTC), weekly (coverage Sundays 06:23 UTC) + manual | Continuous fuzzing with a corpus that survives between runs, which `fuzz.yml` cannot do: batch fuzzing grows it, pruning keeps it minimal, and the coverage job reports which code it reaches. Builds in the OSS-Fuzz Rust builder image from `.clusterfuzzlite/`, which compiles the targets the way ClusterFuzzLite runs them. No pull-request fuzzing: without continuous builds on every push it would report pre-existing crashes as though the change introduced them. |
-| `docker.yml` | push to main, `v*` tags | Builds and pushes the image to GHCR with sigstore provenance. |
+| `docker.yml` | push to main, `v*` tags, pull requests that change the Dockerfile, the workflow or the files its `paths:` list names | Builds the image natively on an amd64 and an arm64 runner, smoke-tests and scans each, pushes each by digest, and joins them into one manifest list on GHCR with sigstore provenance. `latest` moves only on a release tag, and `edge` follows main. Each tag has one writing trigger: the tag push writes the version tags and `latest`, the push to main writes `edge` and `sha-<commit>`, and the `manifest` job reads its list back by the run's own tag (`sha-<commit>` on main, the full version on a tag). On a pull request it logs in nowhere and pushes nothing to GHCR: each leg hands its image to the `manifest` job, which assembles and checks the list in a registry it starts on localhost. |
 | `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website, with the homepage test count taken from CI's run of the same commit. |
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](https://github.com/NormB/sipnab/blob/main/scripts/build-wiki.py). |
@@ -125,7 +125,7 @@ It exists because nothing else in the suite can see a data race.
 The borrow checker does not help here either.
 
 - It stops at `unsafe`.
-- Most of this crate's 151 `unsafe` blocks are libc FFI.
+- Most of this crate's 153 `unsafe` blocks are libc FFI.
 - They concentrate in privilege dropping ([`privilege.rs`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs)
   and [`process_isolation.rs`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs)) and capture setup.
 - Recount with `grep -rc 'unsafe {' src/` rather than trusting that figure.
@@ -388,6 +388,21 @@ So `quality.yml` has a second job, `coverage-branch`.
 - The comment above it claimed "every other job" at the time.
 - So `install-sh` and `deb-package` could both fail with the
   one required check on main still green.
+
+`code-scanning-clean` waits for CodeQL's analysis of the commit, and how long it waits follows the CodeQL workflow run of that commit.
+
+- While the run waits for a runner or runs, the job waits, up to 90 minutes.
+- When the run has completed, the job waits 2 more minutes for the upload.
+- When GitHub lists no CodeQL run of the commit, the job waits 10 minutes.
+- The three times are arguments of [`scripts/code-scanning-clean.py`](https://github.com/NormB/sipnab/blob/main/scripts/code-scanning-clean.py), which the job's step in `ci.yml` passes.
+- The job fails with exit 2 when it ends with no verdict, and its last line says which case it was:
+  - `still queued or running`: the CodeQL run had not finished. Run the job again when it has.
+  - `no CodeQL analysis`: the run completed and uploaded none, or GitHub lists no run. Read the CodeQL run.
+  - `could not be read`: the script could not read GitHub's answer.
+- An open alert fails the job with exit 1, whatever the state of the run.
+- The job once waited a fixed 25 minutes. On 2026-11-10 the CodeQL run of a pull request head waited 46 minutes for a hosted runner,
+  and the job failed 147 s before CodeQL uploaded the analysis, with no alert open.
+- [`test_code_scanning_wait.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_code_scanning_wait.py) holds the rule.
 
 `ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
 
@@ -1161,6 +1176,14 @@ What the gate runs:
   [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950.html#section-11).
 
 A machine without either tool reports `NOT CHECKED` and names the fix.
+
+The pre-push hook runs the gate only for a tree that has a module: a `yang/` directory that holds a `.yang` file.
+For any other tree it prints `YANG: NOT CHECKED` with the reason, and goes on.
+
+- The script validates the tree it lives in. It builds and runs `yang_export_test` there, which took 9 s on the host that measured it.
+- The hook's own scenarios in [`scripts/test-pre-push.sh`](https://github.com/NormB/sipnab/blob/main/scripts/test-pre-push.sh) push from a throwaway crate with no module.
+  Each hook run of theirs paid those seconds to validate the repository's own module.
+- That was most of the 818 s the scenario file took on 2026-11-10. With the rule it took 187 s on the same host, with four more scenarios.
 
 - CI's `check` job installs both (`libyang2-tools`, and `pyang` from the hashed
   [`scripts/requirements-yang.txt`](https://github.com/NormB/sipnab/blob/main/scripts/requirements-yang.txt)).
@@ -2200,6 +2223,13 @@ So it has to be open for about one hook's length before a local step, and it mus
 
 - During the pull request's CI the train keeps the window closed.
 - It opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+- It keeps the window closed, and closes it again, while a check has waited for a runner for 2 minutes or more.
+  - Such a check has not started, so nothing says when it ends.
+  - A check queued for less than 2 minutes, or one with no start time, does not count.
+    A job waits in the queue for a few seconds on an ordinary day, and closing the window for it would let an ordinary job start just before the landing.
+  - On 0.5.244 the one pending check was a re-run macOS job, queued with no runner from 15:39:23Z until GitHub canceled it at 15:55:06Z.
+    The window was open for those minutes, the main slot was idle, and two ordinary jobs waited behind the window.
+  - [`test_release_train_queued.py`](https://github.com/NormB/sipnab/blob/main/scripts/tests/test_release_train_queued.py) holds the rule.
 - It keeps the window open through the landing and the tag push, closes it once the tag is on GitHub, and leaves it closed for the release workflow and the post checks, which use no main slot.
 - It closes its window on every exit, and leaves another owner's window alone.
 - On 0.5.239 there was no window, and the tag push waited 769 s behind an ordinary job that had started 7 s before it.
