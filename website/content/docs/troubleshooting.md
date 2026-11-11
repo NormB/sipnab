@@ -1672,7 +1672,7 @@ reason.
   0.5.233 and earlier did not handle `SIGHUP`: the service went `inactive`
   with `Result=success` and stayed down until started again.
 
-[A service that does not start](@/docs/run-as-a-service.md#a-service-that-does-not-start)
+[When the service does not start](@/docs/run-as-a-service.md#when-the-service-does-not-start)
 lists each refusal message with its fix.
 
 ## Live capture says Permission denied

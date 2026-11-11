@@ -671,7 +671,20 @@ while kill -0 "$TEST_PID" 2>/dev/null; do
 	# ended, and every run waited up to the whole interval for it. Against
 	# scripts/lib-hook-sandbox.sh's stub suite this step took 5.3 s with a
 	# five-second poll and 1.3 s with this one (measured 2026-11-07).
-	sleep 1
+	#
+	# The second is now ten looks 0.1 s apart that stop when the suite has
+	# ended, so the deadline above is still read once a second and the hook
+	# leaves within 0.1 s of the suite. With one sleep of a whole second a
+	# sandboxed run of this hook spent 1.00 s of its 2.24 s here (measured
+	# 2026-11-11), the harnesses run the hook dozens of times, and the two
+	# tests of tests/hook_test_scripts_git_env_test.rs that run a whole
+	# harness passed nextest's 180 s deadline on a loaded host.
+	# scripts/test-pre-commit.sh's Scenario W holds the 0.1 s.
+	_look=0
+	while [ "$_look" -lt 10 ] && kill -0 "$TEST_PID" 2>/dev/null; do
+		sleep 0.1
+		_look=$((_look + 1))
+	done
 done
 wait "$TEST_PID"
 TEST_RC=$?
@@ -891,8 +904,22 @@ fi
 # Twenty Python scripts had no tests at all, and several of them are the
 # fixers the gates below depend on. A fixer that stops producing what its gate
 # demands turns every commit into a manual repair.
-if git diff --cached --name-only | grep -qE "^scripts/"; then
-    echo -n "  Script tests... "
+#
+# Every commit, not only one that stages `scripts/`: the tests read files
+# outside it (test_advertise_release.py reads docs/install.md and
+# website/config.toml), so a commit that staged only docs/install.md passed
+# this hook and failed CI on two heads (c1223c892, 21537ddd1). The gate cache
+# keys this step on the whole tree, so a second run on an unchanged tree is a
+# hit. Measured 2026-11-11: 2040 tests, 268 s at a load average near 25.
+# scripts/test-pre-commit.sh's Scenario S drives this step.
+echo -n "  Script tests... "
+if [ ! -d scripts/tests ]; then
+    echo -e "${YELLOW}NOT RUN (this tree has no scripts/tests)${NC}"
+elif [ "$RELEASE_ONLY" = 1 ]; then
+    # As before this step ran on every commit: a release-only commit stages
+    # nothing under scripts/, so it never ran them. CI does.
+    echo -e "${YELLOW}NOT RUN (release-only commit; CI runs them)${NC}"
+else
     if command -v python3 >/dev/null 2>&1 && python3 -c "import pytest" 2>/dev/null; then
         if gate_hit script-tests; then
             :

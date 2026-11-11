@@ -33,9 +33,9 @@ says otherwise.
 - **sipnab installed.** See [Installing sipnab](@/docs/install.md). The `.deb` and
   `.rpm` packages install the unit and create the `sipnab` user. The installer
   and the tarballs install the binary only.
-- **Nothing to change on the SIP server** for a capture of the host's own
-  interfaces. A HEP listener needs the SIP server's HEP tracing pointed at it:
-  see [Wire HEP from your SIP stack to a central
+- **Nothing to change on any other system** for a capture of the host's own
+  interfaces. A HEP listener needs one change on the other system, the SIP
+  server: point its HEP tracing at the listener. See [Wire HEP from your SIP stack to a central
   sipnab](@/docs/cookbook.md#wire-hep-from-your-sip-stack-to-a-central-sipnab).
 - **A firewall rule** for any port you bind to a routable address. A unit that
   binds only `127.0.0.1` needs none.
@@ -524,7 +524,7 @@ record landed in the emptied file as a complete line:
 - sipnab writes the provenance file once per run, at startup, so any rotation
   method works for it.
 
-## A service that does not start
+## When the service does not start
 
 `systemctl status sipnab` names the exit status, and the journal names the
 reason:

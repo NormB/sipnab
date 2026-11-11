@@ -34,7 +34,7 @@ theme = "ayu-dark"
 # download links came from here. They did once — `download.html` was moved to
 # `published_version` and the claim was never revisited, which is also how the
 # same sentence ended up in site_journey_test.rs and pages.yml.
-version = "0.5.246"
+version = "0.5.247"
 # The last version that actually EXISTS as a published GitHub release, which is
 # what every download link must point at.
 #
@@ -49,7 +49,7 @@ version = "0.5.246"
 # Bumped after a release finishes publishing, not while cutting it.
 # `site_advertises_only_a_released_version` requires a matching `v<x.y.z>` tag,
 # so advertising something unreleased fails the suite rather than the visitor.
-published_version = "0.5.245"
+published_version = "0.5.246"
 # Release date of `published_version` above -- NOT of `version`, further up.
 # `download.html` renders this beside `published_version` in a single sentence,
 # so the date belongs to the release a reader can actually download.
@@ -197,6 +197,7 @@ macos_floor_intel = "10.12"
 #   0.5.243  24,979,712 bytes   (+69,696, leaving 1,234,688 bytes of headroom under 25 MB)
 #   0.5.244  25,065,792 bytes   (+86,080, leaving 1,148,608 bytes of headroom under 25 MB)
 #   0.5.245  25,164,288 bytes   (+98,496, leaving 1,050,112 bytes of headroom under 25 MB)
+#   0.5.246  25,172,480 bytes   (+8,192, leaving 1,041,920 bytes of headroom under 25 MB)
 #
 # So 0.5.159 shipped one ordinary release away from tipping and nothing said
 # so. The 118,784 bytes are `find_in_captures` -- a 66th MCP tool with derived

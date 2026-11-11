@@ -21,6 +21,30 @@ only topic.**
 - Every method below is one of those two. They differ only in what access each
   demands.
 
+## Before you start
+
+On the machine that runs sipnab:
+
+- A build with the `tls` feature. `sipnab --version` prints the list after
+  `features:`, and the release binaries carry `tls`. A build without it stops
+  with a message such as `--keylog requires the 'tls' feature (not compiled in)`.
+- For a live capture, capture rights on the interface:
+  [Install](install.md) sets them up. Reading a capture file needs none.
+- For the two probe methods, Linux and `root` at the moment sipnab attaches.
+
+On the other system, the one that ends the TLS session (a phone, a
+proxy, a session border controller), each method asks for one change:
+
+| Method | Change on the other system |
+|---|---|
+| The endpoint writes a key log | Set `SSLKEYLOGFILE` in the environment of the phone or daemon and restart it. Give sipnab read access to that file, or copy the file to the machine that reads the capture |
+| No keys at all, and plaintext with the peer address | Nothing changes in the daemon. sipnab itself runs on that machine, as `root`, so that machine needs sipnab installed |
+| Lift keys from a daemon you cannot restart | Install eCapture on that machine and run it as `root`. The daemon keeps running |
+| The old RSA case | Copy the private key of the server to the machine that runs sipnab |
+
+A key log opens every session it holds keys for. Store it with the same care
+as a private key, and delete it when the work ends.
+
 ## Which method can you use?
 
 Answer these in order.
@@ -501,10 +525,49 @@ Stated plainly, because time spent here is time people lose:
   - Traffic that went past before the capture started is not in the capture.
     Nothing recovers it.
 
-## Still stuck?
+## Check that it worked
+
+Before a probe method, list what sipnab can attach to:
+
+```sh
+sudo sipnab --uprobe-list
+```
+
+Expect a table under the header `FLAVOR        INODE  PIDS  LIBRARY`, one row
+for each TLS library. A host with none in view prints
+`No TLS library is mapped by any process sipnab can see.`
+
+After a key method, read the capture with its keys:
+
+```sh
+sipnab -N -I tls-capture.pcap --keylog /tmp/sip-keys.log
+```
+
+Expect three things:
+
+- One line for each decrypted message, ending in `TLS`:
+  `22:13:20.004 10.9.0.1:40111 -> 10.9.0.2:5061 INVITE TLS`.
+- `TLS session decrypted` in the log on standard error.
+- A totals line that counts the messages: `6 packets captured, 2 SIP messages`
+  for a call of one INVITE and one 180.
+
+This check ran on Ubuntu 24.04 (Linux 6.8, aarch64) against the TLS 1.3 call
+that the test suite builds with its keys, an INVITE and a 180 Ringing, and
+printed the lines above. The listing ran there without `root` and printed the
+header and its rows. Not run for this section: the two probe methods and the
+eCapture method, which need `root` on a machine that runs a SIP daemon. A
+probe run labels each dialog `uprobe:<process>/<pid>`.
+
+## When decryption does not work
 
 | Symptom | Likely cause |
 |---|---|
+| `No SIP traffic found.` and a totals line with `0 SIP messages`, from a capture of port 5061 | The run had no `--keylog`, so sipnab read no TLS record. Pass the key log |
+| `sipnab could not decrypt 2 TLS application-data record(s): it holds no key material for any session in this capture` (the number varies) | The key log is empty or holds no key line. Check that the key source attached to the TLS library and the process the daemon uses, and that it started before the connection opened |
+| `sipnab loaded 1 keylog line(s) and built no session from any of them` (the numbers vary), then `No key in the key log belongs to a handshake in this capture` | The capture holds the handshake, and the key log comes from other connections: another process, another run, or a log rotated after these connections began. sipnab prints the remedy: `Use the key log that the endpoint of these connections wrote during this capture.` |
+| `sipnab loaded 1 keylog line(s) and built no session from any of them`, then `The handshake is missing: this capture holds no ClientHello and no ServerHello.` | The capture started after the connection opened. For TLS 1.2, restart the connection while the capture runs. For TLS 1.3, use a key log that holds both traffic secret lines of the connection |
+| `Failed to load --keylog <path>:` with `No such file or directory`, exit 1 | The path is wrong, or the user that runs sipnab cannot reach the file |
+| `Permission denied attaching TLS probes (--uprobe-tls).`, exit 1 | sipnab was not `root` when it attached. Run it with `sudo`. `sipnab --setup-caps` grants the rights for a capture on an interface, and they do not cover a probe |
 | `--uprobe-list` finds no TLS library | It reads `/proc/<pid>/maps`, and an unprivileged run sees only its own processes. Re-run with `sudo` |
 | `--uprobe-list` marks a library `(UNREACHABLE)` | The path lives in another mount namespace, almost always a container. Run as root |
 | Attaches, reports 0 messages | Wrong symbol — try `--uprobe-symbol SSL_write_ex` (see [No keys at all](#no-keys-at-all-read-the-plaintext-in-the-process)) |
