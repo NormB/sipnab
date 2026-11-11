@@ -202,10 +202,36 @@ install -D -m 0644 %{service_src} %{buildroot}/usr/lib/systemd/system/sipnab.ser
 install -D -m 0644 %{plugin_src} %{buildroot}/usr/lib/sipnab/libsipnab_audio.so
 %endif
 
+# The %%preun and %%postun scriptlets below do what the systemd packaging macros
+# %%systemd_preun and %%systemd_postun_with_restart do, written out because
+# the release builds this package on Debian, where those macros are not
+# defined. In both, $1 is the number of sipnab packages installed once this
+# one is gone: 0 when it is erased, 1 when an upgrade replaces it. Erase stops
+# and disables the service; upgrade restarts it only if it is running, so it
+# runs the new binary. A failing systemctl never fails the transaction.
+# packaging/rpm/test-build-rpm.sh runs both per value of $1 against a stub
+# systemctl.
 %pre
 # Create sipnab user for privilege drop (mirrors the .deb postinst).
 if ! getent passwd sipnab > /dev/null 2>&1; then
     useradd -r -s /usr/sbin/nologin -d /nonexistent sipnab
+fi
+
+%preun
+if [ "$1" -eq 0 ] && command -v systemctl > /dev/null 2>&1; then
+    if [ -d /run/systemd/system ]; then
+        systemctl --no-reload disable --now sipnab.service > /dev/null 2>&1 || :
+    else
+        systemctl --no-reload disable sipnab.service > /dev/null 2>&1 || :
+    fi
+fi
+
+%postun
+if [ -d /run/systemd/system ] && command -v systemctl > /dev/null 2>&1; then
+    systemctl daemon-reload > /dev/null 2>&1 || :
+    if [ "$1" -ge 1 ]; then
+        systemctl try-restart sipnab.service > /dev/null 2>&1 || :
+    fi
 fi
 
 %files

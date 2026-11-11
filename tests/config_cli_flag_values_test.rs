@@ -2203,9 +2203,11 @@ static SPECS: &[Spec] = &[
     ("mcp-allow-save-findings", Kind::Switch, &[]),
     (
         "hep-listen",
+        // The bind policy is applied while the run is planned (OPS-13): with
+        // no secret and no allowlist, only a literal loopback address passes.
         Kind::Text {
-            accept: &["x", "", " ", "0"],
-            reject: &[],
+            accept: &["127.0.0.1:0", "[::1]:0"],
+            reject: &[("x", 2), ("", 2), (" ", 2), ("0", 2), ("0.0.0.0:0", 2)],
         },
         &[],
     ),

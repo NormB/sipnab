@@ -5672,9 +5672,41 @@ sipnab could not create the capture thread. `{e}` is the error from starting it 
 
 **Exit code:** 1.
 
-### `Permission denied on '{}'. Grant capture capabilities once (Linux), then re-run without sudo:\n  sipnab --setup-caps\n  # or run this invocation under sudo:\n  sudo sipnab\n  # equivalent manual step:\n  sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`
+### `Permission denied on '{target}'. {}`
 
-sipnab lacks the permission to open the capture device. `{}` names the interfaces involved. The message lists three ways to grant the capture capabilities.
+sipnab lacks the permission to open the capture device, and found the cause in its own process state. `{target}` names the interfaces involved. `{}` is one or both of the paragraphs below, the bounding set first. sipnab reads `CapBnd` from `/proc/self/status`, and `NoNewPrivs` as it read when sipnab started: sipnab sets `NoNewPrivs` on itself before the capture opens.
+
+**What to do:** Follow the paragraph's remedy. See [Live capture says Permission denied](troubleshooting.md#live-capture-says-permission-denied).
+
+**Exit code:** 1.
+
+### `CAP_NET_RAW is not in this process's capability bounding set{}, so nothing inside it (setcap, sudo, root) can gain it. Add it where the process is started:\n  # a container:\n  docker run --cap-add=NET_RAW <image>\n  # a systemd unit:\n  CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN`
+
+Part of the permission refusal above: `CAP_NET_RAW`, the capability a capture needs, is missing from the process's capability bounding set (`CapBnd`). `{}` names the container marker sipnab found, if any. No `setcap`, `sudo` or root inside the process can gain a capability its bounding set lacks. sipnab does not report a bounding set that lacks `CAP_NET_ADMIN` alone: the default set of a Docker container lacks it, and root captures there.
+
+**What to do:** Add it where the process starts: `docker run --cap-add=NET_RAW`, or `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN` in a systemd unit.
+
+**Exit code:** 1.
+
+### `This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or a container started with no-new-privileges), so the kernel ignores file capabilities and set-user-ID: sipnab --setup-caps, setcap and sudo cannot take effect. Grant the capabilities to the process instead:\n  # a systemd unit:\n  AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN\n  CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN\n  # or start it as root`
+
+Part of the permission refusal above: `/proc/self/status` said `NoNewPrivs: 1` when sipnab started, before sipnab set the flag itself. systemd sets it for `NoNewPrivileges=yes`, and Docker for `--security-opt no-new-privileges`. The kernel then ignores file capabilities and set-user-ID programs.
+
+**What to do:** Grant the capabilities to the process: `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` and `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN` in the unit, or start sipnab as root.
+
+**Exit code:** 1.
+
+### `Permission denied on '{target}'. This process runs in a container ({marker}), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
+
+sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user the container runs as has the capability in its bounding set but not in effect.
+
+**What to do:** Start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens.
+
+**Exit code:** 1.
+
+### `Permission denied on '{target}'. Grant capture capabilities once (Linux), then re-run without sudo:\n  sipnab --setup-caps\n  # or run this invocation under sudo:\n  sudo sipnab\n  # equivalent manual step:\n  sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`
+
+sipnab lacks the permission to open the capture device, and found neither NoNewPrivs at startup, `CAP_NET_RAW` missing from the bounding set, nor a container. `{target}` names the interfaces involved. The message lists three ways to grant the capture capabilities.
 
 **What to do:** Run `sipnab --setup-caps` once and re-run without sudo, run the command under sudo, or run `sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`.
 

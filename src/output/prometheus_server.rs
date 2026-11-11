@@ -304,6 +304,7 @@ pub fn metrics_tls_config(
         std::path::Path::new(chain),
         std::path::Path::new(pem),
         "metrics TLS",
+        crate::cli::METRICS_TLS_FLAGS,
         Vec::new(),
     )
     .map(Some)
@@ -595,6 +596,30 @@ mod tests {
 
     /// Any error a test can return; `?` converts into it.
     type TestError = Box<dyn std::error::Error>;
+
+    /// An unreadable `--metrics-tls-key` is refused with the flag, the
+    /// path and the reason in the message, by the rule MCP and REST use.
+    #[test]
+    fn metrics_tls_config_names_the_flag_path_and_reason_for_an_unreadable_key()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let (cert, _) = crate::tls_files::self_signed_pair(dir.path())?;
+        let absent = dir.path().join("absent.key");
+        let err = metrics_tls_config(cert.to_str(), absent.to_str())
+            .err()
+            .ok_or("an unreadable key must be refused")?
+            .to_string();
+        assert!(
+            err.starts_with("--metrics-tls-key: "),
+            "names the flag: {err}"
+        );
+        assert!(
+            err.contains(&*absent.to_string_lossy()),
+            "names the path: {err}"
+        );
+        assert!(err.contains("No such file or directory"), "says why: {err}");
+        Ok(())
+    }
 
     /// A bare port string binds to `127.0.0.1:<port>`.
     #[test]

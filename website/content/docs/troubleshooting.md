@@ -1682,16 +1682,37 @@ Permission denied on 'eth0'. Grant capture capabilities once (Linux), then re-ru
 ```
 
 The process lacks `CAP_NET_RAW` and `CAP_NET_ADMIN`. Which fix applies
-depends on how sipnab runs:
+depends on how sipnab runs. sipnab reads `NoNewPrivs` and `CapBnd` from
+`/proc/self/status` (`NoNewPrivs` as it read at startup, before sipnab sets
+the flag on itself) and looks for a container marker (`/.dockerenv`,
+`/run/.containerenv`, or a `container` environment variable), and the lines
+under the message name the cause it found:
 
 | How it runs | Cause | Fix |
 |---|---|---|
 | From a shell, as your user | The binary has no file capabilities, or an upgrade replaced it and cleared them | `sudo sipnab --setup-caps` |
 | Under systemd with `NoNewPrivileges=true` | `NoNewPrivileges` stops file capabilities taking effect, so `setcap` cannot help | `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` in the unit ([Write a unit of your own](@/docs/run-as-a-service.md#write-a-unit-of-your-own)) |
 | In the release container image | The image runs as the non-root user `sipnab`, which gets no capabilities, even with `--cap-add` | `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
+| In a container or unit whose bounding set lacks `CAP_NET_RAW` | Nothing inside the process, root included, can gain a capability missing from its bounding set | `docker run --cap-add=NET_RAW`, or `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN` in the unit |
 
-The lines under the message suggest `--setup-caps`, `sudo` and `setcap`
-whatever the cause. In the last two rows none of them helps.
+Each cause has its own first line after `Permission denied on '<dev>'.`:
+
+| sipnab found | The message continues with |
+|---|---|
+| `NoNewPrivs: 1` at startup | `This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or a container started with no-new-privileges)`, then the `AmbientCapabilities=` lines |
+| `CAP_NET_RAW` missing from `CapBnd` | `CAP_NET_RAW is not in this process's capability bounding set`, then `docker run --cap-add=NET_RAW` and `CapabilityBoundingSet=` |
+| A container marker, and neither of the above | `This process runs in a container (/.dockerenv)`, then `docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>` |
+| None of these | `Grant capture capabilities once (Linux), then re-run without sudo:`, then `sipnab --setup-caps`, `sudo` and `setcap` |
+
+To check which cause applies, read the same two lines sipnab reads:
+
+```bash
+grep -E '^(NoNewPrivs|CapBnd)' /proc/self/status
+```
+
+Run it in the environment sipnab runs in, for example in the container with
+`docker exec`. `NoNewPrivs: 1` is the first cause. In `CapBnd`, bit 13 is `CAP_NET_RAW` and bit 12 is
+`CAP_NET_ADMIN`. `capsh` decodes the mask into names.
 
 ## A key file sipnab cannot read
 
@@ -1704,7 +1725,14 @@ before it drops to `nobody` (or the `--user` account), so a file only root can
 read works there. This message means the user sipnab started as cannot read
 the file. Under the packaged unit that user is `sipnab`: make the file
 `root:sipnab` mode `640`, as [Make a certificate](@/docs/auth.md#make-a-certificate)
-shows. For an MCP certificate or key the message is the path alone, such as
+shows. Every listener names a TLS certificate or key the same way, by its
+flag, path and reason:
+
+```text
+--mcp-tls-key: /etc/sipnab/mcp.key: Permission denied (os error 13)
+```
+
+In 0.5.244 and earlier the MCP message was the path alone, such as
 `/etc/sipnab/mcp.key`.
 
 A root run reads the `[vcon_fetch]` store's files (`auth_file`,
@@ -1876,7 +1904,8 @@ That file is what we need. You do not have to reproduce the crash or install
 anything extra.
 
 - **Find the report.** It is the path on the `crash report written to` line.
-  - By default reports land in `~/.local/state/sipnab/`.
+  - By default reports land in `~/.local/state/sipnab/`, and in
+    `/var/lib/sipnab/` under the packaged systemd unit.
   - Each name has the form `sipnab-crash-<date>-<time>-<pid>-<n>.log`.
   - A `report_dir` in the
     [`[crash]` config section](@/docs/config.md#crash) moves them.

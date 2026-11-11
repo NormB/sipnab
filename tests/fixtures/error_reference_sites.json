@@ -156,9 +156,13 @@
       "count": 1,
       "carries": [
         "Capture source failed to open: {e}",
-        "Permission denied on '{}'. Grant capture capabilities once (Linux), then re-run without sudo:\\n  sipnab --setup-caps\\n  # or run this invocation under sudo:\\n  sudo sipnab\\n  # equivalent manual step:\\n  sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)"
+        "CAP_NET_RAW is not in this process's capability bounding set{}, so nothing inside it (setcap, sudo, root) can gain it. Add it where the process is started:\\n  # a container:\\n  docker run --cap-add=NET_RAW <image>\\n  # a systemd unit:\\n  CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN",
+        "This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or a container started with no-new-privileges), so the kernel ignores file capabilities and set-user-ID: sipnab --setup-caps, setcap and sudo cannot take effect. Grant the capabilities to the process instead:\\n  # a systemd unit:\\n  AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN\\n  CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN\\n  # or start it as root",
+        "Permission denied on '{target}'. {}",
+        "Permission denied on '{target}'. This process runs in a container ({marker}), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:\\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>",
+        "Permission denied on '{target}'. Grant capture capabilities once (Linux), then re-run without sudo:\\n  sipnab --setup-caps\\n  # or run this invocation under sudo:\\n  sudo sipnab\\n  # equivalent manual step:\\n  sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)"
       ],
-      "why": "capture_open_failure in bootstrap.rs (two format! literals)."
+      "why": "capture_open_failure_in in bootstrap.rs: the open failure, the permission header around the causes it found (the bounding-set and NoNewPrivs paragraphs), the container hint and the general hint, all format! or string literals."
     },
     {
       "file": "src/app/bootstrap.rs",
@@ -448,7 +452,7 @@
     },
     {
       "file": "src/app/batch.rs",
-      "call": "PlanError { exit_code: 2, message: e.to_string(), }",
+      "call": "PlanError { exit_code: 2, message: format!(\"{e:#}\"), }",
       "count": 1,
       "carries": [],
       "why": "anyhow error from src/app/servers.rs::start_servers, which propagates errors from out-of-scope modules (e.g. src/output/prometheus_server.rs::parse_metrics_addr, metrics_tls_config, start_metrics_server, and the API/MCP listener setup)."
@@ -652,9 +656,16 @@
     {
       "file": "src/app/tui_mode.rs",
       "call": "stderr_line!(\"{e}\")",
-      "count": 2,
+      "count": 1,
       "carries": [],
-      "why": "servers::start_actions returns format!(\"actions journal {}: {e}\") (servers.rs, not a site) around src/journal / src/security/actions errors, out of scope; the server-start error is likewise passed through."
+      "why": "servers::start_actions returns format!(\"actions journal {}: {e}\") (servers.rs, not a site) around src/journal / src/security/actions errors, out of scope."
+    },
+    {
+      "file": "src/app/tui_mode.rs",
+      "call": "stderr_line!(\"{e:#}\")",
+      "count": 1,
+      "carries": [],
+      "why": "servers::start_servers' error, printed with its whole chain; it passes through errors from out-of-scope modules (src/output/prometheus_server.rs, src/output/api.rs, src/mcp/transport.rs, src/tls_files.rs)."
     },
     {
       "file": "src/app/tui_mode.rs",

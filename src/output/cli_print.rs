@@ -238,17 +238,81 @@ pub fn format_sip_message(
     out
 }
 
-/// Determine whether to use color based on the mode and TTY detection.
-/// `Auto` queries `isatty(STDOUT_FILENO)`; `Always`/`Never` are fixed.
+/// Whether the message lines on stdout get color under `mode`.
+///
+/// # Side effects
+///
+/// Reads `isatty(STDOUT_FILENO)` and the `NO_COLOR` environment variable.
 fn should_use_color(mode: ColorMode) -> bool {
+    // SAFETY: isatty() with STDOUT_FILENO only reads kernel fd state; cannot cause UB.
+    let stdout_is_terminal = unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 };
+    color_enabled(
+        mode,
+        stdout_is_terminal,
+        no_color_requested(std::env::var_os("NO_COLOR").as_deref()),
+    )
+}
+
+/// Whether a stream gets ANSI color codes: the one rule for the message
+/// lines on stdout and the log lines on stderr.
+///
+/// `Always` and `Never` are the operator's explicit choice (`--color`,
+/// `[display] color`) and win over everything, as <https://no-color.org>
+/// asks of a command-line option. `Auto` colors only a terminal, and only
+/// while `NO_COLOR` is unset: journald, `docker logs`, a pipe and a file
+/// are not terminals, and an escape sequence written there reaches whoever
+/// reads the text as `[2m` and `[32m`.
+///
+/// # Arguments
+///
+/// * `mode` — the color mode asked for.
+/// * `is_terminal` — whether the stream is a terminal.
+/// * `no_color` — whether `NO_COLOR` asks for no color
+///   ([`no_color_requested`]).
+#[must_use]
+pub fn color_enabled(mode: ColorMode, is_terminal: bool, no_color: bool) -> bool {
     match mode {
         ColorMode::Always => true,
         ColorMode::Never => false,
-        ColorMode::Auto => {
-            // SAFETY: isatty() with STDOUT_FILENO only reads kernel fd state; cannot cause UB.
-            unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 }
-        }
+        ColorMode::Auto => is_terminal && !no_color,
     }
+}
+
+/// Whether the log lines on stderr get ANSI color codes.
+///
+/// The log has no option of its own: `--color` and `[display] color` set
+/// the message lines, and the log is set up before the configuration file
+/// is read, so a key could not reach it. It follows [`color_enabled`] in
+/// `Auto` mode for its own stream.
+#[must_use]
+pub fn log_color_enabled(stderr_is_terminal: bool, no_color: bool) -> bool {
+    color_enabled(ColorMode::Auto, stderr_is_terminal, no_color)
+}
+
+/// [`log_color_enabled`] for this process's stderr and environment.
+///
+/// # Side effects
+///
+/// Reads whether stderr is a terminal and the `NO_COLOR` environment
+/// variable.
+#[must_use]
+pub fn stderr_log_color() -> bool {
+    use std::io::IsTerminal as _;
+    log_color_enabled(
+        std::io::stderr().is_terminal(),
+        no_color_requested(std::env::var_os("NO_COLOR").as_deref()),
+    )
+}
+
+/// Whether a `NO_COLOR` value asks for no color: set and not empty
+/// (<https://no-color.org>). `NO_COLOR=` is the same as unset.
+///
+/// # Arguments
+///
+/// * `value` — the variable's value, `None` when it is unset.
+#[must_use]
+pub fn no_color_requested(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|v| !v.is_empty())
 }
 
 // ── Tests ────────────────────────────────────────────────────────────
@@ -738,5 +802,89 @@ mod sdp_label_tests {
         let line = format_sip_message(&answer, &opts, None);
         assert!(line.contains("200 OK (SDP)"), "{line}");
         Ok(())
+    }
+}
+
+/// Tests for [`color_enabled`], [`log_color_enabled`] and
+/// [`no_color_requested`]: when a stream gets ANSI color codes.
+#[cfg(test)]
+mod color_rule_tests {
+    use super::*;
+
+    /// A pipe, a file or the journal is not a terminal: `auto` writes no
+    /// color there, which is what `2>&1 | cat` and journald read.
+    #[test]
+    fn auto_color_is_off_when_the_stream_is_not_a_terminal() {
+        assert!(
+            !color_enabled(ColorMode::Auto, false, false),
+            "auto on a pipe writes no color"
+        );
+    }
+
+    /// A terminal with `NO_COLOR` unset is the one place `auto` colors.
+    #[test]
+    fn auto_color_is_on_for_a_terminal_without_no_color() {
+        assert!(
+            color_enabled(ColorMode::Auto, true, false),
+            "auto on a terminal colors"
+        );
+    }
+
+    /// `NO_COLOR` turns `auto` off on a terminal too (<https://no-color.org>).
+    #[test]
+    fn no_color_turns_auto_off_on_a_terminal() {
+        assert!(
+            !color_enabled(ColorMode::Auto, true, true),
+            "NO_COLOR turns auto off"
+        );
+    }
+
+    /// An explicit `always` is a per-run request and wins over `NO_COLOR`
+    /// and a pipe, as no-color.org asks of a command-line option.
+    #[test]
+    fn always_colors_a_pipe_even_under_no_color() {
+        assert!(
+            color_enabled(ColorMode::Always, false, true),
+            "always wins over NO_COLOR and a pipe"
+        );
+    }
+
+    /// `never` writes no color on a terminal with `NO_COLOR` unset.
+    #[test]
+    fn never_writes_no_color_on_a_terminal() {
+        assert!(
+            !color_enabled(ColorMode::Never, true, false),
+            "never wins over a terminal"
+        );
+    }
+
+    /// Log lines color only on a terminal with `NO_COLOR` unset: every one
+    /// of the four combinations.
+    #[test]
+    fn log_lines_color_only_on_a_terminal_without_no_color() {
+        assert!(log_color_enabled(true, false), "terminal, NO_COLOR unset");
+        assert!(!log_color_enabled(false, false), "pipe or journal");
+        assert!(!log_color_enabled(true, true), "terminal under NO_COLOR");
+        assert!(!log_color_enabled(false, true), "pipe under NO_COLOR");
+    }
+
+    /// `NO_COLOR` counts only when set to a non-empty value; `NO_COLOR=`
+    /// is the same as unset.
+    #[test]
+    fn an_empty_no_color_is_the_same_as_unset() {
+        use std::ffi::OsStr;
+        assert!(!no_color_requested(None), "unset asks for nothing");
+        assert!(
+            !no_color_requested(Some(OsStr::new(""))),
+            "empty is the same as unset"
+        );
+        assert!(
+            no_color_requested(Some(OsStr::new("1"))),
+            "1 asks for no color"
+        );
+        assert!(
+            no_color_requested(Some(OsStr::new("0"))),
+            "any non-empty value"
+        );
     }
 }

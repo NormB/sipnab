@@ -13315,12 +13315,13 @@ curl -fsSL https://sipnab.com/install.sh | sh
 
 The install script:
 
-- detects your OS, CPU architecture, and glibc version,
+- detects your OS, CPU architecture, glibc version, and whether the host has
+  `libpcap.so.0.8`,
 - downloads the matching versioned release tarball
   (`sipnab-<version>-<target-triple>.tar.gz`) together with its `.sha256` file,
 - **verifies the checksum**,
 - installs the binary to `/usr/local/bin` (using `sudo` only if that directory
-  isn't writable).
+  isn't writable), and the audio plugin beside it when the tarball holds one.
 
 Prefer to read it first: <https://sipnab.com/install.sh>.
 
@@ -13359,16 +13360,32 @@ When the installer stops, its last line names the reason:
 
 Each of these exits with status 1 and installs nothing.
 
-**The installer does not install libpcap.** On a glibc host it installs the
-`-gnu` build, which loads libpcap at startup. Without it, the first run
-fails:
+**The installer does not install libpcap.** The `-gnu` build loads
+`libpcap.so.0.8`, Debian's name for libpcap, at startup. The installer looks
+for that library in the `ldconfig` cache, or in the library directories when
+there is no cache. When the library is missing it installs the static musl
+build instead and says so:
+
+```text
+sipnab-install: libpcap.so.0.8 not found — using the static musl build (no TUI audio; otherwise identical). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead
+```
+
+- To get the `-gnu` build with TUI audio on Debian or Ubuntu, install the
+  package the line names and run the installer again.
+- Fedora and RHEL name the library `libpcap.so.1`, so no package there
+  provides `libpcap.so.0.8`. The `.rpm` package links `libpcap.so.1`; see
+  [Install with your package manager](#install-with-your-package-manager).
+- Check what the installer finds: `/sbin/ldconfig -p | grep libpcap.so.0.8`.
+  No output means it installs the musl build.
+
+Before 2026-11-10 the installer chose the `-gnu` build on the glibc version
+alone. On a host without the library, the first run then failed:
 
 ```text
 sipnab: error while loading shared libraries: libpcap.so.0.8: cannot open shared object file: No such file or directory
 ```
 
-Install `libpcap0.8` (Debian, Ubuntu) or `libpcap` (Fedora, RHEL) and run it
-again.
+Run the installer again to replace that binary.
 
 - Go to [Check it worked](#check-it-worked) for the fuller checks, or
   [Next steps](#next-steps) to start reading captures.
@@ -13376,11 +13393,10 @@ again.
   `PATH`. See [Check it worked](#check-it-worked).
 
 On Linux the installer chooses between two builds.
-- Hosts with glibc 2.36 or newer (Debian 12+, Ubuntu 23.04+) get the
-  dynamically linked **`-gnu`** build. That build needs libpcap from your
-  package manager.
-- Older hosts, and hosts with no glibc, get the static **musl** build. It
-  needs nothing else.
+- Hosts with glibc 2.36 or newer (Debian 12+, Ubuntu 23.04+) and
+  `libpcap.so.0.8` installed get the dynamically linked **`-gnu`** build.
+- Older hosts, hosts with no glibc, and hosts without `libpcap.so.0.8`
+  get the static **musl** build. It needs nothing else.
   - It lacks TUI audio playback, WASM plugins, vCon export and the eBPF uprobe
     backend.
   - It reads password-protected ZIP and 7z archives like every other release
@@ -13652,14 +13668,27 @@ A manual download of the gnu build that checks the checksum before installing.
    sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
    ```
 
+- Install the audio plugin in the same directory as the binary:
+
+   ```bash
+   sudo install -m 644 "sipnab-$VERSION-$TARGET/libsipnab_audio.so" /usr/local/bin/libsipnab_audio.so
+   ```
+
 The dynamic builds, whose names end in `-unknown-linux-gnu.tar.gz`, are the
 ones that can add TUI audio playback. From 0.5.233 the tarball holds the
 playback plugin (`libsipnab_audio.so`) beside the binary. From 0.5.118 to
-0.5.232 it held the binary, the man page and the license files only. sipnab
-looks for the plugin next to its own executable, then in `/usr/lib/sipnab/`,
-then through the dynamic loader's search path, so the step above, which
-installs the binary alone, leaves playback off. See
+0.5.232 it held the binary, the man page and the license files only, and the
+last step fails with `cannot stat`. Skip it for those releases. sipnab looks
+for the plugin next to its own executable, then in `/usr/lib/sipnab/`, then
+through the dynamic loader's search path. Without the last step playback is
+off. See
 [The audio plugin in Linux packages](#the-audio-plugin-in-linux-packages).
+
+To check that sipnab finds the plugin, open a call's RTP stream in the TUI and
+start playback. When the plugin is missing, the status line starts with
+`Audio init failed: Audio playback unavailable — the sipnab audio plugin or
+libasound2 is not installed`. The plugin also needs `libasound2`
+(`libasound2t64` on Debian 13 and Ubuntu 24.04).
 
 - They require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap.
 - On an older distribution they fail with
@@ -14357,11 +14386,21 @@ INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=6553
 ```
 
 Without `--user root`, with or without `--cap-add NET_RAW --cap-add
-NET_ADMIN`, the capture fails and the container exits with status 1:
+NET_ADMIN`, the capture fails and the container exits with status 1. sipnab
+finds `/.dockerenv` and says what to change:
 
 ```text
-Permission denied on 'lo'. Grant capture capabilities once (Linux), then re-run without sudo:
+Permission denied on 'lo'. This process runs in a container (/.dockerenv), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:
+  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>
 ```
+
+A container started with `--cap-drop=NET_RAW` gets `CAP_NET_RAW is not in
+this process's capability bounding set (container: /.dockerenv)` instead,
+even as root. A non-root container started with
+`--security-opt no-new-privileges` gets `This process runs with NoNewPrivs
+set`. As root, that container captures.
+These permission lines come from a development build of sipnab run in a
+`debian:13` container on `lo`.
 
 The outputs above came from an arm64 image built from the
 [`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
@@ -14600,8 +14639,9 @@ curl -fsSL https://sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin"
 
 Repeat the download steps in
 [Download a release binary yourself](#download-a-release-binary-yourself) with
-`VERSION` set to the new release. The last step,
-`sudo install -m 755`, replaces the old binary.
+`VERSION` set to the new release. The two install steps,
+`sudo install -m 755` and `sudo install -m 644`, replace the old binary and the
+old plugin.
 
 ### With a .deb package
 
@@ -14716,11 +14756,12 @@ alone.
 Remove sipnab the way you installed it. Every method below removes the binary
 itself. The last part covers the files sipnab may have read but never created.
 
-If you used the one-line installer, it copied a single binary and nothing
-else. So deleting that file is the whole uninstall:
+If you used the one-line installer, it copied the binary and, from a gnu or
+macOS tarball, the audio plugin beside it, and nothing else. So deleting those
+files is the whole uninstall:
 
 ```bash
-sudo rm -f /usr/local/bin/sipnab
+sudo rm -f /usr/local/bin/sipnab /usr/local/bin/libsipnab_audio.so /usr/local/bin/libsipnab_audio.dylib
 ```
 
 If you set `SIPNAB_INSTALL_DIR`, remove the copy there instead. `command -v`
@@ -14730,18 +14771,28 @@ answers where it actually is, which beats guessing:
 command -v sipnab
 ```
 
-On Debian or Ubuntu, stop and disable the service first, then remove the
-package:
+On Debian or Ubuntu, remove the package. Its `prerm` script stops the
+service and disables it, and its `postrm` script reloads systemd:
 
 ```bash
-# Run all of these, in order.
-sudo systemctl disable --now sipnab
 sudo apt remove sipnab
 ```
 
-The package does not stop the service itself. A running sipnab survives
-`apt remove` with its binary deleted, and the unit's enable link stays behind,
-pointing at a file that no longer exists.
+Check that the service no longer runs and is not enabled. Both commands should answer
+`inactive` and `not-found` or `disabled`:
+
+```bash
+# Run all of these, in order.
+systemctl is-active sipnab
+systemctl is-enabled sipnab
+```
+
+The `.deb` of 0.5.244 and earlier had no `prerm` or `postrm`. A running sipnab
+survived `apt remove` with its binary deleted, and the unit's enable link
+stayed behind, pointing at a file that no longer existed. When removing such a
+version, run `sudo systemctl disable --now sipnab` first. An upgrade does not
+stop or disable the service: the new package's `postinst` restarts it when it
+is running, so it runs the new binary.
 
 What `apt remove` and `apt purge` both leave in place:
 
@@ -14759,14 +14810,16 @@ sudo systemctl daemon-reload
 sudo userdel sipnab
 ```
 
-On RHEL or Fedora, the same: stop and disable the service, remove the
-package, and remove what the package leaves:
+On RHEL or Fedora, the same: remove the package, whose `%preun` script
+stops and disables the service, then remove what the package leaves:
 
 ```bash
-# Run all of these, in order.
-sudo systemctl disable --now sipnab
 sudo dnf remove sipnab
 ```
+
+The `.rpm` of 0.5.244 and earlier had no `%preun`. For those, run
+`sudo systemctl disable --now sipnab` first. An upgrade restarts a running
+service, from the package's `%postun`, and leaves it enabled.
 
 On macOS with Homebrew:
 
@@ -17244,16 +17297,37 @@ Permission denied on 'eth0'. Grant capture capabilities once (Linux), then re-ru
 ```
 
 The process lacks `CAP_NET_RAW` and `CAP_NET_ADMIN`. Which fix applies
-depends on how sipnab runs:
+depends on how sipnab runs. sipnab reads `NoNewPrivs` and `CapBnd` from
+`/proc/self/status` (`NoNewPrivs` as it read at startup, before sipnab sets
+the flag on itself) and looks for a container marker (`/.dockerenv`,
+`/run/.containerenv`, or a `container` environment variable), and the lines
+under the message name the cause it found:
 
 | How it runs | Cause | Fix |
 |---|---|---|
 | From a shell, as your user | The binary has no file capabilities, or an upgrade replaced it and cleared them | `sudo sipnab --setup-caps` |
 | Under systemd with `NoNewPrivileges=true` | `NoNewPrivileges` stops file capabilities taking effect, so `setcap` cannot help | `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` in the unit ([Write a unit of your own](run-as-a-service.md#write-a-unit-of-your-own)) |
 | In the release container image | The image runs as the non-root user `sipnab`, which gets no capabilities, even with `--cap-add` | `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
+| In a container or unit whose bounding set lacks `CAP_NET_RAW` | Nothing inside the process, root included, can gain a capability missing from its bounding set | `docker run --cap-add=NET_RAW`, or `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN` in the unit |
 
-The lines under the message suggest `--setup-caps`, `sudo` and `setcap`
-whatever the cause. In the last two rows none of them helps.
+Each cause has its own first line after `Permission denied on '<dev>'.`:
+
+| sipnab found | The message continues with |
+|---|---|
+| `NoNewPrivs: 1` at startup | `This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or a container started with no-new-privileges)`, then the `AmbientCapabilities=` lines |
+| `CAP_NET_RAW` missing from `CapBnd` | `CAP_NET_RAW is not in this process's capability bounding set`, then `docker run --cap-add=NET_RAW` and `CapabilityBoundingSet=` |
+| A container marker, and neither of the above | `This process runs in a container (/.dockerenv)`, then `docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>` |
+| None of these | `Grant capture capabilities once (Linux), then re-run without sudo:`, then `sipnab --setup-caps`, `sudo` and `setcap` |
+
+To check which cause applies, read the same two lines sipnab reads:
+
+```bash
+grep -E '^(NoNewPrivs|CapBnd)' /proc/self/status
+```
+
+Run it in the environment sipnab runs in, for example in the container with
+`docker exec`. `NoNewPrivs: 1` is the first cause. In `CapBnd`, bit 13 is `CAP_NET_RAW` and bit 12 is
+`CAP_NET_ADMIN`. `capsh` decodes the mask into names.
 
 ## A key file sipnab cannot read
 
@@ -17266,7 +17340,14 @@ before it drops to `nobody` (or the `--user` account), so a file only root can
 read works there. This message means the user sipnab started as cannot read
 the file. Under the packaged unit that user is `sipnab`: make the file
 `root:sipnab` mode `640`, as [Make a certificate](auth.md#make-a-certificate)
-shows. For an MCP certificate or key the message is the path alone, such as
+shows. Every listener names a TLS certificate or key the same way, by its
+flag, path and reason:
+
+```text
+--mcp-tls-key: /etc/sipnab/mcp.key: Permission denied (os error 13)
+```
+
+In 0.5.244 and earlier the MCP message was the path alone, such as
 `/etc/sipnab/mcp.key`.
 
 A root run reads the `[vcon_fetch]` store's files (`auth_file`,
@@ -17438,7 +17519,8 @@ That file is what we need. You do not have to reproduce the crash or install
 anything extra.
 
 - **Find the report.** It is the path on the `crash report written to` line.
-  - By default reports land in `~/.local/state/sipnab/`.
+  - By default reports land in `~/.local/state/sipnab/`, and in
+    `/var/lib/sipnab/` under the packaged systemd unit.
   - Each name has the form `sipnab-crash-<date>-<time>-<pid>-<n>.log`.
   - A `report_dir` in the
     [`[crash]` config section](config-reference.md#crash) moves them.
@@ -29020,9 +29102,41 @@ sipnab could not create the capture thread. `{e}` is the error from starting it 
 
 **Exit code:** 1.
 
-### `Permission denied on '{}'. Grant capture capabilities once (Linux), then re-run without sudo:\n  sipnab --setup-caps\n  # or run this invocation under sudo:\n  sudo sipnab\n  # equivalent manual step:\n  sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`
+### `Permission denied on '{target}'. {}`
 
-sipnab lacks the permission to open the capture device. `{}` names the interfaces involved. The message lists three ways to grant the capture capabilities.
+sipnab lacks the permission to open the capture device, and found the cause in its own process state. `{target}` names the interfaces involved. `{}` is one or both of the paragraphs below, the bounding set first. sipnab reads `CapBnd` from `/proc/self/status`, and `NoNewPrivs` as it read when sipnab started: sipnab sets `NoNewPrivs` on itself before the capture opens.
+
+**What to do:** Follow the paragraph's remedy. See [Live capture says Permission denied](troubleshooting.md#live-capture-says-permission-denied).
+
+**Exit code:** 1.
+
+### `CAP_NET_RAW is not in this process's capability bounding set{}, so nothing inside it (setcap, sudo, root) can gain it. Add it where the process is started:\n  # a container:\n  docker run --cap-add=NET_RAW <image>\n  # a systemd unit:\n  CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN`
+
+Part of the permission refusal above: `CAP_NET_RAW`, the capability a capture needs, is missing from the process's capability bounding set (`CapBnd`). `{}` names the container marker sipnab found, if any. No `setcap`, `sudo` or root inside the process can gain a capability its bounding set lacks. sipnab does not report a bounding set that lacks `CAP_NET_ADMIN` alone: the default set of a Docker container lacks it, and root captures there.
+
+**What to do:** Add it where the process starts: `docker run --cap-add=NET_RAW`, or `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN` in a systemd unit.
+
+**Exit code:** 1.
+
+### `This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or a container started with no-new-privileges), so the kernel ignores file capabilities and set-user-ID: sipnab --setup-caps, setcap and sudo cannot take effect. Grant the capabilities to the process instead:\n  # a systemd unit:\n  AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN\n  CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN\n  # or start it as root`
+
+Part of the permission refusal above: `/proc/self/status` said `NoNewPrivs: 1` when sipnab started, before sipnab set the flag itself. systemd sets it for `NoNewPrivileges=yes`, and Docker for `--security-opt no-new-privileges`. The kernel then ignores file capabilities and set-user-ID programs.
+
+**What to do:** Grant the capabilities to the process: `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` and `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN` in the unit, or start sipnab as root.
+
+**Exit code:** 1.
+
+### `Permission denied on '{target}'. This process runs in a container ({marker}), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
+
+sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user the container runs as has the capability in its bounding set but not in effect.
+
+**What to do:** Start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens.
+
+**Exit code:** 1.
+
+### `Permission denied on '{target}'. Grant capture capabilities once (Linux), then re-run without sudo:\n  sipnab --setup-caps\n  # or run this invocation under sudo:\n  sudo sipnab\n  # equivalent manual step:\n  sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`
+
+sipnab lacks the permission to open the capture device, and found neither NoNewPrivs at startup, `CAP_NET_RAW` missing from the bounding set, nor a container. `{target}` names the interfaces involved. The message lists three ways to grant the capture capabilities.
 
 **What to do:** Run `sipnab --setup-caps` once and re-run without sudo, run the command under sudo, or run `sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`.
 
@@ -35381,7 +35495,7 @@ What happens when sipnab panics. The panic hook:
 |-----|------|---------|-------------|
 | `reports` | boolean | `true` | Write a crash-report file on panic (message, location, thread, version, backtrace) |
 | `backtrace` | boolean | `true` | Capture a full backtrace in the report (independent of `RUST_BACKTRACE`) |
-| `report_dir` | string | `~/.local/state/sipnab` | Directory crash reports land in, one file per crash named `sipnab-crash-<UTC time>-<pid>-<n>.log` (for example `sipnab-crash-20261016-010341-2420651-0.log`; `<n>` counts the reports this process wrote). An empty string fails validation and names the key |
+| `report_dir` | string | `$STATE_DIRECTORY` (the first entry), else `~/.local/state/sipnab` | Directory crash reports land in. systemd sets `$STATE_DIRECTORY` for a unit with `StateDirectory=`, so under the packaged unit the default is `/var/lib/sipnab`. sipnab writes one file per crash, named `sipnab-crash-<UTC time>-<pid>-<n>.log` (for example `sipnab-crash-20261016-010341-2420651-0.log`; `<n>` counts the reports this process wrote). An empty string fails validation and names the key |
 | `core` | boolean | `false` | `true`: abort after the report so the kernel can dump core (subject to `ulimit -c` / `core_pattern`); `false`: exit cleanly with status 101, suppressing the core |
 
 ```toml
@@ -35392,10 +35506,11 @@ report_dir = "/var/lib/sipnab"
 core = false
 ```
 
-Under the unit the `.deb` and `.rpm` packages install, the default
-`report_dir` is not writable and sipnab prints `failed to write crash report:
-Read-only file system (os error 30)`. `/var/lib/sipnab`, the unit's state
-directory, is. See [Keep crash reports](run-as-a-service.md#keep-crash-reports).
+Under the unit the `.deb` and `.rpm` packages install, the default is
+`/var/lib/sipnab`, the unit's state directory, which the service can write.
+In 0.5.244 and earlier the default there was `/nonexistent/.local/state/sipnab`
+and sipnab printed `failed to write crash report: Read-only file system (os
+error 30)`. See [Keep crash reports](run-as-a-service.md#keep-crash-reports).
 
 ### `[fleet]`
 
@@ -38050,8 +38165,9 @@ sudo sipnab -N -d eth0 --user sipnab --mcp --mcp-transport http --mcp-bind 0.0.0
 
 A root run drops to `--user` before it reads the token, the certificate and
 the key, so make all three `root:sipnab` mode `640`. With a file only root
-can read, the run stops with exit status 2. For the key the message is the
-path alone, `/etc/sipnab/mcp.key`.
+can read, the run stops with exit status 2, and the message names the flag,
+the path and the reason:
+`--mcp-tls-key: /etc/sipnab/mcp.key: Permission denied (os error 13)`.
 
 `--mcp-allowed-host` names the host clients use in the URL. Without it, the
 request below gets `403` ([Stop a browser reaching your
@@ -52879,6 +52995,8 @@ LOST: the audit subsystem lost 12 record(s) during the run.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Permission denied on 'eth0'. Grant capture capabilities once`, exit 1 | The binary has no capabilities, or something replaced it since | `sipnab --setup-caps` again |
+| `Permission denied on 'eth0'. This process runs with NoNewPrivs set`, exit 1 | `NoNewPrivileges=yes` or `no-new-privileges` makes file capabilities ineffective | `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` in the unit, or start as root |
+| `Permission denied on 'eth0'. CAP_NET_RAW is not in this process's capability bounding set`, exit 1 | The container or unit dropped the capability | `--cap-add=NET_RAW`, or `CapabilityBoundingSet=` naming it |
 | `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | The user does not exist on this host. With `--chroot`, 0.5.233 and earlier also printed this when the directory held no `etc/passwd` naming the user | Create the user, or name another with `--user`. On 0.5.233 or earlier, upgrade, or add the user's entries to the directory |
 | `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
 | A root run reading files stops before it reads any with exit `2`, and the message names the hard open-file limit ([quoted in full](#read-capture-files-only-root-can-read)) | The set needs one descriptor per file plus 64, more than the hard open-file limit allows | Raise `ulimit -Hn` or `LimitNOFILE=`, or read fewer files per run |
@@ -62053,7 +62171,7 @@ certificate, and each refuses a routable bind that has no credential:
 | REST API (`--api`) | bearer token: `--api-key` or `--api-signing-key[-file]` | `--api-tls-cert`, `--api-tls-key` | `[api] tls_cert`, `tls_key` | refused, exit 2 |
 | MCP over HTTP (`--mcp-transport http`) | bearer token: `--mcp-token[-file]` or `--mcp-signing-key[-file]` | `--mcp-tls-cert`, `--mcp-tls-key` | `[mcp] tls_cert`, `tls_key` | refused, exit 2 |
 | Metrics (`--metrics`) | HTTP Basic: `--metrics-auth-file` holding `user:password` | `--metrics-tls-cert`, `--metrics-tls-key` | `[metrics] tls_cert`, `tls_key` | refused, exit 2 |
-| HEP (`--hep-listen`) | source allowlist `--hep-allow`, or shared secret `--hep-auth-file` | `--hep-listen-transport tls`, `--hep-tls-cert`, `--hep-tls-key` | `[hep] tls_cert`, `tls_key` | refused, exit 1 |
+| HEP (`--hep-listen`) | source allowlist `--hep-allow`, or shared secret `--hep-auth-file` | `--hep-listen-transport tls`, `--hep-tls-cert`, `--hep-tls-key` | `[hep] tls_cert`, `tls_key` | refused, exit 2 |
 
 The exact refusal messages are in [A service that does not
 start](run-as-a-service.md#a-service-that-does-not-start).
@@ -62973,13 +63091,14 @@ Two rules decide whether such a unit can capture and read its files:
   and `setcap cap_net_raw+ep` on the binary fails to capture:
 
   ```text
-  Permission denied on 'any'. Grant capture capabilities once (Linux), then re-run without sudo:
+  Permission denied on 'any'. This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or a container started with no-new-privileges), so the kernel ignores file capabilities and set-user-ID: sipnab --setup-caps, setcap and sudo cannot take effect. Grant the capabilities to the process instead:
   sipnab.service: Main process exited, code=exited, status=1/FAILURE
   ```
 
-  The lines after the first suggest `sipnab --setup-caps`, `sudo` or
-  `setcap`, none of which helps under `NoNewPrivileges=true`. Add the `AmbientCapabilities=` and
-  `CapabilityBoundingSet=` lines instead.
+  Add the `AmbientCapabilities=` and `CapabilityBoundingSet=` lines the
+  message names. A unit whose `CapabilityBoundingSet=` leaves out
+  `CAP_NET_RAW` gets `CAP_NET_RAW is not in this process's capability
+  bounding set` instead. Add it to that line.
 - **Every file the unit names must be readable by the unit's user.** sipnab
   reads token, key and certificate files as `sipnab`, not as root. A token file
   that root owns with mode 0600 stops the run with exit status 2:
@@ -63021,16 +63140,21 @@ the [Security section of the CLI reference](cli-reference.md#security).
   The alert also appears in the log on stderr. Every detector is off by
   default and the packaged unit names none, so it sends no alert until a
   drop-in or `sipnab.toml` turns one on.
-- **sipnab colors its log lines even when stderr is not a terminal.** The
-  journal then stores the escape sequences, and `journalctl -o cat` or a
-  `grep` over an export shows them as `[2m` and `[32m`. Set `NO_COLOR` to turn
-  them off:
+- **sipnab colors its log lines only when stderr is a terminal.** Under
+  systemd stderr is the journal, not a terminal, so the journal stores plain
+  text and `journalctl -o cat` shows no escape sequences. The same holds for
+  `docker logs` and for a pipe such as `sipnab -N -I x.pcap 2>&1 | cat`. On
+  a terminal, a non-empty `NO_COLOR` turns the color off. `--color` and
+  `[display] color` set the SIP message lines on stdout, not the log.
 
-  ```ini
-  [Service]
-  Environment=NO_COLOR=1
-  Environment=SIPNAB_LOG=info
+  To check, look for an escape byte in the unit's recent log:
+
+  ```bash
+  journalctl -u sipnab -n 50 -o cat | grep -c $'\x1b'
   ```
+
+  The count is `0`. A non-zero count means sipnab 0.5.244 or earlier. Set
+  `Environment=NO_COLOR=1` in the unit to turn the color off there.
 
 ## Stop, rotate and reconfigure
 
@@ -63145,10 +63269,37 @@ INFO sipnab::capture::writer: Rotating output to '/root/cap/sip_00002.pcap' (seq
 
 ## Keep crash reports
 
-When sipnab panics it writes a crash report. The default directory is
-`$HOME/.local/state/sipnab`. The packaged `sipnab` user's home is
+When sipnab panics it writes a crash report. Under the packaged unit the
+report goes to `/var/lib/sipnab`, the unit's state directory, with no
+configuration:
+
+- The unit sets `StateDirectory=sipnab`. systemd creates `/var/lib/sipnab`,
+  owned by the `sipnab` user, and exports its path as `$STATE_DIRECTORY`.
+- With no `report_dir` set, sipnab writes reports to the first directory in
+  `$STATE_DIRECTORY`. Outside a unit with a state directory it uses
+  `$HOME/.local/state/sipnab`.
+
+Prerequisites: a `.deb` or `.rpm` newer than 0.5.244, or a unit of your own
+with `StateDirectory=`.
+
+A panic under the unit then logs the file it wrote:
+
+```text
+crash report written to /var/lib/sipnab/sipnab-crash-20261103-143506-290-0.log
+```
+
+To keep reports somewhere else, set `report_dir` in `/etc/sipnab/sipnab.toml`
+to a directory the `sipnab` user can write and the unit leaves writable, for
+example a subdirectory of the state directory:
+
+```toml
+[crash]
+report_dir = "/var/lib/sipnab/crash"
+```
+
+In 0.5.244 and earlier there was no such default. The service user's home is
 `/nonexistent`, and `ProtectSystem=strict` makes the rest of the file system
-read-only, so under the packaged unit sipnab cannot write the report:
+read-only, so sipnab could not write the report:
 
 ```text
 sipnab panicked at src/main.rs:297:9:
@@ -63157,19 +63308,8 @@ failed to write crash report: Read-only file system (os error 30)
 sipnab.service: Main process exited, code=exited, status=101/n/a
 ```
 
-The report's text still reaches the journal. To keep the file as well, point
-`report_dir` at the unit's state directory in `/etc/sipnab/sipnab.toml`:
-
-```toml
-[crash]
-report_dir = "/var/lib/sipnab"
-```
-
-After a restart the same panic writes the file:
-
-```text
-crash report written to /var/lib/sipnab/sipnab-crash-20261103-143506-290-0.log
-```
+The report's text still reached the journal. On those versions set
+`report_dir = "/var/lib/sipnab"` in `[crash]` to keep the file.
 
 To check this on your own unit, add `--panic-selftest` to a drop-in's
 `ExecStart=` and set `Restart=no` in it, restart, read the journal, and then
@@ -63262,16 +63402,19 @@ The refusals a service meets most often:
 | `REST API refuses to start: --api 0.0.0.0:18080 is non-loopback but no --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was supplied.` | 2 | Bind `127.0.0.1`, or give a key as in [Change the packaged unit with a drop-in](#change-the-packaged-unit-with-a-drop-in) |
 | `MCP HTTP refuses to start: --mcp-bind 0.0.0.0:18731 is non-loopback but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / --mcp-signing-key / --mcp-signing-key-file / SIPNAB_MCP_SIGNING_KEY was supplied. Bind 127.0.0.1, or supply one of them.` | 2 | Bind `127.0.0.1`, or give a token file |
 | `metrics server refuses to start: --metrics 0.0.0.0:19090 is non-loopback but no --metrics-auth / --metrics-auth-file was supplied.` | 2 | Bind `127.0.0.1`, or give `--metrics-auth-file` |
-| `HEP listener refuses to start: --hep-listen 0.0.0.0:19060 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured.` | 1 | Add `--hep-allow` with your SIP servers' addresses, or a secret |
+| `HEP listener refuses to start: --hep-listen 0.0.0.0:19060 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured.` | 2 | Add `--hep-allow` with your SIP servers' addresses, or a secret |
 | `--api-tls-cert (or [api] tls_cert) c.pem was given without --api-tls-key (or [api] tls_key)` | 2 | Give both halves of the pair |
 | `k.pem: the API TLS private key is world-readable (mode 0644); chmod 600 it` | 2 | `chmod 600` the key, or `640` with the `sipnab` group |
 | `failed to bind API to 127.0.0.1:18081: Address already in use (os error 98)` | 2 | Another process holds the port. `ss -ltnp` names it |
-| `Permission denied on 'eth0'. Grant capture capabilities once (Linux), then re-run without sudo:` | 1 | Grant capture in the unit, as in [Write a unit of your own](#write-a-unit-of-your-own) |
+| `Permission denied on 'eth0'. This process runs with NoNewPrivs set` | 1 | Grant capture in the unit with `AmbientCapabilities=`, as in [Write a unit of your own](#write-a-unit-of-your-own) |
+| `Permission denied on 'eth0'. CAP_NET_RAW is not in this process's capability bounding set` | 1 | Add `CAP_NET_RAW CAP_NET_ADMIN` to the unit's `CapabilityBoundingSet=` |
 | `--mcp-token-file '/etc/sipnab/mcp.token': Permission denied (os error 13)` | 2 | Make the file readable by the unit's user |
 | `--mcp-audit-file /var/log/sipnab2/mcp-audit.jsonl: Read-only file system (os error 30)` | 2 | Add `LogsDirectory=sipnab` and write under `/var/log/sipnab` |
 | `invalid config value: [capture] snaplen must be > 0` | 1 | Correct the key the message names in `sipnab.toml` |
 
-The HEP listener's refusal exits 1 where the other three listeners exit 2.
+All four listeners' refusals of a routable bind exit 2, and sipnab prints
+each before any capture opens. In 0.5.244 and earlier the HEP listener's
+exited 1, after the words `Capture source failed to open:`.
 
 **A misspelled key in `sipnab.toml` does not stop the run.** sipnab logs a
 warning and ignores the key:
