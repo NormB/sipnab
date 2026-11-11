@@ -1260,3 +1260,370 @@ fn the_startup_rule_reads_the_shapes_it_is_given() {
         "a main the rule can no longer place the raise in"
     );
 }
+
+// ── The pull-request run: the workflow is exercised before it ships ──────────
+
+/// The condition on every step that publishes or needs registry credentials.
+const NOT_PR: &str = "github.event_name != 'pull_request'";
+
+/// The condition on every step that exists only for the pull-request run.
+const ONLY_PR: &str = "github.event_name == 'pull_request'";
+
+/// The steps that push to GHCR, log in to it, or attest: `(job, step)`.
+const PUBLISHING: &[(&str, &str)] = &[
+    ("docker", "Login to GHCR"),
+    ("docker", "Build and push"),
+    ("docker", "Export the digest"),
+    ("docker", "Upload the digest"),
+    ("manifest", "Download the digests"),
+    ("manifest", "Login to GHCR"),
+    ("manifest", "Attest image provenance"),
+    ("manifest", "Verify the attestation we just created"),
+];
+
+/// The steps that stand in for them on a pull request: each leg hands its
+/// image to the `manifest` job as a file, and that job pushes both to a
+/// registry it starts itself, on `localhost`.
+const REHEARSAL: &[(&str, &str)] = &[
+    ("docker", "Save the image"),
+    ("docker", "Upload the image"),
+    ("manifest", "Start a local registry"),
+    ("manifest", "Download the images"),
+    ("manifest", "Push the images to the local registry"),
+];
+
+/// The steps both runs share, so a pull request exercises the same lines a
+/// push to `main` does.
+const SHARED: &[(&str, &str)] = &[
+    ("docker", "Build image for smoke test"),
+    ("docker", "Scan the image for vulnerable OS packages"),
+    ("docker", "Smoke test the image"),
+    ("manifest", "Docker meta"),
+    ("manifest", "Create the manifest list"),
+    ("manifest", "Check the manifest list holds every platform"),
+];
+
+/// What a pull request must change for the workflow to run on it.
+const TRIGGER_PATHS: &[&str] = &[
+    "Dockerfile",
+    ".dockerignore",
+    ".github/workflows/docker.yml",
+    "src/main.rs",
+    "src/privilege.rs",
+];
+
+/// What the smoke test must run against the built image: the cases of OPS-4
+/// measured by hand, each by the text that proves it.
+const SMOKE_CASES: &[(&str, &str)] = &[
+    (
+        "--cap-drop ALL sipnab:smoke -N -d lo",
+        "a capture with no capability at all",
+    ),
+    (
+        "CAP_NET_RAW is not in this process's capability bounding set",
+        "the hint a capture without CAP_NET_RAW gets",
+    ),
+    (
+        "--security-opt no-new-privileges",
+        "a capture under no-new-privileges",
+    ),
+    (
+        "This process runs with NoNewPrivs set",
+        "the hint a shell entry point under no-new-privileges gets",
+    ),
+    (
+        "0000000000003000",
+        "both capture capabilities permitted and effective",
+    ),
+];
+
+/// A step's `if:` condition, whole. [`input`] trims quotes from a value, and
+/// a condition ends in one that belongs to it.
+fn guard(step: &str) -> Option<String> {
+    step.lines()
+        .find_map(|l| l.trim_start().strip_prefix("if:"))
+        .map(|v| v.trim().to_string())
+}
+
+/// The `paths:` of the workflow's `pull_request` trigger, if it has one.
+fn pull_request_paths(wf: &str) -> Option<Vec<String>> {
+    let mut lines = wf.lines().skip_while(|l| *l != "  pull_request:");
+    lines.next()?;
+    let mut out = Vec::new();
+    let mut in_paths = false;
+    for l in lines {
+        let t = l.trim_start();
+        let indent = l.len() - t.len();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if indent <= 2 {
+            break;
+        }
+        if t == "paths:" {
+            in_paths = true;
+        } else if in_paths && indent >= 6 {
+            if let Some(p) = t.strip_prefix("- ") {
+                out.push(p.trim_matches(['\'', '"']).to_string());
+            }
+        } else {
+            in_paths = false;
+        }
+    }
+    Some(out)
+}
+
+/// What is wrong with how `wf` runs on a pull request; empty when nothing is.
+///
+/// `docker.yml` used to run only on a push to `main` and on a tag, so a
+/// change to it first ran on the commit it had already merged into. On a
+/// pull request it must build both legs, run the smoke test, and assemble
+/// and check the manifest list, with no credential and no push to GHCR.
+fn pull_request_problems(wf: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    match pull_request_paths(wf) {
+        None => problems.push("the workflow has no `pull_request` trigger".to_string()),
+        Some(paths) => {
+            for want in TRIGGER_PATHS {
+                if !paths.iter().any(|p| p == want) {
+                    problems.push(format!("the pull_request trigger's paths lack `{want}`"));
+                }
+            }
+        }
+    }
+    let condition = |j: &str, s: &str| -> Result<Option<String>, String> {
+        let body = job(wf, j).ok_or_else(|| format!("no `{j}` job"))?;
+        let found = step(body, s).ok_or_else(|| format!("the `{j}` job has no step `{s}`"))?;
+        Ok(guard(&found))
+    };
+    for (set, want, why) in [
+        (PUBLISHING, Some(NOT_PR), "publishes or needs credentials"),
+        (REHEARSAL, Some(ONLY_PR), "exists for the pull-request run"),
+        (SHARED, None, "is shared by both runs"),
+    ] {
+        for (j, s) in set {
+            match condition(j, s) {
+                Err(e) => problems.push(e),
+                Ok(got) if got.as_deref() != want => problems.push(format!(
+                    "`{s}` in `{j}` {why}, so its `if:` must be {want:?}, not {got:?}"
+                )),
+                Ok(_) => {}
+            }
+        }
+    }
+    // Nothing outside the guarded steps reaches the registry or a secret.
+    for j in ["docker", "manifest"] {
+        for s in steps(job(wf, j).unwrap_or_default()) {
+            if guard(&s).as_deref() == Some(NOT_PR) {
+                continue;
+            }
+            let name = input(&s, "name").unwrap_or_default();
+            for forbidden in [
+                "docker/login-action@",
+                "attest-build-provenance@",
+                "push: true",
+                "push=true",
+                "secrets.",
+                "ghcr.io",
+            ] {
+                if s.contains(forbidden) {
+                    problems.push(format!(
+                        "`{name}` in `{j}` runs on a pull request and holds `{forbidden}`"
+                    ));
+                }
+            }
+        }
+    }
+    let manifest = job(wf, "manifest").unwrap_or_default();
+    let image = "IMAGE: ${{ github.event_name == 'pull_request' && \
+                 'localhost:5000/normb/sipnab' || 'ghcr.io/normb/sipnab' }}";
+    if !manifest.lines().any(|l| l.trim() == image) {
+        problems.push(
+            "the `manifest` job does not point IMAGE at its own registry on a pull request"
+                .to_string(),
+        );
+    }
+    let meta = step(manifest, "Docker meta").unwrap_or_default();
+    if input(&meta, "images").as_deref() != Some("${{ env.IMAGE }}") {
+        problems.push(
+            "the `manifest` job's tags are not made for `${{ env.IMAGE }}`, so on a pull \
+             request they would name GHCR"
+                .to_string(),
+        );
+    }
+    let registry = step(manifest, "Start a local registry").unwrap_or_default();
+    if !registry.contains(" mirror.gcr.io/library/registry:") || !registry.contains("@sha256:") {
+        problems.push(
+            "the local registry image is not pulled from mirror.gcr.io by digest".to_string(),
+        );
+    }
+    let smoke = step(
+        job(wf, "docker").unwrap_or_default(),
+        "Smoke test the image",
+    )
+    .unwrap_or_default();
+    for (text, what) in SMOKE_CASES {
+        if !smoke.contains(text) {
+            problems.push(format!("the smoke test does not check {what} (`{text}`)"));
+        }
+    }
+    problems
+}
+
+/// SUCCESS: `docker.yml` runs on a pull request, without credentials.
+#[test]
+fn the_workflow_runs_on_a_pull_request_without_publishing() -> Result<(), TestError> {
+    let problems = pull_request_problems(&read(".github/workflows/docker.yml")?);
+    assert!(problems.is_empty(), "{problems:#?}");
+    Ok(())
+}
+
+/// `docker.yml` with `old` replaced by `new`, which must change it.
+fn workflow_with(old: &str, new: &str) -> Result<String, TestError> {
+    let wf = read(".github/workflows/docker.yml")?;
+    let changed = wf.replace(old, new);
+    if changed == wf {
+        return Err(format!("docker.yml does not contain `{old}`").into());
+    }
+    Ok(changed)
+}
+
+/// FAILURE: a workflow with no `pull_request` trigger, or one whose paths
+/// leave out a file the image is built from, is refused.
+#[test]
+fn a_workflow_that_does_not_run_on_pull_requests_is_refused() -> Result<(), TestError> {
+    let none = workflow_with("  pull_request:\n", "  workflow_dispatch:\n")?;
+    assert!(
+        pull_request_problems(&none)
+            .contains(&"the workflow has no `pull_request` trigger".to_string()),
+        "a workflow with no pull_request trigger was accepted"
+    );
+    for path in TRIGGER_PATHS {
+        let without = workflow_with(&format!("      - {path}\n"), "")?;
+        assert!(
+            pull_request_problems(&without)
+                .contains(&format!("the pull_request trigger's paths lack `{path}`")),
+            "a trigger without {path} was accepted"
+        );
+    }
+    Ok(())
+}
+
+/// FAILURE: a publishing step that also runs on a pull request is refused,
+/// each one by name.
+#[test]
+fn a_publishing_step_without_its_guard_is_refused() -> Result<(), TestError> {
+    let unguarded = workflow_with(&format!("        if: {NOT_PR}\n"), "")?;
+    let problems = pull_request_problems(&unguarded);
+    for (j, s) in PUBLISHING {
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with(&format!("`{s}` in `{j}` publishes"))),
+            "{s} in {j} without its guard was accepted: {problems:#?}"
+        );
+    }
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("runs on a pull request and holds `docker/login-action@`")),
+        "an unguarded login was not named by what it holds: {problems:#?}"
+    );
+    Ok(())
+}
+
+/// FAILURE: a push or a credential in a step both runs share is refused.
+#[test]
+fn a_shared_step_that_pushes_or_reads_a_secret_is_refused() -> Result<(), TestError> {
+    let pushes = workflow_with("          push: false\n", "          push: true\n")?;
+    assert!(
+        pull_request_problems(&pushes)
+            .iter()
+            .any(|p| p.contains("`Build image for smoke test`") && p.contains("`push: true`")),
+        "a smoke build that pushes was accepted"
+    );
+    let ghcr = workflow_with(
+        "'localhost:5000/normb/sipnab' ||",
+        "'ghcr.io/normb/sipnab' ||",
+    )?;
+    assert!(
+        pull_request_problems(&ghcr)
+            .iter()
+            .any(|p| p.contains("does not point IMAGE at its own registry")),
+        "a manifest job that targets GHCR on a pull request was accepted"
+    );
+    Ok(())
+}
+
+/// FAILURE: a rehearsal step that also runs on a push, and a shared step
+/// that skips one of the runs, are refused.
+#[test]
+fn a_step_on_the_wrong_run_is_refused() -> Result<(), TestError> {
+    let always = workflow_with(&format!("        if: {ONLY_PR}\n"), "")?;
+    let problems = pull_request_problems(&always);
+    for (j, s) in REHEARSAL {
+        assert!(
+            problems
+                .iter()
+                .any(|p| p.starts_with(&format!("`{s}` in `{j}` exists for"))),
+            "{s} in {j} on every run was accepted: {problems:#?}"
+        );
+    }
+    let skipped = workflow_with(
+        "      - name: Create the manifest list\n",
+        &format!("      - name: Create the manifest list\n        if: {NOT_PR}\n"),
+    )?;
+    assert!(
+        pull_request_problems(&skipped)
+            .iter()
+            .any(|p| p.starts_with("`Create the manifest list` in `manifest` is shared")),
+        "a manifest list never assembled on a pull request was accepted"
+    );
+    Ok(())
+}
+
+/// FAILURE: a smoke test without one of the measured cases is refused, and
+/// so is a local registry pulled from Docker Hub or by tag alone.
+#[test]
+fn a_smoke_test_or_registry_that_checks_less_is_refused() -> Result<(), TestError> {
+    for (text, what) in SMOKE_CASES {
+        let without = workflow_with(text, "REMOVED")?;
+        assert!(
+            pull_request_problems(&without)
+                .contains(&format!("the smoke test does not check {what} (`{text}`)")),
+            "a smoke test without {what} was accepted"
+        );
+    }
+    let hub = workflow_with(" mirror.gcr.io/library/registry:", " registry:")?;
+    assert!(
+        pull_request_problems(&hub)
+            .iter()
+            .any(|p| p.contains("not pulled from mirror.gcr.io by digest")),
+        "a registry image from Docker Hub was accepted"
+    );
+    Ok(())
+}
+
+/// EDGE: the trigger reader takes quoted and bare paths, stops at the next
+/// trigger, and tells a missing trigger from one with no paths.
+#[test]
+fn the_trigger_reader_reads_paths_and_their_absence() {
+    let wf = "on:\n  push:\n    branches: [main]\n  pull_request:\n    # why\n    paths:\n      \
+              - Dockerfile\n      - 'src/main.rs'\n    branches: [main]\n  schedule:\n    \
+              - cron: x\n\njobs:\n";
+    assert_eq!(
+        pull_request_paths(wf),
+        Some(vec!["Dockerfile".to_string(), "src/main.rs".to_string()]),
+        "two paths, the comment and the later keys left out"
+    );
+    assert_eq!(
+        pull_request_paths("on:\n  push:\n    paths:\n      - Dockerfile\n"),
+        None,
+        "paths of another trigger are not the pull_request trigger's"
+    );
+    assert_eq!(
+        pull_request_paths("on:\n  pull_request:\n\njobs:\n  a:\n"),
+        Some(Vec::new()),
+        "a trigger with no paths has none"
+    );
+}

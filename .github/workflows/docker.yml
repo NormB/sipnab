@@ -4,6 +4,29 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  # A pull request that changes what decides how the image is built or
+  # whether its user can capture runs this workflow before it merges: both
+  # legs build, scan and smoke-test their image, and the `manifest` job
+  # assembles and checks the manifest list in a registry it starts itself.
+  # Nothing logs in to GHCR, pushes to it or attests: every such step is
+  # skipped on a pull request, and tests/container_image_test.rs holds that.
+  # Until 2026-11-11 this workflow ran only on a push to main and on a tag,
+  # so a change to it first ran on the commit it had already merged into.
+  #
+  # The paths are the Dockerfile, what it leaves out of the build context,
+  # the dependency lock, this file, the two sources the smoke test's capture
+  # cases depend on, and the two tests that hold this file to its rules.
+  # Not all of `src/`: the push to main still builds every commit.
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - Cargo.lock
+      - .github/workflows/docker.yml
+      - src/main.rs
+      - src/privilege.rs
+      - tests/container_image_test.rs
+      - tests/ci_docker_hub_test.rs
 
 # Read by default; the one job that publishes declares what it needs. A
 # workflow-level `packages: write` would hand any job added later the ability
@@ -125,6 +148,7 @@ jobs:
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
       - name: Login to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -263,6 +287,36 @@ jobs:
           # With no capability at all the image must still start: an effective
           # bit in the file capabilities would make execve fail with EPERM.
           docker run --rm --cap-drop ALL sipnab:smoke --version
+          # The cases of OPS-4 measured by hand, on the image just built.
+          run_image() { docker run --rm "$@" 2>&1 || true; }
+          expect() { # what, text, output
+            if ! grep -qF -- "$2" <<<"$3"; then
+              echo "$3"
+              echo "::error::$1: the output does not contain: $2"
+              exit 1
+            fi
+          }
+          echo "::group::capture cases"
+          out=$(run_image sipnab:smoke -N -d lo --duration 2s)
+          expect "capture under Docker's default capability set" "Capturing on 'lo'" "$out"
+          out=$(run_image --cap-drop ALL sipnab:smoke -N -d lo --duration 2s)
+          expect "capture with no capability" \
+            "CAP_NET_RAW is not in this process's capability bounding set" "$out"
+          out=$(run_image --security-opt no-new-privileges --cap-add NET_RAW --cap-add NET_ADMIN \
+            sipnab:smoke -N -d lo --duration 2s)
+          expect "capture under no-new-privileges, sipnab as the entry point" "Capturing on 'lo'" "$out"
+          out=$(run_image --security-opt no-new-privileges --cap-add NET_RAW --cap-add NET_ADMIN \
+            --entrypoint sh sipnab:smoke -c 'sipnab -N -d lo --duration 2s')
+          expect "capture under no-new-privileges, through a shell" \
+            "This process runs with NoNewPrivs set" "$out"
+          out=$(run_image --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh sipnab:smoke -c \
+            'sipnab -N -d lo --duration 3s --quiet & sleep 1; grep -E "^Cap(Prm|Eff)" /proc/$!/status; wait')
+          echo "$out"
+          if [ "$(grep -c '0000000000003000' <<<"$out")" != 2 ]; then
+            echo "::error::CapPrm and CapEff are not both 0000000000003000 with --cap-add NET_RAW --cap-add NET_ADMIN"
+            exit 1
+          fi
+          echo "::endgroup::"
           # The CA bundle a TLS client in the image reads (OPS-15).
           docker run --rm --entrypoint test sipnab:smoke -s /etc/ssl/certs/ca-certificates.crt \
             || { echo "::error::the image has no CA bundle at /etc/ssl/certs/ca-certificates.crt"; exit 1; }
@@ -270,6 +324,7 @@ jobs:
       # By digest only, with no tag: the `manifest` job tags the manifest
       # list that holds both legs.
       - name: Build and push
+        if: github.event_name != 'pull_request'
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
@@ -295,6 +350,7 @@ jobs:
 
       # The manifest job reads each leg's digest from these artifacts.
       - name: Export the digest
+        if: github.event_name != 'pull_request'
         env:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
@@ -303,10 +359,28 @@ jobs:
           touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
 
       - name: Upload the digest
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: digests-${{ matrix.arch }}
           path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      # On a pull request the leg pushes nothing. It hands the image it built
+      # and tested to the `manifest` job as a file instead.
+      - name: Save the image
+        if: github.event_name == 'pull_request'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: docker save sipnab:smoke -o "$RUNNER_TEMP/image-${ARCH}.tar"
+
+      - name: Upload the image
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image-${{ matrix.arch }}.tar
           if-no-files-found: error
           retention-days: 1
 
@@ -321,8 +395,61 @@ jobs:
       packages: write
       id-token: write
       attestations: write
+    # On a pull request the list is assembled in a registry this job starts
+    # on localhost, so the same commands run with no credential and nothing
+    # reaches GHCR.
+    env:
+      IMAGE: ${{ github.event_name == 'pull_request' && 'localhost:5000/normb/sipnab' || 'ghcr.io/normb/sipnab' }}
     steps:
+      # The registry image comes from mirror.gcr.io, as every other Docker
+      # Hub image this workflow uses does, pinned by the digest of its
+      # manifest list.
+      - name: Start a local registry
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name registry -p 127.0.0.1:5000:5000 \
+            mirror.gcr.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          # Wait until the port accepts a connection: bash's own /dev/tcp,
+          # so no HTTP client is needed for a registry on this host.
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if (exec 3<> /dev/tcp/127.0.0.1/5000) 2> /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::the local registry did not accept a connection within 10 s"
+          exit 1
+
+      - name: Download the images
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: ${{ runner.temp }}/images
+          pattern: image-*
+          merge-multiple: true
+
+      # Each leg's image goes into the local registry under a tag of its
+      # own, and its digest into the directory the steps below read, where
+      # a push to main finds the digests the legs uploaded.
+      - name: Push the images to the local registry
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/digests"
+          for tar in "$RUNNER_TEMP"/images/image-*.tar; do
+            arch=${tar##*/image-}
+            arch=${arch%.tar}
+            docker load -q -i "$tar"
+            docker tag sipnab:smoke "${IMAGE}:leg-${arch}"
+            docker push -q "${IMAGE}:leg-${arch}"
+            docker rmi sipnab:smoke > /dev/null
+            digest=$(docker buildx imagetools inspect --raw "${IMAGE}:leg-${arch}" \
+              | sha256sum | cut -d' ' -f1)
+            echo "leg ${arch}: sha256:${digest}"
+            touch "$RUNNER_TEMP/digests/${digest}"
+          done
+
       - name: Download the digests
+        if: github.event_name != 'pull_request'
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           path: ${{ runner.temp }}/digests
@@ -330,6 +457,7 @@ jobs:
           merge-multiple: true
 
       - name: Login to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -340,7 +468,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.IMAGE }}
           flavor: latest=false
           tags: ${{ env.IMAGE_TAGS }}
 
@@ -404,6 +532,7 @@ jobs:
       # proves the image came from this workflow. subject-name is the
       # lowercase registry path — github.repository is mixed-case.
       - name: Attest image provenance
+        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: ghcr.io/normb/sipnab
@@ -422,6 +551,7 @@ jobs:
       # missing attestation fails the push that produced it rather than a user's
       # verify weeks later.
       - name: Verify the attestation we just created
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           DIGEST: ${{ steps.manifest.outputs.digest }}
