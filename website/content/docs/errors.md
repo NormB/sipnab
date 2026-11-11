@@ -5528,10 +5528,19 @@ The center could not open its encrypted store, and leaves it as it found it.
   center wrote it.
 - `was truncated: it ends before its records do`: the file is shorter than
   the center wrote it.
+- `was cut at its end: it holds <n> of the <m> entries it was written with`:
+  records the center had written and counted are missing from the end of the
+  file. An entry is a record, the end of an append, or the end of the records
+  a rewrite wrote.
+- `has a record count that did not authenticate (the file was modified, or
+  the key is wrong)`: something changed the two counts in the file's header,
+  or changed one of them in a file that is not in the state a center leaves
+  when it stops while it writes a count.
 - `is a sealed intake file, not a registry file`: another of the center's files
   is in the store's place.
-- `has sealed format <n>, and this build reads format 1`: a later sipnab wrote
-  the store.
+- `has sealed format <n>, and this build reads format 2`: a later sipnab wrote
+  the store. This build also reads format 1, which releases up to 0.5.244
+  wrote, and writes the file again as format 2 at start.
 - `record <n> is not a member record: <reason>`: the record is intact and is not one
   this build reads.
 
@@ -5578,10 +5587,18 @@ the center runs as.
 ### `the intake '{shown}': {e}`
 
 The center could not read its intake, or could not write it again at
-start. The text after the path is the operating system's error.
+start. The text after the path is the operating system's error, or
+`sealed layer:` and the reason the center refused the encrypted file. The
+reasons are those listed above under
+`--store '{shown}': sealed layer: the file {e}`.
+`was cut at its end` means call records the center had acknowledged are
+missing from the end of the intake.
 
-**What to do:** Check that the directory of `--store` is writable by the
-center's user and has free space.
+**What to do:** For an operating system error, check that the directory of
+`--store` is writable by the center's user and has free space. For a
+`sealed layer` reason, restore the intake from a copy, or move it away and
+start with an empty one: the center then holds none of the call records the
+file held, and members do not send them again.
 
 **Exit code:** 2.
 

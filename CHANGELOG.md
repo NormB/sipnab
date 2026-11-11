@@ -12,6 +12,18 @@ entry that carries them.
 
 ### Changed
 
+- **Breaking for a downgrade: a fleet center and a fleet member write sealed format 2, which 0.5.244 does not read.** This release reads the format 1 files 0.5.244 wrote and writes them again as format 2 at the first start. A center put back to 0.5.244 refuses to start on a format 2 store (`has sealed format 2, and this build reads format 1`), and a member put back moves its waiting deliveries to `failed/`. To keep a way back, stop the center and copy `<store>` and `<store>.intake` before the first start of this release. [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store) has the commands. The reason is the fix below.
+
+### Fixed
+
+- **A fleet center refuses a store or an intake that had records removed from its end.** A sealed file detected a changed byte, a moved record and a cut inside the records of its last rewrite. It did not detect whole records removed from the end among those appended after that rewrite: the file opened without them, and the center started with a member or a call record fewer than it had acknowledged and said nothing.
+  - The sealed file format is now 2. Its header holds two authenticated counts of the file's entries. An append writes its records and an end mark, waits until they are on disk, and then writes the count that covers them, into the two places in turn. A file that holds fewer entries than its count is refused: `was cut at its end: it holds <n> of the <m> entries it was written with`.
+  - A center stopped while it wrote a count leaves one count that does not authenticate, the append it was to cover whole on disk, and nothing after it. Only that state opens with one count. A changed count on any other file is refused: `has a record count that did not authenticate`.
+  - This applies to the center's store, to its intake, and to a member's sealed deliveries.
+  - Each append now waits for the disk twice, where it waited once. Measured on one host (NVMe, ext4, 300 appends of 1,200 bytes, three rounds): 2,196 to 2,686 appends a second before, 1,803 to 1,832 after.
+  - Not detected, as before: the whole file deleted, and an earlier copy of the whole file put back.
+  - **Upgrade:** this release reads a format 1 file, which releases up to 0.5.244 wrote, and writes it again as format 2 at start. A format 1 file that was cut at its end before the upgrade opens once more without the removed records. A release up to 0.5.244 does not read a format 2 file: a center that goes back to one refuses to start on its store, and a member that goes back moves its waiting deliveries to `failed/` and does not send them.
+  - How-to: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
 - **`ghcr.io/normb/sipnab:latest` is the newest release, and `edge` is the newest commit on `main` (OPS-2).** `latest` moved on every push to `main`, so it could be ahead of every release. The Docker workflow now makes `latest` only for a `v*` tag that is not a pre-release, and makes the new tag `edge` for `main`. `latest` moves to a release with the first release after 0.5.245; until then it stays on the last `main` image the old workflow built. To keep following `main`, pull `edge`. Each tag now has one writer: the tag push writes the version tags and `latest`, and the push to `main` writes `edge` and `sha-<commit>`. A release is both pushes of one commit, and both runs wrote `latest` and `sha-<commit>`, so each ended on the run that finished last: for 0.5.245, `latest` and `0.5.245` name different digests. How-to: [Run from a pre-built image](docs/install.md#run-from-a-pre-built-image).
 - **The container image is published for `linux/amd64` and `linux/arm64` (OPS-3).** It was `linux/amd64` only, and `docker pull` on an arm64 host failed with `no matching manifest`. Each platform is built on a runner of that architecture, smoke-tested and scanned, and pushed by digest; one manifest list carries the tags and the attestation. Images of 0.5.245 and earlier stay `linux/amd64` only.
 
@@ -25,6 +37,10 @@ entry that carries them.
 ### Dependencies
 
 - Browser analyzer: `js-sys` and `web-sys` 0.3.94 → 0.3.107, `wasm-bindgen` 0.2.117 → 0.2.130 (with its `-macro`, `-macro-support` and `-shared` crates) and `wasm-bindgen-futures` 0.4.67 → 0.4.80. The seven crates pin each other with `=`, so they move together, in `Cargo.lock` and in `fuzz/Cargo.lock`. `website/static/wasm/sipnab.js` is rebuilt with the new `wasm-bindgen`, and the 16 exports the site calls are unchanged. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes. The native binaries do not contain these crates.
+
+### Security
+
+- **rustix 1.1.4 to 1.1.6, for [RUSTSEC-2026-0486](https://rustsec.org/advisories/RUSTSEC-2026-0486.html) (GHSA-jh2m-fhpj-3vr7), xattr functions that mark unwritten bytes as initialized when given a zero-length buffer.** sipnab's own code calls no xattr function. rustix comes in through crossterm 0.29.0 and, for tests only, tempfile 3.27.0, and neither crate's source calls one. The update changes one entry in `Cargo.lock` and in `fuzz/Cargo.lock`.
 
 ## [0.5.245] - 2026-11-11
 
