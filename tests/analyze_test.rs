@@ -313,6 +313,11 @@ fn the_ranked_output_is_identical_across_runs() -> Result<(), TestError> {
 /// Both flags write to stdout, so both belong in the output-flag tally that
 /// requires `-N`. A flag missing from it produces a report the TUI then
 /// scribbles over — silently, because the report was still generated.
+///
+/// Only in a build with the `tui` feature: a build without it has no TUI,
+/// every run of it is the run `-N` asks for, and the flags need no `-N`
+/// (NO-TUI-BUILD-SILENT).
+#[cfg(feature = "tui")]
 #[test]
 fn the_analyze_flags_require_non_interactive_mode() -> Result<(), TestError> {
     for flag in ["--analyze", "--json-analyze", "--yang-analyze"] {

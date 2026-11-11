@@ -427,6 +427,12 @@ pub(crate) mod testutil {
         )
     }
 
+    /// A ZIP holding `entries`, each with its own lock, stored without
+    /// compression.
+    pub fn build_stored_each(entries: &[(&str, &[u8], Lock<'_>)]) -> Result<Vec<u8>, TestError> {
+        build_with(entries, zip::CompressionMethod::Stored)
+    }
+
     /// A ZIP holding `entries`, each with its own lock, compressed per
     /// `method`.
     fn build_with(
@@ -460,7 +466,7 @@ mod tests {
     use super::super::password::{ArchivePassword, Candidate, Keyring, Source};
     use super::super::tar::testutil::{Spec, build as build_tar};
     use super::super::*;
-    use super::testutil::{Lock, build, build_each, build_stored};
+    use super::testutil::{Lock, build, build_each, build_stored, build_stored_each};
     use std::io::Write;
 
     /// Any error a test can return; `?` converts into it.
@@ -783,6 +789,265 @@ mod tests {
             a
         );
         assert_eq!(both.attempts(), 2);
+        Ok(())
+    }
+
+    /// `count` different wrong passwords that pass ZipCrypto's one-byte check
+    /// on member `index` of `zip`, found the way [`false_positive`] finds
+    /// one. Stored, such a member reads to its end as noise of its full size.
+    fn false_positives(zip: &[u8], index: usize, count: usize) -> Result<Vec<Vec<u8>>, TestError> {
+        let mut archive =
+            zip::ZipArchive::new(std::io::Cursor::new(zip)).map_err(|e| format!("zip: {e:?}"))?;
+        let mut found = Vec::new();
+        for i in 0..100_000u32 {
+            if found.len() == count {
+                return Ok(found);
+            }
+            let candidate = format!("{}{i}", crate::test_material::key_str("fp-count-probe"));
+            if archive
+                .by_index_decrypt(index, candidate.as_bytes())
+                .is_ok()
+            {
+                found.push(candidate.into_bytes());
+            }
+        }
+        Err(format!("fewer than {count} false positives in 100000 tries").into())
+    }
+
+    /// A keyring of `passwords`, tried in the order given.
+    fn ring_of_bytes(passwords: &[&[u8]]) -> Result<Keyring, TestError> {
+        Ok(Keyring::new(
+            passwords
+                .iter()
+                .map(|p| {
+                    ArchivePassword::from_bytes(p)
+                        .map(|password| Candidate {
+                            password,
+                            source: Source::File,
+                        })
+                        .map_err(|e| format!("valid: {e:?}"))
+                })
+                .collect::<Result<_, _>>()?,
+            None,
+        ))
+    }
+
+    /// The capture every member of the inflation-count ZIPs holds.
+    fn counted_capture() -> Vec<u8> {
+        pcap_bytes(&[7u8; 4000])
+    }
+
+    /// `path` expanded under an inflation ceiling of `limit` bytes.
+    fn expand_under(
+        path: &std::path::Path,
+        limit: u64,
+        keyring: Option<&mut Keyring>,
+    ) -> Result<Expansion, TestError> {
+        let lim = Limits {
+            max_inflated_bytes: limit,
+            ..limits()
+        };
+        Ok(
+            expand_filtered_with(path, &lim, None, keyring)
+                .map_err(|e| format!("expand: {e:?}"))?,
+        )
+    }
+
+    /// FAILURE (ARCHIVE-TRIAL-INFLATION-COUNT): three wrong passwords each
+    /// read the stored member to its end as noise, under the ceiling, and
+    /// their sum passes it. Each trial is rolled back and returns its bytes,
+    /// so the right password, tried fourth, still has the whole budget.
+    #[test]
+    fn wrong_zip_passwords_under_the_ceiling_leave_the_budget_to_the_right_one()
+    -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let a = counted_capture();
+        let zip = build_stored(&[("a.pcap", &a)], Lock::ZipCrypto(secret("count-right")))?;
+        let path = write(tmp.path(), "count.zip", &zip)?;
+        let wrong = false_positives(&zip, 0, 3)?;
+        let mut keys = ring_of_bytes(&[&wrong[0], &wrong[1], &wrong[2], secret("count-right")])?;
+        let exp = expand_under(&path, 2 * a.len() as u64, Some(&mut keys))?;
+        assert!(
+            exp.stops.is_empty(),
+            "three rolled-back trials must not reach the ceiling: {:?}",
+            exp.stops
+        );
+        assert_eq!(
+            exp.members.len(),
+            1,
+            "the fourth password opens the member: {:?}",
+            exp.skipped
+        );
+        assert_eq!(
+            std::fs::read(&exp.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+            a,
+            "the member is the capture that was stored"
+        );
+        assert_eq!(keys.attempts(), 4, "every password was tried in order");
+        Ok(())
+    }
+
+    /// EDGE, the boundary: the ceiling is exactly the member's size. A wrong
+    /// password's trial ends exactly at the ceiling and is rolled back, and
+    /// the right password then reads the member whole.
+    #[test]
+    fn a_wrong_zip_password_at_exactly_the_ceiling_leaves_room_for_the_right_one()
+    -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let a = counted_capture();
+        let zip = build_stored(&[("a.pcap", &a)], Lock::ZipCrypto(secret("exact-right")))?;
+        let path = write(tmp.path(), "exact.zip", &zip)?;
+        let wrong = false_positives(&zip, 0, 1)?;
+        let mut keys = ring_of_bytes(&[&wrong[0], secret("exact-right")])?;
+        let exp = expand_under(&path, a.len() as u64, Some(&mut keys))?;
+        assert!(
+            exp.stops.is_empty(),
+            "a member of exactly the ceiling is within it: {:?}",
+            exp.stops
+        );
+        assert_eq!(
+            exp.members.len(),
+            1,
+            "the second password opens the member: {:?}",
+            exp.skipped
+        );
+        assert_eq!(keys.attempts(), 2, "both passwords were tried");
+        Ok(())
+    }
+
+    /// FAILURE: one password whose trial alone passes the ceiling. The trial
+    /// cannot tell a wrong password from a right one on a member this large,
+    /// so it is reported as the ceiling, the walk ends, nothing is kept and
+    /// no later password is tried.
+    #[test]
+    fn a_zip_trial_that_alone_passes_the_ceiling_is_a_ceiling_stop() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let a = counted_capture();
+        let zip = build_stored(&[("a.pcap", &a)], Lock::ZipCrypto(secret("over-right")))?;
+        let path = write(tmp.path(), "over.zip", &zip)?;
+        let wrong = false_positives(&zip, 0, 1)?;
+        let limit = a.len() as u64 - 1;
+        let mut keys = ring_of_bytes(&[&wrong[0], secret("over-right")])?;
+        let exp = expand_under(&path, limit, Some(&mut keys))?;
+        assert_eq!(
+            exp.stops,
+            vec![Stop::InflationCap {
+                limit,
+                at: format!("{}/a.pcap", path.display()),
+            }],
+            "the walk reports the ceiling once, at the member"
+        );
+        assert!(exp.members.is_empty(), "nothing is kept");
+        assert!(
+            exp.skipped.is_empty(),
+            "the member is not reported as locked: {:?}",
+            exp.skipped
+        );
+        assert_eq!(keys.attempts(), 1, "no password is tried after the stop");
+        Ok(())
+    }
+
+    /// SUCCESS, unchanged: the right password first reads a member of exactly
+    /// the ceiling in one attempt, and one byte under the member's size is
+    /// refused.
+    #[test]
+    fn the_right_zip_password_first_reads_up_to_the_ceiling() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let a = counted_capture();
+        let zip = build_stored(&[("a.pcap", &a)], Lock::ZipCrypto(secret("first-right")))?;
+        let path = write(tmp.path(), "first.zip", &zip)?;
+        let wrong = false_positives(&zip, 0, 1)?;
+        let mut keys = ring_of_bytes(&[secret("first-right"), &wrong[0]])?;
+        let exp = expand_under(&path, a.len() as u64, Some(&mut keys))?;
+        assert_eq!(
+            exp.members.len(),
+            1,
+            "the first password opens the member: {:?} {:?}",
+            exp.skipped,
+            exp.stops
+        );
+        assert_eq!(keys.attempts(), 1, "the second password is never tried");
+
+        let mut keys = ring_of_bytes(&[secret("first-right")])?;
+        let exp = expand_under(&path, a.len() as u64 - 1, Some(&mut keys))?;
+        assert!(
+            matches!(exp.stops.as_slice(), [Stop::InflationCap { .. }]),
+            "the right password does not lift the ceiling: {:?}",
+            exp.stops
+        );
+        Ok(())
+    }
+
+    /// SUCCESS, unchanged: an unencrypted stored member of exactly the
+    /// ceiling is read, and one byte under its size is refused.
+    #[test]
+    fn an_unencrypted_zip_reads_up_to_the_ceiling() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let a = counted_capture();
+        let zip = build_stored(&[("a.pcap", &a)], Lock::None)?;
+        let path = write(tmp.path(), "open.zip", &zip)?;
+        let exp = expand_under(&path, a.len() as u64, None)?;
+        assert_eq!(
+            exp.members.len(),
+            1,
+            "a member of exactly the ceiling is read: {:?}",
+            exp.stops
+        );
+        let exp = expand_under(&path, a.len() as u64 - 1, None)?;
+        assert!(exp.members.is_empty(), "nothing is kept past the ceiling");
+        assert!(
+            matches!(exp.stops.as_slice(), [Stop::InflationCap { .. }]),
+            "one byte under the member's size is refused: {:?}",
+            exp.stops
+        );
+        Ok(())
+    }
+
+    /// EDGE: a rollback returns the bytes of its own trial and no more. The
+    /// two members have different passwords, so a wrong password is tried on
+    /// the second member after the first was kept. The first member stays
+    /// counted: both are read when they fit under the ceiling exactly, and
+    /// the second is refused when the ceiling is one byte lower.
+    #[test]
+    fn the_bytes_of_a_kept_zip_member_stay_counted_after_a_rollback() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let a = counted_capture();
+        let zip = build_stored_each(&[
+            ("a.pcap", &a, Lock::ZipCrypto(secret("kept-first"))),
+            ("b.pcap", &a, Lock::ZipCrypto(secret("kept-second"))),
+        ])?;
+        let path = write(tmp.path(), "kept.zip", &zip)?;
+        // The wrong password passes the check of the SECOND member, so its
+        // trial reads that member as noise after the first member was kept.
+        let wrong = false_positives(&zip, 1, 1)?;
+        let both = 2 * a.len() as u64;
+        let passwords: [&[u8]; 3] = [secret("kept-first"), &wrong[0], secret("kept-second")];
+
+        let mut keys = ring_of_bytes(&passwords)?;
+        let exp = expand_under(&path, both, Some(&mut keys))?;
+        assert!(
+            exp.stops.is_empty(),
+            "the rolled-back trial on the second member must not reach the ceiling: {:?}",
+            exp.stops
+        );
+        assert_eq!(
+            exp.members.len(),
+            2,
+            "both members fit exactly: {:?}",
+            exp.skipped
+        );
+
+        let mut keys = ring_of_bytes(&passwords)?;
+        let exp = expand_under(&path, both - 1, Some(&mut keys))?;
+        assert_eq!(exp.members.len(), 1, "the first member is kept");
+        assert_eq!(
+            exp.stops,
+            vec![Stop::InflationCap {
+                limit: both - 1,
+                at: format!("{}/b.pcap", path.display()),
+            }],
+            "the second member passes the ceiling, the first one's bytes still counted"
+        );
         Ok(())
     }
 
