@@ -7,6 +7,19 @@ sipnab's TUI uses 11 semantic color slots. There is also `highlight`, a legacy a
 - The slots control every visual element.
 - Customize them via the `[theme]` section in your config file.
 
+## Before you start
+
+- **A build with the `tui` feature.** `sipnab --version` prints the list after
+  `features:`, and the release binaries carry `tui`.
+- **A config file you can write.**
+  [File Locations](config-reference.md#file-locations) lists where sipnab
+  looks. The examples use `~/.config/sipnab/sipnab.toml`.
+- **A true-color terminal, for hex values.** A named color needs none.
+- **Over SSH, the terminal on the other system.** The terminal you type at
+  draws the colors, so its true-color support and its palette are what count.
+  The machine that runs sipnab holds the config file. Nothing else changes on
+  any other system.
+
 ## Color slots
 
 | Slot | Default | What It Affects |
@@ -333,6 +346,42 @@ border = "white"
   <span style="color:#ff00ff">4  INVITE     +15551234      +15559876      </span><span style="color:#ff0000">Failed</span>
   <span style="color:#ff00ff">5  INVITE     1005           1006           </span><span style="color:#00ff00">Completed</span></pre>
 </div>
+
+## Check that it worked
+
+With this in the config file:
+
+```toml
+[theme]
+header = "#89b4fa"
+```
+
+print the settings sipnab holds:
+
+```bash
+sipnab --dump-config
+```
+
+- The log on standard error names the file: `Loaded config from` and its path.
+- The `[theme]` section of the output holds your value: `header = "#89b4fa"`.
+  It lists the slots the file sets, and no defaults.
+- With an empty `[theme]` and no `Loaded config from` line, sipnab found no
+  config file, or read another one.
+
+This check ran on Ubuntu 24.04 (Linux 6.8, aarch64) with that file and
+printed both lines. Then open a capture in the terminal UI and look at the
+header row: `sipnab -I capture.pcap`. No test draws the terminal UI on a real
+terminal, so check the colors by eye.
+
+## When something does not work
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| A message that starts `invalid config value: [theme] header = "bluish" is not a color`, exit 1 | The value is not a name or a hex value from [Supported color syntax](#supported-color-syntax) | Correct the value. sipnab does not start until every color parses |
+| A warning `Unknown config key: theme.headr`, and the slot keeps its default | The slot name has a spelling error | Use a name from [Color slots](#color-slots) |
+| `--dump-config` prints an empty `[theme]` | sipnab loaded another config file, or none | Read the `Loaded config from` line, and compare it with [File Locations](config-reference.md#file-locations) |
+| The terminal UI has no color at all | The environment holds a non-empty `NO_COLOR` | Unset it: [`NO_COLOR`](#no_color) |
+| Hex colors look wrong, and named colors look right | The terminal has no true-color support | Use named colors, or a terminal from the list under [Tips](#tips) |
 
 ## Tips
 
