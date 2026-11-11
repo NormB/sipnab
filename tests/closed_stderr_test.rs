@@ -14,6 +14,9 @@
 //! write to it fails from the first byte. Racing a real `head` would make the
 //! failure depend on timing; this makes it depend only on sipnab.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::process::{Command, Stdio};
 
 /// The error a test returns: any error, boxed, so `?` works on I/O,
@@ -110,14 +113,10 @@ fn both_streams_closed_is_a_clean_exit() -> Result<(), TestError> {
 #[test]
 fn no_source_file_uses_a_panicking_stderr_macro() -> Result<(), TestError> {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = Command::new("git")
-        .args(["ls-files", "-z", "--", "src/*.rs", "src/**/*.rs"])
-        .current_dir(root)
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
+    let listed = tracked::ls_files(root, &["--", "src/*.rs", "src/**/*.rs"])?;
     let mut files = 0;
     let mut offenders = Vec::new();
-    for rel in String::from_utf8_lossy(&out.stdout).split('\0') {
+    for rel in listed.iter().map(String::as_str) {
         if rel.is_empty() {
             continue;
         }

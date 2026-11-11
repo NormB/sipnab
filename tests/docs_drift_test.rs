@@ -29,6 +29,8 @@ mod cli_flags;
 mod howto_parts;
 #[path = "support/markdown.rs"]
 mod markdown;
+
+use markdown::tracked;
 #[path = "support/mcp_reference.rs"]
 mod mcp_reference;
 
@@ -2417,13 +2419,10 @@ fn published_markdown() -> Result<Vec<(String, String)>, TestError> {
     const ROOT_PAGES: &[&str] = &["README.md", "SECURITY.md", "CONTRIBUTING.md"];
     const SKIP: &[&str] = &["docs/design/", "docs/research/"];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "*.md"])
-        .current_dir(root)
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
-    let mut pages: Vec<(String, String)> = String::from_utf8_lossy(&out.stdout)
-        .lines()
+    let listed = tracked::ls_files(root, &["--", "*.md"])?;
+    let mut pages: Vec<(String, String)> = listed
+        .iter()
+        .map(String::as_str)
         .filter(|rel| {
             if SKIP.iter().any(|d| rel.starts_with(d)) {
                 return false;
@@ -4856,17 +4855,9 @@ fn scanned_markdown() -> Result<Vec<std::path::PathBuf>, TestError> {
     // link_integrity_test's docs-tree scan.
     const SKIP_DIRS: &[&str] = &["docs/design/", "docs/research/"];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "*.md"])
-        .current_dir(root)
-        .output()?;
-    assert!(
-        out.status.success(),
-        "git ls-files failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .lines()
+    Ok(tracked::ls_files(root, &["--", "*.md"])?
+        .iter()
+        .map(String::as_str)
         .filter(|rel| !SKIP_DIRS.iter().any(|d| rel.starts_with(d)))
         .map(|rel| root.join(rel))
         .collect())
@@ -4884,13 +4875,10 @@ fn scanned_markdown() -> Result<Vec<std::path::PathBuf>, TestError> {
 fn agent_planning_documents_are_never_committed() -> Result<(), TestError> {
     const FORBIDDEN: &[&str] = &["docs/superpowers/", ".superpowers/"];
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::process::Command::new("git")
-        .args(["ls-files"])
-        .current_dir(root)
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
-    let tracked: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
+    let listed = tracked::ls_files(root, &[])?;
+    let tracked: Vec<String> = listed
+        .iter()
+        .map(String::as_str)
         .filter(|rel| FORBIDDEN.iter().any(|d| rel.starts_with(d)))
         .map(str::to_string)
         .collect();
@@ -4938,15 +4926,11 @@ fn only_the_backlog_tracks_open_work() -> Result<(), TestError> {
     const FORMS: &[&str] = &[".github/PULL_REQUEST_TEMPLATE.md"];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "*.md"])
-        .current_dir(root)
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
+    let listed = tracked::ls_files(root, &["--", "*.md"])?;
 
     let mut new_trackers: Vec<String> = Vec::new();
     let mut grown: Vec<String> = Vec::new();
-    for rel in String::from_utf8_lossy(&out.stdout).lines() {
+    for rel in listed.iter().map(String::as_str) {
         let text = std::fs::read_to_string(root.join(rel)).unwrap_or_default();
         let open = text
             .lines()
@@ -6246,15 +6230,7 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     const EXPECTED_TABLES: usize = 1464;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::process::Command::new("git")
-        .args(["ls-files", "-z", "*.md"])
-        .current_dir(repo)
-        .output()?;
-    let files: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|f| !f.is_empty())
-        .map(str::to_string)
-        .collect();
+    let files = tracked::ls_files(repo, &["--", "*.md"])?;
     // Pinned. `>= 50` against a real 93 let the sweep lose nearly half the
     // tracked markdown without noticing, which for a duplicate-row check means
     // the duplicates it exists to find simply stop being looked for.
@@ -7586,11 +7562,7 @@ fn the_tree_spells_in_us_english() -> Result<(), TestError> {
     ];
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = std::process::Command::new("git")
-        .args(["ls-files"])
-        .current_dir(root)
-        .output()?;
-    let listing = String::from_utf8_lossy(&out.stdout);
+    let listing = tracked::ls_files(root, &[])?.join("\n");
 
     // SPELL1. Word boundaries are not enough: `_` is a word character, so
     // `\bsignalling\b` never fires inside

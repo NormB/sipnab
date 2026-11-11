@@ -75,13 +75,13 @@ alone: the label is the authority, and here the label is what is wrong.
 """
 
 import pathlib
-import subprocess
 import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from lib_markdown import fence_mask  # noqa: E402
+from lib_tracked import ls_files  # noqa: E402
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 
@@ -94,13 +94,11 @@ def tracked(pattern: str) -> list[pathlib.Path]:
     this checker reported 212 where CI -- which has no such file -- reported
     172, and a pre-commit run passed over a verdict CI then refused. A gate
     reads what is committed.
+
+    Each page once: git lists an unmerged path once per stage, and a page read
+    three times reported each stale citation three times.
     """
-    out = subprocess.run(
-        ["git", "-C", str(REPO), "ls-files", "-z", "--", f":(glob){pattern}"],
-        capture_output=True,
-        check=True,
-    ).stdout.decode()
-    return sorted(REPO / rel for rel in out.split("\0") if rel)
+    return sorted(REPO / rel for rel in ls_files(REPO, "--", f":(glob){pattern}"))
 
 # [`src/foo.rs:123`](url#L123) -- the link is captured because the label alone
 # does not say which file is meant. See `source_for`.

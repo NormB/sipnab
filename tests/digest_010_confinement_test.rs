@@ -21,9 +21,11 @@
 //! - the exception exists exactly while `rsa` 0.9 is locked, and expires.
 #![cfg(feature = "native")]
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::process::Command;
 
 /// Any error a test can return; `?` converts into it.
 type TestError = Box<dyn std::error::Error>;
@@ -41,23 +43,7 @@ fn repo() -> PathBuf {
 
 /// Tracked Rust sources under `src/` and `crates/`.
 fn tracked_rust_sources() -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .args([
-            "ls-files",
-            "-z",
-            "--",
-            "src/*.rs",
-            "src/**/*.rs",
-            "crates/**/*.rs",
-        ])
-        .current_dir(repo())
-        .output()?;
-    assert!(out.status.success(), "git ls-files failed");
-    Ok(String::from_utf8_lossy(&out.stdout)
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect())
+    tracked::ls_files(repo(), &["--", "src/*.rs", "src/**/*.rs", "crates/**/*.rs"])
 }
 
 /// Every line naming `sha1_oaep` that is not the OAEP padding, as `file:line: text`.

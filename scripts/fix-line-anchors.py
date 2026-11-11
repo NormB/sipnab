@@ -23,11 +23,12 @@ This rewrites both shapes to an absolute blob URL with an #L fragment, keeping
 the label exactly as written: the label is the author's citation and this only
 fixes where it goes.
 """
-import pathlib, re, subprocess, sys
+import pathlib, re, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from lib_markdown import fence_mask  # noqa: E402
+from lib_tracked import ls_files  # noqa: E402
 
 # Derived from this file's location, like every sibling script
 # (`check-line-drift.py` and `rfc-links.py` both use the same `parents[1]`).
@@ -45,8 +46,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 BASE = "https://github.com/NormB/sipnab"
 LINK = re.compile(r"\[`([^`]*?):(\d+(?:-\d+)?)`\]\(([^)]+)\)")
 
-tracked = set(subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
-                             text=True).stdout.split())
+tracked = set(ls_files(ROOT))
 
 
 def repo_path(doc: pathlib.Path, href: str) -> str | None:

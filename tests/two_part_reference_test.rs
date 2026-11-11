@@ -54,6 +54,9 @@
 //! account list out of that gate so the two cannot disagree about who is
 //! private.
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -233,17 +236,12 @@ fn the_scan_reaches_every_page_the_documentation_is_published_from() -> Result<(
     // machine that holds it -- 198 against the checker's 197 -- so this test
     // failed there and passed in CI over the same commit.
     fn md_under(rel: &str) -> Result<Vec<PathBuf>, TestError> {
-        let listed = std::process::Command::new("git")
-            .args(["ls-files", "-z", "--", &format!(":(glob){rel}/**/*.md")])
-            .current_dir(repo())
-            .output()
-            .map_err(|e| format!("git ls-files: {e}"))?;
-        assert!(listed.status.success(), "git ls-files failed");
-        Ok(String::from_utf8_lossy(&listed.stdout)
-            .split('\0')
-            .filter(|r| !r.is_empty())
-            .map(|r| repo().join(r))
-            .collect())
+        Ok(
+            tracked::ls_files(repo(), &["--", &format!(":(glob){rel}/**/*.md")])?
+                .iter()
+                .map(|r| repo().join(r))
+                .collect(),
+        )
     }
 
     let docs_only = md_under("docs")?.len();
@@ -631,17 +629,11 @@ fn word_at(line: &str, needle: &str) -> Option<usize> {
 
 /// Every tracked text file, as (repo-relative path, contents).
 fn tracked_text() -> Result<Vec<(String, String)>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| {
-            format!("git ls-files -- the scan is over what is tracked, not what is present: {e}")
-        })?;
-    assert!(out.status.success(), "git ls-files failed");
+    // The scan is over what is tracked, not what is present.
+    let listed = tracked::ls_files(repo(), &[])?;
 
     let mut files = Vec::new();
-    for rel in String::from_utf8_lossy(&out.stdout).lines() {
+    for rel in listed.iter().map(String::as_str) {
         let ext = PathBuf::from(rel)
             .extension()
             .and_then(|s| s.to_str())

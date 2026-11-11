@@ -26,6 +26,9 @@
 #[path = "../src/test_scratch.rs"]
 mod test_scratch;
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -496,13 +499,9 @@ fn has_conflict_markers(body: &str) -> bool {
 /// would spot first.
 #[test]
 fn no_tracked_file_carries_a_conflict_marker() -> Result<(), TestError> {
-    let out = Command::new("git")
-        .args(["ls-files", "-z"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"))?;
+    let listed = tracked::ls_files(repo(), &[])?;
     let mut bad = Vec::new();
-    for rel in String::from_utf8_lossy(&out.stdout).split('\0') {
+    for rel in listed.iter().map(String::as_str) {
         if rel.is_empty() {
             continue;
         }
@@ -1016,12 +1015,8 @@ fn the_age_floor_separates_recent_from_backdated_in_one_run() -> Result<(), Test
 fn no_test_shells_out_for_file_metadata() -> Result<(), TestError> {
     let mut offenders = Vec::new();
     let mut scanned = 0;
-    let out = Command::new("git")
-        .args(["ls-files", "tests/"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files tests/: {e}"))?;
-    for file in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+    let listed = tracked::ls_files(repo(), &["--", "tests/"])?;
+    for file in listed.iter().map(String::as_str) {
         if !file.ends_with(".rs") {
             continue;
         }
@@ -1072,15 +1067,11 @@ fn no_executable_line_uses_a_gnu_only_spelling() -> Result<(), TestError> {
         ("date -d ", "BSD date spells it -v or -j -f"),
         ("cp --preserve", "BSD cp uses -p"),
     ];
-    let out = Command::new("git")
-        .args(["ls-files", "scripts/", ".githooks/", "bench/"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"))?;
+    let listed = tracked::ls_files(repo(), &["--", "scripts/", ".githooks/", "bench/"])?;
 
     let mut offenders = Vec::new();
     let mut scanned = 0;
-    for file in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+    for file in listed.iter().map(String::as_str) {
         let Ok(src) = std::fs::read_to_string(repo().join(file)) else {
             continue; // binary fixture
         };

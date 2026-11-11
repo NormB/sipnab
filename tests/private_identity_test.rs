@@ -59,6 +59,9 @@ use std::net::Ipv6Addr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 #[path = "support/ai_attribution.rs"]
 mod ai_attribution;
 #[path = "support/executable.rs"]
@@ -100,21 +103,11 @@ fn is_vendored(rel: &str) -> bool {
 /// not published and is not this gate's business, and walking would pull in
 /// `target/` and every worktree artefact besides.
 fn tracked_text() -> Result<Vec<(String, String)>, TestError> {
-    let out = Command::new("git")
-        .args(["ls-files"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| {
-            format!("git ls-files -- the scan is over what is tracked, not what is present: {e}")
-        })?;
-    assert!(
-        out.status.success(),
-        "git ls-files failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    // The scan is over what is tracked, not what is present.
+    let listed = tracked::ls_files(repo(), &[])?;
 
     let mut files = Vec::new();
-    for rel in String::from_utf8_lossy(&out.stdout).lines() {
+    for rel in listed.iter().map(String::as_str) {
         let ext = PathBuf::from(rel)
             .extension()
             .and_then(|s| s.to_str())
@@ -2468,13 +2461,10 @@ fn e10_the_guide_names_the_corpus_rule() -> Result<(), TestError> {
 /// path under the maintainer's home directory.
 #[test]
 fn f1_no_transcript_or_backup_file_is_tracked() -> Result<(), TestError> {
-    let out = Command::new("git")
-        .args(["ls-files"])
-        .current_dir(repo())
-        .output()
-        .map_err(|e| format!("git ls-files: {e}"))?;
-    let bad: Vec<String> = String::from_utf8_lossy(&out.stdout)
-        .lines()
+    let listed = tracked::ls_files(repo(), &[])?;
+    let bad: Vec<String> = listed
+        .iter()
+        .map(String::as_str)
         .filter(|f| rule::transcript_file(f))
         .map(str::to_string)
         .collect();

@@ -39,10 +39,13 @@ from __future__ import annotations
 
 import argparse
 import re
-import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from lib_tracked import ls_files  # noqa: E402
 
 CONFIG = Path(".config/source-headers.txt")
 CODING = re.compile(r"^[ \t\f]*#.*?coding[:=][ \t]*[-_.a-zA-Z0-9]+")
@@ -167,10 +170,9 @@ def fix(config: Config, rule: Rule, text: str) -> tuple[str, str | None]:
 
 
 def tracked() -> list[str]:
-    out = subprocess.run(
-        ["git", "ls-files", "-z"], check=True, capture_output=True
-    ).stdout.decode()
-    return [p for p in out.split("\0") if p]
+    # Through the shared reader: an unmerged path is listed once per stage,
+    # and a header is added to a file once.
+    return ls_files(".")
 
 
 def main() -> int:

@@ -24,6 +24,9 @@
 
 #![cfg(all(unix, feature = "full"))]
 
+#[path = "support/tracked.rs"]
+mod tracked;
+
 #[path = "support/source_scan.rs"]
 mod source_scan;
 
@@ -599,27 +602,14 @@ fn findings(src: &str) -> Vec<Finding> {
 /// with the hook's git variables removed so a run under `git commit` lists
 /// this tree.
 fn tracked_sources() -> Result<Vec<String>, TestError> {
-    let out = Command::new("git")
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .args(["ls-files", "-z", "--", "src/*.rs"])
+    let mut git = Command::new("git");
+    git.current_dir(env!("CARGO_MANIFEST_DIR"))
         .env_remove("GIT_DIR")
         .env_remove("GIT_INDEX_FILE")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_PREFIX")
-        .env_remove("GIT_COMMON_DIR")
-        .output()?;
-    if !out.status.success() {
-        return Err(format!(
-            "git ls-files failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        )
-        .into());
-    }
-    Ok(String::from_utf8(out.stdout)?
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(str::to_string)
-        .collect())
+        .env_remove("GIT_COMMON_DIR");
+    tracked::ls_files_from(git, &["--", "src/*.rs"])
 }
 
 /// No production `error!` is followed by the exit it explains.
