@@ -8,6 +8,13 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Dependencies
+
+- eBPF capture backend, kernel half: `aya-ebpf` 0.1.1 → 0.3.0 in `bpf/` (with `aya-ebpf-macros` 0.4.0, `aya-ebpf-cty` 0.4.0 and `aya-ebpf-bindings` 0.3.0). No source change was needed. The rebuilt object has the same sections, the same two programs and the same four maps; the two programs' sizes changed (`sipnab_tls_write` 2784 → 3024 bytes, `sipnab_tcp_sendmsg` 2464 → 2424 bytes), so the release's load check on a real kernel is the first proof that the verifier accepts them.
+- `zip` 9.4.1 → 9.4.2 in `Cargo.lock` and `fuzz/Cargo.lock`, and `sse-starlette` 3.6.0 → 3.7.0 in the Python MCP client's pinned requirements. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes.
+
 ## [0.5.246] - 2026-11-11
 
 ### Changed
@@ -33,8 +40,6 @@ entry that carries them.
 
 ### Dependencies
 
-- eBPF capture backend, kernel half: `aya-ebpf` 0.1.1 → 0.3.0 in `bpf/` (with `aya-ebpf-macros` 0.4.0, `aya-ebpf-cty` 0.4.0 and `aya-ebpf-bindings` 0.3.0). No source change was needed. The rebuilt object has the same sections, the same two programs and the same four maps; the two programs' sizes changed (`sipnab_tls_write` 2784 → 3024 bytes, `sipnab_tcp_sendmsg` 2464 → 2424 bytes), so the release's load check on a real kernel is the first proof that the verifier accepts them.
-- `zip` 9.4.1 → 9.4.2 in `Cargo.lock` and `fuzz/Cargo.lock`, and `sse-starlette` 3.6.0 → 3.7.0 in the Python MCP client's pinned requirements. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes.
 - Browser analyzer: `js-sys` and `web-sys` 0.3.94 → 0.3.107, `wasm-bindgen` 0.2.117 → 0.2.130 (with its `-macro`, `-macro-support` and `-shared` crates) and `wasm-bindgen-futures` 0.4.67 → 0.4.80. The seven crates pin each other with `=`, so they move together, in `Cargo.lock` and in `fuzz/Cargo.lock`. `website/static/wasm/sipnab.js` is rebuilt with the new `wasm-bindgen`, and the 16 exports the site calls are unchanged. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes. The native binaries do not contain these crates.
 
 ### Security
