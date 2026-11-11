@@ -256,6 +256,24 @@ fn problems_on_the_clean_sample_prints_a_header_and_no_rows() -> Result<(), Test
 // --- docs/tui-walkthrough.md -----------------------------------------------
 
 #[test]
+fn the_walkthrough_requires_the_terminal_ui_feature() -> Result<(), TestError> {
+    // Checked in every build, so the build without `tui` still reads the
+    // page: the message test below needs the feature the page requires.
+    page_says(
+        section(WALKTHROUGH, "## Before you start")?,
+        "**sipnab with the `tui` feature**",
+        "tui-walkthrough",
+    );
+    Ok(())
+}
+
+// Only a build with `tui` has an interface that can fail to start. CI's
+// feature matrix also builds sipnab without it: there `sipnab -I <file>`
+// with no `-N` exits 0 and prints nothing (seen 2026-11-11 with the features
+// native,hep,api,mcp,mcp-http). That is recorded as the defect
+// NO-TUI-BUILD-SILENT, not stated on the page and not asserted here.
+#[cfg(feature = "tui")]
+#[test]
 fn the_terminal_ui_without_a_terminal_gives_the_message_the_page_quotes() -> Result<(), TestError> {
     let troubleshoot = section(WALKTHROUGH, TROUBLESHOOT)?;
     let message = "sipnab: the terminal UI could not start: No such device or address \
@@ -371,8 +389,21 @@ fn the_follow_check_shows_what_correlate_prints() -> Result<(), TestError> {
         out.lines().count() >= 4,
         "a count line, a header, a rule and one leg; output:\n{out}"
     );
+    // The `TH` column says whether sipnab decoded a topology-hiding Call-ID,
+    // which needs the `tls` feature. A build without it prints `-` there, and
+    // the page says so.
+    let no_tls = "A build without the `tls` feature prints `-` in the `TH` column.";
+    page_says(check, no_tls, "follow-a-call");
     for line in out.lines() {
-        page_says(check, line.trim_end(), "follow-a-call");
+        let line = line.trim_end();
+        if cfg!(feature = "tls") || !line.starts_with("DLGCH_") {
+            page_says(check, line, "follow-a-call");
+        } else {
+            let stem = line.strip_suffix('-').ok_or_else(|| {
+                format!("without tls the TH column was expected to read `-`: {line}")
+            })?;
+            page_says(check, &format!("{stem}no_secret"), "follow-a-call");
+        }
     }
     Ok(())
 }

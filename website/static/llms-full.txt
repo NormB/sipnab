@@ -30756,6 +30756,8 @@ The match is exact when the `Match` column reads `identifier`: both legs carry
 the same identifier, here a `Session-ID` header. The run exits with status 0
 when it found the Call-ID you named.
 
+A build without the `tls` feature prints `-` in the `TH` column.
+
 ## When it does not work
 
 | What you see | Why | What to do |
