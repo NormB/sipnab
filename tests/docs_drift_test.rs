@@ -6220,7 +6220,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // hints in docs/troubleshooting.md's "Live capture says Permission
     // denied" and its site mirror (+2), and the "What the packages do to the
     // service" table in packaging/README.md, which has no mirror (+1).
-    const EXPECTED_TABLES: usize = 1460;
+    // 1460 -> 1464 (DOCS-HOWTO-GAP, second batch): the table of log lines in
+    // docs/least-privilege.md's "Check that it worked" and the table of
+    // failures in docs/g729.md's "When a run does not find the tables", each
+    // with its site mirror (+4).
+    const EXPECTED_TABLES: usize = 1464;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

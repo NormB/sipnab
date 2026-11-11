@@ -1791,7 +1791,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // Permission denied"), first-cli-triage.md +6, tui-walkthrough.md +6,
     // expectations.md +1; follow-a-call.md +1 -1 (its link to "Make the match
     // exact" was reworded, not added).
-    const EXPECTED_WIKI_LINKS: usize = 2552;
+    // 2552 -> 2559 (DOCS-HOWTO-GAP, second batch): uprobe-walkthrough.md +4
+    // (its "Before you start", "Check that it worked" and the new
+    // troubleshooting row link four of its own sections), plugins.md +1,
+    // g729.md +1, least-privilege.md +1 (to install.md).
+    const EXPECTED_WIKI_LINKS: usize = 2559;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
