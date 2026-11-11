@@ -5602,7 +5602,7 @@ The center could not open its encrypted store, and leaves it as it found it.
 - `has a header that did not authenticate (the file was modified, or the key
   is wrong)` or `has a record <n> that did not authenticate (the file was
   modified, or its records were moved)`: a byte of the file changed after the
-  center wrote it. Releases 0.5.244 to 0.5.246 also left a file that gives
+  center wrote it. Releases 0.5.244 to 0.5.247 also left a file that gives
   the second message, with no one changing it: an append failed, for example
   on a full disk, and a later append worked before the center wrote the file
   again. [Encrypt the center's store](fleet.md#encrypt-the-centers-store)

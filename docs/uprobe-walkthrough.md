@@ -406,7 +406,7 @@ when sipnab exits.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `Permission denied on 'capture source'.`, exit 1, from `sipnab -N --uprobe-tls` | sipnab was not root when it attached | Run it with `sudo`. The hint under the message names `sipnab --setup-caps`, which grants the rights for a capture on an interface; attaching a probe needs root, as [Root, at the moment sipnab attaches a probe](#root-at-the-moment-sipnab-attaches-a-probe) says |
+| `Permission denied attaching TLS probes (--uprobe-tls).`, exit 1, from `sipnab -N --uprobe-tls` | sipnab was not root when it attached | Run it with `sudo`, as the message says. `sipnab --setup-caps` grants the rights for a capture on an interface; attaching a probe needs root, as [Root, at the moment sipnab attaches a probe](#root-at-the-moment-sipnab-attaches-a-probe) says. Releases through 0.5.245 printed `Permission denied on 'capture source'.` and named `sipnab --setup-caps` here |
 | `--uprobe-list` finds no TLS library | Unprivileged, so `/proc/<pid>/maps` opens only for your own processes | Re-run as root before concluding the host uses no TLS |
 | `no kernel programs` from a binary you built | `--features bpf` compiled the loader, and the inner nightly build found no `bpf-linker` | Rebuild on a host carrying `bpf-linker`, with `SIPNAB_BPF_REQUIRED=1` so the gap fails the build |
 | Capture attaches, reports 0 messages | Almost always the wrong symbol | `nm -D --undefined-only <binary> \| grep -i ssl_write`, then `--uprobe-symbol` |

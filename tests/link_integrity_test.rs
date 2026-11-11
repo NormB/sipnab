@@ -1800,9 +1800,18 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // (its "Before you start", "Check that it worked" and the new
     // troubleshooting row link four of its own sections), plugins.md +1,
     // g729.md +1, least-privilege.md +1 (to install.md).
-    // 2564 -> 2565 (failed fleet append): errors.md +1, the sealed layer's
+    // 2564 -> 2577 (DOCS-HOWTO-GAP, third batch): tuning-capture.md +6 (its
+    // "Before you start" links install.md and one of its sections, and its
+    // troubleshooting table four of its sections), theme-guide.md +6 (two
+    // links to config-reference.md and four to its own sections),
+    // tls-capture.md +1 (to install.md).
+    // 2577 -> 2587 (DOCS-HOWTO-GAP, fourth batch): rest-api.md +2 and
+    // mcp-deploy.md +1, each "Before you start" linking sections of its page;
+    // auth.md +7 (its "Before you start" links one of its sections and its
+    // troubleshooting table six).
+    // 2587 -> 2588 (failed fleet append): errors.md +1, the sealed layer's
     // refusal list links to fleet.md's "Encrypt the center's store".
-    const EXPECTED_WIKI_LINKS: usize = 2565;
+    const EXPECTED_WIKI_LINKS: usize = 2588;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

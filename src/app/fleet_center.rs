@@ -2173,7 +2173,7 @@ mod tests {
         Ok(())
     }
 
-    /// The file releases 0.5.244 to 0.5.246 left when an append failed and
+    /// The file releases 0.5.244 to 0.5.247 left when an append failed and
     /// a later one worked: the record after the failure is sealed for a
     /// position the file does not reach. It is refused, by file and layer,
     /// and left as found.

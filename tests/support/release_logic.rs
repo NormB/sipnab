@@ -279,3 +279,43 @@ pub fn unreleased_section(changelog: &str) -> Option<String> {
         .collect();
     Some(body.join("\n"))
 }
+
+/// The `### ` headings that one changelog section's `body` carries more than
+/// once: each with its 1-based line numbers in `body`, in the order the
+/// headings first appear, spelled as on the first appearance.
+///
+/// Two branches that each add a `### Fixed` list merge without a conflict
+/// when the lists are not adjacent, and the section then has the heading
+/// twice. #749's merge left that in `[Unreleased]` on 2026-11-11.
+///
+/// Headings compare without regard to case or to the amount of white space.
+/// A line inside a fenced code block is not a heading, and neither is an
+/// indented line or a heading of another level.
+pub fn repeated_headings(body: &str) -> Vec<(String, Vec<usize>)> {
+    let mut seen: Vec<(String, String, Vec<usize>)> = Vec::new();
+    let mut fenced = false;
+    for (index, line) in body.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let Some(title) = line.strip_prefix("### ") else {
+            continue;
+        };
+        let words: Vec<&str> = title.split_whitespace().collect();
+        let shown = format!("### {}", words.join(" "));
+        let key = shown.to_lowercase();
+        match seen.iter_mut().find(|(k, _, _)| *k == key) {
+            Some((_, _, lines)) => lines.push(index + 1),
+            None => seen.push((key, shown, vec![index + 1])),
+        }
+    }
+    seen.into_iter()
+        .filter(|(_, _, lines)| lines.len() > 1)
+        .map(|(_, shown, lines)| (shown, lines))
+        .collect()
+}

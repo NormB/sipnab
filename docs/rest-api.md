@@ -24,6 +24,22 @@ Most routes only read. These change state:
 
 ## Getting started
 
+### Before you start
+
+- **A binary with the `api` feature.** `sipnab --version` lists the features:
+  [Check your binary has the API](#check-your-binary-has-the-api).
+- **A capture file, or capture rights on an interface.** The examples read a
+  file, which needs no rights.
+- **`curl` and `jq`,** for the requests and the checks on this page, and
+  **`openssl`,** to generate the key. Any HTTP client can stand in for `curl`.
+- **A free TCP port.** The examples use `127.0.0.1:8080`.
+- **For a client on another system:** a routable address for `--api`, a key or
+  a signing key, which sipnab requires on such an address, and a firewall rule
+  that lets the client reach the port. The client needs the key. A client that
+  reaches the server by a name needs `--api-allowed-host` with that name.
+  [API TLS](#api-tls) covers encryption on that path. A client on the same
+  machine changes nothing on any other system.
+
 ### Check your binary has the API
 
 The REST API is the `api` feature.
@@ -107,7 +123,7 @@ ok
 | `curl` exits `7`, `Failed to connect` | Nothing listens there. sipnab is not running, or it stopped at startup: read its standard error. |
 | `{"status":401,"title":"Unauthorized","type":"https://sipnab.com/problems/unauthorized"}` | The request carries no key, or not the one sipnab holds. Under `sudo`, pass the variable with `--preserve-env=SIPNAB_API_KEY`. |
 | `403` with `Forbidden: Host header is not allowed: <name>. If clients reach this server by that name, start sipnab with --api-allowed-host <name>.` | The client reaches the server by a name sipnab was not given. Add `--api-allowed-host <name>` ([Which `Host` names the API answers](#which-host-names-the-api-answers)). |
-| sipnab prints `server error: failed to bind API to 127.0.0.1:8080: Address already in use (os error 98)` and exits `1` | Another program holds the port. Choose another port for `--api`. |
+| sipnab prints `server error: failed to bind API to 127.0.0.1:8080: Address already in use (os error 98)` and exits `2` | Another program holds the port. Choose another port for `--api`. |
 | sipnab prints `server error: REST API refuses to start: --api 0.0.0.0:8080 is non-loopback but no --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was supplied. Bind 127.0.0.1, or configure authentication.` and exits `2` | A routable bind needs a credential. Set `SIPNAB_API_KEY`, or a signing key ([Set up authentication](auth.md)). |
 | `503` | Over the per-address rate or the in-flight cap, whatever the credential ([Bind address & connection limits](#bind-address--connection-limits)). |
 

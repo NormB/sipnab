@@ -1096,7 +1096,7 @@ shows a key.
   ```
 
 - **`has a record <n> that did not authenticate`, on a file no one
-  changed.** A center from 0.5.244, 0.5.245 or 0.5.246 left this state when
+  changed.** A center from 0.5.244 to 0.5.247 left this state when
   an append failed, for example on a full disk, and a later append worked.
   The center logged `fleet center: the store could not be written:` at the
   time and kept running. The center sealed the record after the failure for
@@ -1117,7 +1117,7 @@ shows a key.
     and start the center. It starts with an empty store. Each member
     reports again within one heartbeat interval, and the list loses only a
     member that is silent now.
-  - The intake (`the intake '<file>.intake'`, from 0.5.245 or 0.5.246).
+  - The intake (`the intake '<file>.intake'`, from 0.5.245 to 0.5.247).
     Those releases wrote the intake again only to remove records past the
     retention or the intake's size, and that rewrite failed on a file in
     this state, with the warning `fleet center: the intake was not

@@ -478,6 +478,14 @@ const SELF_HOSTED_POOLS: &[&str] = &["jetson", "overflow", "X64"];
 /// I/O the host's local gates leave idle, or the `X64` runner.
 const AARCH64_HOST_ONLY: &[(&str, &str, &str)] = &[
     (
+        "ci.yml",
+        "features",
+        "only on a push to main, whose run waited 34 and 68 minutes for the \
+         two overflow runners behind pull request runs on 2026-11-11 (run \
+         42977445618); every other event keeps the overflow pair, and \
+         scripts/tests/test_feature_matrix_runner.py holds that split",
+    ),
+    (
         "bench.yml",
         "throughput",
         "the throughput baseline was measured on this hardware",
