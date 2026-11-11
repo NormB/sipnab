@@ -6679,7 +6679,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // 275 -> 276: docker.yml's IMAGE_TAGS comment on one writer per tag names
     // `tests/container_image_test.rs` once more. Measurement: the scan read
     // 275 on the commit before that comment and 276 with it.
-    const EXPECTED_REFERENCES: usize = 276;
+    // 276 -> 278: ci.yml's comment on the features job's runners names
+    // `scripts/check-feature-matrix.py` and
+    // `scripts/tests/test_feature_matrix_runner.py`. Measurement: the scan
+    // read 276 on main c327e86ad and 278 with that comment.
+    const EXPECTED_REFERENCES: usize = 278;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

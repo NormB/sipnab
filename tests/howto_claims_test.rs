@@ -33,6 +33,20 @@ const PRIVILEGE: &str = include_str!("../docs/least-privilege.md");
 const PRIVILEGE_SOURCE: &str = include_str!("../src/privilege.rs");
 const G729: &str = include_str!("../docs/g729.md");
 const UPROBE: &str = include_str!("../docs/uprobe-walkthrough.md");
+const TLS: &str = include_str!("../docs/tls-capture.md");
+const TUNING: &str = include_str!("../docs/tuning-capture.md");
+const LIVE: &str = include_str!("../src/capture/live.rs");
+const THEME: &str = include_str!("../docs/theme-guide.md");
+const SERVICE: &str = include_str!("../docs/run-as-a-service.md");
+const REST: &str = include_str!("../docs/rest-api.md");
+const MCP_DEPLOY: &str = include_str!("../docs/mcp-deploy.md");
+const AUTH: &str = include_str!("../docs/auth.md");
+
+/// The troubleshooting heading of run-as-a-service.
+const SERVICE_TROUBLESHOOT: &str = "## When the service does not start";
+
+/// The troubleshooting heading of tls-capture.
+const TLS_TROUBLESHOOT: &str = "## When decryption does not work";
 
 const SAMPLE_CALL: &str = "website/static/demos/sample-call.pcap";
 const PROBLEM_CALL: &str = "tests/pcap-samples/sip-problem-call.pcap";
@@ -41,6 +55,21 @@ const SESSION_ID: &str = "tests/fixtures/session-id/opensips-4.0-th-session-id.p
 
 const CHECK: &str = "## Check that it worked";
 const TROUBLESHOOT: &str = "## When something does not work";
+
+// The TLS call the suite builds in code, with its keys: no capture checked in
+// under `tests/` holds SIP over TLS.
+#[cfg(feature = "tls")]
+#[path = "support/encrypted_captures.rs"]
+mod encrypted_captures;
+#[cfg(feature = "tls")]
+#[path = "support/pcap_build.rs"]
+mod pcap_build;
+
+// A REST API server started on a port the kernel picks, for the pages whose
+// check sends a request.
+#[cfg(all(unix, feature = "api"))]
+#[path = "support/server.rs"]
+mod server;
 
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -891,7 +920,7 @@ fn the_uprobe_capture_without_root_gives_the_message_the_page_quotes() -> Result
         .find_map(|line| line.strip_prefix("Uid:"))
         .and_then(|rest| rest.split_whitespace().next().map(str::to_owned))
         .ok_or("no Uid line in /proc/self/status")?;
-    let message = "Permission denied on 'capture source'.";
+    let message = "Permission denied attaching TLS probes (--uprobe-tls).";
     page_says(
         section(UPROBE, "## Troubleshooting")?,
         message,
@@ -908,5 +937,847 @@ fn the_uprobe_capture_without_root_gives_the_message_the_page_quotes() -> Result
     let run = sipnab(&["-N", "--uprobe-tls", "--duration", "1"])?;
     exited(&run, 1);
     printed(&stderr(&run), message);
+    printed(&stderr(&run), "sudo sipnab -N --uprobe-tls");
+    assert!(
+        !stderr(&run).contains("\n  sipnab --setup-caps"),
+        "--setup-caps grants interface capture rights and cannot attach a probe: {}",
+        stderr(&run)
+    );
+    Ok(())
+}
+
+// ── tls-capture ──────────────────────────────────────────────────────────
+
+/// The TLS call of the suite and its key log, written under `dir`.
+#[cfg(feature = "tls")]
+fn tls_call(dir: &Path) -> Result<(String, String), TestError> {
+    let capture = dir.join("tls-capture.pcap");
+    let keys = dir.join("sip-keys.log");
+    pcap_build::write_pcap(&capture, &encrypted_captures::tls_session_frames()?)?;
+    std::fs::write(&keys, encrypted_captures::tls_keylog())?;
+    Ok((capture.display().to_string(), keys.display().to_string()))
+}
+
+/// With the keys, the check of the page prints each decrypted message on a
+/// line that ends in `TLS`, logs `TLS session decrypted` and counts the two
+/// SIP messages of the call.
+#[cfg(feature = "tls")]
+#[test]
+fn the_tls_check_shows_the_decrypted_messages_and_the_log_line() -> Result<(), TestError> {
+    let check = section(TLS, CHECK)?;
+    page_says(
+        check,
+        "sipnab -N -I tls-capture.pcap --keylog /tmp/sip-keys.log",
+        "tls-capture",
+    );
+    for quoted in ["INVITE TLS", "TLS session decrypted", "2 SIP messages"] {
+        page_says(check, quoted, "tls-capture");
+    }
+    let dir = tempfile::tempdir()?;
+    let (capture, keys) = tls_call(dir.path())?;
+    let run = sipnab(&["-N", "-I", &capture, "--keylog", &keys])?;
+    exited(&run, 0);
+    let lines: Vec<String> = stdout(&run).lines().map(str::to_owned).collect();
+    assert_eq!(lines.len(), 2, "an INVITE and a 180: {lines:?}");
+    assert!(lines[0].ends_with(" INVITE TLS"), "{lines:?}");
+    assert!(lines[1].ends_with(" 180 Ringing TLS"), "{lines:?}");
+    printed(&stderr(&run), "TLS session decrypted");
+    printed(&stderr(&run), "2 SIP messages");
+    Ok(())
+}
+
+/// Without `--keylog` sipnab looks at no TLS record: the run prints no
+/// message and the sentence the page quotes.
+#[cfg(feature = "tls")]
+#[test]
+fn a_tls_capture_read_without_keys_prints_what_the_page_quotes() -> Result<(), TestError> {
+    let message = "No SIP traffic found.";
+    page_says(section(TLS, TLS_TROUBLESHOOT)?, message, "tls-capture");
+    let dir = tempfile::tempdir()?;
+    let (capture, _) = tls_call(dir.path())?;
+    let run = sipnab(&["-N", "-I", &capture])?;
+    exited(&run, 0);
+    assert_eq!(stdout(&run), "", "nothing decrypted, so no message line");
+    printed(&stderr(&run), message);
+    printed(&stderr(&run), "0 SIP messages");
+    Ok(())
+}
+
+/// A key log with no key line in it: sipnab counts the records it could not
+/// read and says so in the words the page quotes.
+#[cfg(feature = "tls")]
+#[test]
+fn a_key_log_with_no_key_line_gives_the_message_the_page_quotes() -> Result<(), TestError> {
+    let message = "sipnab could not decrypt 2 TLS application-data record(s): \
+                   it holds no key material for any session in this capture";
+    page_says(section(TLS, TLS_TROUBLESHOOT)?, message, "tls-capture");
+    let dir = tempfile::tempdir()?;
+    let (capture, _) = tls_call(dir.path())?;
+    let empty = dir.path().join("empty-keys.log");
+    std::fs::write(&empty, "# no key line\n")?;
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        &capture,
+        "--keylog",
+        &empty.display().to_string(),
+    ])?;
+    exited(&run, 0);
+    assert_eq!(stdout(&run), "", "nothing decrypted, so no message line");
+    printed(&stderr(&run), message);
+    Ok(())
+}
+
+/// A key log that holds a key of another connection: sipnab loads the line,
+/// builds no session and says so in the words the page quotes.
+#[cfg(feature = "tls")]
+#[test]
+fn a_key_log_of_another_connection_gives_the_message_the_page_quotes() -> Result<(), TestError> {
+    let message = "sipnab loaded 1 keylog line(s) and built no session from any of them";
+    let cause = "No key in the key log belongs to a handshake in this capture";
+    let remedy =
+        "Use the key log that the endpoint of these connections wrote during this capture.";
+    let rows = section(TLS, TLS_TROUBLESHOOT)?;
+    for quoted in [message, cause, remedy] {
+        page_says(rows, quoted, "tls-capture");
+    }
+    let dir = tempfile::tempdir()?;
+    let (capture, _) = tls_call(dir.path())?;
+    let other = dir.path().join("other-keys.log");
+    std::fs::write(
+        &other,
+        format!(
+            "CLIENT_TRAFFIC_SECRET_0 {} {}\n",
+            "11".repeat(32),
+            "22".repeat(32)
+        ),
+    )?;
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        &capture,
+        "--keylog",
+        &other.display().to_string(),
+    ])?;
+    exited(&run, 0);
+    assert_eq!(stdout(&run), "", "nothing decrypted, so no message line");
+    for quoted in [message, cause, remedy] {
+        printed(&stderr(&run), quoted);
+    }
+    assert!(
+        !stderr(&run).contains("The handshake is missing"),
+        "the capture holds the handshake, so sipnab must not call it missing; it printed:\n{}",
+        stderr(&run)
+    );
+    Ok(())
+}
+
+/// A capture that began after the connection opened holds no ClientHello and
+/// no ServerHello: sipnab says the handshake is missing, in the words the
+/// page quotes, and does not blame the key log.
+#[cfg(feature = "tls")]
+#[test]
+fn a_capture_without_the_handshake_gives_the_message_the_page_quotes() -> Result<(), TestError> {
+    let message = "sipnab loaded 1 keylog line(s) and built no session from any of them";
+    let cause = "The handshake is missing: this capture holds no ClientHello and no ServerHello.";
+    let rows = section(TLS, TLS_TROUBLESHOOT)?;
+    for quoted in [message, cause] {
+        page_says(rows, quoted, "tls-capture");
+    }
+    let dir = tempfile::tempdir()?;
+    let frames = encrypted_captures::tls_session_frames()?;
+    assert_eq!(
+        frames.len(),
+        6,
+        "the call is SYN, SYN-ACK, two hellos and two records"
+    );
+    let late: Vec<Vec<u8>> = frames
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| *index >= 4)
+        .map(|(_, frame)| frame)
+        .collect();
+    let capture = dir.path().join("late-capture.pcap");
+    pcap_build::write_pcap(&capture, &late)?;
+    let keys = dir.path().join("one-key.log");
+    std::fs::write(
+        &keys,
+        format!(
+            "CLIENT_TRAFFIC_SECRET_0 {} {}\n",
+            "11".repeat(32),
+            "22".repeat(32)
+        ),
+    )?;
+    let run = sipnab(&[
+        "-N",
+        "-I",
+        &capture.display().to_string(),
+        "--keylog",
+        &keys.display().to_string(),
+    ])?;
+    exited(&run, 0);
+    assert_eq!(stdout(&run), "", "nothing decrypted, so no message line");
+    for quoted in [message, cause] {
+        printed(&stderr(&run), quoted);
+    }
+    assert!(
+        !stderr(&run).contains("No key in the key log belongs"),
+        "with no ClientHello in the capture sipnab cannot say whose key it is; it printed:\n{}",
+        stderr(&run)
+    );
+    Ok(())
+}
+
+/// A `--keylog` path that is not there stops the run with exit status 1.
+#[cfg(feature = "tls")]
+#[test]
+fn a_key_log_that_is_not_there_gives_the_message_the_page_quotes() -> Result<(), TestError> {
+    let message = "Failed to load --keylog";
+    let rows = section(TLS, TLS_TROUBLESHOOT)?;
+    page_says(rows, message, "tls-capture");
+    page_says(rows, "exit 1", "tls-capture");
+    let dir = tempfile::tempdir()?;
+    let (capture, _) = tls_call(dir.path())?;
+    let missing = dir.path().join("no-such-keys.log").display().to_string();
+    let run = sipnab(&["-N", "-I", &capture, "--keylog", &missing])?;
+    exited(&run, 1);
+    printed(&stderr(&run), &format!("{message} {missing}"));
+    printed(&stderr(&run), "No such file or directory");
+    Ok(())
+}
+
+/// The prerequisites name the `tls` feature the way `--version` lists it and
+/// quote the refusal of a build without it, as the code words it.
+#[test]
+fn the_tls_prerequisites_name_the_feature_and_its_refusal() -> Result<(), TestError> {
+    let needs = section(TLS, "## Before you start")?;
+    page_says(needs, "sipnab --version", "tls-capture");
+    page_says(
+        needs,
+        "requires the 'tls' feature (not compiled in)",
+        "tls-capture",
+    );
+    assert!(
+        BOOTSTRAP.contains("--keylog-fd requires the 'tls' feature (not compiled in)"),
+        "the refusal the page quotes is no longer in src/app/bootstrap.rs"
+    );
+    let version = sipnab(&["--version"])?;
+    exited(&version, 0);
+    let listed = stdout(&version);
+    let features = listed
+        .lines()
+        .find_map(|line| line.split_once("features: ").map(|(_, list)| list))
+        .ok_or("--version prints no `features:` list")?;
+    assert_eq!(
+        features.split(',').any(|name| name.trim() == "tls"),
+        cfg!(feature = "tls"),
+        "--version lists `tls` exactly when the build carries it: {features}"
+    );
+    Ok(())
+}
+
+/// The prerequisites say what changes on the system that ends the TLS
+/// session, for each kind of method.
+#[test]
+fn the_tls_prerequisites_say_what_changes_on_the_other_system() -> Result<(), TestError> {
+    let needs = section(TLS, "## Before you start")?;
+    for named in ["other system", "SSLKEYLOGFILE", "root", "eCapture"] {
+        page_says(needs, named, "tls-capture");
+    }
+    Ok(())
+}
+
+/// The page quotes the permission message of a probe run in the words of the
+/// code, and no longer sends the reader to `--setup-caps` for it.
+#[test]
+fn the_tls_page_quotes_the_probe_permission_message_of_the_code() -> Result<(), TestError> {
+    let message = "Permission denied attaching TLS probes (--uprobe-tls).";
+    page_says(section(TLS, TLS_TROUBLESHOOT)?, message, "tls-capture");
+    assert!(
+        BOOTSTRAP.contains(message),
+        "src/app/bootstrap.rs no longer holds the message the page quotes"
+    );
+    Ok(())
+}
+
+/// The listing the page gives as its first check prints the header the page
+/// quotes, or the sentence for a host with no TLS library in view.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_tls_page_listing_prints_the_header_the_page_quotes() -> Result<(), TestError> {
+    let check = section(TLS, CHECK)?;
+    let header = "FLAVOR        INODE  PIDS  LIBRARY";
+    let none = "No TLS library is mapped by any process sipnab can see.";
+    page_says(check, "sipnab --uprobe-list", "tls-capture");
+    page_says(check, header, "tls-capture");
+    page_says(check, none, "tls-capture");
+    let listing = sipnab(&["--uprobe-list"])?;
+    exited(&listing, 0);
+    let shown = stdout(&listing);
+    assert!(
+        shown.starts_with(header) || shown.contains(none),
+        "neither the header nor the empty sentence: {shown}"
+    );
+    Ok(())
+}
+
+// ── tuning-capture ───────────────────────────────────────────────────────
+//
+// A live capture needs capture rights, which the suite does not have, so the
+// lines of a live run are compared with the format strings in
+// `src/capture/live.rs`. What stops before the capture opens is run.
+
+/// The check quotes the last line of a live run in the words of the code,
+/// for a run with no drops and for a run with drops.
+#[test]
+fn the_tuning_check_quotes_the_end_of_run_lines_of_the_code() -> Result<(), TestError> {
+    let check = section(TUNING, CHECK)?;
+    page_says(
+        check,
+        "sudo sipnab -N -d eth0 --duration 60",
+        "tuning-capture",
+    );
+    page_says(
+        check,
+        "Live capture on 'eth0' finished: 0 packets, no drops",
+        "tuning-capture",
+    );
+    page_says(check, "THIS ANALYSIS IS INCOMPLETE", "tuning-capture");
+    for held in [
+        "Live capture on '{device}' finished: {count} packets, no drops",
+        "the interface — THIS ANALYSIS IS INCOMPLETE",
+    ] {
+        assert!(
+            LIVE.contains(held),
+            "src/capture/live.rs no longer holds {held:?}"
+        );
+    }
+    Ok(())
+}
+
+/// The prerequisites name capture rights, the tool the interface steps use,
+/// and say that no other system changes.
+#[test]
+fn the_tuning_prerequisites_name_rights_tools_and_no_other_system() -> Result<(), TestError> {
+    let needs = section(TUNING, "## Before you start")?;
+    for named in [
+        "sipnab --setup-caps",
+        "ethtool",
+        "other system",
+        "(install.md",
+    ] {
+        page_says(needs, named, "tuning-capture");
+    }
+    printed(TUNING, "sudo ethtool -K eth0");
+    Ok(())
+}
+
+/// `-B 0` stops before any capture opens, with exit status 2 and the message
+/// the troubleshooting table quotes.
+#[test]
+fn a_buffer_of_zero_gives_the_message_the_tuning_page_quotes() -> Result<(), TestError> {
+    let message = "invalid value '0' for '--buffer <MIB>'";
+    let rows = section(TUNING, TROUBLESHOOT)?;
+    page_says(rows, message, "tuning-capture");
+    page_says(rows, "exit 2", "tuning-capture");
+    let run = sipnab(&["-N", "-d", "lo", "-B", "0"])?;
+    exited(&run, 2);
+    printed(&stderr(&run), message);
+    Ok(())
+}
+
+/// A capture filter that does not compile stops the run with exit status 1
+/// and the message the troubleshooting table quotes. Run on a capture file:
+/// a file and an interface share the wording up to the filter text.
+#[test]
+fn a_filter_that_does_not_compile_gives_the_message_the_tuning_page_quotes() -> Result<(), TestError>
+{
+    let message = "Failed to compile BPF filter";
+    page_says(section(TUNING, TROUBLESHOOT)?, message, "tuning-capture");
+    assert!(
+        LIVE.contains("\"Failed to compile BPF filter: {bpf}{}\""),
+        "src/capture/live.rs no longer words a filter failure this way"
+    );
+    let sample = capture(SAMPLE_CALL)?.display().to_string();
+    let run = sipnab(&["-N", "-I", &sample, "port port"])?;
+    exited(&run, 1);
+    printed(&stderr(&run), "Failed to compile BPF filter 'port port'");
+    assert_eq!(stdout(&run), "", "no message of the sample is printed");
+    Ok(())
+}
+
+/// The table quotes the permission message and the message for an interface
+/// that is not there. An unprivileged run is refused before the kernel looks
+/// the interface up, so that case is run only when the test is not root.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_tuning_page_quotes_the_two_messages_of_a_capture_that_does_not_open() -> Result<(), TestError>
+{
+    let rows = section(TUNING, TROUBLESHOOT)?;
+    page_says(rows, "Permission denied on 'eth0'.", "tuning-capture");
+    page_says(rows, "No such device exists", "tuning-capture");
+    page_says(rows, "Available devices:", "tuning-capture");
+    assert!(
+        BOOTSTRAP.contains("\"Permission denied on '{target}'. Grant capture capabilities once"),
+        "src/app/bootstrap.rs no longer words the permission message this way"
+    );
+    assert!(
+        LIVE.contains("Available devices: {}"),
+        "src/capture/live.rs no longer lists the devices"
+    );
+    let uid = std::fs::read_to_string("/proc/self/status")?
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|rest| rest.split_whitespace().next().map(str::to_owned))
+        .ok_or("no Uid line in /proc/self/status")?;
+    if uid == "0" {
+        return Ok(());
+    }
+    let run = sipnab(&["-N", "-d", "sipnab-none0", "--duration", "1"])?;
+    exited(&run, 1);
+    let said = stderr(&run);
+    assert!(
+        said.contains("Permission denied on 'sipnab-none0'.")
+            || said.contains("No such device exists"),
+        "neither message of the table: {said}"
+    );
+    Ok(())
+}
+
+/// The page still warns that a smaller buffer was taken in the words of the
+/// code, which the troubleshooting table points at.
+#[test]
+fn the_tuning_page_quotes_the_smaller_buffer_warning_of_the_code() -> Result<(), TestError> {
+    let message = "the kernel refused a";
+    page_says(section(TUNING, TROUBLESHOOT)?, message, "tuning-capture");
+    assert!(
+        LIVE.contains(message),
+        "src/capture/live.rs no longer holds {message:?}"
+    );
+    Ok(())
+}
+
+// ── theme-guide ──────────────────────────────────────────────────────────
+
+/// Runs sipnab with `[theme]` holding `lines`, in a config directory of its
+/// own.
+fn sipnab_with_theme(lines: &str, args: &[&str]) -> Result<Output, TestError> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("sipnab");
+    std::fs::create_dir(&config)?;
+    std::fs::write(config.join("sipnab.toml"), format!("[theme]\n{lines}"))?;
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(args)
+        .current_dir(repo())
+        .env("NO_COLOR", "1")
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("HOME", dir.path())
+        .stdin(Stdio::null())
+        .output()?)
+}
+
+/// The check of the page: `--dump-config` prints the `[theme]` section with
+/// the value the config file holds.
+#[test]
+fn the_theme_check_prints_the_value_the_config_holds() -> Result<(), TestError> {
+    let check = section(THEME, CHECK)?;
+    page_says(check, "sipnab --dump-config", "theme-guide");
+    page_says(check, "header = \"#89b4fa\"", "theme-guide");
+    page_says(check, "Loaded config from", "theme-guide");
+    let run = sipnab_with_theme("header = \"#89b4fa\"\n", &["--dump-config"])?;
+    exited(&run, 0);
+    printed(&stdout(&run), "[theme]\nheader = \"#89b4fa\"\n");
+    printed(&stderr(&run), "Loaded config from");
+    Ok(())
+}
+
+/// With no config file the `[theme]` section of `--dump-config` is empty,
+/// which the check gives as the sign that sipnab read another file or none.
+#[test]
+fn the_theme_check_is_empty_without_a_config_file() -> Result<(), TestError> {
+    page_says(section(THEME, CHECK)?, "an empty `[theme]`", "theme-guide");
+    let run = sipnab(&["--dump-config"])?;
+    exited(&run, 0);
+    printed(&stdout(&run), "[theme]\n\n");
+    assert!(
+        !stderr(&run).contains("Loaded config from"),
+        "no config file is in reach of this run: {}",
+        stderr(&run)
+    );
+    Ok(())
+}
+
+/// A value that is not a color stops the run with exit status 1 and the
+/// message the troubleshooting table quotes. Only a build with the `tui`
+/// feature, which the page's prerequisites name, parses colors
+/// (`ThemeConfig::validate`); a build without it accepts the value.
+#[cfg(feature = "tui")]
+#[test]
+fn a_value_that_is_not_a_color_gives_the_message_the_theme_page_quotes() -> Result<(), TestError> {
+    let rows = section(THEME, TROUBLESHOOT)?;
+    page_says(rows, "is not a color", "theme-guide");
+    page_says(rows, "exit 1", "theme-guide");
+    let run = sipnab_with_theme("header = \"bluish\"\n", &["--dump-config"])?;
+    exited(&run, 1);
+    printed(
+        &stderr(&run),
+        "invalid config value: [theme] header = \"bluish\" is not a color",
+    );
+    Ok(())
+}
+
+/// A misspelled slot is a warning, and the run goes on with the default.
+#[test]
+fn a_slot_that_does_not_exist_gives_the_warning_the_theme_page_quotes() -> Result<(), TestError> {
+    let message = "Unknown config key: theme.headr";
+    page_says(section(THEME, TROUBLESHOOT)?, message, "theme-guide");
+    let run = sipnab_with_theme("headr = \"cyan\"\n", &["--dump-config"])?;
+    exited(&run, 0);
+    printed(&stderr(&run), message);
+    Ok(())
+}
+
+/// The prerequisites name the feature that draws the terminal UI and say
+/// which other system decides the colors of a remote session.
+#[test]
+fn the_theme_prerequisites_name_the_feature_and_the_other_system() -> Result<(), TestError> {
+    let needs = section(THEME, "## Before you start")?;
+    for named in ["`tui`", "sipnab --version", "other system", "true-color"] {
+        page_says(needs, named, "theme-guide");
+    }
+    let version = sipnab(&["--version"])?;
+    let listed = stdout(&version);
+    let features = listed
+        .lines()
+        .find_map(|line| line.split_once("features: ").map(|(_, list)| list))
+        .ok_or("--version prints no `features:` list")?;
+    assert_eq!(
+        features.split(',').any(|name| name.trim() == "tui"),
+        cfg!(feature = "tui"),
+        "--version lists `tui` exactly when the build carries it: {features}"
+    );
+    Ok(())
+}
+
+// ── run-as-a-service, rest-api, mcp-deploy ───────────────────────────────
+
+/// Whether `--version` lists `feature`, with the list it printed.
+fn version_lists(feature: &str) -> Result<(bool, String), TestError> {
+    let version = sipnab(&["--version"])?;
+    exited(&version, 0);
+    let listed = stdout(&version);
+    let features = listed
+        .lines()
+        .find_map(|line| line.split_once("features: ").map(|(_, list)| list))
+        .ok_or("--version prints no `features:` list")?;
+    Ok((
+        features.split(',').any(|name| name.trim() == feature),
+        features.to_owned(),
+    ))
+}
+
+/// Runs sipnab with `--config` naming a file that holds `[capture]` and
+/// `line`.
+fn sipnab_with_capture_key(line: &str) -> Result<Output, TestError> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("sipnab.toml");
+    std::fs::write(&config, format!("[capture]\n{line}\n"))?;
+    sipnab(&["-D", "--config", &config.display().to_string()])
+}
+
+/// The troubleshooting section of the service page, up to the section after
+/// it. [`section`] cannot take it: a `#` comment in one of its fenced blocks
+/// reads as a heading there.
+fn service_troubleshooting() -> Result<&'static str, TestError> {
+    let from = SERVICE
+        .find(&format!("\n{SERVICE_TROUBLESHOOT}\n"))
+        .ok_or_else(|| format!("no heading {SERVICE_TROUBLESHOOT:?}"))?;
+    let rest = SERVICE.get(from..).ok_or("section start")?;
+    let end = rest
+        .find("\n## Check that a running service is healthy\n")
+        .ok_or("the section after the troubleshooting section moved")?;
+    rest.get(..end).ok_or_else(|| "section range".into())
+}
+
+/// The service prerequisites say what changes on the other system, the SIP
+/// server, and when nothing does.
+#[test]
+fn the_service_prerequisites_say_what_changes_on_the_other_system() -> Result<(), TestError> {
+    let needs = section(SERVICE, "## Before you start")?;
+    for named in ["other system", "HEP", "firewall", "systemd"] {
+        page_says(needs, named, "run-as-a-service");
+    }
+    Ok(())
+}
+
+/// A key sipnab does not know is a warning, and `-D` goes on to print the
+/// configuration: the check the service page gives after each edit.
+#[test]
+fn a_misspelled_key_gives_the_warning_the_service_page_quotes() -> Result<(), TestError> {
+    let message = "Unknown config key: capture.snaplenn";
+    let rows = service_troubleshooting()?;
+    page_says(rows, message, "run-as-a-service");
+    page_says(
+        rows,
+        "sipnab -D --config /etc/sipnab/sipnab.toml",
+        "run-as-a-service",
+    );
+    let run = sipnab_with_capture_key("snaplenn = 1600")?;
+    exited(&run, 0);
+    printed(&stderr(&run), message);
+    printed(&stdout(&run), "[capture]");
+    Ok(())
+}
+
+/// A value sipnab refuses stops the run with exit status 1 and the message
+/// the table of the service page quotes.
+#[test]
+fn a_refused_value_gives_the_message_and_status_the_service_page_quotes() -> Result<(), TestError> {
+    let message = "invalid config value: [capture] snaplen must be > 0";
+    let rows = service_troubleshooting()?;
+    page_says(rows, &format!("| `{message}` | 1 |"), "run-as-a-service");
+    let run = sipnab_with_capture_key("snaplen = 0")?;
+    exited(&run, 1);
+    printed(&stderr(&run), message);
+    Ok(())
+}
+
+/// A port another process holds: sipnab prints the bind failure and exits 2,
+/// as the service page and the REST page both state.
+#[cfg(feature = "api")]
+#[test]
+fn an_api_port_in_use_gives_the_message_and_status_both_pages_quote() -> Result<(), TestError> {
+    page_says(
+        service_troubleshooting()?,
+        "| `failed to bind API to 127.0.0.1:18081: Address already in use (os error 98)` | 2 |",
+        "run-as-a-service",
+    );
+    page_says(
+        section(REST, "### When it does not answer")?,
+        "`server error: failed to bind API to 127.0.0.1:8080: Address already in use \
+         (os error 98)` and exits `2`",
+        "rest-api",
+    );
+    // Bound until the end of the test, so the port stays taken while sipnab
+    // runs.
+    let held = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let address = held.local_addr()?.to_string();
+    let sample = capture(SAMPLE_CALL)?.display().to_string();
+    let run = sipnab(&["-N", "-I", &sample, "--api", &address])?;
+    exited(&run, 2);
+    printed(
+        &stderr(&run),
+        &format!("server error: failed to bind API to {address}: Address already in use"),
+    );
+    Ok(())
+}
+
+/// The REST prerequisites name the feature as `--version` lists it, the
+/// three tools the page's commands use, and what another system needs.
+#[test]
+fn the_rest_prerequisites_name_the_feature_the_tools_and_the_other_system() -> Result<(), TestError>
+{
+    let needs = section(REST, "### Before you start")?;
+    for named in [
+        "`api`",
+        "sipnab --version",
+        "`curl`",
+        "`jq`",
+        "`openssl`",
+        "other system",
+    ] {
+        page_says(needs, named, "rest-api");
+    }
+    for used in ["curl -s", "| jq ", "openssl rand -hex 32"] {
+        printed(REST, used);
+    }
+    let (listed, features) = version_lists("api")?;
+    assert_eq!(
+        listed,
+        cfg!(feature = "api"),
+        "--version lists `api` exactly when the build carries it: {features}"
+    );
+    Ok(())
+}
+
+/// The MCP deployment prerequisites name the two features as `--version`
+/// lists them, the client, and the systems a remote setup changes.
+#[test]
+fn the_mcp_deploy_prerequisites_name_the_features_and_the_other_systems() -> Result<(), TestError> {
+    let needs = section(MCP_DEPLOY, "## Before you start")?;
+    for named in [
+        "`mcp`",
+        "`mcp-http`",
+        "sipnab --version",
+        "Claude Code",
+        "other system",
+        "SSH",
+    ] {
+        page_says(needs, named, "mcp-deploy");
+    }
+    for (feature, built) in [
+        ("mcp", cfg!(feature = "mcp")),
+        ("mcp-http", cfg!(feature = "mcp-http")),
+    ] {
+        let (listed, features) = version_lists(feature)?;
+        assert_eq!(
+            listed, built,
+            "--version lists `{feature}` exactly when the build carries it: {features}"
+        );
+    }
+    Ok(())
+}
+
+// ── auth ─────────────────────────────────────────────────────────────────
+
+/// A signing key for the tests: any text serves.
+#[cfg(all(unix, feature = "api"))]
+const SIGNING_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// The token `sipnab --mint-token` prints for the REST API with `key` and
+/// `extra` flags.
+#[cfg(all(unix, feature = "api"))]
+fn minted(key: &str, extra: &[&str]) -> Result<String, TestError> {
+    let mut args = vec!["--mint-token", "--api-signing-key", key];
+    args.extend_from_slice(extra);
+    let run = sipnab(&args)?;
+    exited(&run, 0);
+    Ok(stdout(&run).trim().to_owned())
+}
+
+/// The check of the page: a server that holds the signing key answers 200 to
+/// a token minted with it, 401 to a request with no token, and 200 to
+/// `/health` with none.
+#[cfg(all(unix, feature = "api"))]
+#[test]
+fn the_auth_check_gets_200_with_the_token_and_401_without() -> Result<(), TestError> {
+    // Sliced by hand: the fenced blocks of the check hold `#` comments, which
+    // `section` reads as headings.
+    let from = AUTH
+        .find(&format!("\n{CHECK}\n"))
+        .ok_or_else(|| format!("no heading {CHECK:?}"))?;
+    let rest = AUTH.get(from..).ok_or("section start")?;
+    let end = rest
+        .find(&format!("\n{TROUBLESHOOT}\n"))
+        .ok_or_else(|| format!("no heading {TROUBLESHOOT:?} after the check"))?;
+    let check = rest.get(..end).ok_or("section range")?;
+    for quoted in [
+        "sipnab --mint-token --api-signing-key \"$KEY\"",
+        "--api-signing-key \"$KEY\"",
+        "`200`",
+        "`401`",
+        "/health",
+        "s2.",
+    ] {
+        page_says(check, quoted, "auth");
+    }
+    let token = minted(SIGNING_KEY, &[])?;
+    assert!(token.starts_with("s2."), "a signed token: {token}");
+    let api =
+        server::ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]).map_err(|e| e.to_string())?;
+    let with = api
+        .get_bearer("/v1/dialogs", &token)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(with.status, 200, "the minted token: {}", with.body);
+    let without = api.get("/v1/dialogs").map_err(|e| e.to_string())?;
+    assert_eq!(without.status, 401, "no token: {}", without.body);
+    let health = api.get("/health").map_err(|e| e.to_string())?;
+    assert_eq!(
+        health.status, 200,
+        "/health takes no token: {}",
+        health.body
+    );
+    Ok(())
+}
+
+/// A token signed with a key the server does not hold gets 401, the first
+/// row of the troubleshooting table.
+#[cfg(all(unix, feature = "api"))]
+#[test]
+fn a_token_of_another_key_gets_the_401_the_auth_page_states() -> Result<(), TestError> {
+    page_says(
+        section(AUTH, TROUBLESHOOT)?,
+        "a key the server does not hold",
+        "auth",
+    );
+    let token = minted("another-key-another-key-another-key", &[])?;
+    let api =
+        server::ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]).map_err(|e| e.to_string())?;
+    let got = api
+        .get_bearer("/v1/dialogs", &token)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(got.status, 401, "a token of another key: {}", got.body);
+    Ok(())
+}
+
+/// A token whose id is in the file of `--api-revoked-file` gets 401, and a
+/// token with another id from the same key gets 200.
+#[cfg(all(unix, feature = "api"))]
+#[test]
+fn a_revoked_token_gets_the_401_the_auth_page_states() -> Result<(), TestError> {
+    page_says(section(AUTH, TROUBLESHOOT)?, "--api-revoked-file", "auth");
+    let dir = tempfile::tempdir()?;
+    let revoked = dir.path().join("revoked.txt");
+    std::fs::write(&revoked, "ci-runner-1\n")?;
+    let listed = minted(SIGNING_KEY, &["--token-id", "ci-runner-1"])?;
+    let other = minted(SIGNING_KEY, &["--token-id", "ci-runner-2"])?;
+    let api = server::ApiServer::spawn(&[
+        "--api-signing-key",
+        SIGNING_KEY,
+        "--api-revoked-file",
+        &revoked.display().to_string(),
+    ])
+    .map_err(|e| e.to_string())?;
+    let refused = api
+        .get_bearer("/v1/dialogs", &listed)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(refused.status, 401, "the listed id: {}", refused.body);
+    let served = api
+        .get_bearer("/v1/dialogs", &other)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(served.status, 200, "an id the file lacks: {}", served.body);
+    Ok(())
+}
+
+/// `--mint-token` with no signing key stops with exit status 2 and the
+/// message the troubleshooting table quotes.
+#[test]
+fn minting_without_a_key_gives_the_message_the_auth_page_quotes() -> Result<(), TestError> {
+    let message = "--mint-token requires at least one --api-signing-key/--api-signing-key-file \
+                   or --mcp-signing-key/--mcp-signing-key-file";
+    let rows = section(AUTH, TROUBLESHOOT)?;
+    page_says(rows, message, "auth");
+    page_says(rows, "exit 2", "auth");
+    let run = sipnab(&["--mint-token"])?;
+    if cfg!(any(feature = "api", feature = "mcp-http")) {
+        exited(&run, 2);
+        printed(&stderr(&run), message);
+    }
+    Ok(())
+}
+
+/// The prerequisites name the features, the tools of the page's commands and
+/// what reaches the other system: the token, never the signing key.
+#[test]
+fn the_auth_prerequisites_name_the_features_the_tools_and_the_other_system() -> Result<(), TestError>
+{
+    let needs = section(AUTH, "## Before you start")?;
+    for named in [
+        "`api`",
+        "`mcp-http`",
+        "sipnab --version",
+        "`openssl`",
+        "`curl`",
+        "other system",
+        "signing key",
+    ] {
+        page_says(needs, named, "auth");
+    }
+    for used in [
+        "openssl rand -hex 32",
+        "curl -H \"Authorization: Bearer $TOKEN\"",
+    ] {
+        printed(AUTH, used);
+    }
     Ok(())
 }

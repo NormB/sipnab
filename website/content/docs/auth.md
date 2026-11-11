@@ -42,6 +42,22 @@ The steps below set up signed tokens from scratch. After the steps, this page co
   including the metrics endpoint and the HEP listener, which use no bearer
   token.
 
+## Before you start
+
+- **A binary with the `api` feature** for the REST API, and `mcp-http` for the
+  HTTP MCP server. `sipnab --version` lists the features, and the release
+  binaries carry both.
+- **`openssl`,** to generate a signing key, and **`curl`,** to send a request.
+- **A place for the signing key that only the server reads.** The examples
+  keep it in the shell variable `KEY`. A service reads it from a file with
+  `--api-signing-key-file`.
+- **On each other system that sends requests:** the token, in the
+  `Authorization` header of its client. The signing key never leaves the
+  server: a client that holds it can mint tokens of its own.
+- **For a client on another machine:** a routable address and
+  [TLS on the listener](#secure-every-listener), so that the token does not
+  cross the network in the clear.
+
 ## Configure a signing key
 
 Give the server one or more HMAC signing keys (use a long, random secret).
@@ -271,6 +287,52 @@ It is **re-read when its mtime changes**.
 - (Signed tokens are otherwise valid until `exp`. So a denylist is the revocation mechanism for the
   stateless model.)
 
+## Check that it worked
+
+Start a server with a signing key, mint a token with the same key, and send
+one request with the token and one without. Run the server in one shell:
+
+```bash
+# Run all of these, in order.
+export KEY="$(openssl rand -hex 32)"
+sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-signing-key "$KEY"
+```
+
+In a second shell that holds the same `KEY`:
+
+```bash
+# Run all of these, in order.
+TOKEN="$(sipnab --mint-token --api-signing-key "$KEY")"
+echo "$TOKEN" | cut -c1-3
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/v1/dialogs
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/health
+```
+
+Expect four lines:
+
+- `s2.`, the start of every signed token,
+- `200`, the request with the token,
+- `401`, the request without one,
+- `200`, because `/health` on the REST API takes no credential.
+
+The test suite runs this check on each build: it mints a token, starts a
+server on a port the kernel picks and compares the three status codes. On
+Ubuntu 24.04 (Linux 6.8, aarch64) it got `200`, `401` and `200`. The suite
+sends its requests from Rust, not with `curl`.
+
+## When something does not work
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| `--mint-token requires at least one --api-signing-key/--api-signing-key-file or --mcp-signing-key/--mcp-signing-key-file`, exit 2 | The command names no signing key. In a second shell, `KEY` is empty unless you exported it there | Give the key the server holds |
+| `401` with a token you minted a moment ago | The token carries the signature of a key the server does not hold: the server started with another key, or with a fresh `$(openssl rand -hex 32)` | Mint with the key the server started with. The first key mints, and every key verifies: [Rotation](#rotation) |
+| `401` on one route, `200` on another | The scope of the token does not cover the route | [Scope: what a token may reach](#scope-what-a-token-may-reach) |
+| `401` after a time with no other change | The token passed its expiry. The default life is one hour | Mint a new token, with `--api-token-ttl` for a longer life: [Expiry](#expiry) |
+| `401` for one token, `200` for another from the same key | The id of the token is in the file of `--api-revoked-file` | Mint a token with another id: [Revocation](#revocation) |
+| `401` for an API token on the MCP server, or the reverse | A token binds to one audience | [Audience binding](#audience-binding) |
+| `403` or `503` | The server did not look at the token | The table in [Use a token](#use-a-token) |
+
 ## Secure every listener
 
 sipnab has four network listeners. Each takes its own credential and its own
@@ -283,8 +345,8 @@ certificate, and each refuses a routable bind that has no credential:
 | Metrics (`--metrics`) | HTTP Basic: `--metrics-auth-file` holding `user:password` | `--metrics-tls-cert`, `--metrics-tls-key` | `[metrics] tls_cert`, `tls_key` | refused, exit 2 |
 | HEP (`--hep-listen`) | source allowlist `--hep-allow`, or shared secret `--hep-auth-file` | `--hep-listen-transport tls`, `--hep-tls-cert`, `--hep-tls-key` | `[hep] tls_cert`, `tls_key` | refused, exit 2 |
 
-The exact refusal messages are in [A service that does not
-start](@/docs/run-as-a-service.md#a-service-that-does-not-start).
+The exact refusal messages are in [When the service does not
+start](@/docs/run-as-a-service.md#when-the-service-does-not-start).
 
 TLS encrypts the path, and the credential in the second column says who the
 client is. The REST API and MCP over HTTP can also ask each client for a

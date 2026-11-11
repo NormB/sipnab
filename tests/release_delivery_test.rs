@@ -1202,3 +1202,166 @@ fn the_fixture_git_drops_the_hook_environment() {
         );
     }
 }
+
+// ── A changelog section names each kind of change once ────────────────────
+//
+// Two branches that each add a `### Fixed` list to `[Unreleased]` merge
+// without a conflict when their lists are not adjacent, and the section then
+// carries the heading twice. #749's merge left exactly that on main
+// (f7157fe4f: `### Fixed` at lines 17 and 30), and nothing refused it. The
+// rule is `release_logic::repeated_headings`, a pure function over a
+// section's body; these tables drive it, and the last test holds the real
+// `[Unreleased]` section to it. Released sections are history: 23 of them
+// repeat a heading (counted 2026-11-11, 0.5.246 among them) and are not
+// rewritten.
+
+/// Bodies with no heading repeated.
+const HEADINGS_ONCE: &[&str] = &[
+    "",
+    "\n\n",
+    "- a change with no heading",
+    "### Fixed\n\n- a",
+    "### Added\n\n- a\n\n### Fixed\n\n- b",
+    "### Added\n- a\n### Changed\n- b\n### Fixed\n- c\n### Dependencies\n- d\n### Security\n- e",
+    "### Fixed\n\n- the page said `### Fixed` twice",
+    "### Fixed\n\n- a\n\n#### Fixed\n\n- a fourth-level heading is not a section heading",
+    "### Fixed\n\n- a\n\n## Fixed",
+    "### Fixed\n\n- a\n\n###Fixed",
+    "### Fixed\n\n- a\n\n    ### Fixed",
+    "### Fixed\n\n```\n### Fixed\n```",
+    "### Fixed\n\n~~~\n### Fixed\n~~~",
+    "### Fixed\n\n- a step:\n\n  ```\n### Fixed\n  ```",
+    "### Fixed\n\n- a\n\n### Fixed in 0.5.1",
+    "### Fixed\n\n- a\n\n### Fixes",
+];
+
+/// Bodies with a repeated heading: the body, the heading, its 1-based lines.
+const HEADINGS_REPEATED: &[(&str, &str, &[usize])] = &[
+    ("### Fixed\n\n- a\n\n### Fixed\n\n- b", "### Fixed", &[1, 5]),
+    ("### Fixed\n### Fixed", "### Fixed", &[1, 2]),
+    (
+        "### Changed\n- a\n### Fixed\n- b\n### Fixed\n- c",
+        "### Fixed",
+        &[3, 5],
+    ),
+    (
+        "### Fixed\n- a\n### Changed\n- b\n### Fixed\n- c",
+        "### Fixed",
+        &[1, 5],
+    ),
+    (
+        "### Fixed\n- a\n### Fixed\n- b\n### Fixed\n- c",
+        "### Fixed",
+        &[1, 3, 5],
+    ),
+    ("### Fixed\n- a\n### fixed\n- b", "### Fixed", &[1, 3]),
+    ("### Fixed\n- a\n### FIXED\n- b", "### Fixed", &[1, 3]),
+    ("### Fixed\n- a\n### Fixed  \n- b", "### Fixed", &[1, 3]),
+    ("### Fixed\n- a\n### Fixed\t\n- b", "### Fixed", &[1, 3]),
+    ("### Fixed\n- a\n###  Fixed\n- b", "### Fixed", &[1, 3]),
+    ("### Fixed\r\n- a\r\n### Fixed\r\n- b", "### Fixed", &[1, 3]),
+    (
+        "\n\n### Dependencies\n\n- a\n\n### Security\n\n- b\n\n### Dependencies\n",
+        "### Dependencies",
+        &[3, 11],
+    ),
+    (
+        "### Fixed\n\n```\n### Fixed\n```\n\n### Fixed\n",
+        "### Fixed",
+        &[1, 7],
+    ),
+    (
+        "### Bug fixes and repairs\n- a\n### Bug fixes and repairs\n- b",
+        "### Bug fixes and repairs",
+        &[1, 3],
+    ),
+];
+
+#[test]
+fn a_section_with_each_heading_once_reports_nothing() {
+    assert!(
+        HEADINGS_ONCE.len() >= 12,
+        "the table lost cases: {}",
+        HEADINGS_ONCE.len()
+    );
+    for body in HEADINGS_ONCE {
+        let found = release_logic::repeated_headings(body);
+        assert!(
+            found.is_empty(),
+            "no heading repeats in {body:?}, yet the rule reported {found:?}"
+        );
+    }
+}
+
+#[test]
+fn a_repeated_heading_is_reported_with_every_line_it_is_on() {
+    assert!(
+        HEADINGS_REPEATED.len() >= 12,
+        "the table lost cases: {}",
+        HEADINGS_REPEATED.len()
+    );
+    for (body, heading, lines) in HEADINGS_REPEATED {
+        let found = release_logic::repeated_headings(body);
+        assert_eq!(
+            found,
+            vec![((*heading).to_string(), lines.to_vec())],
+            "wrong report for {body:?}"
+        );
+    }
+}
+
+#[test]
+fn two_repeated_headings_are_both_reported_in_the_order_they_first_appear() {
+    let body = "### Fixed\n- a\n### Added\n- b\n### Added\n- c\n### Fixed\n- d\n### Changed\n- e";
+    assert_eq!(
+        release_logic::repeated_headings(body),
+        vec![
+            ("### Fixed".to_string(), vec![1, 7]),
+            ("### Added".to_string(), vec![3, 5]),
+        ],
+        "both repeats, first-appearance order, and Changed left out"
+    );
+}
+
+#[test]
+fn a_fence_left_open_hides_the_rest_of_the_section_and_nothing_before_it() {
+    assert_eq!(
+        release_logic::repeated_headings("### Fixed\n### Fixed\n```\n### Added\n### Added"),
+        vec![("### Fixed".to_string(), vec![1, 2])],
+        "the lines before the open fence are still read; those after are code"
+    );
+}
+
+#[test]
+fn the_report_keeps_the_spelling_of_the_first_appearance() {
+    assert_eq!(
+        release_logic::repeated_headings("### fixed\n### Fixed"),
+        vec![("### fixed".to_string(), vec![1, 2])],
+        "the first spelling names the heading"
+    );
+}
+
+/// The real file: `[Unreleased]` carries each `### ` heading once.
+#[test]
+fn the_unreleased_section_names_each_kind_of_change_once() -> Result<(), TestError> {
+    let Some(body) = unreleased_body()? else {
+        return Ok(());
+    };
+    let found = release_logic::repeated_headings(&body);
+    let report: Vec<String> = found
+        .iter()
+        .map(|(h, lines)| {
+            format!(
+                "`{h}` appears {} times (section lines {lines:?})",
+                lines.len()
+            )
+        })
+        .collect();
+    assert!(
+        found.is_empty(),
+        "CHANGELOG.md's [Unreleased] section repeats a heading; move the entries under one \
+         heading (a merge of two branches leaves this without a conflict):\n{}",
+        report.join("\n")
+    );
+    Ok(())
+}

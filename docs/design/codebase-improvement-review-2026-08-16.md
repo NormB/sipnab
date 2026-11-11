@@ -415,7 +415,7 @@ catches future accidental dependencies on `native` or another default feature.
 (`packaging/sipnab.service:1,9`). It binds REST and standalone metrics
 non-loopback without credentials (`:9`), which REST refuses
 ([`src/output/api.rs:443-465`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/output/api.rs#L443-L465); [`docs/rest-api.md:210-217`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/rest-api.md#L210-L217)) and metrics documents as
-fail-closed ([`docs/rest-api.md:403-413`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L403-L413)<!-- "### Metrics endpoints" -->). Yet [`docs/install.md:222-224`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L222-L224) promises a
+fail-closed ([`docs/rest-api.md:419-429`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L419-L429)<!-- "### Metrics endpoints" -->). Yet [`docs/install.md:222-224`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/docs/install.md#L222-L224) promises a
 packaged unit and service user.
 
 **Impact:** `systemctl start sipnab` from either native package enters failure or
@@ -476,7 +476,7 @@ either finds a Sipnab span in Tempo or explicitly says traces are unavailable.
 **Priority / type / effort:** P2 / capability improvement / M
 
 **Evidence:** REST health always returns literal `ok`
-([`src/output/api.rs:595-597`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/output/api.rs#L595-L597); [`docs/rest-api.md:781-783`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L781-L783)<!-- "### GET /health" -->), and MCP health is also
+([`src/output/api.rs:595-597`](https://github.com/NormB/sipnab/blob/b28f5e55af584218fbcdf22b253f85a62f7e6935/src/output/api.rs#L595-L597); [`docs/rest-api.md:797-799`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L797-L799)<!-- "### GET /health" -->), and MCP health is also
 unconditional ([`src/mcp/transport.rs:734-737`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L734-L737)<!-- "let mcp_router = Router::new()" -->). Existing capture state is not
 consulted by these probes.
 

@@ -433,7 +433,7 @@ means no loss.
 
 **`--cores` is untouched.** `RunMode::CoresFile` requires `cli.has_input()`
 ([`src/app/bootstrap.rs:154`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L154)<!-- "if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device { return RunMode::CoresFile;" -->), so it never sees a live or HEP source. The existing
-`cores_ignored_warning` ([`src/app/bootstrap.rs:7994`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7994)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
+`cores_ignored_warning` ([`src/app/bootstrap.rs:8021`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8021)<!-- "fn cores_ignored_warning(cli:" -->) already names both reasons a
 run stays single-threaded. A composite source adds nothing here and needs
 nothing.
 
@@ -497,7 +497,7 @@ sipnab -N -d eth0 -L 127.0.0.1:9060 udp portrange 10000-20000
 
 `plan` already sets the precedent: `--cores` with `--json` exits 2 with a precise
 message ([`src/app/bootstrap.rs:1943-1956`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1943-L1956)<!-- "fn refuse_cores_without_their_outputs(cli: &Cli, config: &Config) {" -->), `--cores` on a live source warns
-(`cores_ignored_warning`, [`src/app/bootstrap.rs:7994`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L7994)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
+(`cores_ignored_warning`, [`src/app/bootstrap.rs:8021`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L8021)<!-- "fn cores_ignored_warning(cli:" -->), `-I` beating `-d` warns
 ([`src/app/bootstrap.rs:1033`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1033)<!-- "if cli.has_input() && cli.capture_args.device.is_some()" -->). Three rules follow that precedent:
 
 1. **Refuse what produces a wrong answer.** `-I` with a composite; `-O` with a

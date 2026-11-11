@@ -7089,6 +7089,22 @@ Most routes only read. These change state:
 
 ## Getting started
 
+### Before you start
+
+- **A binary with the `api` feature.** `sipnab --version` lists the features:
+  [Check your binary has the API](#check-your-binary-has-the-api).
+- **A capture file, or capture rights on an interface.** The examples read a
+  file, which needs no rights.
+- **`curl` and `jq`,** for the requests and the checks on this page, and
+  **`openssl`,** to generate the key. Any HTTP client can stand in for `curl`.
+- **A free TCP port.** The examples use `127.0.0.1:8080`.
+- **For a client on another system:** a routable address for `--api`, a key or
+  a signing key, which sipnab requires on such an address, and a firewall rule
+  that lets the client reach the port. The client needs the key. A client that
+  reaches the server by a name needs `--api-allowed-host` with that name.
+  [API TLS](#api-tls) covers encryption on that path. A client on the same
+  machine changes nothing on any other system.
+
 ### Check your binary has the API
 
 The REST API is the `api` feature.
@@ -7172,7 +7188,7 @@ ok
 | `curl` exits `7`, `Failed to connect` | Nothing listens there. sipnab is not running, or it stopped at startup: read its standard error. |
 | `{"status":401,"title":"Unauthorized","type":"https://sipnab.com/problems/unauthorized"}` | The request carries no key, or not the one sipnab holds. Under `sudo`, pass the variable with `--preserve-env=SIPNAB_API_KEY`. |
 | `403` with `Forbidden: Host header is not allowed: <name>. If clients reach this server by that name, start sipnab with --api-allowed-host <name>.` | The client reaches the server by a name sipnab was not given. Add `--api-allowed-host <name>` ([Which `Host` names the API answers](#which-host-names-the-api-answers)). |
-| sipnab prints `server error: failed to bind API to 127.0.0.1:8080: Address already in use (os error 98)` and exits `1` | Another program holds the port. Choose another port for `--api`. |
+| sipnab prints `server error: failed to bind API to 127.0.0.1:8080: Address already in use (os error 98)` and exits `2` | Another program holds the port. Choose another port for `--api`. |
 | sipnab prints `server error: REST API refuses to start: --api 0.0.0.0:8080 is non-loopback but no --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was supplied. Bind 127.0.0.1, or configure authentication.` and exits `2` | A routable bind needs a credential. Set `SIPNAB_API_KEY`, or a signing key ([Set up authentication](auth.md)). |
 | `503` | Over the per-address rate or the in-flight cap, whatever the credential ([Bind address & connection limits](#bind-address--connection-limits)). |
 
@@ -13352,7 +13368,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.245 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.246 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13375,7 +13391,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.245` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.246` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13564,7 +13580,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.245) | Plugin | `Recommends` |
+| Artifact (0.5.246) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13604,11 +13620,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.245 for the
+it first, in the same shell, to the release you want, e.g. 0.5.246 for the
 latest:
 
 ```bash
-VERSION=0.5.245
+VERSION=0.5.246
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13748,13 +13764,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.245, as in
+you want, e.g. 0.5.246, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.245
+   VERSION=0.5.246
    ```
 
 - Download the package:
@@ -13865,25 +13881,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.245-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.246-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.245-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.246-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.245-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.246-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.245-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.246-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14368,14 +14384,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.245
+docker pull ghcr.io/normb/sipnab:0.5.246
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.245` | That release |
+| `0.5.246` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14413,7 +14429,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.245 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.246 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14426,11 +14442,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.245 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.246 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.245` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.245`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.246` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.246`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14628,7 +14644,7 @@ sipnab -D
 line it shows the libpcap it is running, e.g.
 
 ```text
-sipnab 0.5.246 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+sipnab 0.5.247 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
 libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
 ```
 
@@ -14852,7 +14868,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.245
+docker pull ghcr.io/normb/sipnab:0.5.246
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -17429,7 +17445,7 @@ reason.
   0.5.233 and earlier did not handle `SIGHUP`: the service went `inactive`
   with `Result=success` and stayed down until started again.
 
-[A service that does not start](run-as-a-service.md#a-service-that-does-not-start)
+[When the service does not start](run-as-a-service.md#when-the-service-does-not-start)
 lists each refusal message with its fix.
 
 ## Live capture says Permission denied
@@ -19972,6 +19988,19 @@ sipnab's TUI uses 11 semantic color slots. There is also `highlight`, a legacy a
 - The slots control every visual element.
 - Customize them via the `[theme]` section in your config file.
 
+## Before you start
+
+- **A build with the `tui` feature.** `sipnab --version` prints the list after
+  `features:`, and the release binaries carry `tui`.
+- **A config file you can write.**
+  [File Locations](config-reference.md#file-locations) lists where sipnab
+  looks. The examples use `~/.config/sipnab/sipnab.toml`.
+- **A true-color terminal, for hex values.** A named color needs none.
+- **Over SSH, the terminal on the other system.** The terminal you type at
+  draws the colors, so its true-color support and its palette are what count.
+  The machine that runs sipnab holds the config file. Nothing else changes on
+  any other system.
+
 ## Color slots
 
 | Slot | Default | What It Affects |
@@ -20298,6 +20327,42 @@ border = "white"
   <span style="color:#ff00ff">4  INVITE     +15551234      +15559876      </span><span style="color:#ff0000">Failed</span>
   <span style="color:#ff00ff">5  INVITE     1005           1006           </span><span style="color:#00ff00">Completed</span></pre>
 </div>
+
+## Check that it worked
+
+With this in the config file:
+
+```toml
+[theme]
+header = "#89b4fa"
+```
+
+print the settings sipnab holds:
+
+```bash
+sipnab --dump-config
+```
+
+- The log on standard error names the file: `Loaded config from` and its path.
+- The `[theme]` section of the output holds your value: `header = "#89b4fa"`.
+  It lists the slots the file sets, and no defaults.
+- With an empty `[theme]` and no `Loaded config from` line, sipnab found no
+  config file, or read another one.
+
+This check ran on Ubuntu 24.04 (Linux 6.8, aarch64) with that file and
+printed both lines. Then open a capture in the terminal UI and look at the
+header row: `sipnab -I capture.pcap`. No test draws the terminal UI on a real
+terminal, so check the colors by eye.
+
+## When something does not work
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| A message that starts `invalid config value: [theme] header = "bluish" is not a color`, exit 1 | The value is not a name or a hex value from [Supported color syntax](#supported-color-syntax) | Correct the value. sipnab does not start until every color parses |
+| A warning `Unknown config key: theme.headr`, and the slot keeps its default | The slot name has a spelling error | Use a name from [Color slots](#color-slots) |
+| `--dump-config` prints an empty `[theme]` | sipnab loaded another config file, or none | Read the `Loaded config from` line, and compare it with [File Locations](config-reference.md#file-locations) |
+| The terminal UI has no color at all | The environment holds a non-empty `NO_COLOR` | Unset it: [`NO_COLOR`](#no_color) |
+| Hex colors look wrong, and named colors look right | The terminal has no true-color support | Use named colors, or a terminal from the list under [Tips](#tips) |
 
 ## Tips
 
@@ -36716,7 +36781,7 @@ when sipnab exits.
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `Permission denied on 'capture source'.`, exit 1, from `sipnab -N --uprobe-tls` | sipnab was not root when it attached | Run it with `sudo`. The hint under the message names `sipnab --setup-caps`, which grants the rights for a capture on an interface; attaching a probe needs root, as [Root, at the moment sipnab attaches a probe](#root-at-the-moment-sipnab-attaches-a-probe) says |
+| `Permission denied attaching TLS probes (--uprobe-tls).`, exit 1, from `sipnab -N --uprobe-tls` | sipnab was not root when it attached | Run it with `sudo`, as the message says. `sipnab --setup-caps` grants the rights for a capture on an interface; attaching a probe needs root, as [Root, at the moment sipnab attaches a probe](#root-at-the-moment-sipnab-attaches-a-probe) says. Releases through 0.5.245 printed `Permission denied on 'capture source'.` and named `sipnab --setup-caps` here |
 | `--uprobe-list` finds no TLS library | Unprivileged, so `/proc/<pid>/maps` opens only for your own processes | Re-run as root before concluding the host uses no TLS |
 | `no kernel programs` from a binary you built | `--features bpf` compiled the loader, and the inner nightly build found no `bpf-linker` | Rebuild on a host carrying `bpf-linker`, with `SIPNAB_BPF_REQUIRED=1` so the gap fails the build |
 | Capture attaches, reports 0 messages | Almost always the wrong symbol | `nm -D --undefined-only <binary> \| grep -i ssl_write`, then `--uprobe-symbol` |
@@ -36788,6 +36853,25 @@ MCP-capable agent.
 - Then do the same scenario and swap the registration step.
 - [Registering other MCP clients](#use-an-agent-other-than-claude-code)
   has the exact config for each.
+
+## Before you start
+
+- **A sipnab binary with the `mcp` feature** on each machine that runs
+  sipnab, and `mcp-http` as well for the HTTP service. `sipnab --version`
+  lists the features, and the release binaries carry both.
+  [Install sipnab](#install-sipnab-every-server-once) has the steps.
+- **An MCP client.** The steps use Claude Code.
+- **A capture file, or capture rights on an interface** of the machine that
+  runs sipnab.
+
+What changes on each other system depends on the setup:
+
+| Setup | Change on the other system |
+|---|---|
+| Agent and sipnab on one machine | None |
+| Agent on a laptop, sipnab on a server, over SSH | The server needs sipnab and an account the laptop can reach over SSH. The laptop needs the registration of the server in its MCP client |
+| Agent on a laptop, sipnab as an HTTP service | The server needs sipnab, a token or a signing key, and a firewall rule for the port of `--mcp-bind`. The laptop needs the address and the token |
+| Captures sent from a SIP proxy | The proxy needs its HEP tracing pointed at sipnab |
 
 ## Find your setup
 
@@ -36901,7 +36985,7 @@ that's the laptop itself):
    build came from:
 
    ```text
-   sipnab 0.5.246 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
+   sipnab 0.5.247 (<hash>) features: native,tui,audio,tls,hep,api,mcp,mcp-http,metrics,plugins,bpf,vcon,opus,archive,g729
    libpcap version 1.10.5 (with TPACKET_V3); alternate capture backends named: none
    ```
 
@@ -37603,7 +37687,7 @@ data:
 id: 0
 retry: 3000
 
-data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.246"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.247"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 **`Accept` must offer both types.** Not one, not the wrong one:
@@ -38288,7 +38372,7 @@ Then confirm the build can do what you are about to ask of it:
 ```json
 {
   "schema_version": 1,
-  "version": "0.5.246",
+  "version": "0.5.247",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp",
                "mcp-http", "metrics", "native", "opus", "plugins", "tls",
                "tui", "vcon", "wasm"],
@@ -39231,7 +39315,7 @@ client. The whole block is one pipeline.
 Expected first line of response:
 
 ```json
-{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.246"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"completions":{},"prompts":{},"resources":{"subscribe":true},"tools":{}},"serverInfo":{"name":"sipnab","version":"0.5.247"},"instructions":"sipnab MCP server — queries captured SIP dialogs, RTP streams, diagnostics and security findings. No tool edits a capture's contents. `open_capture` can change WHICH capture is loaded and stays off unless enabled server-side; every response carries `capture_identity`, so a swap is visible rather than silent. File exports write only under the configured file root, and stopping the server requires an explicit server-side opt-in. This server changes no external system: the tools that would (actions_revert, tfps_ban, tfps_unban) refuse unless the operator enables them with --allow-action. Tools loaded: full."}}
 ```
 
 ### Test the HTTP wire by hand
@@ -49298,7 +49382,7 @@ opt-in flags:
 // server_capabilities {}
 {
   "schema_version": 1,
-  "version": "0.5.246",
+  "version": "0.5.247",
   "features": ["api", "archive", "audio", "bpf", "g729", "hep", "mcp", "mcp-http",
                "metrics", "native", "opus", "plugins", "tls", "tui", "vcon", "wasm"],
   "can_decrypt": true,           // tls
@@ -52642,6 +52726,22 @@ Every other decision on this page depends on that number, and sipnab reports it.
 
 ---
 
+## Before you start
+
+- **sipnab on the machine that captures,** as [Install](install.md) says.
+- **Capture rights on the interface.** Run sipnab with `sudo`, or grant the
+  rights once with `sipnab --setup-caps`. The examples use `sudo`.
+- **Linux, for the ring and driver sections.** The kernel capture buffer, the
+  ring formats and the `ethtool` steps describe Linux.
+- **`ethtool` and `ip`,** for
+  [Interface and driver drops](#interface-and-driver-drops). On Debian and
+  Ubuntu the `ethtool` and `iproute2` packages have them.
+- **The name of the interface that carries the calls.** `ip -brief link` lists
+  the interfaces. The examples use `eth0`.
+- **Nothing on any other system.** Every setting on this page changes the
+  machine that captures: the flags of one sipnab run, and in one section the
+  offload settings of one interface.
+
 ## Are you dropping packets?
 
 sipnab polls libpcap's kernel counters once a second and reports two numbers.
@@ -53439,6 +53539,45 @@ Then read the drop line at the end.
   - [Give sipnab less work](#give-sipnab-less-work)
   - [Interface and driver drops](#interface-and-driver-drops)
 - Re-measure after each change rather than applying all of them at once.
+
+---
+
+## Check that it worked
+
+Run the capture for a fixed time under real load, then read its last line:
+
+```bash
+sudo sipnab -N -d eth0 --duration 60 \
+  -B 256 \
+  --snaplen 1600 \
+  "port 5060 or port 5061"
+```
+
+A run that kept up ends with an info line such as
+`Live capture on 'eth0' finished: 0 packets, no drops`, with the packet count
+of the run in place of `0`.
+
+A run that fell behind ends with a warning that holds both counters and
+`THIS ANALYSIS IS INCOMPLETE`. Change one setting and run the check again.
+
+This check ran as `root` in a container with no network (Ubuntu 24.04,
+Linux 6.8, aarch64) on the interface `lo` for 2 seconds. It printed
+`Capturing on 'lo' (link_type=1, snaplen=1600)` and
+`Live capture on 'lo' finished: 0 packets, no drops`, and exited 0. Not run
+for this section: a capture under load, and the `ethtool` steps, which change
+a network interface.
+
+## When something does not work
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| `Permission denied on 'eth0'.`, exit 1 | The run has no capture rights. A run without them gets this message for an interface that does not exist as well | Run with `sudo`, or run `sipnab --setup-caps` once |
+| `Failed to activate capture on 'eth0': libpcap error: No such device exists`, then `Available devices:` and a list, exit 1 | No interface has that name | Take a name from the list |
+| `error: invalid value '0' for '--buffer <MIB>'`, exit 2 | `-B 0` and `--snaplen 0` would capture nothing | Give a value of 1 or more |
+| `Failed to compile BPF filter`, exit 1 | The capture filter after the options is not valid BPF | Correct the filter. [Capture less: BPF filters](#capture-less-bpf-filters) has filters that compile |
+| A warning that starts `'eth0': the kernel refused a` | The kernel had no memory for the buffer `-B` asked for, and sipnab took a smaller one | Free memory or ask for less, as [It degrades rather than failing](#it-degrades-rather-than-failing) says |
+| The last line still counts drops by the kernel buffer | sipnab read slower than packets arrived | Work down the list in [A worked starting point](#a-worked-starting-point) |
+| The last line counts drops by the interface | The interface or its driver dropped them before libpcap saw them. A larger `-B` does not change this count | [Interface and driver drops](#interface-and-driver-drops) |
 
 ---
 
@@ -62859,6 +62998,22 @@ The steps below set up signed tokens from scratch. After the steps, this page co
   including the metrics endpoint and the HEP listener, which use no bearer
   token.
 
+## Before you start
+
+- **A binary with the `api` feature** for the REST API, and `mcp-http` for the
+  HTTP MCP server. `sipnab --version` lists the features, and the release
+  binaries carry both.
+- **`openssl`,** to generate a signing key, and **`curl`,** to send a request.
+- **A place for the signing key that only the server reads.** The examples
+  keep it in the shell variable `KEY`. A service reads it from a file with
+  `--api-signing-key-file`.
+- **On each other system that sends requests:** the token, in the
+  `Authorization` header of its client. The signing key never leaves the
+  server: a client that holds it can mint tokens of its own.
+- **For a client on another machine:** a routable address and
+  [TLS on the listener](#secure-every-listener), so that the token does not
+  cross the network in the clear.
+
 ## Configure a signing key
 
 Give the server one or more HMAC signing keys (use a long, random secret).
@@ -63088,6 +63243,52 @@ It is **re-read when its mtime changes**.
 - (Signed tokens are otherwise valid until `exp`. So a denylist is the revocation mechanism for the
   stateless model.)
 
+## Check that it worked
+
+Start a server with a signing key, mint a token with the same key, and send
+one request with the token and one without. Run the server in one shell:
+
+```bash
+# Run all of these, in order.
+export KEY="$(openssl rand -hex 32)"
+sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-signing-key "$KEY"
+```
+
+In a second shell that holds the same `KEY`:
+
+```bash
+# Run all of these, in order.
+TOKEN="$(sipnab --mint-token --api-signing-key "$KEY")"
+echo "$TOKEN" | cut -c1-3
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/v1/dialogs
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/health
+```
+
+Expect four lines:
+
+- `s2.`, the start of every signed token,
+- `200`, the request with the token,
+- `401`, the request without one,
+- `200`, because `/health` on the REST API takes no credential.
+
+The test suite runs this check on each build: it mints a token, starts a
+server on a port the kernel picks and compares the three status codes. On
+Ubuntu 24.04 (Linux 6.8, aarch64) it got `200`, `401` and `200`. The suite
+sends its requests from Rust, not with `curl`.
+
+## When something does not work
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| `--mint-token requires at least one --api-signing-key/--api-signing-key-file or --mcp-signing-key/--mcp-signing-key-file`, exit 2 | The command names no signing key. In a second shell, `KEY` is empty unless you exported it there | Give the key the server holds |
+| `401` with a token you minted a moment ago | The token carries the signature of a key the server does not hold: the server started with another key, or with a fresh `$(openssl rand -hex 32)` | Mint with the key the server started with. The first key mints, and every key verifies: [Rotation](#rotation) |
+| `401` on one route, `200` on another | The scope of the token does not cover the route | [Scope: what a token may reach](#scope-what-a-token-may-reach) |
+| `401` after a time with no other change | The token passed its expiry. The default life is one hour | Mint a new token, with `--api-token-ttl` for a longer life: [Expiry](#expiry) |
+| `401` for one token, `200` for another from the same key | The id of the token is in the file of `--api-revoked-file` | Mint a token with another id: [Revocation](#revocation) |
+| `401` for an API token on the MCP server, or the reverse | A token binds to one audience | [Audience binding](#audience-binding) |
+| `403` or `503` | The server did not look at the token | The table in [Use a token](#use-a-token) |
+
 ## Secure every listener
 
 sipnab has four network listeners. Each takes its own credential and its own
@@ -63100,8 +63301,8 @@ certificate, and each refuses a routable bind that has no credential:
 | Metrics (`--metrics`) | HTTP Basic: `--metrics-auth-file` holding `user:password` | `--metrics-tls-cert`, `--metrics-tls-key` | `[metrics] tls_cert`, `tls_key` | refused, exit 2 |
 | HEP (`--hep-listen`) | source allowlist `--hep-allow`, or shared secret `--hep-auth-file` | `--hep-listen-transport tls`, `--hep-tls-cert`, `--hep-tls-key` | `[hep] tls_cert`, `tls_key` | refused, exit 2 |
 
-The exact refusal messages are in [A service that does not
-start](run-as-a-service.md#a-service-that-does-not-start).
+The exact refusal messages are in [When the service does not
+start](run-as-a-service.md#when-the-service-does-not-start).
 
 TLS encrypts the path, and the credential in the second column says who the
 client is. The REST API and MCP over HTTP can also ask each client for a
@@ -63810,9 +64011,9 @@ says otherwise.
 - **sipnab installed.** See [Installing sipnab](install.md). The `.deb` and
   `.rpm` packages install the unit and create the `sipnab` user. The installer
   and the tarballs install the binary only.
-- **Nothing to change on the SIP server** for a capture of the host's own
-  interfaces. A HEP listener needs the SIP server's HEP tracing pointed at it:
-  see [Wire HEP from your SIP stack to a central
+- **Nothing to change on any other system** for a capture of the host's own
+  interfaces. A HEP listener needs one change on the other system, the SIP
+  server: point its HEP tracing at the listener. See [Wire HEP from your SIP stack to a central
   sipnab](examples.md#wire-hep-from-your-sip-stack-to-a-central-sipnab).
 - **A firewall rule** for any port you bind to a routable address. A unit that
   binds only `127.0.0.1` needs none.
@@ -64301,7 +64502,7 @@ record landed in the emptied file as a complete line:
 - sipnab writes the provenance file once per run, at startup, so any rotation
   method works for it.
 
-## A service that does not start
+## When the service does not start
 
 `systemctl status sipnab` names the exit status, and the journal names the
 reason:
@@ -78111,6 +78312,30 @@ only topic.**
 - Every method below is one of those two. They differ only in what access each
   demands.
 
+## Before you start
+
+On the machine that runs sipnab:
+
+- A build with the `tls` feature. `sipnab --version` prints the list after
+  `features:`, and the release binaries carry `tls`. A build without it stops
+  with a message such as `--keylog requires the 'tls' feature (not compiled in)`.
+- For a live capture, capture rights on the interface:
+  [Install](install.md) sets them up. Reading a capture file needs none.
+- For the two probe methods, Linux and `root` at the moment sipnab attaches.
+
+On the other system, the one that ends the TLS session (a phone, a
+proxy, a session border controller), each method asks for one change:
+
+| Method | Change on the other system |
+|---|---|
+| The endpoint writes a key log | Set `SSLKEYLOGFILE` in the environment of the phone or daemon and restart it. Give sipnab read access to that file, or copy the file to the machine that reads the capture |
+| No keys at all, and plaintext with the peer address | Nothing changes in the daemon. sipnab itself runs on that machine, as `root`, so that machine needs sipnab installed |
+| Lift keys from a daemon you cannot restart | Install eCapture on that machine and run it as `root`. The daemon keeps running |
+| The old RSA case | Copy the private key of the server to the machine that runs sipnab |
+
+A key log opens every session it holds keys for. Store it with the same care
+as a private key, and delete it when the work ends.
+
 ## Which method can you use?
 
 Answer these in order.
@@ -78591,10 +78816,49 @@ Stated plainly, because time spent here is time people lose:
   - Traffic that went past before the capture started is not in the capture.
     Nothing recovers it.
 
-## Still stuck?
+## Check that it worked
+
+Before a probe method, list what sipnab can attach to:
+
+```sh
+sudo sipnab --uprobe-list
+```
+
+Expect a table under the header `FLAVOR        INODE  PIDS  LIBRARY`, one row
+for each TLS library. A host with none in view prints
+`No TLS library is mapped by any process sipnab can see.`
+
+After a key method, read the capture with its keys:
+
+```sh
+sipnab -N -I tls-capture.pcap --keylog /tmp/sip-keys.log
+```
+
+Expect three things:
+
+- One line for each decrypted message, ending in `TLS`:
+  `22:13:20.004 10.9.0.1:40111 -> 10.9.0.2:5061 INVITE TLS`.
+- `TLS session decrypted` in the log on standard error.
+- A totals line that counts the messages: `6 packets captured, 2 SIP messages`
+  for a call of one INVITE and one 180.
+
+This check ran on Ubuntu 24.04 (Linux 6.8, aarch64) against the TLS 1.3 call
+that the test suite builds with its keys, an INVITE and a 180 Ringing, and
+printed the lines above. The listing ran there without `root` and printed the
+header and its rows. Not run for this section: the two probe methods and the
+eCapture method, which need `root` on a machine that runs a SIP daemon. A
+probe run labels each dialog `uprobe:<process>/<pid>`.
+
+## When decryption does not work
 
 | Symptom | Likely cause |
 |---|---|
+| `No SIP traffic found.` and a totals line with `0 SIP messages`, from a capture of port 5061 | The run had no `--keylog`, so sipnab read no TLS record. Pass the key log |
+| `sipnab could not decrypt 2 TLS application-data record(s): it holds no key material for any session in this capture` (the number varies) | The key log is empty or holds no key line. Check that the key source attached to the TLS library and the process the daemon uses, and that it started before the connection opened |
+| `sipnab loaded 1 keylog line(s) and built no session from any of them` (the numbers vary), then `No key in the key log belongs to a handshake in this capture` | The capture holds the handshake, and the key log comes from other connections: another process, another run, or a log rotated after these connections began. sipnab prints the remedy: `Use the key log that the endpoint of these connections wrote during this capture.` |
+| `sipnab loaded 1 keylog line(s) and built no session from any of them`, then `The handshake is missing: this capture holds no ClientHello and no ServerHello.` | The capture started after the connection opened. For TLS 1.2, restart the connection while the capture runs. For TLS 1.3, use a key log that holds both traffic secret lines of the connection |
+| `Failed to load --keylog <path>:` with `No such file or directory`, exit 1 | The path is wrong, or the user that runs sipnab cannot reach the file |
+| `Permission denied attaching TLS probes (--uprobe-tls).`, exit 1 | sipnab was not `root` when it attached. Run it with `sudo`. `sipnab --setup-caps` grants the rights for a capture on an interface, and they do not cover a probe |
 | `--uprobe-list` finds no TLS library | It reads `/proc/<pid>/maps`, and an unprivileged run sees only its own processes. Re-run with `sudo` |
 | `--uprobe-list` marks a library `(UNREACHABLE)` | The path lives in another mount namespace, almost always a container. Run as root |
 | Attaches, reports 0 messages | Wrong symbol — try `--uprobe-symbol SSL_write_ex` (see [No keys at all](#no-keys-at-all-read-the-plaintext-in-the-process)) |
@@ -82149,7 +82413,9 @@ What the script does that a reader of the user page does not need to:
 - [`.config/nextest.toml`](../../.config/nextest.toml) defines three profiles:
   - `default` (no retries, 60 s slow timeout, stopped after 180 s), for local runs.
   - `suite`, what `parallel-tests.py` runs: the same deadline, no retries, no fail-fast, and a JUnit report.
-    One test has a deadline of its own, six periods: `every_documented_command_runs_or_says_why_not`, whose binary took 191.85 s on CI's `macos-latest` runner.
+    Three tests have a deadline of their own, six periods: `every_documented_command_runs_or_says_why_not`, whose binary took 191.85 s on CI's `macos-latest` runner,
+    and `test_pre_commit_sh_leaves_the_hooks_repository_alone` and `test_pre_push_sh_leaves_the_hooks_repository_alone`, which each run a whole hook harness.
+    Those two take about 40 s alone, and the suite stopped both at 180 s on a host with a load average of 44 to 50.
   - `e2e` (2 retries, 60 s timeout) for the timing-sensitive tmux tests.
 - nextest does not run doctests, so `parallel-tests.py` runs them after it with `cargo test --doc`.
 - The script renders nextest's JUnit report as `cargo test`'s text, one block per test binary.
@@ -83444,6 +83710,7 @@ Their contents are worth spelling out.
   - plus the `--ignored` PTY TUI end-to-end tests
   - On Linux it also compiles the Python clients under `clients/python/`.
     It runs `pytest` over their tests and `scripts/tests`.
+    The pre-commit hook runs `scripts/tests` on every commit except a release-only one, whatever the commit stages: those tests read documentation pages and workflows too.
 - **`features`**: `cargo clippy --no-default-features --features X --tests
   -- -D warnings` across twenty-one feature sets.
   - [`.github/feature-combos.txt`](../../.github/feature-combos.txt) lists the sets, the tests that run beside them, and what each needs from the machine.
@@ -83962,9 +84229,12 @@ The workflow-shape test holds each job's runner.
 - On the aarch64 runners: `memcheck.yml` (those runners have valgrind), `bench.yml` (its baseline is a property of that hardware),
   `reproducible.yml` (those runners have bpf-linker) and `self-hosted-smoke.yml` (it exists to prove that runner works).
 - On the `overflow` runners: two groups of the feature combinations.
+  On a push to `main` the two groups take any of the four aarch64 runners instead.
+  On 2026-11-11 a push to `main` waited 34 and 68 minutes for the two `overflow` runners behind pull request runs.
+  `test_the_workflow_carries_the_rendered_expression` holds the workflow to that rule.
 - On the x86_64 runner: the RPM packaging job.
   The RPM job builds no Rust, and the runner has every package it names, so it installs nothing there.
-- Only the four jobs above may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
+- Only the four jobs above, and the feature combinations on a push to `main`, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
   `a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host` holds that, `an_x64_job_refuses_to_start_with_less_than_25_gb_free` the disk floor, and `a_pooled_job_builds_in_its_own_directory_and_removes_it` the build directory.
 - Everything else runs on GitHub's runners. The repository is public, so they cost nothing.
 
@@ -88212,6 +88482,7 @@ Each successful run gets a row here.
 | 0.5.243 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.244 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.245 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-11 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.246 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-11 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it
