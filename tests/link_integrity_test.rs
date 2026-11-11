@@ -1796,7 +1796,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // link to troubleshooting.md's "Live capture says Permission
     // denied"); troubleshooting.md +1 and errors.md +2, each a
     // link to install.md's "Capture live traffic in the container".
-    const EXPECTED_WIKI_LINKS: usize = 2557;
+    // 2557 -> 2564 (DOCS-HOWTO-GAP, second batch): uprobe-walkthrough.md +4
+    // (its "Before you start", "Check that it worked" and the new
+    // troubleshooting row link four of its own sections), plugins.md +1,
+    // g729.md +1, least-privilege.md +1 (to install.md).
+    const EXPECTED_WIKI_LINKS: usize = 2564;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

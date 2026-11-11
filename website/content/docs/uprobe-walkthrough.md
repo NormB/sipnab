@@ -168,6 +168,21 @@ That is almost always one inside a container.
 - Such a library lists as `(UNREACHABLE)`, with a count of how many.
 - It does not quietly drop out.
 
+## Before you start
+
+- **A Linux host that passes the checks in
+  [Can your system run this at all?](#can-your-system-run-this-at-all)**
+  tracefs for either backend, and BTF for the eBPF backend.
+- **Root on that host when sipnab attaches,** through `sudo` or a root shell.
+- **sipnab on the host that runs the TLS process.** A uprobe reads the memory
+  of a process on the same kernel, so sipnab runs where the SIP server or
+  client runs, not on a mirror port.
+- **A process that sends or receives SIP over TLS with OpenSSL or wolfSSL,**
+  running, with traffic to read.
+- **Nothing on any other system.** The SIP server keeps its configuration,
+  its certificate and its key, and the far end of each TLS connection is
+  not changed.
+
 ## Walkthrough: the tracefs backend
 
 This is the default.
@@ -342,6 +357,34 @@ rather than sent.
 - sipnab does not guess a peer. A guessed one would be indistinguishable from
   an observed one.
 
+## Check that it worked
+
+Before a capture, the listing shows what sipnab would probe. It installs
+nothing:
+
+```bash
+sudo sipnab --uprobe-list
+```
+
+A host with a TLS library mapped prints a table that starts with this line,
+then one row for each library:
+
+```text
+FLAVOR        INODE  PIDS  LIBRARY
+```
+
+During a capture, each SIP message the probed process sends or receives
+prints as one line that ends `origin=uprobe`, as
+[Read the output, and know what is missing](#read-the-output-and-know-what-is-missing)
+shows. A capture that attaches and prints no such line while the process
+handles calls has not worked: see the row for 0 messages under
+[Troubleshooting](#troubleshooting).
+
+What ran: on 2026-11-11, sipnab 0.5.245 ran `sipnab --uprobe-list` without
+root on Ubuntu 24.04 (Linux 6.8, aarch64) and printed the header and three
+OpenSSL rows. Not run for this section: a capture as root, which attaches
+probes to every process on the host that maps the library.
+
 ## Cleaning up
 
 Probes are kernel state that outlives the process which created them.
@@ -371,6 +414,7 @@ when sipnab exits.
 
 | What you see | What it means | What to do |
 |---|---|---|
+| `Permission denied on 'capture source'.`, exit 1, from `sipnab -N --uprobe-tls` | sipnab was not root when it attached | Run it with `sudo`. The hint under the message names `sipnab --setup-caps`, which grants the rights for a capture on an interface; attaching a probe needs root, as [Root, at the moment sipnab attaches a probe](#root-at-the-moment-sipnab-attaches-a-probe) says |
 | `--uprobe-list` finds no TLS library | Unprivileged, so `/proc/<pid>/maps` opens only for your own processes | Re-run as root before concluding the host uses no TLS |
 | `no kernel programs` from a binary you built | `--features bpf` compiled the loader, and the inner nightly build found no `bpf-linker` | Rebuild on a host carrying `bpf-linker`, with `SIPNAB_BPF_REQUIRED=1` so the gap fails the build |
 | Capture attaches, reports 0 messages | Almost always the wrong symbol | `nm -D --undefined-only <binary> \| grep -i ssl_write`, then `--uprobe-symbol` |
