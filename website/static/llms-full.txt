@@ -14266,7 +14266,7 @@ sipnab uses Cargo feature flags to control optional capability. The default buil
 | Feature | Description | Dependencies |
 |---------|-------------|--------------|
 | `native` | Live capture, file capture, output writers, signal handling, CLI parser. **Required (directly or transitively) by `tui`, `hep`, `metrics`, `api`, `mcp`, `mcp-http`, `plugins`, `bpf`, `vcon`, `archive` and `g729`. Not required by `tls`, `audio`, or `wasm`.** Included by default. | `pcap`, `clap`, `clap_complete`, `env_logger`, `crossbeam-channel`, `libc`, `pcap-file`, `memmap2`, `tracing-subscriber`, `tracing-log`, `tempfile` |
-| `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
+| `tui` | Interactive terminal UI (ratatui + crossterm). Included by default. A build without it has no terminal UI: every run is the run `-N` (`--no-tui`) asks for, so `sipnab -I capture.pcap` prints one line per SIP message, and the output flags need no `-N`. A run that gave neither `-N` nor an output flag says so in one line on standard error when standard error is a terminal. | `native`, `ratatui`, `crossterm`, `unicode-width`, `base64` |
 | `audio` | RTP audio playback in the TUI + WAV export. Included by default. Builds the separate `sipnab-audio` plugin (`libsipnab_audio.so`) that the binary `dlopen`s lazily; the binary itself does **not** link `libasound.so.2`. | `libloading`, `libc` (plugin: `rodio`) |
 | `tls` | TLS/DTLS decryption and SRTP key extraction (pure Rust) | `ring`, `rustls`, `rsa`, `aes`, `cbc`, `zeroize`, `base64`, `libc` |
 | `hep` | HEP v3 send + v1/v2/v3 receive (Homer Encapsulation Protocol) | `native`, `hmac`, `sha2`, `rustls`, `base64` |
@@ -18272,7 +18272,8 @@ the ladder, measure a delay, and inspect RTP.
 ## Before you start
 
 - **sipnab with the `tui` feature**, which every release binary and package
-  has. `sipnab --version` lists the features of your build.
+  has. `sipnab --version` lists the features of your build. A build without
+  `tui` draws no interface and reads the capture as `sipnab -N` does.
   [Installing sipnab](install.md) has every install route.
 - **A terminal.** sipnab draws the interface on the terminal it starts in, and
   exits with an error when it has none.
@@ -20956,6 +20957,10 @@ The rules:
 - **Inflation stops at a ceiling.**
   - Every byte any gzip layer produces counts against `--max-gunzip-bytes`.
     sipnab sums the count across the layers of one input.
+  - The ceiling bounds the output sipnab keeps. A password that does not open
+    a ZIP member or a 7z leaves nothing counted: sipnab deletes what the
+    attempt produced and returns its bytes to the count. Each attempt alone
+    still stops at the ceiling.
   - One archive may hold at most 10,000 entries.
   - An archive cut short, or stopped at a ceiling, keeps what arrived. It
     marks the run incomplete:
@@ -22818,7 +22823,7 @@ This applies to root runs and to unprivileged runs set up with
 | `--api-accept-archive-passwords` | -- | off | 0.5.187 | Accept the `Sipnab-Archive-Password` header on `GET /v1/captures/compare` from a client that is not on this host. Without `--api-tls-cert` sipnab serves plain HTTP, so the password crosses the network in the clear unless TLS terminates in front: making sure it does is your job when you pass this. Without it, only a loopback client may send one, and a remote one gets `403`, also when `--api-tls-cert` serves HTTPS. Feature: `api` |
 | `--api-file-root` | `<DIR>` | -- | 0.5.177 | Directory of capture files `GET /v1/captures/compare` may diff. The REST counterpart of `--mcp-file-root`, off for the same reason: every other REST answer comes from bytes sipnab already holds, while this reads FILES a client names. It takes a bare FILENAME, never a path: sipnab rejects a separator, a `..`, an absolute prefix or a control character before touching the filesystem, and refuses a symlink that resolves out of the root at open, by the same check `-O` uses. Without this flag the compare route answers `503`. Naming one directory means the worst a client can do is name files inside it. Feature: `api` |
 | `--metrics-max-conn` | `<N>` | `16` | 0.5.100 | Metrics scrapes served at once before further ones get `503`. Sixteen suits one Prometheus server; raise it when an HA pair, a federating parent, `remote_write` shards or sidecars scrape the same endpoint. A refused scrape leaves a gap in the series. Config: `[limits] metrics_max_conn` Feature: `metrics` |
-| `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling; an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](examples.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). A UDP listener also takes the OpenSIPS `E_SIPNAB_TH_MAP` event, a change to the OpenSIPS script only, from a sender `--hep-allow` lists ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Steps for each SIP server, a shared secret, TCP and TLS: [Collect and forward HEP](hep.md). Feature: `hep` |
+| `-L`, `--hep-listen` | `<ADDR>` | -- | 0.3.0 | Listen for HEP (Homer Encapsulation Protocol) packets. `ADDR` is a literal address and a port, `IP:PORT`, for example `127.0.0.1:9060` or `[::1]:9060`. Port `0` takes a free port, which the start line of the log names. A literal loopback address needs nothing else. A routable address, and a host name with a port such as `localhost:9060`, need `--hep-allow` or `--hep-auth`/`--hep-auth-file`: sipnab does not resolve a name to decide whether it is loopback. sipnab refuses a value that is not an address (no port, no address, a port above 65535) with exit `2` and `--hep-listen "<value>" is not an address`, with or without an allowlist or a secret. **Combines with `-d <iface>`**: HEP then supplies signaling while the interface supplies the RTP a HEP feed cannot carry, and streams bind to dialogs by SDP media endpoint. With no BPF expression of your own, the interface gets a media-only default, since the mirror carries the signaling; an explicit expression such as `sipnab -N -d eth0 -L 127.0.0.1:9060 "udp portrange 10000-20000"` narrows it to your media ports. One interface and one listener only: `--multi-device` with `-L`, `-I` with `-L`, and `-O` alongside the pair are each refused with the reason. See [cookbook recipe "Take signaling from HEP and media off the wire, in one process"](examples.md#take-signaling-from-hep-and-media-off-the-wire-in-one-process). The decrypted TLS and WebSocket legs OpenSIPS and Kamailio trace arrive with IP protocol 22, 50 or 6 and decode as TLS, WS or WSS, see [How `--hep-listen` reads the transport](#how---hep-listen-reads-the-transport). A UDP listener also takes the OpenSIPS `E_SIPNAB_TH_MAP` event, a change to the OpenSIPS script only, from a sender `--hep-allow` lists ([Have OpenSIPS send the mapping](opensips-sipnab.md#have-opensips-send-the-mapping)). `--portrange` does not apply to HEP messages, so a proxy tracing SIP on 7060 needs no `--portrange 1-65535`. Each message takes the time its HEP packet carries; a HEP v3 packet without a `TS_SEC` chunk, and a HEP v1 packet, take the time sipnab received them. sipnab reads HEP v1 and v2 packets in the layout the `captagent` capture agent writes and Kamailio's `sipcapture` module reads: IPv4 or IPv6 addresses by the family byte, the transport by the IP protocol byte, and for v2 the time and capture ID in its time header. Steps for each SIP server, a shared secret, TCP and TLS: [Collect and forward HEP](hep.md). Feature: `hep` |
 | `-H`, `--hep-send` | `<ADDR>` | -- | 0.3.0 | Send captured packets via HEP to a remote collector: SIP as protocol type 1, and RTCP as type 5 in the JSON form heplify sends, carrying the Call-ID of the call whose SDP set up that media. RTCP for a call whose SDP sipnab never saw is not sent, since Homer stores none of it. RTP is never forwarded. **On `-I <file>` this forwards the file's contents**: every SIP message sipnab reads out of the capture goes to `<ADDR>` as recorded, and every RTCP report of a call in it as JSON, redacted in no way. sipnab announces that at startup, naming the flag, the destination and the capture files, before it reads the first packet. See [What `--hep-send` sends](#what---hep-send-sends). **A headless run ends with one line saying what it exported**: packets sent, queued, replayed after an outage, dropped by reason (`queue_full`, `stopped`, `unsent_at_exit`), still queued, failed attempts by kind (`connect`, `tls_handshake`, `write`) and reconnects, at `warn` when anything failed or sipnab dropped a packet. Over UDP "sent" means handed to the kernel, and a collector that is down produces no failure; the line says so. `runtime_stats`, `GET /v1/runtime` (`hep_export`) and the Prometheus `sipnab_hep_export_*` series carry the same counts while it runs. Steps for each SIP server, a shared secret, TCP and TLS: [Collect and forward HEP](hep.md). Feature: `hep` |
 | `--hep-send-transport` | `<udp\|tcp\|tls>` | `udp` | 0.5.150 | Transport `--hep-send` uses to reach the collector. Homer's collectors accept all three. HEP v3 carries its own total length, so a `tcp` or `tls` feed is packets laid end to end with no extra framing, and sipnab sets `TCP_NODELAY` because these are small packets whose value is timeliness. sipnab opens the first connection at startup: when the collector refuses it, or it does not complete within `--hep-send-timeout` (default 3 seconds), sipnab stops with exit `2` and names the error, such as `Failed to connect HEP sender to '127.0.0.1:9061' over TCP: Connection refused (os error 111)`. After that, a write that fails keeps its packet queued and drops the connection, and the sending thread dials again with backoff, never in a tight loop. Each dial gives up after `--hep-send-timeout` and counts as a `connect` failure, as a refused one does. See [When the `--hep-send` collector goes away](#when-the---hep-send-collector-goes-away). Refused without `--hep-send`, which is the side it governs. Feature: `hep` |
 | `--hep-send-queue` | `<MIB>` | `64` | 0.5.226 | How many MiB of HEP packets `--hep-send` holds while the collector is unreachable, 1 to 4096. Sending runs on its own thread behind this queue, so a slow or dead collector never slows the capture, and sipnab replays the queue in capture order when the collector answers. At the bound sipnab drops the **oldest** packet and counts it as `queue_full`. A stop (SIGINT/SIGTERM) discards the queue and counts it as `stopped`: sipnab flushes nothing at shutdown. Refused without `--hep-send`; `[hep] send_queue_mib` on a run without `--hep-send` gets a startup warning naming it instead. Config: `[hep] send_queue_mib`. Feature: `hep` |
@@ -24554,6 +24559,14 @@ An inline secret is empty or holds only whitespace. `{inline_flag}` is `--hep-au
 `--tui-audit-file` writes a record of the actions an operator takes in the interactive terminal interface (TUI). `-N`/`--no-tui` runs without that interface, so there would be nothing to record. `--run-provenance-file` records how you started a run, and it works without the TUI.
 
 **What to do:** Remove `-N` to run the TUI with its audit file, or replace `--tui-audit-file` with `--run-provenance-file FILE` for a headless run.
+
+**Exit code:** 2.
+
+### `--tui-audit-file requires the 'tui' feature (not compiled in): this build runs no TUI. Use --run-provenance-file to record how a run was invoked`
+
+This build of sipnab does not have the `tui` feature, so it has no interactive terminal interface (TUI) and there are no operator actions for `--tui-audit-file` to record. Every release binary and package has the feature. A build from source with a feature list that leaves out `tui` does not.
+
+**What to do:** Replace `--tui-audit-file` with `--run-provenance-file FILE`, which records how you started the run. To get the TUI and its audit file, install a release build, or build with the `tui` feature.
 
 **Exit code:** 2.
 
@@ -27249,11 +27262,19 @@ The `--keylog` path is a FIFO (named pipe), and sipnab could not open it for rea
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
-### `Capture the handshake: restart the connection while the capture is running, or capture continuously from before the connections you want to read.`
+### `Check that the key log holds every line the endpoint wrote for these connections, and that the capture holds the ServerHello of each TLS 1.2 connection you want to read.`
 
-The remedy for a capture that missed the TLS handshake.
+The remedy when sipnab loaded key-log lines, saw a handshake message, and still built no session. It follows the line that says what a session needs.
 
-**What to do:** Restart the connection while the capture runs, or capture continuously from before the connections start.
+**What to do:** Compare the key log with the connections in the capture. A TLS 1.3 connection needs both of its traffic secret lines. A TLS 1.2 connection needs its `CLIENT_RANDOM` line, and the capture must hold its `ServerHello`.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `For TLS 1.2, capture the handshake: restart the connection while the capture is running, or capture continuously from before the connections you want to read. For TLS 1.3, use a key log that holds both traffic secret lines.`
+
+The remedy for a capture that holds no TLS handshake, when sipnab built no session from the key log.
+
+**What to do:** For TLS 1.2, restart the connection while the capture runs, or capture continuously from before the connections start. For TLS 1.3, check that the key log holds the `CLIENT_TRAFFIC_SECRET_0` line and the `SERVER_TRAFFIC_SECRET_0` line of the connection.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -27542,7 +27563,11 @@ sipnab holds TLS records that arrive before their key, so that it can decrypt th
 
 sipnab holds keys for the first number of TLS sessions and could not decrypt any of the second number of records.
 
-**What to do:** Read the next two lines.
+- The lines that follow give the cause.
+- When the capture holds a `ClientHello` and no key-log line carries its client random, they say that the key log is from other connections.
+- Otherwise they say that the record sequence is not known.
+
+**What to do:** Read the lines that follow.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -27550,15 +27575,80 @@ sipnab holds keys for the first number of TLS sessions and could not decrypt any
 
 sipnab loaded the first number of key-log lines. It could not build a TLS session from any of them. So the second number of TLS application-data records went unread.
 
-**What to do:** Read the two lines that follow.
+The lines that follow give one of three causes:
+
+- The capture holds no handshake.
+- The capture holds a handshake, and the key log is from other connections.
+- A handshake message is in the capture, and the key log or the capture lacks a part that a session needs.
+
+**What to do:** Read the lines that follow.
 
 **Exit code:** None. This is a warning, and the run continues.
 
-### `The handshake is missing. A TLS 1.2 key log gives the master secret; the server random and cipher suite that expand it into record keys are in the ServerHello, and a capture that started after the connection did never saw one. Nothing later in the capture can supply them.`
+### `No key in the key log belongs to a handshake in this capture: sipnab saw {} ClientHello and {} ServerHello message(s) and loaded {} keylog line(s), and {} of those line(s) carry a client random that no ClientHello in the capture has. The key log is from other connections: another process, another run, or a log that was rotated or truncated after these connections began.`
 
-Follows the line above. For TLS 1.2, the session keys also need the server random value and the cipher suite from the `ServerHello` message. This capture started after the handshake.
+The capture holds a TLS handshake, and no line of the key log belongs to it.
 
-**What to do:** Capture the handshake, as the next line says.
+- The first two numbers are the `ClientHello` and `ServerHello` messages that sipnab saw in the capture.
+- The third number is the key-log lines that sipnab loaded.
+- The fourth number is the lines whose client random is the client random of no `ClientHello` in the capture. It equals the third number.
+
+A key-log line names its connection by the client random. So the key log holds the keys of other connections. It can come from another process, from another run of the same process, or from a file that something rotated or truncated after these connections began.
+
+sipnab remembers the client random of at most `MAX_REMEMBERED_CLIENT_HELLOS` (65,536) `ClientHello` messages. A capture that holds more of them does not get this line, because sipnab can no longer say that a key-log line matches none of them.
+
+**What to do:** Use the right key log, as the next line says. Capturing the handshake again does not help, because the handshake is already in the capture.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `Use the key log that the endpoint of these connections wrote during this capture. Restarting the connection helps only when the same run of that endpoint writes the key log sipnab reads.`
+
+The remedy for a key log from other connections.
+
+**What to do:** Give `--keylog` the file that the endpoint of these connections wrote while the capture ran. If you restart the connection, also make sure that the same run of that endpoint writes the key log that sipnab reads.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `If a connection these keys belong to was already running when the capture began, its ClientHello is not in the capture: restart that connection while the capture is running.`
+
+Follows the remedy for a key log from other connections, when sipnab built a session from the key log. sipnab builds a TLS 1.3 session from the key log alone, so the keys can belong to a connection whose handshake came before the capture.
+
+**What to do:** If that is the case, restart that connection while the capture runs.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `The handshake is missing: this capture holds no ClientHello and no ServerHello. A TLS 1.2 key log gives the master secret; the server random and cipher suite that expand it into record keys are in the ServerHello, and a capture that started after the connection did never saw one. Nothing later in the capture can supply them. A TLS 1.3 key log gives traffic secrets and needs no handshake, and sipnab builds a session from it only when it holds both the CLIENT_TRAFFIC_SECRET_0 and the SERVER_TRAFFIC_SECRET_0 line of one connection.`
+
+sipnab saw no `ClientHello` and no `ServerHello` in the capture, and it built no session from the key log.
+
+- For TLS 1.2, the session keys also need the server random value and the cipher suite from the `ServerHello` message. This capture started after the handshake.
+- For TLS 1.3, the key log holds traffic secrets, and sipnab needs no handshake. It needs both the `CLIENT_TRAFFIC_SECRET_0` line and the `SERVER_TRAFFIC_SECRET_0` line of one connection.
+
+**What to do:** Read the next line.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `The handshake is not missing as a whole: sipnab saw {} ClientHello and {} ServerHello message(s) in this capture.`
+
+sipnab loaded key-log lines and built no session, and the capture does hold handshake messages. The two numbers are the `ClientHello` and `ServerHello` messages that sipnab saw.
+
+**What to do:** Read the lines that follow.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `{} of the {} keylog line(s) carry the client random of a ClientHello in this capture.`
+
+The first number is the key-log lines that belong to a handshake in the capture. The second number is the key-log lines that sipnab loaded. sipnab remembers the client random of 65536 `ClientHello` messages. It leaves this line out when the capture held more different client randoms than that, because it then cannot count the lines.
+
+**What to do:** Read the lines that follow.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `sipnab builds a TLS 1.3 session from both the CLIENT_TRAFFIC_SECRET_0 and the SERVER_TRAFFIC_SECRET_0 line of one client random, with secrets of 32 or 48 bytes, and a TLS 1.2 session from a CLIENT_RANDOM line and the ServerHello of that connection with a cipher suite sipnab supports. It could do neither for any client random in the key log.`
+
+Says what sipnab needs to build a session, when it loaded key-log lines, saw a handshake message, and built no session. sipnab does not record which part was absent for each connection.
+
+**What to do:** Check the key log and the capture, as the next line says.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -53930,6 +54020,11 @@ sipnab -N -L 198.51.100.1:9061 --hep-allow 198.51.100.10 \
 - sipnab refuses to bind a listener to a routable address with neither
   `--hep-allow` nor `--hep-auth-file`, because an open HEP port accepts forged
   calls from anyone who reaches it. A loopback bind needs neither.
+- Give `-L` a literal address and a port, `IP:PORT`, for example
+  `127.0.0.1:9060` or `[::1]:9060`. sipnab does not resolve a host name to
+  decide whether it is loopback, so `localhost:9060` needs `--hep-allow` or
+  `--hep-auth-file` as a routable address does. sipnab refuses a value that
+  is not an address, such as `9060` with no address, with exit status 2.
 - `--duration` stops after that long, then `--report` and `--hep-senders`
   print what arrived. Leave `--duration` out for a collector that runs until
   you stop it, or run it as a service ([Run sipnab as a
@@ -54411,6 +54506,8 @@ explains each kind of finding, and the combinations sipnab refuses (`-I`,
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `--hep-listen "9060" is not an address` and exit 2 | The value of `-L` has no address, no port, or a port above 65535 | Give `IP:PORT`, for example `127.0.0.1:9060` |
+| `--hep-listen localhost:9060 names a host, and sipnab does not resolve a name` and exit 2 | A host name, with neither `--hep-allow` nor a key | Use a literal address such as `127.0.0.1:9060`, or add `--hep-allow` or `--hep-auth-file` |
 | `received 0` and `no packets for 30s` | Nothing reaches the port | The SIP server's address and port, its transport, the firewall |
 | Refused, `auth_missing` | The listener has a key and the sender sends none (OpenSIPS never does) | Drop the key and use `--hep-allow`, or send from Kamailio with `auth_key` |
 | Refused, `auth_mismatch` | Different keys on the two ends | Compare the strings. sipnab trims the file's line ending |
@@ -54630,7 +54727,7 @@ rules. MCP takes no archive password on any tool: an agent's
 | `can be read or written by other users (mode 0644); chmod 600 it`, exit 2 | The password file is not private | `chmod 600` it |
 | `uses ZipCrypto, which does not protect its contents` | The ZIP uses the legacy cipher (Info-ZIP's `zip -e` does) | sipnab reads it. Ask the sender to re-encrypt with AES-256 |
 | `xz data, which sipnab does not unwrap` (or `zstd`, `bzip2`, `LZ4`) | A compression sipnab does not read | Unpack that member with its own tool, then point `-I` at the result |
-| `decompressing reached the N-byte ceiling` | The archive inflates past `--max-gunzip-bytes` (1 GiB) | For an archive you trust, raise it. sipnab reads nothing after the member it names, in a 7z as in a tar or a ZIP |
+| `decompressing reached the N-byte ceiling` | The archive inflates past `--max-gunzip-bytes` (1 GiB). Passwords that did not open it do not count: sipnab deletes what each wrong password produced and counts only the output it keeps | For an archive you trust, raise it. sipnab reads nothing after the member it names, in a 7z as in a tar or a ZIP |
 | `could not be read past this point`, `INCOMPLETE RUN`, exit 1 | The archive stops early | sipnab kept what arrived. Fetch the archive again |
 | `has link type N, which sipnab does not decode` | A member is not an IP capture, such as an LTE MAC log | Nothing: its frames count as not decoded |
 
@@ -64436,6 +64533,8 @@ The refusals a service meets most often:
 | `MCP HTTP refuses to start: --mcp-bind 0.0.0.0:18731 is non-loopback but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / --mcp-signing-key / --mcp-signing-key-file / SIPNAB_MCP_SIGNING_KEY was supplied. Bind 127.0.0.1, or supply one of them.` | 2 | Bind `127.0.0.1`, or give a token file |
 | `metrics server refuses to start: --metrics 0.0.0.0:19090 is non-loopback but no --metrics-auth / --metrics-auth-file was supplied.` | 2 | Bind `127.0.0.1`, or give `--metrics-auth-file` |
 | `HEP listener refuses to start: --hep-listen 0.0.0.0:19060 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured.` | 2 | Add `--hep-allow` with your SIP servers' addresses, or a secret |
+| `HEP listener refuses to start: --hep-listen "19060" is not an address. Give it as IP:PORT, for example 127.0.0.1:9060.` | 2 | Give the listener an address and a port, such as `127.0.0.1:19060` |
+| `HEP listener refuses to start: --hep-listen localhost:19060 names a host, and sipnab does not resolve a name to decide whether it is loopback.` | 2 | Use a literal address such as `127.0.0.1:19060`, or add `--hep-allow` or a secret |
 | `--api-tls-cert (or [api] tls_cert) c.pem was given without --api-tls-key (or [api] tls_key)` | 2 | Give both halves of the pair |
 | `k.pem: the API TLS private key is world-readable (mode 0644); chmod 600 it` | 2 | `chmod 600` the key, or `640` with the `sipnab` group |
 | `failed to bind API to 127.0.0.1:18081: Address already in use (os error 98)` | 2 | Another process holds the port. `ss -ltnp` names it |
@@ -78756,7 +78855,8 @@ probe run labels each dialog `uprobe:<process>/<pid>`.
 |---|---|
 | `No SIP traffic found.` and a totals line with `0 SIP messages`, from a capture of port 5061 | The run had no `--keylog`, so sipnab read no TLS record. Pass the key log |
 | `sipnab could not decrypt 2 TLS application-data record(s): it holds no key material for any session in this capture` (the number varies) | The key log is empty or holds no key line. Check that the key source attached to the TLS library and the process the daemon uses, and that it started before the connection opened |
-| `sipnab loaded 1 keylog line(s) and built no session from any of them` (the number varies) | No line of the key log matches a handshake in the capture. Either the capture started after the connection opened and holds no handshake, or the key log comes from other connections. The text under the message names the first cause only; check the second as well |
+| `sipnab loaded 1 keylog line(s) and built no session from any of them` (the numbers vary), then `No key in the key log belongs to a handshake in this capture` | The capture holds the handshake, and the key log comes from other connections: another process, another run, or a log rotated after these connections began. sipnab prints the remedy: `Use the key log that the endpoint of these connections wrote during this capture.` |
+| `sipnab loaded 1 keylog line(s) and built no session from any of them`, then `The handshake is missing: this capture holds no ClientHello and no ServerHello.` | The capture started after the connection opened. For TLS 1.2, restart the connection while the capture runs. For TLS 1.3, use a key log that holds both traffic secret lines of the connection |
 | `Failed to load --keylog <path>:` with `No such file or directory`, exit 1 | The path is wrong, or the user that runs sipnab cannot reach the file |
 | `Permission denied attaching TLS probes (--uprobe-tls).`, exit 1 | sipnab was not `root` when it attached. Run it with `sudo`. `sipnab --setup-caps` grants the rights for a capture on an interface, and they do not cover a probe |
 | `--uprobe-list` finds no TLS library | It reads `/proc/<pid>/maps`, and an unprivileged run sees only its own processes. Re-run with `sudo` |
@@ -84101,6 +84201,23 @@ System packages come from `.github/actions/system-deps`.
   - An example is the Check job's answer for `wireshark-common`.
   - The action applies it inside the same lock, and only when it installs something.
 - No workflow step runs `debconf-set-selections` itself.
+
+[`scripts/runner-listeners.py`](../../scripts/runner-listeners.py) checks that each runner instance on that machine has one listener.
+
+- Why: on 2026-11-10 every job sent to two of the runners failed in 2 s in `actions/checkout`, which reported that a log file of the job already existed.
+  - Each of the two runners had two `Runner.Listener` processes, so each job got two workers that wrote one log file.
+  - A runner's unit had lost its main process, `run.sh`, eight days earlier. The unit sets `KillMode=process`, so systemd left the listener running outside the unit.
+  - `Restart=always` then started a second `run.sh` about every 4 minutes. GitHub refused each one as a second session, 1342 and 1345 times, and then accepted one.
+- Before you start: run it on the runner machine, as any user. It needs `ps` and `systemctl`, and no root.
+  It changes nothing on that machine or any other: it signals no process and writes no unit file.
+- Run `python3 scripts/runner-listeners.py`. It reads the process table and the units' properties, waits 5 minutes, and reads the units again.
+- Check that it worked: the last line says each runner directory has exactly one `Runner.Listener`, inside its unit, and that `NRestarts` did not rise. The exit status is 0.
+- When something does not work:
+  - Exit 1 lists the findings, one per line: a directory with no listener or more than one, a listener that runs outside its unit, or a unit whose `NRestarts` rose between the two reads.
+    A listener outside its unit is the process to stop, and stopping it, like changing the unit's `KillMode`, is the machine owner's decision. The script names the PID and does nothing to it.
+  - Exit 2 says what the script could not read, or that no unit or directory matched. Its header lists the arguments that name other directories and units.
+  - A line that starts `note:` names a unit with `KillMode=process`. It does not change the exit status.
+- [`test_runner_listeners.py`](../../scripts/tests/test_runner_listeners.py) holds the rules, and that the script runs only `ps` and two reading `systemctl` commands.
 
 The GitHub-hosted jobs restore their cargo builds from `actions/cache`.
 It keeps at most 10 GB per repository and evicts the least recently used entry past that.

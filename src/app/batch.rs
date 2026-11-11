@@ -2360,42 +2360,210 @@ fn late_hold_guidance(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
     lines
 }
 
-/// Why ciphertext went unread, and what to change.
-fn unread_guidance(tls: &crate::capture::TlsDecryptReport, mapped_libs: &[String]) -> Vec<String> {
+/// Why a run that saw TLS application data opened none of it.
+///
+/// One variant per remedy. The words for each are in [`unread_guidance`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UnreadCause {
+    /// No keylog line was loaded and no session exists.
+    NoKeys,
+    /// Keylog lines were loaded, no session was built, and the capture holds
+    /// neither a ClientHello nor a ServerHello.
+    HandshakeMissing,
+    /// The capture holds at least one ClientHello and every keylog line
+    /// carries a client random that none of them has.
+    ForeignKeyLog,
+    /// Keylog lines were loaded, a handshake message is in the capture, and
+    /// still no session was built.
+    IncompleteKeys,
+    /// A session was built and no record opened under it.
+    SequenceUnknown,
+}
+
+/// Which [`UnreadCause`] the counts in `tls` describe, or `None` for a run
+/// that has nothing to explain.
+///
+/// Pure, so each case is tested from a report alone, with no capture.
+///
+/// The order is the rule. A keylog none of whose lines matches a ClientHello
+/// in the capture is named first, whether or not a session was built: a
+/// TLS 1.3 session is built from the keylog alone, so a complete keylog of
+/// another connection builds a session and would otherwise be reported as an
+/// unknown record sequence, with the remedy of restarting a connection the
+/// keys do not belong to.
+fn unread_cause(tls: &crate::capture::TlsDecryptReport) -> Option<UnreadCause> {
     // Any successful decrypt at all proves the keys, the sequence numbers and
     // the session matching work, so the run has nothing to explain.
     if !tls.read_nothing() {
-        return Vec::new();
+        return None;
     }
+    let built = tls.sessions_with_keys > 0;
+    if tls.keylog_entries == 0 {
+        // A session with no keylog line comes from an RSA private key.
+        return Some(if built {
+            UnreadCause::SequenceUnknown
+        } else {
+            UnreadCause::NoKeys
+        });
+    }
+    if tls.client_hellos_seen > 0 && tls.keylog_unmatched_entries == Some(tls.keylog_entries) {
+        return Some(UnreadCause::ForeignKeyLog);
+    }
+    if built {
+        return Some(UnreadCause::SequenceUnknown);
+    }
+    if tls.client_hellos_seen == 0 && tls.server_hellos_seen == 0 {
+        return Some(UnreadCause::HandshakeMissing);
+    }
+    Some(UnreadCause::IncompleteKeys)
+}
+
+/// The first line of every case in which keylog lines were loaded and no
+/// session was built.
+fn no_session_line(tls: &crate::capture::TlsDecryptReport) -> String {
+    format!(
+        "sipnab loaded {} keylog line(s) and built no session from any of them, \
+         so the {} TLS application-data record(s) in this capture went unread.",
+        tls.keylog_entries, tls.app_data_records,
+    )
+}
+
+/// The first line of every case in which a session was built and no record
+/// opened.
+fn no_record_opened_line(tls: &crate::capture::TlsDecryptReport) -> String {
+    format!(
+        "sipnab holds keys for {} TLS session(s) and could not decrypt any of the \
+         {} application-data record(s) it saw.",
+        tls.sessions_with_keys, tls.app_data_records,
+    )
+}
+
+/// The lines for [`UnreadCause::HandshakeMissing`].
+///
+/// A TLS 1.2 `CLIENT_RANDOM` line gives the master secret, and the server
+/// random and cipher suite needed to expand it into record keys are in the
+/// ServerHello. A capture that joined mid-stream holds the secret and no way
+/// to use it, and no later packet supplies what is missing. A TLS 1.3 keylog
+/// needs no handshake, so for it the cause is a traffic secret line that is
+/// absent, and the lines say both.
+fn handshake_missing_guidance(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
+    vec![
+        no_session_line(tls),
+        "The handshake is missing: this capture holds no ClientHello and no ServerHello. \
+         A TLS 1.2 key log gives the master secret; the server random and cipher suite \
+         that expand it into record keys are in the ServerHello, and a capture that \
+         started after the connection did never saw one. Nothing later in the capture \
+         can supply them. A TLS 1.3 key log gives traffic secrets and needs no \
+         handshake, and sipnab builds a session from it only when it holds both the \
+         CLIENT_TRAFFIC_SECRET_0 and the SERVER_TRAFFIC_SECRET_0 line of one connection."
+            .to_string(),
+        "For TLS 1.2, capture the handshake: restart the connection while the capture is \
+         running, or capture continuously from before the connections you want to read. \
+         For TLS 1.3, use a key log that holds both traffic secret lines."
+            .to_string(),
+    ]
+}
+
+/// The lines for [`UnreadCause::ForeignKeyLog`].
+///
+/// The handshake is in the capture, so capturing it again changes nothing.
+/// What is wrong is the keylog: its client randoms are those of other
+/// connections.
+fn foreign_key_log_guidance(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
+    let built = tls.sessions_with_keys > 0;
+    let mut lines = vec![
+        if built {
+            no_record_opened_line(tls)
+        } else {
+            no_session_line(tls)
+        },
+        format!(
+            "No key in the key log belongs to a handshake in this capture: sipnab saw {} \
+             ClientHello and {} ServerHello message(s) and loaded {} keylog line(s), and \
+             {} of those line(s) carry a client random that no ClientHello in the capture \
+             has. The key log is from other connections: another process, another run, or \
+             a log that was rotated or truncated after these connections began.",
+            tls.client_hellos_seen,
+            tls.server_hellos_seen,
+            tls.keylog_entries,
+            tls.keylog_unmatched_entries.unwrap_or(tls.keylog_entries),
+        ),
+        "Use the key log that the endpoint of these connections wrote during this capture. \
+         Restarting the connection helps only when the same run of that endpoint writes \
+         the key log sipnab reads."
+            .to_string(),
+    ];
+    // A TLS 1.3 session is built from the keylog alone, so sessions here do
+    // not show that a key matches. They do leave one more possibility open,
+    // and it has its own remedy.
+    if built {
+        lines.push(
+            "If a connection these keys belong to was already running when the capture \
+             began, its ClientHello is not in the capture: restart that connection while \
+             the capture is running."
+                .to_string(),
+        );
+    }
+    lines
+}
+
+/// The lines for [`UnreadCause::IncompleteKeys`].
+///
+/// The decryptor does not record why each client random built no session, so
+/// the lines state what a session needs and the counts that are known, and
+/// name no single cause.
+fn incomplete_keys_guidance(tls: &crate::capture::TlsDecryptReport) -> Vec<String> {
+    let mut lines = vec![
+        no_session_line(tls),
+        format!(
+            "The handshake is not missing as a whole: sipnab saw {} ClientHello and {} \
+             ServerHello message(s) in this capture.",
+            tls.client_hellos_seen, tls.server_hellos_seen,
+        ),
+    ];
+    if let Some(unmatched) = tls.keylog_unmatched_entries {
+        lines.push(format!(
+            "{} of the {} keylog line(s) carry the client random of a ClientHello in this \
+             capture.",
+            tls.keylog_entries.saturating_sub(unmatched),
+            tls.keylog_entries,
+        ));
+    }
+    lines.push(
+        "sipnab builds a TLS 1.3 session from both the CLIENT_TRAFFIC_SECRET_0 and the \
+         SERVER_TRAFFIC_SECRET_0 line of one client random, with secrets of 32 or 48 \
+         bytes, and a TLS 1.2 session from a CLIENT_RANDOM line and the ServerHello of \
+         that connection with a cipher suite sipnab supports. It could do neither for \
+         any client random in the key log."
+            .to_string(),
+    );
+    lines.push(
+        "Check that the key log holds every line the endpoint wrote for these \
+         connections, and that the capture holds the ServerHello of each TLS 1.2 \
+         connection you want to read."
+            .to_string(),
+    );
+    lines
+}
+
+/// Why ciphertext went unread, and what to change.
+fn unread_guidance(tls: &crate::capture::TlsDecryptReport, mapped_libs: &[String]) -> Vec<String> {
+    let Some(cause) = unread_cause(tls) else {
+        return Vec::new();
+    };
     let unread = tls.app_data_records;
 
-    // Keys arrived and none of them became a session. For TLS 1.2 that is the
-    // ServerHello: `CLIENT_RANDOM` gives the master secret, and the server
-    // random and cipher suite needed to expand it into record keys are in the
-    // handshake. A capture that joined mid-stream holds the secret and no way
-    // to use it — and no later packet will supply what is missing.
-    if tls.sessions_with_keys == 0 && tls.keylog_entries > 0 {
-        return vec![
-            format!(
-                "sipnab loaded {} keylog line(s) and built no session from any of them, \
-                 so the {} TLS application-data record(s) in this capture went unread.",
-                tls.keylog_entries, tls.app_data_records,
-            ),
-            "The handshake is missing. A TLS 1.2 key log gives the master secret; the server \
-             random and cipher suite that expand it into record keys are in the ServerHello, \
-             and a capture that started after the connection did never saw one. Nothing later \
-             in the capture can supply them."
-                .to_string(),
-            "Capture the handshake: restart the connection while the capture is running, or \
-             capture continuously from before the connections you want to read."
-                .to_string(),
-        ];
+    match cause {
+        UnreadCause::HandshakeMissing => return handshake_missing_guidance(tls),
+        UnreadCause::ForeignKeyLog => return foreign_key_log_guidance(tls),
+        UnreadCause::IncompleteKeys => return incomplete_keys_guidance(tls),
+        UnreadCause::NoKeys | UnreadCause::SequenceUnknown => {}
     }
 
     // No session and no keys either, so no secret sipnab holds belongs to this
     // traffic. Restarting a connection would produce a fresh handshake that
     // is just as unreadable; the fix is upstream, at the key source.
-    if tls.sessions_with_keys == 0 {
+    if cause == UnreadCause::NoKeys {
         let mut lines = vec![
             format!(
                 "sipnab could not decrypt {unread} TLS application-data record(s): it holds \
@@ -2432,16 +2600,10 @@ fn unread_guidance(tls: &crate::capture::TlsDecryptReport, mapped_libs: &[String
         return lines;
     }
 
-    // Keys matched sessions and the records still would not open. The record
-    // sequence number is the difference, and it is not on the wire.
     // Sessions were built and not one record opened under them. The record
     // sequence number is what is left, and it is not on the wire.
     vec![
-        format!(
-            "sipnab holds keys for {} TLS session(s) and could not decrypt any of the \
-                 {} application-data record(s) it saw.",
-            tls.sessions_with_keys, tls.app_data_records,
-        ),
+        no_record_opened_line(tls),
         format!(
             "The usual cause is a capture that began against connections which were \
                  already running. A TLS record is numbered by a counter both endpoints keep \
@@ -16177,7 +16339,316 @@ mod tests {
             late_recovered: 0,
             late_evicted: 0,
             late_still_held: 0,
+            ..Default::default()
         }
+    }
+
+    /// A TLS report that read none of `records` ApplicationData records, with
+    /// `entries` keylog lines of which `unmatched` carry the client random of
+    /// no ClientHello seen, `sessions` sessions, and `hellos` as
+    /// (ClientHello, ServerHello) counts.
+    fn unread_report(
+        entries: usize,
+        unmatched: Option<usize>,
+        sessions: usize,
+        hellos: (u64, u64),
+        records: u64,
+    ) -> crate::capture::TlsDecryptReport {
+        crate::capture::TlsDecryptReport {
+            keylog_entries: entries,
+            sessions_with_keys: sessions,
+            app_data_records: records,
+            client_hellos_seen: hellos.0,
+            server_hellos_seen: hellos.1,
+            keylog_unmatched_entries: unmatched,
+            ..Default::default()
+        }
+    }
+
+    /// FAILURE, the reported case: the capture holds the handshake and the
+    /// one keylog line is of another connection. The cause is the key log,
+    /// and the remedy is not to capture a handshake that is already there.
+    #[test]
+    fn a_key_log_of_another_connection_is_named_with_its_counts() {
+        let report = unread_report(1, Some(1), 0, (1, 1), 2);
+        assert_eq!(
+            unread_cause(&report),
+            Some(UnreadCause::ForeignKeyLog),
+            "one ClientHello seen and the one keylog line matches none"
+        );
+        let lines = tls_decrypt_guidance(&report, &[]);
+        assert_eq!(
+            lines,
+            [
+                "sipnab loaded 1 keylog line(s) and built no session from any of them, so \
+                 the 2 TLS application-data record(s) in this capture went unread.",
+                "No key in the key log belongs to a handshake in this capture: sipnab saw 1 \
+                 ClientHello and 1 ServerHello message(s) and loaded 1 keylog line(s), and 1 \
+                 of those line(s) carry a client random that no ClientHello in the capture \
+                 has. The key log is from other connections: another process, another run, \
+                 or a log that was rotated or truncated after these connections began.",
+                "Use the key log that the endpoint of these connections wrote during this \
+                 capture. Restarting the connection helps only when the same run of that \
+                 endpoint writes the key log sipnab reads.",
+            ],
+            "the exact lines a page quotes"
+        );
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("The handshake is missing"),
+            "the handshake is in the capture: {joined}"
+        );
+        assert!(
+            !joined.contains("Capture the handshake"),
+            "capturing the handshake again does not change the key log: {joined}"
+        );
+    }
+
+    /// FAILURE, the neighbor: a complete TLS 1.3 key log of another
+    /// connection builds a session from the key log alone. It is still named
+    /// as a key log of other connections, and not as an unknown sequence.
+    #[test]
+    fn a_complete_tls13_key_log_of_another_connection_is_not_a_sequence_problem() {
+        let report = unread_report(2, Some(2), 1, (3, 2), 7);
+        assert_eq!(
+            unread_cause(&report),
+            Some(UnreadCause::ForeignKeyLog),
+            "three ClientHellos seen and neither keylog line matches one"
+        );
+        let lines = tls_decrypt_guidance(&report, &[]);
+        assert_eq!(
+            lines.len(),
+            4,
+            "four lines when a session exists: {lines:?}"
+        );
+        assert_eq!(
+            lines[0],
+            "sipnab holds keys for 1 TLS session(s) and could not decrypt any of the 7 \
+             application-data record(s) it saw.",
+            "the first line states what was built"
+        );
+        assert!(
+            lines[1].contains("sipnab saw 3 ClientHello and 2 ServerHello message(s)")
+                && lines[1].contains("loaded 2 keylog line(s), and 2 of those line(s)"),
+            "the counts are those of the report: {}",
+            lines[1]
+        );
+        assert_eq!(
+            lines[3],
+            "If a connection these keys belong to was already running when the capture \
+             began, its ClientHello is not in the capture: restart that connection while \
+             the capture is running.",
+            "the case a built session leaves open has its own line"
+        );
+        let joined = lines.join("\n");
+        assert!(
+            !joined.contains("The usual cause is a capture that began"),
+            "an unknown sequence is not the usual cause here: {joined}"
+        );
+    }
+
+    /// FAILURE: keylog lines, no session and no handshake message at all is
+    /// the missing handshake, with words that hold for TLS 1.3 as well.
+    #[test]
+    fn keys_with_no_handshake_in_the_capture_name_the_missing_handshake() {
+        let report = unread_report(6, Some(6), 0, (0, 0), 4);
+        assert_eq!(
+            unread_cause(&report),
+            Some(UnreadCause::HandshakeMissing),
+            "no ClientHello and no ServerHello was seen"
+        );
+        let lines = tls_decrypt_guidance(&report, &[]);
+        assert_eq!(
+            lines,
+            [
+                "sipnab loaded 6 keylog line(s) and built no session from any of them, so \
+                 the 4 TLS application-data record(s) in this capture went unread.",
+                "The handshake is missing: this capture holds no ClientHello and no \
+                 ServerHello. A TLS 1.2 key log gives the master secret; the server random \
+                 and cipher suite that expand it into record keys are in the ServerHello, \
+                 and a capture that started after the connection did never saw one. Nothing \
+                 later in the capture can supply them. A TLS 1.3 key log gives traffic \
+                 secrets and needs no handshake, and sipnab builds a session from it only \
+                 when it holds both the CLIENT_TRAFFIC_SECRET_0 and the \
+                 SERVER_TRAFFIC_SECRET_0 line of one connection.",
+                "For TLS 1.2, capture the handshake: restart the connection while the \
+                 capture is running, or capture continuously from before the connections \
+                 you want to read. For TLS 1.3, use a key log that holds both traffic \
+                 secret lines.",
+            ],
+            "the exact lines"
+        );
+    }
+
+    /// FAILURE: a keylog line matches a ClientHello in the capture and still
+    /// no session was built. The lines state what a session needs and do not
+    /// call the key log one of other connections.
+    #[test]
+    fn a_matching_line_that_built_no_session_names_what_a_session_needs() {
+        let report = unread_report(1, Some(0), 0, (1, 1), 2);
+        assert_eq!(
+            unread_cause(&report),
+            Some(UnreadCause::IncompleteKeys),
+            "the one keylog line matches the one ClientHello"
+        );
+        let lines = tls_decrypt_guidance(&report, &[]);
+        assert_eq!(
+            lines,
+            [
+                "sipnab loaded 1 keylog line(s) and built no session from any of them, so \
+                 the 2 TLS application-data record(s) in this capture went unread.",
+                "The handshake is not missing as a whole: sipnab saw 1 ClientHello and 1 \
+                 ServerHello message(s) in this capture.",
+                "1 of the 1 keylog line(s) carry the client random of a ClientHello in this \
+                 capture.",
+                "sipnab builds a TLS 1.3 session from both the CLIENT_TRAFFIC_SECRET_0 and \
+                 the SERVER_TRAFFIC_SECRET_0 line of one client random, with secrets of 32 \
+                 or 48 bytes, and a TLS 1.2 session from a CLIENT_RANDOM line and the \
+                 ServerHello of that connection with a cipher suite sipnab supports. It \
+                 could do neither for any client random in the key log.",
+                "Check that the key log holds every line the endpoint wrote for these \
+                 connections, and that the capture holds the ServerHello of each TLS 1.2 \
+                 connection you want to read.",
+            ],
+            "the exact lines"
+        );
+    }
+
+    /// EDGE: a ServerHello with no ClientHello. No ClientHello means no
+    /// client random to compare with, so the key log is not called one of
+    /// other connections, and a handshake message was seen, so the handshake
+    /// is not called missing.
+    #[test]
+    fn a_server_hello_alone_is_neither_a_foreign_key_log_nor_a_missing_handshake() {
+        let report = unread_report(1, Some(1), 0, (0, 1), 2);
+        assert_eq!(
+            unread_cause(&report),
+            Some(UnreadCause::IncompleteKeys),
+            "a ServerHello was seen and no ClientHello"
+        );
+        let joined = tls_decrypt_guidance(&report, &[]).join("\n");
+        assert!(
+            joined.contains("sipnab saw 0 ClientHello and 1 ServerHello message(s)"),
+            "both counts are stated: {joined}"
+        );
+        assert!(
+            !joined.contains("other connections") && !joined.contains("The handshake is missing:"),
+            "neither of the two other causes is claimed: {joined}"
+        );
+    }
+
+    /// EDGE, the boundary of "no line matches": one line of three matches a
+    /// ClientHello, so the key log is not one of other connections, with or
+    /// without a session.
+    #[test]
+    fn one_matching_line_among_several_is_not_a_foreign_key_log() {
+        assert_eq!(
+            unread_cause(&unread_report(3, Some(2), 0, (1, 1), 2)),
+            Some(UnreadCause::IncompleteKeys),
+            "two of three lines match none, one matches, no session"
+        );
+        assert_eq!(
+            unread_cause(&unread_report(3, Some(2), 1, (1, 1), 2)),
+            Some(UnreadCause::SequenceUnknown),
+            "two of three lines match none, one matches, a session exists"
+        );
+        assert_eq!(
+            unread_cause(&unread_report(3, Some(3), 1, (1, 1), 2)),
+            Some(UnreadCause::ForeignKeyLog),
+            "all three lines match none"
+        );
+    }
+
+    /// EDGE: the decryptor no longer knows which lines match (`None`). The
+    /// key log is then never called one of other connections, and no match
+    /// count is printed.
+    #[test]
+    fn an_unknown_match_count_never_names_a_foreign_key_log() {
+        let no_session = unread_report(4, None, 0, (70_000, 70_000), 9);
+        assert_eq!(
+            unread_cause(&no_session),
+            Some(UnreadCause::IncompleteKeys),
+            "the match count is not known and no session exists"
+        );
+        let joined = tls_decrypt_guidance(&no_session, &[]).join("\n");
+        assert!(
+            !joined.contains("keylog line(s) carry the client random"),
+            "a count that is not known is not printed: {joined}"
+        );
+        assert_eq!(
+            unread_cause(&unread_report(4, None, 2, (70_000, 70_000), 9)),
+            Some(UnreadCause::SequenceUnknown),
+            "the match count is not known and sessions exist"
+        );
+    }
+
+    /// EDGE: no keylog line at all. A handshake in the capture changes
+    /// nothing: the cause is that no key was loaded. With a session and no
+    /// keylog line (an RSA private key), zero unmatched of zero lines is not
+    /// a key log of other connections.
+    #[test]
+    fn no_keylog_line_is_never_a_foreign_key_log() {
+        assert_eq!(
+            unread_cause(&unread_report(0, Some(0), 0, (1, 1), 2)),
+            Some(UnreadCause::NoKeys),
+            "no line, no session, a handshake seen"
+        );
+        assert_eq!(
+            unread_cause(&unread_report(0, Some(0), 1, (1, 1), 2)),
+            Some(UnreadCause::SequenceUnknown),
+            "no line and a session from a private key"
+        );
+    }
+
+    /// FAILURE, unchanged: sessions and no ClientHello in the capture is the
+    /// unknown record sequence.
+    #[test]
+    fn sessions_with_no_client_hello_in_the_capture_stay_a_sequence_problem() {
+        let report = unread_report(2, Some(2), 1, (0, 0), 9);
+        assert_eq!(
+            unread_cause(&report),
+            Some(UnreadCause::SequenceUnknown),
+            "no ClientHello was seen, so nothing can be compared"
+        );
+        let joined = tls_decrypt_guidance(&report, &[]).join("\n");
+        assert!(
+            joined.contains("The usual cause is a capture that began"),
+            "the existing lines are kept: {joined}"
+        );
+    }
+
+    /// SUCCESS: a run that opened a record has no cause to name, whatever the
+    /// handshake and match counts are.
+    #[test]
+    fn a_run_that_opened_a_record_names_no_cause() {
+        for (entries, unmatched, sessions, hellos) in [
+            (2, Some(0), 1, (1, 1)),
+            (2, Some(2), 1, (1, 1)),
+            (2, None, 1, (0, 0)),
+            (0, Some(0), 0, (1, 1)),
+        ] {
+            let mut report = unread_report(entries, unmatched, sessions, hellos, 5);
+            report.decrypted_records = 1;
+            assert_eq!(
+                unread_cause(&report),
+                None,
+                "one record of five opened: {report:?}"
+            );
+            assert!(
+                tls_decrypt_guidance(&report, &[]).is_empty(),
+                "and no line is printed: {report:?}"
+            );
+        }
+    }
+
+    /// SUCCESS: a run that saw no TLS application data names no cause.
+    #[test]
+    fn a_run_with_no_application_data_names_no_cause() {
+        assert_eq!(
+            unread_cause(&unread_report(1, Some(1), 0, (1, 1), 0)),
+            None,
+            "a handshake, a keylog line of another connection and no record"
+        );
     }
 
     /// A TLS 1.2 keylog line binds to a session only through the handshake:
@@ -16197,6 +16668,7 @@ mod tests {
                 late_recovered: 0,
                 late_evicted: 0,
                 late_still_held: 0,
+                ..Default::default()
             },
             &[],
         );

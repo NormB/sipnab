@@ -159,6 +159,8 @@ fn main() {
         sipnab::capture::archive::release_run_and_exit(code);
     }
 
+    say_when_headless_only_by_the_build(&cli);
+
     // 8. Multi-core offline reconstruction bypasses the capture thread.
     //
     //    It still needs the file set, and the set is already on the plan:
@@ -421,6 +423,19 @@ fn run_cores_file(cli: &Cli, loaded: &sipnab::config::LoadedConfig, plan: &boots
     );
 }
 
+/// Print [`Cli::no_tui_build_notice`] when it has a line for this run.
+///
+/// A build without the TUI prints where a build with it would have opened
+/// the TUI. A run that asked for neither says why, once, to a terminal.
+fn say_when_headless_only_by_the_build(cli: &Cli) {
+    let on_a_terminal = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    if let Some(notice) = cli.no_tui_build_notice(on_a_terminal) {
+        use std::io::Write as _;
+        // `writeln!`, not `eprintln!`: a closed stderr must not panic.
+        let _ = writeln!(std::io::stderr(), "{notice}");
+    }
+}
+
 /// Steps 9 and 10 of [`main`]: launch the capture, then run the TUI or the
 /// batch runner over it.
 fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: bootstrap::RunPlan) {
@@ -436,8 +451,11 @@ fn launch_and_dispatch(cli: Cli, loaded: sipnab::config::LoadedConfig, plan: boo
 
     // 10. Dispatch to the selected mode.
     match plan.mode {
+        // The arm exists only where the variant does: a build without the
+        // `tui` feature has no `RunMode::Tui`, so this match is exhaustive
+        // there without an arm that runs nothing.
+        #[cfg(feature = "tui")]
         RunMode::Tui => {
-            #[cfg(feature = "tui")]
             sipnab::app::tui_mode::run_tui_mode(
                 cli,
                 loaded.config,
