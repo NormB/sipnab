@@ -370,6 +370,24 @@ sort alerts.log
 - The command runs in `sh -c`. sipnab reports a failing command, never
   retries it, and never stops the capture for it.
 
+## Check that it worked
+
+sipnab scored the capture's media when every stream it found carries a `mos`.
+Count both:
+
+```bash
+sipnab -N -I tests/pcap-samples/Asterisk_ZFONE_XLITE.pcap --json-dialogs --no-cli-print 2>/dev/null \
+  | jq -c -s '[.[].streams[]?] | {streams: length, scored: (map(select(.mos != null)) | length)}'
+```
+
+```json
+{"streams":3,"scored":3}
+```
+
+`{"streams":0,"scored":0}` means the capture holds no RTP that sipnab tied to
+a call. [`tests/pcap-samples/sip-problem-call.pcap`](https://github.com/NormB/sipnab/raw/main/tests/pcap-samples/sip-problem-call.pcap), a capture of signaling
+only, gives that answer.
+
 ## When something does not work
 
 - **The MOS reads `(delay 100ms assumed, not measured)`** in Stream detail,
