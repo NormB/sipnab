@@ -177,7 +177,16 @@ def test_every_download_marker_in_the_real_install_page_moves():
     out, moved = ad.move_markers(text, MARKERS, old, "9.9.9")
     # The page's marker lines, and nothing else, now name 9.9.9.
     changed = [b for a, b in zip(text.splitlines(), out.splitlines()) if a != b]
-    assert moved == len(changed) >= 20
+    # The floor is the count of marker lines in the page. FEWER means a marker
+    # stopped matching, or a line that named the release was removed: say
+    # which before lowering it.
+    # 20 -> 18 (OPS-4): the container section's live-capture commands no
+    # longer name a release. Two lines went, `docker run --rm --net=host
+    # --user root ghcr.io/normb/sipnab:<version> -N -d eth0` and the sentence
+    # with `docker image inspect ghcr.io/normb/sipnab:<version>`. The section
+    # that replaced them takes the image from `$TAG`, because no release up
+    # to 0.5.245 holds the fix it describes.
+    assert moved == len(changed) >= 18
     assert all("9.9.9" in line and old not in line for line in changed)
 
 
