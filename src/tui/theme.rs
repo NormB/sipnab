@@ -135,9 +135,11 @@ impl Theme {
     }
 }
 
-/// NO_COLOR is honored when set to a non-empty value (<https://no-color.org>).
+/// NO_COLOR is honored when set to a non-empty value (<https://no-color.org>),
+/// by the rule the message and log lines use
+/// ([`crate::output::cli_print::no_color_requested`]).
 fn no_color_requested() -> bool {
-    std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty())
+    crate::output::cli_print::no_color_requested(std::env::var_os("NO_COLOR").as_deref())
 }
 
 // ── Contrast ───────────────────────────────────────────────────────

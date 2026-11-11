@@ -8,9 +8,9 @@ see [`contrib/`](../contrib/README.md).
 | Path | What it does | What runs it |
 |------|--------------|--------------|
 | `deb/build-deb.sh` | Builds the `.deb` (full and `-noaudio` variants) | `release.yml`, on a tag |
-| `deb/test-build-deb.sh` | 25 assertions over control metadata and payload | CI, every push |
+| `deb/test-build-deb.sh` | 54 assertions over control metadata, payload and what each maintainer script does per dpkg action | CI, every push |
 | `rpm/build-rpm.sh` | Builds the `.rpm` from a spec it generates inline | `release.yml`, on a tag |
-| `rpm/test-build-rpm.sh` | 37 assertions over rpm metadata, payload and the packaged binary's `DT_NEEDED` | CI, every push |
+| `rpm/test-build-rpm.sh` | 49 assertions over rpm metadata, payload, the packaged binary's `DT_NEEDED` and what each scriptlet does on erase and upgrade | CI, every push |
 | `homebrew/update-formula.sh` | Generates `sipnab.rb` from `SHA256SUMS.txt` | `scripts/post-release.py`, after a release |
 | `homebrew/test-update-formula.sh` | 25 assertions over formula generation, against a fixture whose shape is checked by `test-real-sums.sh` | CI, every push |
 | `homebrew/test-real-sums.sh` | Runs the real generator against the **real** `SHA256SUMS.txt` of the latest published release | CI, every push |
@@ -61,6 +61,27 @@ cut and the workflow is already publishing.
 `packaging_scripts_reference_existing_paths` (in `tests/site_journey_test.rs`)
 asserts every repo-relative path these scripts name actually exists, so that
 failure lands on the push that causes it.
+
+## What the packages do to the service
+
+Neither package enables or starts `sipnab.service` on a fresh install. Both
+stop and disable it when the package is removed, and restart it on an upgrade
+only when it is running, so it never keeps running a replaced or deleted
+binary:
+
+| Operation | `.deb` script | `.rpm` scriptlet | Effect |
+|---|---|---|---|
+| Fresh install | `postinst configure` | — | Creates the `sipnab` user; nothing else |
+| Upgrade | `postinst configure <old>` | `%postun` with `$1` = 1 | `systemctl daemon-reload`, then `try-restart` |
+| Remove | `prerm remove`, `postrm remove` | `%preun` with `$1` = 0, `%postun` with `$1` = 0 | Stop (when systemd is running), `disable`, `daemon-reload` |
+
+The rules are the ones `dh_installsystemd` and the `%systemd_preun` /
+`%systemd_postun_with_restart` macros apply, written out by hand: the `.deb`
+is not built with debhelper, and the `.rpm` is built on Debian, where the
+macros are not defined. The `.deb` disables in `prerm`, not `postrm`, because
+`systemctl disable` reads the unit file's `[Install]` section to find the links,
+and the file is gone by `postrm`. Both test harnesses run each script per
+action against stub commands.
 
 ## Why the rpm names a different libpcap than the deb
 

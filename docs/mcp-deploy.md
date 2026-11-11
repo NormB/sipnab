@@ -1983,8 +1983,9 @@ sudo sipnab -N -d eth0 --user sipnab --mcp --mcp-transport http --mcp-bind 0.0.0
 
 A root run drops to `--user` before it reads the token, the certificate and
 the key, so make all three `root:sipnab` mode `640`. With a file only root
-can read, the run stops with exit status 2. For the key the message is the
-path alone, `/etc/sipnab/mcp.key`.
+can read, the run stops with exit status 2, and the message names the flag,
+the path and the reason:
+`--mcp-tls-key: /etc/sipnab/mcp.key: Permission denied (os error 13)`.
 
 `--mcp-allowed-host` names the host clients use in the URL. Without it, the
 request below gets `403` ([Stop a browser reaching your

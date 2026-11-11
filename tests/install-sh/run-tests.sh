@@ -97,14 +97,14 @@ t "glibc_at_least 3.0 >= 2.39" "yes" "$(glibc_at_least 3.0 2.39)"
 
 # ── artifact choice ──────────────────────────────────────────────────
 # linux + new glibc → gnu tarball; old/none/musl glibc → musl tarball; darwin → apple
-t "choose linux x86_64 glibc2.41" "sipnab-0.5.2-x86_64-unknown-linux-gnu.tar.gz"   "$(choose_artifact linux x86_64 2.41 0.5.2)"
+t "choose linux x86_64 glibc2.41" "sipnab-0.5.2-x86_64-unknown-linux-gnu.tar.gz"   "$(choose_artifact linux x86_64 2.41 0.5.2 yes)"
 # Debian 12 is exactly the floor and must get the gnu build. This asserted the
 # musl fallback while SIPNAB_GLIBC_FLOOR said 2.39 — the test encoded the wrong
 # floor as expected behavior, so it passed for the same reason the bug existed.
-t "choose linux x86_64 glibc2.36 (at the floor)" "sipnab-0.5.2-x86_64-unknown-linux-gnu.tar.gz" "$(choose_artifact linux x86_64 2.36 0.5.2)"
-t "choose linux x86_64 glibc2.35 (below floor)"  "sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz" "$(choose_artifact linux x86_64 2.35 0.5.2)"
-t "choose linux x86_64 no-glibc"  "sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz"  "$(choose_artifact linux x86_64 "" 0.5.2)"
-t "choose linux aarch64 glibc2.39" "sipnab-0.5.2-aarch64-unknown-linux-gnu.tar.gz" "$(choose_artifact linux aarch64 2.39 0.5.2)"
+t "choose linux x86_64 glibc2.36 (at the floor)" "sipnab-0.5.2-x86_64-unknown-linux-gnu.tar.gz" "$(choose_artifact linux x86_64 2.36 0.5.2 yes)"
+t "choose linux x86_64 glibc2.35 (below floor)"  "sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz" "$(choose_artifact linux x86_64 2.35 0.5.2 yes)"
+t "choose linux x86_64 no-glibc"  "sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz"  "$(choose_artifact linux x86_64 "" 0.5.2 yes)"
+t "choose linux aarch64 glibc2.39" "sipnab-0.5.2-aarch64-unknown-linux-gnu.tar.gz" "$(choose_artifact linux aarch64 2.39 0.5.2 yes)"
 t "choose darwin aarch64"         "sipnab-0.5.2-aarch64-apple-darwin.tar.gz"       "$(choose_artifact darwin aarch64 "" 0.5.2)"
 t "choose darwin x86_64"          "sipnab-0.5.2-x86_64-apple-darwin.tar.gz"        "$(choose_artifact darwin x86_64 "" 0.5.2)"
 choose_artifact plan9 x86_64 "" 0.5.2 >/dev/null 2>&1; t_err "choose bad os rejected" $?
@@ -160,6 +160,87 @@ mkbin "$tmp/bin-none"
 printf '%s  artifact.tar.gz\n' "$good" > "$tmp/artifact.tar.gz.sha256"
 (PATH="$tmp/bin-none"; export PATH; verify_checksum "$tmp/artifact.tar.gz" "$tmp/artifact.tar.gz.sha256" >/dev/null 2>&1)
 t_err "verify refuses when no checksum tool exists" $?
+
+# ── libpcap: the gnu build needs the SONAME it was linked against ────
+# The gnu tarballs are built on Debian and link libpcap.so.0.8. The installer
+# used to pick them on glibc alone, so a host without that library got a
+# binary whose first run failed with "libpcap.so.0.8: cannot open shared
+# object file". That includes every Fedora host: Fedora's libpcap is
+# libpcap.so.1, so installing libpcap there does not help.
+t "gnu pcap SONAME matches the one build-rpm.sh renames" \
+  "$(sed -n 's/^DEBIAN_PCAP_SONAME="\(.*\)"$/\1/p' "$(dirname "$0")/../../packaging/rpm/build-rpm.sh")" \
+  "$SIPNAB_GNU_PCAP_SONAME"
+
+LDC_ARM='	libpcap.so.0.8 (libc6,AArch64) => /lib/aarch64-linux-gnu/libpcap.so.0.8
+	libc.so.6 (libc6,AArch64) => /lib/aarch64-linux-gnu/libc.so.6'
+LDC_X86='	libpcap.so.0.8 (libc6,x86-64) => /lib/x86_64-linux-gnu/libpcap.so.0.8
+	libc.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libc.so.6'
+LDC_FEDORA='	libpcap.so.1 (libc6,x86-64) => /lib64/libpcap.so.1
+	libc.so.6 (libc6,x86-64) => /lib64/libc.so.6'
+LDC_I386_ONLY='	libpcap.so.0.8 (libc6) => /lib/i386-linux-gnu/libpcap.so.0.8
+	libc.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libc.so.6'
+LDC_DEV_ONLY='	libpcap.so (libc6,x86-64) => /lib/x86_64-linux-gnu/libpcap.so
+	libc.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libc.so.6'
+
+t "libpcap found by ldconfig on aarch64" "yes" "$(libpcap_present aarch64 "$LDC_ARM")"
+t "libpcap found by ldconfig on x86_64"  "yes" "$(libpcap_present x86_64 "$LDC_X86")"
+t "libpcap.so.1 alone (Fedora) is not the gnu build's library" "no" "$(libpcap_present x86_64 "$LDC_FEDORA")"
+t "an i386 libpcap does not serve an x86_64 binary" "no" "$(libpcap_present x86_64 "$LDC_I386_ONLY")"
+t "the -dev symlink alone is not the runtime SONAME" "no" "$(libpcap_present x86_64 "$LDC_DEV_ONLY")"
+t "an aarch64 libpcap does not serve an x86_64 binary" "no" "$(libpcap_present x86_64 "$LDC_ARM")"
+
+# No ldconfig output (no ldconfig, or not on PATH as non-root on Debian):
+# look in the library directories instead.
+mkdir -p "$tmp/libs/a" "$tmp/libs/b"
+t "no ldconfig, no library in the dirs" "no" "$(libpcap_present x86_64 "" "$tmp/libs/a" "$tmp/libs/b")"
+: > "$tmp/libs/b/libpcap.so.0.8"
+t "no ldconfig, library in the second dir" "yes" "$(libpcap_present x86_64 "" "$tmp/libs/a" "$tmp/libs/b")"
+t "no ldconfig and no dirs to look in" "no" "$(libpcap_present x86_64 "")"
+
+t "choose linux glibc ok but no libpcap -> musl" "sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz" "$(choose_artifact linux x86_64 2.41 0.5.2 no)"
+t "choose linux glibc ok, libpcap unknown -> musl" "sipnab-0.5.2-aarch64-unknown-linux-musl.tar.gz" "$(choose_artifact linux aarch64 2.41 0.5.2 "")"
+t "choose darwin ignores libpcap" "sipnab-0.5.2-aarch64-apple-darwin.tar.gz" "$(choose_artifact darwin aarch64 "" 0.5.2 no)"
+
+# The line the installer prints says why, and names what to install.
+case "$(choice_reason sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz 2.41 no)" in
+  *libpcap.so.0.8*libpcap0.8*) t "reason for missing libpcap names the library and the package" 0 0 ;;
+  *) t "reason for missing libpcap names the library and the package" "libpcap.so.0.8 ... libpcap0.8" "$(choice_reason sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz 2.41 no)" ;;
+esac
+case "$(choice_reason sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz 2.35 yes)" in
+  *"glibc 2.35 < $SIPNAB_GLIBC_FLOOR"*) t "reason for an old glibc names the floor" 0 0 ;;
+  *) t "reason for an old glibc names the floor" "glibc 2.35 < $SIPNAB_GLIBC_FLOOR" "$(choice_reason sipnab-0.5.2-x86_64-unknown-linux-musl.tar.gz 2.35 yes)" ;;
+esac
+case "$(choice_reason sipnab-0.5.2-x86_64-unknown-linux-gnu.tar.gz 2.41 yes)" in
+  *"gnu build"*) t "reason for the gnu build" 0 0 ;;
+  *) t "reason for the gnu build" "... gnu build ..." "$(choice_reason sipnab-0.5.2-x86_64-unknown-linux-gnu.tar.gz 2.41 yes)" ;;
+esac
+
+# ── install_payload: the binary and, when the archive has one, the plugin ──
+# sipnab loads libsipnab_audio.so from beside its own executable first. The
+# installer copied the binary alone, so a gnu install had no playback.
+t_path() { # t_path <name> <test operator> <path>
+  if test "$2" "$3"; then t "$1" "present" "present"; else t "$1" "$2 $3" "absent"; fi
+}
+mk_payload() { # mk_payload <root> [plugin-file-name]
+  rm -rf "$1"; mkdir -p "$1/sipnab-0.5.2-x"
+  printf '#!/bin/sh\n' > "$1/sipnab-0.5.2-x/sipnab"
+  printf 'README\n' > "$1/sipnab-0.5.2-x/README.md"
+  [ -z "${2:-}" ] || printf 'plugin\n' > "$1/sipnab-0.5.2-x/$2"
+}
+mk_payload "$tmp/gnu" libsipnab_audio.so; rm -rf "$tmp/dest"; mkdir -p "$tmp/dest"
+install_payload "$tmp/gnu" "$tmp/dest" >/dev/null 2>&1; t "install_payload gnu exits 0" "0" "$?"
+t_path "install_payload gnu installs the binary executable" -x "$tmp/dest/sipnab"
+t_path "install_payload gnu installs the plugin beside it" -f "$tmp/dest/libsipnab_audio.so"
+t "install_payload plugin mode is 644" "644" "$(stat -c %a "$tmp/dest/libsipnab_audio.so" 2>/dev/null || stat -f %Lp "$tmp/dest/libsipnab_audio.so" 2>/dev/null)"
+mk_payload "$tmp/mac" libsipnab_audio.dylib; rm -rf "$tmp/dest"; mkdir -p "$tmp/dest"
+install_payload "$tmp/mac" "$tmp/dest" >/dev/null 2>&1
+t_path "install_payload darwin installs the .dylib" -f "$tmp/dest/libsipnab_audio.dylib"
+mk_payload "$tmp/musl"; rm -rf "$tmp/dest"; mkdir -p "$tmp/dest"
+install_payload "$tmp/musl" "$tmp/dest" >/dev/null 2>&1; t "install_payload musl (no plugin) exits 0" "0" "$?"
+t "install_payload musl installs only the binary" "sipnab" "$(ls "$tmp/dest")"
+rm -rf "$tmp/empty"; mkdir -p "$tmp/empty"
+install_payload "$tmp/empty" "$tmp/dest" >/dev/null 2>&1; t_err "install_payload refuses an archive with no binary" $?
+
 
 echo "----------------------------------------"
 echo "pass=$PASS fail=$FAIL"

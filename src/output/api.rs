@@ -1411,6 +1411,7 @@ fn api_tls_config(
     };
     crate::tls_listener::https_config(
         (std::path::Path::new(cert), std::path::Path::new(key)),
+        crate::cli::API_TLS_FLAGS,
         &server_config.client_auth,
         "API TLS",
     )
@@ -12048,6 +12049,22 @@ mod tests {
             err.contains(&*absent.to_string_lossy()),
             "names the file: {err}"
         );
+        Ok(())
+    }
+
+    /// A key file that cannot be read is refused naming the flag, the path
+    /// and the reason, by the rule MCP and the metrics endpoint use.
+    #[test]
+    fn api_tls_names_the_flag_and_reason_for_a_missing_key_file() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_, cert, _) = tls_pki(dir.path(), "missing-key-flag")?;
+        let absent = dir.path().join("absent.key");
+        let err = tls_startup_error(&tls_server_config(Some(&cert), Some(&absent)))?;
+        let want = format!(
+            "--api-tls-key: {}: No such file or directory",
+            absent.display()
+        );
+        assert!(err.contains(&want), "want {want:?} in: {err}");
         Ok(())
     }
 

@@ -1145,7 +1145,8 @@ fn start_tui_servers(
         capture_meter,
     )
     .unwrap_or_else(|e| {
-        stderr_line!("{e}");
+        // The whole chain: `{e}` alone prints only the outermost context.
+        stderr_line!("{e:#}");
         crate::capture::archive::release_run_and_exit(2);
     })
 }

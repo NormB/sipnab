@@ -281,7 +281,7 @@ certificate, and each refuses a routable bind that has no credential:
 | REST API (`--api`) | bearer token: `--api-key` or `--api-signing-key[-file]` | `--api-tls-cert`, `--api-tls-key` | `[api] tls_cert`, `tls_key` | refused, exit 2 |
 | MCP over HTTP (`--mcp-transport http`) | bearer token: `--mcp-token[-file]` or `--mcp-signing-key[-file]` | `--mcp-tls-cert`, `--mcp-tls-key` | `[mcp] tls_cert`, `tls_key` | refused, exit 2 |
 | Metrics (`--metrics`) | HTTP Basic: `--metrics-auth-file` holding `user:password` | `--metrics-tls-cert`, `--metrics-tls-key` | `[metrics] tls_cert`, `tls_key` | refused, exit 2 |
-| HEP (`--hep-listen`) | source allowlist `--hep-allow`, or shared secret `--hep-auth-file` | `--hep-listen-transport tls`, `--hep-tls-cert`, `--hep-tls-key` | `[hep] tls_cert`, `tls_key` | refused, exit 1 |
+| HEP (`--hep-listen`) | source allowlist `--hep-allow`, or shared secret `--hep-auth-file` | `--hep-listen-transport tls`, `--hep-tls-cert`, `--hep-tls-key` | `[hep] tls_cert`, `tls_key` | refused, exit 2 |
 
 The exact refusal messages are in [A service that does not
 start](@/docs/run-as-a-service.md#a-service-that-does-not-start).

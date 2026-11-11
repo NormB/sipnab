@@ -116,7 +116,21 @@ Description: SIP & RTP capture, analysis, and security
 Homepage: https://sipnab.com
 CTRL
 
-# Create postinst
+# Maintainer scripts. They follow what dh_installsystemd generates, by hand
+# because this builder does not use debhelper: the service is stopped and
+# disabled only when the package is removed, never when it is upgraded, and an
+# upgrade restarts a running service so it does not keep running the replaced
+# binary. A fresh install neither enables nor starts the service; that stays
+# the administrator's decision. systemctl is reached through deb-systemd-invoke
+# when it is installed, so that policy-rc.d is honored in chroots and image
+# builds. A failing systemctl never fails the dpkg operation. Under DPKG_ROOT
+# (dpkg operating on another root) nothing is stopped or restarted.
+#
+# packaging/deb/test-build-deb.sh runs each script per dpkg action against
+# stub commands.
+
+# postinst: "configure <old-version>" on an upgrade, "configure" alone on a
+# fresh install.
 cat > "$PKG_DIR/DEBIAN/postinst" << "POST"
 #!/bin/sh
 set -e
@@ -124,8 +138,56 @@ set -e
 if ! getent passwd sipnab > /dev/null 2>&1; then
     useradd -r -s /usr/sbin/nologin -d /nonexistent sipnab
 fi
+if [ "$1" = configure ] && [ -n "${2:-}" ] && [ -z "${DPKG_ROOT:-}" ] \
+    && [ -d /run/systemd/system ]; then
+    # Upgrade: load the new unit file, and restart the service only if it is
+    # running (try-restart), so it runs the new /usr/bin/sipnab.
+    systemctl daemon-reload > /dev/null 2>&1 || true
+    if command -v deb-systemd-invoke > /dev/null 2>&1; then
+        deb-systemd-invoke try-restart sipnab.service > /dev/null 2>&1 || true
+    else
+        systemctl try-restart sipnab.service > /dev/null 2>&1 || true
+    fi
+fi
 POST
 chmod 755 "$PKG_DIR/DEBIAN/postinst"
+
+# prerm: "remove", "upgrade <new-version>", "deconfigure ..." or
+# "failed-upgrade <old-version>". Only "remove" acts. The disable happens here
+# and not in postrm because systemctl reads the [Install] section of the unit
+# file to find the links to delete, and the file is gone by postrm.
+cat > "$PKG_DIR/DEBIAN/prerm" << "PRERM"
+#!/bin/sh
+set -e
+if [ "$1" = remove ]; then
+    if [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+        if command -v deb-systemd-invoke > /dev/null 2>&1; then
+            deb-systemd-invoke stop sipnab.service > /dev/null 2>&1 || true
+        else
+            systemctl stop sipnab.service > /dev/null 2>&1 || true
+        fi
+    fi
+    if command -v systemctl > /dev/null 2>&1; then
+        if [ -n "${DPKG_ROOT:-}" ]; then
+            systemctl --root="$DPKG_ROOT" --no-reload disable sipnab.service > /dev/null 2>&1 || true
+        else
+            systemctl --no-reload disable sipnab.service > /dev/null 2>&1 || true
+        fi
+    fi
+fi
+PRERM
+chmod 755 "$PKG_DIR/DEBIAN/prerm"
+
+# postrm: after "remove" the unit file is gone, so systemd is told to forget
+# it. "purge" follows a "remove" whose prerm already disabled the service.
+cat > "$PKG_DIR/DEBIAN/postrm" << "POSTRM"
+#!/bin/sh
+set -e
+if [ "$1" = remove ] && [ -z "${DPKG_ROOT:-}" ] && [ -d /run/systemd/system ]; then
+    systemctl daemon-reload > /dev/null 2>&1 || true
+fi
+POSTRM
+chmod 755 "$PKG_DIR/DEBIAN/postrm"
 
 # Build .deb
 dpkg-deb --build "$PKG_DIR"

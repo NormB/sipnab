@@ -169,3 +169,57 @@ fn the_unit_gives_the_actions_journal_a_private_writable_home() -> Result<(), Te
     );
     Ok(())
 }
+
+/// The home directory both packages give the `sipnab` user, read from the
+/// `useradd -d <home>` line of each builder.
+fn service_user_homes() -> Result<Vec<(&'static str, String)>, TestError> {
+    let mut homes = Vec::new();
+    for (pkg, rel) in [
+        ("deb", "packaging/deb/build-deb.sh"),
+        ("rpm", "packaging/rpm/build-rpm.sh"),
+    ] {
+        let text = read(rel)?;
+        let home = text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("useradd "))
+            .find_map(|l| {
+                let mut words = l.split_whitespace();
+                words.find(|w| *w == "-d").and(words.next())
+            })
+            .ok_or_else(|| format!("{rel}: no `useradd ... -d <home>` line"))?;
+        homes.push((pkg, home.to_owned()));
+    }
+    Ok(homes)
+}
+
+/// Up to this fix a panic under the packaged unit printed `failed to write
+/// crash report: Read-only file system (os error 30)`. The default report
+/// directory was `$HOME/.local/state/sipnab`, the service user's home is
+/// `/nonexistent`, and `ProtectSystem=strict` makes everything outside the
+/// unit's `StateDirectory=` read-only. systemd exports that directory as
+/// `$STATE_DIRECTORY`, and the default now follows it.
+#[test]
+fn the_unit_lets_a_crash_report_be_written() -> Result<(), TestError> {
+    let unit = read("packaging/sipnab.service")?;
+    let state = unit
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("StateDirectory="))
+        .map(str::trim)
+        .ok_or("the unit has no StateDirectory=")?;
+    let granted = Path::new("/var/lib").join(state);
+    for (pkg, home) in service_user_homes()? {
+        let dir = sipnab::config::default_report_dir(
+            Some(granted.as_os_str()),
+            Some(Path::new(&home)),
+            Path::new("/tmp/sipnab"),
+        );
+        assert!(
+            dir.starts_with(&granted) && !dir.starts_with(&home),
+            "under the {pkg} the crash report default is {}, outside the unit's \
+             writable {}",
+            dir.display(),
+            granted.display()
+        );
+    }
+    Ok(())
+}

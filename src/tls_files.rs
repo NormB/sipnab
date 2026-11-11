@@ -168,7 +168,7 @@ pub(crate) fn trust_roots(
     let mut store = rustls::RootCertStore::empty();
     if let Some(path) = ca {
         // Named by the setting, so the refusal says which flag or key to fix.
-        for cert in pem_certificates(path).with_context(|| (*ca_name).to_string())? {
+        for cert in pem_certificates(path).map_err(|e| named_by(ca_name, &e))? {
             store
                 .add(cert)
                 .with_context(|| format!("{}: rustls rejected a certificate", path.display()))?;
@@ -198,7 +198,7 @@ pub(crate) fn trust_roots(
         bundle.display()
     );
     if let Some(path) = extra {
-        for cert in pem_certificates(path).with_context(|| (*extra_name).to_string())? {
+        for cert in pem_certificates(path).map_err(|e| named_by(extra_name, &e))? {
             store
                 .add(cert)
                 .with_context(|| format!("{}: rustls rejected a certificate", path.display()))?;
@@ -220,6 +220,9 @@ pub(crate) fn trust_roots(
 /// * `key` — PEM private key for the leaf; refused when world-readable.
 /// * `surface` — the listener being configured (`"HEP TLS"`, `"API TLS"`),
 ///   named in every error.
+/// * `settings` — the settings that name `cert` and `key`
+///   (`("--hep-tls-cert", "--hep-tls-key")`), which name a file that cannot
+///   be read ([`named_by`]).
 /// * `alpn` — the application protocols to offer, in preference order; empty
 ///   for none.
 ///
@@ -239,9 +242,24 @@ pub(crate) fn server_config(
     cert: &std::path::Path,
     key: &std::path::Path,
     surface: &str,
+    settings: (&str, &str),
     alpn: Vec<Vec<u8>>,
 ) -> Result<std::sync::Arc<rustls::ServerConfig>> {
-    server_config_with_clients(cert, key, surface, alpn, None)
+    server_config_with_clients(cert, key, surface, settings, alpn, None)
+}
+
+/// A file error `e`, named by the `setting` that named the file:
+/// `--mcp-tls-key: /etc/sipnab/mcp.key: Permission denied (os error 13)`.
+///
+/// The one rule for every TLS file a listener or client reads. The chain is
+/// flattened into the message rather than kept as a context, because a
+/// caller that prints an error with `{}` shows only its outermost context:
+/// the MCP refusal of an unreadable key printed the bare path that way,
+/// while the REST and metrics refusals, printed with `{:#}`, gave the
+/// reason. Flattened here, every printer shows the setting, the path and
+/// the operating system's reason.
+pub(crate) fn named_by(setting: &str, e: &anyhow::Error) -> anyhow::Error {
+    anyhow::anyhow!("{setting}: {e:#}")
 }
 
 /// A rustls verifier of client certificates, as one listener uses it.
@@ -259,11 +277,12 @@ pub(crate) fn server_config_with_clients(
     cert: &std::path::Path,
     key: &std::path::Path,
     surface: &str,
+    settings: (&str, &str),
     alpn: Vec<Vec<u8>>,
     clients: Option<ClientVerifier>,
 ) -> Result<std::sync::Arc<rustls::ServerConfig>> {
-    let chain = pem_certificates(cert)?;
-    let private = pem_private_key(key, surface)?;
+    let chain = pem_certificates(cert).map_err(|e| named_by(settings.0, &e))?;
+    let private = pem_private_key(key, surface).map_err(|e| named_by(settings.1, &e))?;
     let builder = rustls::ServerConfig::builder_with_provider(provider())
         .with_safe_default_protocol_versions()
         .with_context(|| format!("{surface} listener: no usable protocol versions"))?;
@@ -488,6 +507,30 @@ pub(crate) fn pem_private_key(
         "{}: no PRIVATE KEY, RSA PRIVATE KEY or EC PRIVATE KEY block in this file",
         path.display()
     )
+}
+
+/// A self-signed certificate and its key, written into `dir` as
+/// `cert.pem` and `key.pem` (mode 0600), for tests that need a readable pair.
+///
+/// # Errors
+///
+/// The pair cannot be generated or written.
+#[cfg(all(test, any(feature = "metrics", feature = "mcp-http")))]
+pub(crate) fn self_signed_pair(
+    dir: &std::path::Path,
+) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
+    let pair = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+        .map_err(|e| anyhow::anyhow!("self-signed pair: {e:?}"))?;
+    let cert = dir.join("cert.pem");
+    let key = dir.join("key.pem");
+    std::fs::write(&cert, pair.cert.pem())?;
+    std::fs::write(&key, pair.signing_key.serialize_pem())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok((cert, key))
 }
 
 #[cfg(test)]

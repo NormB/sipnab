@@ -681,3 +681,36 @@ fn a_panic_in_the_test_still_stops_the_spawned_server() -> Result<(), TestError>
     assert!(!leaked, "the server outlived the panic that ended its test");
     Ok(())
 }
+
+/// A flag that writes its answer to stdout runs beside MCP over HTTP: the
+/// JSON-RPC wire is a socket, so the stdio transport's refusal ("--mcp uses
+/// stdout for the JSON-RPC wire") does not apply. The server comes up and
+/// answers `initialize`.
+#[test]
+fn http_mcp_runs_beside_a_stdout_writing_flag() -> Result<(), TestError> {
+    let (child, addr) =
+        mcp::spawn_http_loopback(&["--json"])?.ok_or("MCP over HTTP with --json must start")?;
+    let status = mcp::initialize_status(&addr, None);
+    shutdown(child);
+    assert_eq!(status?, 200, "the server must answer initialize");
+    Ok(())
+}
+
+/// The stdio transport still refuses the same flag, exit 2, naming it.
+#[test]
+fn stdio_mcp_refuses_a_stdout_writing_flag_with_exit_2() -> Result<(), TestError> {
+    let pcap = mcp::fixture("sip_call.pcap");
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(["--mcp", "-I"])
+        .arg(&pcap)
+        .arg("--json")
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "{stderr}");
+    assert!(
+        stderr.contains("--mcp uses stdout for the JSON-RPC wire") && stderr.contains("--json"),
+        "{stderr}"
+    );
+    Ok(())
+}

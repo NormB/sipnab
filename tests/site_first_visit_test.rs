@@ -250,77 +250,94 @@ fn only_a_headless_sipnab_command_is_run() {
 
 // --------------------------------------------------------------- installer
 
-/// The package that supplies libpcap at run time for each package manager,
-/// as `docs/install.md` names them in its "The installer does not install
-/// libpcap" passage: `(apt package, dnf package)`.
-fn documented_libpcap_packages(doc: &str) -> Result<(String, String), TestError> {
-    let line = doc
+/// The line the installer prints when the host has no libpcap the gnu build
+/// can load, with the library name filled in as the shell fills it in.
+///
+/// Since OPS-16 the installer installs the gnu build only where that library
+/// is present, so this line, printed with the musl build, is the one place it
+/// names a libpcap package.
+fn installer_missing_libpcap_line(sh: &str) -> Result<String, TestError> {
+    let soname = sh
         .lines()
-        .find(|l| l.starts_with("Install `") && l.contains("(Debian, Ubuntu)"))
-        .ok_or("docs/install.md no longer says which libpcap package to install")?;
-    let names: Vec<&str> = line.split('`').skip(1).step_by(2).collect();
-    match names.as_slice() {
-        [deb, rpm] => Ok(((*deb).to_string(), (*rpm).to_string())),
-        other => Err(format!("expected two package names in `{line}`, found {other:?}").into()),
+        .find_map(|l| l.strip_prefix("SIPNAB_GNU_PCAP_SONAME=\""))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .ok_or("install.sh no longer sets SIPNAB_GNU_PCAP_SONAME")?;
+    let line = sh
+        .lines()
+        .find(|l| l.contains("not found") && l.contains("static musl build"))
+        .ok_or("install.sh no longer says what it does without libpcap")?;
+    let text = line
+        .trim()
+        .strip_prefix("echo \"")
+        .and_then(|rest| rest.strip_suffix('"'))
+        .ok_or_else(|| format!("the line is not one echo of one string: {line}"))?;
+    Ok(text.replace("$SIPNAB_GNU_PCAP_SONAME", soname))
+}
+
+/// The words of `line` that name a libpcap package or file.
+fn libpcap_names(line: &str) -> Vec<&str> {
+    line.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | ',' | ';'))
+        .filter(|w| w.starts_with("libpcap"))
+        .collect()
+}
+
+#[test]
+fn the_install_page_quotes_the_line_the_installer_prints_without_libpcap() -> Result<(), TestError>
+{
+    let line = installer_missing_libpcap_line(INSTALLER)?;
+    assert!(
+        INSTALL_DOC.contains(&format!("sipnab-install: {line}")),
+        "docs/install.md does not quote the installer's line: {line}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_installer_names_only_libpcap_packages_that_exist() -> Result<(), TestError> {
+    let line = installer_missing_libpcap_line(INSTALLER)?;
+    let names = libpcap_names(&line);
+    assert!(
+        names.contains(&"libpcap0.8") && names.contains(&"libpcap0.8t64"),
+        "the Debian and Ubuntu packages are libpcap0.8 and libpcap0.8t64: {line}"
+    );
+    for name in names {
+        assert!(
+            name.starts_with("libpcap0.8") || name.starts_with("libpcap.so."),
+            "`{name}` is no Debian or Ubuntu package (`apt install libpcap` \
+             answers \"Unable to locate package libpcap\"): {line}"
+        );
     }
-}
-
-/// The line the installer prints when it chose the build that needs libpcap.
-fn installer_libpcap_hint(sh: &str) -> Result<&str, TestError> {
-    sh.lines()
-        .find(|l| l.contains("needs libpcap"))
-        .ok_or_else(|| "install.sh no longer says the gnu build needs libpcap".into())
-}
-
-#[test]
-fn the_installer_names_the_libpcap_package_the_install_page_names() -> Result<(), TestError> {
-    let (deb, rpm) = documented_libpcap_packages(INSTALL_DOC)?;
-    let hint = installer_libpcap_hint(INSTALLER)?;
     assert!(
-        hint.contains(&format!("apt install {deb}")),
-        "docs/install.md says the Debian and Ubuntu package is `{deb}`; the \
-         installer prints: {hint}"
-    );
-    assert!(
-        hint.contains(&format!("dnf install {rpm}")),
-        "docs/install.md says the Fedora and RHEL package is `{rpm}`; the \
-         installer prints: {hint}"
+        !INSTALLER.contains("apt/dnf install"),
+        "apt and dnf name the libpcap runtime package differently"
     );
     Ok(())
 }
 
 #[test]
-fn the_installer_does_not_name_one_package_for_both_package_managers() -> Result<(), TestError> {
-    let hint = installer_libpcap_hint(INSTALLER)?;
-    assert!(
-        !hint.contains("apt/dnf install"),
-        "apt and dnf name the libpcap runtime package differently \
-         (`apt install libpcap` answers \"Unable to locate package \
-         libpcap\"): {hint}"
-    );
-    Ok(())
-}
-
-#[test]
-fn the_package_reader_takes_both_names_from_the_install_page() -> Result<(), TestError> {
+fn the_installer_line_reader_fills_in_the_library_name() -> Result<(), TestError> {
+    let sh = "SIPNAB_GNU_PCAP_SONAME=\"libpcap.so.0.8\"\n        \
+              echo \"$SIPNAB_GNU_PCAP_SONAME not found — using the static musl build. \
+              Install libpcap0.8 (Debian 12)\"\n";
+    let line = installer_missing_libpcap_line(sh)?;
     assert_eq!(
-        documented_libpcap_packages(
-            "x\nInstall `libpcap0.8` (Debian, Ubuntu) or `libpcap` (Fedora, RHEL) and run it\n"
-        )?,
-        ("libpcap0.8".to_string(), "libpcap".to_string()),
-        "the Debian name first, then the Fedora name"
+        line,
+        "libpcap.so.0.8 not found — using the static musl build. Install libpcap0.8 (Debian 12)",
+        "the shell variable is replaced by its value"
+    );
+    assert_eq!(
+        libpcap_names(&line),
+        ["libpcap.so.0.8", "libpcap0.8"],
+        "the library and the package, in order"
     );
     assert!(
-        documented_libpcap_packages("Install it.\n").is_err(),
-        "a page that names no package is an error"
+        installer_missing_libpcap_line("echo hello\n").is_err(),
+        "an installer that sets no library name is an error"
     );
     assert!(
-        documented_libpcap_packages("Install `one` (Debian, Ubuntu) only\n").is_err(),
-        "one name is not a pair"
-    );
-    assert!(
-        installer_libpcap_hint("echo hello\n").is_err(),
-        "an installer that prints no libpcap line is an error"
+        installer_missing_libpcap_line("SIPNAB_GNU_PCAP_SONAME=\"libpcap.so.0.8\"\necho hello\n")
+            .is_err(),
+        "an installer that prints no missing-libpcap line is an error"
     );
     Ok(())
 }

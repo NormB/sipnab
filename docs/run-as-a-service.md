@@ -235,13 +235,14 @@ Two rules decide whether such a unit can capture and read its files:
   and `setcap cap_net_raw+ep` on the binary fails to capture:
 
   ```text
-  Permission denied on 'any'. Grant capture capabilities once (Linux), then re-run without sudo:
+  Permission denied on 'any'. This process runs with NoNewPrivs set (systemd NoNewPrivileges=yes, or a container started with no-new-privileges), so the kernel ignores file capabilities and set-user-ID: sipnab --setup-caps, setcap and sudo cannot take effect. Grant the capabilities to the process instead:
   sipnab.service: Main process exited, code=exited, status=1/FAILURE
   ```
 
-  The lines after the first suggest `sipnab --setup-caps`, `sudo` or
-  `setcap`, none of which helps under `NoNewPrivileges=true`. Add the `AmbientCapabilities=` and
-  `CapabilityBoundingSet=` lines instead.
+  Add the `AmbientCapabilities=` and `CapabilityBoundingSet=` lines the
+  message names. A unit whose `CapabilityBoundingSet=` leaves out
+  `CAP_NET_RAW` gets `CAP_NET_RAW is not in this process's capability
+  bounding set` instead. Add it to that line.
 - **Every file the unit names must be readable by the unit's user.** sipnab
   reads token, key and certificate files as `sipnab`, not as root. A token file
   that root owns with mode 0600 stops the run with exit status 2:
@@ -283,16 +284,21 @@ the [Security section of the CLI reference](cli-reference.md#security).
   The alert also appears in the log on stderr. Every detector is off by
   default and the packaged unit names none, so it sends no alert until a
   drop-in or `sipnab.toml` turns one on.
-- **sipnab colors its log lines even when stderr is not a terminal.** The
-  journal then stores the escape sequences, and `journalctl -o cat` or a
-  `grep` over an export shows them as `[2m` and `[32m`. Set `NO_COLOR` to turn
-  them off:
+- **sipnab colors its log lines only when stderr is a terminal.** Under
+  systemd stderr is the journal, not a terminal, so the journal stores plain
+  text and `journalctl -o cat` shows no escape sequences. The same holds for
+  `docker logs` and for a pipe such as `sipnab -N -I x.pcap 2>&1 | cat`. On
+  a terminal, a non-empty `NO_COLOR` turns the color off. `--color` and
+  `[display] color` set the SIP message lines on stdout, not the log.
 
-  ```ini
-  [Service]
-  Environment=NO_COLOR=1
-  Environment=SIPNAB_LOG=info
+  To check, look for an escape byte in the unit's recent log:
+
+  ```bash
+  journalctl -u sipnab -n 50 -o cat | grep -c $'\x1b'
   ```
+
+  The count is `0`. A non-zero count means sipnab 0.5.244 or earlier. Set
+  `Environment=NO_COLOR=1` in the unit to turn the color off there.
 
 ## Stop, rotate and reconfigure
 
@@ -407,10 +413,37 @@ INFO sipnab::capture::writer: Rotating output to '/root/cap/sip_00002.pcap' (seq
 
 ## Keep crash reports
 
-When sipnab panics it writes a crash report. The default directory is
-`$HOME/.local/state/sipnab`. The packaged `sipnab` user's home is
+When sipnab panics it writes a crash report. Under the packaged unit the
+report goes to `/var/lib/sipnab`, the unit's state directory, with no
+configuration:
+
+- The unit sets `StateDirectory=sipnab`. systemd creates `/var/lib/sipnab`,
+  owned by the `sipnab` user, and exports its path as `$STATE_DIRECTORY`.
+- With no `report_dir` set, sipnab writes reports to the first directory in
+  `$STATE_DIRECTORY`. Outside a unit with a state directory it uses
+  `$HOME/.local/state/sipnab`.
+
+Prerequisites: a `.deb` or `.rpm` newer than 0.5.244, or a unit of your own
+with `StateDirectory=`.
+
+A panic under the unit then logs the file it wrote:
+
+```text
+crash report written to /var/lib/sipnab/sipnab-crash-20261103-143506-290-0.log
+```
+
+To keep reports somewhere else, set `report_dir` in `/etc/sipnab/sipnab.toml`
+to a directory the `sipnab` user can write and the unit leaves writable, for
+example a subdirectory of the state directory:
+
+```toml
+[crash]
+report_dir = "/var/lib/sipnab/crash"
+```
+
+In 0.5.244 and earlier there was no such default. The service user's home is
 `/nonexistent`, and `ProtectSystem=strict` makes the rest of the file system
-read-only, so under the packaged unit sipnab cannot write the report:
+read-only, so sipnab could not write the report:
 
 ```text
 sipnab panicked at src/main.rs:297:9:
@@ -419,19 +452,8 @@ failed to write crash report: Read-only file system (os error 30)
 sipnab.service: Main process exited, code=exited, status=101/n/a
 ```
 
-The report's text still reaches the journal. To keep the file as well, point
-`report_dir` at the unit's state directory in `/etc/sipnab/sipnab.toml`:
-
-```toml
-[crash]
-report_dir = "/var/lib/sipnab"
-```
-
-After a restart the same panic writes the file:
-
-```text
-crash report written to /var/lib/sipnab/sipnab-crash-20261103-143506-290-0.log
-```
+The report's text still reached the journal. On those versions set
+`report_dir = "/var/lib/sipnab"` in `[crash]` to keep the file.
 
 To check this on your own unit, add `--panic-selftest` to a drop-in's
 `ExecStart=` and set `Restart=no` in it, restart, read the journal, and then
@@ -524,16 +546,19 @@ The refusals a service meets most often:
 | `REST API refuses to start: --api 0.0.0.0:18080 is non-loopback but no --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was supplied.` | 2 | Bind `127.0.0.1`, or give a key as in [Change the packaged unit with a drop-in](#change-the-packaged-unit-with-a-drop-in) |
 | `MCP HTTP refuses to start: --mcp-bind 0.0.0.0:18731 is non-loopback but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / --mcp-signing-key / --mcp-signing-key-file / SIPNAB_MCP_SIGNING_KEY was supplied. Bind 127.0.0.1, or supply one of them.` | 2 | Bind `127.0.0.1`, or give a token file |
 | `metrics server refuses to start: --metrics 0.0.0.0:19090 is non-loopback but no --metrics-auth / --metrics-auth-file was supplied.` | 2 | Bind `127.0.0.1`, or give `--metrics-auth-file` |
-| `HEP listener refuses to start: --hep-listen 0.0.0.0:19060 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured.` | 1 | Add `--hep-allow` with your SIP servers' addresses, or a secret |
+| `HEP listener refuses to start: --hep-listen 0.0.0.0:19060 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured.` | 2 | Add `--hep-allow` with your SIP servers' addresses, or a secret |
 | `--api-tls-cert (or [api] tls_cert) c.pem was given without --api-tls-key (or [api] tls_key)` | 2 | Give both halves of the pair |
 | `k.pem: the API TLS private key is world-readable (mode 0644); chmod 600 it` | 2 | `chmod 600` the key, or `640` with the `sipnab` group |
 | `failed to bind API to 127.0.0.1:18081: Address already in use (os error 98)` | 2 | Another process holds the port. `ss -ltnp` names it |
-| `Permission denied on 'eth0'. Grant capture capabilities once (Linux), then re-run without sudo:` | 1 | Grant capture in the unit, as in [Write a unit of your own](#write-a-unit-of-your-own) |
+| `Permission denied on 'eth0'. This process runs with NoNewPrivs set` | 1 | Grant capture in the unit with `AmbientCapabilities=`, as in [Write a unit of your own](#write-a-unit-of-your-own) |
+| `Permission denied on 'eth0'. CAP_NET_RAW is not in this process's capability bounding set` | 1 | Add `CAP_NET_RAW CAP_NET_ADMIN` to the unit's `CapabilityBoundingSet=` |
 | `--mcp-token-file '/etc/sipnab/mcp.token': Permission denied (os error 13)` | 2 | Make the file readable by the unit's user |
 | `--mcp-audit-file /var/log/sipnab2/mcp-audit.jsonl: Read-only file system (os error 30)` | 2 | Add `LogsDirectory=sipnab` and write under `/var/log/sipnab` |
 | `invalid config value: [capture] snaplen must be > 0` | 1 | Correct the key the message names in `sipnab.toml` |
 
-The HEP listener's refusal exits 1 where the other three listeners exit 2.
+All four listeners' refusals of a routable bind exit 2, and sipnab prints
+each before any capture opens. In 0.5.244 and earlier the HEP listener's
+exited 1, after the words `Capture source failed to open:`.
 
 **A misspelled key in `sipnab.toml` does not stop the run.** sipnab logs a
 warning and ignores the key:

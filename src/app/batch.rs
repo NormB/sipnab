@@ -3903,9 +3903,12 @@ impl BatchRunner {
             // which is the same defect this ticket is fixing, one layer down.
             Some(capture_meter),
         )
+        // `{:#}`: the whole chain, as the TUI path prints it, so a refusal
+        // built with a context never reaches the operator as its outermost
+        // line alone.
         .map_err(|e| crate::app::bootstrap::PlanError {
             exit_code: 2,
-            message: e.to_string(),
+            message: format!("{e:#}"),
         })?;
 
         let evidence = open_evidence_sink(&cli)?;
