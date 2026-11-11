@@ -852,6 +852,14 @@ An inline secret is empty or holds only whitespace. `{inline_flag}` is `--hep-au
 
 **Exit code:** 2.
 
+### `--tui-audit-file requires the 'tui' feature (not compiled in): this build runs no TUI. Use --run-provenance-file to record how a run was invoked`
+
+This build of sipnab does not have the `tui` feature, so it has no interactive terminal interface (TUI) and there are no operator actions for `--tui-audit-file` to record. Every release binary and package has the feature. A build from source with a feature list that leaves out `tui` does not.
+
+**What to do:** Replace `--tui-audit-file` with `--run-provenance-file FILE`, which records how you started the run. To get the TUI and its audit file, install a release build, or build with the `tui` feature.
+
+**Exit code:** 2.
+
 ### `{from}: Unknown alert channel '{source}': expected one of {}, or a rule written name:threshold/window`
 
 sipnab reads an alert source that contains no `:` as an alert channel name, and `{source}` is not one. `{from}` is where the value came from (`--alert` or `[security] alert`). The list after "expected one of" is `syslog, json, exec` (compared without regard to case).
@@ -3544,11 +3552,19 @@ The `--keylog` path is a FIFO (named pipe), and sipnab could not open it for rea
 
 **Exit code:** None. sipnab logs the error, and the run continues.
 
-### `Capture the handshake: restart the connection while the capture is running, or capture continuously from before the connections you want to read.`
+### `Check that the key log holds every line the endpoint wrote for these connections, and that the capture holds the ServerHello of each TLS 1.2 connection you want to read.`
 
-The remedy for a capture that missed the TLS handshake.
+The remedy when sipnab loaded key-log lines, saw a handshake message, and still built no session. It follows the line that says what a session needs.
 
-**What to do:** Restart the connection while the capture runs, or capture continuously from before the connections start.
+**What to do:** Compare the key log with the connections in the capture. A TLS 1.3 connection needs both of its traffic secret lines. A TLS 1.2 connection needs its `CLIENT_RANDOM` line, and the capture must hold its `ServerHello`.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `For TLS 1.2, capture the handshake: restart the connection while the capture is running, or capture continuously from before the connections you want to read. For TLS 1.3, use a key log that holds both traffic secret lines.`
+
+The remedy for a capture that holds no TLS handshake, when sipnab built no session from the key log.
+
+**What to do:** For TLS 1.2, restart the connection while the capture runs, or capture continuously from before the connections start. For TLS 1.3, check that the key log holds the `CLIENT_TRAFFIC_SECRET_0` line and the `SERVER_TRAFFIC_SECRET_0` line of the connection.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -3837,7 +3853,11 @@ sipnab holds TLS records that arrive before their key, so that it can decrypt th
 
 sipnab holds keys for the first number of TLS sessions and could not decrypt any of the second number of records.
 
-**What to do:** Read the next two lines.
+- The lines that follow give the cause.
+- When the capture holds a `ClientHello` and no key-log line carries its client random, they say that the key log is from other connections.
+- Otherwise they say that the record sequence is not known.
+
+**What to do:** Read the lines that follow.
 
 **Exit code:** None. This is a warning, and the run continues.
 
@@ -3845,15 +3865,80 @@ sipnab holds keys for the first number of TLS sessions and could not decrypt any
 
 sipnab loaded the first number of key-log lines. It could not build a TLS session from any of them. So the second number of TLS application-data records went unread.
 
-**What to do:** Read the two lines that follow.
+The lines that follow give one of three causes:
+
+- The capture holds no handshake.
+- The capture holds a handshake, and the key log is from other connections.
+- A handshake message is in the capture, and the key log or the capture lacks a part that a session needs.
+
+**What to do:** Read the lines that follow.
 
 **Exit code:** None. This is a warning, and the run continues.
 
-### `The handshake is missing. A TLS 1.2 key log gives the master secret; the server random and cipher suite that expand it into record keys are in the ServerHello, and a capture that started after the connection did never saw one. Nothing later in the capture can supply them.`
+### `No key in the key log belongs to a handshake in this capture: sipnab saw {} ClientHello and {} ServerHello message(s) and loaded {} keylog line(s), and {} of those line(s) carry a client random that no ClientHello in the capture has. The key log is from other connections: another process, another run, or a log that was rotated or truncated after these connections began.`
 
-Follows the line above. For TLS 1.2, the session keys also need the server random value and the cipher suite from the `ServerHello` message. This capture started after the handshake.
+The capture holds a TLS handshake, and no line of the key log belongs to it.
 
-**What to do:** Capture the handshake, as the next line says.
+- The first two numbers are the `ClientHello` and `ServerHello` messages that sipnab saw in the capture.
+- The third number is the key-log lines that sipnab loaded.
+- The fourth number is the lines whose client random is the client random of no `ClientHello` in the capture. It equals the third number.
+
+A key-log line names its connection by the client random. So the key log holds the keys of other connections. It can come from another process, from another run of the same process, or from a file that something rotated or truncated after these connections began.
+
+sipnab remembers the client random of at most `MAX_REMEMBERED_CLIENT_HELLOS` (65,536) `ClientHello` messages. A capture that holds more of them does not get this line, because sipnab can no longer say that a key-log line matches none of them.
+
+**What to do:** Use the right key log, as the next line says. Capturing the handshake again does not help, because the handshake is already in the capture.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `Use the key log that the endpoint of these connections wrote during this capture. Restarting the connection helps only when the same run of that endpoint writes the key log sipnab reads.`
+
+The remedy for a key log from other connections.
+
+**What to do:** Give `--keylog` the file that the endpoint of these connections wrote while the capture ran. If you restart the connection, also make sure that the same run of that endpoint writes the key log that sipnab reads.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `If a connection these keys belong to was already running when the capture began, its ClientHello is not in the capture: restart that connection while the capture is running.`
+
+Follows the remedy for a key log from other connections, when sipnab built a session from the key log. sipnab builds a TLS 1.3 session from the key log alone, so the keys can belong to a connection whose handshake came before the capture.
+
+**What to do:** If that is the case, restart that connection while the capture runs.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `The handshake is missing: this capture holds no ClientHello and no ServerHello. A TLS 1.2 key log gives the master secret; the server random and cipher suite that expand it into record keys are in the ServerHello, and a capture that started after the connection did never saw one. Nothing later in the capture can supply them. A TLS 1.3 key log gives traffic secrets and needs no handshake, and sipnab builds a session from it only when it holds both the CLIENT_TRAFFIC_SECRET_0 and the SERVER_TRAFFIC_SECRET_0 line of one connection.`
+
+sipnab saw no `ClientHello` and no `ServerHello` in the capture, and it built no session from the key log.
+
+- For TLS 1.2, the session keys also need the server random value and the cipher suite from the `ServerHello` message. This capture started after the handshake.
+- For TLS 1.3, the key log holds traffic secrets, and sipnab needs no handshake. It needs both the `CLIENT_TRAFFIC_SECRET_0` line and the `SERVER_TRAFFIC_SECRET_0` line of one connection.
+
+**What to do:** Read the next line.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `The handshake is not missing as a whole: sipnab saw {} ClientHello and {} ServerHello message(s) in this capture.`
+
+sipnab loaded key-log lines and built no session, and the capture does hold handshake messages. The two numbers are the `ClientHello` and `ServerHello` messages that sipnab saw.
+
+**What to do:** Read the lines that follow.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `{} of the {} keylog line(s) carry the client random of a ClientHello in this capture.`
+
+The first number is the key-log lines that belong to a handshake in the capture. The second number is the key-log lines that sipnab loaded. sipnab remembers the client random of 65536 `ClientHello` messages. It leaves this line out when the capture held more different client randoms than that, because it then cannot count the lines.
+
+**What to do:** Read the lines that follow.
+
+**Exit code:** None. This is a warning, and the run continues.
+
+### `sipnab builds a TLS 1.3 session from both the CLIENT_TRAFFIC_SECRET_0 and the SERVER_TRAFFIC_SECRET_0 line of one client random, with secrets of 32 or 48 bytes, and a TLS 1.2 session from a CLIENT_RANDOM line and the ServerHello of that connection with a cipher suite sipnab supports. It could do neither for any client random in the key log.`
+
+Says what sipnab needs to build a session, when it loaded key-log lines, saw a handshake message, and built no session. sipnab does not record which part was absent for each connection.
+
+**What to do:** Check the key log and the capture, as the next line says.
 
 **Exit code:** None. This is a warning, and the run continues.
 

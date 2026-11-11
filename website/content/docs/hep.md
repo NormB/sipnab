@@ -67,6 +67,11 @@ sipnab -N -L 198.51.100.1:9061 --hep-allow 198.51.100.10 \
 - sipnab refuses to bind a listener to a routable address with neither
   `--hep-allow` nor `--hep-auth-file`, because an open HEP port accepts forged
   calls from anyone who reaches it. A loopback bind needs neither.
+- Give `-L` a literal address and a port, `IP:PORT`, for example
+  `127.0.0.1:9060` or `[::1]:9060`. sipnab does not resolve a host name to
+  decide whether it is loopback, so `localhost:9060` needs `--hep-allow` or
+  `--hep-auth-file` as a routable address does. sipnab refuses a value that
+  is not an address, such as `9060` with no address, with exit status 2.
 - `--duration` stops after that long, then `--report` and `--hep-senders`
   print what arrived. Leave `--duration` out for a collector that runs until
   you stop it, or run it as a service ([Run sipnab as a
@@ -548,6 +553,8 @@ explains each kind of finding, and the combinations sipnab refuses (`-I`,
 
 | Symptom | Cause | Fix |
 |---|---|---|
+| `--hep-listen "9060" is not an address` and exit 2 | The value of `-L` has no address, no port, or a port above 65535 | Give `IP:PORT`, for example `127.0.0.1:9060` |
+| `--hep-listen localhost:9060 names a host, and sipnab does not resolve a name` and exit 2 | A host name, with neither `--hep-allow` nor a key | Use a literal address such as `127.0.0.1:9060`, or add `--hep-allow` or `--hep-auth-file` |
 | `received 0` and `no packets for 30s` | Nothing reaches the port | The SIP server's address and port, its transport, the firewall |
 | Refused, `auth_missing` | The listener has a key and the sender sends none (OpenSIPS never does) | Drop the key and use `--hep-allow`, or send from Kamailio with `auth_key` |
 | Refused, `auth_mismatch` | Different keys on the two ends | Compare the strings. sipnab trims the file's line ending |

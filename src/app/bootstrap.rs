@@ -108,6 +108,13 @@ impl PlanError {
 /// Which top-level mode this invocation runs.
 pub enum RunMode {
     /// Interactive TUI (the default when compiled in and stdio is free).
+    ///
+    /// The variant exists only in a build with the `tui` feature. A build
+    /// without it has no code to run for this mode, so it has no value to
+    /// select, match or dispatch: a run of it that named the mode would not
+    /// compile. Such a build used to select it and run nothing
+    /// (NO-TUI-BUILD-SILENT).
+    #[cfg(feature = "tui")]
     Tui,
     /// Headless batch capture/replay (`super::batch::run`).
     Batch,
@@ -116,27 +123,42 @@ pub enum RunMode {
     CoresFile,
 }
 
+impl RunMode {
+    /// Whether this is the interactive TUI. Always `false` in a build
+    /// without the `tui` feature, which has no such mode.
+    ///
+    /// The one place code compiled in every feature set asks the question,
+    /// so it does not have to name a variant that may not exist.
+    #[must_use]
+    pub const fn is_tui(&self) -> bool {
+        match self {
+            #[cfg(feature = "tui")]
+            Self::Tui => true,
+            Self::Batch | Self::CoresFile => false,
+        }
+    }
+}
+
 /// The mode the flags select.
 ///
 /// One function because two places ask: the plan below, and
 /// `run_startup_commands`, which refuses `--notes` in a run where nothing would
 /// read it. Two copies of the rule would agree today and disagree the next
 /// time a mode is added.
+///
+/// The TUI is selected only by a build with the `tui` feature, for a run
+/// that is interactive (`no_tui` unset, which `Cli::normalize` settles) and
+/// whose standard output MCP does not own. A build without the feature
+/// selects the batch run for every such command line.
 pub(crate) fn select_run_mode(cli: &Cli) -> RunMode {
     if cli.limits_args.cores > 1 && cli.has_input() && !cli.capture_args.multi_device {
         return RunMode::CoresFile;
     }
-    #[cfg(feature = "mcp")]
-    let use_tui = !cli.mode_args.no_tui && !cli.mcp_owns_stdout();
-    #[cfg(all(feature = "tui", not(feature = "mcp")))]
-    let use_tui = !cli.mode_args.no_tui;
-    #[cfg(not(any(feature = "tui", feature = "mcp")))]
-    let use_tui = false;
-    if use_tui {
-        RunMode::Tui
-    } else {
-        RunMode::Batch
+    #[cfg(feature = "tui")]
+    if !cli.mode_args.no_tui && !cli.mcp_owns_stdout() {
+        return RunMode::Tui;
     }
+    RunMode::Batch
 }
 
 /// Why the TUI would refuse the notes file at `path`, if it would.
@@ -156,7 +178,7 @@ fn tui_notes_refusal(_path: &str) -> Option<String> {
 
 /// Whether this run is the interactive TUI.
 fn runs_the_tui(cli: &Cli) -> bool {
-    matches!(select_run_mode(cli), RunMode::Tui)
+    select_run_mode(cli).is_tui()
 }
 
 /// Everything main() needs to run, decided up front from CLI + config.
@@ -461,8 +483,9 @@ fn uprobe_unavailable(tls: bool, libraries: bool) -> String {
 ///
 /// # Errors
 ///
-/// A malformed `--hep-allow` CIDR, an unresolvable `--hep-auth` secret, or a
-/// non-loopback bind with neither a secret nor an allowlist, all exit code 2.
+/// A malformed `--hep-allow` CIDR, an unresolvable `--hep-auth` secret, a
+/// `--hep-listen` value that is not an address, or a routable or host-name
+/// bind with neither a secret nor an allowlist, all exit code 2.
 fn plan_hep_source(cli: &Cli, config: &Config) -> Result<CaptureSource, PlanError> {
     let hep_addr = match cli.hep_args.hep_listen.as_ref() {
         Some(a) => a,
@@ -2056,7 +2079,7 @@ fn refuse_by_mode(cli: &Cli, config: &Config, mode: &RunMode) -> Result<(), Plan
 /// because an export flag already chose the headless mode.
 #[must_use]
 pub fn tui_export_notice(cli: &Cli, config: &Config, mode: &RunMode) -> Option<String> {
-    if !matches!(mode, RunMode::Tui) || !cli.exports_vcon(config) {
+    if !mode.is_tui() || !cli.exports_vcon(config) {
         return None;
     }
     let names: Vec<String> = config
@@ -7359,7 +7382,7 @@ fn build_capture_config(cli: &Cli, config: &Config) -> Result<CaptureConfig, Pla
 /// milliseconds of delivery latency nobody perceives for a ring that does not
 /// shrink with the snaplen is the correct trade there.
 fn immediate_mode_for(mode: &RunMode) -> bool {
-    matches!(mode, RunMode::Tui)
+    mode.is_tui()
 }
 
 // ── Auto-generated BPF filter ──────────────────────────────────────────
@@ -8154,7 +8177,9 @@ fn security_detection_unarmed_refusal(
         // the interactive TUI, whose processing thread runs the same detectors
         // for their findings (never their kill path — it observes, it does not
         // transmit).
-        RunMode::Batch | RunMode::Tui => return None,
+        #[cfg(feature = "tui")]
+        RunMode::Tui => return None,
+        RunMode::Batch => return None,
         RunMode::CoresFile => (
             "the --cores parallel offline reader",
             "drop --cores (the single-core headless read detects)",
@@ -8469,8 +8494,9 @@ mod tests {
     ///
     /// Only in a build with the exporter: without it a rule writes nothing
     /// anywhere, `Cli::exports_vcon` does not count it, and there is nothing
-    /// to say.
-    #[cfg(feature = "vcon")]
+    /// to say. And only in a build with the TUI: without it there is no TUI
+    /// run to tell.
+    #[cfg(all(feature = "vcon", feature = "tui"))]
     #[test]
     fn a_tui_run_with_a_configured_rule_is_told_and_continues() -> Result<(), TestError> {
         use clap::Parser;
@@ -8497,6 +8523,7 @@ mod tests {
             None,
             "a headless run writes the rule's containers"
         );
+        #[cfg(feature = "tui")]
         assert_eq!(
             tui_export_notice(&cli, &Config::default(), &RunMode::Tui),
             None,
@@ -9585,7 +9612,11 @@ mod tests {
     /// trades it for TPACKET_V3's snaplen-independent ring.
     #[test]
     fn immediate_mode_is_the_tui_and_nothing_else() -> Result<(), TestError> {
-        assert!(immediate_mode_for(&RunMode::Tui));
+        #[cfg(feature = "tui")]
+        assert!(
+            immediate_mode_for(&RunMode::Tui),
+            "the TUI keeps per-packet delivery"
+        );
         assert!(!immediate_mode_for(&RunMode::Batch));
         assert!(!immediate_mode_for(&RunMode::CoresFile));
         Ok(())
@@ -9726,6 +9757,107 @@ mod tests {
         Ok(())
     }
 
+    // ── The run mode in a build without the TUI (NO-TUI-BUILD-SILENT) ────
+
+    /// With no `-N`, a build with the `tui` feature selects the TUI and a
+    /// build without it selects the batch run. Holds in every feature set.
+    #[test]
+    fn the_default_run_mode_is_the_tui_only_in_a_build_that_has_one() -> Result<(), TestError> {
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        let mode = select_run_mode(&cli);
+        assert_eq!(
+            mode.is_tui(),
+            cfg!(feature = "tui"),
+            "no -N selects the TUI exactly when the build has the `tui` feature"
+        );
+        assert_eq!(
+            matches!(mode, RunMode::Batch),
+            cfg!(not(feature = "tui")),
+            "a build without the `tui` feature runs the batch mode instead"
+        );
+        Ok(())
+    }
+
+    /// `-N` selects the batch run in every feature set.
+    #[test]
+    fn no_tui_selects_the_batch_run_in_every_build() -> Result<(), TestError> {
+        for argv in [
+            &["sipnab", "-N", "-I", "x.pcap"][..],
+            &["sipnab", "-N"][..],
+            &["sipnab", "--no-tui", "-d", "eth0"][..],
+        ] {
+            let mode = select_run_mode(&Cli::parse_from_args(argv));
+            assert!(
+                matches!(mode, RunMode::Batch),
+                "{argv:?} must select the batch run"
+            );
+            assert!(!mode.is_tui(), "{argv:?} must not select the TUI");
+        }
+        Ok(())
+    }
+
+    /// In a build without the `tui` feature the parsed flags already say the
+    /// run is not interactive, so every reader of `no_tui` (the per-message
+    /// output, the log level, the output-flag check) agrees with the run
+    /// mode. In a build with it, `-N` alone decides.
+    #[test]
+    fn a_build_without_the_tui_parses_every_run_as_not_interactive() -> Result<(), TestError> {
+        for argv in [
+            &["sipnab", "-I", "x.pcap"][..],
+            &["sipnab"][..],
+            &["sipnab", "-d", "eth0"][..],
+        ] {
+            let cli = Cli::parse_from_args(argv);
+            assert_eq!(
+                cli.mode_args.no_tui,
+                cfg!(not(feature = "tui")),
+                "{argv:?}: `no_tui` is set without -N exactly when the build has no TUI"
+            );
+            assert_eq!(
+                select_run_mode(&cli).is_tui(),
+                !cli.mode_args.no_tui,
+                "{argv:?}: the run mode and `no_tui` must agree"
+            );
+        }
+        Ok(())
+    }
+
+    /// No flag combination selects the TUI in a build without one: not a
+    /// `Cli` built by hand that skipped `normalize`, and not MCP over HTTP,
+    /// which leaves the TUI up in a build that has it.
+    #[cfg(not(feature = "tui"))]
+    #[test]
+    fn nothing_selects_the_tui_in_a_build_without_it() -> Result<(), TestError> {
+        let mut by_hand = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        by_hand.mode_args.no_tui = false;
+        assert!(
+            matches!(select_run_mode(&by_hand), RunMode::Batch),
+            "a Cli that skipped normalize still runs the batch mode"
+        );
+        let mut live = Cli::parse_from_args(["sipnab", "-d", "eth0"]);
+        live.mode_args.no_tui = false;
+        assert!(
+            matches!(select_run_mode(&live), RunMode::Batch),
+            "a live capture without -N runs the batch mode"
+        );
+        #[cfg(feature = "mcp")]
+        {
+            let http = Cli::parse_from_args([
+                "sipnab",
+                "-I",
+                "x.pcap",
+                "--mcp",
+                "--mcp-transport",
+                "http",
+            ]);
+            assert!(
+                matches!(select_run_mode(&http), RunMode::Batch),
+                "MCP over HTTP has no TUI to serve beside"
+            );
+        }
+        Ok(())
+    }
+
     /// The TUI keeps immediate mode: a person is watching messages land, and a
     /// packet held back until its ring block retires is what makes an
     /// interactive tool feel broken.
@@ -9755,7 +9887,7 @@ mod tests {
                 plan(&cli, &Config::default()).map_err(|e| format!("plan must succeed: {e:?}"))?;
             assert_eq!(
                 p.capture_config.immediate_mode,
-                matches!(p.mode, RunMode::Tui),
+                p.mode.is_tui(),
                 "immediate mode must follow the run mode exactly (headless={headless})"
             );
         }
@@ -10112,6 +10244,7 @@ mod tests {
     /// arms all three and their findings reach `View::SecurityFindings`, where
     /// the refusal used to send the operator to `-N`. Only the `--cores`
     /// parallel reader still builds no detector, so only it still refuses.
+    #[cfg(feature = "tui")]
     #[test]
     fn detection_flags_now_arm_in_the_watching_tui() -> Result<(), TestError> {
         let mut cli = base_cli();
@@ -10189,14 +10322,17 @@ mod tests {
             "batch::run builds every one of these; warning here would be false"
         );
 
-        let mut watching = base_cli();
-        watching.mode_args.no_tui = false;
-        watching.capture_args.device = Some("eth0".to_string());
-        assert!(
-            security_detection_unarmed_refusal(&watching, &Config::default(), &RunMode::Tui)
-                .is_none(),
-            "nothing was asked for, so nothing is being ignored"
-        );
+        #[cfg(feature = "tui")]
+        {
+            let mut watching = base_cli();
+            watching.mode_args.no_tui = false;
+            watching.capture_args.device = Some("eth0".to_string());
+            assert!(
+                security_detection_unarmed_refusal(&watching, &Config::default(), &RunMode::Tui)
+                    .is_none(),
+                "nothing was asked for, so nothing is being ignored"
+            );
+        }
         Ok(())
     }
 
@@ -12516,6 +12652,74 @@ mod startup_refusal_tests {
         Ok(())
     }
 
+    /// A `-L` value that is not an address is a refused flag, exit 2, while
+    /// the run is planned, with or without an allowlist or a secret. With
+    /// one of them the value used to pass the plan and fail in the listener
+    /// thread's bind (`Failed to bind HEP listener on 'x'`).
+    #[cfg(feature = "hep")]
+    #[test]
+    fn a_hep_listen_value_that_is_not_an_address_is_refused_at_plan_time_with_exit_2()
+    -> Result<(), TestError> {
+        for value in ["x", "", "0", "127.0.0.1", ":9060"] {
+            for guard in [
+                &[][..],
+                &["--hep-allow", "192.0.2.0/24"][..],
+                &["--hep-auth", "example-secret"][..],
+            ] {
+                let mut argv = vec!["-N", "-L", value];
+                argv.extend_from_slice(guard);
+                let err = plan(&cli_from(&argv), &Config::default())
+                    .err()
+                    .ok_or_else(|| format!("{argv:?} must refuse the run"))?;
+                assert_eq!(err.exit_code, 2, "{argv:?}: {}", err.message);
+                assert_eq!(
+                    err.message,
+                    format!(
+                        "HEP listener refuses to start: --hep-listen {value:?} is not an \
+                         address. Give it as IP:PORT, for example 127.0.0.1:9060."
+                    ),
+                    "the refusal of {argv:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// A host name with a port and nothing guarding the listener is refused
+    /// at plan time in words of its own. The same name with an allowlist
+    /// plans.
+    #[cfg(feature = "hep")]
+    #[test]
+    fn a_hep_listen_host_name_is_refused_unguarded_and_planned_guarded() -> Result<(), TestError> {
+        let err = plan(
+            &cli_from(&["-N", "-L", "collector.example.com:9060"]),
+            &Config::default(),
+        )
+        .err()
+        .ok_or("an unguarded host name must refuse the run")?;
+        assert_eq!(err.exit_code, 2, "{}", err.message);
+        assert!(
+            err.message.starts_with(
+                "HEP listener refuses to start: --hep-listen collector.example.com:9060 \
+                 names a host, and sipnab does not resolve a name"
+            ),
+            "{}",
+            err.message
+        );
+        plan_hep_source(
+            &cli_from(&[
+                "-N",
+                "-L",
+                "collector.example.com:9060",
+                "--hep-allow",
+                "192.0.2.0/24",
+            ]),
+            &Config::default(),
+        )
+        .map_err(|e| format!("a guarded host name must plan: {}", e.message))?;
+        Ok(())
+    }
+
     /// A loopback bind, and a routable one constrained by an allowlist or a
     /// shared secret, pass the plan-time check.
     #[test]
@@ -13415,6 +13619,7 @@ mod decision_tests {
             !reads_input_metadata_before_confinement(false, &RunMode::Batch),
             "a run that keeps its credentials reads them by path"
         );
+        #[cfg(feature = "tui")]
         assert!(
             !reads_input_metadata_before_confinement(true, &RunMode::Tui),
             "the TUI does not read them"

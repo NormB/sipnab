@@ -396,20 +396,46 @@ pub(crate) mod testutil {
         password: Option<&str>,
         encrypt_header: bool,
     ) -> Result<Vec<u8>, TestError> {
+        build_with(
+            entries,
+            password,
+            encrypt_header,
+            sevenz_rust2::EncoderMethod::LZMA2,
+        )
+    }
+
+    /// A 7z of `entries` stored without compression (the COPY method),
+    /// AES-256 with `password` when given, the member list not encrypted.
+    /// A wrong key then decrypts every member to noise of the member's full
+    /// size, which only the CRC at its end gives away.
+    pub fn build_stored(
+        entries: &[(&str, &[u8])],
+        password: Option<&str>,
+    ) -> Result<Vec<u8>, TestError> {
+        build_with(entries, password, false, sevenz_rust2::EncoderMethod::COPY)
+    }
+
+    /// A 7z of `entries` packed with `method`, each file its own block.
+    fn build_with(
+        entries: &[(&str, &[u8])],
+        password: Option<&str>,
+        encrypt_header: bool,
+        method: sevenz_rust2::EncoderMethod,
+    ) -> Result<Vec<u8>, TestError> {
         use sevenz_rust2::encoder_options::AesEncoderOptions;
-        use sevenz_rust2::{ArchiveEntry, ArchiveWriter, EncoderMethod, Password};
+        use sevenz_rust2::{ArchiveEntry, ArchiveWriter, Password};
         let mut w = ArchiveWriter::new(std::io::Cursor::new(Vec::new()))
             .map_err(|e| format!("writer: {e:?}"))?;
         match password {
             Some(pw) => {
                 w.set_content_methods(vec![
                     AesEncoderOptions::new(Password::from(pw)).into(),
-                    EncoderMethod::LZMA2.into(),
+                    method.into(),
                 ]);
                 w.set_encrypt_header(encrypt_header);
             }
             None => {
-                w.set_content_methods(vec![EncoderMethod::LZMA2.into()]);
+                w.set_content_methods(vec![method.into()]);
             }
         }
         for (name, data) in entries {
@@ -555,7 +581,7 @@ mod tests {
     use super::super::*;
     use super::Declared;
     use super::testutil::{
-        build, build_solid, with_cycles_power, with_damaged_block, with_iv_first_byte,
+        build, build_solid, build_stored, with_cycles_power, with_damaged_block, with_iv_first_byte,
     };
     use std::io::{Read, Write};
 
@@ -1570,6 +1596,168 @@ mod tests {
             assert!(walked.out.stops.is_empty(), "{:?}", walked.out.stops);
             assert_eq!(walked.entries, 3, "header {encrypt_header}");
         }
+        Ok(())
+    }
+
+    /// The one capture of the stored 7z the inflation-count tests read. A
+    /// wrong password decrypts it to noise of the same size.
+    fn stored_capture() -> Vec<u8> {
+        pcap_bytes(&[0x5a; 4000])
+    }
+
+    /// A stored, AES-256 7z holding [`stored_capture`] as `a.pcap`, written
+    /// under `dir`, locked with the password minted for `label`.
+    fn stored_locked_7z(
+        dir: &std::path::Path,
+        label: &str,
+    ) -> Result<std::path::PathBuf, TestError> {
+        let a = stored_capture();
+        write(
+            dir,
+            "stored.7z",
+            &build_stored(&[("a.pcap", &a)], Some(secret(label)))?,
+        )
+    }
+
+    /// FAILURE (ARCHIVE-TRIAL-INFLATION-COUNT): three wrong passwords each
+    /// inflate the member to noise under the ceiling, and their sum passes
+    /// it. Each trial is rolled back and returns its bytes, so the right
+    /// password, tried fourth, still has the whole budget.
+    #[test]
+    fn wrong_7z_passwords_under_the_ceiling_leave_the_budget_to_the_right_one()
+    -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let path = stored_locked_7z(tmp.path(), "7z-count")?;
+        let size = stored_capture().len() as u64;
+        let mut ring = ring_of(&[
+            secret("7z-count-wrong-1"),
+            secret("7z-count-wrong-2"),
+            secret("7z-count-wrong-3"),
+            secret("7z-count"),
+        ])?;
+        let walked = walk_file(
+            &path,
+            None,
+            &limits_of(MAX_ENTRIES, 2 * size),
+            Some(&mut ring),
+        )?;
+        assert!(
+            walked.out.stops.is_empty(),
+            "three rolled-back trials must not reach the ceiling: {:?}",
+            walked.out.stops
+        );
+        assert_eq!(
+            names(&path, &walked.out),
+            ["a.pcap"],
+            "the fourth password opens the member: {:?}",
+            walked.out.skipped
+        );
+        assert_eq!(
+            std::fs::read(&walked.out.members[0].path).map_err(|e| format!("read: {e:?}"))?,
+            stored_capture(),
+            "the member is the capture that was stored"
+        );
+        assert_eq!(ring.attempts(), 4, "every password was tried in order");
+        Ok(())
+    }
+
+    /// EDGE, the boundary: the ceiling is exactly the member's size. A wrong
+    /// password's trial ends exactly at the ceiling and is rolled back, and
+    /// the right password then reads the member whole.
+    #[test]
+    fn a_wrong_7z_password_at_exactly_the_ceiling_leaves_room_for_the_right_one()
+    -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let path = stored_locked_7z(tmp.path(), "7z-exact")?;
+        let size = stored_capture().len() as u64;
+        let mut ring = ring_of(&[secret("7z-exact-wrong"), secret("7z-exact")])?;
+        let walked = walk_file(&path, None, &limits_of(MAX_ENTRIES, size), Some(&mut ring))?;
+        assert!(
+            walked.out.stops.is_empty(),
+            "a member of exactly the ceiling is within it: {:?}",
+            walked.out.stops
+        );
+        assert_eq!(
+            names(&path, &walked.out),
+            ["a.pcap"],
+            "the second password opens the member: {:?}",
+            walked.out.skipped
+        );
+        Ok(())
+    }
+
+    /// FAILURE: one password whose trial alone passes the ceiling. The trial
+    /// cannot tell a wrong password from a right one on a member this large,
+    /// so it is reported as the ceiling, the walk ends, nothing is kept and
+    /// no later password is tried.
+    #[test]
+    fn a_7z_trial_that_alone_passes_the_ceiling_is_a_ceiling_stop() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let path = stored_locked_7z(tmp.path(), "7z-over")?;
+        let limit = stored_capture().len() as u64 - 1;
+        let mut ring = ring_of(&[secret("7z-over-wrong"), secret("7z-over")])?;
+        let walked = walk_file(&path, None, &limits_of(MAX_ENTRIES, limit), Some(&mut ring))?;
+        assert_eq!(
+            walked.out.stops,
+            vec![Stop::InflationCap {
+                limit,
+                at: label_of(&path, "a.pcap"),
+            }],
+            "the walk reports the ceiling once, at the member"
+        );
+        assert!(
+            walked.out.members.is_empty(),
+            "nothing is kept: {:?}",
+            names(&path, &walked.out)
+        );
+        assert_eq!(ring.attempts(), 1, "no password is tried after the stop");
+        Ok(())
+    }
+
+    /// SUCCESS, unchanged: the right password first reads a member of exactly
+    /// the ceiling, and an unencrypted stored 7z does the same with no
+    /// password at all.
+    #[test]
+    fn the_right_7z_password_first_and_no_password_read_up_to_the_ceiling() -> Result<(), TestError>
+    {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let size = stored_capture().len() as u64;
+        let lim = limits_of(MAX_ENTRIES, size);
+
+        let locked = stored_locked_7z(tmp.path(), "7z-first")?;
+        let mut ring = ring_of(&[secret("7z-first"), secret("7z-first-wrong")])?;
+        let walked = walk_file(&locked, None, &lim, Some(&mut ring))?;
+        assert_eq!(
+            names(&locked, &walked.out),
+            ["a.pcap"],
+            "the first password opens the member: {:?} {:?}",
+            walked.out.skipped,
+            walked.out.stops
+        );
+        assert_eq!(ring.attempts(), 1, "the second password is never tried");
+
+        let a = stored_capture();
+        let open = write(
+            tmp.path(),
+            "open.7z",
+            &build_stored(&[("a.pcap", &a)], None)?,
+        )?;
+        let walked = walk_file(&open, None, &lim, None)?;
+        assert_eq!(
+            names(&open, &walked.out),
+            ["a.pcap"],
+            "an unencrypted member of exactly the ceiling is read: {:?}",
+            walked.out.stops
+        );
+        let walked = walk_file(&open, None, &limits_of(MAX_ENTRIES, size - 1), None)?;
+        assert_eq!(
+            walked.out.stops,
+            vec![Stop::InflationCap {
+                limit: size - 1,
+                at: label_of(&open, "a.pcap"),
+            }],
+            "one byte under the member's size is still refused"
+        );
         Ok(())
     }
 }

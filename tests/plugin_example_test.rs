@@ -319,3 +319,97 @@ fn wasm_plugin_flag_puts_findings_in_json_dialogs_output() -> Result<(), TestErr
     );
     Ok(())
 }
+
+/// The text of `docs/plugins.md` under "## Check that it worked".
+fn plugins_page_check() -> Result<&'static str, TestError> {
+    let page = include_str!("../docs/plugins.md");
+    let heading = "\n## Check that it worked\n";
+    let at = page
+        .find(heading)
+        .ok_or("docs/plugins.md has no \"## Check that it worked\" section")?;
+    let body = page.get(at + heading.len()..).ok_or("section start")?;
+    let end = body.find("\n## ").unwrap_or(body.len());
+    Ok(body.get(..end).ok_or("section end")?)
+}
+
+/// Runs the binary on `sip-proxy.pcap` with `--plugin plugin`, as the page's
+/// check does, without `--quiet` so the log line of a load is printed.
+fn page_check_run(plugin: &std::path::Path) -> Result<std::process::Output, TestError> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args([
+            "-N",
+            "-I",
+            "tests/pcap-samples/sip-proxy.pcap",
+            "--json-dialogs",
+            "--no-cli-print",
+            "--plugin",
+        ])
+        .arg(plugin)
+        .env("NO_COLOR", "1")
+        .env("XDG_CONFIG_HOME", "/no-such-config-dir")
+        .env_remove("SIPNAB_LOG")
+        .output()?)
+}
+
+/// The check `docs/plugins.md` gives for a plugin that loaded: the log line,
+/// exit status 0 and the finding's id.
+#[test]
+fn wasm_plugin_page_check_shows_the_load_line_and_the_finding() -> Result<(), TestError> {
+    let check = plugins_page_check()?;
+    let out = page_check_run(&build_example()?)?;
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "the page says a run whose plugins all loaded exits 0"
+    );
+    let log = String::from_utf8_lossy(&out.stderr);
+    let line = "loaded plugin sipnab_plugin_example";
+    assert!(log.contains(line), "no {line:?} in the log:\n{log}");
+    assert!(
+        check.contains(line),
+        "the page's check no longer quotes {line:?}"
+    );
+    let stdout = String::from_utf8(out.stdout)?;
+    let ids: Vec<String> = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter_map(|v| v.get("plugin_findings").cloned())
+        .filter_map(|f| f.as_array().cloned())
+        .flatten()
+        .filter_map(|f| f["id"].as_str().map(str::to_owned))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["short-answered-call".to_string()],
+        "the page's check prints one finding id for this capture"
+    );
+    assert!(
+        check.contains("```text\n\"short-answered-call\"\n```"),
+        "the page's check no longer shows the id jq prints"
+    );
+    Ok(())
+}
+
+/// The other side of the page's check: a plugin that did not load leaves no
+/// load line, and the run exits 1.
+#[test]
+fn wasm_plugin_page_check_tells_a_failed_load_apart() -> Result<(), TestError> {
+    let check = plugins_page_check()?;
+    let out = page_check_run(std::path::Path::new("/no-such-dir/absent.wasm"))?;
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "the page says a run with a plugin that did not load exits 1"
+    );
+    let log = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !log.contains("loaded plugin"),
+        "a plugin that did not load must not log a load:\n{log}"
+    );
+    assert!(
+        check.contains("exits `1`"),
+        "the page's check no longer states the exit status of a failed load"
+    );
+    Ok(())
+}

@@ -1796,9 +1796,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // link to troubleshooting.md's "Live capture says Permission
     // denied"); troubleshooting.md +1 and errors.md +2, each a
     // link to install.md's "Capture live traffic in the container".
-    // 2557 -> 2558 (failed fleet append): errors.md +1, the sealed layer's
+    // 2557 -> 2564 (DOCS-HOWTO-GAP, second batch): uprobe-walkthrough.md +4
+    // (its "Before you start", "Check that it worked" and the new
+    // troubleshooting row link four of its own sections), plugins.md +1,
+    // g729.md +1, least-privilege.md +1 (to install.md).
+    // 2564 -> 2565 (failed fleet append): errors.md +1, the sealed layer's
     // refusal list links to fleet.md's "Encrypt the center's store".
-    const EXPECTED_WIKI_LINKS: usize = 2558;
+    const EXPECTED_WIKI_LINKS: usize = 2565;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

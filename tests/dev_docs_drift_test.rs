@@ -1018,7 +1018,10 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // build-ci-release.md's "What actually gates a merge" links
     // scripts/code-scanning-clean.py and
     // scripts/tests/test_code_scanning_wait.py (+2).
-    const EXPECTED_CODE_LINKS: usize = 842;
+    // 842 -> 844 (RUNNER-ORPHAN-LISTENER): build-ci-release.md's runner
+    // paragraph links scripts/runner-listeners.py and
+    // scripts/tests/test_runner_listeners.py (+2).
+    const EXPECTED_CODE_LINKS: usize = 844;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \

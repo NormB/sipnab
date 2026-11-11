@@ -161,6 +161,11 @@ impl std::str::FromStr for HepAuthMode {
 /// and the library default are one number.
 pub const DEFAULT_HEP_SEND_QUEUE_MIB: usize = 64;
 
+/// What a run says on stderr when it prints as `-N` does only because the
+/// build has no TUI. One line. See [`Cli::no_tui_build_notice`].
+pub const NO_TUI_BUILD_NOTICE: &str = "sipnab: this build has no terminal UI (the 'tui' feature is \
+     not compiled in), so it prints each message as -N does. Give -N to run without this notice.";
+
 /// How long one `--hep-send` TCP dial or stalled write may take when
 /// `--hep-send-timeout` is not given.
 ///
@@ -1088,6 +1093,12 @@ pub struct ModeArgs {
     /// Non-interactive mode (no TUI). Required for batch/output flags.
     #[arg(help_heading = "Mode", short = 'N', long = "no-tui")]
     pub no_tui: bool,
+
+    /// Whether this run is non-interactive only because the build has no
+    /// TUI: neither `-N` nor a flag that implies it was given. Not a flag.
+    /// `Cli::normalize` sets it, and [`Cli::no_tui_build_notice`] reads it.
+    #[arg(skip)]
+    pub no_tui_by_build: bool,
 
     /// Show only calls: dialogs an INVITE started. The dialog outputs apply
     /// it, and the TUI opens with only INVITE checked in its filter dialog.
@@ -8570,7 +8581,20 @@ impl Cli {
         // Only the stdio transport, though. Its JSON-RPC wire is stdout, which
         // the TUI draws on; over HTTP the wire is a socket, and the operator
         // can watch the capture in the TUI while an agent queries it.
-        if self.implying_no_tui().iter().any(|flag| flag.active) {
+        //
+        // A build without the `tui` feature has no TUI to start, so every run
+        // of it is the run `-N` asks for. Settled here with the implications
+        // because the readers of `no_tui` are the same: the run mode, the
+        // per-message output of `app::batch`, the log level and the
+        // output-flag check. Left unset, such a build read a capture, printed
+        // nothing and exited 0 (NO-TUI-BUILD-SILENT).
+        let implied = self.implying_no_tui().iter().any(|flag| flag.active);
+        // Recorded before `no_tui` is set, while "the user asked" and "the
+        // build has no TUI" can still be told apart. Once set it stays set,
+        // so a second `normalize` of the same flags changes nothing.
+        self.mode_args.no_tui_by_build |=
+            cfg!(not(feature = "tui")) && !self.mode_args.no_tui && !implied;
+        if cfg!(not(feature = "tui")) || implied {
             self.mode_args.no_tui = true;
         }
         if self.output_args.export_vcon.is_some() && self.output_args.vcon_out.is_none() {
@@ -8723,6 +8747,26 @@ impl Cli {
                 .map(|shot| named(shot.name, shot.active)),
         );
         flags
+    }
+
+    /// The line a run prints on stderr when it is non-interactive only
+    /// because the build has no TUI, or `None` when it prints nothing.
+    ///
+    /// Such a build prints each message as `-N` does, where a build with the
+    /// TUI would have opened it. Output nobody asked for, with no reason
+    /// given, reads as a fault, so the run says why once. It says nothing
+    /// when the user asked for the non-interactive run (`-N`, or a flag that
+    /// implies it), when the user asked for an output (an output flag or a
+    /// one-shot query), or when stderr is not a terminal: a script that
+    /// redirects stderr reads no line it did not expect.
+    ///
+    /// `stderr_is_terminal` is an argument so both sides can be tested.
+    #[must_use]
+    pub fn no_tui_build_notice(&self, stderr_is_terminal: bool) -> Option<&'static str> {
+        let asked_for_output = !self.stdout_answer_flags().is_empty()
+            || !one_shot::needing_no_tui(&self.one_shots()).is_empty();
+        (self.mode_args.no_tui_by_build && stderr_is_terminal && !asked_for_output)
+            .then_some(NO_TUI_BUILD_NOTICE)
     }
 
     /// The flags on this command line that write their answer to standard
@@ -9035,6 +9079,19 @@ impl Cli {
         // and has no trail. The remedy names the flag that DOES cover a
         // headless run, because "wrong mode" and "wrong flag" are otherwise
         // indistinguishable to whoever wrote the command.
+        //
+        // A build without the `tui` feature is always in that mode
+        // (`normalize` sets `no_tui`), and there "drop -N" is no remedy: the
+        // refusal names the feature the build lacks.
+        #[cfg(not(feature = "tui"))]
+        if self.security_args.tui_audit_file.is_some() {
+            return Err(crate::Error::CliValidation(
+                "--tui-audit-file requires the 'tui' feature (not compiled in): this \
+                 build runs no TUI. Use --run-provenance-file to record how a run was \
+                 invoked"
+                    .to_string(),
+            ));
+        }
         if self.security_args.tui_audit_file.is_some() && self.mode_args.no_tui {
             return Err(crate::Error::CliValidation(
                 "--tui-audit-file records what an operator did in the TUI, and \
@@ -12240,7 +12297,11 @@ mod tests {
         assert_eq!(cli.max_reassembly_limit(&cfg), 10_000);
         assert_eq!(cli.limits_args.cores, 1, "single-threaded by default");
         assert_eq!(cli.color_mode(&cfg), "auto");
-        assert!(!cli.mode_args.no_tui);
+        assert_eq!(
+            cli.mode_args.no_tui,
+            cfg!(not(feature = "tui")),
+            "the TUI is the default in a build that has one"
+        );
         assert!(!cli.privilege_args.setup_caps);
         // Dialog rotation is ON by default (SNB-0004): at --limit capacity the
         // store evicts the oldest dialog rather than dropping new legitimate
@@ -12326,9 +12387,10 @@ mod tests {
 
         // Without it, nothing is implied and the TUI remains the default.
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
-        assert!(
-            !cli.mode_args.no_tui,
-            "no --call-report must leave the TUI default"
+        assert_eq!(
+            cli.mode_args.no_tui,
+            cfg!(not(feature = "tui")),
+            "no --call-report must leave the TUI default in a build that has one"
         );
 
         // An explicit -N is unchanged, not doubly applied.
@@ -12952,8 +13014,9 @@ mod tests {
     fn mcp_over_http_leaves_the_tui_up() -> Result<(), TestError> {
         let cli =
             Cli::parse_from_args(["sipnab", "-I", "x.pcap", "--mcp", "--mcp-transport", "http"]);
-        assert!(
-            !cli.mode_args.no_tui,
+        assert_eq!(
+            cli.mode_args.no_tui,
+            cfg!(not(feature = "tui")),
             "--mcp --mcp-transport http must not imply -N: stdout is not its wire"
         );
         assert!(
@@ -13002,6 +13065,10 @@ mod tests {
     /// does not print; `query_relay` transmits on the run's one relay permit,
     /// which the TUI's relay-statistics view holds. Each is refused at startup
     /// naming the flag and `-N`, and accepted with `-N`.
+    ///
+    /// In a build with the `tui` feature. A build without it raises no TUI
+    /// beside MCP, so there is no operator at the terminal to refuse for.
+    #[cfg(feature = "tui")]
     #[test]
     fn process_level_mcp_tools_are_refused_beside_the_tui() -> Result<(), TestError> {
         for flag in [
@@ -13244,7 +13311,11 @@ mod tests {
 
         // Neither implication fires without the flag.
         let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
-        assert!(!cli.mode_args.no_tui);
+        assert_eq!(
+            cli.mode_args.no_tui,
+            cfg!(not(feature = "tui")),
+            "nothing but the build decides the mode without the flag"
+        );
         assert!(!cli.output_args.no_cli_print);
         Ok(())
     }
@@ -13686,7 +13757,182 @@ mod tests {
         Ok(())
     }
 
-    /// `validate` rejects `--json` without `-N` and accepts it with `-N`.
+    /// `-N` is required for an output flag exactly when the build has a TUI
+    /// that would own the terminal. Holds in every feature set.
+    #[test]
+    fn an_output_flag_needs_no_tui_only_in_a_build_with_a_tui() -> Result<(), TestError> {
+        for flag in ["--json", "--report", "--json-dialogs"] {
+            let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap", flag]);
+            assert_eq!(
+                cli.validate().is_err(),
+                cfg!(feature = "tui"),
+                "{flag} without -N is refused exactly when the build has the `tui` feature"
+            );
+            let headless = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", flag]);
+            assert!(
+                headless.validate().is_ok(),
+                "{flag} with -N is accepted in every build"
+            );
+        }
+        Ok(())
+    }
+
+    /// `--tui-audit-file` is refused for the reason that holds in the build.
+    /// With a TUI it is refused beside `-N`, and the remedy is to drop `-N`.
+    /// Without one, no flag can be dropped to get a TUI: the refusal names
+    /// the missing feature, with or without `-N`. Holds in every feature set.
+    #[test]
+    fn a_tui_audit_file_is_refused_for_the_reason_that_holds_in_the_build() -> Result<(), TestError>
+    {
+        for headless in [false, true] {
+            let mut args = vec!["sipnab", "-I", "x.pcap", "--tui-audit-file", "trail.log"];
+            if headless {
+                args.push("-N");
+            }
+            let refusal = Cli::parse_from_args(args)
+                .validate()
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            if cfg!(feature = "tui") {
+                assert_eq!(
+                    refusal.contains("or drop -N"),
+                    headless,
+                    "with a TUI the flag is refused exactly beside -N: {refusal:?}"
+                );
+                assert!(
+                    !refusal.contains("not compiled in"),
+                    "a build with the TUI does not say it lacks it: {refusal:?}"
+                );
+            } else {
+                assert_eq!(
+                    refusal,
+                    "--tui-audit-file requires the 'tui' feature (not compiled in): this \
+                     build runs no TUI. Use --run-provenance-file to record how a run was \
+                     invoked",
+                    "without a TUI the refusal names the feature (-N given: {headless})"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// A run that prints as `-N` does only because the build has no TUI says
+    /// so, once, when stderr is a terminal. Holds in every feature set: with
+    /// the `tui` feature no parsed run is in that state.
+    #[test]
+    fn a_run_that_is_headless_only_by_its_build_says_so_on_a_terminal() -> Result<(), TestError> {
+        let cli = Cli::parse_from_args(["sipnab", "-I", "x.pcap"]);
+        assert_eq!(
+            cli.mode_args.no_tui_by_build,
+            cfg!(not(feature = "tui")),
+            "no -N and no flag that implies it: headless by the build exactly without `tui`"
+        );
+        assert_eq!(
+            cli.no_tui_build_notice(true),
+            cfg!(not(feature = "tui")).then_some(NO_TUI_BUILD_NOTICE),
+            "on a terminal the notice is printed exactly in a build without `tui`"
+        );
+        assert_eq!(
+            cli.no_tui_build_notice(false),
+            None,
+            "stderr that is not a terminal gets no notice in any build"
+        );
+        Ok(())
+    }
+
+    /// The user who asked for the headless run, with `-N` or a flag that
+    /// implies it, or who asked for an output, is told nothing.
+    #[test]
+    fn a_run_that_asked_for_no_tui_or_for_an_output_gets_no_notice() -> Result<(), TestError> {
+        for args in [
+            vec!["sipnab", "-N", "-I", "x.pcap"],
+            vec!["sipnab", "--no-tui", "-I", "x.pcap"],
+            vec!["sipnab", "-I", "x.pcap", "--call-report", "all"],
+        ] {
+            let cli = Cli::parse_from_args(args.clone());
+            assert!(
+                !cli.mode_args.no_tui_by_build,
+                "{args:?} asks for the headless run itself"
+            );
+            assert_eq!(
+                cli.no_tui_build_notice(true),
+                None,
+                "{args:?} gets no notice"
+            );
+        }
+        // An output flag without -N parses only in a build without `tui`.
+        // The state is set by hand so the rule is held in every build.
+        let mut asked_output = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap", "--json"]);
+        asked_output.mode_args.no_tui_by_build = true;
+        assert_eq!(
+            asked_output.no_tui_build_notice(true),
+            None,
+            "--json asks for output, so the output is no surprise"
+        );
+        Ok(())
+    }
+
+    /// The rule itself, with the state set by hand so it runs in every
+    /// build: headless by the build, no output asked, stderr a terminal.
+    #[test]
+    fn the_notice_needs_the_build_state_a_terminal_and_no_output_flag() -> Result<(), TestError> {
+        let mut cli = Cli::parse_from_args(["sipnab", "-N", "-I", "x.pcap"]);
+        assert_eq!(
+            cli.no_tui_build_notice(true),
+            None,
+            "-N was given: not headless by the build"
+        );
+        cli.mode_args.no_tui_by_build = true;
+        assert_eq!(
+            cli.no_tui_build_notice(true),
+            Some(NO_TUI_BUILD_NOTICE),
+            "headless by the build, on a terminal, no output flag"
+        );
+        assert_eq!(
+            cli.no_tui_build_notice(false),
+            None,
+            "the same run with stderr redirected"
+        );
+        assert!(
+            !NO_TUI_BUILD_NOTICE.contains('\n'),
+            "the notice is one line: {NO_TUI_BUILD_NOTICE:?}"
+        );
+        assert!(
+            NO_TUI_BUILD_NOTICE.contains("no terminal UI") && NO_TUI_BUILD_NOTICE.contains("-N"),
+            "it names what the build lacks and the flag whose output this is: \
+             {NO_TUI_BUILD_NOTICE:?}"
+        );
+        Ok(())
+    }
+
+    /// An MCP opt-in that acts on the process is refused beside the TUI, so
+    /// it is refused without `-N` exactly when the build has a TUI to raise.
+    /// Holds in every feature set.
+    #[test]
+    fn a_process_level_mcp_opt_in_needs_no_tui_only_in_a_build_with_a_tui() -> Result<(), TestError>
+    {
+        let cli = Cli::parse_from_args([
+            "sipnab",
+            "-I",
+            "x.pcap",
+            "--mcp",
+            "--mcp-transport",
+            "http",
+            "--mcp-allow-shutdown",
+        ]);
+        assert_eq!(
+            cli.mcp_beside_tui_refusal().is_some(),
+            cfg!(feature = "tui"),
+            "--mcp-allow-shutdown without -N is refused exactly when the build has a TUI"
+        );
+        Ok(())
+    }
+
+    /// `validate` rejects `--json` without `-N` and accepts it with `-N`, in
+    /// a build with the `tui` feature. A build without it has no TUI, and
+    /// `normalize` makes every run of it the run `-N` asks for.
+    #[cfg(feature = "tui")]
     #[test]
     fn output_flags_require_no_tui() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--json"]);
@@ -14029,7 +14275,9 @@ mod tests {
         Ok(())
     }
 
-    /// The validation error names every offending output flag at once.
+    /// The validation error names every offending output flag at once, in a
+    /// build with the `tui` feature, the only one where `-N` is required.
+    #[cfg(feature = "tui")]
     #[test]
     fn validate_multiple_output_flags() -> Result<(), TestError> {
         let cli = Cli::parse_from_args(["sipnab", "--json", "--report", "--fail2ban"]);
@@ -15725,12 +15973,20 @@ mod one_shot_plumbing_tests {
                 owns_stdout: true,
             },
         )?;
-        assert!(!idle.mode_args.no_tui, "an inactive flag implies nothing");
+        assert_eq!(
+            idle.mode_args.no_tui,
+            cfg!(not(feature = "tui")),
+            "an inactive flag implies nothing"
+        );
         Ok(())
     }
 
     /// An active declaration that does not imply `-N` is refused without it,
     /// by name, and accepted with it.
+    ///
+    /// In a build with the `tui` feature. A build without it has no TUI, and
+    /// `normalize` makes every run of it the run `-N` asks for.
+    #[cfg(feature = "tui")]
     #[test]
     fn a_non_implying_one_shot_needs_no_tui() -> Result<(), TestError> {
         let shot = OneShot {
@@ -15820,6 +16076,11 @@ mod one_shot_plumbing_tests {
 
     /// Without `-N` the TUI would own the terminal and the answer would never
     /// be printed, so every flag that writes its answer to stdout needs `-N`.
+    ///
+    /// In a build with the `tui` feature. A build without it has no TUI to
+    /// own the terminal, and `normalize` makes every run of it the run `-N`
+    /// asks for.
+    #[cfg(feature = "tui")]
     #[test]
     fn every_stdout_flag_needs_no_tui() -> Result<(), TestError> {
         let mut missed = Vec::new();

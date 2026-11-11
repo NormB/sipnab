@@ -555,6 +555,8 @@ The refusals a service meets most often:
 | `MCP HTTP refuses to start: --mcp-bind 0.0.0.0:18731 is non-loopback but no --mcp-token / --mcp-token-file / SIPNAB_MCP_TOKEN / --mcp-signing-key / --mcp-signing-key-file / SIPNAB_MCP_SIGNING_KEY was supplied. Bind 127.0.0.1, or supply one of them.` | 2 | Bind `127.0.0.1`, or give a token file |
 | `metrics server refuses to start: --metrics 0.0.0.0:19090 is non-loopback but no --metrics-auth / --metrics-auth-file was supplied.` | 2 | Bind `127.0.0.1`, or give `--metrics-auth-file` |
 | `HEP listener refuses to start: --hep-listen 0.0.0.0:19060 is non-loopback but neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist (--hep-allow) was configured.` | 2 | Add `--hep-allow` with your SIP servers' addresses, or a secret |
+| `HEP listener refuses to start: --hep-listen "19060" is not an address. Give it as IP:PORT, for example 127.0.0.1:9060.` | 2 | Give the listener an address and a port, such as `127.0.0.1:19060` |
+| `HEP listener refuses to start: --hep-listen localhost:19060 names a host, and sipnab does not resolve a name to decide whether it is loopback.` | 2 | Use a literal address such as `127.0.0.1:19060`, or add `--hep-allow` or a secret |
 | `--api-tls-cert (or [api] tls_cert) c.pem was given without --api-tls-key (or [api] tls_key)` | 2 | Give both halves of the pair |
 | `k.pem: the API TLS private key is world-readable (mode 0644); chmod 600 it` | 2 | `chmod 600` the key, or `640` with the `sipnab` group |
 | `failed to bind API to 127.0.0.1:18081: Address already in use (os error 98)` | 2 | Another process holds the port. `ss -ltnp` names it |

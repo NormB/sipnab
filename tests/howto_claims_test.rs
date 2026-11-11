@@ -29,6 +29,10 @@ const QUALITY: &str = include_str!("../docs/call-quality.md");
 const INSTALL: &str = include_str!("../docs/install.md");
 const INSTALLER: &str = include_str!("../website/static/install.sh");
 const BOOTSTRAP: &str = include_str!("../src/app/bootstrap.rs");
+const PRIVILEGE: &str = include_str!("../docs/least-privilege.md");
+const PRIVILEGE_SOURCE: &str = include_str!("../src/privilege.rs");
+const G729: &str = include_str!("../docs/g729.md");
+const UPROBE: &str = include_str!("../docs/uprobe-walkthrough.md");
 
 const SAMPLE_CALL: &str = "website/static/demos/sample-call.pcap";
 const PROBLEM_CALL: &str = "tests/pcap-samples/sip-problem-call.pcap";
@@ -269,9 +273,8 @@ fn the_walkthrough_requires_the_terminal_ui_feature() -> Result<(), TestError> {
 
 // Only a build with `tui` has an interface that can fail to start. CI's
 // feature matrix also builds sipnab without it: there `sipnab -I <file>`
-// with no `-N` exits 0 and prints nothing (seen 2026-11-11 with the features
-// native,hep,api,mcp,mcp-http). That is recorded as the defect
-// NO-TUI-BUILD-SILENT, not stated on the page and not asserted here.
+// with no `-N` is the run `sipnab -N -I <file>` is, which the two tests after
+// this one hold (NO-TUI-BUILD-SILENT).
 #[cfg(feature = "tui")]
 #[test]
 fn the_terminal_ui_without_a_terminal_gives_the_message_the_page_quotes() -> Result<(), TestError> {
@@ -291,6 +294,56 @@ fn the_terminal_ui_without_a_terminal_gives_the_message_the_page_quotes() -> Res
     if cfg!(target_os = "linux") {
         printed(&err, message);
     }
+    Ok(())
+}
+
+/// A build without `tui` has no terminal UI to start, so a run with no `-N`
+/// reads the capture as a run with `-N` does: the same lines on standard
+/// output, exit status 0. The build with the features
+/// native,hep,api,mcp,mcp-http printed nothing and exited 0.
+#[cfg(not(feature = "tui"))]
+#[test]
+fn a_build_without_the_terminal_ui_reads_a_capture_as_no_tui_does() -> Result<(), TestError> {
+    capture(SAMPLE_CALL)?;
+    let plain = sipnab(&["-I", SAMPLE_CALL])?;
+    let headless = sipnab(&["-N", "-I", SAMPLE_CALL])?;
+    exited(&headless, 0);
+    exited(&plain, 0);
+    let expected = stdout(&headless);
+    assert!(
+        expected.lines().count() > 1,
+        "-N prints a line per SIP message and a totals line; it printed:\n{expected}"
+    );
+    assert_eq!(
+        stdout(&plain),
+        expected,
+        "without -N a build with no terminal UI prints what -N prints; stderr:\n{}",
+        stderr(&plain)
+    );
+    Ok(())
+}
+
+/// The same for an output flag: a build with `tui` refuses `--json` without
+/// `-N`, because the terminal UI owns the screen. A build without `tui` has
+/// nothing that owns it, so the flag needs no `-N`.
+#[cfg(not(feature = "tui"))]
+#[test]
+fn a_build_without_the_terminal_ui_takes_an_output_flag_without_no_tui() -> Result<(), TestError> {
+    let plain = sipnab(&["-I", SAMPLE_CALL, "--json"])?;
+    let headless = sipnab(&["-N", "-I", SAMPLE_CALL, "--json"])?;
+    exited(&headless, 0);
+    exited(&plain, 0);
+    let lines = json_lines(&plain)?;
+    assert!(
+        !lines.is_empty(),
+        "--json prints an object per SIP message; stderr:\n{}",
+        stderr(&plain)
+    );
+    assert_eq!(
+        lines,
+        json_lines(&headless)?,
+        "without -N a build with no terminal UI prints the objects -N prints"
+    );
     Ok(())
 }
 
@@ -590,5 +643,270 @@ fn the_install_troubleshooting_points_at_the_installer_table() -> Result<(), Tes
     page_says(troubleshoot, "`sipnab-install: error:`", "install");
     printed(INSTALLER, "printf 'sipnab-install: error: %s\\n'");
     page_says(troubleshoot, "libpcap.so.0.8", "install");
+    Ok(())
+}
+
+// --- docs/least-privilege.md -----------------------------------------------
+
+#[test]
+fn the_least_privilege_check_quotes_the_log_lines_of_the_code() -> Result<(), TestError> {
+    // Dropping root cannot be driven here: a test does not run as root. The
+    // page's check was run in a container (see the page); this holds its
+    // quoted lines to the text `src/privilege.rs` formats.
+    let check = section(PRIVILEGE, CHECK)?;
+    for (in_source, on_page) in [
+        (
+            "\"Dropped privileges to user '{}' (uid={}, gid={})\"",
+            "Dropped privileges to user 'nobody' (uid=65534, gid=65534)",
+        ),
+        ("\"Chrooted to {}\"", "Chrooted to /var/lib/sipnab/jail"),
+        (
+            "\"Privilege drop disabled (--no-priv-drop)\"",
+            "Privilege drop disabled (--no-priv-drop)",
+        ),
+    ] {
+        printed(PRIVILEGE_SOURCE, in_source);
+        page_says(check, on_page, "least-privilege");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_least_privilege_check_reads_the_ids_and_capabilities_of_the_process() -> Result<(), TestError>
+{
+    let check = section(PRIVILEGE, CHECK)?;
+    page_says(
+        check,
+        "grep -E '^(Uid|Gid|CapEff):' \"/proc/$(pidof sipnab)/status\"",
+        "least-privilege",
+    );
+    // What the dropped run printed in the container, and what a run that
+    // kept root printed.
+    page_says(check, "Uid:\t65534\t65534\t65534\t65534", "least-privilege");
+    page_says(check, "CapEff:\t0000000000000000", "least-privilege");
+    page_says(check, "Uid:\t0\t0\t0\t0", "least-privilege");
+    Ok(())
+}
+
+#[test]
+fn the_least_privilege_prerequisites_say_which_system_changes() -> Result<(), TestError> {
+    let before = section(PRIVILEGE, "## Before you start")?;
+    page_says(before, "`setcap`", "least-privilege");
+    page_says(before, "Nothing on any other system", "least-privilege");
+    // `--setup-caps` runs setcap with the capabilities the page names.
+    printed(BOOTSTRAP, "cap_net_raw,cap_net_admin+ep");
+    Ok(())
+}
+
+// --- docs/g729.md ----------------------------------------------------------
+
+/// Runs sipnab with `home` as `$HOME` and `$XDG_CONFIG_HOME`, so the default
+/// table file is `home/sipnab/g729-tables.bin`.
+#[cfg(feature = "g729")]
+fn sipnab_at_home(home: &Path, args: &[&str]) -> Result<Output, TestError> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .args(args)
+        .current_dir(repo())
+        .env("HOME", home)
+        .env("XDG_CONFIG_HOME", home)
+        .env_remove("SIPNAB_CONFIG")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .output()?)
+}
+
+#[cfg(feature = "g729")]
+const G729_CALL: &str = "tests/pcap-samples/sip-rtp-g729a.pcap";
+
+#[cfg(feature = "g729")]
+#[test]
+fn the_g729_check_says_not_installed_and_exits_1_without_tables() -> Result<(), TestError> {
+    let check = section(G729, "## Check that sipnab finds the tables")?;
+    let home = tempfile::tempdir()?;
+    let run = sipnab_at_home(home.path(), &["g729", "status"])?;
+    exited(&run, 1);
+    for line in [
+        "G.729 tables: not installed",
+        "G.729 not decoded: codebook tables not installed; run sipnab g729 install",
+    ] {
+        printed(&stdout(&run), line);
+        page_says(check, line, "g729");
+    }
+    page_says(check, "exits 0", "g729");
+    page_says(check, "1 when it does not", "g729");
+    Ok(())
+}
+
+#[cfg(feature = "g729")]
+#[test]
+fn the_g729_export_without_tables_gives_the_message_the_page_quotes() -> Result<(), TestError> {
+    capture(G729_CALL)?;
+    let troubleshoot = section(G729, "## When a run does not find the tables")?;
+    let home = tempfile::tempdir()?;
+    let out = home.path().join("call.wav");
+    let out_arg = out.to_str().ok_or("a UTF-8 path")?;
+    let run = sipnab_at_home(
+        home.path(),
+        &[
+            "-N",
+            "-q",
+            "--no-cli-print",
+            "-I",
+            G729_CALL,
+            "--export-audio",
+            "1-24411@10.0.2.20",
+            "--export-audio-out",
+            out_arg,
+        ],
+    )?;
+    exited(&run, 1);
+    let message =
+        "--export-audio: No stream on this call carries a codec that decodes to WAV (found: G729).";
+    printed(&stderr(&run), message);
+    page_says(troubleshoot, message, "g729");
+    assert!(!out.exists(), "no WAV file is written without the tables");
+    Ok(())
+}
+
+#[cfg(feature = "g729")]
+#[test]
+fn the_g729_check_exports_the_sample_call_with_tables_installed() -> Result<(), TestError> {
+    capture(G729_CALL)?;
+    let check = section(G729, "## Check that sipnab finds the tables")?;
+    let package = repo().join("crates/g729/test-vectors/itu-source");
+    if !package.is_dir() {
+        return Err(
+            "the ITU-T G.729 package is not fetched: run `python3 scripts/fetch-g729-vectors.py`"
+                .into(),
+        );
+    }
+    let home = tempfile::tempdir()?;
+    let package = package.to_str().ok_or("a UTF-8 path")?;
+    let install = sipnab_at_home(
+        home.path(),
+        &["g729", "install", "--yes", "--no-config", "--from", package],
+    )?;
+    exited(&install, 0);
+    let status = sipnab_at_home(home.path(), &["g729", "status"])?;
+    exited(&status, 0);
+    printed(&stdout(&status), "G.729 tables: installed");
+    page_says(check, "`G.729 tables: installed`", "g729");
+
+    let out = home.path().join("call.wav");
+    let out_arg = out.to_str().ok_or("a UTF-8 path")?;
+    let export = sipnab_at_home(
+        home.path(),
+        &[
+            "-N",
+            "-q",
+            "--no-cli-print",
+            "-I",
+            G729_CALL,
+            "--export-audio",
+            "1-24411@10.0.2.20",
+            "--export-audio-out",
+            out_arg,
+        ],
+    )?;
+    exited(&export, 0);
+    let said = "Exported 8.5s of G.729 audio (425 frames, G729/8000Hz)";
+    let both = format!("{}{}", stdout(&export), stderr(&export));
+    printed(&both, said);
+    page_says(check, said, "g729");
+    page_says(check, "--export-audio 1-24411@10.0.2.20", "g729");
+    assert!(out.is_file(), "the export writes the WAV file it names");
+    Ok(())
+}
+
+#[test]
+fn the_g729_prerequisites_name_the_download_host_and_the_feature() -> Result<(), TestError> {
+    let before = section(G729, "## Before you start")?;
+    page_says(before, "`g729`", "g729");
+    page_says(
+        before,
+        "HTTPS access from the host to `www.itu.int`",
+        "g729",
+    );
+    page_says(before, "other system", "g729");
+    // The page's own quoted notice names the same host.
+    printed(G729, "Source: https://www.itu.int/rec/dologin_pub.asp");
+    Ok(())
+}
+
+// --- docs/uprobe-walkthrough.md --------------------------------------------
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_uprobe_check_lists_libraries_or_says_none_is_mapped() -> Result<(), TestError> {
+    // `--uprobe-list` installs nothing and needs no privilege. Attaching a
+    // probe needs root and a process that speaks TLS, so the capture itself
+    // is not run here.
+    let check = section(UPROBE, CHECK)?;
+    let header = "FLAVOR        INODE  PIDS  LIBRARY";
+    let none = "No TLS library is mapped by any process sipnab can see.";
+    page_says(check, "sipnab --uprobe-list", "uprobe-walkthrough");
+    page_says(check, header, "uprobe-walkthrough");
+    printed(UPROBE, none);
+    let run = sipnab(&["--uprobe-list"])?;
+    exited(&run, 0);
+    let listed = stdout(&run);
+    assert!(
+        listed.starts_with(header) || listed.contains(none),
+        "--uprobe-list printed neither the table nor the empty answer:\n{listed}"
+    );
+    Ok(())
+}
+
+#[test]
+fn the_uprobe_check_quotes_the_mark_the_code_prints() -> Result<(), TestError> {
+    let check = section(UPROBE, CHECK)?;
+    page_says(check, "origin=uprobe", "uprobe-walkthrough");
+    printed(
+        include_str!("../src/capture/parse.rs"),
+        "Self::Uprobe => Some(\" origin=uprobe\")",
+    );
+    Ok(())
+}
+
+#[test]
+fn the_uprobe_prerequisites_say_which_system_changes() -> Result<(), TestError> {
+    let before = section(UPROBE, "## Before you start")?;
+    page_says(
+        before,
+        "(#can-your-system-run-this-at-all)",
+        "uprobe-walkthrough",
+    );
+    page_says(before, "Nothing on any other system", "uprobe-walkthrough");
+    page_says(before, "root", "uprobe-walkthrough");
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_uprobe_capture_without_root_gives_the_message_the_page_quotes() -> Result<(), TestError> {
+    // Run only when the test is not root: as root this would attach probes
+    // to the processes of the machine the suite runs on.
+    let uid = std::fs::read_to_string("/proc/self/status")?
+        .lines()
+        .find_map(|line| line.strip_prefix("Uid:"))
+        .and_then(|rest| rest.split_whitespace().next().map(str::to_owned))
+        .ok_or("no Uid line in /proc/self/status")?;
+    let message = "Permission denied on 'capture source'.";
+    page_says(
+        section(UPROBE, "## Troubleshooting")?,
+        message,
+        "uprobe-walkthrough",
+    );
+    if uid == "0" {
+        return Ok(());
+    }
+    let listing = sipnab(&["--uprobe-list"])?;
+    if !stdout(&listing).starts_with("FLAVOR") {
+        // No library to probe: the run stops earlier, with another message.
+        return Ok(());
+    }
+    let run = sipnab(&["-N", "--uprobe-tls", "--duration", "1"])?;
+    exited(&run, 1);
+    printed(&stderr(&run), message);
     Ok(())
 }

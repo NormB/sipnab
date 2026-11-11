@@ -207,7 +207,7 @@ rules. MCP takes no archive password on any tool: an agent's
 | `can be read or written by other users (mode 0644); chmod 600 it`, exit 2 | The password file is not private | `chmod 600` it |
 | `uses ZipCrypto, which does not protect its contents` | The ZIP uses the legacy cipher (Info-ZIP's `zip -e` does) | sipnab reads it. Ask the sender to re-encrypt with AES-256 |
 | `xz data, which sipnab does not unwrap` (or `zstd`, `bzip2`, `LZ4`) | A compression sipnab does not read | Unpack that member with its own tool, then point `-I` at the result |
-| `decompressing reached the N-byte ceiling` | The archive inflates past `--max-gunzip-bytes` (1 GiB) | For an archive you trust, raise it. sipnab reads nothing after the member it names, in a 7z as in a tar or a ZIP |
+| `decompressing reached the N-byte ceiling` | The archive inflates past `--max-gunzip-bytes` (1 GiB). Passwords that did not open it do not count: sipnab deletes what each wrong password produced and counts only the output it keeps | For an archive you trust, raise it. sipnab reads nothing after the member it names, in a 7z as in a tar or a ZIP |
 | `could not be read past this point`, `INCOMPLETE RUN`, exit 1 | The archive stops early | sipnab kept what arrived. Fetch the archive again |
 | `has link type N, which sipnab does not decode` | A member is not an IP capture, such as an LTE MAC log | Nothing: its frames count as not decoded |
 
