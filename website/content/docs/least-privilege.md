@@ -30,6 +30,22 @@ kernel has seccomp and no Landlock, so [Bound the files it can
 open](#bound-the-files-it-can-open-landlock) shows the refusal and not a
 confined run.
 
+## Before you start
+
+- **Linux.** File capabilities, Landlock and seccomp are Linux features.
+  Every command on this page ran on Linux only.
+- **sipnab on the capture host,** as [Installing sipnab](@/docs/install.md) says.
+- **Root, or `sudo`, for the step you take.** The table above names the steps
+  that start as root.
+- **`setcap` and `getcap`,** for the first step. On Debian and Ubuntu the
+  `libcap2-bin` package has them.
+- **An interface that carries the traffic.** `ip -brief link` lists the
+  interfaces. The examples use `eth0`.
+- **Nothing on any other system.** Every step changes the capture host only:
+  the capabilities of one binary, the user and root directory of one process,
+  and the paths and system calls that process may use. No SIP server, relay
+  or network device changes.
+
 ## Grant capture rights to the binary
 
 ```bash
@@ -296,6 +312,42 @@ LOST: the audit subsystem lost 12 record(s) during the run.
   the process it was built for. Raise the backlog (auditctl -b
   65536), check that auditctl -r is 0, and run it again.
 ```
+
+## Check that it worked
+
+The kernel reports the user, the group and the capabilities a running
+process holds. While a capture runs, read them:
+
+```bash
+grep -E '^(Uid|Gid|CapEff):' "/proc/$(pidof sipnab)/status"
+```
+
+A run that started as root and dropped to `nobody` printed:
+
+```text
+Uid:	65534	65534	65534	65534
+Gid:	65534	65534	65534	65534
+CapEff:	0000000000000000
+```
+
+`CapEff` of all zeros means the process holds no capability. The same run
+with `--no-priv-drop` printed `Uid:	0	0	0	0` and a `CapEff` that is not zero:
+it kept root.
+
+The log states each step as sipnab takes it:
+
+| Step | Log line |
+|---|---|
+| The drop | `Dropped privileges to user 'nobody' (uid=65534, gid=65534)` |
+| `--chroot` | `Chrooted to /var/lib/sipnab/jail`, before the line of the drop |
+| `--no-priv-drop` | `Privilege drop disabled (--no-priv-drop)` |
+
+What ran: on 2026-11-11, sipnab 0.5.245 built from source ran as root on the
+loopback interface inside an Ubuntu 24.04 container with no network, three
+times: with no option, with `--user nobody --chroot /var/lib/sipnab/jail`,
+and with `--no-priv-drop`. The output and the log lines above are from those
+runs. Not run for this check: a run that got its rights from
+`--setup-caps`.
 
 ## When something does not work
 
