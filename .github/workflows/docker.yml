@@ -4,6 +4,29 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+  # A pull request that changes what decides how the image is built or
+  # whether its user can capture runs this workflow before it merges: both
+  # legs build, scan and smoke-test their image, and the `manifest` job
+  # assembles and checks the manifest list in a registry it starts itself.
+  # Nothing logs in to GHCR, pushes to it or attests: every such step is
+  # skipped on a pull request, and tests/container_image_test.rs holds that.
+  # Until 2026-11-11 this workflow ran only on a push to main and on a tag,
+  # so a change to it first ran on the commit it had already merged into.
+  #
+  # The paths are the Dockerfile, what it leaves out of the build context,
+  # the dependency lock, this file, the two sources the smoke test's capture
+  # cases depend on, and the two tests that hold this file to its rules.
+  # Not all of `src/`: the push to main still builds every commit.
+  pull_request:
+    paths:
+      - Dockerfile
+      - .dockerignore
+      - Cargo.lock
+      - .github/workflows/docker.yml
+      - src/main.rs
+      - src/privilege.rs
+      - tests/container_image_test.rs
+      - tests/ci_docker_hub_test.rs
 
 # Read by default; the one job that publishes declares what it needs. A
 # workflow-level `packages: write` would hand any job added later the ability
@@ -22,16 +45,71 @@ permissions:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # The registry path, lowercase as GHCR requires; github.repository is
+  # mixed-case. The build legs push to it by digest, and the manifest list and
+  # its attestation are made for it.
+  IMAGE: ghcr.io/normb/sipnab
+  # The tags, for every docker/metadata-action step in this file, which also
+  # sets `flavor: latest=false` so this is the only rule that makes `latest`.
+  #
+  # `latest` is the newest release, not the newest commit (OPS-2). It used to
+  # be `enable={{is_default_branch}}`, so it moved on every push to main and
+  # could be ahead of every release. It is now made only for a `v*` tag that
+  # is not a pre-release (`v0.1.0-alpha` and `v0.2.0-beta` exist), and `edge`
+  # follows main instead. tests/container_image_test.rs holds both.
+  #
+  # Each tag has one writing trigger. A release is two pushes of one commit,
+  # the merge to main and then the `v*` tag, and each starts a run; the two
+  # builds differ byte for byte, so a tag both runs write names whichever
+  # ended last. On 0.5.245 both wrote `latest` and `sha-<commit>`, the main
+  # run ended 28 s after the tag run, and `latest` and `0.5.245` named
+  # different digests. Now the tag push writes the versions and `latest`, and
+  # the push to main writes `edge` and `sha-<commit>` (`github.ref_type` is
+  # `tag` on a tag push; on a pull request it is `branch`, and nothing is
+  # published). tests/container_image_test.rs works out each rule's writers.
+  IMAGE_TAGS: |
+    type=semver,pattern={{version}}
+    type=semver,pattern={{major}}.{{minor}}
+    type=sha,enable=${{ github.ref_type == 'branch' }}
+    type=edge,branch=main
+    type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
 
 jobs:
+  # One leg per platform, each on a runner of that architecture (OPS-3).
+  #
+  # The image was linux/amd64 only. buildx can build arm64 on an amd64 runner
+  # under QEMU, but that compiles sipnab under emulation, many times slower
+  # than the 13-minute native build. The release binaries are no shortcut
+  # either: this workflow also runs on every push to main, where there are
+  # none, and the image is built from source by the Dockerfile. So each leg
+  # builds natively, smoke-tests and scans its own image, and pushes it by
+  # digest only; the `manifest` job below joins the digests into one manifest
+  # list and puts the tags on it. A leg never pushes a tag, so no tag can point
+  # at one platform alone.
   docker:
+    strategy:
+      # Both legs or no image: the manifest job needs every digest, and a leg
+      # still building after the other failed is time spent on nothing.
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            os: ubuntu-latest
+            arch: amd64
+            # The category the single amd64 build always uploaded under, so
+            # its alert history in the Security tab continues.
+            sarif-category: trivy-image
+          - platform: linux/arm64
+            os: ubuntu-24.04-arm
+            arch: arm64
+            sarif-category: trivy-image-arm64
     # Bounds a wedged job: an unbounded one holds its
     # concurrency group indefinitely. Measured 2026-10-23, while the push
     # build still recompiled sipnab: the smoke build took 793 s, the push build
     # 805 s, and whole runs 19 to 27 min, three of them over this bound. The
     # push build now reuses the smoke build's layers (see .dockerignore).
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     # A job-level block REPLACES the workflow-level one, so `contents: read`
     # must be restated here — without it the checkout has no read grant.
     # `security-events: write` is here for the same reason, and was missed when
@@ -40,12 +118,11 @@ jobs:
     # "Resource not accessible by integration" — a permissions error that names
     # neither the permission nor the job-level override that dropped it.
     #
-    # This block is now the ONLY place any of these are granted.
+    # `id-token: write` and `attestations: write` are in the `manifest` job,
+    # which makes the one attestation, for the manifest list.
     permissions:
       contents: read
       packages: write
-      id-token: write
-      attestations: write
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -81,22 +158,21 @@ jobs:
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
       - name: Login to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Labels only: a leg pushes no tag. See IMAGE_TAGS above.
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
+          flavor: latest=false
+          tags: ${{ env.IMAGE_TAGS }}
 
       # Build locally and RUN it before anything is published. This workflow
       # went straight from build to push to sigstore attestation without ever
@@ -111,8 +187,10 @@ jobs:
           push: false
           load: true
           tags: sipnab:smoke
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # One scope per leg. With a shared scope each leg's mode=max write
+          # replaces the other's, and every run rebuilds both.
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
           # The runtime stage upgrades Debian packages, and a CACHED upgrade
           # layer is the same packages forever. That turns the scan below into
           # a test of whatever Debian shipped the day the cache was filled:
@@ -182,7 +260,9 @@ jobs:
         uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
           sarif_file: trivy.sarif
-          category: trivy-image
+          # Per leg: a second upload under the same category replaces the
+          # first leg's findings.
+          category: ${{ matrix.sarif-category }}
 
       - name: Smoke test the image
         run: |
@@ -203,17 +283,68 @@ jobs:
             echo "::error::the image ran but did not parse the fixture capture — runtime layer is broken"
             exit 1
           fi
+          # The image's own user captures with --cap-add alone (OPS-4): the
+          # binary's `+p` file capabilities and the raise at startup.
+          echo "::group::live capture as the image's user"
+          out=$(docker run --rm --cap-add NET_RAW --cap-add NET_ADMIN \
+            sipnab:smoke -N -d lo --duration 2s 2>&1)
+          echo "$out"
+          echo "::endgroup::"
+          if ! grep -q "Capturing on 'lo'" <<<"$out"; then
+            echo "::error::the image's user could not open a live capture with --cap-add NET_RAW --cap-add NET_ADMIN"
+            exit 1
+          fi
+          # With no capability at all the image must still start: an effective
+          # bit in the file capabilities would make execve fail with EPERM.
+          docker run --rm --cap-drop ALL sipnab:smoke --version
+          # The cases of OPS-4 measured by hand, on the image just built.
+          run_image() { docker run --rm "$@" 2>&1 || true; }
+          expect() { # what, text, output
+            if ! grep -qF -- "$2" <<<"$3"; then
+              echo "$3"
+              echo "::error::$1: the output does not contain: $2"
+              exit 1
+            fi
+          }
+          echo "::group::capture cases"
+          out=$(run_image sipnab:smoke -N -d lo --duration 2s)
+          expect "capture under Docker's default capability set" "Capturing on 'lo'" "$out"
+          out=$(run_image --cap-drop ALL sipnab:smoke -N -d lo --duration 2s)
+          expect "capture with no capability" \
+            "CAP_NET_RAW is not in this process's capability bounding set" "$out"
+          out=$(run_image --security-opt no-new-privileges --cap-add NET_RAW --cap-add NET_ADMIN \
+            sipnab:smoke -N -d lo --duration 2s)
+          expect "capture under no-new-privileges, sipnab as the entry point" "Capturing on 'lo'" "$out"
+          out=$(run_image --security-opt no-new-privileges --cap-add NET_RAW --cap-add NET_ADMIN \
+            --entrypoint sh sipnab:smoke -c 'sipnab -N -d lo --duration 2s')
+          expect "capture under no-new-privileges, through a shell" \
+            "This process runs with NoNewPrivs set" "$out"
+          out=$(run_image --cap-add NET_RAW --cap-add NET_ADMIN --entrypoint sh sipnab:smoke -c \
+            'sipnab -N -d lo --duration 3s --quiet & sleep 1; grep -E "^Cap(Prm|Eff)" /proc/$!/status; wait')
+          echo "$out"
+          if [ "$(grep -c '0000000000003000' <<<"$out")" != 2 ]; then
+            echo "::error::CapPrm and CapEff are not both 0000000000003000 with --cap-add NET_RAW --cap-add NET_ADMIN"
+            exit 1
+          fi
+          echo "::endgroup::"
+          # The CA bundle a TLS client in the image reads (OPS-15).
+          docker run --rm --entrypoint test sipnab:smoke -s /etc/ssl/certs/ca-certificates.crt \
+            || { echo "::error::the image has no CA bundle at /etc/ssl/certs/ca-certificates.crt"; exit 1; }
 
+      # By digest only, with no tag: the `manifest` job tags the manifest
+      # list that holds both legs.
       - name: Build and push
+        if: github.event_name != 'pull_request'
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
         with:
           context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          platforms: ${{ matrix.platform }}
+          tags: ${{ env.IMAGE }}
+          outputs: type=image,push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=image-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.arch }}
           # The runtime stage upgrades Debian packages, and a CACHED upgrade
           # layer is the same packages forever. That turns the scan below into
           # a test of whatever Debian shipped the day the cache was filled:
@@ -227,15 +358,199 @@ jobs:
           # A warning in a log nobody reads is how a no-op looks like a fix.
           no-cache-filters: runtime
 
-      # Sigstore provenance for the image, stored in ghcr next to it so
+      # The manifest job reads each leg's digest from these artifacts.
+      - name: Export the digest
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: digests-${{ matrix.arch }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      # On a pull request the leg pushes nothing. It hands the image it built
+      # and tested to the `manifest` job as a file instead.
+      - name: Save the image
+        if: github.event_name == 'pull_request'
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: docker save sipnab:smoke -o "$RUNNER_TEMP/image-${ARCH}.tar"
+
+      - name: Upload the image
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: image-${{ matrix.arch }}
+          path: ${{ runner.temp }}/image-${{ matrix.arch }}.tar
+          if-no-files-found: error
+          retention-days: 1
+
+  # Joins the legs' digests into one manifest list, tags it, and attests it.
+  manifest:
+    needs: docker
+    # Seconds of registry calls; bounds a wedged one.
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    # On a pull request the list is assembled in a registry this job starts
+    # on localhost, so the same commands run with no credential and nothing
+    # reaches GHCR.
+    env:
+      IMAGE: ${{ github.event_name == 'pull_request' && 'localhost:5000/normb/sipnab' || 'ghcr.io/normb/sipnab' }}
+    steps:
+      # The registry image comes from mirror.gcr.io, as every other Docker
+      # Hub image this workflow uses does, pinned by the digest of its
+      # manifest list.
+      - name: Start a local registry
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          docker run -d --rm --name registry -p 127.0.0.1:5000:5000 \
+            mirror.gcr.io/library/registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+          # Wait until the port accepts a connection: bash's own /dev/tcp,
+          # so no HTTP client is needed for a registry on this host.
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if (exec 3<> /dev/tcp/127.0.0.1/5000) 2> /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::the local registry did not accept a connection within 10 s"
+          exit 1
+
+      - name: Download the images
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: ${{ runner.temp }}/images
+          pattern: image-*
+          merge-multiple: true
+
+      # Each leg's image goes into the local registry under a tag of its
+      # own, and its digest into the directory the steps below read, where
+      # a push to main finds the digests the legs uploaded.
+      - name: Push the images to the local registry
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/digests"
+          for tar in "$RUNNER_TEMP"/images/image-*.tar; do
+            arch=${tar##*/image-}
+            arch=${arch%.tar}
+            docker load -q -i "$tar"
+            docker tag sipnab:smoke "${IMAGE}:leg-${arch}"
+            docker push -q "${IMAGE}:leg-${arch}"
+            docker rmi sipnab:smoke > /dev/null
+            digest=$(docker buildx imagetools inspect --raw "${IMAGE}:leg-${arch}" \
+              | sha256sum | cut -d' ' -f1)
+            echo "leg ${arch}: sha256:${digest}"
+            touch "$RUNNER_TEMP/digests/${digest}"
+          done
+
+      - name: Download the digests
+        if: github.event_name != 'pull_request'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
+        with:
+          images: ${{ env.IMAGE }}
+          flavor: latest=false
+          tags: ${{ env.IMAGE_TAGS }}
+
+      # `imagetools` copies nothing: it writes a manifest list that names the
+      # legs' manifests by digest, once per tag. It runs in the Docker CLI's
+      # buildx plugin and needs no BuildKit engine, so this job pulls nothing.
+      - name: Create the manifest list
+        id: manifest
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(jq -r '.tags[] | "--tag=" + .' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          refs=()
+          for d in *; do refs+=("${IMAGE}@sha256:${d}"); done
+          echo "tags: ${tags[*]}"
+          echo "legs: ${refs[*]}"
+          docker buildx imagetools create "${tags[@]}" "${refs[@]}"
+          # The digest of the list this command pushed. buildx reports it
+          # only from v0.32 (`--metadata-file`), so the list is read back
+          # once, by a tag this run alone writes, and the digest is the
+          # sha256 of those bytes (`--raw` prints them unchanged). That tag
+          # is this commit's `sha-` tag on a push to main and the full
+          # version (`0.5.246`, `0.2.0-beta`) on a tag push, which makes no
+          # `sha-` tag (see IMAGE_TAGS). The digest is kept only if the list
+          # names exactly the legs' manifests: a re-run of an older attempt
+          # can move the tag in between, and attesting that run's list would
+          # be wrong.
+          want=$(for r in "${refs[@]}"; do
+            docker buildx imagetools inspect --raw "$r" \
+              | jq -r --arg d "${r#*@}" 'if has("manifests") then .manifests[].digest else $d end'
+          done | sort)
+          own=$(jq -er 'first(.tags[] | select(test(":sha-"))) // first(.tags[] | select(test(":[0-9]+[.][0-9]+[.][0-9]+")))' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          echo "read back by: $own"
+          docker buildx imagetools inspect --raw "$own" > "$RUNNER_TEMP/list.json"
+          have=$(jq -r '.manifests[].digest' "$RUNNER_TEMP/list.json" | sort)
+          if [ "$have" != "$want" ]; then
+            echo "::error::$own no longer names this run's images; another run moved it"
+            exit 1
+          fi
+          digest="sha256:$(sha256sum "$RUNNER_TEMP/list.json" | cut -d' ' -f1)"
+          echo "manifest list: ${IMAGE}@${digest}"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      # The exit code is the gate: a list missing a platform fails the run
+      # that published it, rather than a user's `docker pull` on that platform.
+      - name: Check the manifest list holds every platform
+        env:
+          DIGEST: ${{ steps.manifest.outputs.digest }}
+          PLATFORMS: linux/amd64 linux/arm64
+        run: |
+          set -euo pipefail
+          have=$(docker buildx imagetools inspect --raw "${IMAGE}@${DIGEST}" \
+            | jq -r '.manifests[] | select(.platform.os != "unknown")
+                     | "\(.platform.os)/\(.platform.architecture)"')
+          printf 'the manifest list holds: %s\n' "$(tr '\n' ' ' <<< "$have")"
+          for p in $PLATFORMS; do
+            if ! grep -qx "$p" <<< "$have"; then
+              echo "::error::the manifest list ${IMAGE}@${DIGEST} has no $p image"
+              exit 1
+            fi
+          done
+
+      # Sigstore provenance for the manifest list, stored in ghcr next to it so
       #   gh attestation verify oci://ghcr.io/normb/sipnab:<tag> --repo NormB/sipnab
       # proves the image came from this workflow. subject-name is the
       # lowercase registry path — github.repository is mixed-case.
       - name: Attest image provenance
+        if: github.event_name != 'pull_request'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
           subject-name: ghcr.io/normb/sipnab
-          subject-digest: ${{ steps.push.outputs.digest }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
           push-to-registry: true
 
       # The attestation was gated only by a test asserting the string
@@ -250,9 +565,10 @@ jobs:
       # missing attestation fails the push that produced it rather than a user's
       # verify weeks later.
       - name: Verify the attestation we just created
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
-          DIGEST: ${{ steps.push.outputs.digest }}
+          DIGEST: ${{ steps.manifest.outputs.digest }}
         run: |
           set -euo pipefail
           subject="oci://ghcr.io/normb/sipnab@${DIGEST}"

@@ -974,7 +974,10 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // src/app/fleet_center.rs +1 (the intake not rewritten). Reworded, count
 // unchanged: the center's refusal of an unknown kind now names both kinds,
 // and the spool cap's warning says files, since it removes deliveries too.
-const EXPECTED_TEMPLATES: usize = 622;
+// 622 -> 623 (OPS-4): src/main.rs, the warning when the permitted capture
+// capabilities cannot be raised into the effective set (+1). The container
+// hint in src/app/bootstrap.rs changed its words, not the count.
+const EXPECTED_TEMPLATES: usize = 623;
 
 // ---------------------------------------------------------------------------
 // The page gates
