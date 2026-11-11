@@ -1603,9 +1603,9 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/run-as-a-service.md",
         ],
     ),
-    // docker's `--cap-add`, on the pages that say it does not let the
-    // release image's non-root user capture, and on the least-privilege
-    // page's row for a bounding set without `CAP_NET_RAW`.
+    // docker's `--cap-add`, on the pages that say how the image's non-root
+    // user captures and when it cannot, and on the least-privilege page's row
+    // for a bounding set without `CAP_NET_RAW`.
     (
         "cap-add",
         &[
@@ -1619,21 +1619,40 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/errors.md",
         ],
     ),
-    // docker's `--cap-drop` and `--security-opt`, in the install page's
-    // list of the permission hints a container run gets, and the error
-    // reference's NoNewPrivs entry.
+    // docker's `--cap-drop` and `--security-opt`, on the install and
+    // troubleshooting pages' lists of when a container run cannot capture,
+    // and the error reference's NoNewPrivs entry.
     (
         "cap-drop",
-        &["docs/install.md", "website/content/docs/install.md"],
+        &[
+            "docs/install.md",
+            "website/content/docs/install.md",
+            "docs/troubleshooting.md",
+            "website/content/docs/troubleshooting.md",
+        ],
     ),
     (
         "security-opt",
         &[
             "docs/install.md",
             "website/content/docs/install.md",
+            "docs/troubleshooting.md",
+            "website/content/docs/troubleshooting.md",
             "docs/errors.md",
             "website/content/docs/errors.md",
         ],
+    ),
+    // docker's `--name`, which the container capture steps use so the
+    // verify step can `docker exec` into the same container.
+    (
+        "name",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
+    // docker's `--entrypoint`, on the page that says to start sipnab without
+    // a shell in front of it.
+    (
+        "entrypoint",
+        &["docs/install.md", "website/content/docs/install.md"],
     ),
     // cosign 2.x's `--new-bundle-format`, which the install page's signature
     // check needs there and cosign 3 does not.
