@@ -943,8 +943,9 @@ The reviewer checks the rest:
   separate workspace with their own [`fuzz/Cargo.lock`](https://github.com/NormB/sipnab/blob/main/fuzz/Cargo.lock),
   also committed.
 - **Dependabot opens update pull requests weekly** for both lock files.
-  [`.github/dependabot.yml`](https://github.com/NormB/sipnab/blob/main/.github/dependabot.yml) sets this up. It groups
-  minor and patch updates into one pull request per lock file. The two lock
+  [`.github/dependabot.yml`](https://github.com/NormB/sipnab/blob/main/.github/dependabot.yml) sets this up. One entry
+  lists both directories, so it groups minor and patch updates into
+  one pull request for both lock files. The two lock
   files must agree on the crates they share; see
   [Keeping fuzz/Cargo.lock aligned with Cargo.lock](#keeping-fuzz-cargo-lock-aligned-with-cargo-lock).
 - **CI scans every pull request to `main`.**
@@ -1002,12 +1003,15 @@ holds it. The pre-commit hook and the `Security audit` job in
 **Prerequisites.** Python 3.11 or later, for `tomllib`. To align the files you
 also need `cargo`.
 
-**Steps.** Dependabot updates the two lock files in separate pull requests,
-the `cargo-minor-patch` group for `/` and the `fuzz-minor-patch` group for
-`/fuzz`. Each pull request moves only its own file, so it fails this check
-whenever it moves a crate that both files share.
+**Steps.** Dependabot updates the two lock files in one pull request, the
+`cargo-minor-patch` group for `/` and `/fuzz`. It resolves each lock file on
+its own, so the pull request can still fail this check: a crate that one file
+holds back stays at a version the other file left. An update outside the
+group, such as a major version, can move one file only. Until 2026-11-10 each
+directory had an entry and a pull request of its own, and each failed this
+check whenever it moved a crate that both files share.
 
-1. Combine the root and fuzz updates in one branch.
+1. Put the root and fuzz updates in one branch, if they are not.
    - Take the root update first. That is the version that ships.
    - If you regenerate `THIRD-PARTY-NOTICES.md`, do it after the root
      update: `python3 scripts/build-third-party-notices.py`.

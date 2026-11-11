@@ -743,10 +743,26 @@ fi
 # must still be able to push, and CI installs both and runs the script with
 # SIPNAB_YANG_REQUIRED=1, where a missing tool is a failure. The verdict is
 # printed either way: silence in this column would read as "validated".
+#
+# The gate applies to a tree that has a module: a `yang/` directory holding a
+# `.yang` file. The validator reads the tree it lives in, and builds and runs
+# yang_export_test there, 9 s on the host that measured it. Run for a tree
+# with no module it validated something the push does not contain; the hook's
+# own scenarios (scripts/test-pre-push.sh) paid that on every one of their
+# hook runs, which was most of the 818 s that file took (HOOK-SELFTEST-818S,
+# 2026-11-10). So the pushed tree is asked first, as the non-Linux gate asks
+# for `target_os` gates.
 YANG_GATE="$(dirname "$0")/../scripts/check-yang.py"
+YANG_DIR="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/yang"
 if [ ! -f "$YANG_GATE" ]; then
 	printf '%b  YANG: NOT CHECKED -- scripts/check-yang.py is missing%b\n' "$YELLOW" "$NC"
 	printf '    CI validates the module and blocks there.\n'
+elif [ ! -d "$YANG_DIR" ]; then
+	printf '%b  YANG: NOT CHECKED -- this tree has no yang/ directory%b\n' "$YELLOW" "$NC"
+	printf '    Nothing to validate here. CI validates the module of a tree that has one.\n'
+elif ! ls "$YANG_DIR"/*.yang >/dev/null 2>&1; then
+	printf '%b  YANG: NOT CHECKED -- yang/ in this tree holds no .yang module%b\n' "$YELLOW" "$NC"
+	printf '    Nothing to validate here. CI validates the module of a tree that has one.\n'
 else
 	printf '  YANG module + RFC 7951 exports (pyang, yanglint) ... '
 	set +e

@@ -5,9 +5,11 @@
 
 The fuzz workspace (`fuzz/`) is outside the root workspace and has its own
 Cargo.lock. It builds the sipnab crate as a path dependency, so every crate
-sipnab uses is resolved twice, once in each lockfile, and Dependabot updates
-the two in separate pull requests (`.github/dependabot.yml` has an entry per
-directory). Nothing compared them. On 2026-11-08 they disagreed on 56 of the
+sipnab uses is resolved twice, once in each lockfile. Until 2026-11-10
+Dependabot updated the two in separate pull requests (`.github/dependabot.yml`
+had an entry per directory); it now has one entry for both directories, and
+still resolves each lockfile on its own. Nothing compared them. On 2026-11-08
+they disagreed on 56 of the
 214 crates they share: clap 4.6.3 in Cargo.lock and 4.6.7 in fuzz/Cargo.lock,
 cc 1.2.59 and 1.4.0, hybrid-array 0.4.15 and 0.4.13. The fuzz targets were
 fuzzing dependency code the binary does not ship.

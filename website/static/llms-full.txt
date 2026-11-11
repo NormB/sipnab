@@ -79135,8 +79135,9 @@ The reviewer checks the rest:
   separate workspace with their own [`fuzz/Cargo.lock`](fuzz/Cargo.lock),
   also committed.
 - **Dependabot opens update pull requests weekly** for both lock files.
-  [`.github/dependabot.yml`](.github/dependabot.yml) sets this up. It groups
-  minor and patch updates into one pull request per lock file. The two lock
+  [`.github/dependabot.yml`](.github/dependabot.yml) sets this up. One entry
+  lists both directories, so it groups minor and patch updates into
+  one pull request for both lock files. The two lock
   files must agree on the crates they share; see
   [Keeping fuzz/Cargo.lock aligned with Cargo.lock](#keeping-fuzzcargolock-aligned-with-cargolock).
 - **CI scans every pull request to `main`.**
@@ -79194,12 +79195,15 @@ holds it. The pre-commit hook and the `Security audit` job in
 **Prerequisites.** Python 3.11 or later, for `tomllib`. To align the files you
 also need `cargo`.
 
-**Steps.** Dependabot updates the two lock files in separate pull requests,
-the `cargo-minor-patch` group for `/` and the `fuzz-minor-patch` group for
-`/fuzz`. Each pull request moves only its own file, so it fails this check
-whenever it moves a crate that both files share.
+**Steps.** Dependabot updates the two lock files in one pull request, the
+`cargo-minor-patch` group for `/` and `/fuzz`. It resolves each lock file on
+its own, so the pull request can still fail this check: a crate that one file
+holds back stays at a version the other file left. An update outside the
+group, such as a major version, can move one file only. Until 2026-11-10 each
+directory had an entry and a pull request of its own, and each failed this
+check whenever it moved a crate that both files share.
 
-1. Combine the root and fuzz updates in one branch.
+1. Put the root and fuzz updates in one branch, if they are not.
    - Take the root update first. That is the version that ships.
    - If you regenerate `THIRD-PARTY-NOTICES.md`, do it after the root
      update: `python3 scripts/build-third-party-notices.py`.
@@ -82896,6 +82900,21 @@ So `quality.yml` has a second job, `coverage-branch`.
 - So `install-sh` and `deb-package` could both fail with the
   one required check on main still green.
 
+`code-scanning-clean` waits for CodeQL's analysis of the commit, and how long it waits follows the CodeQL workflow run of that commit.
+
+- While the run waits for a runner or runs, the job waits, up to 90 minutes.
+- When the run has completed, the job waits 2 more minutes for the upload.
+- When GitHub lists no CodeQL run of the commit, the job waits 10 minutes.
+- The three times are arguments of [`scripts/code-scanning-clean.py`](../../scripts/code-scanning-clean.py), which the job's step in `ci.yml` passes.
+- The job fails with exit 2 when it ends with no verdict, and its last line says which case it was:
+  - `still queued or running`: the CodeQL run had not finished. Run the job again when it has.
+  - `no CodeQL analysis`: the run completed and uploaded none, or GitHub lists no run. Read the CodeQL run.
+  - `could not be read`: the script could not read GitHub's answer.
+- An open alert fails the job with exit 1, whatever the state of the run.
+- The job once waited a fixed 25 minutes. On 2026-11-10 the CodeQL run of a pull request head waited 46 minutes for a hosted runner,
+  and the job failed 147 s before CodeQL uploaded the analysis, with no alert open.
+- [`test_code_scanning_wait.py`](../../scripts/tests/test_code_scanning_wait.py) holds the rule.
+
 `ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
 
 - On 2026-11-02 GitHub canceled Check (macos-latest) on both runs of pull request #601
@@ -83668,6 +83687,14 @@ What the gate runs:
   [RFC 7950 section 11](https://www.rfc-editor.org/rfc/rfc7950.html#section-11).
 
 A machine without either tool reports `NOT CHECKED` and names the fix.
+
+The pre-push hook runs the gate only for a tree that has a module: a `yang/` directory that holds a `.yang` file.
+For any other tree it prints `YANG: NOT CHECKED` with the reason, and goes on.
+
+- The script validates the tree it lives in. It builds and runs `yang_export_test` there, which took 9 s on the host that measured it.
+- The hook's own scenarios in [`scripts/test-pre-push.sh`](../../scripts/test-pre-push.sh) push from a throwaway crate with no module.
+  Each hook run of theirs paid those seconds to validate the repository's own module.
+- That was most of the 818 s the scenario file took on 2026-11-10. With the rule it took 187 s on the same host, with four more scenarios.
 
 - CI's `check` job installs both (`libyang2-tools`, and `pyang` from the hashed
   [`scripts/requirements-yang.txt`](../../scripts/requirements-yang.txt)).
@@ -84707,6 +84734,13 @@ So it has to be open for about one hook's length before a local step, and it mus
 
 - During the pull request's CI the train keeps the window closed.
 - It opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+- It keeps the window closed, and closes it again, while a check has waited for a runner for 2 minutes or more.
+  - Such a check has not started, so nothing says when it ends.
+  - A check queued for less than 2 minutes, or one with no start time, does not count.
+    A job waits in the queue for a few seconds on an ordinary day, and closing the window for it would let an ordinary job start just before the landing.
+  - On 0.5.244 the one pending check was a re-run macOS job, queued with no runner from 15:39:23Z until GitHub canceled it at 15:55:06Z.
+    The window was open for those minutes, the main slot was idle, and two ordinary jobs waited behind the window.
+  - [`test_release_train_queued.py`](../../scripts/tests/test_release_train_queued.py) holds the rule.
 - It keeps the window open through the landing and the tag push, closes it once the tag is on GitHub, and leaves it closed for the release workflow and the post checks, which use no main slot.
 - It closes its window on every exit, and leaves another owner's window alone.
 - On 0.5.239 there was no window, and the tag push waited 769 s behind an ordinary job that had started 7 s before it.

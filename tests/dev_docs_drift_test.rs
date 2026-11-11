@@ -1010,7 +1010,15 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // live check links scripts/pages-live.py, scripts/verify-site-advertises.sh,
     // scripts/tests/test_pages_live.py and
     // scripts/tests/test_pages_live_workflow.py (+4).
-    const EXPECTED_CODE_LINKS: usize = 838;
+    // 838 -> 839 (RELEASE-TRAIN-WINDOW-QUEUED-JOB): build-ci-release.md's
+    // window rule links scripts/tests/test_release_train_queued.py (+1).
+    // 839 -> 840 (HOOK-SELFTEST-818S): build-ci-release.md's YANG gate
+    // links scripts/test-pre-push.sh (+1).
+    // 840 -> 842 (CODE-SCANNING-CHECK-WAIT-SHORTER-THAN-CODEQL-QUEUE):
+    // build-ci-release.md's "What actually gates a merge" links
+    // scripts/code-scanning-clean.py and
+    // scripts/tests/test_code_scanning_wait.py (+2).
+    const EXPECTED_CODE_LINKS: usize = 842;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
