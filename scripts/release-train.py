@@ -26,6 +26,9 @@ hook's length before a local step. The rule is `window_wanted`:
 - open for the landing and the tag;
 - during the pull request's CI, closed, until at most `last_few` checks are
   pending or `lead_s` seconds remain of CI's expected run;
+- during the pull request's CI, closed again while a check has waited for a
+  runner longer than `queued_grace_s` (`stuck_queued`): it has not started, so
+  nothing says when it ends;
 - closed for the release workflow and the post checks, which use no main slot.
 
 Measured: on 0.5.239 there was no window, and the tag push waited 769 s behind
@@ -33,6 +36,11 @@ an ordinary job that had started 7 s before it. On 0.5.240 the window was
 closed for all of CI, an ordinary hook started in the same second, and the tag
 queued 434 s behind it. The default estimate is 0.5.240's 37 min of pull
 request CI.
+
+On 0.5.244 the one pending check was a re-run macOS job, queued with no runner
+from 15:39:23Z until GitHub canceled it at 15:55:06Z. It counted as one of the
+last few checks, the window was open for those minutes, the main slot was idle
+and two ordinary jobs waited behind the window (RELEASE-TRAIN-WINDOW-QUEUED-JOB).
 
 Another owner's window is left alone: it holds ordinary jobs just the same.
 
@@ -113,6 +121,7 @@ class Facts:
     run_status: str
     run_conclusion: str
     post_rc: int | None
+    stuck: int = 0
 
 
 @dataclasses.dataclass
@@ -127,6 +136,7 @@ class Config:
     expected_ci_s: int = 2220
     proof_wait_s: int = 300
     proof_poll_s: float = 10.0
+    queued_grace_s: int = 120
     window_minutes: int = 60
     bin_dir: str = ""
     retry_post: bool = False
@@ -160,12 +170,37 @@ def stage_of(f: Facts) -> str:
     return "land"
 
 
-def window_wanted(stage: str, pending: int, remaining_s: float, cfg: Config) -> bool:
+def window_wanted(stage: str, pending: int, remaining_s: float, cfg: Config, stuck: int = 0) -> bool:
+    """Whether the release window should be open. `stuck` is `stuck_queued`:
+    during CI, a check that waits for a runner keeps the window closed."""
     if stage in ("land", "tag"):
         return True
     if stage == "ci-wait":
-        return pending <= cfg.last_few or remaining_s <= cfg.lead_s
+        return stuck == 0 and (pending <= cfg.last_few or remaining_s <= cfg.lead_s)
     return False
+
+
+# A check run's status before a runner has taken its job.
+NO_RUNNER_YET = {"QUEUED", "WAITING", "REQUESTED", "PENDING"}
+
+
+def stuck_queued(items, now: float, grace_s: float) -> int:
+    """How many checks of a statusCheckRollup have waited for a runner for at
+    least `grace_s` seconds.
+
+    A check that became ready a moment ago is queued for a few seconds on an
+    ordinary day, and closing the window for it would let an ordinary job start
+    just before the landing. So a queued check counts only once it is
+    `grace_s` old, and one whose start time cannot be read does not count.
+    A commit status has no runner and never counts."""
+    n = 0
+    for c in items:
+        if "context" in c or (c.get("status") or "").upper() not in NO_RUNNER_YET:
+            continue
+        t = _epoch(c.get("startedAt"))
+        if t is not None and now - t >= grace_s:
+            n += 1
+    return n
 
 
 def ci_remaining(f: Facts, cfg: Config, now: float) -> float:
@@ -252,16 +287,21 @@ def _read_json(run, argv):
         raise ReadError(f"{' '.join(argv[:4])}: not JSON: {e}") from e
 
 
-def read_facts(cfg: Config, run) -> Facts:
+def read_facts(cfg: Config, run, now: float | None = None) -> Facts:
+    """The release's facts. With `now`, the checks that wait for a runner are
+    counted (`stuck_queued`); without it their age cannot be judged."""
     prs = _read_json(run, ["gh", "pr", "list", "--repo", cfg.repo, "--head", f"release/{cfg.version}",
                            "--state", "all", "--json", "number,state,headRefOid,mergeCommit", "--limit", "1"])
     pr = prs[0] if prs else {}
     state = pr.get("state", "")
-    pending, failed, first = 0, (), None
+    pending, failed, first, stuck = 0, (), None, 0
     if state == "OPEN":
         rollup = _read_json(run, ["gh", "pr", "view", str(pr["number"]), "--repo", cfg.repo,
                                   "--json", "statusCheckRollup"])
-        pending, failed, first = read_rollup(rollup.get("statusCheckRollup") or [])
+        items = rollup.get("statusCheckRollup") or []
+        pending, failed, first = read_rollup(items)
+        if now is not None:
+            stuck = stuck_queued(items, now, cfg.queued_grace_s)
     tag = run(["git", "-C", str(REPO), "ls-remote", "--tags", "origin", f"refs/tags/v{cfg.version}"], 60)
     if tag.rc != 0:
         raise ReadError(f"git ls-remote: {tag.out.strip()}")
@@ -278,7 +318,7 @@ def read_facts(cfg: Config, run) -> Facts:
     return Facts(pr_state=state, pr_number=pr.get("number"), head=pr.get("headRefOid", ""),
                  merge_sha=(pr.get("mergeCommit") or {}).get("oid", ""), pending=pending, failed=failed,
                  first_started=first, tag_exists=bool(tag.out.strip()), run_status=status,
-                 run_conclusion=conclusion, post_rc=post_rc)
+                 run_conclusion=conclusion, post_rc=post_rc, stuck=stuck)
 
 
 def sync_window(cfg: Config, run, want: bool, now: float) -> str:
@@ -408,9 +448,9 @@ def post_checks(cfg: Config, run) -> int:
 def tick(cfg: Config, run, clock, sleep=time.sleep) -> str:
     """Read the facts, set the window, and take the one local step that is due."""
     now = clock()
-    f = read_facts(cfg, run)
+    f = read_facts(cfg, run, now)
     stage = stage_of(f)
-    sync_window(cfg, run, window_wanted(stage, f.pending, ci_remaining(f, cfg, now), cfg), now)
+    sync_window(cfg, run, window_wanted(stage, f.pending, ci_remaining(f, cfg, now), cfg, f.stuck), now)
     if stage in ("ci-wait", "land"):
         post_cla(cfg, run, f)
     if stage == "land":

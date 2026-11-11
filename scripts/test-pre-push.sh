@@ -329,6 +329,54 @@ else
 	sed 's/^/    /' "$TMP/out.log"
 fi
 
+# -- The YANG gate runs for a tree that has a YANG module, and for no other ---
+# scripts/check-yang.py validates the module and the exports of the tree it
+# lives in: it runs `cargo test --test yang_export_test` there and gives each
+# document to yanglint, 9 s on the host that measured it (2026-11-10). The
+# hook ran it on every push from any tree, so each scenario of this file paid
+# those seconds to validate the repository's own module, which no scenario
+# changes: 27 of the 33 s of one scenario, and most of the 818 s this file
+# took (HOOK-SELFTEST-818S). The fixture has no yang/ directory, and the run
+# above is the proof that the hook says so and goes on.
+if grep -qF 'YANG: NOT CHECKED -- this tree has no yang/ directory' "$TMP/out.log"; then
+	ok "YANG gate says NOT CHECKED for a tree with no yang/ directory"
+else
+	bad "YANG gate did not say NOT CHECKED for a tree with no yang/ directory"
+	grep -i 'yang' "$TMP/out.log" | sed 's/^/    /'
+fi
+if grep -qF 'YANG module + RFC 7951 exports' "$TMP/out.log"; then
+	bad "YANG gate ran the validator for a tree with no yang/ directory"
+else
+	ok "YANG gate runs no validator for a tree with no yang/ directory"
+fi
+
+# A tree that has the directory gets the validator. Only the gate's own line
+# is asserted: the verdict belongs to scripts/check-yang.py and its tests.
+mkdir -p "$CRATE/yang"
+: >"$CRATE/yang/fixture@2026-01-01.yang"
+run_hook "" || true
+if grep -qF 'YANG module + RFC 7951 exports (pyang, yanglint) ... ' "$TMP/out.log" \
+	&& ! grep -qF 'YANG: NOT CHECKED -- this tree has no yang/ directory' "$TMP/out.log"; then
+	ok "YANG gate runs the validator for a tree with a yang/ directory"
+else
+	bad "YANG gate did not run the validator for a tree with a yang/ directory"
+	grep -i 'yang' "$TMP/out.log" | sed 's/^/    /'
+fi
+rm -rf "${CRATE:?}/yang"
+
+# An empty yang/ directory holds no module: nothing to validate.
+mkdir -p "$CRATE/yang"
+run_hook "" || true
+if grep -qF 'YANG: NOT CHECKED -- this tree has no yang/ directory' "$TMP/out.log"; then
+	bad "YANG gate treats an empty yang/ directory as no directory: the message is wrong for it"
+elif grep -qF 'YANG: NOT CHECKED -- yang/ in this tree holds no .yang module' "$TMP/out.log"; then
+	ok "YANG gate says NOT CHECKED for a yang/ directory with no module"
+else
+	bad "YANG gate did not say NOT CHECKED for a yang/ directory with no module"
+	grep -i 'yang' "$TMP/out.log" | sed 's/^/    /'
+fi
+rmdir "$CRATE/yang"
+
 # -- The other three hard gates ----------------------------------------------
 # Only the rustfmt gate was ever reachable here. The throwaway crate is
 # clippy-clean, doc-clean, and has no fuzz/ directory, so deleting the clippy,
