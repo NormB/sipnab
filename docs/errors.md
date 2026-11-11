@@ -5531,7 +5531,7 @@ The center could not open its encrypted store, and leaves it as it found it.
 - `is a sealed intake file, not a registry file`: another of the center's files
   is in the store's place.
 - `has sealed format <n>, and this build reads format 2`: a later sipnab wrote
-  the store. This build also reads format 1, which releases up to 0.5.244
+  the store. This build also reads format 1, which 0.5.244 and 0.5.245
   wrote, and writes the file again as format 2 at start.
 - `record <n> is not a member record: <reason>`: the record is intact and is not one
   this build reads.

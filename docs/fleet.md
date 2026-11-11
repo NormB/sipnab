@@ -919,11 +919,12 @@ development build after 0.5.243 and the files in one working directory.
   key. After the upgrade it does not start until you give it
   `--store-key-file`. [Upgrade a center that stored in clear](#upgrade-a-center-that-stored-in-clear)
   has the steps and the way back.
-- **A center or a member from 0.5.244** wrote sealed format 1. A later
-  release reads those files once and writes them again as format 2, and
-  0.5.244 does not read format 2. To keep a way back to 0.5.244, stop the
-  center and copy its store and its intake before the first start of the new
-  release:
+- **A center from 0.5.244 or 0.5.245, or a member from 0.5.245** wrote
+  sealed format 1. A later release reads those files once and writes them
+  again as format 2, and neither 0.5.244 nor 0.5.245 reads format 2. To keep
+  a way back, stop the center and copy its store and its intake before the
+  first start of the new release. A center from 0.5.244 has no intake, so
+  only the first command applies to it:
 
   ```bash
   # Run all of these, in order.
@@ -931,10 +932,11 @@ development build after 0.5.243 and the files in one working directory.
   cp -p /var/lib/sipnab/center.store.intake /var/lib/sipnab/center.store.intake.format1
   ```
 
-  To go back, stop the center, put the two copies back under their own names
-  and start 0.5.244. It then knows nothing the newer release stored. A member
-  has nothing to copy: let its spool drain before a downgrade, because
-  0.5.244 moves a format 2 delivery to `failed/` and does not send it.
+  To go back, stop the center, put the copies back under their own names
+  and start the release that wrote them. It then knows nothing the newer
+  release stored. A member has nothing to copy: let its spool drain before a
+  downgrade, because 0.5.245 moves a format 2 delivery to `failed/` and does
+  not send it.
 
 **Steps.**
 
@@ -1040,8 +1042,8 @@ header, and the center refuses a file that holds fewer entries than its
 count (`was cut at its end`). The same holds for the intake beside the store
 and for a member's sealed deliveries. Two things it cannot detect: someone
 deleting the whole store, and someone putting back an earlier copy of the
-whole file, which is a valid file with its own valid count. Releases up to
-0.5.244 wrote no count (sealed format 1). This release reads such a file
+whole file, which is a valid file with its own valid count. Releases 0.5.244
+and 0.5.245 wrote no count (sealed format 1). This release reads such a file
 once at start and writes it again with one (format 2), and an earlier
 release does not read a format 2 file. `--store-encryption` names how the center encrypts
 the store. This release has one mechanism, `sealed`, and refuses the values

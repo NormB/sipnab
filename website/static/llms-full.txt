@@ -13352,7 +13352,7 @@ Two environment variables tune it. To pin a specific version instead of taking
 whatever the latest release is:
 
 ```bash
-curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.244 sh
+curl -fsSL https://sipnab.com/install.sh | SIPNAB_VERSION=0.5.245 sh
 ```
 
 To install somewhere other than `/usr/local/bin`, use a directory you already
@@ -13375,7 +13375,7 @@ When the installer stops, its last line names the reason:
 
 | The installer prints | Cause | Fix |
 |---|---|---|
-| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.244` |
+| `sipnab-install: error: could not determine the latest version (set SIPNAB_VERSION to pin one)` | It could not reach `api.github.com`, or GitHub refused the request, for example for its rate limit | Pin the release: `SIPNAB_VERSION=0.5.245` |
 | `sipnab-install: error: download failed: https://github.com/NormB/sipnab/releases/download/v9.9.9/sipnab-9.9.9-aarch64-unknown-linux-gnu.tar.gz` | No release has that version, or `github.com` is unreachable | Check the version on the [releases page](https://github.com/NormB/sipnab/releases) |
 | `sipnab-install: error: sha256 mismatch for <file> — download corrupted or tampered, aborting` | The tarball does not match its `.sha256` file | Run it again. If it repeats, download by hand and [verify the download](#verify-a-download-is-genuine) |
 | `sipnab-install: error: neither sha256sum nor shasum found; refusing to install unverified binary` | The host has no checksum tool | Install `coreutils` (Linux) |
@@ -13564,7 +13564,7 @@ Live audio playback in the TUI loads a separate plugin,
 held no plugin, and the packages recommended no sound library. 0.5.233 ships
 the plugin again:
 
-| Artifact (0.5.244) | Plugin | `Recommends` |
+| Artifact (0.5.245) | Plugin | `Recommends` |
 |---|---|---|
 | `sipnab_<version>_<arch>.deb` | `/usr/lib/sipnab/libsipnab_audio.so` | `libasound2` or `libasound2t64` |
 | `sipnab-<version>-1.<arch>.rpm` | `/usr/lib/sipnab/libsipnab_audio.so` | `alsa-lib` |
@@ -13604,11 +13604,11 @@ target triple (`arch-vendor-os-abi`).
   all use the same names.
 
 Every command below reads the release number from a `VERSION` variable. Set
-it first, in the same shell, to the release you want, e.g. 0.5.244 for the
+it first, in the same shell, to the release you want, e.g. 0.5.245 for the
 latest:
 
 ```bash
-VERSION=0.5.244
+VERSION=0.5.245
 ```
 
 On Linux x86_64, the static musl tarball runs on any distro and any glibc,
@@ -13748,13 +13748,13 @@ Download the `.deb` for your architecture from the [latest release](https://gith
 - On older releases use the static musl tarball above.
 
 Download and install the amd64 (x86_64) package. Set `VERSION` to the release
-you want, e.g. 0.5.244, as in
+you want, e.g. 0.5.245, as in
 [Download a release binary yourself](#download-a-release-binary-yourself):
 
 - Set the version:
 
    ```bash
-   VERSION=0.5.244
+   VERSION=0.5.245
    ```
 
 - Download the package:
@@ -13865,25 +13865,25 @@ matches `uname -m` (`x86_64` or `aarch64`).
 The standard package on an x86_64 host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.x86_64.rpm
+sudo dnf install ./sipnab-0.5.245-1.x86_64.rpm
 ```
 
 The headless / no-ALSA variant on the same architecture:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.x86_64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.245-1.x86_64-noaudio.rpm
 ```
 
 The standard package on an aarch64 (arm64) host:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.aarch64.rpm
+sudo dnf install ./sipnab-0.5.245-1.aarch64.rpm
 ```
 
 The headless / no-ALSA variant on aarch64:
 
 ```bash
-sudo dnf install ./sipnab-0.5.244-1.aarch64-noaudio.rpm
+sudo dnf install ./sipnab-0.5.245-1.aarch64-noaudio.rpm
 ```
 
 `rpm -i` does not fetch dependencies. On a host without libpcap it refuses:
@@ -14368,14 +14368,14 @@ The cross images automatically install the required `libpcap-dev` headers for th
 The image is `ghcr.io/normb/sipnab`. Pin a release tag:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.244
+docker pull ghcr.io/normb/sipnab:0.5.245
 ```
 
 The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/.github/workflows/docker.yml):
 
 | Tag | Points at |
 |---|---|
-| `0.5.244` | That release |
+| `0.5.245` | That release |
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
@@ -14413,7 +14413,7 @@ Read a capture file by mounting it:
 
 ```bash
 docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
-  ghcr.io/normb/sipnab:0.5.244 -N -I /data/capture.pcap
+  ghcr.io/normb/sipnab:0.5.245 -N -I /data/capture.pcap
 ```
 
 - `--net=host` lets the container see the host's interfaces.
@@ -14426,11 +14426,11 @@ docker run --rm -v /path/to/capture.pcap:/data/capture.pcap:ro \
 Check where an image came from before you run it:
 
 ```bash
-gh attestation verify oci://ghcr.io/normb/sipnab:0.5.244 --repo NormB/sipnab
+gh attestation verify oci://ghcr.io/normb/sipnab:0.5.245 --repo NormB/sipnab
 ```
 
-It names the workflow and the ref that built the image. For `0.5.244` that is
-`.github/workflows/docker.yml@refs/tags/v0.5.244`, and for `latest` the tag of
+It names the workflow and the ref that built the image. For `0.5.245` that is
+`.github/workflows/docker.yml@refs/tags/v0.5.245`, and for `latest` the tag of
 the newest release. For `edge` it is
 `.github/workflows/docker.yml@refs/heads/main`. The workflow makes the
 attestation for the digest of the manifest list, which is what the tag names.
@@ -14852,7 +14852,7 @@ git pull
 Pull the new release's tag, and use that tag in your `docker run` command:
 
 ```bash
-docker pull ghcr.io/normb/sipnab:0.5.244
+docker pull ghcr.io/normb/sipnab:0.5.245
 ```
 
 `latest` is the newest release, and `edge` is the newest `main` commit. See
@@ -29179,7 +29179,7 @@ The center could not open its encrypted store, and leaves it as it found it.
 - `is a sealed intake file, not a registry file`: another of the center's files
   is in the store's place.
 - `has sealed format <n>, and this build reads format 2`: a later sipnab wrote
-  the store. This build also reads format 1, which releases up to 0.5.244
+  the store. This build also reads format 1, which 0.5.244 and 0.5.245
   wrote, and writes the file again as format 2 at start.
 - `record <n> is not a member record: <reason>`: the record is intact and is not one
   this build reads.
@@ -41176,11 +41176,12 @@ development build after 0.5.243 and the files in one working directory.
   key. After the upgrade it does not start until you give it
   `--store-key-file`. [Upgrade a center that stored in clear](#upgrade-a-center-that-stored-in-clear)
   has the steps and the way back.
-- **A center or a member from 0.5.244** wrote sealed format 1. A later
-  release reads those files once and writes them again as format 2, and
-  0.5.244 does not read format 2. To keep a way back to 0.5.244, stop the
-  center and copy its store and its intake before the first start of the new
-  release:
+- **A center from 0.5.244 or 0.5.245, or a member from 0.5.245** wrote
+  sealed format 1. A later release reads those files once and writes them
+  again as format 2, and neither 0.5.244 nor 0.5.245 reads format 2. To keep
+  a way back, stop the center and copy its store and its intake before the
+  first start of the new release. A center from 0.5.244 has no intake, so
+  only the first command applies to it:
 
   ```bash
   # Run all of these, in order.
@@ -41188,10 +41189,11 @@ development build after 0.5.243 and the files in one working directory.
   cp -p /var/lib/sipnab/center.store.intake /var/lib/sipnab/center.store.intake.format1
   ```
 
-  To go back, stop the center, put the two copies back under their own names
-  and start 0.5.244. It then knows nothing the newer release stored. A member
-  has nothing to copy: let its spool drain before a downgrade, because
-  0.5.244 moves a format 2 delivery to `failed/` and does not send it.
+  To go back, stop the center, put the copies back under their own names
+  and start the release that wrote them. It then knows nothing the newer
+  release stored. A member has nothing to copy: let its spool drain before a
+  downgrade, because 0.5.245 moves a format 2 delivery to `failed/` and does
+  not send it.
 
 **Steps.**
 
@@ -41297,8 +41299,8 @@ header, and the center refuses a file that holds fewer entries than its
 count (`was cut at its end`). The same holds for the intake beside the store
 and for a member's sealed deliveries. Two things it cannot detect: someone
 deleting the whole store, and someone putting back an earlier copy of the
-whole file, which is a valid file with its own valid count. Releases up to
-0.5.244 wrote no count (sealed format 1). This release reads such a file
+whole file, which is a valid file with its own valid count. Releases 0.5.244
+and 0.5.245 wrote no count (sealed format 1). This release reads such a file
 once at start and writes it again with one (format 2), and an earlier
 release does not read a format 2 file. `--store-encryption` names how the center encrypts
 the store. This release has one mechanism, `sealed`, and refuses the values
@@ -87839,6 +87841,7 @@ Each successful run gets a row here.
 | 0.5.242 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.243 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
 | 0.5.244 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-10 | attached, 2 libraries plus `tcp_sendmsg` |
+| 0.5.245 | x86_64-unknown-linux-gnu | Debian 13, x86_64 | 6.12.115+deb13.1-amd64 | 2026-11-11 | attached, 2 libraries plus `tcp_sendmsg` |
 
 That requirement makes this file part of every advertisement commit, the commit
 a release pull request carries for the release before it
