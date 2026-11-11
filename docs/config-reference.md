@@ -1280,7 +1280,8 @@ error 30)`. See [Keep crash reports](run-as-a-service.md#keep-crash-reports).
 
 ### `[fleet]`
 
-Makes the run a fleet member, which reports its heartbeat to a fleet center
+Makes the run a fleet member, which reports its heartbeat, and the calls
+`call_push` selects, to a fleet center
 (`sipnab fleet serve`). [Make an instance a fleet member](fleet.md#make-an-instance-a-fleet-member)
 is the how-to. Unset `report_url`, the run reports nothing.
 
@@ -1291,7 +1292,10 @@ is the how-to. Unset `report_url`, the run reports nothing.
 | `report_ca_file` | string | -- | A PEM CA file to trust for the center. Flag: `--fleet-report-ca-file` |
 | `spool_dir` | string | -- | Where heartbeats wait until the center takes them. Flag: `--fleet-spool-dir` |
 | `heartbeat_secs` | integer | `30` (`DEFAULT_HEARTBEAT_SECS`) | Seconds between heartbeats, 1 to 3600. The center reports the member silent after `--silent-after-missed` of these |
-| `spool_max_files` | integer | `2880` | The most heartbeats the spool keeps while the center is away, at least 1; the oldest go first |
+| `spool_max_files` | integer | `2880` | The most files, heartbeats and deliveries of call records, the spool keeps while the center is away, at least 1; the oldest go first |
+| `call_push` | string | `exceptions` with a `spool_key_file`, else `none` | Which ended calls the member pushes to the center: `exceptions` (a call that failed, lost quality or raised a finding), `all` or `none`. `exceptions` and `all` need `spool_key_file`. See [Push call records to the center](fleet.md#push-call-records-to-the-center) |
+| `exception_max_per_sec` | integer | `10` (`DEFAULT_EXCEPTION_MAX_PER_SEC`) | The most exception records pushed a second, 1 to 10000 (`MAX_EXCEPTION_MAX_PER_SEC`). The member counts what the cap refused |
+| `spool_key_file` | string | -- | The key that seals call records while they wait in the spool, in a file only this user can read. Create it with `sipnab fleet keygen --out FILE` |
 
 ```toml
 [fleet]
@@ -1300,6 +1304,9 @@ report_token_file = "/etc/sipnab/fleet/edge-a.report.token"
 report_ca_file = "/etc/sipnab/fleet/internal-ca.pem"
 spool_dir = "/var/lib/sipnab/fleet-spool"
 heartbeat_secs = 30
+spool_key_file = "/etc/sipnab/fleet/spool.key"
+call_push = "exceptions"
+exception_max_per_sec = 10
 ```
 
 ### `[g729]`

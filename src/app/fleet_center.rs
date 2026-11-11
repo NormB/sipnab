@@ -87,6 +87,54 @@ pub struct Heartbeat {
     pub heartbeat_secs: u64,
     /// The member's inventory record (`GET /v1/inventory`), as it sent it.
     pub inventory: serde_json::Value,
+    /// What the member says it did with its ended calls, when it pushes
+    /// call records.
+    pub calls: Option<super::fleet_calls::CallCounts>,
+}
+
+/// One call record, as a member sent it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallRecord {
+    /// See [`Heartbeat::stream`].
+    pub stream: String,
+    /// See [`Heartbeat::seq`].
+    pub seq: u64,
+    /// See [`Heartbeat::sent_at`].
+    pub sent_at: DateTime<Utc>,
+    /// What selected the call on the member: `all`, or an exception's
+    /// reason.
+    pub selected_by: String,
+    /// The call: the member's own REST answer for the dialog.
+    pub call: serde_json::Value,
+}
+
+/// One record of an ingest body.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Record {
+    /// A heartbeat.
+    Heartbeat(Heartbeat),
+    /// A call record.
+    Call(CallRecord),
+}
+
+impl Record {
+    /// The heartbeat, when the record is one.
+    #[must_use]
+    pub fn heartbeat(&self) -> Option<&Heartbeat> {
+        match self {
+            Self::Heartbeat(hb) => Some(hb),
+            Self::Call(_) => None,
+        }
+    }
+
+    /// The call record, when the record is one.
+    #[must_use]
+    pub fn call(&self) -> Option<&CallRecord> {
+        match self {
+            Self::Heartbeat(_) => None,
+            Self::Call(call) => Some(call),
+        }
+    }
 }
 
 /// One ingest record on the wire.
@@ -102,10 +150,16 @@ struct WireRecord {
     seq: u64,
     /// See [`Heartbeat::sent_at`], RFC 3339.
     sent_at: String,
-    /// See [`Heartbeat::heartbeat_secs`].
-    heartbeat_secs: u64,
-    /// See [`Heartbeat::inventory`].
-    inventory: serde_json::Value,
+    /// See [`Heartbeat::heartbeat_secs`]. A heartbeat carries it.
+    heartbeat_secs: Option<u64>,
+    /// See [`Heartbeat::inventory`]. A heartbeat carries it.
+    inventory: Option<serde_json::Value>,
+    /// See [`Heartbeat::calls`].
+    calls: Option<super::fleet_calls::CallCounts>,
+    /// See [`CallRecord::selected_by`]. A call record carries it.
+    selected_by: Option<String>,
+    /// See [`CallRecord::call`]. A call record carries it.
+    call: Option<serde_json::Value>,
 }
 
 /// Parse an ingest body: one JSON record per line, blank lines ignored.
@@ -119,7 +173,7 @@ struct WireRecord {
 /// [`MAX_BATCH_RECORDS`], or a record that is not JSON, names another
 /// `schema_version` or `kind`, or carries a field out of its range. The
 /// message names the line.
-pub fn parse_batch(body: &[u8]) -> Result<Vec<Heartbeat>, String> {
+pub fn parse_batch(body: &[u8]) -> Result<Vec<Record>, String> {
     let text = std::str::from_utf8(body).map_err(|_| "the body is not UTF-8".to_string())?;
     let mut out = Vec::new();
     for (index, raw) in text.lines().enumerate() {
@@ -135,7 +189,7 @@ pub fn parse_batch(body: &[u8]) -> Result<Vec<Heartbeat>, String> {
         }
         let record: WireRecord =
             serde_json::from_str(raw).map_err(|e| format!("line {n}: not a record: {e}"))?;
-        out.push(heartbeat(record).map_err(|e| format!("line {n}: {e}"))?);
+        out.push(self::record(record).map_err(|e| format!("line {n}: {e}"))?);
     }
     if out.is_empty() {
         return Err("the batch holds no record".to_string());
@@ -143,18 +197,38 @@ pub fn parse_batch(body: &[u8]) -> Result<Vec<Heartbeat>, String> {
     Ok(out)
 }
 
-/// `record` as a [`Heartbeat`], or why it is not one.
-fn heartbeat(record: WireRecord) -> Result<Heartbeat, String> {
+/// The heartbeats of an ingest body that holds nothing else, for tests
+/// that read a heartbeat's fields.
+///
+/// # Errors
+///
+/// [`parse_batch`] refused the body, or a record is not a heartbeat.
+#[cfg(test)]
+pub(crate) fn parse_heartbeats(body: &[u8]) -> Result<Vec<Heartbeat>, String> {
+    parse_batch(body)?
+        .into_iter()
+        .map(|record| match record {
+            Record::Heartbeat(hb) => Ok(hb),
+            Record::Call(_) => Err("a call record".to_string()),
+        })
+        .collect()
+}
+
+/// `record` as a heartbeat or a call record, or why it is neither. The
+/// rules of a record's position are the same for both kinds.
+fn record(record: WireRecord) -> Result<Record, String> {
     if record.schema_version != RECORD_SCHEMA_VERSION {
         return Err(format!(
             "schema_version {}; this center reads {RECORD_SCHEMA_VERSION}",
             record.schema_version
         ));
     }
-    if record.kind != KIND_HEARTBEAT {
+    let is_call = record.kind == super::fleet_calls::KIND_CALL;
+    if !is_call && record.kind != KIND_HEARTBEAT {
         return Err(format!(
-            "kind {:?}; this center accepts {KIND_HEARTBEAT:?}",
-            cut(&record.kind)
+            "kind {:?}; this center accepts {KIND_HEARTBEAT:?} and {:?}",
+            cut(&record.kind),
+            super::fleet_calls::KIND_CALL
         ));
     }
     if !is_valid_id(&record.stream) {
@@ -168,22 +242,46 @@ fn heartbeat(record: WireRecord) -> Result<Heartbeat, String> {
     let sent_at = DateTime::parse_from_rfc3339(&record.sent_at)
         .map_err(|_| format!("sent_at {:?} is not an RFC 3339 time", cut(&record.sent_at)))?
         .with_timezone(&Utc);
-    if !(MIN_HEARTBEAT_SECS..=MAX_HEARTBEAT_SECS).contains(&record.heartbeat_secs) {
+    if is_call {
+        let selected_by = record
+            .selected_by
+            .filter(|by| is_valid_id(by))
+            .ok_or_else(|| {
+                format!("selected_by must be 1 to {MAX_ID_LEN} letters, digits, '.', '_' or '-'")
+            })?;
+        let call = record
+            .call
+            .filter(serde_json::Value::is_object)
+            .ok_or("call must be a JSON object")?;
+        return Ok(Record::Call(CallRecord {
+            stream: record.stream,
+            seq: record.seq,
+            sent_at,
+            selected_by,
+            call,
+        }));
+    }
+    let heartbeat_secs = record
+        .heartbeat_secs
+        .ok_or("a heartbeat needs heartbeat_secs")?;
+    if !(MIN_HEARTBEAT_SECS..=MAX_HEARTBEAT_SECS).contains(&heartbeat_secs) {
         return Err(format!(
             "heartbeat_secs {} is outside {MIN_HEARTBEAT_SECS} to {MAX_HEARTBEAT_SECS}",
-            record.heartbeat_secs
+            heartbeat_secs
         ));
     }
-    if !record.inventory.is_object() {
-        return Err("inventory must be a JSON object".to_string());
-    }
-    Ok(Heartbeat {
+    let inventory = record
+        .inventory
+        .filter(serde_json::Value::is_object)
+        .ok_or("inventory must be a JSON object")?;
+    Ok(Record::Heartbeat(Heartbeat {
         stream: record.stream,
         seq: record.seq,
         sent_at,
-        heartbeat_secs: record.heartbeat_secs,
-        inventory: record.inventory,
-    })
+        heartbeat_secs,
+        inventory,
+        calls: record.calls,
+    }))
 }
 
 /// At most the first 64 characters of a value a client sent, for an error.
@@ -224,11 +322,50 @@ pub struct Cursor {
 /// the record; it decides only which of that member's records count.
 #[must_use]
 pub fn admits(prev: Option<&Cursor>, hb: &Heartbeat) -> bool {
+    admits_at(prev, &hb.stream, hb.seq, hb.sent_at)
+}
+
+/// [`admits`] for any record, by its stream, position and send time.
+#[must_use]
+pub fn admits_at(prev: Option<&Cursor>, stream: &str, seq: u64, sent_at: DateTime<Utc>) -> bool {
     match prev {
         None => true,
-        Some(prev) if prev.stream == hb.stream => hb.seq > prev.seq,
-        Some(prev) => hb.sent_at > prev.sent_at,
+        Some(prev) if prev.stream == stream => seq > prev.seq,
+        Some(prev) => sent_at > prev.sent_at,
     }
+}
+
+/// A member's record after a call record at the given stream, position and
+/// send time: its position moves and
+/// its count of call records grows. What its heartbeats said stays: when it
+/// was last heard, from where, and its inventory. A member the center has
+/// no heartbeat from gets a record with none, received at `now` from `peer`.
+fn after_call(
+    current: Option<MemberRecord>,
+    member: &str,
+    peer: &str,
+    now: DateTime<Utc>,
+    (stream, seq, sent_at): (&str, u64, DateTime<Utc>),
+) -> MemberRecord {
+    let cursor = Cursor {
+        stream: stream.to_string(),
+        seq,
+        sent_at,
+    };
+    let mut record = current.unwrap_or_else(|| MemberRecord {
+        member: member.to_string(),
+        received_at: now,
+        peer: peer.to_string(),
+        heartbeats: 0,
+        cursor: cursor.clone(),
+        heartbeat_secs: super::fleet_member::DEFAULT_HEARTBEAT_SECS,
+        inventory: serde_json::json!({}),
+        call_records: 0,
+        calls: None,
+    });
+    record.cursor = cursor;
+    record.call_records = record.call_records.saturating_add(1);
+    record
 }
 
 /// Whether a member last heard at `last` is silent at `now`: more than
@@ -272,6 +409,13 @@ pub struct MemberRecord {
     pub heartbeat_secs: u64,
     /// The member's inventory, as it sent it.
     pub inventory: serde_json::Value,
+    /// Call records accepted from this member.
+    #[serde(default)]
+    pub call_records: u64,
+    /// What the member's newest heartbeat said it did with its ended
+    /// calls, when it said.
+    #[serde(default)]
+    pub calls: Option<super::fleet_calls::CallCounts>,
 }
 
 /// Every member's newest accepted heartbeat.
@@ -291,6 +435,8 @@ pub struct Plan {
     /// The member's record after this request, when anything was accepted:
     /// what the store appends and the registry then holds.
     pub record: Option<MemberRecord>,
+    /// The call records that are new, in order: what the intake appends.
+    pub calls: Vec<CallRecord>,
 }
 
 impl Registry {
@@ -312,14 +458,41 @@ impl Registry {
     /// record counts it once.
     #[must_use]
     pub fn plan(&self, member: &str, peer: &str, now: DateTime<Utc>, batch: &[Heartbeat]) -> Plan {
+        let records: Vec<Record> = batch.iter().cloned().map(Record::Heartbeat).collect();
+        self.plan_records(member, peer, now, &records)
+    }
+
+    /// [`Self::plan`] for a batch of heartbeats and call records. A call
+    /// record moves the member's position as a heartbeat does, and is
+    /// returned in [`Plan::calls`] for the intake when it is new.
+    #[must_use]
+    pub fn plan_records(
+        &self,
+        member: &str,
+        peer: &str,
+        now: DateTime<Utc>,
+        batch: &[Record],
+    ) -> Plan {
         let mut current = self.members.get(member).cloned();
         let mut accepted = 0;
         let mut duplicate = 0;
-        for hb in batch {
-            if !admits(current.as_ref().map(|r| &r.cursor), hb) {
-                duplicate += 1;
-                continue;
-            }
+        let mut calls = Vec::new();
+        for record in batch {
+            let prev = current.as_ref().map(|r| &r.cursor);
+            let hb = match record {
+                Record::Heartbeat(hb) if admits(prev, hb) => hb,
+                Record::Call(call) if admits_at(prev, &call.stream, call.seq, call.sent_at) => {
+                    accepted += 1;
+                    let position = (call.stream.as_str(), call.seq, call.sent_at);
+                    current = Some(after_call(current, member, peer, now, position));
+                    calls.push(call.clone());
+                    continue;
+                }
+                _ => {
+                    duplicate += 1;
+                    continue;
+                }
+            };
             accepted += 1;
             current = Some(MemberRecord {
                 member: member.to_string(),
@@ -336,12 +509,33 @@ impl Registry {
                 },
                 heartbeat_secs: hb.heartbeat_secs,
                 inventory: hb.inventory.clone(),
+                call_records: current.as_ref().map_or(0, |r| r.call_records),
+                calls: hb.calls,
             });
         }
         Plan {
             accepted,
             duplicate,
             record: if accepted > 0 { current } else { None },
+            calls,
+        }
+    }
+
+    /// Note a call record the intake holds for `member`, received at
+    /// `received_at`: when the member's position is before it, the position
+    /// moves to it and the record is counted. Used when the center starts
+    /// ([`super::fleet_intake::replay`]).
+    pub fn note_stored_call(
+        &mut self,
+        member: &str,
+        received_at: DateTime<Utc>,
+        position: (&str, u64, DateTime<Utc>),
+    ) {
+        let current = self.members.get(member).cloned();
+        let (stream, seq, sent_at) = position;
+        if admits_at(current.as_ref().map(|r| &r.cursor), stream, seq, sent_at) {
+            let record = after_call(current, member, "", received_at, position);
+            self.members.insert(member.to_string(), record);
         }
     }
 
@@ -413,6 +607,7 @@ impl Registry {
                         "received_at": secs(r.received_at),
                         "peer": r.peer,
                         "heartbeats": r.heartbeats,
+                        "call_records": r.call_records,
                     },
                     "self_reported": {
                         "stream": r.cursor.stream,
@@ -420,6 +615,7 @@ impl Registry {
                         "sent_at": secs(r.cursor.sent_at),
                         "heartbeat_secs": r.heartbeat_secs,
                         "inventory": r.inventory,
+                        "calls": r.calls,
                     },
                 })
             })
@@ -576,40 +772,53 @@ fn write_sealed<'a>(
     keys: &crate::app::fleet_seal::Keys,
     records: impl Iterator<Item = &'a MemberRecord>,
 ) -> std::io::Result<crate::app::fleet_seal::LogSealer> {
-    write_sealed_reading(path, keys, records, &|staged| std::fs::read(staged))
+    let lines = records.map(|record| serde_json::to_vec(record).map_err(std::io::Error::other));
+    write_sealed_reading(
+        path,
+        keys,
+        crate::app::fleet_seal::Kind::Registry,
+        lines,
+        &|staged| std::fs::read(staged),
+    )
 }
 
-/// [`write_sealed`], with the read of the staged file as an argument:
-/// `read` returns what the disk holds at the staged path, and the store at
-/// `path` is replaced only when those bytes open and hold every record.
-fn write_sealed_reading<'a>(
+/// Write the sealed file of `kind` at `path` holding exactly `records`,
+/// with the read of the staged file as an argument: `read` returns what the
+/// disk holds at the staged path, and the file at `path` is replaced only
+/// when those bytes open and hold every record.
+///
+/// # Errors
+///
+/// A record is an error, or the staged file cannot be sealed, written,
+/// synced, read back or renamed. The file at `path` is then as it was.
+pub(super) fn write_sealed_reading(
     path: &Path,
     keys: &crate::app::fleet_seal::Keys,
-    records: impl Iterator<Item = &'a MemberRecord>,
+    kind: crate::app::fleet_seal::Kind,
+    records: impl Iterator<Item = std::io::Result<Vec<u8>>>,
     read: &dyn Fn(&Path) -> std::io::Result<Vec<u8>>,
 ) -> std::io::Result<crate::app::fleet_seal::LogSealer> {
-    use crate::app::fleet_seal::{Kind, LogSealer, system_draw};
+    use crate::app::fleet_seal::{LogSealer, system_draw};
     let name = path
         .file_name()
         .map_or_else(|| "store".into(), |n| n.to_string_lossy().into_owned());
     let staged = path.with_file_name(format!(".{name}.partial"));
     let _ = std::fs::remove_file(&staged);
     let result = (|| {
-        let (mut sealer, header) = LogSealer::new(keys.current(), Kind::Registry, &system_draw)
-            .map_err(std::io::Error::other)?;
+        let (mut sealer, header) =
+            LogSealer::new(keys.current(), kind, &system_draw).map_err(std::io::Error::other)?;
         let mut file = create_private(&staged)?;
         file.write_all(&header)?;
         let mut count = 0usize;
         for record in records {
-            let line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
-            file.write_all(&sealer.record(&line).map_err(std::io::Error::other)?)?;
+            file.write_all(&sealer.record(&record?).map_err(std::io::Error::other)?)?;
             count += 1;
         }
         file.write_all(&sealer.base_end().map_err(std::io::Error::other)?)?;
         file.sync_all()?;
-        // The store, which may still be the one an earlier release wrote in
-        // clear, is replaced only by a file that is on disk and reads back.
-        staged_reads_back(&read(&staged)?, keys, count)?;
+        // The file, which may still be a store an earlier release wrote in
+        // clear, is replaced only by one that is on disk and reads back.
+        staged_reads_back(&read(&staged)?, keys, kind, count)?;
         std::fs::rename(&staged, path)?;
         Ok(sealer)
     })();
@@ -619,19 +828,21 @@ fn write_sealed_reading<'a>(
     result
 }
 
-/// Check that the staged bytes of a rewrite open under `keys` and hold
-/// `count` records, before the staged file replaces the store.
+/// Check that the staged bytes of a rewrite open under `keys` as a file of
+/// `kind` and hold `count` records, before the staged file replaces the
+/// file it rewrites.
 ///
 /// # Errors
 ///
-/// The bytes do not open as a sealed store, or hold another number of
-/// records.
+/// The bytes do not open as a sealed file of that kind, or hold another
+/// number of records.
 fn staged_reads_back(
     bytes: &[u8],
     keys: &crate::app::fleet_seal::Keys,
+    kind: crate::app::fleet_seal::Kind,
     count: usize,
 ) -> std::io::Result<()> {
-    let log = crate::app::fleet_seal::open_log(bytes, keys, crate::app::fleet_seal::Kind::Registry)
+    let log = crate::app::fleet_seal::open_log(bytes, keys, kind)
         .map_err(|e| std::io::Error::other(format!("the staged store {e}")))?;
     if log.records.len() != count || log.torn_tail {
         return Err(std::io::Error::other(format!(
@@ -683,7 +894,7 @@ fn plaintext_records(bytes: &[u8]) -> Result<Vec<MemberRecord>, String> {
 }
 
 /// Create `path` new, readable and writable by this user only.
-fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+pub(super) fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -783,6 +994,78 @@ struct Center {
     registry: Registry,
     /// The store file.
     store: Store,
+    /// The call records the center acknowledged.
+    intake: super::fleet_intake::Intake,
+}
+
+impl Center {
+    /// The center whose store is the file `store`, with its intake beside
+    /// it, as both stand at `now`: members and call records past
+    /// `retention` are removed, and each member's position is past the
+    /// call records the intake holds. Returns the center and the members
+    /// removed.
+    ///
+    /// # Errors
+    ///
+    /// The store or the intake is refused or cannot be rewritten. The
+    /// message names the file.
+    fn open(
+        store: &Path,
+        keys: Arc<crate::app::fleet_seal::Keys>,
+        now: DateTime<Utc>,
+        retention: chrono::Duration,
+    ) -> Result<(Self, Vec<String>), String> {
+        use super::fleet_intake::{Intake, MAX_INTAKE_BYTES, path_for, replay};
+        let (mut file, records) = Store::open(store, Arc::clone(&keys))?;
+        let mut registry = Registry::from_records(records);
+        let gone = registry.expire(now, retention);
+        let (intake, stored) =
+            Intake::open(&path_for(store), keys, now, retention, MAX_INTAKE_BYTES)?;
+        replay(&mut registry, &stored);
+        file.compact(&registry)
+            .map_err(|e| format!("--store '{}': {e}", store.display()))?;
+        Ok((
+            Self {
+                registry,
+                store: file,
+                intake,
+            },
+            gone,
+        ))
+    }
+
+    /// Take `batch` from `member` at `peer`, received at `now`: the new
+    /// call records go to the intake and the member's record to the store,
+    /// each on disk before this returns, and then the registry holds what
+    /// the files hold. Returns the records accepted, the duplicates, and
+    /// the call records stored.
+    ///
+    /// # Errors
+    ///
+    /// The intake or the store could not be written. The registry is then
+    /// unchanged, so the member's next try is taken as new.
+    fn take(
+        &mut self,
+        member: &str,
+        peer: &str,
+        now: DateTime<Utc>,
+        batch: &[Record],
+    ) -> std::io::Result<(usize, usize, usize)> {
+        let mut plan = self.registry.plan_records(member, peer, now, batch);
+        // The intake first: a record it holds is a duplicate after a
+        // restart whether or not the store got the position.
+        let calls: Vec<super::fleet_intake::IntakeRecord> = std::mem::take(&mut plan.calls)
+            .into_iter()
+            .map(|call| super::fleet_intake::IntakeRecord::new(member, now, call))
+            .collect();
+        self.intake.append(&calls)?;
+        if let Some(record) = &plan.record {
+            self.store.append(record)?;
+        }
+        let counts = (plan.accepted, plan.duplicate, calls.len());
+        self.registry.commit(plan);
+        Ok(counts)
+    }
 }
 
 /// What every request handler shares.
@@ -880,21 +1163,23 @@ fn prepare(
         audience: crate::auth::AUDIENCE_API.to_string(),
     });
     let keys = store_keys(args)?;
-    let (mut store, records) = Store::open(&args.store, keys)?;
-    let mut registry = Registry::from_records(records);
-    let gone = registry.expire(Utc::now(), retention(args.retention_hours));
-    store
-        .compact(&registry)
-        .map_err(|e| format!("--store '{}': {e}", args.store.display()))?;
+    let (center, gone) = Center::open(
+        &args.store,
+        keys,
+        Utc::now(),
+        retention(args.retention_hours),
+    )?;
     tracing::info!(
-        "fleet center store '{}': {} member(s), {} past --retention-hours {} removed",
+        "fleet center store '{}': {} member(s), {} past --retention-hours {} removed; {} \
+         call record(s) in its intake",
         args.store.display(),
-        registry.records().len(),
+        center.registry.records().len(),
         gone.len(),
-        args.retention_hours
+        args.retention_hours,
+        center.intake.records()
     );
     let state = CenterState {
-        center: Arc::new(parking_lot::Mutex::new(Center { registry, store })),
+        center: Arc::new(parking_lot::Mutex::new(center)),
         verifier: Arc::new(verifier),
         limiter: Arc::new(parking_lot::Mutex::new(
             crate::output::api::RateLimiter::new(args.rate_limit_per_peer, MAX_TRACKED_PEERS),
@@ -1031,7 +1316,9 @@ async fn stop_requested() {
 /// Rewrite the store once more as the center stops.
 fn rewrite_on_exit(state: &CenterState) {
     let mut center = state.center.lock();
-    let Center { registry, store } = &mut *center;
+    let Center {
+        registry, store, ..
+    } = &mut *center;
     if let Err(e) = store.compact(registry) {
         tracing::warn!("fleet center: the store was not rewritten on the way out: {e}");
     }
@@ -1094,19 +1381,10 @@ async fn ingest(
     let peer = peer.ip().to_canonical().to_string();
     let center = Arc::clone(&state.center);
     let who = member.clone();
-    let done = tokio::task::spawn_blocking(move || {
-        let mut center = center.lock();
-        let plan = center.registry.plan(&who, &peer, now, &batch);
-        if let Some(record) = &plan.record {
-            center.store.append(record)?;
-        }
-        let counts = (plan.accepted, plan.duplicate);
-        center.registry.commit(plan);
-        Ok::<_, std::io::Error>(counts)
-    })
-    .await
-    .map_err(|_| Problem::new(StatusCode::INTERNAL_SERVER_ERROR))?;
-    let (accepted, duplicate) = done.map_err(|e| {
+    let done = tokio::task::spawn_blocking(move || center.lock().take(&who, &peer, now, &batch))
+        .await
+        .map_err(|_| Problem::new(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let (accepted, duplicate, calls) = done.map_err(|e| {
         tracing::error!("fleet center: the store could not be written: {e}");
         Problem::detailed(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1117,6 +1395,7 @@ async fn ingest(
         "member": member,
         "accepted": accepted,
         "duplicate": duplicate,
+        "calls": calls,
     })))
 }
 
@@ -1130,11 +1409,15 @@ async fn members(
     limit(&state, peer.ip())?;
     crate::output::api::verify_bearer(&state.verifier, &headers, crate::auth::SCOPE_INVENTORY)?;
     let center = state.center.lock();
-    Ok(axum::Json(center.registry.report(
-        Utc::now(),
-        state.missed,
-        state.retention_hours,
-    )))
+    let mut report = center
+        .registry
+        .report(Utc::now(), state.missed, state.retention_hours);
+    report["intake"] = serde_json::json!({
+        "call_records": center.intake.records(),
+        "bytes": center.intake.bytes(),
+        "removed": center.intake.dropped(),
+    });
+    Ok(axum::Json(report))
 }
 
 /// Log members going silent and coming back, every [`SILENCE_CHECK`]; apply
@@ -1183,10 +1466,32 @@ fn log_silence_changes(
     silent_now
 }
 
-/// Remove the members past retention, rewrite the store when anything
-/// changed, and return the members removed.
+/// Remove the call records past retention or the intake's size, and log
+/// how many went.
+fn trim_intake(intake: &mut super::fleet_intake::Intake, now: DateTime<Utc>, retention_hours: u64) {
+    match intake.trim(
+        now,
+        retention(retention_hours),
+        super::fleet_intake::MAX_INTAKE_BYTES,
+    ) {
+        Ok(0) => {}
+        Ok(removed) => tracing::info!(
+            "fleet center: {removed} call record(s) past --retention-hours {retention_hours} \
+             or the intake's size were removed"
+        ),
+        Err(e) => tracing::warn!("fleet center: the intake was not rewritten: {e}"),
+    }
+}
+
+/// Remove the members and the call records past retention, rewrite the
+/// store when anything changed, and return the members removed.
 fn apply_retention(center: &mut Center, now: DateTime<Utc>, retention_hours: u64) -> Vec<String> {
-    let Center { registry, store } = center;
+    let Center {
+        registry,
+        store,
+        intake,
+    } = center;
+    trim_intake(intake, now, retention_hours);
     let gone = registry.expire(now, retention(retention_hours));
     for member in &gone {
         tracing::info!(
@@ -1241,6 +1546,7 @@ mod tests {
             sent_at: t(sent_at)?,
             heartbeat_secs: 30,
             inventory: serde_json::json!({"node_name": "edge-a"}),
+            calls: None,
         })
     }
 
@@ -1253,7 +1559,7 @@ mod tests {
             line("s-1", 1, "2026-11-07T12:00:00Z", 30),
             line("s-1", 2, "2026-11-07T12:00:30Z", 30)
         );
-        let got = parse_batch(body.as_bytes())?;
+        let got = parse_heartbeats(body.as_bytes())?;
         assert_eq!(got.len(), 2, "two records: {got:?}");
         assert_eq!(got[1].seq, 2, "{got:?}");
         assert_eq!(got[1].stream, "s-1", "{got:?}");
@@ -1602,17 +1908,15 @@ mod tests {
     fn the_upkeep_applies_retention_to_the_registry_and_the_file() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
         let path = dir.path().join("center.store");
-        let (mut store, _) = Store::open(&path, test_keys(1))?;
-        let mut registry = Registry::default();
+        let keep = chrono::Duration::hours(72);
+        let (mut center, _) = Center::open(&path, test_keys(1), t("2026-11-01T00:00:00Z")?, keep)?;
         for (member, at) in [
             ("old", "2026-11-01T00:00:00Z"),
             ("new", "2026-11-07T11:00:00Z"),
         ] {
-            let plan = registry.plan(member, "192.0.2.1", t(at)?, &[hb("s", 1, at)?]);
-            store.append(plan.record.as_ref().ok_or("a record")?)?;
-            registry.commit(plan);
+            let batch = [Record::Heartbeat(hb("s", 1, at)?)];
+            center.take(member, "192.0.2.1", t(at)?, &batch)?;
         }
-        let mut center = Center { registry, store };
         let gone = apply_retention(&mut center, t("2026-11-07T12:00:00Z")?, 72);
         assert_eq!(gone, vec!["old".to_string()], "only the old member");
         assert_eq!(center.registry.records().len(), 1, "one member left");
@@ -1701,6 +2005,7 @@ mod behavior_tests {
             sent_at: t(sent_at)?,
             heartbeat_secs: 30,
             inventory: serde_json::json!({"node_name": "edge-a"}),
+            calls: None,
         })
     }
 
@@ -1752,12 +2057,14 @@ mod behavior_tests {
 
     /// A center state over a store in `dir`, `rate` requests per second.
     fn state(dir: &Path, rate: u32) -> Result<CenterState, TestError> {
-        let (store, records) = Store::open(&dir.join("center.store"), test_keys(1))?;
+        let (center, _) = Center::open(
+            &dir.join("center.store"),
+            test_keys(1),
+            Utc::now(),
+            chrono::Duration::hours(72),
+        )?;
         Ok(CenterState {
-            center: Arc::new(parking_lot::Mutex::new(Center {
-                registry: Registry::from_records(records),
-                store,
-            })),
+            center: Arc::new(parking_lot::Mutex::new(center)),
             verifier: Arc::new(crate::auth::TokenVerifier::new(
                 crate::auth::VerifierConfig {
                     signing_keys: vec![key().to_vec()],
@@ -2204,21 +2511,27 @@ mod behavior_tests {
         let good = std::fs::read(&path)?;
         let keys = test_keys(1);
         assert!(
-            staged_reads_back(&good, &keys, 2).is_ok(),
+            staged_reads_back(&good, &keys, crate::app::fleet_seal::Kind::Registry, 2).is_ok(),
             "the rewrite reads back"
         );
         let mut changed = good.clone();
         changed[good.len() / 2] ^= 1;
         assert!(
-            staged_reads_back(&changed, &keys, 2).is_err(),
+            staged_reads_back(&changed, &keys, crate::app::fleet_seal::Kind::Registry, 2).is_err(),
             "a changed byte"
         );
         assert!(
-            staged_reads_back(&good[..good.len() - 29], &keys, 2).is_err(),
+            staged_reads_back(
+                &good[..good.len() - 29],
+                &keys,
+                crate::app::fleet_seal::Kind::Registry,
+                2
+            )
+            .is_err(),
             "no end of the base"
         );
         assert!(
-            staged_reads_back(&good, &keys, 3).is_err(),
+            staged_reads_back(&good, &keys, crate::app::fleet_seal::Kind::Registry, 3).is_err(),
             "a record short"
         );
         Ok(())
@@ -2246,10 +2559,18 @@ mod behavior_tests {
             bytes[middle] ^= 1;
             Ok(bytes)
         };
-        let e = write_sealed_reading(&path, &test_keys(1), records.iter(), &damaged)
-            .err()
-            .map(|e| e.to_string())
-            .unwrap_or_default();
+        let e = write_sealed_reading(
+            &path,
+            &test_keys(1),
+            crate::app::fleet_seal::Kind::Registry,
+            records
+                .iter()
+                .map(|r| serde_json::to_vec(r).map_err(std::io::Error::other)),
+            &damaged,
+        )
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
         assert!(e.starts_with("the staged store "), "refused: '{e}'");
         assert_eq!(std::fs::read(&path)?, clear.as_bytes(), "the clear store");
         assert_eq!(std::fs::read_dir(dir.path())?.count(), 1, "no staged file");
@@ -2417,7 +2738,8 @@ mod behavior_tests {
     fn failure_a_record_without_an_inventory_is_refused() {
         let body = without("inventory") + "\n";
         assert!(
-            parse_batch(body.as_bytes()).is_err_and(|e| e.starts_with("line 1: not a record")),
+            parse_batch(body.as_bytes())
+                .is_err_and(|e| e == "line 1: inventory must be a JSON object"),
             "a missing field"
         );
     }
@@ -2859,6 +3181,733 @@ mod behavior_tests {
             st.center.lock().registry.records()[0].peer,
             "192.0.2.7",
             "canonical"
+        );
+        Ok(())
+    }
+
+    /// A call line as a member writes it, for the call `call_id`.
+    fn call_line(
+        stream: &str,
+        seq: u64,
+        sent_at: &str,
+        call_id: &str,
+    ) -> Result<String, TestError> {
+        Ok(crate::app::fleet_calls::call_line(
+            stream,
+            seq,
+            t(sent_at)?,
+            "failed",
+            &serde_json::json!({"call_id": call_id, "from": "sip:+12025550101@example.com"}),
+        ))
+    }
+
+    /// A call record with `change` applied to the JSON a member writes.
+    fn call_with(change: impl Fn(&mut serde_json::Map<String, serde_json::Value>)) -> String {
+        let line = call_line("s-1", 1, "2026-11-07T12:00:00Z", "a@example.com").unwrap_or_default();
+        let mut v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
+        if let Some(o) = v.as_object_mut() {
+            change(o);
+        }
+        v.to_string()
+    }
+
+    /// Why the center refuses `body`.
+    fn refusal(body: &str) -> String {
+        parse_batch(body.as_bytes()).err().unwrap_or_default()
+    }
+
+    #[test]
+    fn success_a_call_line_is_what_the_center_reads() -> Result<(), TestError> {
+        let line = call_line("s-1", 7, "2026-11-07T12:00:00.5Z", "a@example.com")?;
+        let got = parse_batch(line.as_bytes())?;
+        let want = CallRecord {
+            stream: "s-1".to_string(),
+            seq: 7,
+            sent_at: t("2026-11-07T12:00:00.5Z")?,
+            selected_by: "failed".to_string(),
+            call: serde_json::json!({"call_id": "a@example.com", "from": "sip:+12025550101@example.com"}),
+        };
+        assert_eq!(
+            got,
+            vec![Record::Call(want)],
+            "success a call line is what the center reads"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_body_of_heartbeats_and_calls_keeps_their_order() -> Result<(), TestError> {
+        let body = format!(
+            "{}\n{}{}\n",
+            record(serde_json::json!({"seq": 1})),
+            call_line("s-1", 2, "2026-11-07T12:00:01Z", "a@example.com")?,
+            record(serde_json::json!({"seq": 3})),
+        );
+        let got = parse_batch(body.as_bytes())?;
+        let kinds: Vec<bool> = got.iter().map(|r| r.call().is_some()).collect();
+        assert_eq!(
+            kinds,
+            vec![false, true, false],
+            "success a body of heartbeats and calls keeps their order"
+        );
+        assert_eq!(
+            got[1].call().map(|c| c.seq),
+            Some(2),
+            "success a body of heartbeats and calls keeps their order"
+        );
+        assert_eq!(
+            got[2].heartbeat().map(|h| h.seq),
+            Some(3),
+            "success a body of heartbeats and calls keeps their order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_call_record_without_its_call_is_refused() {
+        let body = call_with(|o| {
+            o.remove("call");
+        });
+        assert_eq!(
+            refusal(&body),
+            "line 1: call must be a JSON object",
+            "failure a call record without its call is refused"
+        );
+    }
+
+    #[test]
+    fn failure_a_call_that_is_not_an_object_is_refused() {
+        for value in [
+            serde_json::json!("text"),
+            serde_json::json!(null),
+            serde_json::json!([1]),
+        ] {
+            let body = call_with(|o| {
+                o.insert("call".to_string(), value.clone());
+            });
+            assert_eq!(
+                refusal(&body),
+                "line 1: call must be a JSON object",
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_a_call_record_must_say_what_selected_it() {
+        let long = "x".repeat(65);
+        for value in [None, Some(""), Some("has space"), Some(long.as_str())] {
+            let body = call_with(|o| {
+                o.remove("selected_by");
+                if let Some(v) = value {
+                    o.insert("selected_by".to_string(), serde_json::json!(v));
+                }
+            });
+            assert_eq!(
+                refusal(&body),
+                "line 1: selected_by must be 1 to 64 letters, digits, '.', '_' or '-'",
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_a_record_of_an_unknown_kind_names_the_two_the_center_reads() {
+        let body = record(serde_json::json!({"kind": "rollup"}));
+        assert_eq!(
+            refusal(&body),
+            "line 1: kind \"rollup\"; this center accepts \"heartbeat\" and \"call\"",
+            "failure a record of an unknown kind names the two the center reads"
+        );
+    }
+
+    #[test]
+    fn failure_a_call_record_keeps_the_rules_of_its_position() {
+        let no_seq = call_with(|o| {
+            o.insert("seq".to_string(), serde_json::json!(0));
+        });
+        assert_eq!(
+            refusal(&no_seq),
+            "line 1: seq must be 1 or more",
+            "failure a call record keeps the rules of its position"
+        );
+        let bad_time = call_with(|o| {
+            o.insert("sent_at".to_string(), serde_json::json!("yesterday"));
+        });
+        assert!(
+            refusal(&bad_time).contains("is not an RFC 3339 time"),
+            "{}",
+            refusal(&bad_time)
+        );
+        let version = call_with(|o| {
+            o.insert("schema_version".to_string(), serde_json::json!(2));
+        });
+        assert!(
+            refusal(&version).starts_with("line 1: schema_version 2;"),
+            "{}",
+            refusal(&version)
+        );
+    }
+
+    #[test]
+    fn edge_a_heartbeat_may_carry_the_members_call_counts() -> Result<(), TestError> {
+        let counts = crate::app::fleet_calls::CallCounts {
+            selected: 9,
+            dropped_by_cap: 3,
+            left_out: 1,
+            spooled: 8,
+        };
+        let with = record(serde_json::json!({"calls": counts}));
+        let got = parse_heartbeats(with.as_bytes())?;
+        assert_eq!(
+            got[0].calls,
+            Some(counts),
+            "edge a heartbeat may carry the members call counts"
+        );
+        let without = record(serde_json::json!({}));
+        assert_eq!(
+            parse_heartbeats(without.as_bytes())?[0].calls,
+            None,
+            "edge a heartbeat may carry the members call counts"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_call_counts_that_are_not_counts_refuse_the_heartbeat() {
+        let body = record(serde_json::json!({"calls": {"selected": "many"}}));
+        assert!(
+            refusal(&body).starts_with("line 1: not a record"),
+            "{}",
+            refusal(&body)
+        );
+    }
+
+    /// The call record at `seq` of stream `s`, sent at `sent_at`.
+    fn call_at(seq: u64, sent_at: &str) -> Result<Record, TestError> {
+        let line = call_line("s", seq, sent_at, &format!("call-{seq}@example.com"))?;
+        Ok(parse_batch(line.as_bytes())?.remove(0))
+    }
+
+    /// A registry that took one heartbeat of stream `s` at position 1 from
+    /// `edge-a`.
+    fn registry_with_a_heartbeat() -> Result<Registry, TestError> {
+        let mut reg = Registry::default();
+        let first = [Record::Heartbeat(hb("s", 1, "2026-11-07T12:00:00Z")?)];
+        let plan = reg.plan_records("edge-a", "192.0.2.7", t("2026-11-07T12:00:00Z")?, &first);
+        reg.commit(plan);
+        Ok(reg)
+    }
+
+    #[test]
+    fn success_a_new_call_record_moves_the_position_and_goes_to_the_intake() -> Result<(), TestError>
+    {
+        let reg = registry_with_a_heartbeat()?;
+        let batch = [
+            call_at(2, "2026-11-07T12:00:05Z")?,
+            call_at(3, "2026-11-07T12:00:06Z")?,
+        ];
+        let plan = reg.plan_records("edge-a", "192.0.2.7", t("2026-11-07T12:00:07Z")?, &batch);
+        assert_eq!(
+            (plan.accepted, plan.duplicate),
+            (2, 0),
+            "success a new call record moves the position and goes to the intake"
+        );
+        let seqs: Vec<u64> = plan.calls.iter().map(|c| c.seq).collect();
+        assert_eq!(seqs, vec![2, 3], "both go to the intake, in order");
+        let record = plan.record.ok_or("the member's record")?;
+        assert_eq!(
+            record.cursor.seq, 3,
+            "success a new call record moves the position and goes to the intake"
+        );
+        assert_eq!(
+            record.cursor.sent_at,
+            t("2026-11-07T12:00:06Z")?,
+            "success a new call record moves the position and goes to the intake"
+        );
+        assert_eq!(
+            record.call_records, 2,
+            "success a new call record moves the position and goes to the intake"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_replayed_call_record_is_a_duplicate_and_not_for_the_intake()
+    -> Result<(), TestError> {
+        let mut reg = registry_with_a_heartbeat()?;
+        let batch = [call_at(2, "2026-11-07T12:00:05Z")?];
+        let now = t("2026-11-07T12:00:07Z")?;
+        let first = reg.plan_records("edge-a", "192.0.2.7", now, &batch);
+        reg.commit(first);
+        let again = reg.plan_records("edge-a", "192.0.2.7", now, &batch);
+        assert_eq!(
+            (again.accepted, again.duplicate),
+            (0, 1),
+            "failure a replayed call record is a duplicate and not for the intake"
+        );
+        assert!(
+            again.calls.is_empty() && again.record.is_none(),
+            "{again:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_batch_that_repeats_a_call_record_stores_it_once() -> Result<(), TestError> {
+        let reg = registry_with_a_heartbeat()?;
+        let batch = [
+            call_at(2, "2026-11-07T12:00:05Z")?,
+            call_at(2, "2026-11-07T12:00:05Z")?,
+        ];
+        let plan = reg.plan_records("edge-a", "192.0.2.7", t("2026-11-07T12:00:07Z")?, &batch);
+        assert_eq!(
+            (plan.accepted, plan.duplicate, plan.calls.len()),
+            (1, 1, 1),
+            "edge a batch that repeats a call record stores it once"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_call_record_does_not_count_as_a_heartbeat() -> Result<(), TestError> {
+        let reg = registry_with_a_heartbeat()?;
+        let batch = [call_at(2, "2026-11-07T12:00:05Z")?];
+        let plan = reg.plan_records("edge-a", "198.51.100.9", t("2026-11-07T13:00:00Z")?, &batch);
+        let record = plan.record.ok_or("the member's record")?;
+        assert_eq!(
+            record.heartbeats, 1,
+            "edge a call record does not count as a heartbeat"
+        );
+        assert_eq!(
+            record.received_at,
+            t("2026-11-07T12:00:00Z")?,
+            "silence is counted from heartbeats"
+        );
+        assert_eq!(record.peer, "192.0.2.7", "and so is the address");
+        assert_eq!(
+            record.inventory,
+            serde_json::json!({"node_name": "edge-a"}),
+            "edge a call record does not count as a heartbeat"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_call_record_before_any_heartbeat_makes_a_member_with_no_inventory()
+    -> Result<(), TestError> {
+        let reg = Registry::default();
+        let now = t("2026-11-07T12:00:07Z")?;
+        let plan = reg.plan_records(
+            "edge-new",
+            "192.0.2.7",
+            now,
+            &[call_at(5, "2026-11-07T12:00:05Z")?],
+        );
+        assert_eq!(
+            plan.calls.len(),
+            1,
+            "edge a call record before any heartbeat makes a member with no inventory"
+        );
+        let record = plan.record.ok_or("the member's record")?;
+        assert_eq!(
+            (record.heartbeats, record.call_records),
+            (0, 1),
+            "edge a call record before any heartbeat makes a member with no inventory"
+        );
+        assert_eq!(
+            record.inventory,
+            serde_json::json!({}),
+            "edge a call record before any heartbeat makes a member with no inventory"
+        );
+        assert_eq!(
+            record.heartbeat_secs,
+            crate::app::fleet_member::DEFAULT_HEARTBEAT_SECS,
+            "edge a call record before any heartbeat makes a member with no inventory"
+        );
+        assert_eq!(
+            record.received_at, now,
+            "edge a call record before any heartbeat makes a member with no inventory"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_heartbeat_after_calls_keeps_their_count_and_brings_the_members_own()
+    -> Result<(), TestError> {
+        let mut reg = registry_with_a_heartbeat()?;
+        let now = t("2026-11-07T12:00:40Z")?;
+        let calls = reg.plan_records(
+            "edge-a",
+            "192.0.2.7",
+            now,
+            &[call_at(2, "2026-11-07T12:00:05Z")?],
+        );
+        reg.commit(calls);
+        let counts = crate::app::fleet_calls::CallCounts {
+            selected: 4,
+            spooled: 4,
+            ..Default::default()
+        };
+        let mut beat = hb("s", 3, "2026-11-07T12:00:30Z")?;
+        beat.calls = Some(counts);
+        let plan = reg.plan_records("edge-a", "192.0.2.7", now, &[Record::Heartbeat(beat)]);
+        let record = plan.record.clone().ok_or("the member's record")?;
+        assert_eq!(
+            (record.heartbeats, record.call_records),
+            (2, 1),
+            "success a heartbeat after calls keeps their count and brings the members own"
+        );
+        assert_eq!(
+            record.calls,
+            Some(counts),
+            "success a heartbeat after calls keeps their count and brings the members own"
+        );
+        reg.commit(plan);
+        let report = reg.report(now, 3, 72);
+        let row = &report["members"][0];
+        assert_eq!(row["verified"]["call_records"], 1, "{row}");
+        assert_eq!(row["self_reported"]["calls"]["selected"], 4, "{row}");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_store_record_written_before_call_records_reads_with_none() -> Result<(), TestError> {
+        let old = serde_json::json!({
+            "member": "edge-a", "received_at": "2026-11-07T12:00:00Z", "peer": "192.0.2.7",
+            "heartbeats": 3, "heartbeat_secs": 30, "inventory": {},
+            "cursor": {"stream": "s", "seq": 3, "sent_at": "2026-11-07T12:00:00Z"},
+        });
+        let record: MemberRecord = serde_json::from_value(old)?;
+        assert_eq!(
+            (record.call_records, record.calls),
+            (0, None),
+            "edge a store record written before call records reads with none"
+        );
+        Ok(())
+    }
+
+    /// The center in `dir` under key 1 as it stands at `now`.
+    fn center_at(dir: &Path, now: &str) -> Result<Center, TestError> {
+        let keep = chrono::Duration::hours(72);
+        Ok(Center::open(&dir.join("center.store"), test_keys(1), t(now)?, keep)?.0)
+    }
+
+    /// The Call-IDs in the intake of the center in `dir`.
+    fn intake_ids(dir: &Path) -> Result<Vec<String>, TestError> {
+        let path = crate::app::fleet_intake::path_for(&dir.join("center.store"));
+        let bytes = std::fs::read(path)?;
+        let log = crate::app::fleet_seal::open_log(
+            &bytes,
+            &test_keys(1),
+            crate::app::fleet_seal::Kind::Intake,
+        )
+        .map_err(|e| e.to_string())?;
+        let mut ids = Vec::new();
+        for line in &log.records {
+            let v: serde_json::Value = serde_json::from_slice(line)?;
+            ids.push(
+                v["call"]["call_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
+        }
+        Ok(ids)
+    }
+
+    #[test]
+    fn success_taken_call_records_are_in_the_intake_before_the_answer() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut center = center_at(dir.path(), "2026-11-07T12:00:00Z")?;
+        let batch = [
+            Record::Heartbeat(hb("s", 1, "2026-11-07T12:00:00Z")?),
+            call_at(2, "2026-11-07T12:00:05Z")?,
+            call_at(3, "2026-11-07T12:00:06Z")?,
+        ];
+        let got = center.take("edge-a", "192.0.2.7", t("2026-11-07T12:00:07Z")?, &batch)?;
+        assert_eq!(
+            got,
+            (3, 0, 2),
+            "success taken call records are in the intake before the answer"
+        );
+        assert_eq!(
+            intake_ids(dir.path())?,
+            vec!["call-2@example.com", "call-3@example.com"],
+            "success taken call records are in the intake before the answer"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_replayed_batch_of_call_records_is_not_stored_twice() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut center = center_at(dir.path(), "2026-11-07T12:00:00Z")?;
+        let batch = [
+            call_at(1, "2026-11-07T12:00:05Z")?,
+            call_at(2, "2026-11-07T12:00:06Z")?,
+        ];
+        let now = t("2026-11-07T12:00:07Z")?;
+        assert_eq!(
+            center.take("edge-a", "192.0.2.7", now, &batch)?,
+            (2, 0, 2),
+            "failure a replayed batch of call records is not stored twice"
+        );
+        assert_eq!(
+            center.take("edge-a", "192.0.2.7", now, &batch)?,
+            (0, 2, 0),
+            "failure a replayed batch of call records is not stored twice"
+        );
+        assert_eq!(
+            intake_ids(dir.path())?.len(),
+            2,
+            "failure a replayed batch of call records is not stored twice"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_replay_after_a_restart_is_not_stored_twice() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let batch = [call_at(1, "2026-11-07T12:00:05Z")?];
+        let now = t("2026-11-07T12:00:07Z")?;
+        let mut center = center_at(dir.path(), "2026-11-07T12:00:00Z")?;
+        center.take("edge-a", "192.0.2.7", now, &batch)?;
+        drop(center);
+        let mut again = center_at(dir.path(), "2026-11-07T12:01:00Z")?;
+        assert_eq!(
+            again.take("edge-a", "192.0.2.7", now, &batch)?,
+            (0, 1, 0),
+            "failure a replay after a restart is not stored twice"
+        );
+        assert_eq!(
+            intake_ids(dir.path())?,
+            vec!["call-1@example.com"],
+            "failure a replay after a restart is not stored twice"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_record_stored_before_a_crash_noted_its_position_is_still_a_duplicate()
+    -> Result<(), TestError> {
+        // The center stopped after the intake held the record and before the
+        // store held the member's new position.
+        let dir = tempfile::tempdir()?;
+        let batch = [call_at(1, "2026-11-07T12:00:05Z")?];
+        let now = t("2026-11-07T12:00:07Z")?;
+        let mut center = center_at(dir.path(), "2026-11-07T12:00:00Z")?;
+        let call = batch[0].call().cloned().ok_or("a call")?;
+        center
+            .intake
+            .append(&[crate::app::fleet_intake::IntakeRecord::new(
+                "edge-a", now, call,
+            )])?;
+        drop(center);
+        let mut again = center_at(dir.path(), "2026-11-07T12:01:00Z")?;
+        assert_eq!(
+            again.registry.records()[0].call_records,
+            1,
+            "counted from the intake"
+        );
+        assert_eq!(
+            again.take("edge-a", "192.0.2.7", now, &batch)?,
+            (0, 1, 0),
+            "edge a record stored before a crash noted its position is still a duplicate"
+        );
+        assert_eq!(
+            intake_ids(dir.path())?.len(),
+            1,
+            "edge a record stored before a crash noted its position is still a duplicate"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_position_from_the_intake_is_in_the_store_after_the_start() -> Result<(), TestError>
+    {
+        let dir = tempfile::tempdir()?;
+        let now = t("2026-11-07T12:00:07Z")?;
+        let mut center = center_at(dir.path(), "2026-11-07T12:00:00Z")?;
+        let call = call_at(4, "2026-11-07T12:00:05Z")?
+            .call()
+            .cloned()
+            .ok_or("a call")?;
+        center
+            .intake
+            .append(&[crate::app::fleet_intake::IntakeRecord::new(
+                "edge-a", now, call,
+            )])?;
+        drop(center);
+        drop(center_at(dir.path(), "2026-11-07T12:01:00Z")?);
+        let (_, records) = Store::open(&dir.path().join("center.store"), test_keys(1))?;
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(
+            (records[0].cursor.seq, records[0].call_records),
+            (4, 1),
+            "edge the position from the intake is in the store after the start"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_retention_removes_old_call_records_and_keeps_new_ones() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut center = center_at(dir.path(), "2026-11-01T00:00:00Z")?;
+        center.take(
+            "edge-a",
+            "192.0.2.7",
+            t("2026-11-01T00:00:00Z")?,
+            &[call_at(1, "2026-11-01T00:00:00Z")?],
+        )?;
+        center.take(
+            "edge-a",
+            "192.0.2.7",
+            t("2026-11-03T12:00:00Z")?,
+            &[call_at(2, "2026-11-03T12:00:00Z")?],
+        )?;
+        apply_retention(&mut center, t("2026-11-04T00:00:01Z")?, 72);
+        assert_eq!(
+            center.intake.records(),
+            1,
+            "edge retention removes old call records and keeps new ones"
+        );
+        assert_eq!(
+            intake_ids(dir.path())?,
+            vec!["call-2@example.com"],
+            "edge retention removes old call records and keeps new ones"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn success_the_ingest_answers_with_the_call_records_it_stored() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let tok = bearer(&token(
+            "edge-a",
+            crate::auth::SCOPE_FLEET_REPORT,
+            3600,
+            crate::auth::AUDIENCE_API,
+        ));
+        let body = format!(
+            "{}{}",
+            call_line("s", 1, "2026-11-07T12:00:05Z", "a@example.com")?,
+            call_line("s", 2, "2026-11-07T12:00:06Z", "b@example.com")?
+        );
+        let (status, text) = call(
+            &st,
+            "POST",
+            "/v1/fleet/ingest",
+            Some(&tok),
+            body.clone().into_bytes(),
+        )
+        .await?;
+        let v: serde_json::Value = serde_json::from_str(&text)?;
+        assert_eq!(
+            (status, &v["accepted"], &v["duplicate"], &v["calls"]),
+            (
+                200,
+                &serde_json::json!(2),
+                &serde_json::json!(0),
+                &serde_json::json!(2)
+            ),
+            "{text}"
+        );
+        let (_, text) = call(
+            &st,
+            "POST",
+            "/v1/fleet/ingest",
+            Some(&tok),
+            body.into_bytes(),
+        )
+        .await?;
+        let v: serde_json::Value = serde_json::from_str(&text)?;
+        assert_eq!(
+            (&v["accepted"], &v["duplicate"], &v["calls"]),
+            (
+                &serde_json::json!(0),
+                &serde_json::json!(2),
+                &serde_json::json!(0)
+            ),
+            "{text}"
+        );
+        assert_eq!(
+            intake_ids(dir.path())?,
+            vec!["a@example.com", "b@example.com"],
+            "success the ingest answers with the call records it stored"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn success_the_members_answer_counts_the_intake() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let st = state(dir.path(), 0)?;
+        let tok = bearer(&token(
+            "edge-a",
+            crate::auth::SCOPE_FLEET_REPORT,
+            3600,
+            crate::auth::AUDIENCE_API,
+        ));
+        let body = call_line("s", 1, "2026-11-07T12:00:05Z", "a@example.com")?;
+        call(
+            &st,
+            "POST",
+            "/v1/fleet/ingest",
+            Some(&tok),
+            body.into_bytes(),
+        )
+        .await?;
+        let reader = bearer(&token(
+            "ops",
+            crate::auth::SCOPE_INVENTORY,
+            3600,
+            crate::auth::AUDIENCE_API,
+        ));
+        let (status, text) =
+            call(&st, "GET", "/v1/fleet/members", Some(&reader), Vec::new()).await?;
+        let v: serde_json::Value = serde_json::from_str(&text)?;
+        assert_eq!(status, 200, "{text}");
+        assert_eq!(v["intake"]["call_records"], 1, "{text}");
+        assert!(
+            v["intake"]["bytes"].as_u64().is_some_and(|b| b > 100),
+            "{text}"
+        );
+        assert_eq!(v["intake"]["removed"], 0, "{text}");
+        assert_eq!(v["members"][0]["verified"]["call_records"], 1, "{text}");
+        Ok(())
+    }
+
+    /// When the intake cannot take a record, the member's position does not
+    /// move: the record is refused whole, and taken as new when the member
+    /// sends it again.
+    #[cfg(unix)]
+    #[test]
+    fn failure_a_record_the_intake_could_not_take_leaves_the_position_where_it_was()
+    -> Result<(), TestError> {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = tempfile::tempdir()?;
+        let batch = [call_at(1, "2026-11-07T12:00:05Z")?];
+        let now = t("2026-11-07T12:00:07Z")?;
+        let mut center = center_at(dir.path(), "2026-11-07T12:00:00Z")?;
+        let intake = crate::app::fleet_intake::path_for(&dir.path().join("center.store"));
+        std::fs::set_permissions(&intake, std::fs::Permissions::from_mode(0o400))?;
+        assert!(
+            center.take("edge-a", "192.0.2.7", now, &batch).is_err(),
+            "the intake cannot be appended to"
+        );
+        assert!(
+            center.registry.records().is_empty(),
+            "no position was noted"
+        );
+        drop(center);
+        std::fs::set_permissions(&intake, std::fs::Permissions::from_mode(0o600))?;
+        let mut again = center_at(dir.path(), "2026-11-07T12:01:00Z")?;
+        assert_eq!(
+            again.take("edge-a", "192.0.2.7", now, &batch)?,
+            (1, 0, 1),
+            "the same record is new: neither file held it"
         );
         Ok(())
     }

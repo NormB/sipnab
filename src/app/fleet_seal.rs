@@ -189,6 +189,8 @@ pub enum Kind {
     Registry,
     /// Batches the center acknowledged and has not yet filed.
     Intake,
+    /// A delivery waiting in a member's spool.
+    Spool,
 }
 
 impl Kind {
@@ -197,6 +199,7 @@ impl Kind {
         match self {
             Self::Registry => 1,
             Self::Intake => 2,
+            Self::Spool => 3,
         }
     }
 
@@ -205,6 +208,7 @@ impl Kind {
         match self {
             Self::Registry => "registry",
             Self::Intake => "intake",
+            Self::Spool => "spool",
         }
     }
 
@@ -213,6 +217,7 @@ impl Kind {
         match byte {
             1 => Some(Self::Registry),
             2 => Some(Self::Intake),
+            3 => Some(Self::Spool),
             _ => None,
         }
     }
