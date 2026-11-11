@@ -1692,8 +1692,8 @@ under the message name the cause it found:
 |---|---|---|
 | From a shell, as your user | The binary has no file capabilities, or an upgrade replaced it and cleared them | `sudo sipnab --setup-caps` |
 | Under systemd with `NoNewPrivileges=true` | `NoNewPrivileges` stops file capabilities taking effect, so `setcap` cannot help | `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` in the unit ([Write a unit of your own](@/docs/run-as-a-service.md#write-a-unit-of-your-own)) |
-| In the container image, newer than 0.5.244 | The container's bounding set lacks `CAP_NET_RAW` (`--cap-drop ALL`, or a policy that drops it), or a shell starts sipnab under `--security-opt no-new-privileges` | `docker run --cap-add NET_RAW --cap-add NET_ADMIN`, with sipnab as the entrypoint ([Capture live traffic in the container](@/docs/install.md#capture-live-traffic-in-the-container)) |
-| In the container image, 0.5.244 or earlier, or in another container as a non-root user | The sipnab binary has no file capabilities, so its user gets no capabilities, even with `--cap-add` | A newer tag, or `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
+| In the container image, newer than 0.5.245 | The container's bounding set lacks `CAP_NET_RAW` (`--cap-drop ALL`, or a policy that drops it), or a shell starts sipnab under `--security-opt no-new-privileges` | `docker run --cap-add NET_RAW --cap-add NET_ADMIN`, with sipnab as the entrypoint ([Capture live traffic in the container](@/docs/install.md#capture-live-traffic-in-the-container)) |
+| In the container image, 0.5.245 or earlier, or in another container as a non-root user | The sipnab binary has no file capabilities, so its user gets no capabilities, even with `--cap-add` | A newer tag, or `docker run --user root`; sipnab drops to `nobody` after it opens the capture |
 | In a container or unit whose bounding set lacks `CAP_NET_RAW` | Nothing inside the process, root included, can gain a capability missing from its bounding set | `docker run --cap-add=NET_RAW`, or `CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN` in the unit |
 
 Each cause has its own first line after `Permission denied on '<dev>'.`:
@@ -1797,7 +1797,7 @@ to read the `WWW-Authenticate` challenge MCP adds to a `401`.
   default level, so this line on the sender is the evidence.
 - **A HEP sender in the container image stops with `no system CA bundle
   found; name the collector's issuer with --hep-tls-ca`.** Images up to
-  0.5.244 have no CA bundle. Pull a newer tag, which carries Debian's bundle,
+  0.5.245 have no CA bundle. Pull a newer tag, which carries Debian's bundle,
   or mount the issuer's certificate and name it with `--hep-tls-ca`.
 
 [API TLS](@/docs/api.md#api-tls), [MCP TLS](@/docs/mcp-deploy.md#mcp-tls) and

@@ -5284,6 +5284,65 @@ started. The member does not report, and the capture goes on. The line follows
 
 **What to do:** Run `chmod 600` on the token file, and restart the run.
 
+### `[fleet] call_push {:?} is not one of "exceptions", "all", "none"`
+
+`[fleet] call_push` holds another value than the three it takes.
+
+**What to do:** Set it to `exceptions`, `all` or `none`, in lower case.
+[Push call records to the center](@/docs/fleet.md#push-call-records-to-the-center)
+says what each sends.
+
+**Exit code:** 1.
+
+### `` [fleet] call_push {:?} needs [fleet] spool_key_file: call records wait on disk only in sealed files. Create a key with `sipnab fleet keygen --out FILE` ``
+
+`[fleet] call_push` is `exceptions` or `all`, and the member has no
+`[fleet] spool_key_file`. A member never writes a call record to its disk in clear, so it
+does not push records without a key to seal them under.
+
+**What to do:** Run `sipnab fleet keygen --out FILE` on the member, and set
+`[fleet] spool_key_file` to that file.
+
+**Exit code:** 1.
+
+### `[fleet] exception_max_per_sec {max_per_sec} is outside 1 to {MAX_EXCEPTION_MAX_PER_SEC}`
+
+`[fleet] exception_max_per_sec` is 0 or over 10000.
+
+**What to do:** Give a number of records a second from 1 to 10000. The
+default is 10. To push no call, set `[fleet] call_push = "none"`.
+
+**Exit code:** 1.
+
+### `{label} '{shown}' can be read or written by other users (mode {:04o}); chmod 600 it`
+
+The file `[fleet] spool_key_file` names has group or other permission bits.
+The key in it seals the call records that wait in the member's spool. The
+member does not report. The capture goes on.
+
+**What to do:** Run `chmod 600` on the file and restart the member. If
+someone else may have read it, create a new key and name that one.
+
+### `fleet member: call records were not written to the spool: {e}`
+
+A warning. The member selected ended calls and could not seal them into
+its spool: the directory does not exist, the disk is full, or the system
+random source failed. Those calls are not sent. The capture goes on.
+
+**What to do:** Check that `[fleet] spool_dir` exists, is writable by the
+sipnab user and has free space.
+
+### `fleet member: sealed layer: {name}: {why}; it is moved to {FAILED_DIR}/ and not sent`
+
+A warning. A delivery of call records in the spool did not open: something
+changed the file or cut it short, or the spool key is not the one that
+sealed it. The member moves it to `failed/` in the spool and sends nothing
+of it.
+
+**What to do:** If you replaced `[fleet] spool_key_file`, put the earlier
+key back to send what waits, then replace it when the spool is empty.
+Otherwise delete the file in `failed/`.
+
 ### `fleet member: not reporting: {e}`
 
 The member could not start: it could not create or read its spool, load the
@@ -5332,11 +5391,13 @@ interval.
 **What to do:** Free space on the spool's file system, or fix its
 permissions.
 
-### `fleet member: the spool holds [fleet] spool_max_files {}; the oldest {dropped} heartbeat(s) were dropped`
+### `fleet member: the spool holds [fleet] spool_max_files {}; the oldest {dropped} file(s) were dropped`
 
 A warning. The center has been away long enough to fill the spool, and the
-member removed its oldest heartbeats to stay under the cap. A newer heartbeat
-carries everything an older one did.
+member removed its oldest files to stay under the cap, heartbeats and
+deliveries of call records alike. A newer heartbeat carries everything an
+older one did. The member does not send the call records of a removed
+delivery.
 
 **What to do:** Bring the center back. Raise `[fleet] spool_max_files` to keep
 more of the history while it is away.
@@ -5503,6 +5564,53 @@ sipnab ships.
 
 **What to do:** Report it as a defect, with the member's version.
 
+### `the intake '{shown}' {why}`
+
+`sipnab fleet serve` found its intake, the file `<store>.intake` that holds
+the call records it acknowledged, readable or writable by other users, or
+not a regular file of the user it runs as.
+
+**What to do:** Run `chmod 600` on the file, and make its owner the user
+the center runs as.
+
+**Exit code:** 2.
+
+### `the intake '{shown}': {e}`
+
+The center could not read its intake, or could not write it again at
+start. The text after the path is the operating system's error.
+
+**What to do:** Check that the directory of `--store` is writable by the
+center's user and has free space.
+
+**Exit code:** 2.
+
+### `the intake '{shown}': the last record is incomplete, from a write the center did not finish; it is dropped`
+
+A warning at start. The center stopped while it was writing a call record,
+so it never acknowledged that record. The member still holds it and sends
+it again.
+
+**What to do:** Nothing.
+
+### `the intake '{}': {first} call record(s) past the retention or the intake's size were removed`
+
+A warning at start. The intake held call records older than
+`--retention-hours`, or more than 64 MiB of them, and the center removed
+the oldest.
+
+**What to do:** Nothing, if that is the retention you want. Otherwise raise
+`--retention-hours`, or lower the members' `[fleet] exception_max_per_sec`.
+
+### `fleet center: the intake was not rewritten: {e}`
+
+A warning. The center could not rewrite its intake to remove records past
+the retention or the intake's size. The intake is as it was, and the
+center tries again a minute later.
+
+**What to do:** Check that the directory of `--store` is writable and has
+free space.
+
 ### `fleet center: the store could not be written: {e}`
 
 The center could not append a heartbeat to its store, for the system's reason
@@ -5551,12 +5659,14 @@ number. It reads version 1, and accepted none of the batch.
 **What to do:** Run the same sipnab version on the center as on the members,
 or a newer one on the center.
 
-### `kind {:?}; this center accepts {KIND_HEARTBEAT:?}`
+### `kind {:?}; this center accepts {KIND_HEARTBEAT:?} and {:?}`
 
-The center's answer to a record whose `kind` is not `heartbeat`, after the
-line number. It accepted none of the batch.
+The center's answer to a record whose `kind` is not `heartbeat` or `call`,
+after the line number. It accepted none of the batch.
 
-**What to do:** Send only heartbeats to this center's version.
+**What to do:** Send only heartbeats and call records to this center's
+version. A member newer than the center may send a kind the center does not
+read yet: upgrade the center first.
 
 ### `stream must be 1 to {MAX_ID_LEN} letters, digits, '.', '_' or '-'`
 
@@ -5706,9 +5816,9 @@ Part of the permission refusal above: `/proc/self/status` said `NoNewPrivs: 1` w
 
 ### `Permission denied on '{target}'. This process runs in a container ({marker}) as a user that holds no capture capability. In a container a non-root user gets a capability only through file capabilities on the binary (cap_net_raw,cap_net_admin+p), which the sipnab image's binary carries and this one does not. Run that image, or start this container as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
 
-sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user holds no capability: the binary it runs carries no file capabilities. The binary of the sipnab container image newer than 0.5.244 carries `cap_net_raw,cap_net_admin+p`, and its user `sipnab` captures with `--cap-add`.
+sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user holds no capability: the binary it runs carries no file capabilities. The binary of the sipnab container image newer than 0.5.245 carries `cap_net_raw,cap_net_admin+p`, and its user `sipnab` captures with `--cap-add`.
 
-**What to do:** Run a sipnab image newer than 0.5.244 with `docker run --cap-add NET_RAW --cap-add NET_ADMIN`. For any other image, start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens. See [Capture live traffic in the container](@/docs/install.md#capture-live-traffic-in-the-container).
+**What to do:** Run a sipnab image newer than 0.5.245 with `docker run --cap-add NET_RAW --cap-add NET_ADMIN`. For any other image, start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens. See [Capture live traffic in the container](@/docs/install.md#capture-live-traffic-in-the-container).
 
 **Exit code:** 1.
 

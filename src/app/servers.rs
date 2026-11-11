@@ -608,6 +608,8 @@ pub fn start_servers(
                 meter: capture_meter.clone(),
                 interfaces: cli.capture_args.device.clone().into_iter().collect(),
                 started: std::time::Instant::now(),
+                dialogs: Arc::clone(dialog_store),
+                streams: Arc::clone(stream_store),
             },
         )
         .map_err(|e| anyhow::anyhow!("the fleet member did not start: {e}"))?;

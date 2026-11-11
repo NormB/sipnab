@@ -418,8 +418,10 @@ member, and answers "which members are there, what do they run, and which went
 silent" on `GET /v1/fleet/members`, without asking any member.
 
 Use it when the controller cannot reach every member, such as members behind
-NAT, or to learn that a member stopped without polling it. It is phase P1 of
-the fleet center: heartbeats only, no traffic. A capture run becomes a member
+NAT, or to learn that a member stopped without polling it. A member can also
+push a record of each call that ended badly, as
+[Push call records to the center](#push-call-records-to-the-center) shows. A
+capture run becomes a member
 with `--fleet-report-url` (or `[fleet] report_url`), as
 [Make an instance a fleet member](#make-an-instance-a-fleet-member) shows.
 Step 3 sends one heartbeat by hand, in the format a member sends.
@@ -634,6 +636,162 @@ with its REST API on `127.0.0.1:18080`, reporting every 5 seconds.
 - **`the spool holds [fleet] spool_max_files`.** The center was away long
   enough to fill the spool, and the member dropped the oldest heartbeats. A newer
   heartbeat says everything an older one did.
+
+### Push call records to the center
+
+**Purpose.** A member can send the center one record for each call that
+ended badly, so the center holds the calls an operator asks about without
+anyone opening a session on the member. The record's `call` is the member's
+own answer to `GET /v1/dialogs/{call_id}`, built by the same code, so the
+center and the member cannot disagree about a call. The record leaves out
+only the capture's identity, which the REST API stamps on each answer.
+
+The outputs below come from a run on 2026-11-10 on one host, with a
+development build after 0.5.243: a center on `127.0.0.1:18444` and `edge-a`
+reading a capture file that holds one call that got a `486` and one call
+that the callee answered and that then ended.
+
+**Before you start.**
+
+- **A center that takes call records.** Upgrade the center to this release
+  first. An older center refuses a call record with `400`, and the member
+  moves that delivery to `failed/` in its spool.
+- **A fleet member that already reports heartbeats**, as
+  [Make an instance a fleet member](#make-an-instance-a-fleet-member) sets up.
+- **A key file on the member**, apart from every other key. Call records
+  hold numbers and URIs. While they wait for the center they are on the
+  member's disk only in sealed files, under this key.
+- **Other systems.** Nothing changes on OpenSIPS, Kamailio, Homer or any HEP
+  collector. The member uses the connection to the center that its
+  heartbeats already use.
+- **Room at the center.** The center keeps the records in one sealed file
+  beside its store, `<store>.intake`, for `--retention-hours`, and holds at
+  most 64 MiB there (`MAX_INTAKE_BYTES`); past that the oldest records go
+  first. A later release files them into Parquet.
+
+**Steps.**
+
+1. **[member]** Create the spool key. The file gets mode `0600`:
+
+   ```bash
+   sipnab fleet keygen --out /etc/sipnab/fleet/spool.key
+   ```
+
+   ```text
+   spool.key: key id 0728832701dd1d86
+   ```
+
+2. **[member]** Name the key in the member's configuration and restart the
+   member. With a spool key and no `call_push`, the member pushes
+   `exceptions`:
+
+   ```toml
+   [fleet]
+   spool_key_file = "/etc/sipnab/fleet/spool.key"
+   call_push = "exceptions"
+   exception_max_per_sec = 10
+   ```
+
+   - `call_push = "exceptions"` sends a call that ended on a final error
+     response, or whose media diagnosis found one-way audio, no media, a
+     NAT mismatch, an asymmetry between the two directions, late media or
+     any other finding. The record says which in `selected_by`.
+   - `call_push = "all"` sends every ended call. `call_push = "none"` sends
+     none.
+   - `exception_max_per_sec` (default 10, `DEFAULT_EXCEPTION_MAX_PER_SEC`;
+     at most 10000, `MAX_EXCEPTION_MAX_PER_SEC`) caps the exceptions. The
+     member keeps the unused allowance of at most 10 seconds
+     (`CAP_BURST_SECS`), counts every call the cap refused, and does not
+     send that call later. `all` is not capped.
+
+   The member's start line names the rule:
+
+   ```text
+   INFO sipnab::app::fleet_member: fleet member reporting to http://127.0.0.1:18444/ every 5 s, spool '/var/lib/sipnab/fleet-spool', call records: exceptions
+   ```
+
+The member looks at its dialogs every 5 seconds. It sends a call once the
+call has ended and has stood unchanged for 5 seconds, so the record is the
+answer the call settled on. When a call changes after the member sent it,
+such as one whose `BYE` arrives late, the member sends it again as it then
+stands. One delivery holds at most 500 records (`MAX_DELIVERY_RECORDS`) and
+2 MiB (`MAX_DELIVERY_BYTES`). The member deletes a delivery when the center
+acknowledges it.
+
+**Verify.**
+
+- **[center]** `GET /v1/fleet/members` counts what the center stored and
+  what the member says it did. `verified.call_records` is the center's own
+  count for the member. `self_reported.calls` is the member's: `selected`
+  calls passed the rule and the cap, `dropped_by_cap` did not pass the cap,
+  `left_out` were too large for a delivery, and the member wrote `spooled`
+  of them for delivery:
+
+  ```text
+  "intake": {"bytes": 944, "call_records": 1, "removed": 0}
+  "verified": {"call_records": 1, "heartbeats": 3, "peer": "127.0.0.1", "received_at": "2026-11-10T15:44:12Z"}
+  "calls": {"dropped_by_cap": 0, "left_out": 0, "selected": 1, "spooled": 1}
+  ```
+
+  The capture held two ended calls. The member sent the one that got a `486`.
+
+- **[center]** The intake is a sealed file. Its first four bytes are `SNFS`:
+
+  ```bash
+  head -c 4 /var/lib/sipnab/center.store.intake; echo
+  ```
+
+  ```text
+  SNFS
+  ```
+
+- **[member]** After the center acknowledged a delivery, the spool holds no
+  file that ends in `.sealed`.
+
+**What it covers and what it does not.**
+
+- A record the center acknowledged is on the center's disk before the
+  acknowledgment, and survives a `kill -9` of the center. The center counts
+  a record that the member sends again as a duplicate and does not store it
+  twice, also after a restart.
+- A member keeps no database. A call the rule did not select, or one the
+  cap refused, is at the center only as a count.
+- The summary of a call measured over three checked-in captures is 583,
+  1,283 and 2,592 bytes of JSON. Raw SIP, RTCP and rtpengine control
+  messages are not in the record.
+- When the spool is past `[fleet] spool_max_files`, the oldest file goes
+  first, a delivery of call records like a heartbeat.
+- A record's `sent_at` and its `call` are the member's claim. The member's
+  name comes from its token, which the center verified.
+
+**Troubleshoot.**
+
+- **`needs [fleet] spool_key_file`.** `call_push` asks for records and the
+  member has no key to seal them under. The run stops at its start. Create
+  the key and name it, as in steps 1 and 2:
+
+  ```text
+  [fleet] call_push "all" needs [fleet] spool_key_file: call records wait on disk only in sealed files. Create a key with `sipnab fleet keygen --out FILE`
+  ```
+
+- **`can be read or written by other users`**, naming the spool key file.
+  The member does not report until you run `chmod 600` on the file and
+  restart it. The capture goes on.
+- **`sealed layer:`, then a file name, in the member's log.** A delivery in
+  the spool did not open: something changed the file, or the spool key is
+  not the one that sealed it. The member moves it to `failed/` and never
+  sends it. Restore the key that sealed the file to send it, or delete the
+  file.
+- **`verified.call_records` stays at 0.** Check the member's start line. It
+  says `call records: none` when the member has no spool key or `call_push`
+  is `none`. Under `exceptions`, a capture with no failed or degraded call
+  sends nothing.
+- **`dropped_by_cap` grows.** The member sees more exceptions than
+  `exception_max_per_sec` lets through. Raise the cap, or read the calls on
+  the member, which still holds them in memory.
+- **The center logs `call record(s) past --retention-hours`.** The intake
+  removed its oldest records, by age or because it held 64 MiB. Lower the
+  members' cap, or shorten `--retention-hours`.
 
 ### Step 3: send a heartbeat by hand
 

@@ -1088,7 +1088,7 @@ The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/
 | `edge` | The newest commit on `main`, which can be ahead of every release |
 | `sha-<commit>` | The image built from that commit |
 
-Until the release after 0.5.244, `latest` followed `main`, as `edge` does
+Until the release after 0.5.245, `latest` followed `main`, as `edge` does
 now. The first release built by the changed workflow moves `latest` to a
 release.
 
@@ -1103,7 +1103,7 @@ docker buildx imagetools inspect "ghcr.io/normb/sipnab:$TAG"
 ```
 
 The output lists a `Platform: linux/amd64` and a `Platform: linux/arm64`
-manifest. Releases up to 0.5.244 are `linux/amd64` only: on an arm64 host
+manifest. Releases up to 0.5.245 are `linux/amd64` only: on an arm64 host
 `docker pull` of one of them fails with `no matching manifest for
 linux/arm64/v8 in the manifest list entries`. Use a newer tag, or a
 [release tarball](#download-a-release-binary-yourself) or a package.
@@ -1142,7 +1142,7 @@ The image runs as the unprivileged user `sipnab`, and that user captures:
 
 **Prerequisites:**
 
-- An image newer than 0.5.244. In 0.5.244 and earlier the user `sipnab` cannot
+- An image newer than 0.5.245. In 0.5.245 and earlier the user `sipnab` cannot
   capture whatever `--cap-add` grants, and only `--user root` works (see
   Troubleshooting below).
 - `--net=host`, to capture the host's interfaces rather than the container's
@@ -1205,7 +1205,7 @@ The output and the values above came from an arm64 image built from this
 
   - The container runs with `--cap-drop ALL`, or another policy that
     leaves `CAP_NET_RAW` out of the bounding set. Add `--cap-add NET_RAW`.
-  - The image is 0.5.244 or earlier, whose binary has no file capabilities.
+  - The image is 0.5.245 or earlier, whose binary has no file capabilities.
     Use a newer tag, or `--user root`: started as root, sipnab opens the
     capture and then drops to `nobody`.
   - A shell starts sipnab (`--entrypoint sh`)
