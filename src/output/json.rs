@@ -1273,6 +1273,7 @@ mod caveat_tests {
                 late_recovered: 0,
                 late_evicted: 0,
                 late_still_held: 0,
+                ..Default::default()
             }),
         };
         let v = opened_nothing.to_json();
@@ -1296,6 +1297,7 @@ mod caveat_tests {
                 late_recovered: 0,
                 late_evicted: 0,
                 late_still_held: 0,
+                ..Default::default()
             }),
         };
         let v = mostly_working.to_json();

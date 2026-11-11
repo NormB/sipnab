@@ -226,59 +226,143 @@ fn plain_auth_check(
 /// authentication (`has_auth`) or a non-empty source allowlist
 /// (`allowlist_len > 0`). A loopback bind is always permitted.
 ///
-/// Loopback is determined purely syntactically (`hep_bind_is_loopback`):
-/// a hostname is not resolved and counts as non-loopback, so an unguarded
-/// hostname bind is refused (fail closed).
+/// [`classify_hep_bind`] decides what `bind_addr` is, from its syntax alone,
+/// and each class has its own answer:
+///
+/// * a literal loopback address is accepted.
+/// * a literal routable address is accepted with a secret or an allowlist,
+///   and refused without either.
+/// * a host name with a port is not resolved, so it cannot be accepted as
+///   loopback. It is accepted with a secret or an allowlist and refused
+///   without either (fail closed), in words that say a name is not resolved.
+/// * a value that is not an address is refused whatever else is configured:
+///   a secret or an allowlist constrains who may send, and neither makes the
+///   value something a socket can bind.
 ///
 /// # Arguments
 ///
-/// * `bind_addr` — the listener bind address (host:port form).
+/// * `bind_addr` — the listener bind address, as the operator gave it.
 /// * `has_auth` — whether a receiver-side shared secret is configured.
 /// * `allowlist_len` — number of configured source CIDR ranges.
 ///
 /// # Errors
 ///
-/// Returns a human-readable refusal message when `bind_addr` is
-/// non-loopback and neither `has_auth` nor a non-empty allowlist applies.
+/// Returns a human-readable refusal message when `bind_addr` is not an
+/// address, or is not a literal loopback address while neither `has_auth`
+/// nor a non-empty allowlist applies.
 pub fn enforce_hep_bind_policy(
     bind_addr: &str,
     has_auth: bool,
     allowlist_len: usize,
 ) -> Result<(), String> {
-    if has_auth || allowlist_len > 0 {
-        return Ok(());
+    let guarded = has_auth || allowlist_len > 0;
+    match classify_hep_bind(bind_addr) {
+        // Quoted with `{:?}`: the value is anything the operator typed, and
+        // may be empty or hold a space or a control character.
+        HepBindClass::NotAnAddress => Err(format!(
+            "HEP listener refuses to start: --hep-listen {bind_addr:?} is not an address. \
+             Give it as IP:PORT, for example 127.0.0.1:9060."
+        )),
+        HepBindClass::Loopback => Ok(()),
+        HepBindClass::Routable | HepBindClass::Hostname if guarded => Ok(()),
+        HepBindClass::Hostname => Err(format!(
+            "HEP listener refuses to start: --hep-listen {bind_addr} names a host, and \
+             sipnab does not resolve a name to decide whether it is loopback. Neither a \
+             shared secret (--hep-auth / --hep-auth-file) nor a source allowlist \
+             (--hep-allow) was configured. Use a literal address such as 127.0.0.1:9060, \
+             add an allowlist, or set a secret."
+        )),
+        HepBindClass::Routable => Err(format!(
+            "HEP listener refuses to start: --hep-listen {bind_addr} is non-loopback but \
+             neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist \
+             (--hep-allow) was configured. Bind to 127.0.0.1, add an allowlist, or set a \
+             secret to accept HEP from a routable address."
+        )),
     }
-    if hep_bind_is_loopback(bind_addr) {
-        return Ok(());
-    }
-    Err(format!(
-        "HEP listener refuses to start: --hep-listen {bind_addr} is non-loopback but \
-         neither a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist \
-         (--hep-allow) was configured. Bind to 127.0.0.1, add an allowlist, or set a \
-         secret to accept HEP from a routable address."
-    ))
 }
 
-/// Whether `bind_addr` is a loopback address, decided **purely
-/// syntactically**. Only a literal IP (in `IP:port` form, including the
-/// bracketed IPv6 form) is classified; a hostname is *not* resolved.
+/// What the text given to `--hep-listen` is, decided from its syntax alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HepBindClass {
+    /// A literal loopback address with a port: `127.0.0.1:9060`,
+    /// `[::1]:9060`.
+    Loopback,
+    /// A literal address with a port that is not loopback: `192.0.2.1:9060`,
+    /// `0.0.0.0:9060`.
+    Routable,
+    /// A host name with a port: `localhost:9060`. sipnab does not resolve
+    /// it, so it is not known to be loopback.
+    Hostname,
+    /// Neither of the forms above: `x`, the empty string, `0`, `:9060`,
+    /// `127.0.0.1` with no port.
+    NotAnAddress,
+}
+
+/// The class of `bind_addr`, the one rule the bind policy and the listener's
+/// startup warnings both read.
 ///
-/// A DNS lookup inside this security decision could block startup or be
-/// steered by a spoofed record, so a non-literal address is treated
-/// conservatively as non-loopback (fail closed). Callers that bind to a
-/// hostname get a startup warning suggesting a literal (see [`capture_hep`]).
-fn hep_bind_is_loopback(bind_addr: &str) -> bool {
-    match bind_addr.parse::<std::net::SocketAddr>() {
-        Ok(addr) => addr.ip().is_loopback(),
-        Err(_) => false,
+/// The rule is syntactic. No name is resolved: a DNS lookup inside this
+/// security decision could block startup or be steered by a spoofed record.
+///
+/// 1. A value the standard library parses as a socket address (`IP:PORT`,
+///    with an IPv6 address in brackets, port 0 to 65535) is a literal. It is
+///    [`HepBindClass::Loopback`] when the address is a loopback address and
+///    [`HepBindClass::Routable`] otherwise. Port 0 asks the system for a
+///    free port and is a port like any other here.
+/// 2. Any other value is split at its last colon into a host and a port. It
+///    is a [`HepBindClass::Hostname`] when the port is ASCII digits only
+///    with a value of 0 to 65535, and the host holds only ASCII letters,
+///    digits, `-`, `.` and `_`, with at least one letter.
+/// 3. Everything else is [`HepBindClass::NotAnAddress`]. That covers a value
+///    with no colon, an empty host or port, a port out of range, an IPv6
+///    address without brackets, and a host of digits and dots only, which is
+///    an IPv4 address that did not parse and not a name.
+#[must_use]
+pub fn classify_hep_bind(bind_addr: &str) -> HepBindClass {
+    if let Ok(literal) = bind_addr.parse::<std::net::SocketAddr>() {
+        return if literal.ip().is_loopback() {
+            HepBindClass::Loopback
+        } else {
+            HepBindClass::Routable
+        };
+    }
+    let Some((host, port)) = bind_addr.rsplit_once(':') else {
+        return HepBindClass::NotAnAddress;
+    };
+    let port_is_a_port =
+        !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) && port.parse::<u16>().is_ok();
+    let host_is_a_name = host.bytes().any(|b| b.is_ascii_alphabetic())
+        && host
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_'));
+    if port_is_a_port && host_is_a_name {
+        HepBindClass::Hostname
+    } else {
+        HepBindClass::NotAnAddress
     }
 }
 
-/// Whether `bind_addr` is a literal socket address (`IP:port`, including the
-/// bracketed IPv6 form) rather than a hostname. Purely syntactic — it never
-/// performs name resolution.
-fn hep_bind_is_ip_literal(bind_addr: &str) -> bool {
-    bind_addr.parse::<std::net::SocketAddr>().is_ok()
+/// The address a bound listener names in its log lines: the one its socket
+/// reports, which carries the port the system assigned when the operator
+/// asked for port 0 and the address a host name resolved to.
+///
+/// # Arguments
+///
+/// * `local` — what the socket's `local_addr()` returned.
+/// * `configured` — the listen address as the operator gave it, named only
+///   when the socket could not report its own.
+fn bound_addr_text(local: std::io::Result<std::net::SocketAddr>, configured: &str) -> String {
+    local.map_or_else(|_| configured.to_string(), |addr| addr.to_string())
+}
+
+/// The line a listener logs when it stops.
+///
+/// # Arguments
+///
+/// * `bound` — the address the listener bound, from [`bound_addr_text`].
+/// * `received` — how many packets it received.
+fn listener_finished_line(bound: &str, received: u64) -> String {
+    format!("HEP listener on {bound} finished: {received} packets received")
 }
 
 // ── Per-peer rate-limit ergonomics ───────────────────────────────────
@@ -2558,7 +2642,7 @@ struct HepStreamShared<'a, 'o> {
     config: &'a CaptureConfig,
     /// When the listener began, for `--duration`.
     start: Instant,
-    /// The listener's address as the operator gave it, for log lines.
+    /// The address the listener bound, for log lines.
     bind_addr: &'a str,
 }
 
@@ -3200,11 +3284,13 @@ fn capture_hep_stream(
         let _ = ready.send(Ok(()));
     }
 
-    let actual_addr = listener
-        .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| bind_addr.to_string());
-    tracing::info!("HEP listener started on {actual_addr} ({})", opts.transport);
+    // Every line logged from here on names the address the socket bound, not
+    // the configured text: with port 0 the system assigns the port, and the
+    // configured text would name ":0" (TH-SMALL-DRIFT). The configured name
+    // is shadowed so no later line can reach it.
+    let actual_addr = bound_addr_text(listener.local_addr(), bind_addr);
+    let bind_addr = actual_addr.as_str();
+    tracing::info!("HEP listener started on {bind_addr} ({})", opts.transport);
 
     let shared = HepStreamShared {
         ingest: parking_lot::Mutex::new(HepIngest::new(opts, roster)),
@@ -3280,8 +3366,8 @@ fn capture_hep_stream(
     });
 
     tracing::info!(
-        "HEP listener on {bind_addr} finished: {} packets received",
-        shared.received.load(Ordering::Relaxed)
+        "{}",
+        listener_finished_line(bind_addr, shared.received.load(Ordering::Relaxed))
     );
     match fatal {
         Some(e) => Err(e),
@@ -3657,7 +3743,11 @@ fn warn_on_unverified_bind(bind_addr: &str, opts: &HepListenerOpts<'_>) {
     // treated as routable. enforce_hep_bind_policy already fail-closes it
     // when no auth or allowlist is set; when it is allowed, warn and suggest a
     // literal so the operator knows the loopback shortcut did not apply.
-    if !hep_bind_is_ip_literal(bind_addr) {
+    // The class comes from the function the policy reads, so the two cannot
+    // disagree about what the value is. A value that is not an address does
+    // not reach here: the preflight refused it.
+    let class = classify_hep_bind(bind_addr);
+    if class == HepBindClass::Hostname {
         tracing::warn!(
             "HEP listen address '{bind_addr}' is not a literal IP; sipnab does not resolve \
              it to decide loopback vs routable (a DNS lookup in a security check could block \
@@ -3667,7 +3757,7 @@ fn warn_on_unverified_bind(bind_addr: &str, opts: &HepListenerOpts<'_>) {
     }
     if opts.auth_key.is_some() {
         tracing::info!("HEP receiver authentication active: packets must carry a matching key");
-    } else if !hep_bind_is_loopback(bind_addr) {
+    } else if class != HepBindClass::Loopback {
         tracing::warn!(
             "HEP listener on {bind_addr} is non-loopback and unauthenticated — the inner \
              src/dst addresses a sender asserts are trusted verbatim; prefer --hep-auth."
@@ -3742,12 +3832,12 @@ fn capture_hep_udp(start: HepListenerStart<'_, '_>, tx: PacketTx) -> Result<()> 
     let mut ingest = HepIngest::new(opts, roster);
 
     // Log the actual bound address: with port 0 the OS assigns an ephemeral
-    // port, so logging `bind_addr` would print ":0" (mirrors the REST API).
-    let actual_addr = socket
-        .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| bind_addr.to_string());
-    tracing::info!("HEP listener started on {actual_addr}");
+    // port, so logging the configured text would print ":0" (mirrors the REST
+    // API). Every line logged from here on names it, and the configured name
+    // is shadowed so no later line can reach it (TH-SMALL-DRIFT).
+    let actual_addr = bound_addr_text(socket.local_addr(), bind_addr);
+    let bind_addr = actual_addr.as_str();
+    tracing::info!("HEP listener started on {bind_addr}");
 
     loop {
         if let Some(stop) = listener_stop(config, count, start) {
@@ -3781,7 +3871,7 @@ fn capture_hep_udp(start: HepListenerStart<'_, '_>, tx: PacketTx) -> Result<()> 
         }
     }
 
-    tracing::info!("HEP listener on {bind_addr} finished: {count} packets received");
+    tracing::info!("{}", listener_finished_line(bind_addr, count));
     Ok(())
 }
 
@@ -9173,10 +9263,26 @@ mod tests {
     /// loopback; routable literals are not. No DNS resolution happens.
     #[test]
     fn hep_bind_loopback_classifies_literals() -> Result<(), TestError> {
-        assert!(hep_bind_is_loopback("127.0.0.1:9060"));
-        assert!(hep_bind_is_loopback("[::1]:9060"));
-        assert!(!hep_bind_is_loopback("0.0.0.0:9060"));
-        assert!(!hep_bind_is_loopback("192.0.2.1:9060"));
+        assert_eq!(
+            classify_hep_bind("127.0.0.1:9060"),
+            HepBindClass::Loopback,
+            "IPv4 loopback"
+        );
+        assert_eq!(
+            classify_hep_bind("[::1]:9060"),
+            HepBindClass::Loopback,
+            "IPv6 loopback"
+        );
+        assert_eq!(
+            classify_hep_bind("0.0.0.0:9060"),
+            HepBindClass::Routable,
+            "the wildcard address is not loopback"
+        );
+        assert_eq!(
+            classify_hep_bind("192.0.2.1:9060"),
+            HepBindClass::Routable,
+            "a routable literal"
+        );
         Ok(())
     }
 
@@ -9185,12 +9291,11 @@ mod tests {
     /// `enforce_hep_bind_policy` therefore fail-closes it without auth/allowlist.
     #[test]
     fn hep_bind_hostname_is_conservatively_non_loopback() -> Result<(), TestError> {
-        assert!(
-            !hep_bind_is_loopback("localhost:9060"),
-            "a hostname must not be resolved and must count as non-loopback"
+        assert_eq!(
+            classify_hep_bind("localhost:9060"),
+            HepBindClass::Hostname,
+            "a hostname must not be resolved and must not count as loopback"
         );
-        assert!(!hep_bind_is_ip_literal("localhost:9060"));
-        assert!(hep_bind_is_ip_literal("127.0.0.1:9060"));
         // Unguarded hostname bind is refused (fail closed), same as any other
         // non-loopback address.
         assert!(
@@ -9200,6 +9305,489 @@ mod tests {
         // With auth it is permitted (the warning about the non-literal is a
         // startup log, not a refusal).
         assert!(enforce_hep_bind_policy("localhost:9060", true, 0).is_ok());
+        Ok(())
+    }
+
+    // ── What the `--hep-listen` text is (HEP-LISTEN-NOT-AN-ADDRESS-MESSAGE) ──
+
+    /// The three values the report named. None holds a host and a port.
+    const REPORTED_NOT_ADDRESSES: [&str; 3] = ["x", "", "0"];
+
+    /// Values one edit away from an address, each missing a part or carrying
+    /// one too many.
+    const MALFORMED_NEIGHBORS: [&str; 16] = [
+        ":9060",
+        "127.0.0.1",
+        "127.0.0.1:",
+        "127.0.0.1:99999",
+        "[::1]",
+        "host:port:extra",
+        "host:9060:extra",
+        " ",
+        "localhost:",
+        "localhost:65536",
+        "localhost:+80",
+        "localhost: 9060",
+        "::1:9060",
+        "256.0.0.1:9060",
+        "a b:9060",
+        "127.0.0.1:9060 ",
+    ];
+
+    /// The refusal of a value that is not an address, as the policy words it.
+    fn not_an_address_refusal(value: &str) -> String {
+        format!(
+            "HEP listener refuses to start: --hep-listen {value:?} is not an address. \
+             Give it as IP:PORT, for example 127.0.0.1:9060."
+        )
+    }
+
+    #[test]
+    fn hep_bind_class_of_a_literal_loopback_address() -> Result<(), TestError> {
+        for value in [
+            "127.0.0.1:9060",
+            "[::1]:9060",
+            "127.0.0.1:0",
+            "127.255.255.254:65535",
+        ] {
+            assert_eq!(
+                classify_hep_bind(value),
+                HepBindClass::Loopback,
+                "{value:?} is a literal loopback address with a port"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hep_bind_class_of_a_literal_routable_address() -> Result<(), TestError> {
+        for value in [
+            "192.0.2.1:9060",
+            "0.0.0.0:9060",
+            "0.0.0.0:0",
+            "[2001:db8::1]:9060",
+            "[::]:9060",
+        ] {
+            assert_eq!(
+                classify_hep_bind(value),
+                HepBindClass::Routable,
+                "{value:?} is a literal address that is not loopback"
+            );
+        }
+        Ok(())
+    }
+
+    /// A name is classed from its spelling. Nothing is resolved, so
+    /// `localhost` is a host name and not a loopback address.
+    #[test]
+    fn hep_bind_class_of_a_host_name_with_a_port() -> Result<(), TestError> {
+        for value in [
+            "localhost:9060",
+            "collector.example.com:9060",
+            "sipnab_collector:9060",
+            "hep-1.example.com.:9060",
+            "LOCALHOST:65535",
+            "localhost:0",
+            "x:1",
+        ] {
+            assert_eq!(
+                classify_hep_bind(value),
+                HepBindClass::Hostname,
+                "{value:?} is a host name with a port"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hep_bind_class_of_the_reported_values_is_not_an_address() -> Result<(), TestError> {
+        for value in REPORTED_NOT_ADDRESSES {
+            assert_eq!(
+                classify_hep_bind(value),
+                HepBindClass::NotAnAddress,
+                "{value:?} holds no host and port"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hep_bind_class_of_a_malformed_neighbor_is_not_an_address() -> Result<(), TestError> {
+        for value in MALFORMED_NEIGHBORS {
+            assert_eq!(
+                classify_hep_bind(value),
+                HepBindClass::NotAnAddress,
+                "{value:?} is not IP:PORT and not HOST:PORT"
+            );
+        }
+        Ok(())
+    }
+
+    /// The reported case: the refusal says the value is not an address and
+    /// shows the form, and does not describe the value as a routable address.
+    #[test]
+    fn a_value_that_is_not_an_address_is_refused_as_such() -> Result<(), TestError> {
+        for value in REPORTED_NOT_ADDRESSES {
+            let refusal = enforce_hep_bind_policy(value, false, 0)
+                .err()
+                .ok_or_else(|| format!("{value:?} was accepted"))?;
+            assert_eq!(
+                refusal,
+                not_an_address_refusal(value),
+                "the refusal of {value:?}"
+            );
+            assert!(
+                !refusal.contains("non-loopback"),
+                "{value:?} is not an address, so it is not a non-loopback one: {refusal}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A secret or an allowlist constrains who may send. Neither makes a
+    /// value an address, so the refusal is the same with them.
+    #[test]
+    fn a_value_that_is_not_an_address_is_refused_with_a_secret_or_an_allowlist()
+    -> Result<(), TestError> {
+        for value in REPORTED_NOT_ADDRESSES.iter().chain(&MALFORMED_NEIGHBORS) {
+            for (has_auth, allowlist_len) in [(false, 0), (true, 0), (false, 1), (true, 3)] {
+                let refusal = enforce_hep_bind_policy(value, has_auth, allowlist_len)
+                    .err()
+                    .ok_or_else(|| {
+                        format!(
+                            "{value:?} was accepted (secret {has_auth}, allowlist {allowlist_len})"
+                        )
+                    })?;
+                assert_eq!(
+                    refusal,
+                    not_an_address_refusal(value),
+                    "the refusal of {value:?} (secret {has_auth}, allowlist {allowlist_len})"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// A host name with no secret and no allowlist stays refused, and the
+    /// refusal says why a name cannot be accepted as loopback.
+    #[test]
+    fn a_host_name_without_a_secret_or_an_allowlist_is_refused_in_its_own_words()
+    -> Result<(), TestError> {
+        for value in ["localhost:9060", "collector.example.com:9060"] {
+            let refusal = enforce_hep_bind_policy(value, false, 0)
+                .err()
+                .ok_or_else(|| format!("{value:?} was accepted with nothing guarding it"))?;
+            assert_eq!(
+                refusal,
+                format!(
+                    "HEP listener refuses to start: --hep-listen {value} names a host, and \
+                     sipnab does not resolve a name to decide whether it is loopback. Neither \
+                     a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist \
+                     (--hep-allow) was configured. Use a literal address such as \
+                     127.0.0.1:9060, add an allowlist, or set a secret."
+                ),
+                "the refusal of the host name {value:?}"
+            );
+            assert!(
+                !refusal.contains("is non-loopback"),
+                "sipnab did not decide that {value:?} is non-loopback: {refusal}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_host_name_with_a_secret_or_an_allowlist_is_accepted() -> Result<(), TestError> {
+        for (has_auth, allowlist_len) in [(true, 0), (false, 1), (true, 2)] {
+            assert_eq!(
+                enforce_hep_bind_policy("collector.example.com:9060", has_auth, allowlist_len),
+                Ok(()),
+                "a guarded host name binds (secret {has_auth}, allowlist {allowlist_len})"
+            );
+        }
+        Ok(())
+    }
+
+    /// The refusal of a literal routable address is the text it had before
+    /// the other classes got words of their own.
+    #[test]
+    fn a_literal_routable_address_keeps_its_refusal_text() -> Result<(), TestError> {
+        for value in ["192.0.2.1:9060", "0.0.0.0:9060", "[2001:db8::1]:9060"] {
+            assert_eq!(
+                enforce_hep_bind_policy(value, false, 0),
+                Err(format!(
+                    "HEP listener refuses to start: --hep-listen {value} is non-loopback but \
+                     neither a shared secret (--hep-auth / --hep-auth-file) nor a source \
+                     allowlist (--hep-allow) was configured. Bind to 127.0.0.1, add an \
+                     allowlist, or set a secret to accept HEP from a routable address."
+                )),
+                "the refusal of the routable address {value:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Port 0 asks the system for a free port. It is a port, so a literal
+    /// address with it is classed by its address alone.
+    #[test]
+    fn port_zero_with_a_literal_address_is_classed_by_the_address() -> Result<(), TestError> {
+        for value in ["127.0.0.1:0", "[::1]:0"] {
+            assert_eq!(
+                enforce_hep_bind_policy(value, false, 0),
+                Ok(()),
+                "{value:?} is loopback and needs no secret"
+            );
+        }
+        assert_eq!(
+            enforce_hep_bind_policy("0.0.0.0:0", false, 1),
+            Ok(()),
+            "a routable address with port 0 binds behind an allowlist"
+        );
+        let refusal = enforce_hep_bind_policy("0.0.0.0:0", false, 0)
+            .err()
+            .ok_or("0.0.0.0:0 was accepted with nothing guarding it")?;
+        assert!(
+            refusal.contains("--hep-listen 0.0.0.0:0 is non-loopback"),
+            "0.0.0.0:0 is an address, and a routable one: {refusal}"
+        );
+        Ok(())
+    }
+
+    /// A listener started without planning applies the same rule before it
+    /// binds: with a secret set, `x` used to pass the policy and fail in the
+    /// bind with the resolver's error.
+    #[test]
+    fn a_listener_given_a_value_that_is_not_an_address_refuses_before_it_binds()
+    -> Result<(), TestError> {
+        for value in ["x", "", "0", "127.0.0.1"] {
+            let (tx, _rx) = crate::capture::channel::packet_channel(1);
+            let (ready_tx, ready_rx) = crossbeam_channel::bounded(1);
+            let opts = keyed_opts(right_key(), Duration::from_secs(30));
+            let refused = capture_hep(value, &CaptureConfig::default(), tx, &opts, Some(ready_tx))
+                .err()
+                .ok_or_else(|| format!("a listener on {value:?} started"))?;
+            assert_eq!(
+                refused.to_string(),
+                not_an_address_refusal(value),
+                "what the listener returns for {value:?}"
+            );
+            assert_eq!(
+                ready_rx.recv_timeout(Duration::from_secs(5))?,
+                Err(not_an_address_refusal(value)),
+                "what the listener reports to the thread that awaits it for {value:?}"
+            );
+        }
+        Ok(())
+    }
+
+    /// What a listener on `bind_addr` logs about how far it can trust its
+    /// senders, with a shared secret (`keyed`) or with an allowlist only.
+    fn bind_warnings(bind_addr: &str, keyed: bool) -> Result<String, TestError> {
+        let allow = [CidrRange::parse("192.0.2.0/24").map_err(|e| format!("cidr: {e:?}"))?];
+        let opts = if keyed {
+            keyed_opts(right_key(), Duration::from_secs(30))
+        } else {
+            unkeyed_allowlisted_opts(&allow)
+        };
+        Ok(crate::test_utils::capture_logs(
+            tracing::Level::INFO,
+            || {
+                warn_on_unverified_bind(bind_addr, &opts);
+            },
+        ))
+    }
+
+    /// The startup warnings read the class the policy reads. A literal
+    /// loopback address draws neither warning.
+    #[test]
+    fn a_literal_loopback_listener_draws_no_bind_warning() -> Result<(), TestError> {
+        for bind_addr in ["127.0.0.1:9060", "[::1]:9060", "127.0.0.1:0"] {
+            let logs = bind_warnings(bind_addr, false)?;
+            assert!(
+                !logs.contains("is not a literal IP") && !logs.contains("non-loopback"),
+                "{bind_addr} is a literal loopback address:\n{logs}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A literal routable address with no secret is warned as unauthenticated
+    /// and is not described as a name.
+    #[test]
+    fn a_literal_routable_listener_without_a_secret_is_warned() -> Result<(), TestError> {
+        for bind_addr in ["192.0.2.1:9060", "0.0.0.0:9060"] {
+            let logs = bind_warnings(bind_addr, false)?;
+            assert!(
+                logs.contains(&format!(
+                    "HEP listener on {bind_addr} is non-loopback and unauthenticated"
+                )),
+                "{bind_addr} is routable and has no secret:\n{logs}"
+            );
+            assert!(
+                !logs.contains("is not a literal IP"),
+                "{bind_addr} is a literal address:\n{logs}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A host name is warned as a value sipnab did not resolve, with or
+    /// without a secret, and as unauthenticated only without one.
+    #[test]
+    fn a_host_name_listener_is_warned_that_the_name_is_not_resolved() -> Result<(), TestError> {
+        let unkeyed = bind_warnings("collector.example.com:9060", false)?;
+        assert!(
+            unkeyed.contains("HEP listen address 'collector.example.com:9060' is not a literal IP"),
+            "a host name is not resolved:\n{unkeyed}"
+        );
+        assert!(
+            unkeyed.contains("is non-loopback and unauthenticated"),
+            "a host name with no secret is not known to be loopback:\n{unkeyed}"
+        );
+        let keyed = bind_warnings("collector.example.com:9060", true)?;
+        assert!(
+            keyed.contains("is not a literal IP"),
+            "the secret does not make the name a literal address:\n{keyed}"
+        );
+        assert!(
+            !keyed.contains("unauthenticated"),
+            "a listener with a secret is authenticated:\n{keyed}"
+        );
+        Ok(())
+    }
+
+    // ── The address a bound listener logs (TH-SMALL-DRIFT) ───────────────
+
+    #[test]
+    fn the_finished_line_names_the_bound_address_and_the_count() -> Result<(), TestError> {
+        assert_eq!(
+            listener_finished_line("127.0.0.1:40123", 7),
+            "HEP listener on 127.0.0.1:40123 finished: 7 packets received",
+            "the line a listener logs when it stops"
+        );
+        assert_eq!(
+            listener_finished_line("[::1]:9060", 0),
+            "HEP listener on [::1]:9060 finished: 0 packets received",
+            "the same line for a listener that received nothing"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_bound_listener_logs_the_address_the_socket_reports() -> Result<(), TestError> {
+        assert_eq!(
+            bound_addr_text(Ok("127.0.0.1:40123".parse()?), "127.0.0.1:0"),
+            "127.0.0.1:40123",
+            "the bound port, not the 0 that asked for one"
+        );
+        assert_eq!(
+            bound_addr_text(Ok("[::1]:40123".parse()?), "localhost:0"),
+            "[::1]:40123",
+            "the bound address, not the name that was resolved"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_listener_whose_socket_reports_no_address_logs_the_configured_text() -> Result<(), TestError>
+    {
+        assert_eq!(
+            bound_addr_text(
+                Err(std::io::Error::from(std::io::ErrorKind::NotConnected)),
+                "127.0.0.1:0"
+            ),
+            "127.0.0.1:0",
+            "the configured text is all there is to name"
+        );
+        Ok(())
+    }
+
+    /// Run a listener on `127.0.0.1:0` on this thread until a short
+    /// `--duration` stops it, and return what it logged at INFO and above.
+    ///
+    /// On this thread because `capture_logs` records the calling thread only.
+    /// The port is not known to the test in advance: the system picks it, and
+    /// the log is where the listener says which one it got.
+    fn log_of_a_listener_on_port_zero(
+        transport: HepTransport,
+        silence: Duration,
+    ) -> Result<String, TestError> {
+        let (tx, _rx) = crate::capture::channel::packet_channel(8);
+        let config = CaptureConfig {
+            duration: Some(Duration::from_millis(400)),
+            ..CaptureConfig::default()
+        };
+        let opts = HepListenerOpts {
+            transport,
+            ..keyed_opts(right_key(), silence)
+        };
+        let mut result = None;
+        let logs = crate::test_utils::capture_logs(tracing::Level::INFO, || {
+            result = Some(capture_hep("127.0.0.1:0", &config, tx, &opts, None));
+        });
+        result
+            .ok_or("the listener did not run")?
+            .map_err(|e| format!("the listener failed: {e:#}"))?;
+        Ok(logs)
+    }
+
+    /// The address in the listener's "started on" line.
+    fn started_address(logs: &str) -> Result<std::net::SocketAddr, TestError> {
+        let marker = "HEP listener started on ";
+        let rest = logs
+            .split_once(marker)
+            .map(|(_, rest)| rest)
+            .ok_or_else(|| format!("no {marker:?} line in:\n{logs}"))?;
+        let address = rest.split_whitespace().next().ok_or("an address")?;
+        Ok(address.parse()?)
+    }
+
+    /// Fails unless every "HEP listener on" line in `logs` names `bound`, and
+    /// the finished line is among them.
+    fn every_listener_line_names(logs: &str, bound: std::net::SocketAddr) -> Result<(), TestError> {
+        assert_ne!(bound.port(), 0, "the system assigned a port:\n{logs}");
+        let finished = listener_finished_line(&bound.to_string(), 0);
+        assert!(
+            logs.lines().any(|line| line.ends_with(&finished)),
+            "no line ends with {finished:?} in:\n{logs}"
+        );
+        for line in logs.lines().filter(|l| l.contains("HEP listener on ")) {
+            assert!(
+                line.contains(&format!("HEP listener on {bound}")),
+                "a line logged after the bind names another address than {bound}: {line}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_udp_listener_on_port_zero_logs_the_port_it_bound_when_it_finishes() -> Result<(), TestError>
+    {
+        let logs = log_of_a_listener_on_port_zero(HepTransport::Udp, Duration::from_secs(30))?;
+        every_listener_line_names(&logs, started_address(&logs)?)
+    }
+
+    #[test]
+    fn a_tcp_listener_on_port_zero_logs_the_port_it_bound_when_it_finishes() -> Result<(), TestError>
+    {
+        let logs = log_of_a_listener_on_port_zero(HepTransport::Tcp, Duration::from_secs(30))?;
+        every_listener_line_names(&logs, started_address(&logs)?)
+    }
+
+    /// The silence warning is logged after the bind, so it names the bound
+    /// port too.
+    #[test]
+    fn a_listener_on_port_zero_names_the_port_it_bound_in_its_silence_warning()
+    -> Result<(), TestError> {
+        for transport in [HepTransport::Udp, HepTransport::Tcp] {
+            let logs = log_of_a_listener_on_port_zero(transport, Duration::from_millis(50))?;
+            let bound = started_address(&logs)?;
+            assert!(
+                logs.contains(&format!("HEP listener on {bound}: no packets for ")),
+                "the {transport} listener's silence warning names {bound}:\n{logs}"
+            );
+            every_listener_line_names(&logs, bound)?;
+        }
         Ok(())
     }
 

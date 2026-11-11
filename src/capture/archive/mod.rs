@@ -1200,6 +1200,18 @@ struct Checkpoint {
     /// `entries`: what a failed trial met is not charged to the entry cap,
     /// or every wrong password would bring a 7z closer to it.
     entries: usize,
+    /// `used`: the bytes a failed trial inflated are returned to the budget.
+    ///
+    /// The inflation ceiling bounds the output KEPT from one input, and a
+    /// rolled-back trial keeps none: its files are deleted. Without this,
+    /// several wrong passwords on a large archive reached the ceiling before
+    /// the right one was tried (ARCHIVE-TRIAL-INFLATION-COUNT). The work
+    /// stays bounded: each trial alone is still cut off at the ceiling, and
+    /// the number of trials is the number of passwords given. A trial that
+    /// itself reaches the ceiling is not rolled back. It is reported as
+    /// [`Stop::InflationCap`] and ends the walk, because a member that large
+    /// reaches the ceiling under the right password as well.
+    used: u64,
 }
 
 impl<'l> Walker<'l> {
@@ -1254,6 +1266,7 @@ impl<'l> Walker<'l> {
             filtered: self.out.filtered,
             seen: self.seen_log.len(),
             entries: self.entries,
+            used: self.used.get(),
         }
     }
 
@@ -1270,7 +1283,8 @@ impl<'l> Walker<'l> {
                 .any(|m| m.cut_short.is_some())
     }
 
-    /// Undo everything recorded since `mark`, deleting the files it wrote.
+    /// Undo everything recorded since `mark`, deleting the files it wrote
+    /// and returning the bytes inflated since then to the budget.
     #[cfg_attr(not(feature = "archive"), allow(dead_code))]
     fn rollback(&mut self, mark: Checkpoint) {
         for m in self.out.members.drain(mark.members..) {
@@ -1284,6 +1298,7 @@ impl<'l> Walker<'l> {
             self.seen.remove(&label);
         }
         self.entries = mark.entries;
+        self.used.set(mark.used);
     }
 
     /// The extraction directory, created on first use.
@@ -2716,6 +2731,77 @@ mod tests {
         assert!(!written.exists(), "the trial's file is deleted");
         assert!(w.claim("r/gone"), "the trial's label is free again");
         assert!(!w.claim("r/kept"));
+        Ok(())
+    }
+
+    /// FAILURE (ARCHIVE-TRIAL-INFLATION-COUNT): a trial that fails also gives
+    /// back the bytes it inflated. Its output is deleted, and the ceiling
+    /// bounds the output kept. The bytes inflated before the trial stay
+    /// counted.
+    #[test]
+    fn a_rolled_back_trial_returns_its_inflated_bytes() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let root = tmp.path().join("r");
+        let lim = Limits {
+            max_inflated_bytes: 4096,
+            ..limits()
+        };
+        let mut w = Walker::new(&lim, None, &root, "r");
+        let kept = pcap_bytes(&[1u8; 100]);
+        let mut first = Inflating {
+            inner: &kept[..],
+            used: std::rc::Rc::clone(&w.used),
+            limit: lim.max_inflated_bytes,
+        };
+        assert_eq!(
+            w.walk(&mut first, "r/kept", &[], 1),
+            Flow::Continue,
+            "a capture read outside a trial"
+        );
+        let before = w.used.get();
+        assert_eq!(before, kept.len() as u64, "the kept member is counted");
+
+        let mark = w.checkpoint();
+        w.trial = true;
+        let noise = [0x77u8; 3000];
+        let mut second = Inflating {
+            inner: &noise[..],
+            used: std::rc::Rc::clone(&w.used),
+            limit: lim.max_inflated_bytes,
+        };
+        let _ = w.walk(&mut second, "r/noise", &[], 1);
+        w.trial = false;
+        assert_eq!(
+            w.used.get(),
+            before + noise.len() as u64,
+            "the trial's bytes are counted while it runs"
+        );
+        w.rollback(mark);
+        assert_eq!(
+            w.used.get(),
+            before,
+            "the rollback returns the trial's bytes and keeps the earlier ones"
+        );
+        Ok(())
+    }
+
+    /// EDGE: a rollback to a checkpoint taken before anything was inflated
+    /// returns the count to zero, and a rollback with no trial bytes changes
+    /// nothing.
+    #[test]
+    fn a_rollback_restores_the_count_of_its_own_checkpoint() -> Result<(), TestError> {
+        let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e:?}"))?;
+        let root = tmp.path().join("r");
+        let lim = limits();
+        let mut w = Walker::new(&lim, None, &root, "r");
+        let empty = w.checkpoint();
+        w.used.set(700);
+        let later = w.checkpoint();
+        w.rollback(later);
+        assert_eq!(w.used.get(), 700, "nothing was inflated since this mark");
+        w.used.set(900);
+        w.rollback(empty);
+        assert_eq!(w.used.get(), 0, "the first mark was taken at zero");
         Ok(())
     }
 

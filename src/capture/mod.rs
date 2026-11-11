@@ -618,7 +618,32 @@ pub struct TlsDecryptReport {
     pub late_evicted: u64,
     /// Records still held at the end of the run, i.e. keys that never came.
     pub late_still_held: u64,
+    /// ClientHello messages the decryptor parsed out of the capture.
+    ///
+    /// With `server_hellos_seen` this is what separates "no handshake is in
+    /// the capture" from "a handshake is in the capture and no key belongs to
+    /// it". The two need different remedies, and `sessions_with_keys == 0`
+    /// alone is the same in both.
+    pub client_hellos_seen: u64,
+    /// ServerHello messages the decryptor parsed out of the capture.
+    pub server_hellos_seen: u64,
+    /// Keylog entries whose client random is that of no ClientHello seen.
+    ///
+    /// `None` when the count is not known: the decryptor remembers the client
+    /// random of at most [`MAX_REMEMBERED_CLIENT_HELLOS`] ClientHellos, and
+    /// once it has dropped one it can no longer say that an entry matches
+    /// none. A reader must not treat `None` as zero.
+    pub keylog_unmatched_entries: Option<usize>,
 }
+
+/// ClientHello client randoms the TLS decryptor remembers for
+/// [`TlsDecryptReport::keylog_unmatched_entries`].
+///
+/// A bound, because a ClientHello costs a peer one packet and an unbounded
+/// set would let a peer grow the process. 65,536 randoms are 2 MiB of key
+/// material plus the set's own overhead. Defined here, beside the report that
+/// documents it, so the reporting path compiles without the `tls` feature.
+pub const MAX_REMEMBERED_CLIENT_HELLOS: usize = 65_536;
 
 /// Total ciphertext the late-keylog hold may keep across every session at once.
 ///
@@ -765,6 +790,14 @@ pub fn published_tls_decrypt() -> Option<TlsDecryptReport> {
         // a running total of a queue describes no moment that ever existed.
         // Zero is the honest value for a reader outside the run.
         late_still_held: 0,
+        // Never published either. The handshake counts and the match count
+        // describe one decryptor's view at the end of a run, they feed the
+        // end-of-run guidance only, and no JSON block carries them. `None`
+        // says the match count is not known, which is true for a reader
+        // outside the run.
+        client_hellos_seen: 0,
+        server_hellos_seen: 0,
+        keylog_unmatched_entries: None,
     })
 }
 

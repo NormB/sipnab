@@ -977,7 +977,17 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 622 -> 623 (OPS-4): src/main.rs, the warning when the permitted capture
 // capabilities cannot be raised into the effective set (+1). The container
 // hint in src/app/bootstrap.rs changed its words, not the count.
-const EXPECTED_TEMPLATES: usize = 623;
+// 623 -> 624 (NO-TUI-BUILD-SILENT): src/cli.rs, the refusal of
+// `--tui-audit-file` in a build without the `tui` feature (+1).
+// 624 -> 631 (TLS-KEYLOG-MISMATCH-DIAGNOSIS): src/app/batch.rs, the lines
+// for a key log that opens nothing. Added: three for a key log from other
+// connections (the counts and the cause, the remedy, and the line for a
+// session built from the key log alone) and four for key-log lines that
+// built no session although a handshake message was seen (the handshake
+// counts, the match count, what a session needs, and the remedy). +7.
+// Reworded, count unchanged: the missing-handshake line and its remedy now
+// also say what a TLS 1.3 key log needs.
+const EXPECTED_TEMPLATES: usize = 631;
 
 // ---------------------------------------------------------------------------
 // The page gates

@@ -269,9 +269,8 @@ fn the_walkthrough_requires_the_terminal_ui_feature() -> Result<(), TestError> {
 
 // Only a build with `tui` has an interface that can fail to start. CI's
 // feature matrix also builds sipnab without it: there `sipnab -I <file>`
-// with no `-N` exits 0 and prints nothing (seen 2026-11-11 with the features
-// native,hep,api,mcp,mcp-http). That is recorded as the defect
-// NO-TUI-BUILD-SILENT, not stated on the page and not asserted here.
+// with no `-N` is the run `sipnab -N -I <file>` is, which the two tests after
+// this one hold (NO-TUI-BUILD-SILENT).
 #[cfg(feature = "tui")]
 #[test]
 fn the_terminal_ui_without_a_terminal_gives_the_message_the_page_quotes() -> Result<(), TestError> {
@@ -291,6 +290,56 @@ fn the_terminal_ui_without_a_terminal_gives_the_message_the_page_quotes() -> Res
     if cfg!(target_os = "linux") {
         printed(&err, message);
     }
+    Ok(())
+}
+
+/// A build without `tui` has no terminal UI to start, so a run with no `-N`
+/// reads the capture as a run with `-N` does: the same lines on standard
+/// output, exit status 0. The build with the features
+/// native,hep,api,mcp,mcp-http printed nothing and exited 0.
+#[cfg(not(feature = "tui"))]
+#[test]
+fn a_build_without_the_terminal_ui_reads_a_capture_as_no_tui_does() -> Result<(), TestError> {
+    capture(SAMPLE_CALL)?;
+    let plain = sipnab(&["-I", SAMPLE_CALL])?;
+    let headless = sipnab(&["-N", "-I", SAMPLE_CALL])?;
+    exited(&headless, 0);
+    exited(&plain, 0);
+    let expected = stdout(&headless);
+    assert!(
+        expected.lines().count() > 1,
+        "-N prints a line per SIP message and a totals line; it printed:\n{expected}"
+    );
+    assert_eq!(
+        stdout(&plain),
+        expected,
+        "without -N a build with no terminal UI prints what -N prints; stderr:\n{}",
+        stderr(&plain)
+    );
+    Ok(())
+}
+
+/// The same for an output flag: a build with `tui` refuses `--json` without
+/// `-N`, because the terminal UI owns the screen. A build without `tui` has
+/// nothing that owns it, so the flag needs no `-N`.
+#[cfg(not(feature = "tui"))]
+#[test]
+fn a_build_without_the_terminal_ui_takes_an_output_flag_without_no_tui() -> Result<(), TestError> {
+    let plain = sipnab(&["-I", SAMPLE_CALL, "--json"])?;
+    let headless = sipnab(&["-N", "-I", SAMPLE_CALL, "--json"])?;
+    exited(&headless, 0);
+    exited(&plain, 0);
+    let lines = json_lines(&plain)?;
+    assert!(
+        !lines.is_empty(),
+        "--json prints an object per SIP message; stderr:\n{}",
+        stderr(&plain)
+    );
+    assert_eq!(
+        lines,
+        json_lines(&headless)?,
+        "without -N a build with no terminal UI prints the objects -N prints"
+    );
     Ok(())
 }
 
