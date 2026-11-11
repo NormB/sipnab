@@ -251,6 +251,40 @@ sipnab -N -I tests/pcap-samples/sip-over-tcp.pcap --json-dialogs --no-cli-print 
 
 A dialog the plugin has nothing to say about carries no `plugin_findings`.
 
+## Check that it worked
+
+Three facts show that a plugin loaded and ran. Each check ran on 2026-11-11
+with sipnab 0.5.245, from the repository root, after the build in
+[Build and run it](#build-and-run-it).
+
+The log names each plugin that loaded. Run without `--quiet`, and keep the
+log lines that say so:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-proxy.pcap --json-dialogs --no-cli-print --plugin target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm 2>&1 >/dev/null | grep 'loaded plugin'
+```
+
+```text
+INFO sipnab::app::batch: loaded plugin sipnab_plugin_example
+```
+
+The line starts with the time of the run. A plugin that did not load has no
+such line.
+
+The findings carry the plugin's ids. The call in this capture ends 2.2
+seconds after its answer, so the example plugin reports it:
+
+```bash
+sipnab -N -I tests/pcap-samples/sip-proxy.pcap --json-dialogs --no-cli-print --plugin target/wasm32-unknown-unknown/release/sipnab_plugin_example.wasm | jq '.plugin_findings[]?.id'
+```
+
+```text
+"short-answered-call"
+```
+
+The exit status is `0`. A run with a plugin that did not load exits `1`, and
+the next section lists the reasons.
+
 ## When a plugin does not load
 
 sipnab still reads the capture and prints every dialog, without the findings
