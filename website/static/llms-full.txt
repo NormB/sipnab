@@ -83521,6 +83521,23 @@ System packages come from `.github/actions/system-deps`.
   - The action applies it inside the same lock, and only when it installs something.
 - No workflow step runs `debconf-set-selections` itself.
 
+[`scripts/runner-listeners.py`](../../scripts/runner-listeners.py) checks that each runner instance on that machine has one listener.
+
+- Why: on 2026-11-10 every job sent to two of the runners failed in 2 s in `actions/checkout`, which reported that a log file of the job already existed.
+  - Each of the two runners had two `Runner.Listener` processes, so each job got two workers that wrote one log file.
+  - A runner's unit had lost its main process, `run.sh`, eight days earlier. The unit sets `KillMode=process`, so systemd left the listener running outside the unit.
+  - `Restart=always` then started a second `run.sh` about every 4 minutes. GitHub refused each one as a second session, 1342 and 1345 times, and then accepted one.
+- Before you start: run it on the runner machine, as any user. It needs `ps` and `systemctl`, and no root.
+  It changes nothing on that machine or any other: it signals no process and writes no unit file.
+- Run `python3 scripts/runner-listeners.py`. It reads the process table and the units' properties, waits 5 minutes, and reads the units again.
+- Check that it worked: the last line says each runner directory has exactly one `Runner.Listener`, inside its unit, and that `NRestarts` did not rise. The exit status is 0.
+- When something does not work:
+  - Exit 1 lists the findings, one per line: a directory with no listener or more than one, a listener that runs outside its unit, or a unit whose `NRestarts` rose between the two reads.
+    A listener outside its unit is the process to stop, and stopping it, like changing the unit's `KillMode`, is the machine owner's decision. The script names the PID and does nothing to it.
+  - Exit 2 says what the script could not read, or that no unit or directory matched. Its header lists the arguments that name other directories and units.
+  - A line that starts `note:` names a unit with `KillMode=process`. It does not change the exit status.
+- [`test_runner_listeners.py`](../../scripts/tests/test_runner_listeners.py) holds the rules, and that the script runs only `ps` and two reading `systemctl` commands.
+
 The GitHub-hosted jobs restore their cargo builds from `actions/cache`.
 It keeps at most 10 GB per repository and evicts the least recently used entry past that.
 
