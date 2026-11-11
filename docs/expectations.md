@@ -14,7 +14,8 @@ and exits non-zero when a rule fails, so the step that runs it fails the build.
   test run: SIPp or a test phone places calls through a staging server while
   sipnab or `tcpdump` records them.
 - A suite file in your repository, `sipnab.expect.toml` by convention.
-- Nothing on your SIP servers. The suite reads the capture only.
+- No change on any other system. The suite reads the capture only, so nothing
+  on your SIP servers changes.
 
 ## Write a suite
 
@@ -92,6 +93,23 @@ The run exits with the verdict:
 
 sipnab reads and checks the suite before it reads the capture, so a mistake in
 the file stops the run at once.
+
+### Check that it worked
+
+Print the exit status after the run. The sample suite has two failing rules,
+so the status is 3:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --expect tests/fixtures/expect/sip-problem-call.expect.toml --no-cli-print --quiet > /dev/null; echo $?
+```
+
+```text
+3
+```
+
+A status of 3 with the `Expectations: fail` line means the suite ran and
+judged the capture. A status of 2 or 1 means it did not judge it:
+[When it does not work](#when-it-does-not-work) lists the causes.
 
 The rules judge every call in the capture. `--filter` and `--since` do not
 narrow them. Narrow a rule with its own `scope`.

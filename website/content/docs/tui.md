@@ -21,6 +21,19 @@ the ladder, measure a delay, and inspect RTP.
 >   [Triage a capture from the command line](@/docs/first-cli-triage.md) instead.
 > - The [Glossary](@/docs/glossary.md) defines any term you do not recognize.
 
+## Before you start
+
+- **sipnab with the `tui` feature**, which every release binary and package
+  has. `sipnab --version` lists the features of your build.
+  [Installing sipnab](@/docs/install.md) has every install route.
+- **A terminal.** sipnab draws the interface on the terminal it starts in, and
+  exits with an error when it has none.
+- **No privileges** to read a capture file. Watching an interface needs root
+  or the capture capabilities that
+  [Capture live traffic without root](@/docs/install.md#capture-live-traffic-without-root)
+  grants once.
+- **No change on any other system.** Every step reads one downloaded file.
+
 ## Open a capture
 
 No capture handy? Download the sample call the website uses:
@@ -404,6 +417,49 @@ To pick the session up later, Tab to NOTES instead. Then start sipnab again with
 
 - The capture you send carries your notes.
 - sipnab never reads them back as analysis.
+
+## Check that it worked
+
+With `sample-call.pcap` open, the first line of the screen names the file and
+counts its dialogs, and the Call List has one row for each. This is the top
+of a terminal 110 columns wide, from sipnab 0.5.244 on 2026-11-10:
+
+```text
+ File: sample-call.pcap    Dialogs: 7 shown of 7    Autoscroll: on
+ Capture filter (BPF): none
+ View filter: none
+  # ▲    Method    From  To     Source             Destination        State      Msgs +Prev    PDD    Duration
+> [ ] 1  REGISTER  alice alice  192.0.2.10         192.0.2.20         Registered 4    +0.000s         17ms
+  [ ] 2  REGISTER  bob   bob    192.0.2.30         192.0.2.20         Expired    8    +0.500s         14.5s
+  [ ] 3  SUBSCRIBE alice alice  192.0.2.10         192.0.2.20         Active     3    +0.700s         30ms
+  [ ] 4  SUBSCRIBE bob   bob    192.0.2.30         192.0.2.20         Pending    3    +0.200s         30ms
+  [ ] 5  SUBSCRIBE alice alice  192.0.2.10         192.0.2.20         Terminated 6    +0.200s         14.4s
+  [ ] 6  OPTIONS   pbx   alice  192.0.2.20         192.0.2.10         Completed  2    +0.400s         6ms
+  [ ] 7  INVITE    alice bob    192.0.2.10         192.0.2.20         Completed  7    +3.000s  180ms  8.5s
+```
+
+`Dialogs: 7 shown of 7` means no filter hides a call. A lower first number
+means a view filter hides the rest: `F9` clears it.
+
+## When something does not work
+
+**`sipnab: the terminal UI could not start: No such device or address (os error 6). It needs a terminal; add -N for a run without one.`**
+sipnab started with no terminal on its input, and exited with status 1. Run
+it in a terminal, or add `-N` and follow
+[Triage a capture from the command line](@/docs/first-cli-triage.md).
+
+**`-I/--input: 'sample-call.pcap' does not exist`.** The file is not in the
+current directory. Download it again with the `curl` command of
+[Open a capture](#open-a-capture), or give `-I` its path. From inside the TUI,
+`O` opens a file by browsing to it.
+
+**The Call List is empty.** The capture holds no SIP on the ports sipnab reads
+by default.
+[Read a capture whose SIP is not on port 5060](@/docs/cookbook.md#read-a-capture-whose-sip-is-not-on-port-5060)
+has the fix.
+
+**A key does something other than this page says.** `F1` lists the keys of
+the view you are in, and [Keybindings](@/docs/keybindings.md) lists every view's.
 
 ## Where to go next
 

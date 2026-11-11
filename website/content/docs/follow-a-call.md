@@ -28,9 +28,11 @@ rather than a guess.
 - A capture that holds every leg. Capture where the legs meet, on the B2BUA
   itself or on a link that carries both sides. sipnab cannot join a leg the
   capture does not hold.
-- A change on your SIP servers only if you want an exact match where there is
-  none today. [Make the match exact](#make-the-match-exact) says what to change
-  for each server.
+- No change on any other system to list legs by the identifiers the capture
+  already holds. You change your SIP servers only if you want an exact match
+  where there is none today.
+  [Make the match exact](#make-the-match-exact) says what to change for each
+  server.
 
 ## List the other legs of a call
 
@@ -365,6 +367,28 @@ sipnab -I tests/fixtures/session-id/opensips-4.0-th-session-id.pcap --correlate 
 ```json
 {"call_id":"DLGCH_fl0WBzdkMzIjHCULKyg9IyMVSw08JA--","strategy":"session_id","method":"header","identifier_match":true}
 ```
+
+## Check that it worked
+
+The first line of the answer counts the legs sipnab tied to the call, and each
+row names one leg with the strategy that tied it:
+
+```sh
+sipnab -I tests/fixtures/session-id/opensips-4.0-th-session-id.pcap --correlate 1-sid-call@example.com --no-cli-print --quiet
+```
+
+```text
+Legs correlated with 1-sid-call@example.com: 1 leg
+Leg                                     Strategy    Method  Score  Match       Gap ms  TH
+------------------------------------------------------------------------------------------------
+DLGCH_fl0WBzdkMzIjHCULKyg9IyMVSw08JA--  session_id  header  100    identifier  -       no_secret
+```
+
+The match is exact when the `Match` column reads `identifier`: both legs carry
+the same identifier, here a `Session-ID` header. The run exits with status 0
+when it found the Call-ID you named.
+
+A build without the `tls` feature prints `-` in the `TH` column.
 
 ## When it does not work
 

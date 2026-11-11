@@ -481,6 +481,33 @@ kill %1
 `GET /v1/captures/compare` reads its two files from the server's
 `--api-file-root`. [REST API](rest-api.md) lists every route's parameters.
 
+## Check that it worked
+
+A query counted every call when its total equals the number of dialogs in the
+capture. Ask the query for its total:
+
+```sh
+sipnab -I tests/pcap-samples/sip-problem-call.pcap --count-by response_code --json --no-cli-print --quiet | jq .total_matched
+```
+
+```text
+5
+```
+
+Then count the dialogs:
+
+```sh
+sipnab -N -I tests/pcap-samples/sip-problem-call.pcap --json-dialogs --no-cli-print --quiet | jq -s length
+```
+
+```text
+5
+```
+
+With a filter or a time window on the query, `total_matched` is the number of
+calls the filter admits, which can be lower. A query that read the capture
+exits with status 0, with or without rows in its answer.
+
 ## When it does not work
 
 | What you see | Why | What to do |

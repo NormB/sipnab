@@ -1785,7 +1785,13 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // section's prerequisite linking "Make an instance a fleet member";
     // config-reference.md +1 and errors.md +1, each a link to "Push call
     // records to the center".
-    const EXPECTED_WIKI_LINKS: usize = 2531;
+    // 2531 -> 2552 (DOCS-HOWTO-GAP, first batch: the "Before you start",
+    // "Check that it worked" and "When something does not work" sections):
+    // install.md +8 (one of them to troubleshooting.md's "Live capture says
+    // Permission denied"), first-cli-triage.md +6, tui-walkthrough.md +6,
+    // expectations.md +1; follow-a-call.md +1 -1 (its link to "Make the match
+    // exact" was reworded, not added).
+    const EXPECTED_WIKI_LINKS: usize = 2552;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
