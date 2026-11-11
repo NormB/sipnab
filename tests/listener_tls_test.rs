@@ -330,6 +330,24 @@ mod mcp {
         Ok(())
     }
 
+    /// A key file the run cannot read stops it with exit 2 and a message
+    /// naming the flag, the path and the operating system's reason. Before,
+    /// it printed the bare path alone.
+    #[test]
+    fn mcp_an_unreadable_key_is_refused_naming_flag_path_and_reason() -> Result<(), TestError> {
+        let pki = test_pki("mcp-unreadable-key")?;
+        let missing = pki.dir.path().join("no-such-key.pem");
+        let missing = missing.to_string_lossy().into_owned();
+        let mut args = base(&fixture());
+        args.extend([CERT, &pki.cert, KEY, &missing].map(String::from));
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let (stderr, code) = super::run_until_exit(&refs, test_timeout(10))?;
+        assert_eq!(code, Some(2), "a refused flag exits 2:\n{stderr}");
+        let want = format!("{KEY}: {missing}: No such file or directory");
+        assert!(stderr.contains(&want), "want {want:?} in:\n{stderr}");
+        Ok(())
+    }
+
     /// A key any user on the host can read stops the run naming it.
     #[test]
     fn mcp_a_world_readable_key_is_refused_naming_it() -> Result<(), TestError> {

@@ -2244,8 +2244,9 @@ pub struct CrashConfig {
     pub reports: Option<bool>,
     /// Include a full backtrace in the crash report (default: true).
     pub backtrace: Option<bool>,
-    /// Directory crash reports are written to
-    /// (default: `~/.local/state/sipnab`).
+    /// Directory crash reports are written to (default: the first entry of
+    /// `$STATE_DIRECTORY`, else `~/.local/state/sipnab`; see
+    /// [`default_report_dir`]).
     pub report_dir: Option<PathBuf>,
     /// After the report is written: `true` aborts the process so the OS
     /// can produce a core dump (subject to `ulimit -c` / `core_pattern`);
@@ -2271,16 +2272,52 @@ impl CrashConfig {
     }
 
     /// Effective report directory: the configured one, else
-    /// `~/.local/state/sipnab`, else a `sipnab` dir under the system tmp.
-    /// Reads `$HOME` for the fallback; does not touch the filesystem.
+    /// [`default_report_dir`] of `$STATE_DIRECTORY`, `$HOME` and the system
+    /// temporary directory. Does not touch the filesystem.
     pub fn effective_report_dir(&self) -> PathBuf {
         if let Some(ref dir) = self.report_dir {
             return dir.clone();
         }
-        match home_dir() {
-            Some(home) => home.join(".local").join("state").join("sipnab"),
-            None => std::env::temp_dir().join("sipnab"),
-        }
+        let fallback = std::env::temp_dir().join("sipnab");
+        default_report_dir(
+            std::env::var_os("STATE_DIRECTORY").as_deref(),
+            home_dir().as_deref(),
+            &fallback,
+        )
+    }
+}
+
+/// The crash report directory when `[crash] report_dir` is unset, given
+/// `$STATE_DIRECTORY`, `$HOME` and the directory to use when neither helps.
+///
+/// In order:
+/// 1. the first entry of `state_directory`, when it is an absolute path.
+///    systemd exports `$STATE_DIRECTORY` for a unit with `StateDirectory=`,
+///    with several entries separated by `:`. The packaged unit runs as the
+///    `sipnab` user, whose home is `/nonexistent`, under
+///    `ProtectSystem=strict`, so the state directory (`/var/lib/sipnab`) is
+///    the only place it can write a report;
+/// 2. `<home>/.local/state/sipnab`, the XDG state directory, for an
+///    interactive run;
+/// 3. `fallback`, which the caller sets to `sipnab` under the system
+///    temporary directory.
+///
+/// An empty or relative first entry is ignored: systemd never exports one,
+/// and a relative path would depend on the working directory.
+pub fn default_report_dir(
+    state_directory: Option<&std::ffi::OsStr>,
+    home: Option<&Path>,
+    fallback: &Path,
+) -> PathBuf {
+    let granted = state_directory
+        .and_then(|dirs| std::env::split_paths(dirs).next())
+        .filter(|dir| dir.is_absolute());
+    if let Some(dir) = granted {
+        return dir;
+    }
+    match home {
+        Some(home) => home.join(".local").join("state").join("sipnab"),
+        None => fallback.to_path_buf(),
     }
 }
 
@@ -7156,6 +7193,85 @@ column_selector = "F10"
         };
         assert_eq!(expand_env_vars("${A}", &env)?, "${B}");
         Ok(())
+    }
+
+    // ── [crash] report_dir default ────────────────────────────────────
+
+    /// The packaged unit runs as `sipnab`, whose home is `/nonexistent`, and
+    /// grants `StateDirectory=sipnab`. systemd exports that grant as
+    /// `$STATE_DIRECTORY`, and it is the one writable directory the service
+    /// has, so the default is that directory and not the home.
+    #[test]
+    fn a_service_writes_crash_reports_to_its_state_directory() {
+        let dir = default_report_dir(
+            Some(std::ffi::OsStr::new("/var/lib/sipnab")),
+            Some(Path::new("/nonexistent")),
+            Path::new("/tmp/sipnab"),
+        );
+        assert_eq!(
+            dir,
+            PathBuf::from("/var/lib/sipnab"),
+            "the state directory wins over the home"
+        );
+    }
+
+    /// An interactive run has no `$STATE_DIRECTORY`, and keeps the XDG state
+    /// directory under the home.
+    #[test]
+    fn an_interactive_run_writes_crash_reports_under_its_home() {
+        let dir = default_report_dir(None, Some(Path::new("/home/u")), Path::new("/tmp/sipnab"));
+        assert_eq!(
+            dir,
+            PathBuf::from("/home/u/.local/state/sipnab"),
+            "no state directory: the XDG directory under the home"
+        );
+    }
+
+    /// systemd separates several `StateDirectory=` entries with `:`. The
+    /// first is the one the unit names first.
+    #[test]
+    fn the_first_of_several_state_directories_is_used() {
+        let dir = default_report_dir(
+            Some(std::ffi::OsStr::new("/var/lib/sipnab:/var/lib/other")),
+            None,
+            Path::new("/tmp/sipnab"),
+        );
+        assert_eq!(
+            dir,
+            PathBuf::from("/var/lib/sipnab"),
+            "the first of several entries"
+        );
+    }
+
+    /// An empty or relative `$STATE_DIRECTORY` did not come from systemd,
+    /// which always exports absolute paths, and a relative one would depend
+    /// on the working directory. Both fall through to the home.
+    #[test]
+    fn an_empty_or_relative_state_directory_is_ignored() {
+        for value in ["", "relative/dir", ":/var/lib/sipnab"] {
+            let dir = default_report_dir(
+                Some(std::ffi::OsStr::new(value)),
+                Some(Path::new("/home/u")),
+                Path::new("/tmp/sipnab"),
+            );
+            assert_eq!(
+                dir,
+                PathBuf::from("/home/u/.local/state/sipnab"),
+                "STATE_DIRECTORY={value:?}"
+            );
+        }
+    }
+
+    /// With neither variable, reports go to a `sipnab` directory under the
+    /// system temporary directory.
+    #[test]
+    fn with_no_home_and_no_state_directory_reports_go_to_temp() {
+        let dir = default_report_dir(None, None, Path::new("/tmp/sipnab"));
+        assert_eq!(
+            dir,
+            PathBuf::from("/tmp/sipnab"),
+            "neither variable: the temporary directory"
+        );
     }
 }
 

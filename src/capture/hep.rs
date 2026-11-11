@@ -2515,7 +2515,13 @@ fn hep_tls_server_config(
     let key_path = key.context("--hep-listen-transport tls needs --hep-tls-key")?;
     // No ALPN: HEP over TLS is HEP v3 packets end to end, not a protocol an
     // agent negotiates.
-    crate::tls_files::server_config(cert, key_path, "HEP TLS", Vec::new())
+    crate::tls_files::server_config(
+        cert,
+        key_path,
+        "HEP TLS",
+        ("--hep-tls-cert", "--hep-tls-key"),
+        Vec::new(),
+    )
 }
 
 /// [`crate::tls_files::pem_private_key`] with the HEP listener named in its
@@ -6432,6 +6438,26 @@ mod tests {
                 assert!(text.contains("--hep-tls-ca"), "{text}");
             }
         }
+        Ok(())
+    }
+
+    /// An unreadable `--hep-tls-key` is refused naming the flag, the path
+    /// and the reason, by the rule the other TLS listeners use.
+    #[test]
+    fn an_unreadable_hep_tls_key_names_the_flag_and_reason() -> Result<(), TestError> {
+        let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e:?}"))?;
+        let (_ca, cert, _key) = test_chain(dir.path())?;
+        let absent = dir.path().join("absent.key");
+        let err = hep_tls_server_config(Some(&cert), Some(&absent))
+            .err()
+            .ok_or("an unreadable key must be refused")?
+            .to_string();
+        assert!(err.starts_with("--hep-tls-key: "), "names the flag: {err}");
+        assert!(
+            err.contains(&*absent.to_string_lossy()),
+            "names the path: {err}"
+        );
+        assert!(err.contains("No such file or directory"), "says why: {err}");
         Ok(())
     }
 

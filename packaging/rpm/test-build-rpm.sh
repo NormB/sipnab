@@ -227,6 +227,86 @@ else
     fail "full build failed or did not produce $PKG"
 fi
 
+# --- 1b. Scriptlets: what erase and upgrade do to the service --------------
+#
+# Up to this fix the package had a %pre and nothing else, so `dnf remove` left
+# the daemon running on a deleted /usr/bin/sipnab with its enable link
+# dangling, and an upgrade left the old process running on the replaced
+# binary. Each scriptlet is read out of the built package and run in a sandbox
+# whose PATH holds only stubs that record their arguments, the way rpm runs it:
+# /bin/sh with the remaining-package count as $1. /run/systemd/system, which
+# exists only while systemd is the running init, is rewritten to a sandbox
+# directory so both answers can be driven.
+echo "=== scriptlets ==="
+PKG="sipnab-1.2.3-1.${HOST_ARCH}.rpm"
+for tag in PREUN POSTUN; do
+    prog="$(rpm -qp --qf "%{${tag}PROG}" "$PKG" 2> /dev/null)"
+    body="$(rpm -qp --qf "%{${tag}}" "$PKG" 2> /dev/null)"
+    if [ "$prog" = "/bin/sh" ] && [ -n "$body" ] && [ "$body" != "(none)" ]; then
+        pass "%${tag,,} is in the package and runs under /bin/sh"
+    else
+        fail "%${tag,,} is missing or not a /bin/sh scriptlet (prog '$prog')"
+    fi
+    case "$body" in
+        *"/run/systemd/system"*) pass "%${tag,,} tests /run/systemd/system" ;;
+        *) fail "%${tag,,} does not test /run/systemd/system, so the sandbox cannot drive it" ;;
+    esac
+done
+
+# run_scriptlet <PREUN|POSTUN> <systemd running: 1|0> <$1>
+# Prints "rc=<exit status>" and then one line per stub call. STUB_RC sets the
+# exit status of the stubs, to show a failing systemctl does not fail rpm.
+run_scriptlet() {
+    local tag="$1" running="$2" d rc
+    shift 2
+    d="$(mktemp -d "$SANDBOX/run.XXXXXX")"
+    mkdir -p "$d/bin"
+    printf '#!/bin/sh\nprintf "%%s\\n" "systemctl $*" >> "%s/calls"\nexit %s\n' \
+        "$d" "${STUB_RC:-0}" > "$d/bin/systemctl"
+    chmod 755 "$d/bin/systemctl"
+    [ "$running" = "1" ] && mkdir -p "$d/run/systemd/system"
+    : > "$d/calls"
+    rpm -qp --qf "%{${tag}}" "$PKG" 2> /dev/null \
+        | sed "s#/run/systemd/system#$d/run/systemd/system#g" > "$d/script"
+    PATH="$d/bin" /bin/sh "$d/script" "$@" > /dev/null 2>&1
+    rc=$?
+    echo "rc=$rc"
+    cat "$d/calls"
+}
+
+expect_calls() { # description, expected (newline-separated), actual
+    if [ "$2" = "$3" ]; then
+        pass "$1"
+    else
+        fail "$1"
+        printf '  expected:\n%s\n  actual:\n%s\n' "$2" "$3" >&2
+    fi
+}
+
+NL='
+'
+expect_calls "%preun on erase disables and stops" \
+    "rc=0${NL}systemctl --no-reload disable --now sipnab.service" \
+    "$(run_scriptlet PREUN 1 0)"
+expect_calls "%preun on erase with systemd not running disables only" \
+    "rc=0${NL}systemctl --no-reload disable sipnab.service" \
+    "$(run_scriptlet PREUN 0 0)"
+expect_calls "%preun on upgrade neither stops nor disables" \
+    "rc=0" "$(run_scriptlet PREUN 1 1)"
+expect_calls "%preun on erase still exits 0 when systemctl fails" \
+    "rc=0${NL}systemctl --no-reload disable --now sipnab.service" \
+    "$(STUB_RC=1 run_scriptlet PREUN 1 0)"
+expect_calls "%postun on upgrade restarts a running service on the new binary" \
+    "rc=0${NL}systemctl daemon-reload${NL}systemctl try-restart sipnab.service" \
+    "$(run_scriptlet POSTUN 1 1)"
+expect_calls "%postun on erase reloads systemd and restarts nothing" \
+    "rc=0${NL}systemctl daemon-reload" "$(run_scriptlet POSTUN 1 0)"
+expect_calls "%postun with systemd not running does nothing" \
+    "rc=0" "$(run_scriptlet POSTUN 0 1)"
+expect_calls "%postun on upgrade still exits 0 when systemctl fails" \
+    "rc=0${NL}systemctl daemon-reload${NL}systemctl try-restart sipnab.service" \
+    "$(STUB_RC=1 run_scriptlet POSTUN 1 1)"
+
 # --- 2. noaudio variant: suffixed name, no plugin, no alsa-lib -------------
 echo "=== noaudio variant ==="
 PKG="sipnab-1.2.3-1.${HOST_ARCH}-noaudio.rpm"

@@ -19,6 +19,11 @@
 # was pushed to the musl build it did not need.
 SIPNAB_GLIBC_FLOOR="2.36"
 SIPNAB_REPO="NormB/sipnab"
+# The libpcap SONAME the -gnu builds link. They are built on Debian, which
+# names libpcap libpcap.so.0.8; upstream and every RPM distribution name it
+# libpcap.so.1. Must equal DEBIAN_PCAP_SONAME in packaging/rpm/build-rpm.sh,
+# which tests/install-sh/run-tests.sh checks.
+SIPNAB_GNU_PCAP_SONAME="libpcap.so.0.8"
 
 set -u
 
@@ -74,13 +79,17 @@ glibc_at_least() {
   fi
 }
 
-# choose_artifact <os> <arch> <glibc-version-or-empty> <version> → tarball name
+# choose_artifact <os> <arch> <glibc-version-or-empty> <version> <libpcap yes|no>
+# → tarball name. Linux gets the gnu build only when glibc is at the floor and
+# the libpcap it links is installed; otherwise the static musl build, which
+# needs neither.
 choose_artifact() {
-  _os=$1; _arch=$2; _glibc=$3; _ver=$4
+  _os=$1; _arch=$2; _glibc=$3; _ver=$4; _pcap=${5:-no}
   case "$_os" in
     darwin) echo "sipnab-${_ver}-${_arch}-apple-darwin.tar.gz" ;;
     linux)
-      if [ -n "$_glibc" ] && [ "$(glibc_at_least "$_glibc" "$SIPNAB_GLIBC_FLOOR")" = "yes" ]; then
+      if [ -n "$_glibc" ] && [ "$(glibc_at_least "$_glibc" "$SIPNAB_GLIBC_FLOOR")" = "yes" ] \
+         && [ "$_pcap" = "yes" ]; then
         echo "sipnab-${_ver}-${_arch}-unknown-linux-gnu.tar.gz"
       else
         echo "sipnab-${_ver}-${_arch}-unknown-linux-musl.tar.gz"
@@ -88,6 +97,94 @@ choose_artifact() {
       ;;
     *) printf 'sipnab-install: error: unsupported OS "%s"\n' "$_os" >&2; return 1 ;;
   esac
+}
+
+# The architecture tag `ldconfig -p` prints for a library of this CPU, as in
+# "libpcap.so.0.8 (libc6,x86-64) => ...". A 32-bit x86 library prints
+# "(libc6)" alone and must not count for a 64-bit binary.
+ldconfig_arch_tag() {
+  case "${1:-}" in
+    x86_64)  echo "x86-64" ;;
+    aarch64) echo "AArch64" ;;
+    *) return 1 ;;
+  esac
+}
+
+# libpcap_present <arch> <ldconfig -p output> [<lib dir>...] → "yes"/"no"
+#
+# Whether the library the -gnu build loads, $SIPNAB_GNU_PCAP_SONAME, is
+# installed for this CPU. The ldconfig cache answers when there is one. With
+# no ldconfig output (ldconfig is in /sbin, which a non-root Debian PATH
+# leaves out, and some hosts have no cache), each directory is checked for the
+# file instead. Only the exact SONAME counts: libpcap.so (the -dev symlink)
+# and libpcap.so.1 (Fedora's libpcap) do not satisfy the binary's DT_NEEDED.
+libpcap_present() {
+  _arch=$1; _cache=$2; shift 2
+  if [ -n "$_cache" ]; then
+    _tag=$(ldconfig_arch_tag "$_arch") || { echo no; return 0; }
+    if printf '%s\n' "$_cache" | awk -v so="$SIPNAB_GNU_PCAP_SONAME" -v tag="$_tag" '
+        $1 == so && index($2, "," tag ")") { found = 1 }
+        END { exit found ? 0 : 1 }'; then
+      echo yes
+    else
+      echo no
+    fi
+    return 0
+  fi
+  for _d in "$@"; do
+    if [ -e "$_d/$SIPNAB_GNU_PCAP_SONAME" ]; then echo yes; return 0; fi
+  done
+  echo no
+}
+
+# The ldconfig cache listing, or nothing. Tries PATH, then the two places
+# ldconfig lives, because /sbin is not on a non-root PATH on Debian.
+ldconfig_listing() {
+  for _l in ldconfig /sbin/ldconfig /usr/sbin/ldconfig; do
+    if command -v "$_l" >/dev/null 2>&1; then
+      "$_l" -p 2>/dev/null && return 0
+    fi
+  done
+  return 0
+}
+
+# choice_reason <artifact> <glibc-version-or-empty> <libpcap yes|no> → the
+# line the installer prints about which build it chose and why.
+choice_reason() {
+  _art=$1; _glibc=$2; _pcap=$3
+  case "$_art" in
+    *musl*)
+      if [ -z "$_glibc" ]; then
+        echo "no glibc detected — using the static musl build"
+      elif [ "$(glibc_at_least "$_glibc" "$SIPNAB_GLIBC_FLOOR")" != "yes" ]; then
+        echo "glibc $_glibc < $SIPNAB_GLIBC_FLOOR — using the static musl build (no TUI audio; otherwise identical)"
+      else
+        echo "$SIPNAB_GNU_PCAP_SONAME not found — using the static musl build (no TUI audio; otherwise identical). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead"
+      fi
+      ;;
+    *gnu*) echo "glibc $_glibc and $SIPNAB_GNU_PCAP_SONAME found — using the gnu build, which needs libpcap" ;;
+    *) : ;;
+  esac
+}
+
+# install_payload <extracted dir> <dest dir> [<command prefix, e.g. sudo>]
+#
+# Installs the sipnab binary from the unpacked tarball into <dest>, and the
+# audio plugin beside it when the tarball holds one. sipnab looks for the
+# plugin next to its own executable first (src/rtp/playback.rs), so a binary
+# installed alone has no TUI audio playback. The musl tarballs hold no plugin.
+install_payload() {
+  _src=$1; _dest=$2; _pre=${3:-}
+  _bin=$(find "$_src" -type f -name sipnab | head -1)
+  [ -n "$_bin" ] || { printf 'sipnab-install: error: sipnab binary not found in archive\n' >&2; return 1; }
+  $_pre install -m 755 "$_bin" "$_dest/sipnab" || return 1
+  for _name in libsipnab_audio.so libsipnab_audio.dylib; do
+    _plugin=$(find "$_src" -type f -name "$_name" | head -1)
+    [ -n "$_plugin" ] || continue
+    $_pre install -m 644 "$_plugin" "$_dest/$_name" || return 1
+    printf 'sipnab-install: installed the audio plugin %s/%s\n' "$_dest" "$_name"
+  done
+  return 0
 }
 
 # verify_checksum <file> <file.sha256> — .sha256 format: "<hex>  <basename>"
@@ -126,18 +223,15 @@ main() {
     [ -n "$version" ] || err "could not determine the latest version (set SIPNAB_VERSION to pin one)"
   fi
 
-  artifact=$(choose_artifact "$os" "$arch" "$glibc" "$version") || exit 1
+  pcap=no
   if [ "$os" = "linux" ]; then
-    case "$artifact" in
-      *musl*)
-        if [ -n "$glibc" ]; then
-          info "glibc $glibc < $SIPNAB_GLIBC_FLOOR — using the static musl build (no TUI audio; otherwise identical)"
-        else
-          info "no glibc detected — using the static musl build"
-        fi
-        ;;
-      *) info "glibc $glibc — using the gnu build (needs libpcap: apt install libpcap0.8, or dnf install libpcap)" ;;
-    esac
+    pcap=$(libpcap_present "$arch" "$(ldconfig_listing)" \
+      "/lib/${arch}-linux-gnu" "/usr/lib/${arch}-linux-gnu" /lib64 /usr/lib64 /lib /usr/lib)
+  fi
+
+  artifact=$(choose_artifact "$os" "$arch" "$glibc" "$version" "$pcap") || exit 1
+  if [ "$os" = "linux" ]; then
+    info "$(choice_reason "$artifact" "$glibc" "$pcap")"
   fi
 
   base="https://github.com/${SIPNAB_REPO}/releases/download/v${version}"
@@ -150,16 +244,15 @@ main() {
   verify_checksum "$tmp/$artifact" "$tmp/$artifact.sha256" || exit 1
   info "sha256 verified"
 
-  tar -xzf "$tmp/$artifact" -C "$tmp" || err "extraction failed"
-  bin=$(find "$tmp" -type f -name sipnab | head -1)
-  [ -n "$bin" ] || err "sipnab binary not found in archive"
+  mkdir "$tmp/x" || err "mktemp failed"
+  tar -xzf "$tmp/$artifact" -C "$tmp/x" || err "extraction failed"
 
   dest="${SIPNAB_INSTALL_DIR:-/usr/local/bin}"
   if [ -w "$dest" ]; then
-    install -m 755 "$bin" "$dest/sipnab" || err "install to $dest failed"
+    install_payload "$tmp/x" "$dest" || err "install to $dest failed"
   else
     info "$dest is not writable — using sudo"
-    sudo install -m 755 "$bin" "$dest/sipnab" || err "install to $dest failed"
+    install_payload "$tmp/x" "$dest" sudo || err "install to $dest failed"
   fi
   info "installed $dest/sipnab — run 'sipnab --version' to confirm"
   post_install_hint "$dest"

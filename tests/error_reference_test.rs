@@ -961,7 +961,11 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // 605 -> 607 (CONSOLE-FLAG-WITHOUT-API): src/app/bootstrap.rs, the refusal
 // of `--api-console` on a run with no `--api` (+1) and `--api-console
 // requires the 'api' feature (not compiled in)` (+1).
-const EXPECTED_TEMPLATES: usize = 607;
+// 607 -> 611 (OPS-7, the permission hint names its cause):
+// src/app/bootstrap.rs's one permission template became five (the header
+// around the causes, the bounding-set and NoNewPrivs paragraphs, the
+// container hint, and the general hint, its placeholder renamed). +4.
+const EXPECTED_TEMPLATES: usize = 611;
 
 // ---------------------------------------------------------------------------
 // The page gates

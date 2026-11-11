@@ -1604,7 +1604,8 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         ],
     ),
     // docker's `--cap-add`, on the pages that say it does not let the
-    // release image's non-root user capture.
+    // release image's non-root user capture, and on the least-privilege
+    // page's row for a bounding set without `CAP_NET_RAW`.
     (
         "cap-add",
         &[
@@ -1612,6 +1613,26 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/install.md",
             "docs/troubleshooting.md",
             "website/content/docs/troubleshooting.md",
+            "docs/least-privilege.md",
+            "website/content/docs/least-privilege.md",
+            "docs/errors.md",
+            "website/content/docs/errors.md",
+        ],
+    ),
+    // docker's `--cap-drop` and `--security-opt`, in the install page's
+    // list of the permission hints a container run gets, and the error
+    // reference's NoNewPrivs entry.
+    (
+        "cap-drop",
+        &["docs/install.md", "website/content/docs/install.md"],
+    ),
+    (
+        "security-opt",
+        &[
+            "docs/install.md",
+            "website/content/docs/install.md",
+            "docs/errors.md",
+            "website/content/docs/errors.md",
         ],
     ),
     // cosign 2.x's `--new-bundle-format`, which the install page's signature
@@ -6195,7 +6216,11 @@ fn no_documentation_table_repeats_a_row() -> Result<(), TestError> {
     // 1455 -> 1457 (PAGES-SAME-SHA-REDEPLOY-NOT-LIVE): the exit-status table
     // of the live check in docs/internals/build-ci-release.md and its site
     // mirror (+2).
-    const EXPECTED_TABLES: usize = 1457;
+    // 1457 -> 1460 (OPS batch 4): the "sipnab found" table of permission
+    // hints in docs/troubleshooting.md's "Live capture says Permission
+    // denied" and its site mirror (+2), and the "What the packages do to the
+    // service" table in packaging/README.md, which has no mirror (+1).
+    const EXPECTED_TABLES: usize = 1460;
 
     let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let out = std::process::Command::new("git")

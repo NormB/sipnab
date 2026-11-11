@@ -484,7 +484,15 @@ fn the_install_page_quotes_the_permission_message_of_the_code() -> Result<(), Te
     let source = BOOTSTRAP.split_whitespace().collect::<Vec<_>>().join(" ");
     printed(
         &source,
-        "\"Permission denied on '{}'. Grant capture capabilities once \\ (Linux), then re-run without sudo:\\n",
+        "\"Permission denied on '{target}'. Grant capture capabilities once \\ (Linux), then re-run without sudo:\\n",
+    );
+    // The code words other causes too (a container, NoNewPrivs, the bounding
+    // set). The install page quotes the general one and sends the reader to
+    // the section that lists the rest.
+    page_says(
+        troubleshoot,
+        "(troubleshooting.md#live-capture-says-permission-denied)",
+        "install",
     );
     page_says(
         troubleshoot,
@@ -516,6 +524,39 @@ fn the_install_prerequisites_name_what_the_installer_requires() -> Result<(), Te
             "install.sh no longer has {in_script}: re-read what it requires"
         );
         page_says(before, on_page, "install");
+    }
+    Ok(())
+}
+
+#[test]
+fn the_install_page_says_what_the_installer_does_without_libpcap() -> Result<(), TestError> {
+    // Since OPS batch 4 the installer looks for libpcap.so.0.8 and installs
+    // the static musl build when the host has none. The prerequisites said
+    // libpcap was required, and the troubleshooting entry named a Fedora
+    // package that does not provide that library.
+    for in_script in [
+        "SIPNAB_GNU_PCAP_SONAME=\"libpcap.so.0.8\"",
+        "$SIPNAB_GNU_PCAP_SONAME not found — using the static musl build",
+        "libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12)",
+        "on Fedora or RHEL install the .rpm package instead",
+    ] {
+        printed(INSTALLER, in_script);
+    }
+    let before = section(INSTALL, "## Before you start")?;
+    page_says(before, "`libpcap.so.0.8`", "install");
+    page_says(before, "static musl build", "install");
+    let troubleshoot = section(INSTALL, TROUBLESHOOT)?;
+    page_says(
+        troubleshoot,
+        "`libpcap0.8t64` (Debian 13, Ubuntu 24.04) or `libpcap0.8` (Debian 12)",
+        "install",
+    );
+    for page_text in [before, troubleshoot] {
+        assert!(
+            !page_text.contains("`libpcap` (Fedora"),
+            "Fedora and RHEL have no package that provides libpcap.so.0.8; \
+             the page must not name one as the fix"
+        );
     }
     Ok(())
 }

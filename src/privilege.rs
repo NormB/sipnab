@@ -877,6 +877,9 @@ fn set_uid(uid: u32) -> Result<()> {
 pub fn block_privilege_escalation() -> Result<()> {
     #[cfg(target_os = "linux")]
     {
+        // Before the flag is set, so the status the process started with
+        // survives for the permission hint (`status_before_block`).
+        let _ = STATUS_BEFORE_BLOCK.set(std::fs::read_to_string("/proc/self/status").ok());
         set_no_new_privs()?;
         tracing::debug!("PR_SET_NO_NEW_PRIVS set: exec can no longer grant privileges");
     }
@@ -889,6 +892,38 @@ pub fn block_privilege_escalation() -> Result<()> {
     );
 
     Ok(())
+}
+
+/// `/proc/self/status` as it read before [`block_privilege_escalation`] set
+/// `NoNewPrivs` on this process; `None` inside when it could not be read.
+static STATUS_BEFORE_BLOCK: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// This process's `/proc/self/status` as it started: before
+/// [`block_privilege_escalation`] set `NoNewPrivs`, or now when it has not.
+///
+/// The permission hint of a refused capture reads `NoNewPrivs` to tell an
+/// operator that systemd's `NoNewPrivileges=yes` made file capabilities
+/// ineffective. sipnab sets the flag on itself at startup, before the
+/// capture opens, so the status read when the capture failed always says
+/// `NoNewPrivs: 1` and cannot tell the two apart.
+///
+/// # Side effects
+///
+/// Reads `/proc/self/status` when no status was recorded.
+#[must_use]
+pub fn status_before_block() -> Option<String> {
+    status_for_hint(STATUS_BEFORE_BLOCK.get().cloned(), || {
+        std::fs::read_to_string("/proc/self/status").ok()
+    })
+}
+
+/// [`status_before_block`] with its inputs as arguments: the status
+/// `recorded` before the block, if one was recorded, else `current`.
+fn status_for_hint(
+    recorded: Option<Option<String>>,
+    current: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    recorded.unwrap_or_else(current)
 }
 
 /// Set the `PR_SET_NO_NEW_PRIVS` flag to prevent regaining privileges via
@@ -1156,6 +1191,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The status recorded before the block wins over the current one, which
+    /// says `NoNewPrivs: 1` because sipnab set it.
+    #[test]
+    fn the_hint_reads_the_status_recorded_before_the_block() {
+        let got = super::status_for_hint(Some(Some("NoNewPrivs:\t0\n".into())), || {
+            Some("NoNewPrivs:\t1\n".into())
+        });
+        assert_eq!(
+            got.as_deref(),
+            Some("NoNewPrivs:\t0\n"),
+            "the recorded status wins"
+        );
+    }
+
+    /// Nothing recorded (a caller that never blocked): the current status
+    /// is the truth, because nothing in this process changed it.
+    #[test]
+    fn without_a_recorded_status_the_hint_reads_the_current_one() {
+        let got = super::status_for_hint(None, || Some("NoNewPrivs:\t1\n".into()));
+        assert_eq!(
+            got.as_deref(),
+            Some("NoNewPrivs:\t1\n"),
+            "nothing recorded: the current status"
+        );
+    }
+
+    /// A status that could not be read before the block stays unread: the
+    /// current one would carry the flag sipnab set, so it is no substitute.
+    #[test]
+    fn an_unreadable_recorded_status_is_not_replaced_by_the_current_one() {
+        let got = super::status_for_hint(Some(None), || Some("NoNewPrivs:\t1\n".into()));
+        assert_eq!(got, None, "an unreadable recorded status stays unread");
     }
     /// A secret file you own that your group or other users can read is
     /// refused, naming the mode, and the same file at 0600 opens. This is the

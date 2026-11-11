@@ -520,6 +520,7 @@ mod http {
         };
         crate::tls_listener::https_config(
             (std::path::Path::new(chain), std::path::Path::new(pem)),
+            crate::cli::MCP_TLS_FLAGS,
             client_auth,
             "MCP TLS",
         )
@@ -847,6 +848,55 @@ mod http {
                 err.starts_with("--mcp-tls-client-auth required needs --mcp-tls-client-ca"),
                 "{err}"
             );
+        }
+
+        /// The reported case: an unreadable `--mcp-tls-key` is refused with
+        /// the flag, the path and the operating system's reason in the
+        /// message itself, not only in an error chain a plain `{}` drops.
+        #[test]
+        fn mcp_tls_config_names_the_flag_path_and_reason_for_an_unreadable_key()
+        -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let (cert, _) = crate::tls_files::self_signed_pair(dir.path())?;
+            let absent = dir.path().join("absent.key");
+            let err = mcp_tls_config(
+                cert.to_str(),
+                absent.to_str(),
+                &crate::config::ClientCertAuth::default(),
+            )
+            .err()
+            .ok_or("an unreadable key must be refused")?
+            .to_string();
+            assert!(err.contains("--mcp-tls-key"), "names the flag: {err}");
+            assert!(
+                err.contains(&*absent.to_string_lossy()),
+                "names the path: {err}"
+            );
+            assert!(err.contains("No such file or directory"), "says why: {err}");
+            Ok(())
+        }
+
+        /// The certificate is named by its own flag, not the key's.
+        #[test]
+        fn mcp_tls_config_names_the_cert_flag_for_an_unreadable_cert() -> Result<(), TestError> {
+            let dir = tempfile::tempdir()?;
+            let (_, key) = crate::tls_files::self_signed_pair(dir.path())?;
+            let absent = dir.path().join("absent.pem");
+            let err = mcp_tls_config(
+                absent.to_str(),
+                key.to_str(),
+                &crate::config::ClientCertAuth::default(),
+            )
+            .err()
+            .ok_or("an unreadable certificate must be refused")?
+            .to_string();
+            assert!(err.starts_with("--mcp-tls-cert: "), "names the flag: {err}");
+            assert!(
+                err.contains(&*absent.to_string_lossy()),
+                "names the path: {err}"
+            );
+            assert!(err.contains("No such file or directory"), "says why: {err}");
+            Ok(())
         }
 
         /// Test signing key shared between minting and the router's verifier.

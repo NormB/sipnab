@@ -302,6 +302,8 @@ LOST: the audit subsystem lost 12 record(s) during the run.
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Permission denied on 'eth0'. Grant capture capabilities once`, exit 1 | The binary has no capabilities, or something replaced it since | `sipnab --setup-caps` again |
+| `Permission denied on 'eth0'. This process runs with NoNewPrivs set`, exit 1 | `NoNewPrivileges=yes` or `no-new-privileges` makes file capabilities ineffective | `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN` in the unit, or start as root |
+| `Permission denied on 'eth0'. CAP_NET_RAW is not in this process's capability bounding set`, exit 1 | The container or unit dropped the capability | `--cap-add=NET_RAW`, or `CapabilityBoundingSet=` naming it |
 | `Failed to drop privileges: User 'nobody' not found. Create it with 'useradd -r -s /usr/sbin/nologin nobody' or use --user <name>` | The user does not exist on this host. With `--chroot`, 0.5.233 and earlier also printed this when the directory held no `etc/passwd` naming the user | Create the user, or name another with `--user`. On 0.5.233 or earlier, upgrade, or add the user's entries to the directory |
 | `Failed to chroot: chroot(/var/empty) failed: No such file or directory (os error 2)` | The `--chroot` directory does not exist | Create it |
 | A root run reading files stops before it reads any with exit `2`, and the message names the hard open-file limit ([quoted in full](#read-capture-files-only-root-can-read)) | The set needs one descriptor per file plus 64, more than the hard open-file limit allows | Raise `ulimit -Hn` or `LimitNOFILE=`, or read fewer files per run |

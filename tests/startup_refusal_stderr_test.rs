@@ -106,6 +106,13 @@ const CASES: &[Case] = &[
         stdout: Stdout::Null,
     },
     Case {
+        label: "a HEP listener's unguarded routable bind",
+        args: &["-N", "-L", "0.0.0.0:0", "--no-cli-print"],
+        code: 2,
+        needle: "HEP listener refuses to start",
+        stdout: Stdout::Null,
+    },
+    Case {
         label: "a plan refusal (PlanError::exit)",
         args: &["-N", "-I", "{tmp}/missing.pcap", "--no-cli-print"],
         code: 1,

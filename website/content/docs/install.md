@@ -41,9 +41,10 @@ minute.
 - **A supported host.** Linux or macOS, on x86_64 or aarch64.
 - **`curl`, `tar` and a checksum tool** (`sha256sum` or `shasum`) for the
   one-line installer. It stops with an error when one is missing.
-- **libpcap on a glibc Linux host.** The installer does not install it:
-  `libpcap0.8` on Debian and Ubuntu, `libpcap` on Fedora and RHEL. The static
-  musl build and macOS need nothing.
+- **libpcap, for the `-gnu` build only.** The installer does not install it.
+  On a glibc Linux host that has `libpcap.so.0.8` it installs the `-gnu`
+  build. On a host without that library it installs the static musl build,
+  which needs nothing. macOS has libpcap.
 - **Root only to write the install directory.** The installer uses `sudo` when
   `/usr/local/bin` is not writable. Set `SIPNAB_INSTALL_DIR` to a directory you
   own and it needs no root. Reading capture files needs no privileges. Live
@@ -67,12 +68,13 @@ curl -fsSL https://sipnab.com/install.sh | sh
 
 The install script:
 
-- detects your OS, CPU architecture, and glibc version,
+- detects your OS, CPU architecture, glibc version, and whether the host has
+  `libpcap.so.0.8`,
 - downloads the matching versioned release tarball
   (`sipnab-<version>-<target-triple>.tar.gz`) together with its `.sha256` file,
 - **verifies the checksum**,
 - installs the binary to `/usr/local/bin` (using `sudo` only if that directory
-  isn't writable).
+  isn't writable), and the audio plugin beside it when the tarball holds one.
 
 Prefer to read it first: <https://sipnab.com/install.sh>.
 
@@ -111,16 +113,32 @@ When the installer stops, its last line names the reason:
 
 Each of these exits with status 1 and installs nothing.
 
-**The installer does not install libpcap.** On a glibc host it installs the
-`-gnu` build, which loads libpcap at startup. Without it, the first run
-fails:
+**The installer does not install libpcap.** The `-gnu` build loads
+`libpcap.so.0.8`, Debian's name for libpcap, at startup. The installer looks
+for that library in the `ldconfig` cache, or in the library directories when
+there is no cache. When the library is missing it installs the static musl
+build instead and says so:
+
+```text
+sipnab-install: libpcap.so.0.8 not found — using the static musl build (no TUI audio; otherwise identical). For the gnu build, install libpcap0.8t64 (Debian 13, Ubuntu 24.04) or libpcap0.8 (Debian 12) and run the installer again; on Fedora or RHEL install the .rpm package instead
+```
+
+- To get the `-gnu` build with TUI audio on Debian or Ubuntu, install the
+  package the line names and run the installer again.
+- Fedora and RHEL name the library `libpcap.so.1`, so no package there
+  provides `libpcap.so.0.8`. The `.rpm` package links `libpcap.so.1`; see
+  [Install with your package manager](#install-with-your-package-manager).
+- Check what the installer finds: `/sbin/ldconfig -p | grep libpcap.so.0.8`.
+  No output means it installs the musl build.
+
+Before 2026-11-10 the installer chose the `-gnu` build on the glibc version
+alone. On a host without the library, the first run then failed:
 
 ```text
 sipnab: error while loading shared libraries: libpcap.so.0.8: cannot open shared object file: No such file or directory
 ```
 
-Install `libpcap0.8` (Debian, Ubuntu) or `libpcap` (Fedora, RHEL) and run it
-again.
+Run the installer again to replace that binary.
 
 - Go to [Check it worked](#check-it-worked) for the fuller checks, or
   [Next steps](#next-steps) to start reading captures.
@@ -128,11 +146,10 @@ again.
   `PATH`. See [Check it worked](#check-it-worked).
 
 On Linux the installer chooses between two builds.
-- Hosts with glibc 2.36 or newer (Debian 12+, Ubuntu 23.04+) get the
-  dynamically linked **`-gnu`** build. That build needs libpcap from your
-  package manager.
-- Older hosts, and hosts with no glibc, get the static **musl** build. It
-  needs nothing else.
+- Hosts with glibc 2.36 or newer (Debian 12+, Ubuntu 23.04+) and
+  `libpcap.so.0.8` installed get the dynamically linked **`-gnu`** build.
+- Older hosts, hosts with no glibc, and hosts without `libpcap.so.0.8`
+  get the static **musl** build. It needs nothing else.
   - It lacks TUI audio playback, WASM plugins, vCon export and the eBPF uprobe
     backend.
   - It reads password-protected ZIP and 7z archives like every other release
@@ -404,14 +421,27 @@ A manual download of the gnu build that checks the checksum before installing.
    sudo install -m 755 "sipnab-$VERSION-$TARGET/sipnab" /usr/local/bin/sipnab
    ```
 
+- Install the audio plugin in the same directory as the binary:
+
+   ```bash
+   sudo install -m 644 "sipnab-$VERSION-$TARGET/libsipnab_audio.so" /usr/local/bin/libsipnab_audio.so
+   ```
+
 The dynamic builds, whose names end in `-unknown-linux-gnu.tar.gz`, are the
 ones that can add TUI audio playback. From 0.5.233 the tarball holds the
 playback plugin (`libsipnab_audio.so`) beside the binary. From 0.5.118 to
-0.5.232 it held the binary, the man page and the license files only. sipnab
-looks for the plugin next to its own executable, then in `/usr/lib/sipnab/`,
-then through the dynamic loader's search path, so the step above, which
-installs the binary alone, leaves playback off. See
+0.5.232 it held the binary, the man page and the license files only, and the
+last step fails with `cannot stat`. Skip it for those releases. sipnab looks
+for the plugin next to its own executable, then in `/usr/lib/sipnab/`, then
+through the dynamic loader's search path. Without the last step playback is
+off. See
 [The audio plugin in Linux packages](#the-audio-plugin-in-linux-packages).
+
+To check that sipnab finds the plugin, open a call's RTP stream in the TUI and
+start playback. When the plugin is missing, the status line starts with
+`Audio init failed: Audio playback unavailable — the sipnab audio plugin or
+libasound2 is not installed`. The plugin also needs `libasound2`
+(`libasound2t64` on Debian 13 and Ubuntu 24.04).
 
 - They require glibc >= 2.36 (Debian 12+, Ubuntu 23.04+) and libpcap.
 - On an older distribution they fail with
@@ -1109,11 +1139,21 @@ INFO sipnab::privilege: Dropped privileges to user 'nobody' (uid=65534, gid=6553
 ```
 
 Without `--user root`, with or without `--cap-add NET_RAW --cap-add
-NET_ADMIN`, the capture fails and the container exits with status 1:
+NET_ADMIN`, the capture fails and the container exits with status 1. sipnab
+finds `/.dockerenv` and says what to change:
 
 ```text
-Permission denied on 'lo'. Grant capture capabilities once (Linux), then re-run without sudo:
+Permission denied on 'lo'. This process runs in a container (/.dockerenv), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:
+  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>
 ```
+
+A container started with `--cap-drop=NET_RAW` gets `CAP_NET_RAW is not in
+this process's capability bounding set (container: /.dockerenv)` instead,
+even as root. A non-root container started with
+`--security-opt no-new-privileges` gets `This process runs with NoNewPrivs
+set`. As root, that container captures.
+These permission lines come from a development build of sipnab run in a
+`debian:13` container on `lo`.
 
 The outputs above came from an arm64 image built from the
 [`Dockerfile`](https://github.com/NormB/sipnab/blob/main/Dockerfile)'s runtime
@@ -1319,16 +1359,22 @@ directory is not on your `PATH`. Run it by its full path, such as
 `/usr/local/bin/sipnab --version`, or add the directory to `PATH`.
 
 **`sipnab: error while loading shared libraries: libpcap.so.0.8: cannot open shared object file: No such file or directory`.**
-The `-gnu` build loads libpcap when it starts, and the host has none. The exit
-status is 127. Install `libpcap0.8` (Debian, Ubuntu) or `libpcap` (Fedora,
-RHEL).
+The `-gnu` build loads `libpcap.so.0.8` when it starts, and the host has none.
+The exit status is 127. Install
+`libpcap0.8t64` (Debian 13, Ubuntu 24.04) or `libpcap0.8` (Debian 12). Or run the installer again: on a host without the
+library it installs the static musl build. Fedora and RHEL have no package
+that provides `libpcap.so.0.8`: use the `.rpm` package or the musl build
+there.
 
 **`Permission denied on 'eth0'. Grant capture capabilities once (Linux), then re-run without sudo:`**
 Opening a network device needs privilege, and reading a file does not. sipnab
 exits with status 1 and prints the commands that fix it. The first one,
 `sipnab --setup-caps`, grants the two capture capabilities to the binary:
 [Capture live traffic without root](#capture-live-traffic-without-root)
-explains what it does.
+explains what it does. In a container, or under a service unit that sets
+`NoNewPrivileges`, the line after `Permission denied` names that cause:
+[Live capture says Permission denied](@/docs/troubleshooting.md#live-capture-says-permission-denied)
+lists each one with its fix.
 
 **A feature is missing.** `sipnab --version` lists the features in your
 build. [Feature flags](#feature-flags) says what each one adds.
@@ -1386,8 +1432,9 @@ curl -fsSL https://sipnab.com/install.sh | SIPNAB_INSTALL_DIR="$HOME/.local/bin"
 
 Repeat the download steps in
 [Download a release binary yourself](#download-a-release-binary-yourself) with
-`VERSION` set to the new release. The last step,
-`sudo install -m 755`, replaces the old binary.
+`VERSION` set to the new release. The two install steps,
+`sudo install -m 755` and `sudo install -m 644`, replace the old binary and the
+old plugin.
 
 ### With a .deb package
 
@@ -1502,11 +1549,12 @@ alone.
 Remove sipnab the way you installed it. Every method below removes the binary
 itself. The last part covers the files sipnab may have read but never created.
 
-If you used the one-line installer, it copied a single binary and nothing
-else. So deleting that file is the whole uninstall:
+If you used the one-line installer, it copied the binary and, from a gnu or
+macOS tarball, the audio plugin beside it, and nothing else. So deleting those
+files is the whole uninstall:
 
 ```bash
-sudo rm -f /usr/local/bin/sipnab
+sudo rm -f /usr/local/bin/sipnab /usr/local/bin/libsipnab_audio.so /usr/local/bin/libsipnab_audio.dylib
 ```
 
 If you set `SIPNAB_INSTALL_DIR`, remove the copy there instead. `command -v`
@@ -1516,18 +1564,28 @@ answers where it actually is, which beats guessing:
 command -v sipnab
 ```
 
-On Debian or Ubuntu, stop and disable the service first, then remove the
-package:
+On Debian or Ubuntu, remove the package. Its `prerm` script stops the
+service and disables it, and its `postrm` script reloads systemd:
 
 ```bash
-# Run all of these, in order.
-sudo systemctl disable --now sipnab
 sudo apt remove sipnab
 ```
 
-The package does not stop the service itself. A running sipnab survives
-`apt remove` with its binary deleted, and the unit's enable link stays behind,
-pointing at a file that no longer exists.
+Check that the service no longer runs and is not enabled. Both commands should answer
+`inactive` and `not-found` or `disabled`:
+
+```bash
+# Run all of these, in order.
+systemctl is-active sipnab
+systemctl is-enabled sipnab
+```
+
+The `.deb` of 0.5.244 and earlier had no `prerm` or `postrm`. A running sipnab
+survived `apt remove` with its binary deleted, and the unit's enable link
+stayed behind, pointing at a file that no longer existed. When removing such a
+version, run `sudo systemctl disable --now sipnab` first. An upgrade does not
+stop or disable the service: the new package's `postinst` restarts it when it
+is running, so it runs the new binary.
 
 What `apt remove` and `apt purge` both leave in place:
 
@@ -1545,14 +1603,16 @@ sudo systemctl daemon-reload
 sudo userdel sipnab
 ```
 
-On RHEL or Fedora, the same: stop and disable the service, remove the
-package, and remove what the package leaves:
+On RHEL or Fedora, the same: remove the package, whose `%preun` script
+stops and disables the service, then remove what the package leaves:
 
 ```bash
-# Run all of these, in order.
-sudo systemctl disable --now sipnab
 sudo dnf remove sipnab
 ```
+
+The `.rpm` of 0.5.244 and earlier had no `%preun`. For those, run
+`sudo systemctl disable --now sipnab` first. An upgrade restarts a running
+service, from the package's `%postun`, and leaves it enabled.
 
 On macOS with Homebrew:
 

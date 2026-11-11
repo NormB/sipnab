@@ -6685,7 +6685,11 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // scripts/pages-live.py in its comment and its error line (+2).
     // Measurement: with main's release.yml swapped back in the scan read two
     // fewer.
-    const EXPECTED_REFERENCES: usize = 268;
+    // 268 -> 270: the maintainer-script comments in
+    // `packaging/deb/build-deb.sh` and `packaging/rpm/build-rpm.sh` name the
+    // harness that runs them, `packaging/deb/test-build-deb.sh` and
+    // `packaging/rpm/test-build-rpm.sh` (+1 each).
+    const EXPECTED_REFERENCES: usize = 270;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

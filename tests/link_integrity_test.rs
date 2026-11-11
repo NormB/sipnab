@@ -1776,12 +1776,17 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // console needs" and the troubleshooting table link to
     // #the-console-without-the-api; errors.md +1, the refusal's entry links
     // to the same section.
-    // 2525 -> 2545 (DOCS-HOWTO-GAP, first batch: the "Before you start",
+    // 2525 -> 2527 (OPS batch 4): errors.md +1, the permission-refusal
+    // entry's link to troubleshooting.md's "Live capture says Permission
+    // denied"; install.md +1, to "Install with your package manager" from
+    // the paragraph on hosts without libpcap.so.0.8.
+    // 2527 -> 2548 (DOCS-HOWTO-GAP, first batch: the "Before you start",
     // "Check that it worked" and "When something does not work" sections):
-    // install.md +7, first-cli-triage.md +6, tui-walkthrough.md +6,
+    // install.md +8 (one of them to troubleshooting.md's "Live capture says
+    // Permission denied"), first-cli-triage.md +6, tui-walkthrough.md +6,
     // expectations.md +1; follow-a-call.md +1 -1 (its link to "Make the match
     // exact" was reworded, not added).
-    const EXPECTED_WIKI_LINKS: usize = 2545;
+    const EXPECTED_WIKI_LINKS: usize = 2548;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
