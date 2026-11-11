@@ -965,7 +965,16 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // src/app/bootstrap.rs's one permission template became five (the header
 // around the causes, the bounding-set and NoNewPrivs paragraphs, the
 // container hint, and the general hint, its placeholder renamed). +4.
-const EXPECTED_TEMPLATES: usize = 611;
+// 611 -> 622 (fleet call records): src/app/fleet_calls.rs +1 (an unknown
+// call_push), src/app/fleet_member.rs +5 (call_push with no spool key, the
+// exception cap's range, a spool key file other users can read, call records
+// not written to the spool, and a delivery that does not open),
+// src/app/fleet_intake.rs +4 (the intake's mode, its read or write error, its
+// torn last record, and the records removed at start) and
+// src/app/fleet_center.rs +1 (the intake not rewritten). Reworded, count
+// unchanged: the center's refusal of an unknown kind now names both kinds,
+// and the spool cap's warning says files, since it removes deliveries too.
+const EXPECTED_TEMPLATES: usize = 622;
 
 // ---------------------------------------------------------------------------
 // The page gates

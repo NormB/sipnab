@@ -74,6 +74,60 @@ pub struct MemberPlan {
     pub heartbeat_secs: u64,
     /// The most heartbeats the spool keeps.
     pub spool_max_files: u64,
+    /// How the member pushes its ended calls; `None` when it pushes none.
+    pub calls: Option<CallPlan>,
+}
+
+/// How a member pushes its ended calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallPlan {
+    /// `[fleet] call_push`: `exceptions` or `all`.
+    pub rule: super::fleet_calls::CallPush,
+    /// `[fleet] exception_max_per_sec`.
+    pub max_per_sec: u32,
+    /// `[fleet] spool_key_file`.
+    pub key_file: PathBuf,
+}
+
+/// The call push `[fleet]` asks for; `None` when the member pushes no call.
+///
+/// With no `call_push`, a member that has a `spool_key_file` pushes
+/// `exceptions` and one without pushes none, so a member set up before call
+/// records existed runs as it did.
+///
+/// # Errors
+///
+/// `call_push` is not one of its three values, `exception_max_per_sec` is
+/// out of range, or `call_push` asks for records with no `spool_key_file`
+/// to seal them under. The message names the key.
+pub fn call_plan(keys: &crate::config::FleetConfig) -> Result<Option<CallPlan>, String> {
+    use super::fleet_calls::{CallPush, DEFAULT_EXCEPTION_MAX_PER_SEC, MAX_EXCEPTION_MAX_PER_SEC};
+    let written = keys.call_push.as_deref().map(CallPush::parse).transpose()?;
+    let max_per_sec = keys
+        .exception_max_per_sec
+        .unwrap_or(DEFAULT_EXCEPTION_MAX_PER_SEC);
+    if !(1..=MAX_EXCEPTION_MAX_PER_SEC).contains(&max_per_sec) {
+        return Err(format!(
+            "[fleet] exception_max_per_sec {max_per_sec} is outside 1 to {MAX_EXCEPTION_MAX_PER_SEC}"
+        ));
+    }
+    let rule = match (written, &keys.spool_key_file) {
+        (Some(CallPush::None), _) | (None, None) => return Ok(None),
+        (Some(rule), Some(_)) => rule,
+        (None, Some(_)) => CallPush::Exceptions,
+        (Some(rule), None) => {
+            return Err(format!(
+                "[fleet] call_push {:?} needs [fleet] spool_key_file: call records wait on disk \
+                 only in sealed files. Create a key with `sipnab fleet keygen --out FILE`",
+                rule.name()
+            ));
+        }
+    };
+    Ok(keys.spool_key_file.clone().map(|key_file| CallPlan {
+        rule,
+        max_per_sec,
+        key_file,
+    }))
 }
 
 impl MemberPlan {
@@ -102,6 +156,7 @@ impl MemberPlan {
             ("report_token_file", &keys.report_token_file),
             ("report_ca_file", &keys.report_ca_file),
             ("spool_dir", &keys.spool_dir),
+            ("spool_key_file", &keys.spool_key_file),
         ];
         for (key, path) in written {
             if path.as_ref().is_some_and(|p| p.as_os_str().is_empty()) {
@@ -122,6 +177,7 @@ impl MemberPlan {
         if spool_max_files == 0 {
             return Err("[fleet] spool_max_files must be 1 or more".to_string());
         }
+        let calls = call_plan(keys)?;
         let (url, url_from) = match (&args.fleet_report_url, &keys.report_url) {
             (Some(url), _) => (url.clone(), "--fleet-report-url"),
             (None, Some(url)) => (url.clone(), "[fleet] report_url"),
@@ -168,6 +224,7 @@ impl MemberPlan {
             spool,
             heartbeat_secs,
             spool_max_files,
+            calls,
         }))
     }
 }
@@ -249,6 +306,23 @@ impl SpoolStream {
         self.next_seq = next;
         Ok(seq)
     }
+
+    /// The next `n` positions, recorded as taken before the first is
+    /// returned.
+    ///
+    /// # Errors
+    ///
+    /// The position file cannot be written.
+    pub fn take_n(&mut self, spool: &Path, n: u64) -> std::io::Result<u64> {
+        let first = self.next_seq;
+        if n == 0 {
+            return Ok(first);
+        }
+        let next = first.saturating_add(n);
+        super::spool::write_atomically(&spool.join(SEQ_FILE), next.to_string().as_bytes())?;
+        self.next_seq = next;
+        Ok(first)
+    }
 }
 
 /// A new stream id: 32 random hex digits.
@@ -271,7 +345,21 @@ pub fn heartbeat_line(
     heartbeat_secs: u64,
     inventory: &serde_json::Value,
 ) -> String {
-    let mut line = serde_json::json!({
+    heartbeat_line_with(stream, seq, sent_at, heartbeat_secs, inventory, None)
+}
+
+/// [`heartbeat_line`] for a member that pushes call records: the line
+/// carries `calls`, what the member did with its ended calls so far.
+#[must_use]
+pub fn heartbeat_line_with(
+    stream: &str,
+    seq: u64,
+    sent_at: DateTime<Utc>,
+    heartbeat_secs: u64,
+    inventory: &serde_json::Value,
+    calls: Option<super::fleet_calls::CallCounts>,
+) -> String {
+    let mut record = serde_json::json!({
         "schema_version": super::fleet_center::RECORD_SCHEMA_VERSION,
         "kind": super::fleet_center::KIND_HEARTBEAT,
         "stream": stream,
@@ -279,8 +367,11 @@ pub fn heartbeat_line(
         "sent_at": sent_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
         "heartbeat_secs": heartbeat_secs,
         "inventory": inventory,
-    })
-    .to_string();
+    });
+    if let Some(calls) = calls {
+        record["calls"] = serde_json::json!(calls);
+    }
+    let mut line = record.to_string();
     line.push('\n');
     line
 }
@@ -298,13 +389,71 @@ pub fn file_name(seq: u64) -> String {
 ///
 /// The spool cannot be listed, or a file cannot be removed.
 pub fn enforce_cap(spool: &Path, max: u64) -> std::io::Result<usize> {
-    let names = super::spool::pending(spool)?;
+    let names = waiting(spool)?;
     let keep = usize::try_from(max).unwrap_or(usize::MAX);
     let over = names.len().saturating_sub(keep);
     for name in &names[..over] {
         std::fs::remove_file(spool.join(name))?;
     }
     Ok(over)
+}
+
+/// The files waiting in `spool`, heartbeats and sealed deliveries of call
+/// records, in position order.
+///
+/// # Errors
+///
+/// The directory cannot be read.
+pub fn waiting(spool: &Path) -> std::io::Result<Vec<String>> {
+    super::spool::pending_with(spool, |name| {
+        name.ends_with(".json") || super::fleet_calls::is_batch_file(name)
+    })
+}
+
+/// Seal `selected` into `spool` as the next records of `stream`, sent at
+/// `now`: one sealed file per delivery ([`super::fleet_calls::batches`]),
+/// under `key`, with `source` for each file's random values. Returns how
+/// many calls were written and how many were left out.
+///
+/// # Errors
+///
+/// The positions or a file cannot be written, or a delivery cannot be
+/// sealed. Nothing in clear is written at any point.
+pub fn spool_calls(
+    spool: &Path,
+    stream: &mut SpoolStream,
+    selected: &[super::fleet_calls::Selected],
+    now: DateTime<Utc>,
+    key: &super::fleet_seal::MasterKey,
+    source: super::fleet_seal::Draw<'_>,
+) -> Result<(u64, u64), String> {
+    use super::fleet_calls::{MAX_DELIVERY_BYTES, MAX_DELIVERY_RECORDS};
+    if selected.is_empty() {
+        return Ok((0, 0));
+    }
+    let first = stream
+        .take_n(spool, selected.len() as u64)
+        .map_err(|e| e.to_string())?;
+    let lines: Vec<String> = selected
+        .iter()
+        .zip(first..)
+        .map(|(call, seq)| {
+            super::fleet_calls::call_line(&stream.stream, seq, now, call.selected_by, &call.call)
+        })
+        .collect();
+    let (batches, left_out) =
+        super::fleet_calls::batches(lines, MAX_DELIVERY_RECORDS, MAX_DELIVERY_BYTES);
+    let mut spooled = 0u64;
+    let mut seq = first;
+    for batch in batches {
+        // Named by a position of its own: the records inside carry theirs.
+        let sealed = super::fleet_calls::seal_batch(key, &batch, source)?;
+        let name = super::fleet_calls::batch_file_name(seq);
+        super::spool::write_atomically(&spool.join(name), &sealed).map_err(|e| e.to_string())?;
+        spooled += batch.len() as u64;
+        seq += batch.len() as u64;
+    }
+    Ok((spooled, left_out as u64))
 }
 
 /// What a delivery's answer means for the heartbeat that drew it.
@@ -346,6 +495,10 @@ pub struct Sources {
     pub interfaces: Vec<String>,
     /// When the run started, for the uptime.
     pub started: Instant,
+    /// The dialogs this run holds, which the call push reads.
+    pub dialogs: std::sync::Arc<parking_lot::RwLock<crate::sip::dialog_store::DialogStore>>,
+    /// The RTP streams this run holds, which the call push reads.
+    pub streams: std::sync::Arc<parking_lot::RwLock<crate::rtp::stream_store::StreamStore>>,
 }
 
 /// Start the member on a thread of its own.
@@ -368,47 +521,153 @@ enum Pass {
     Wait(String),
 }
 
-/// The member's loop: a heartbeat every interval, and a delivery pass when
-/// one is due. Returns only when the spool cannot be used at all.
+/// How often a member that pushes call records looks at its dialogs.
+const CALL_LOOK: Duration = Duration::from_secs(5);
+
+/// How long an ended call must be quiet before it is pushed, so the answer
+/// it is pushed with is the one the call settles on.
+const CALL_SETTLE: chrono::TimeDelta = chrono::TimeDelta::seconds(5);
+
+/// A member's push of call records while it runs.
+struct CallState {
+    /// The rule, the cap and the calls pushed.
+    pusher: super::fleet_calls::CallPusher,
+    /// The spool key, which seals and opens the deliveries.
+    keys: super::fleet_seal::Keys,
+    /// When the member next looks at its dialogs.
+    next_look: Instant,
+}
+
+/// The member's loop: a heartbeat every interval, a look at the ended calls
+/// every [`CALL_LOOK`] when the member pushes them, and a delivery pass
+/// when one is due. Returns only when the spool cannot be used at all.
 fn run(plan: &MemberPlan, sources: &Sources) {
-    let Some((mut stream, tls, token)) = start(plan) else {
+    let Some(ready) = start(plan) else {
         return;
     };
+    let Ready {
+        mut stream,
+        tls,
+        token,
+        spool_key,
+    } = ready;
+    let mut calls = plan
+        .calls
+        .as_ref()
+        .zip(spool_key)
+        .map(|(call, key)| CallState {
+            pusher: super::fleet_calls::CallPusher::new(call.rule, call.max_per_sec),
+            keys: super::fleet_seal::Keys::new(key, Vec::new()),
+            next_look: Instant::now(),
+        });
     let interval = Duration::from_secs(plan.heartbeat_secs);
     let mut next_beat = Instant::now();
     let mut delivery = Delivery::new(plan.heartbeat_secs);
     loop {
         let now = Instant::now();
+        if let Some(state) = calls.as_mut()
+            && now >= state.next_look
+        {
+            state.next_look = now + CALL_LOOK;
+            match push_calls(plan, sources, &mut stream, state) {
+                // New records go out now, unless the center is being waited for.
+                Ok(spooled) if spooled > 0 && delivery.waiting.is_none() => {
+                    delivery.next_try = now;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("fleet member: call records were not written to the spool: {e}");
+                }
+            }
+        }
         if now >= next_beat {
             next_beat = now + interval;
-            if let Err(e) = write_heartbeat(plan, sources, &mut stream) {
+            let counts = calls.as_ref().map(|state| state.pusher.counts());
+            if let Err(e) = write_heartbeat(plan, sources, &mut stream, counts) {
                 tracing::warn!("fleet member: a heartbeat was not written to the spool: {e}");
             }
         }
         if now >= delivery.next_try {
-            let pass = deliver(plan, tls.as_ref(), &token);
+            let keys = calls.as_ref().map(|state| &state.keys);
+            let pass = deliver(plan, tls.as_ref(), &token, keys);
             delivery.after(pass, now, next_beat);
         }
-        let until = next_beat.min(delivery.next_try);
+        let look = calls.as_ref().map_or(next_beat, |state| state.next_look);
+        let until = next_beat.min(delivery.next_try).min(look);
         std::thread::sleep(until.saturating_duration_since(Instant::now()));
     }
 }
 
-/// [`prepare`], logging where the member reports, or why it does not.
-fn start(
+/// One look at the run's dialogs: the ended calls the rule selects are
+/// sealed into the spool. Returns how many were written.
+fn push_calls(
     plan: &MemberPlan,
-) -> Option<(
-    SpoolStream,
-    Option<std::sync::Arc<rustls::ClientConfig>>,
-    String,
-)> {
+    sources: &Sources,
+    stream: &mut SpoolStream,
+    state: &mut CallState,
+) -> Result<u64, String> {
+    let selected = {
+        // Dialogs, then streams: the order the REST API takes them in.
+        let dialogs = sources.dialogs.read();
+        let streams = sources.streams.read();
+        state.pusher.look(
+            &dialogs,
+            &streams,
+            Utc::now(),
+            sources.started.elapsed(),
+            CALL_SETTLE,
+        )
+    };
+    if selected.is_empty() {
+        return Ok(0);
+    }
+    let (spooled, left_out) = spool_calls(
+        &plan.spool,
+        stream,
+        &selected,
+        Utc::now(),
+        state.keys.current(),
+        &super::fleet_seal::system_draw,
+    )?;
+    state.pusher.spooled(spooled, left_out);
+    let dropped = enforce_cap(&plan.spool, plan.spool_max_files).map_err(|e| e.to_string())?;
+    warn_capped(plan, dropped);
+    Ok(spooled)
+}
+
+/// Log that the spool's cap removed `dropped` files, when it removed any.
+fn warn_capped(plan: &MemberPlan, dropped: usize) {
+    if dropped > 0 {
+        tracing::warn!(
+            "fleet member: the spool holds [fleet] spool_max_files {}; the oldest {dropped} \
+             file(s) were dropped",
+            plan.spool_max_files
+        );
+    }
+}
+
+/// What a member needs to run, read once at its start.
+struct Ready {
+    /// The spool's stream.
+    stream: SpoolStream,
+    /// The TLS configuration for the center, when its URL is `https://`.
+    tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+    /// The member's token.
+    token: String,
+    /// The spool key, when the member pushes call records.
+    spool_key: Option<super::fleet_seal::MasterKey>,
+}
+
+/// [`prepare`], logging where the member reports, or why it does not.
+fn start(plan: &MemberPlan) -> Option<Ready> {
     match prepare(plan) {
         Ok(ready) => {
             tracing::info!(
-                "fleet member reporting to {} every {} s, spool '{}'",
+                "fleet member reporting to {} every {} s, spool '{}', call records: {}",
                 plan.url,
                 plan.heartbeat_secs,
-                plan.spool.display()
+                plan.spool.display(),
+                plan.calls.as_ref().map_or("none", |call| call.rule.name())
             );
             Some(ready)
         }
@@ -473,16 +732,7 @@ impl Delivery {
 }
 
 /// The spool's stream, the TLS configuration and the token.
-fn prepare(
-    plan: &MemberPlan,
-) -> Result<
-    (
-        SpoolStream,
-        Option<std::sync::Arc<rustls::ClientConfig>>,
-        String,
-    ),
-    String,
-> {
+fn prepare(plan: &MemberPlan) -> Result<Ready, String> {
     let stream = SpoolStream::open(&plan.spool)
         .map_err(|e| format!("--fleet-spool-dir '{}': {e}", plan.spool.display()))?;
     std::fs::create_dir_all(plan.spool.join(FAILED_DIR))
@@ -493,7 +743,45 @@ fn prepare(
         None
     };
     let token = read_token(&plan.token_file)?;
-    Ok((stream, tls, token))
+    let spool_key = plan
+        .calls
+        .as_ref()
+        .map(|call| read_spool_key(&call.key_file))
+        .transpose()?;
+    Ok(Ready {
+        stream,
+        tls,
+        token,
+        spool_key,
+    })
+}
+
+/// The spool key from `path`, a file other users cannot read.
+///
+/// Through `secret_files`, as the token is: a run that drops privileges
+/// read the file before the drop.
+fn read_spool_key(path: &Path) -> Result<super::fleet_seal::MasterKey, String> {
+    let shown = path.display();
+    let label = "[fleet] spool_key_file";
+    let hint = "create a key with `sipnab fleet keygen --out FILE`";
+    #[cfg(unix)]
+    {
+        let mode = crate::secret_files::mode(path)
+            .map_err(|e| format!("{label} '{shown}': {e}; {hint}"))?;
+        if mode & 0o077 != 0 {
+            return Err(format!(
+                "{label} '{shown}' can be read or written by other users (mode {:04o}); chmod \
+                 600 it",
+                mode & 0o7777
+            ));
+        }
+    }
+    let text = zeroize::Zeroizing::new(
+        crate::secret_files::read_to_string(path)
+            .map_err(|e| format!("{label} '{shown}': {e}; {hint}"))?,
+    );
+    super::fleet_seal::MasterKey::parse(&text)
+        .map_err(|why| format!("{label} '{shown}' {why}; {hint}"))
 }
 
 /// The member's token from `path`: one token on one line, in a file other
@@ -533,6 +821,7 @@ fn write_heartbeat(
     plan: &MemberPlan,
     sources: &Sources,
     stream: &mut SpoolStream,
+    calls: Option<super::fleet_calls::CallCounts>,
 ) -> Result<(), String> {
     let inventory = crate::output::inventory::current(
         sources.meter.as_ref(),
@@ -547,14 +836,9 @@ fn write_heartbeat(
         Utc::now(),
         plan.heartbeat_secs,
         plan.spool_max_files,
+        calls,
     )?;
-    if dropped > 0 {
-        tracing::warn!(
-            "fleet member: the spool holds [fleet] spool_max_files {}; the oldest {dropped} \
-             heartbeat(s) were dropped",
-            plan.spool_max_files
-        );
-    }
+    warn_capped(plan, dropped);
     Ok(())
 }
 
@@ -572,9 +856,10 @@ fn spool_heartbeat(
     now: DateTime<Utc>,
     heartbeat_secs: u64,
     max: u64,
+    calls: Option<super::fleet_calls::CallCounts>,
 ) -> Result<usize, String> {
     let seq = stream.take(spool).map_err(|e| e.to_string())?;
-    let line = heartbeat_line(&stream.stream, seq, now, heartbeat_secs, inventory);
+    let line = heartbeat_line_with(&stream.stream, seq, now, heartbeat_secs, inventory, calls);
     super::spool::write_atomically(&spool.join(file_name(seq)), line.as_bytes())
         .map_err(|e| e.to_string())?;
     enforce_cap(spool, max).map_err(|e| e.to_string())
@@ -586,17 +871,19 @@ fn deliver(
     plan: &MemberPlan,
     tls: Option<&std::sync::Arc<rustls::ClientConfig>>,
     token: &str,
+    keys: Option<&super::fleet_seal::Keys>,
 ) -> Pass {
-    deliver_spool(&plan.spool, |body| post(&plan.url, tls, token, body))
+    deliver_spool(&plan.spool, keys, |body| post(&plan.url, tls, token, body))
 }
 
 /// [`deliver`]'s rules, with `send` as the one step that reaches the
 /// center: the status and the start of the answer, or why there was none.
 fn deliver_spool(
     spool: &Path,
+    keys: Option<&super::fleet_seal::Keys>,
     mut send: impl FnMut(&[u8]) -> Result<(u16, String), String>,
 ) -> Pass {
-    let names = match super::spool::pending(spool) {
+    let names = match waiting(spool) {
         Ok(names) => names,
         Err(e) => return Pass::Wait(format!("the spool cannot be read: {e}")),
     };
@@ -605,6 +892,21 @@ fn deliver_spool(
         let Ok(body) = std::fs::read(&path) else {
             // Gone since the listing: the cap removed it.
             continue;
+        };
+        let body = if super::fleet_calls::is_batch_file(&name) {
+            match opened(&body, keys) {
+                Ok(lines) => lines,
+                Err(why) => {
+                    tracing::warn!(
+                        "fleet member: sealed layer: {name}: {why}; it is moved to {FAILED_DIR}/ \
+                         and not sent"
+                    );
+                    let _ = std::fs::rename(&path, spool.join(FAILED_DIR).join(&name));
+                    continue;
+                }
+            }
+        } else {
+            body
         };
         let (status, text) = match send(&body) {
             Ok(got) => got,
@@ -633,6 +935,13 @@ fn deliver_spool(
         }
     }
     Pass::Drained
+}
+
+/// The body a sealed delivery holds, opened under `keys`, or why it does
+/// not open.
+fn opened(sealed: &[u8], keys: Option<&super::fleet_seal::Keys>) -> Result<Vec<u8>, String> {
+    let keys = keys.ok_or("no [fleet] spool_key_file is loaded")?;
+    super::fleet_calls::open_batch(sealed, keys).map_err(|e| format!("the file {e}"))
 }
 
 /// The request target for the ingest under `target`, the URL's own path.
@@ -683,7 +992,7 @@ mod tests {
         let line = heartbeat_line("s-0123", 7, at, 30, &inventory);
         assert!(line.ends_with('\n'), "one line: {line:?}");
         assert_eq!(line.matches('\n').count(), 1, "one line: {line:?}");
-        let got = crate::app::fleet_center::parse_batch(line.as_bytes())?;
+        let got = crate::app::fleet_center::parse_heartbeats(line.as_bytes())?;
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0].stream, "s-0123", "{got:?}");
         assert_eq!(got[0].seq, 7, "{got:?}");
@@ -1047,7 +1356,7 @@ mod behavior_tests {
         let dir = spool_with(3)?;
         let (send, seen) = scripted(vec![ok(200), ok(200), ok(200)]);
         assert_eq!(
-            deliver_spool(dir.path(), send),
+            deliver_spool(dir.path(), None, send),
             Pass::Drained,
             "success the spool is sent oldest first"
         );
@@ -1064,7 +1373,7 @@ mod behavior_tests {
     fn success_a_delivered_heartbeat_leaves_the_spool() -> Result<(), TestError> {
         let dir = spool_with(2)?;
         let (send, _) = scripted(vec![ok(200), ok(204)]);
-        deliver_spool(dir.path(), send);
+        deliver_spool(dir.path(), None, send);
         assert!(left(dir.path())?.is_empty(), "{:?}", left(dir.path())?);
         Ok(())
     }
@@ -1112,7 +1421,7 @@ mod behavior_tests {
         let mut stream = SpoolStream::open(dir.path())?;
         let inv = serde_json::json!({"node_name": "edge-a"});
         let now = Utc::now();
-        spool_heartbeat(dir.path(), &mut stream, &inv, now, 30, 10)?;
+        spool_heartbeat(dir.path(), &mut stream, &inv, now, 30, 10, None)?;
         assert_eq!(left(dir.path())?, [file_name(1)], "one file, position 1");
         let text = std::fs::read_to_string(dir.path().join(file_name(1)))?;
         assert_eq!(
@@ -1130,7 +1439,7 @@ mod behavior_tests {
         let mut stream = SpoolStream::open(dir.path())?;
         let inv = serde_json::json!({});
         for _ in 0..3 {
-            spool_heartbeat(dir.path(), &mut stream, &inv, Utc::now(), 30, 10)?;
+            spool_heartbeat(dir.path(), &mut stream, &inv, Utc::now(), 30, 10, None)?;
         }
         assert_eq!(
             left(dir.path())?,
@@ -1212,7 +1521,7 @@ mod behavior_tests {
         let dir = spool_with(2)?;
         let (send, seen) = scripted(vec![ok(503)]);
         assert_eq!(
-            deliver_spool(dir.path(), send),
+            deliver_spool(dir.path(), None, send),
             Pass::Wait("the center answered HTTP 503".into()),
             "failure a 5xx keeps the heartbeat and stops"
         );
@@ -1227,7 +1536,7 @@ mod behavior_tests {
         let dir = spool_with(1)?;
         let (send, _) = scripted(vec![Err("connection timed out".into())]);
         assert_eq!(
-            deliver_spool(dir.path(), send),
+            deliver_spool(dir.path(), None, send),
             Pass::Wait("the center did not answer: connection timed out".into()),
             "failure no answer keeps the heartbeat"
         );
@@ -1244,7 +1553,7 @@ mod behavior_tests {
     fn failure_a_401_waits_and_names_the_token() -> Result<(), TestError> {
         let dir = spool_with(2)?;
         let (send, seen) = scripted(vec![ok(401)]);
-        let Pass::Wait(why) = deliver_spool(dir.path(), send) else {
+        let Pass::Wait(why) = deliver_spool(dir.path(), None, send) else {
             return Err("a 401 must wait".into());
         };
         assert!(
@@ -1264,7 +1573,7 @@ mod behavior_tests {
     fn failure_a_403_is_a_refused_token() -> Result<(), TestError> {
         let dir = spool_with(1)?;
         let (send, _) = scripted(vec![ok(403)]);
-        let Pass::Wait(why) = deliver_spool(dir.path(), send) else {
+        let Pass::Wait(why) = deliver_spool(dir.path(), None, send) else {
             return Err("a 403 must wait".into());
         };
         assert!(why.contains("HTTP 403"), "{why}");
@@ -1278,7 +1587,7 @@ mod behavior_tests {
         let dir = spool_with(2)?;
         let (send, _) = scripted(vec![ok(400), ok(200)]);
         assert_eq!(
-            deliver_spool(dir.path(), send),
+            deliver_spool(dir.path(), None, send),
             Pass::Drained,
             "failure a 400 moves the heartbeat to failed"
         );
@@ -1296,7 +1605,7 @@ mod behavior_tests {
     fn failure_a_413_moves_the_heartbeat_to_failed() -> Result<(), TestError> {
         let dir = spool_with(1)?;
         let (send, _) = scripted(vec![ok(413)]);
-        deliver_spool(dir.path(), send);
+        deliver_spool(dir.path(), None, send);
         assert_eq!(
             failed(dir.path())?,
             [file_name(1)],
@@ -1454,6 +1763,7 @@ mod behavior_tests {
             Utc::now(),
             30,
             10,
+            None,
         );
         assert!(
             got.is_err(),
@@ -1510,7 +1820,7 @@ mod behavior_tests {
         let dir = spool_with(0)?;
         let (send, seen) = scripted(Vec::new());
         assert_eq!(
-            deliver_spool(dir.path(), send),
+            deliver_spool(dir.path(), None, send),
             Pass::Drained,
             "edge an empty spool sends nothing"
         );
@@ -1576,7 +1886,7 @@ mod behavior_tests {
             ok(200)
         };
         assert_eq!(
-            deliver_spool(dir.path(), send),
+            deliver_spool(dir.path(), None, send),
             Pass::Drained,
             "edge a vanished heartbeat is passed over"
         );
@@ -1591,7 +1901,7 @@ mod behavior_tests {
         std::fs::write(dir.path().join(STREAM_FILE), "abc")?;
         std::fs::write(dir.path().join("notes.txt"), "x")?;
         let (send, seen) = scripted(vec![ok(200)]);
-        deliver_spool(dir.path(), send);
+        deliver_spool(dir.path(), None, send);
         assert_eq!(
             *seen.borrow(),
             ["hb 1"],
@@ -1605,10 +1915,10 @@ mod behavior_tests {
     fn edge_a_failed_heartbeat_is_not_sent_again() -> Result<(), TestError> {
         let dir = spool_with(1)?;
         let (send, _) = scripted(vec![ok(400)]);
-        deliver_spool(dir.path(), send);
+        deliver_spool(dir.path(), None, send);
         let (send, seen) = scripted(Vec::new());
         assert_eq!(
-            deliver_spool(dir.path(), send),
+            deliver_spool(dir.path(), None, send),
             Pass::Drained,
             "edge a failed heartbeat is not sent again"
         );
@@ -1639,7 +1949,7 @@ mod behavior_tests {
     fn edge_unicode_in_the_inventory_round_trips() -> Result<(), TestError> {
         let inv = serde_json::json!({"node_name": "edge-zürich-東京"});
         let line = heartbeat_line("s", 1, Utc::now(), 30, &inv);
-        let got = crate::app::fleet_center::parse_batch(line.as_bytes())?;
+        let got = crate::app::fleet_center::parse_heartbeats(line.as_bytes())?;
         assert_eq!(
             got[0].inventory, inv,
             "edge unicode in the inventory round trips"
@@ -1652,7 +1962,7 @@ mod behavior_tests {
     fn edge_an_empty_inventory_is_a_heartbeat() -> Result<(), TestError> {
         let line = heartbeat_line("s", 1, Utc::now(), 30, &serde_json::json!({}));
         assert_eq!(
-            crate::app::fleet_center::parse_batch(line.as_bytes())?.len(),
+            crate::app::fleet_center::parse_heartbeats(line.as_bytes())?.len(),
             1,
             "edge an empty inventory is a heartbeat"
         );
@@ -1666,7 +1976,7 @@ mod behavior_tests {
             DateTime::parse_from_rfc3339("2026-11-07T12:00:00.123456789Z")?.with_timezone(&Utc);
         let line = heartbeat_line("s", 1, at, 30, &serde_json::json!({}));
         assert_eq!(
-            crate::app::fleet_center::parse_batch(line.as_bytes())?[0].sent_at,
+            crate::app::fleet_center::parse_heartbeats(line.as_bytes())?[0].sent_at,
             at,
             "edge the send time keeps nanoseconds"
         );
@@ -1766,10 +2076,11 @@ mod behavior_tests {
                 Utc::now(),
                 30,
                 10,
+                None,
             )?;
         }
         let (send, _) = scripted(vec![ok(200), ok(200), Err("stopped".into())]);
-        deliver_spool(dir.path(), send);
+        deliver_spool(dir.path(), None, send);
         let mut again = SpoolStream::open(dir.path())?;
         assert_eq!(
             again.take(dir.path())?,
@@ -1794,6 +2105,660 @@ mod behavior_tests {
             (status, text.chars().count()),
             (400, 200),
             "edge a long answer is cut to 200 characters"
+        );
+        Ok(())
+    }
+
+    // ── CALL RECORDS ────────────────────────────────────────────────────
+
+    use crate::app::fleet_calls::{CallCounts, CallPush, Selected};
+    use crate::app::fleet_seal::{Keys, MasterKey};
+
+    /// `[fleet]` with `set` applied.
+    fn fleet_keys(set: impl Fn(&mut crate::config::FleetConfig)) -> crate::config::FleetConfig {
+        let mut keys = crate::config::FleetConfig::default();
+        set(&mut keys);
+        keys
+    }
+
+    /// A spool key path, for a plan that is not started.
+    fn key_path() -> PathBuf {
+        PathBuf::from("/run/example/spool.key")
+    }
+
+    #[test]
+    fn success_a_member_with_no_call_settings_pushes_no_calls() -> Result<(), TestError> {
+        assert_eq!(
+            call_plan(&fleet_keys(|_| {}))?,
+            None,
+            "success a member with no call settings pushes no calls"
+        );
+        let plan = MemberPlan::resolve(&cli(&[])?, &fleet_config("http://127.0.0.1:8444"))?
+            .ok_or("a plan")?;
+        assert_eq!(
+            plan.calls, None,
+            "a member set up before call records runs as it did"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_spool_key_alone_pushes_exceptions_at_the_default_cap() -> Result<(), TestError> {
+        let got = call_plan(&fleet_keys(|k| k.spool_key_file = Some(key_path())))?;
+        let want = CallPlan {
+            rule: CallPush::Exceptions,
+            max_per_sec: 10,
+            key_file: key_path(),
+        };
+        assert_eq!(
+            got,
+            Some(want),
+            "success a spool key alone pushes exceptions at the default cap"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_call_push_all_with_a_key_and_a_cap_is_planned_as_written() -> Result<(), TestError> {
+        let mut c = fleet_config("http://127.0.0.1:8444");
+        c.fleet.spool_key_file = Some(key_path());
+        c.fleet.call_push = Some("all".to_string());
+        c.fleet.exception_max_per_sec = Some(250);
+        let plan = MemberPlan::resolve(&cli(&[])?, &c)?.ok_or("a plan")?;
+        let want = CallPlan {
+            rule: CallPush::All,
+            max_per_sec: 250,
+            key_file: key_path(),
+        };
+        assert_eq!(
+            plan.calls,
+            Some(want),
+            "success call push all with a key and a cap is planned as written"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_call_push_without_a_spool_key_is_refused_with_the_fix() {
+        for rule in ["exceptions", "all"] {
+            let e = call_plan(&fleet_keys(|k| k.call_push = Some(rule.to_string())))
+                .err()
+                .unwrap_or_default();
+            assert_eq!(
+                e,
+                format!(
+                    "[fleet] call_push \"{rule}\" needs [fleet] spool_key_file: call records wait \
+                     on disk only in sealed files. Create a key with `sipnab fleet keygen --out FILE`"
+                ),
+                "failure call push without a spool key is refused with the fix"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_an_unknown_call_push_is_refused_even_with_no_center_named() -> Result<(), TestError>
+    {
+        let mut c = crate::config::Config::default();
+        c.fleet.call_push = Some("some".to_string());
+        let e = MemberPlan::resolve(&cli(&[])?, &c)
+            .err()
+            .unwrap_or_default();
+        assert!(
+            e.starts_with("[fleet] call_push \"some\" is not one of"),
+            "{e}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_exception_cap_out_of_range_is_refused() {
+        for cap in [0, 10_001, u32::MAX] {
+            let e = call_plan(&fleet_keys(|k| {
+                k.spool_key_file = Some(key_path());
+                k.exception_max_per_sec = Some(cap);
+            }))
+            .err()
+            .unwrap_or_default();
+            assert_eq!(
+                e,
+                format!("[fleet] exception_max_per_sec {cap} is outside 1 to 10000"),
+                "failure an exception cap out of range is refused"
+            );
+        }
+        let unused = call_plan(&fleet_keys(|k| k.exception_max_per_sec = Some(0))).err();
+        assert!(
+            unused.is_some(),
+            "refused when it is written, key or no key"
+        );
+    }
+
+    #[test]
+    fn failure_an_empty_spool_key_path_is_refused() -> Result<(), TestError> {
+        let mut c = crate::config::Config::default();
+        c.fleet.spool_key_file = Some(PathBuf::new());
+        let e = MemberPlan::resolve(&cli(&[])?, &c)
+            .err()
+            .unwrap_or_default();
+        assert_eq!(
+            e, "[fleet] spool_key_file is empty; give a path",
+            "failure an empty spool key path is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_call_push_none_with_a_key_pushes_no_calls() -> Result<(), TestError> {
+        let got = call_plan(&fleet_keys(|k| {
+            k.spool_key_file = Some(key_path());
+            k.call_push = Some("none".to_string());
+        }))?;
+        assert_eq!(got, None, "edge call push none with a key pushes no calls");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_exception_cap_bounds_are_accepted() -> Result<(), TestError> {
+        for cap in [1, 10_000] {
+            let got = call_plan(&fleet_keys(|k| {
+                k.spool_key_file = Some(key_path());
+                k.exception_max_per_sec = Some(cap);
+            }))?;
+            assert_eq!(
+                got.map(|plan| plan.max_per_sec),
+                Some(cap),
+                "edge the exception cap bounds are accepted"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn success_positions_taken_together_are_successive_and_recorded() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut stream = SpoolStream::open(dir.path())?;
+        assert_eq!(
+            stream.take_n(dir.path(), 3)?,
+            1,
+            "success positions taken together are successive and recorded"
+        );
+        assert_eq!(
+            stream.take(dir.path())?,
+            4,
+            "the next position is past the three"
+        );
+        assert_eq!(
+            SpoolStream::open(dir.path())?.next_seq,
+            5,
+            "and a restart continues"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_taking_no_position_takes_none() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut stream = SpoolStream::open(dir.path())?;
+        stream.take_n(dir.path(), 0)?;
+        assert_eq!(
+            stream.take(dir.path())?,
+            1,
+            "edge taking no position takes none"
+        );
+        Ok(())
+    }
+
+    /// Every file name in the spool's failed directory.
+    fn failed_names(dir: &Path) -> Result<Vec<String>, TestError> {
+        let mut names = Vec::new();
+        for entry in std::fs::read_dir(dir.join(FAILED_DIR))? {
+            names.push(entry?.file_name().to_string_lossy().into_owned());
+        }
+        names.sort();
+        Ok(names)
+    }
+
+    /// The spool key the tests seal under, alone.
+    fn spool_keys() -> Keys {
+        Keys::new(MasterKey::from_bytes([7; 32]), Vec::new())
+    }
+
+    /// `n` selected calls that name a number and a host.
+    fn selected(n: usize) -> Vec<Selected> {
+        (0..n)
+            .map(|i| Selected {
+                selected_by: "failed",
+                call: serde_json::json!({
+                    "call_id": format!("call-{i}@example.com"),
+                    "from": "sip:+12025550101@example.com",
+                }),
+            })
+            .collect()
+    }
+
+    /// `n` calls sealed into the spool at `dir` as the stream's next records.
+    fn spool_n(dir: &Path, n: usize) -> Result<(u64, u64), TestError> {
+        let mut stream = SpoolStream::open(dir)?;
+        let now = DateTime::parse_from_rfc3339("2026-11-07T12:00:00Z")?.with_timezone(&Utc);
+        Ok(spool_calls(
+            dir,
+            &mut stream,
+            &selected(n),
+            now,
+            spool_keys().current(),
+            &crate::app::fleet_seal::system_draw,
+        )?)
+    }
+
+    #[test]
+    fn success_calls_are_sealed_as_one_delivery_named_by_its_first_position()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        SpoolStream::open(dir.path())?.take(dir.path())?;
+        assert_eq!(
+            spool_n(dir.path(), 3)?,
+            (3, 0),
+            "success calls are sealed as one delivery named by its first position"
+        );
+        assert_eq!(
+            waiting(dir.path())?,
+            vec!["00000000000000000002.sealed"],
+            "success calls are sealed as one delivery named by its first position"
+        );
+        let bytes = std::fs::read(dir.path().join("00000000000000000002.sealed"))?;
+        let body = crate::app::fleet_calls::open_batch(&bytes, &spool_keys())
+            .map_err(|e| e.to_string())?;
+        let records = crate::app::fleet_center::parse_batch(&body)?;
+        let seqs: Vec<u64> = records
+            .iter()
+            .filter_map(|r| r.call().map(|c| c.seq))
+            .collect();
+        assert_eq!(seqs, vec![2, 3, 4], "each call has its own position");
+        assert_eq!(
+            SpoolStream::open(dir.path())?.next_seq,
+            5,
+            "success calls are sealed as one delivery named by its first position"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_no_file_of_the_spool_holds_a_call_in_clear() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        spool_n(dir.path(), 3)?;
+        let mut files = 0;
+        for entry in std::fs::read_dir(dir.path())? {
+            let path = entry?.path();
+            if !path.is_file() {
+                continue;
+            }
+            files += 1;
+            let bytes = std::fs::read(&path)?;
+            for clear in ["2025550101", "example.com", "call_id"] {
+                assert!(
+                    !bytes.windows(clear.len()).any(|w| w == clear.as_bytes()),
+                    "{clear} is in {}",
+                    path.display()
+                );
+            }
+        }
+        assert_eq!(files, 3, "the delivery, the stream id and the position");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_no_calls_write_no_file_and_take_no_position() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        assert_eq!(
+            spool_n(dir.path(), 0)?,
+            (0, 0),
+            "edge no calls write no file and take no position"
+        );
+        assert_eq!(
+            waiting(dir.path())?,
+            Vec::<String>::new(),
+            "edge no calls write no file and take no position"
+        );
+        assert_eq!(
+            SpoolStream::open(dir.path())?.next_seq,
+            1,
+            "edge no calls write no file and take no position"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_call_over_the_size_of_a_delivery_is_left_out_and_the_rest_written()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut calls = selected(2);
+        calls[0].call["note"] =
+            serde_json::json!("x".repeat(crate::app::fleet_calls::MAX_DELIVERY_BYTES));
+        let mut stream = SpoolStream::open(dir.path())?;
+        let got = spool_calls(
+            dir.path(),
+            &mut stream,
+            &calls,
+            Utc::now(),
+            spool_keys().current(),
+            &crate::app::fleet_seal::system_draw,
+        )?;
+        assert_eq!(
+            got,
+            (1, 1),
+            "edge a call over the size of a delivery is left out and the rest written"
+        );
+        assert_eq!(
+            waiting(dir.path())?.len(),
+            1,
+            "edge a call over the size of a delivery is left out and the rest written"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_random_source_that_fails_leaves_no_delivery() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let mut stream = SpoolStream::open(dir.path())?;
+        let failing = |_: usize| Err("no entropy".to_string());
+        let e = spool_calls(
+            dir.path(),
+            &mut stream,
+            &selected(1),
+            Utc::now(),
+            spool_keys().current(),
+            &failing,
+        )
+        .err()
+        .unwrap_or_default();
+        assert_eq!(
+            e, "no entropy",
+            "failure a random source that fails leaves no delivery"
+        );
+        assert_eq!(
+            waiting(dir.path())?,
+            Vec::<String>::new(),
+            "failure a random source that fails leaves no delivery"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_sealed_delivery_is_sent_as_its_lines_and_removed_when_taken()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join(FAILED_DIR))?;
+        spool_n(dir.path(), 2)?;
+        let (send, seen) = scripted(vec![ok(200)]);
+        assert_eq!(
+            deliver_spool(dir.path(), Some(&spool_keys()), send),
+            Pass::Drained,
+            "success a sealed delivery is sent as its lines and removed when taken"
+        );
+        let bodies = seen.borrow();
+        assert_eq!(
+            bodies.len(),
+            1,
+            "success a sealed delivery is sent as its lines and removed when taken"
+        );
+        let records = crate::app::fleet_center::parse_batch(bodies[0].as_bytes())?;
+        assert_eq!(
+            records.len(),
+            2,
+            "the center reads what was sent: {}",
+            bodies[0]
+        );
+        assert_eq!(
+            waiting(dir.path())?,
+            Vec::<String>::new(),
+            "deleted on acknowledgment"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_no_answer_keeps_the_sealed_delivery_sealed() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        spool_n(dir.path(), 2)?;
+        let before = std::fs::read(dir.path().join("00000000000000000001.sealed"))?;
+        let (send, _) = scripted(vec![Err("refused".to_string())]);
+        let pass = deliver_spool(dir.path(), Some(&spool_keys()), send);
+        assert_eq!(
+            pass,
+            Pass::Wait("the center did not answer: refused".to_string()),
+            "failure no answer keeps the sealed delivery sealed"
+        );
+        assert_eq!(
+            std::fs::read(dir.path().join("00000000000000000001.sealed"))?,
+            before,
+            "failure no answer keeps the sealed delivery sealed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_delivery_that_does_not_open_goes_to_failed_and_is_never_sent()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join(FAILED_DIR))?;
+        spool_n(dir.path(), 1)?;
+        let path = dir.path().join("00000000000000000001.sealed");
+        let mut bytes = std::fs::read(&path)?;
+        let last = bytes.len() - 30;
+        bytes[last] ^= 1;
+        std::fs::write(&path, &bytes)?;
+        let (send, seen) = scripted(Vec::new());
+        assert_eq!(
+            deliver_spool(dir.path(), Some(&spool_keys()), send),
+            Pass::Drained,
+            "failure a delivery that does not open goes to failed and is never sent"
+        );
+        assert!(seen.borrow().is_empty(), "nothing of it reaches the center");
+        assert_eq!(
+            failed_names(dir.path())?,
+            vec!["00000000000000000001.sealed"],
+            "failure a delivery that does not open goes to failed and is never sent"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_delivery_under_another_key_or_with_no_key_goes_to_failed() -> Result<(), TestError>
+    {
+        let other = Keys::new(MasterKey::from_bytes([8; 32]), Vec::new());
+        for keys in [Some(&other), None] {
+            let dir = tempfile::tempdir()?;
+            std::fs::create_dir_all(dir.path().join(FAILED_DIR))?;
+            spool_n(dir.path(), 1)?;
+            let (send, seen) = scripted(Vec::new());
+            assert_eq!(
+                deliver_spool(dir.path(), keys, send),
+                Pass::Drained,
+                "failure a delivery under another key or with no key goes to failed"
+            );
+            assert!(
+                seen.borrow().is_empty(),
+                "failure a delivery under another key or with no key goes to failed"
+            );
+            assert_eq!(
+                failed_names(dir.path())?.len(),
+                1,
+                "failure a delivery under another key or with no key goes to failed"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn edge_heartbeats_and_deliveries_are_sent_in_position_order() -> Result<(), TestError> {
+        let dir = spool_with(1)?;
+        SpoolStream::open(dir.path())?.take_n(dir.path(), 1)?;
+        spool_n(dir.path(), 2)?;
+        let mut stream = SpoolStream::open(dir.path())?;
+        let inventory = serde_json::json!({});
+        spool_heartbeat(
+            dir.path(),
+            &mut stream,
+            &inventory,
+            Utc::now(),
+            30,
+            100,
+            None,
+        )?;
+        let (send, seen) = scripted(vec![ok(200), ok(200), ok(200)]);
+        assert_eq!(
+            deliver_spool(dir.path(), Some(&spool_keys()), send),
+            Pass::Drained,
+            "edge heartbeats and deliveries are sent in position order"
+        );
+        let kinds: Vec<&str> = seen
+            .borrow()
+            .iter()
+            .map(|body| {
+                if body.contains("\"kind\":\"call\"") {
+                    "calls"
+                } else {
+                    "heartbeat"
+                }
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["heartbeat", "calls", "heartbeat"],
+            "edge heartbeats and deliveries are sent in position order"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_the_spool_cap_counts_deliveries_with_heartbeats() -> Result<(), TestError> {
+        let dir = spool_with(2)?;
+        SpoolStream::open(dir.path())?.take_n(dir.path(), 2)?;
+        spool_n(dir.path(), 1)?;
+        assert_eq!(
+            enforce_cap(dir.path(), 2)?,
+            1,
+            "edge the spool cap counts deliveries with heartbeats"
+        );
+        let left = waiting(dir.path())?;
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(
+            left[1].ends_with(".sealed"),
+            "the oldest heartbeat went: {left:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_heartbeat_carries_the_call_counts_the_center_reads() -> Result<(), TestError> {
+        let at = DateTime::parse_from_rfc3339("2026-11-07T12:00:00Z")?.with_timezone(&Utc);
+        let counts = CallCounts {
+            selected: 5,
+            dropped_by_cap: 2,
+            left_out: 1,
+            spooled: 4,
+        };
+        let line = heartbeat_line_with("s-1", 7, at, 30, &serde_json::json!({}), Some(counts));
+        let got = crate::app::fleet_center::parse_heartbeats(line.as_bytes())?;
+        assert_eq!(
+            got[0].calls,
+            Some(counts),
+            "success a heartbeat carries the call counts the center reads"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_heartbeat_of_a_member_that_pushes_no_calls_has_no_calls_field()
+    -> Result<(), TestError> {
+        let at = DateTime::parse_from_rfc3339("2026-11-07T12:00:00Z")?.with_timezone(&Utc);
+        let line = heartbeat_line("s-1", 7, at, 30, &serde_json::json!({}));
+        assert!(!line.contains("calls"), "{line}");
+        Ok(())
+    }
+
+    /// A key file's text for the key whose every byte is 7.
+    fn key_text() -> String {
+        MasterKey::from_bytes([7; 32]).encode().to_string()
+    }
+
+    #[test]
+    fn success_a_private_spool_key_file_is_read() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = private(dir.path(), "spool.key", &key_text(), 0o600)?;
+        assert_eq!(
+            read_spool_key(&path)?.id(),
+            spool_keys().current().id(),
+            "success a private spool key file is read"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_spool_key_file_others_can_read_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = private(dir.path(), "spool.key", &key_text(), 0o640)?;
+        let e = read_spool_key(&path).err().unwrap_or_default();
+        assert!(e.starts_with("[fleet] spool_key_file '"), "{e}");
+        assert!(
+            e.ends_with("can be read or written by other users (mode 0640); chmod 600 it"),
+            "{e}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_spool_key_file_that_is_not_a_key_is_refused_without_its_contents()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = private(dir.path(), "spool.key", "hunter2-not-a-key", 0o600)?;
+        let e = read_spool_key(&path).err().unwrap_or_default();
+        assert!(e.contains("is not a key"), "{e}");
+        assert!(!e.contains("hunter2"), "the contents are not shown: {e}");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_missing_spool_key_file_names_the_key_and_the_fix() {
+        let e = read_spool_key(Path::new("/nonexistent/example/spool.key"))
+            .err()
+            .unwrap_or_default();
+        assert!(
+            e.starts_with("[fleet] spool_key_file '/nonexistent/example/spool.key'"),
+            "{e}"
+        );
+        assert!(
+            e.ends_with("create a key with `sipnab fleet keygen --out FILE`"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn edge_more_calls_than_one_delivery_holds_make_files_named_by_their_first_positions()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let n = crate::app::fleet_calls::MAX_DELIVERY_RECORDS + 1;
+        assert_eq!(
+            spool_n(dir.path(), n)?,
+            (n as u64, 0),
+            "every call is written"
+        );
+        assert_eq!(
+            waiting(dir.path())?,
+            vec!["00000000000000000001.sealed", "00000000000000000501.sealed"],
+            "the second delivery starts where the first ended"
+        );
+        let last = std::fs::read(dir.path().join("00000000000000000501.sealed"))?;
+        let body =
+            crate::app::fleet_calls::open_batch(&last, &spool_keys()).map_err(|e| e.to_string())?;
+        let records = crate::app::fleet_center::parse_batch(&body)?;
+        let seqs: Vec<u64> = records
+            .iter()
+            .filter_map(|r| r.call().map(|c| c.seq))
+            .collect();
+        assert_eq!(
+            seqs,
+            vec![501],
+            "and holds the one record past the first 500"
         );
         Ok(())
     }

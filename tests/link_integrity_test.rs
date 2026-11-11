@@ -1780,7 +1780,12 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // entry's link to troubleshooting.md's "Live capture says Permission
     // denied"; install.md +1, to "Install with your package manager" from
     // the paragraph on hosts without libpcap.so.0.8.
-    const EXPECTED_WIKI_LINKS: usize = 2527;
+    // 2527 -> 2531 (fleet call records): fleet.md +2, the center's
+    // introduction linking "Push call records to the center" and that
+    // section's prerequisite linking "Make an instance a fleet member";
+    // config-reference.md +1 and errors.md +1, each a link to "Push call
+    // records to the center".
+    const EXPECTED_WIKI_LINKS: usize = 2531;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file
