@@ -376,6 +376,10 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
         &[
             "docs/internals/postmortems.md",
             "website/content/docs/internals/postmortems.md",
+            // `scripts/check-line-drift.py --apply`, the citation fixer the
+            // cite-a-line walkthrough tells a contributor to run.
+            "docs/internals/walkthroughs.md",
+            "website/content/docs/internals/walkthroughs.md",
         ],
     ),
     (
@@ -897,6 +901,15 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
     // settings table owns, so the add-a-flag walkthrough names it.
     (
         "lib",
+        &[
+            "docs/internals/walkthroughs.md",
+            "website/content/docs/internals/walkthroughs.md",
+        ],
+    ),
+    // git's. Its ancestry check with `--is-ancestor` is how the cite-a-line
+    // walkthrough checks that a pinned commit is on `main`.
+    (
+        "is-ancestor",
         &[
             "docs/internals/walkthroughs.md",
             "website/content/docs/internals/walkthroughs.md",

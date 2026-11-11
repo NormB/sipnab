@@ -26,10 +26,10 @@ rather than `fork()`:
 
 | Site | What it spawns | Why a process is right |
 |---|---|---|
-| [`src/output/event_exec.rs:443`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L443) | `sh -c` per `--on-*-exec` event | Operator-supplied code. Must not share our address space. |
-| [`src/security/alerting.rs:700`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L700) | `sh -c` per `--alert-exec` alert | Same. |
-| [`src/privilege.rs:153`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L153) | `setcap` | One-shot install helper. |
-| [`src/tui/clipboard.rs:89`](https://github.com/NormB/sipnab/blob/main/src/tui/clipboard.rs#L89) | `xclip`/`pbcopy` | Holds an X11 selection; must outlive the copy. |
+| [`src/output/event_exec.rs:468`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L468)<!-- "/// Spawn every queued" --> | `sh -c` per `--on-*-exec` event | Operator-supplied code. Must not share our address space. |
+| [`src/security/alerting.rs:835`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L835)<!-- "let mut command = Command::new("sh");" --> | `sh -c` per `--alert-exec` alert | Same. |
+| [`src/privilege.rs:416`](https://github.com/NormB/sipnab/blob/main/src/privilege.rs#L416)<!-- "let status = std::process::Command::new(&program)" --> | `setcap` | One-shot install helper. |
+| [`src/tui/clipboard.rs:107`](https://github.com/NormB/sipnab/blob/main/src/tui/clipboard.rs#L107)<!-- "let Some(mut child)" --> | `xclip`/`pbcopy` | Holds an X11 selection; must outlive the copy. |
 
 Both exec paths are already correct: non-blocking `spawn` (never `status`),
 rate-limited, capped by queue depth, and reaped. There is no gap here to close.
@@ -39,13 +39,13 @@ rate-limited, capped by queue depth, and reaped. There is no gap here to close.
 Two design decisions govern this, and they disagree with each other.
 
 **D2 — synchronous core, async only at the edges**
-([`implementation-plan-v6.md:304`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L304)) is what shipped.
-[`threading.md:3-5`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L3-L5) restates it: *"the packet path
+([`implementation-plan-v6.md:335`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L335)<!-- "### D2 — Synchronous core, async only at the edges" -->) is what shipped.
+[`threading.md:6-7`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L6-L7)<!-- "The packet path is synchronous threads + channels." --> restates it: *"the packet path
 is synchronous threads + channels. tokio exists only inside the optional
 servers."*
 
 **D16 — process isolation for dangerous operations**
-([`implementation-plan-v6.md:564`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L564)) is what did not.
+([`implementation-plan-v6.md:624`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L624)<!-- "### D16 — Process isolation for dangerous operations" -->) is what did not.
 It specified, in detail, child processes for two components:
 
 > Scanner kill (packet injection) and the REST API (network-facing service) run
@@ -54,8 +54,8 @@ It specified, in detail, child processes for two components:
 > crafted scanner-kill responses cannot compromise the capture/parse pipeline.
 
 with `fork` before privilege drop, a Unix socket pair, and — at
-[`implementation-plan-v6.md:2003`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L2003) and
-[`:2508`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L2508) — acceptance gates reading *"verified by
+[`implementation-plan-v6.md:2104`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L2104)<!-- "**Scanner kill runs in isolated child process** (D16), verified by checking PID differs from main" --> and
+[`:2609`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L2609)<!-- "**API runs in isolated child process** (D16), verified by PID check" --> — acceptance gates reading *"verified by
 checking PID differs from main"*.
 
 Neither shipped as a process. Scanner-kill became a thread, and the module
@@ -65,7 +65,7 @@ process-level isolation" — until R3 below made it true
 
 The REST API became a tokio task on a shared thread reading the same
 `Arc<RwLock<..>>` stores as the capture loop
-([`src/app/servers.rs:164-197`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L164-L197)).
+([`src/app/servers.rs:694-705`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L694-L705)<!-- "let api_door = if selection.api" -->).
 
 **This is the honest finding for "is there a documented rationale?"** — there is
 not. The design demanded processes, the implementation substituted threads, and
@@ -84,13 +84,13 @@ substitution was never argued; it just happened.
 
 That bullet is no longer in `architecture.md`. The commit that added this page
 (`a58bd7b55`) replaced it, and the D15 and D16 entries now live in
-[`docs/internals/code-map.md:231-239`](https://github.com/NormB/sipnab/blob/main/docs/internals/code-map.md#L231-L239).
+[`docs/internals/code-map.md:231-258`](https://github.com/NormB/sipnab/blob/main/docs/internals/code-map.md#L231-L258)<!-- "**D15 — Privilege drop.**" -->.
 
 Active responses do not run in an isolated child. They run in the
 `scanner-kill` thread, in the same address space as the parsers, the stores,
 the TLS key material and the bearer tokens.
 
-[`docs/rest-api.md:1117`](https://github.com/NormB/sipnab/blob/main/docs/rest-api.md#L1117) gets this right for the API and says
+[`docs/rest-api.md:1117`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/docs/rest-api.md#L1117) gets this right for the API and says
 so plainly — *"it is not a separate OS process; treat the API bind address and
 key accordingly"* — which is exactly the disclosure `architecture.md` owes for
 scanner-kill and does not make. **Fixing that sentence is P0 and costs
@@ -140,7 +140,7 @@ in `playback.rs`, `privilege.rs`, `process_isolation.rs`, `crash.rs`,
 `etherparse`, `opus-decoder` (pure Rust, no FFI), `flate2` (`rust_backend`) and
 `wasmi` (interpreter, no JIT) are all memory-safe.
 
-The exception is **libpcap** (`pcap = "2"`, [`Cargo.toml:58`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L58)),
+The exception is **libpcap** (`pcap = "2"`, [`Cargo.toml:136`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L136)<!-- "pcap = { version = "2", optional = true }" -->),
 a C library that touches every untrusted byte before Rust ever sees it, on both
 the live and the offline path. A memory-safety bug there executes inside an
 address space that also holds:
@@ -161,7 +161,7 @@ installed after the privilege drop, designed in
 ### 2c. Per-process pcap handles — no
 
 Multi-device capture already gives each device its own thread and its own pcap
-handle ([`capture/native.rs:302-353`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L302-L353)). Nothing is
+handle ([`capture/native.rs:693-752`](https://github.com/NormB/sipnab/blob/main/src/capture/native.rs#L693-L752)<!-- "pub fn start_multi_capture(" -->). Nothing is
 contended. There is no handle problem to solve.
 
 ### 2d. Bypassing a shared-lock bottleneck — **no, and this is measured**
@@ -169,7 +169,7 @@ contended. There is no handle problem to solve.
 This is the argument that fails hardest, and it fails on data rather than on
 opinion.
 
-`--cores N` scaling, from [`docs/benchmarks.md:57-62`](https://github.com/NormB/sipnab/blob/main/docs/benchmarks.md#L57-L62):
+`--cores N` scaling, from [`docs/benchmarks.md:57-62`](https://github.com/NormB/sipnab/blob/789c70ca8e101d8875f3a5d68547ed00578cf86d/docs/benchmarks.md#L57-L62):
 
 | cores | pkts/s |
 |------:|-------:|
@@ -181,7 +181,7 @@ opinion.
 Throughput *peaks at four cores and then declines*. It peaked at two until
 0.5.89 moved the frame-provenance digest off the sequential reader; the reader
 is still the ceiling, which is why 8 cores remains slower than 4. The published
-cause ([`benchmarks.md:64-70`](https://github.com/NormB/sipnab/blob/main/docs/benchmarks.md#L64-L70)) is:
+cause ([`benchmarks.md:64-70`](https://github.com/NormB/sipnab/blob/789c70ca8e101d8875f3a5d68547ed00578cf86d/docs/benchmarks.md#L64-L70)) is:
 
 > Through 0.5.88 the reader computed the frame-provenance digest on the single
 > sequential stage that already sets this ceiling (read + buffer copy +
@@ -189,16 +189,16 @@ cause ([`benchmarks.md:64-70`](https://github.com/NormB/sipnab/blob/main/docs/be
 
 And critically: **`--cores` mode holds no shared locks at all.** Each worker
 owns a thread-local `DialogStore` and `StreamStore`
-([`parallel.rs:421-426`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L421-L426)), merged at EOF. There is no
+([`parallel.rs:838-855`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L838-L855)<!-- "fn new(cfg: ParallelConfig) -> Self {" -->), merged at EOF. There is no
 lock to bypass. Forking the workers would change nothing about the ceiling and
 would make the merge worse — it becomes serialization and IPC of two whole
 stores instead of a move.
 
 Elsewhere, contention is **asserted but never measured**. The oldest claim,
-[`implementation-plan-v6.md:368`](https://github.com/NormB/sipnab/blob/main/docs/design/implementation-plan-v6.md#L368), says the store
+[`implementation-plan-v6.md:368`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/docs/design/implementation-plan-v6.md#L368), says the store
 lock is *"read-heavy, write-rare, so RwLock contention is minimal"* — which is
 simply stale: the batch loop takes `dialog_store.write()` **once per packet**
-([`batch.rs:2281`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2281)), so at 2.3M pkts/s writes are the
+([`batch.rs:4808`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L4808)<!-- "let mut ds_guard = self.dialog_store.write();" -->), so at 2.3M pkts/s writes are the
 most frequent operation in the process, not a rare one. No benchmark in
 `benches/` acquires a lock; no metric reports contention. *We do not know what
 it costs, and neither does anyone else.*
@@ -211,7 +211,7 @@ Specific to this codebase, not in general.
 
 **The stores are the product, and four surfaces read them in-process.** The
 same `Arc<RwLock<DialogStore>>` / `Arc<RwLock<StreamStore>>` is held by the
-capture loop ([`batch.rs:870-881`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L870-L881)), the REST handlers,
+capture loop ([`batch.rs:3987-3992`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3987-L3992)<!-- "let dialog_store: Arc<RwLock<DialogStore>> =" -->), the REST handlers,
 every MCP tool ([`mcp/server.rs`](../../src/mcp/server.rs)), the Prometheus
 exporter and the TUI. Forking the capture away from the servers turns every one
 of those reads into IPC. That is not a refactor; it is a new wire protocol,
@@ -219,28 +219,28 @@ with pagination, cursors, backpressure and versioning, for data that is
 currently a pointer dereference.
 
 **Two paths *write* the stores from outside the capture loop.** `open_capture`
-spawns `mcp-pcap-load` ([`mcp/load.rs:132-174`](https://github.com/NormB/sipnab/blob/main/src/mcp/load.rs#L132-L174)) and the
+spawns `mcp-pcap-load` ([`mcp/load.rs:163-234`](https://github.com/NormB/sipnab/blob/main/src/mcp/load.rs#L163-L234)<!-- "pub fn spawn(" -->) and the
 TUI's file-open spawns `pcap-load`. Both are documented exceptions to
 [invariant "One writer per store, per run mode"](../internals/invariants.md). Across a process boundary they stop
 being exceptions and start being a replication problem.
 
 **The TUI depends on being able to *fail* to read.** Every render-side access is
 `try_read()`, and a contended read deliberately skips a frame
-([`threading.md:154-157`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L154-L157)). There is no `try_read`
+([`threading.md:285-288`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L285-L288)<!-- "**The TUI never blocks:** all render-side store access is `try_read()`." -->). There is no `try_read`
 over a socket.
 
 **A merged view is the deliverable.** Multi-device capture merges N interfaces
 into *one* dialog store, so a call seen on two interfaces is one call.
 Per-source processes fragment exactly that. `--cores` already hit this and
 needed `DialogStore::merge` to undo it —
-[`parallel.rs:17-30`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L17-L30) records that an earlier merge
+[`parallel.rs:19-36`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L19-L36)<!-- "**A call's SIP does NOT stay on one worker" --> records that an earlier merge
 dropped roughly half of every proxied call's signaling, invisibly, because the
 dialog *count* was unaffected. That is the failure mode process-splitting
 invites back.
 
 **`fork()` in a multithreaded process is a trap.** Only async-signal-safe calls
 are legal in the child. sipnab spawns the capture thread *before* the privilege
-drop and chroot ([`threading.md:80-88`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L80-L88)), so any fork
+drop and chroot ([`threading.md:136-144`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L136-L144)<!-- "The reason is where" -->), so any fork
 would have to happen in a narrow window before that — which is what D16
 actually specified, and it is the hardest part of D16 to get right.
 
@@ -266,12 +266,12 @@ security claim. Fix the sentence.
 
 ### R2 — Get `fork`/`exec` and stdout out of the store write locks *(P1, days)*
 Not a forking change — the opposite. The batch loop takes **both** store write
-locks at [`batch.rs:2281-2282`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2281-L2282) and holds them across
+locks at [`batch.rs:1553-1554`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/src/app/batch.rs#L1553-L1554) and holds them across
 the entire per-packet body, which includes:
 
 - `Command::spawn` (a real `fork`/`exec`) for `--on-*-exec` at
-  [`batch.rs:2076`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2076) and
-  [`:2386`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L2386),
+  [`batch.rs:2038`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/src/app/batch.rs#L2038) and
+  [`:2348`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/src/app/batch.rs#L2348),
 - `Command::spawn` for `--alert-exec`, reached through
   `alert_engine.write().fire(..)` at
   [`:2072`, `:2122`, `:2160`, `:2172`, `:2185`](../../src/app/batch.rs),
@@ -281,14 +281,14 @@ the entire per-packet body, which includes:
 
 This violates two written rules. [Invariant "Dialog before stream, then alerts — one consistent order"](../internals/invariants.md) says
 *"Never hold both write locks simultaneously"*, and
-[`threading.md:144-147`](https://github.com/NormB/sipnab/blob/main/docs/internals/threading.md#L144-L147) says each store takes *"one
+[`threading.md:144-146`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/docs/internals/threading.md#L144-L146) says each store takes *"one
 write lock per packet, briefly"*. A `posix_spawn` is on the order of hundreds of
 microseconds against a packet budget of hundreds of nanoseconds — it is by far
 the most expensive thing in the critical section, and it is there by accident.
 
 The nested `AlertEngine` lock is worse than it currently looks. The ordering
 `stores → alerts` exists only on this path; `security_findings`
-([`mcp/server.rs:6630`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6630)) takes `alerts.read()` and no
+([`mcp/server.rs:2078`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/src/mcp/server.rs#L2078)) takes `alerts.read()` and no
 store lock, so there is no deadlock **today**. Nothing writes that ordering
 down, and nothing enforces it. The next MCP tool that reads an alert and then a
 dialog deadlocks the capture.
@@ -348,7 +348,7 @@ moves work *toward* the thing that is already the limit.
 
 **Hand-vectorizing is a dead end because the hot loop is not arithmetic.** The
 per-packet cost is dominated by a `memcpy` and an allocation
-([`capture/live.rs:266`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L266): `pkt.data.to_vec()`), a
+([`capture/live.rs:1011`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L1011)<!-- "pkt.data.to_vec()," -->: `pkt.data.to_vec()`), a
 hash lookup, and pointer chasing through the stores. There is no scalar inner
 loop for SIMD to widen.
 
@@ -370,10 +370,10 @@ that copy is worth anything either.
 contains no `asm!`, no `core::arch`, and no `target_feature` anywhere:
 
 - `memchr` — SIMD CRLF scan in the SIP line scanner, replacing scalar
-  `windows(2)` ([`Cargo.toml:51`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L51)),
+  `windows(2)` ([`Cargo.toml:128`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L128)<!-- "memchr = "2"" -->),
 - `ahash` — AES-backed hashing for the per-packet store lookups, replacing
   SipHash, which had been *"profiled at ~7% of total instructions"*
-  ([`Cargo.toml:47`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L47)),
+  ([`Cargo.toml:124`](https://github.com/NormB/sipnab/blob/main/Cargo.toml#L124)<!-- "# keys (5-tuple/SSRC," -->),
 - `smallvec` — removes the per-packet heap allocation in
   `PacketProcessor::process`,
 - `mimalloc` — replaces the system allocator for the whole native binary.
@@ -384,7 +384,7 @@ cost a line of `unsafe` in this crate.
 ### Where the throughput actually is, ranked
 
 #### R4 — Parallel readers, so `--cores` can exceed 2× *(P2, the big one)*
-[`parallel.rs:758`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L758) reads a multi-file `-I` set in a
+[`parallel.rs:1478`](https://github.com/NormB/sipnab/blob/main/src/parallel.rs#L1478)<!-- "for (i, path) in" --> reads a multi-file `-I` set in a
 **serial `for` loop on one thread**. Since the reader is the proven ceiling, and
 `-I` routinely names a directory or glob of rotated captures, N reader threads
 each opening their own file — all sharding into the same worker pool, so
@@ -402,7 +402,7 @@ result.** A parity test at `--cores 1` vs parallel-reader `--cores N` over the
 reference corpus is the gate, and it must be written before the feature.
 
 #### R5 — Reconsider `immediate_mode(true)` for live capture *(P2, hours)*
-[`capture/live.rs:152`](https://github.com/NormB/sipnab/blob/main/src/capture/live.rs#L152) enables libpcap immediate
+[`capture/live.rs:152`](https://github.com/NormB/sipnab/blob/b63f122e76d4f7c4972edc5e074e529900754fca/src/capture/live.rs#L152) enables libpcap immediate
 mode unconditionally, which defeats kernel batching and costs roughly a wakeup
 per packet. That is the right default for an interactive TUI and the wrong one
 for a headless high-rate capture. Make it a policy — batched for `-N`,

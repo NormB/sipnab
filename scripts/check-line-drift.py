@@ -72,8 +72,40 @@ reads `.rs` labels only. `check_anchors` now resolves the file the LINK opens
 (`link_target`) and refuses any cited line past its end, through
 `beyond_eof`, the predicate the drift rule uses too. `--apply` leaves these
 alone: the label is the authority, and here the label is what is wrong.
+
+# The fourth rule: the cited line holds what the citation says
+
+A line that exists can still be the wrong line. `process-isolation-and-hot-
+path-cost.md` cited `rest-api.md:1117` for a sentence that page no longer had
+there, and the three rules above passed it. Measured 2026-11-08: of the 649
+line citations under docs/, 573 no longer landed on the lines they held when
+they were written. The drift rule could see 172 of them, and its tolerance
+let it pass a citation anywhere within 15 lines of the symbol, including a
+blank line above `DialogStore::generation`.
+
+So a citation says what its first cited line holds: a PHRASE, in an HTML
+comment directly after the link, `[`docs/x.md:12`](...#L12)<!-- "text that
+begins on line 12" -->`. `check_anchors` requires the phrase to begin on that
+line (`phrase_starts`, whitespace-normalized, so it may wrap), and `--apply`
+moves label and fragment together to the one line it begins on when there is
+exactly one. A citation of a file this checker can read, on `main`, without a
+phrase is counted as `unanchored`, and the tree-wide test holds that count at
+zero. A link pinned to a commit is not read: it shows that commit's file,
+which does not move.
+
+# The fifth rule: a line link that no rule reads names a commit
+
+Every rule above reads a CITATION: a link whose label is `file:line`, to this
+repository on `main`. A line link in any other shape, `[the parser](...
+/blob/main/src/sip/parser.rs#L10)`, a bare URL, a link to a branch of another
+project, was read by nothing and could drift with every commit there.
+`unpinned_line_links` finds them: a GitHub link with an `#L` fragment must be
+a citation of `main` here, or name a commit by its full hash, or, for another
+project, a version tag. `--apply` does not rewrite one: it cannot know which
+commit the author read.
 """
 
+import bisect
 import pathlib
 import re
 import sys
@@ -103,8 +135,15 @@ def tracked(pattern: str) -> list[pathlib.Path]:
 # [`src/foo.rs:123`](url#L123) -- the link is captured because the label alone
 # does not say which file is meant. See `source_for`.
 CITE = re.compile(r"\[`([A-Za-z0-9_./-]+\.rs):(\d+)`\]\(([^)]*)\)")
-# https://github.com/OWNER/REPO/blob/REF/the/path.rs
-BLOB = re.compile(r"https?://[^/]*github\.com/[^/]+/[^/]+/blob/[^/]+/(.+)$")
+# https://github.com/NormB/sipnab/blob/main/the/path.rs -- THIS repository on
+# `main`, the only ref the working tree stands for. It used to accept any
+# owner and any ref, so a kamailio link to `src/modules/x.c` would have been
+# read from sipnab's own `src/modules/x.c` had one existed, and a link pinned
+# to a commit would be measured against today's file instead of that commit's.
+# GitHub matches owner and repository names without regard to case.
+BLOB = re.compile(
+    r"https?://(?:www\.)?github\.com/NormB/sipnab/blob/main/(.+)$", re.IGNORECASE
+)
 # A markdown link whose label is backticked: [`whatever`](target). See
 # `symbol_near` for why these are masked on the trailing side of a citation.
 LINKED = re.compile(r"\[`[^`\n]+`\]\([^)\n]*\)")
@@ -128,6 +167,50 @@ ANCHORED = re.compile(r"\[`([^`\n]*?):(\d+)(?:-(\d+))?`\]\(([^)\n]+)\)")
 # accepted so a half-written one is REPORTED rather than silently read as
 # having no range at all.
 FRAGMENT = re.compile(r"#L(\d+)(?:-L?(\d+))?$")
+# What a citation says its first cited line holds: an HTML comment directly
+# after the link, `[`docs/rest-api.md:1117`](...#L1117)<!-- "it is not a
+# separate OS process" -->`. A comment and not a link title, because a title
+# sits inside the link's parentheses, which every link parser in this
+# repository reads as the target. It renders as nothing.
+PHRASE = re.compile(r'<!-- "(.*?)" -->')
+# A link pinned to one commit of this repository by its full hash. Counted,
+# not resolved: it shows that commit's file, which does not move.
+PINNED = re.compile(
+    r"https?://(?:www\.)?github\.com/NormB/sipnab/blob/[0-9a-f]{40}/", re.IGNORECASE
+)
+# Any link to a line of a file on GitHub: owner, repository and ref captured.
+LINE_LINK = re.compile(
+    r"https?://(?:www\.)?github\.com/([^/\s]+)/([^/\s]+)/blob/([^/\s]+)/"
+    r"[^\s()<>\[\]\"']*?#L\d+(?:-L?\d+)?",
+    re.IGNORECASE,
+)
+FULL_HASH = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+VERSION_TAG = re.compile(r"v?\d+(?:\.\d+)+")
+
+
+def unpinned_line_links(line: str) -> list[str]:
+    """The line links on `line` that no rule reads and that can move.
+
+    A link to a line is fixed when it names a commit by its full hash, or, in
+    another project, a version tag. A link to this repository on `main` is
+    read by the citation rules when it is a citation (`ANCHORED`). Every other
+    one is returned: a link with a prose label or a bare link to `main`, a branch, a
+    short hash, a tag of this repository.
+    """
+    cited = [m.span() for m in ANCHORED.finditer(line)]
+    found = []
+    for m in LINE_LINK.finditer(line):
+        owner, repo, ref = m.group(1).lower(), m.group(2).lower(), m.group(3)
+        ours = (owner, repo) == ("normb", "sipnab")
+        if FULL_HASH.fullmatch(ref):
+            continue
+        if not ours and VERSION_TAG.fullmatch(ref):
+            continue
+        in_citation = any(a <= m.start() and m.end() <= b for a, b in cited)
+        if ours and ref == "main" and in_citation:
+            continue
+        found.append(m.group(0))
+    return found
 
 CONTEXT_CHARS = 90
 TOLERANCE = 15
@@ -164,8 +247,17 @@ def symbol_near(text: str, start: int, end: int) -> str | None:
     # before it, and even then the next "[`...`](...)" is masked out: that
     # label belongs to its own reference. Masked rather than truncated so
     # distances stay measured against the original text.
-    before = text[max(0, start - CONTEXT_CHARS) : start]
-    after = LINKED.sub(lambda m: " " * len(m.group(0)), text[end : end + CONTEXT_CHARS])
+    #
+    # A citation's phrase comment is REMOVED on both sides before the window
+    # is measured. It quotes code, and code is full of backticked names: read
+    # as prose, the `parse_body` quoted for one citation became the subject of
+    # the next. Blanking it to spaces instead kept its length in the window,
+    # so adding phrases pushed subjects out of range and `checked` fell from
+    # 172 to 171. The slack keeps the removal off the whole page.
+    slack = CONTEXT_CHARS + 4096
+    before = PHRASE.sub("", text[max(0, start - slack) : start])[-CONTEXT_CHARS:]
+    after = PHRASE.sub("", text[end : end + slack])[:CONTEXT_CHARS]
+    after = LINKED.sub(lambda m: " " * len(m.group(0)), after)
 
     def usable(name: str) -> bool:
         return name not in NOT_SYMBOLS and len(name) > 2
@@ -198,7 +290,15 @@ def resolve_symbol(lines: list[str], qualified: str):
     The type is the fallback, for `DialogStore` used on its own and for a
     member this file does not define (an inherent method on a foreign type).
     """
-    for cand in dict.fromkeys(reversed(qualified.split("::"))):
+    #
+    # A member too common to look up (`new`, `default`) is not a reason to
+    # cite the type instead: `BatchRunner::new` resolved to `struct
+    # BatchRunner`, 876 lines from the constructor the sentence is about.
+    # Such a citation is left to its phrase.
+    parts = qualified.split("::")
+    if parts[-1] in NOT_SYMBOLS:
+        return None
+    for cand in dict.fromkeys(reversed(parts)):
         if cand in NOT_SYMBOLS or len(cand) <= 2:
             continue
         if definition_lines(lines, cand):
@@ -271,10 +371,16 @@ def source_for(page: pathlib.Path, path: str, target: str):
     and the link's `#LNNN` together -- so reading the file out of the link is
     the same rule this script already applies in the other direction.
     """
+    # An absolute link that is not this repository's `main` -- a commit pin,
+    # another ref, another project -- shows a file this tree does not hold,
+    # so the label must not be read against today's file either.
+    target_file = link_target(page, target)
+    if target_file is None and target.strip().startswith(("http://", "https://")):
+        return None
     direct = REPO / path
     if direct.is_file():
         return direct
-    return link_target(page, target)
+    return target_file
 
 
 def link_target(page: pathlib.Path, target: str):
@@ -323,6 +429,60 @@ def beyond_eof(length: int, *cited: int | None) -> int | None:
     return None
 
 
+def drift_subject(page: pathlib.Path, text: str, m: re.Match):
+    """What the drift rule checks a `CITE` match against, or `None`.
+
+    `(file, its lines, symbol)`, where the symbol is `None` when the prose
+    names none the file can resolve.
+    """
+    src = source_for(page, m.group(1), m.group(3))
+    if src is None:
+        return None
+    lines = src.read_text().splitlines()
+    qual = symbol_near(text, m.start(), m.end())
+    return src, lines, (resolve_symbol(lines, qual) if qual else None)
+
+
+def normalize(text: str) -> str:
+    """`text` with every run of whitespace made one space, and stripped."""
+    return " ".join(text.split())
+
+
+def phrase_starts(lines: list[str], phrase: str) -> list[int]:
+    """The 1-based lines on which an occurrence of `phrase` begins.
+
+    Read over the file's text with whitespace normalized and its non-blank
+    lines joined by one space, so a phrase may wrap onto the next line and
+    indentation does not matter. The one predicate behind the content rule:
+    the gate asks whether the first cited line is among these, and the fixer
+    re-points a citation when there is exactly one.
+    """
+    want = normalize(phrase)
+    if not want:
+        return []
+    starts: list[int] = []  # offset in `joined` where each kept line begins
+    numbers: list[int] = []
+    parts: list[str] = []
+    at = 0
+    for n, raw in enumerate(lines, 1):
+        flat = normalize(raw)
+        if not flat:
+            continue
+        starts.append(at)
+        numbers.append(n)
+        parts.append(flat)
+        at += len(flat) + 1
+    joined = " ".join(parts)
+    found: list[int] = []
+    i = joined.find(want)
+    while i != -1:
+        n = numbers[bisect.bisect_right(starts, i) - 1]
+        if not found or found[-1] != n:
+            found.append(n)
+        i = joined.find(want, i + 1)
+    return found
+
+
 def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
     """Check `pages`, or every page under `docs/` when none are named.
 
@@ -357,17 +517,15 @@ def check(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
         edits: list[tuple[int, int, str]] = []
 
         for m in CITE.finditer(text):
-            path, line, target = m.group(1), int(m.group(2)), m.group(3)
-            src = source_for(md, path, target)
-            if src is None:
+            line = int(m.group(2))
+            subject = drift_subject(md, text, m)
+            if subject is None:
                 continue  # linked_code_targets_exist owns missing files
+            src, lines, sym = subject
             # Name the file that was actually read. When the label is a
             # basename it does not identify the file, and a report that echoes
             # the label sends the reader looking for `file.rs` in the root.
             shown = src.relative_to(REPO).as_posix()
-            lines = src.read_text().splitlines()
-            qual = symbol_near(text, m.start(), m.end())
-            sym = resolve_symbol(lines, qual) if qual else None
 
             # Out of range is wrong whether or not a symbol is named.
             if beyond_eof(len(lines), line) is not None:
@@ -448,11 +606,21 @@ def anchor_pages() -> list[pathlib.Path]:
 
 
 def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
-    """The label and the `#L` fragment of one citation must name one line."""
+    """The label and the `#L` fragment of one citation must name one line.
+
+    And the line must exist, and, when the citation carries a phrase, hold it.
+    """
     page_list = anchor_pages() if pages is None else pages
     problems: list[str] = []
+    unanchored: list[str] = []
     fixed = examined = both = fenced = resolved = past_eof = disagreeing = 0
-    lengths: dict[pathlib.Path, int] = {}
+    phrased = wrong_content = pinned = unpinned = 0
+    files: dict[pathlib.Path, list[str]] = {}
+
+    def lines_of(path: pathlib.Path) -> list[str]:
+        if path not in files:
+            files[path] = path.read_text().splitlines()
+        return files[path]
 
     for md in page_list:
         text = md.read_text()
@@ -476,6 +644,14 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
             if i < len(mask) and mask[i]:
                 fenced += len(ANCHORED.findall(line))
                 continue
+            for url in unpinned_line_links(line):
+                unpinned += 1
+                problems.append(
+                    f"{rel}:{i + 1}: {url} links to a line and no rule reads it: it "
+                    "follows a branch, a tag or a short hash. Write it as a citation "
+                    "of main ([`path:line`](...#Lline) with its phrase), or name a "
+                    "commit by its full hash"
+                )
             edits: list[tuple[int, int, str]] = []
             for m in ANCHORED.finditer(line):
                 examined += 1
@@ -483,23 +659,78 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
                 # The cited line must EXIST, in the file the click opens.
                 # Agreement alone passed `mcp.md:1268` -> `#L1268` on a
                 # 486-line page. Checked before the fragment: a label with no
-                # fragment still promises a line. Never fixed by `--apply`:
-                # the label is the authority below, and here it is the label
-                # that is wrong, so only a human knows what was meant.
+                # fragment still promises a line.
                 target = link_target(md, href)
+                said = PHRASE.match(line, m.end())
+                if target is None and PINNED.match(href):
+                    pinned += 1
                 if target is not None:
                     resolved += 1
-                    if target not in lengths:
-                        lengths[target] = len(target.read_text().splitlines())
-                    over = beyond_eof(
-                        lengths[target], int(start), int(end) if end else None
-                    )
+                    shown = target.relative_to(REPO).as_posix()
+                    body = lines_of(target)
+                    first, last = int(start), int(end) if end else None
+                    # The content rule. The phrase names what the first cited
+                    # line holds, so it is the one half of a citation that
+                    # survives the code moving: the fixer re-points the label
+                    # and the fragment to the one line it begins on.
+                    if said is not None:
+                        phrased += 1
+                        phrase = normalize(said.group(1))
+                        if not phrase:
+                            wrong_content += 1
+                            problems.append(
+                                f"{rel}:{i + 1}: the phrase after {shown}:{start} is "
+                                "empty, and an empty phrase occurs on every line"
+                            )
+                            continue
+                        if "|" in phrase:
+                            wrong_content += 1
+                            problems.append(
+                                f"{rel}:{i + 1}: the phrase after {shown}:{start} "
+                                "holds `|`, which splits a table row before the "
+                                "comment is read; quote another part of the line"
+                            )
+                            continue
+                        at = phrase_starts(body, phrase)
+                        if first not in at:
+                            if apply and len(at) == 1:
+                                moved = at[0] - first
+                                edits.append((m.start(), m.end(), _repoint_range(
+                                    m.group(0), at[0],
+                                    last + moved if last is not None else None,
+                                )))
+                                fixed += 1
+                                continue
+                            wrong_content += 1
+                            problems.append(
+                                f'{rel}:{i + 1}: cites {shown}:{start} for "{phrase}", '
+                                "which does not begin on that line"
+                                + (f" (it begins on line {at})" if at else
+                                   " (it is nowhere in the file)")
+                            )
+                    else:
+                        # Coverage, not a verdict: nothing says what this
+                        # citation is about, so no rule here can tell when it
+                        # lands on the wrong content. Counted and named, and
+                        # the tree-wide test holds the count at zero. A Rust
+                        # symbol in the prose is not enough: the drift rule
+                        # accepts any line within TOLERANCE of it, and passed
+                        # `DialogStore::generation` cited at a blank line 15
+                        # lines above its definition.
+                        unanchored.append(
+                            f"{rel}:{i + 1}: {shown}:{start} carries no phrase; "
+                            + (f'line {first} reads "{normalize(body[first - 1])[:80]}"'
+                               if first <= len(body) else "that line does not exist")
+                        )
+                    # Never fixed by `--apply` without a phrase: the label is
+                    # the authority below, and here it is the label that is
+                    # wrong, so only a human knows what was meant.
+                    over = beyond_eof(len(body), first, last)
                     if over is not None:
                         past_eof += 1
-                        shown = target.relative_to(REPO).as_posix()
                         problems.append(
                             f"{rel}:{i + 1}: cites {shown}:{over} but that "
-                            f"file has {lengths[target]} lines"
+                            f"file has {len(body)} lines"
                         )
                 frag = FRAGMENT.search(href)
                 if frag is None:
@@ -534,6 +765,7 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
 
         if changed:
             md.write_text("\n".join(lines))
+            files.pop(md, None)  # another page may cite this one
 
     if apply:
         print(f"re-anchored {fixed} citation(s)")
@@ -541,16 +773,40 @@ def check_anchors(apply: bool, pages: list[pathlib.Path] | None = None) -> int:
     # `examined=0` is how this scanner goes blind, and `disagreeing=0` reads
     # identically whether it examined 781 citations or none. `resolved` is the
     # same guard for `past_eof`: a resolver that stopped resolving would
-    # report `past_eof=0` exactly like a clean tree.
+    # report `past_eof=0` exactly like a clean tree; `pinned` counts the links
+    # it does not resolve on purpose, so `resolved + pinned` must account for
+    # every examined citation. `phrased` is that guard
+    # for `wrong_content`, and `unanchored` is how many citations no rule can
+    # check for content at all. `unpinned` is the line links no rule reads
+    # because they are not citations of `main` and name no commit.
     print(
         f"two-part references: pages={len(page_list)} examined={examined} "
         f"both_halves={both} fenced={fenced} "
         f"disagreeing={disagreeing} resolved={resolved} "
-        f"past_eof={past_eof}"
+        f"past_eof={past_eof} pinned={pinned} phrased={phrased} "
+        f"wrong_content={wrong_content} unanchored={len(unanchored)} "
+        f"unpinned={unpinned}"
     )
     for p in problems:
         print(f"  {p}")
+    if unanchored:
+        print("unanchored citations (add <!-- \"...\" --> quoting the first cited line):")
+        for u in unanchored:
+            print(f"  {u}")
     return 1 if problems else 0
+
+
+def _repoint_range(cite: str, start: int, end: int | None) -> str:
+    """Move a citation of any label shape to `start` (through `end`).
+
+    The label's trailing `:N` or `:N-M` and the `#L` fragment are rewritten
+    together, because they are one citation. A citation with no fragment keeps
+    having none: adding one is `cited_line_numbers_link_to_the_line`'s call.
+    """
+    span = f"{start}" + (f"-{end}" if end is not None else "")
+    frag = f"#L{start}" + (f"-L{end}" if end is not None else "")
+    cite = re.sub(r":\d+(?:-\d+)?`\]", f":{span}`]", cite, count=1)
+    return re.sub(r"#L\d+(?:-L?\d+)?(?=\)$)", frag, cite, count=1)
 
 
 def _repoint(cite: str, line: int) -> str:

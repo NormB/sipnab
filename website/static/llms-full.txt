@@ -82513,7 +82513,7 @@ The cases the matrix covers:
 
 # Contributor walkthroughs
 
-Seven ordered checklists for the changes people actually make.
+Eight ordered checklists for the changes people actually make.
 
 - Each step names the test that fails if you skip it.
 - Where no test enforces a step, it carries **(unenforced)**.
@@ -82930,6 +82930,83 @@ hard compile error.
 - It left `cd fuzz && cargo check` at exit 0.
 - Registering the same file made the same error fail the build with exit 101.
 - The gate only ever sees registered targets.
+
+## Cite a line of code in a doc
+
+A line citation sends a reader to one line on `main`, and that line moves
+whenever the code above it changes. The citation says what the line holds, so
+the gate can tell when it no longer does, and the fixer can follow it.
+
+Prerequisites: Python 3, and a checkout with the history of `main` if you need
+to pin a link (step 4).
+
+A citation has three parts, written one after another with nothing between
+them (shown here on separate lines):
+
+```text
+label:   [`src/app/batch.rs:120`]
+target:  (https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L120)
+phrase:  <!-- "pub fn run_batch(" -->
+```
+
+- Write the line number twice, once in the label and once in the fragment.
+  - A range is `:120-124` and `#L120-L124`.
+  - `two_part_reference_test::label_and_anchor_agree_across_the_documentation_tree`
+    fails when the two halves name different lines.
+- Directly after the link, with no space, add a phrase: an HTML comment that
+  quotes the start of the first cited line.
+  - It renders as nothing.
+  - The gate compares it with whitespace collapsed, so indentation does not
+    matter and the phrase may run onto the next line.
+  - It must begin on the first cited line. A phrase that begins one line
+    earlier or later fails.
+  - It must not contain `|`: GitHub splits a table row on it before it reads
+    the comment.
+  - Quote enough to occur only once in the file. The fixer can only follow a
+    phrase it finds exactly once.
+  - The same test fails when a citation of a file on `main` has no phrase
+    (`unanchored`), or when its phrase does not begin on its line
+    (`wrong_content`).
+- Run `python3 scripts/check-line-drift.py --apply` ([`scripts/prepare-commit.sh`](../../scripts/prepare-commit.sh)
+  runs it for you).
+  - It moves each citation whose phrase now begins on another line to that
+    line, label and fragment together, and keeps a range's length.
+  - It leaves alone a phrase that occurs twice or not at all, and says so.
+- If the sentence describes code that has since changed or gone, pin the link
+  to a commit that still has it instead.
+  - Replace `blob/main/` with `blob/<commit>/`, the full 40-character hash,
+    and use the line numbers the file has at that commit.
+  - The commit must be on `main`: `git merge-base --is-ancestor <commit> origin/main`.
+    A branch commit can disappear in a rebase, and its link with it.
+  - Drop the phrase. The gate does not read a pinned link: it shows the file
+    as of that commit, which does not move.
+- Write every other link to a line so that it cannot move.
+  - A link to a line of this repository that is not a citation (its label is
+    prose, or it is a bare URL) names a commit by its full hash.
+  - A link to a line in another project names a commit by its full hash or a
+    version tag such as `v1.11.3`, never a branch.
+  - The gate reports any other line link as `unpinned`, and `--apply` does not
+    rewrite it: it cannot know which commit you read.
+
+Verify: `python3 scripts/check-line-drift.py docs/your-page.md` exits 0, and its
+`two-part references:` line shows `wrong_content=0`, `unanchored=0` and
+`unpinned=0`.
+
+Troubleshooting:
+
+- **`does not begin on that line (it begins on line [N])`**: the code moved.
+  Run `--apply`, which re-points the citation to line N.
+- **`(it begins on line [N, M])`**: the phrase occurs twice. Lengthen it until
+  it occurs once, then run `--apply`.
+- **`(it is nowhere in the file)`**: the quoted code changed. Find what the
+  sentence means in today's file, re-point and re-quote it, or pin the link.
+- **`carries no phrase`**: add the phrase. The message goes on to quote
+  line N to save a lookup, but check that line N is the one the
+  sentence means before you copy it.
+- **The gate refuses a phrase with `|`**: quote a different part of the line.
+- **`links to a line and no rule reads it`**: the link is not a citation of
+  `main` and names no commit. Give it a `file:line` label and a phrase, or
+  replace the branch in its URL with the full hash of a commit.
 
 ---
 

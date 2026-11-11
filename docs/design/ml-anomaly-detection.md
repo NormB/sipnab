@@ -243,7 +243,7 @@ names is a peer set an operator can open and read.
 The strongest argument for it is that the tree already holds a working example.
 `FraudDetector` baselines within a capture today. It keeps a rolling call rate
 per source address, folded one window at a time by `sample_baseline`
-([`src/security/fraud_detect.rs:152`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L152))
+([`src/security/fraud_detect.rs:145`](https://github.com/NormB/sipnab/blob/main/src/security/fraud_detect.rs#L145)<!-- "fn sample_baseline(&mut self, now: DateTime<Utc>, window: TimeDelta) {" -->)
 so the average stays slower than the burst it exists to catch. A volume spike
 is reported when a source exceeds the rate it established itself, and the alert
 prints both sides — "12 calls in 60s (baseline: 2.4/min)" — which is the
@@ -266,7 +266,7 @@ the capture's INVITE dialogs by `src_addr`, the only grouping key that exists �
 "trunk" and "gateway" are still not modeled, and inventing them is a second
 feature. For each source carrying enough dialogs, compare its distribution of
 final status codes, which `final_status_code`
-([`src/sip/dialog.rs:420`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L420))
+([`src/sip/dialog.rs:420`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L420)<!-- "pub fn final_status_code(&self) -> Option<u16> {" -->)
 already returns, against the pooled distribution of the other sources in the
 same capture. Report the sources that diverge, printing both distributions and
 the dialog identifiers behind them, so an operator opens the calls rather than
@@ -291,7 +291,7 @@ A divergence figure fails the way a MOS fails. The number a two-source capture
 produces is byte-identical to the number a two-hundred-source capture produces,
 and only one of them means anything — which is exactly why an RTP score says
 whether it is grounded. `mos_is_grounded`
-([`src/mcp/server.rs:4121`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L4121))
+([`src/mcp/server.rs:2319`](https://github.com/NormB/sipnab/blob/3597f6bc9a12496351c368c5aed64b2559c33cdc/src/mcp/server.rs#L2319))
 exists because a placeholder 4.2 and a measured 4.2 are the same bytes, and an
 agent that cannot tell them apart reasons confidently from a guess.
 

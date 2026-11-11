@@ -191,9 +191,25 @@ fn label_and_anchor_agree_across_the_documentation_tree() -> Result<(), TestErro
     // half: a link resolver that stopped resolving would report
     // `past_eof=0` exactly like a clean tree. Measured 2026-11-04: 652 of 652
     // examined resolved; the floor follows the `examined` one above.
+    //
+    // Re-measured 2026-11-08: 458 resolved and 191 pinned of 649. Citations
+    // whose sentence describes code that has since changed now link to a
+    // commit that still has it, and a pinned link is not resolved on purpose.
+    // So the two together must account for every examined citation, which is
+    // a sharper guard than the old 600 floor: a resolver that stopped
+    // resolving shows up as a gap, not as a lower number that still clears a
+    // floor. The floor itself moves to 400 on the same ~10% rule.
     let resolved = field(&report, "resolved")?;
+    let pinned = field(&report, "pinned")?;
+    assert_eq!(
+        resolved + pinned,
+        examined,
+        "{examined} line citation(s) examined, but only {resolved} resolved to \
+         a file and {pinned} are pinned to a commit; the rest were read by \
+         nothing:\n{report}"
+    );
     assert!(
-        resolved >= 600,
+        resolved >= 400,
         "only {resolved} of {examined} line citation(s) resolved to a file, so \
          the past-the-end check below is reading almost nothing:\n{report}"
     );
@@ -204,6 +220,49 @@ fn label_and_anchor_agree_across_the_documentation_tree() -> Result<(), TestErro
          and still send a reader nowhere; re-point it at the content it meant \
          (git log -S on the cited file finds what was there), or say in the \
          page that the content is gone. `--apply` cannot fix this one.\n{report}"
+    );
+
+    // The third question: does the cited line hold what the citation says it
+    // does? A phrase, `<!-- "..." -->` after the link, names the content.
+    // Measured 2026-11-08 before phrases existed: 573 of the 649 citations
+    // under docs/ no longer landed on the lines they held when written. 477
+    // named no symbol the drift rule checks, and that rule's 15-line
+    // tolerance passed the other 172 wherever they landed near the symbol.
+    // `unanchored` is held at zero so a new citation cannot join them, and
+    // `phrased` is the anti-vacuity floor for `wrong_content`.
+    let phrased = field(&report, "phrased")?;
+    assert!(
+        phrased >= 300,
+        "only {phrased} line citation(s) carry a phrase, so the content check \
+         below is reading almost nothing:\n{report}"
+    );
+    assert_eq!(
+        field(&report, "wrong_content")?,
+        0,
+        "a citation's phrase does not begin on the line it cites, so the click \
+         lands on other content. Run `python3 scripts/check-line-drift.py \
+         --apply` to move each one whose phrase occurs once; re-point the rest \
+         by hand.\n{report}"
+    );
+    assert_eq!(
+        field(&report, "unanchored")?,
+        0,
+        "a line citation says neither what its line holds (a phrase, \
+         `<!-- \"...\" -->` directly after the link, quoting the start of the \
+         first cited line), so nothing can tell when it starts landing on \
+         other content. Add a phrase, or pin the link to a commit if it \
+         describes an old revision.\n{report}"
+    );
+    // The fourth question: is there a line link that none of the rules above
+    // reads? A link to a line that is not a `file:line` citation of `main`
+    // (a prose label, a bare URL, a branch of another project) follows its
+    // branch and was checked by nothing (DOC-LINE-LINKS).
+    assert_eq!(
+        field(&report, "unpinned")?,
+        0,
+        "a link to a line follows a branch, a tag or a short hash and is not a \
+         citation the rules above read. Write it as a citation of main with its \
+         phrase, or name a commit by its full hash.\n{report}"
     );
 
     assert!(
@@ -346,6 +405,47 @@ fn a_citation_past_the_end_of_its_file_is_reported() -> Result<(), TestError> {
     assert!(ok, "line 1 exists in every file:\n{report}");
     assert_eq!(field(&report, "resolved")?, 1, "{report}");
     assert_eq!(field(&report, "past_eof")?, 0, "{report}");
+    Ok(())
+}
+
+/// A citation's phrase must begin on the line it cites.
+///
+/// The line exists and both halves agree, so every older rule passed
+/// `rest-api.md:1117` for a sentence that page no longer had there. The
+/// fixture cites `LICENSE-MIT`, which changes only with the license, so the
+/// control cannot start failing as code moves.
+#[test]
+fn a_phrase_that_is_not_on_its_cited_line_is_reported() -> Result<(), TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
+    let blob = "https://github.com/NormB/sipnab/blob/main/LICENSE-MIT";
+
+    let good = fixture(
+        dir.path(),
+        "on-its-line.md",
+        &format!("See [`LICENSE-MIT:1`]({blob}#L1)<!-- \"MIT License\" -->.\n"),
+    )?;
+    let (ok, report) = drift(&[&good], false)?;
+    assert!(
+        ok,
+        "line 1 of LICENSE-MIT begins with the phrase:\n{report}"
+    );
+    assert_eq!(field(&report, "phrased")?, 1, "{report}");
+    assert_eq!(field(&report, "wrong_content")?, 0, "{report}");
+
+    let bad = fixture(
+        dir.path(),
+        "elsewhere.md",
+        &format!("See [`LICENSE-MIT:1`]({blob}#L1)<!-- \"Permission is hereby granted\" -->.\n"),
+    )?;
+    let (ok, report) = drift(&[&bad], false)?;
+    assert!(
+        !ok,
+        "line 1 of LICENSE-MIT does not hold the phrase, so the citation lands \
+         on the wrong content:\n{report}"
+    );
+    assert_eq!(field(&report, "wrong_content")?, 1, "{report}");
+    assert_eq!(field(&report, "past_eof")?, 0, "{report}");
+    assert_eq!(field(&report, "disagreeing")?, 0, "{report}");
     Ok(())
 }
 

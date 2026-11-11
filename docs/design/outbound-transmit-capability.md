@@ -40,17 +40,17 @@ Three properties make it hold, and a new capability must reproduce all three or
 it is not the same guarantee:
 
 1. **A private field.** `pub struct TransmitPermit(())`
-   ([`:86`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L86)). No other module can construct
-   one, so `for_source` ([`:111`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L111)) is the
+   ([`:87`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L87)<!-- "pub struct TransmitPermit(());" -->). No other module can construct
+   one, so `for_source` ([`:112`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L112)<!-- "pub fn for_source(source:" -->) is the
    sole entry point. It returns `Some` for `Live` and `Hep` and `None` for
    `File`.
 2. **The permit is a parameter of every socket the kill path creates.**
    `RawKillSocket::open` in both the Linux and stub forms
    ([`process_isolation.rs:149`, `:177`](../../src/process_isolation.rs)) and
-   `KillUdpSocket::bind` ([`:322`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L322)) take it by
+   `KillUdpSocket::bind` ([`:335`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L335)<!-- "fn bind(_permit:" -->) take it by
    reference, and `spawn_scanner_kill_worker`
-   ([`:1542`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1542)) and `BatchRunner::new`
-   ([`batch.rs:3054`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3054)) by value. The sends themselves
+   ([`:1640`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1640)<!-- "pub fn spawn_scanner_kill_worker(" -->) and `BatchRunner::new`
+   ([`batch.rs:3931`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3931)<!-- "fn new( cli: Cli, config: &Config, mut batch: BatchProcessing," -->) by value. The sends themselves
    take none, and that is the design rather than a gap: they happen in the
    scanner-kill worker, a process of its own, and a proof token cannot cross a
    pipe. The worker's capability is the descriptors it inherited — all of
@@ -58,16 +58,16 @@ it is not the same guarantee:
    none it refuses every request. A new socket that forgets the permit does
    not compile; a worker with nothing handed to it has nothing to send on.
 3. **A refusal the operator can read.** `offline_refusal`
-   ([`:143`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L143)) names the flag, says what
+   ([`:154`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L154)<!-- "pub fn offline_refusal(feature:" -->) names the flag, says what
    happens instead and says how to get what was asked for. It fires from
-   `bootstrap::plan` ([`bootstrap.rs:245-263`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L245-L263)),
+   `bootstrap::plan` ([`bootstrap.rs:1343-1348`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1343-L1348)<!-- "let kill_requested = kill_worker_wanted(cli, config);" -->),
    which runs for every mode. The doc comment at `:31-36` is explicit that the
    pair is deliberate: a type-only guard leaves someone believing their defense
    is armed, and a message-only guard is one forgetful call site away from being
    no guard at all.
 
 The permit is derived once, from the source the capture thread actually opened
-rather than from the flags ([`batch.rs:480-481`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L480-L481)), with
+rather than from the flags ([`batch.rs:3016-3017`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L3016-L3017)<!-- "let transmit_permit" -->), with
 the reasoning recorded above it — `-I` beating `-d`, device auto-detection and
 `--hep-listen` are already resolved into `handle.source`, so re-deriving it from
 `cli` would be a second copy of that precedence to get wrong.
@@ -82,8 +82,8 @@ let _ = handle.send_kill(KillRequest::SendResponse {
     dst_port: sip_msg.src_port,
 ```
 
-([`batch.rs:1917-1918`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1917-L1918), and identically at
-[`:1958-1959`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1958-L1959) for the `-K` path.)
+([`batch.rs:1879-1880`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/app/batch.rs#L1879-L1880), and identically at
+[`:1920-1921`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/app/batch.rs#L1920-L1921) for the `-K` path.)
 
 That is correct for its purpose — a scanner-kill reply must go back to the
 scanner, and there is nowhere else for it to go. It is also the entire reason the
@@ -109,19 +109,19 @@ capture file.
 
 The chain, verified:
 
-- `HepSender::send` ([`hep.rs:4623`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L4623)) builds a HEP v3
+- `HepSender::send` ([`hep.rs:1741`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/capture/hep.rs#L1741)) builds a HEP v3
   packet around `msg.raw` and calls `self.socket.send(&pkt)`
-  ([`:1759`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1759)). No permit parameter.
+  ([`:1759`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/capture/hep.rs#L1759)). No permit parameter.
 - It is constructed unconditionally from `cli.hep_send` inside `BatchRunner::new`
-  ([`batch.rs:606-636`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L606-L636)). That constructor **receives**
-  `transmit_permit: Option<TransmitPermit>` ([`:593`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L593)) and
+  ([`batch.rs:606-636`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/app/batch.rs#L606-L636)). That constructor **receives**
+  `transmit_permit: Option<TransmitPermit>` ([`:593`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/app/batch.rs#L593)) and
   consumes it only for the kill worker
-  ([`:731-734`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L731-L734)). The HEP sender block never looks at it.
+  ([`:731-734`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/app/batch.rs#L731-L734)). The HEP sender block never looks at it.
 - It fires once per matched SIP message in the run loop
-  ([`batch.rs:1373`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L1373)).
+  ([`batch.rs:1335`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/app/batch.rs#L1335)).
 - `bootstrap::plan`'s refusal tests only the kill flags —
   `cli.kill_scanner || !cli.kill_target.is_empty() || config.security.kill_scanner`
-  ([`bootstrap.rs:245-247`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L245-L247)) — so no warning fires
+  ([`bootstrap.rs:245-247`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/app/bootstrap.rs#L245-L247)) — so no warning fires
   either.
 
 So `sipnab -I customer.pcap --hep-send collector.example:9060` forwards every SIP
@@ -186,7 +186,7 @@ required by the one function that sends; it converts into neither of the
 other two permits.
 
 **A related, smaller one.** `--reverse-dns` calls `reverse_dns`
-([`names.rs:637`](https://github.com/NormB/sipnab/blob/main/src/names.rs#L637)), whose own doc comment says *"Emits DNS
+([`names.rs:638`](https://github.com/NormB/sipnab/blob/main/src/names.rs#L638)<!-- "fn reverse_dns(ip: IpAddr) -> Option<String> {" -->), whose own doc comment says *"Emits DNS
 queries on the network"*. On a file source the addresses queried are the
 capture's, so the analyst's resolver — and its upstream — learn the address set
 of a customer capture. It is off by default
@@ -212,11 +212,11 @@ operator-supplied. Content is derived from the capture. This is the category
 
 For the record, the inventory of what sipnab can currently emit is short:
 the kill path (permit-gated), `--hep-send` (section 3), reverse DNS (section 3),
-syslog from the alert engine ([`alerting.rs:428`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L428),
+syslog from the alert engine ([`alerting.rs:773-776`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L773-L776)<!-- "// Send to syslog if enabled" -->,
 local `AF_UNIX` by default but remotable by host configuration), and the
 `sh -c` hooks — `--alert-exec`, `--on-dialog-exec`, `--on-quality-exec` — which
 transmit nothing themselves but whose documented example is an outbound HTTP POST
-([`event_exec.rs:82`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L82)). There is no HTTP client in
+([`event_exec.rs:262`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L262)<!-- "/// `"curl -X POST" -->). There is no HTTP client in
 the dependency graph, no metrics push, no update check and no telemetry; the REST
 API, the MCP HTTP transport, the Prometheus endpoint and the HEP receiver are all
 inbound listeners. Any new exporter would be sipnab's first outbound client.
@@ -321,7 +321,7 @@ Each capability gets a flag that names what it does and where it goes:
 | Active probe | *out of scope* | — | — |
 
 Every one off by default, matching the standing rule
-([`cli.rs:645-798`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L645-L798)) that every arming flag starts off.
+([`cli.rs:645-798`](https://github.com/NormB/sipnab/blob/42250716e8bb6c220ed7665cafd26fc43aa50739/src/cli.rs#L645-L798)) that every arming flag starts off.
 
 ### 5.4 What the guard must never grow
 
@@ -330,7 +330,7 @@ extending it:
 
 - **`TransmitPermit::for_source` must keep returning `None` for `CaptureSource::File`.**
   The unit test at
-  [`transmit_guard.rs:97-126`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L97-L126) pins it with
+  [`transmit_guard.rs:171-211`](https://github.com/NormB/sipnab/blob/main/src/security/transmit_guard.rs#L171-L211)<!-- "fn only_live_sources_may_transmit()" --> pins it with
   the message *"reading a capture file must never grant permission to transmit"*.
   That test is the guard's specification. Changing it is changing the product.
 - **No `OriginatePermit` may be accepted where a `TransmitPermit` is required**,

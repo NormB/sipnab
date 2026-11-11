@@ -67,9 +67,9 @@ keyed on Call-ID. That works only if a Call-ID identifies at most one call in
 the combined view. It does not.
 
 The clearest statement of this is in the code that had to cope with it.
-`DialogStore::merge` ([`dialog_store.rs:1633`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1633))
+`DialogStore::merge` ([`dialog_store.rs:595`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/sip/dialog_store.rs#L595))
 carries a doc section headed *"Same-Call-ID collisions are the normal case, not
-the rare one"* ([`:594`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L594)), and explains that a
+the rare one"* ([`:554`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/sip/dialog_store.rs#L554)), and explains that a
 call through a proxy or SBC reconstructs as two fragments keyed on the same
 Call-ID — *"measured at 1173 of 2311 dialogs in one 100 MB file."*
 That is within a single capture. Across two captures of
@@ -88,17 +88,17 @@ generators and proxies — where operators most want to compare two captures.
 ### What the `-I` set actually gave us, and why it is not this
 
 `-I` now accepts a file, a directory, a glob, or a repeated set
-([`cli.rs:234-247`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L234-L247)), resolves it into one chronologically
+([`cli.rs:771-796`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L771-L796)<!-- "/// Read packets from a capture file" -->), resolves it into one chronologically
 ordered list (`input_set::resolve`,
-[`input_set.rs:355`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L355)), and streams every file
+[`input_set.rs:355`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L355)<!-- "/// resolves" -->), and streams every file
 into **one** `DialogStore` through one channel
-(`capture_files`, [`file.rs:587`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L587)). It is tempting to
+(`capture_files`, [`file.rs:586`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L586)<!-- "/// packets in replay mode, checks the global shutdown flag, and logs progress." -->). It is tempting to
 read that as "sipnab now has a cross-capture story, so the comparison request is
 satisfied."
 
 It is the opposite operation, and the module that implements it says so in as
 many words. `warn_on_overlap`
-([`input_set.rs:1097`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1097)) exists precisely to warn
+([`input_set.rs:1097`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1097)<!-- "/// A clean ring" -->) exists precisely to warn
 an operator away from the comparison use case:
 
 ```
@@ -107,7 +107,7 @@ the same traffic, packets present in both are counted twice
 ```
 
 and its companion in the read path, `overlap_message`
-([`file.rs:1301`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1301)), repeats the consequence for the
+([`file.rs:1300`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1300)<!-- "/// anyway, so" -->), repeats the consequence for the
 end-against-start case: *"they overlap by {by} ms, so packets present in both
 are counted twice."* The doc comment above `warn_on_overlap` is explicit that
 *"Overlap means the set is not one sequence — most often two capture runs, or
@@ -133,7 +133,7 @@ produce — silently, with `--problems` adding nothing.
 The `same instant` warning did fire, which is the design working. But the
 warning detects overlap in *time*, not overlap in *identity*: `same_instant_pairs`
 compares consecutive files' first-packet timestamps against `SAME_INSTANT_SECS`
-(1 ms, [`input_set.rs:1122`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1122)) and
+(1 ms, [`input_set.rs:1128`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L1128)<!-- "const SAME_INSTANT_SECS:" -->) and
 `overlap_message` compares the previous file's end against the next one's start.
 Two captures that share Call-IDs without overlapping in time trip neither — and
 that population is not exotic, since a load generator reuses Call-IDs across
@@ -151,36 +151,36 @@ than the Call-ID problem, and it survives even if Call-IDs were unique: **sipnab
 retains no record of which capture anything came from.**
 
 - `Packet` carries `interface: Option<String>`
-  ([`packet.rs:50`](https://github.com/NormB/sipnab/blob/main/src/capture/packet.rs#L50)), and the file reader hard-codes
-  it to `None` — [`file.rs:633`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L633):
+  ([`packet.rs:50`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/capture/packet.rs#L50)), and the file reader hard-codes
+  it to `None` — [`file.rs:633`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/capture/file.rs#L633):
   `None, // File captures have no interface name`, with the invariant asserted in
-  the module's own tests at [`file.rs:1107`](https://github.com/NormB/sipnab/blob/main/src/capture/file.rs#L1107).
-- `ParsedPacket` ([`parse.rs:49-84`](https://github.com/NormB/sipnab/blob/main/src/capture/parse.rs#L49-L84)) does not carry
+  the module's own tests at [`file.rs:1107`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/capture/file.rs#L1107).
+- `ParsedPacket` ([`parse.rs:49-84`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/capture/parse.rs#L49-L84)) does not carry
   `interface` forward at all, so even the live-capture device name is dropped
   before SIP parsing.
-- `SipMessage` ([`message.rs:34-70`](https://github.com/NormB/sipnab/blob/main/src/sip/message.rs#L34-L70)) and `SipDialog`
-  ([`dialog.rs:87-140`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog.rs#L87-L140)) have no source field. `tags` on
+- `SipMessage` ([`message.rs:34-70`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/sip/message.rs#L34-L70)) and `SipDialog`
+  ([`dialog.rs:87-140`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/sip/dialog.rs#L87-L140)) have no source field. `tags` on
   `SipDialog` is the operator's `--tag` string, not provenance.
 - The TUI's only notion of where its data came from is one display string,
-  `capture_mode` ([`tui/mod.rs:145`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L145)), overwritten wholesale
-  on each in-TUI open ([`file_open.rs:520`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L520)).
+  `capture_mode` ([`tui/mod.rs:247`](https://github.com/NormB/sipnab/blob/main/src/tui/mod.rs#L247)<!-- "/// Capture mode" -->), overwritten wholesale
+  on each in-TUI open ([`file_open.rs:832`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L832)<!-- "app.set_capture_mode(outcome.capture_mode);" -->).
   The `-I` set never reaches the TUI: `plan.source` is consumed by
-  `bootstrap::launch` ([`main.rs:134`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L134)) and `TuiOptions`
-  ([`state.rs:218-229`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L218-L229)) carries no path.
+  `bootstrap::launch` ([`main.rs:444-447`](https://github.com/NormB/sipnab/blob/main/src/main.rs#L444-L447)<!-- "let launched = bootstrap::launch(" -->) and `TuiOptions`
+  ([`state.rs:218-229`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/state.rs#L218-L229)) carries no path.
 - Opening a capture from inside the TUI **clears** both stores rather than
   merging — `reset_for_load`
-  ([`file_open.rs:333`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L333)), whose caller
+  ([`file_open.rs:338`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/file_open.rs#L338)<!-- "fn reset_for_load(app:" -->), whose caller
   `load_pcap_file` is documented as *"replacing all existing data."* There is no
   merge-on-open branch anywhere in that path.
 
-The `View` enum ([`state.rs:1042-1090`](https://github.com/NormB/sipnab/blob/main/src/tui/state.rs#L1042-L1090)) reflects the
+The `View` enum ([`state.rs:1036-1084`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/state.rs#L1036-L1084)) reflects the
 same absence: every data-bearing variant is keyed on a Call-ID or a `StreamKey`
 and nothing else, so two dialogs from two captures would be
 indistinguishable at the routing layer even before they reached a renderer.
 
 The one comparison the TUI does have is `View::MessageDiff`, and its controller
 refuses to cross even a dialog boundary —
-[`call_flow.rs:634-641`](https://github.com/NormB/sipnab/blob/main/src/tui/controllers/call_flow.rs#L634-L641):
+[`call_flow.rs:634-641`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/tui/controllers/call_flow.rs#L634-L641):
 
 ```rust
 if first_cid != cur_cid {
@@ -198,7 +198,7 @@ The cheap version — load both captures into one store and add a "capture A / B
 column — cannot work, because the column has nothing to read. There is no field
 to populate. Adding one means touching `Packet`, `ParsedPacket`, `SipMessage`
 and `SipDialog`, which is the zero-copy payload spine (D3) and the hot path;
-`process_message` ([`dialog_store.rs:1465`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1465)) is
+`process_message` ([`dialog_store.rs:1471-1473`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1471-L1473)<!-- "// Look up by the borrowed Call-ID" -->) is
 written to avoid even a single owned-key allocation per message. A per-message
 `String` source label is a straightforward regression of that work.
 
@@ -286,15 +286,15 @@ registry has grown since, and the count is pinned by
 `mcp_tool_table_lists_every_registered_tool` rather than by this sentence.
 The argument below does not depend on the number. Four
 of them touch something other than the stores: `export_capture`
-([`server.rs:8575`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8575)) writes a pcap, `export_audio`
-([`server.rs:8639`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8639)) writes a WAV, `list_captures`
-([`server.rs:8346`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8346)) reads a directory, and
-`shutdown_server` ([`server.rs:9131`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9131)) ends the process.
+([`server.rs:8580`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8580)<!-- "pub async fn export_capture(" -->) writes a pcap, `export_audio`
+([`server.rs:8636`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8636)<!-- "pub async fn export_audio(" -->) writes a WAV, `list_captures`
+([`server.rs:8355`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L8355)<!-- "pub async fn list_captures(&self)" -->) reads a directory, and
+`shutdown_server` ([`server.rs:9128`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9128)<!-- "pub async fn shutdown_server(" -->) ends the process.
 
 **None of them mutates a store.** `shutdown_server` reads `dialog_store` and
 `stream_store` for its report, optionally writes a file, and then calls
 `crate::signals::request_shutdown()`
-([`server.rs:2286`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2286)) — the same flag SIGTERM sets. The
+([`server.rs:9239`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9239)<!-- "None => crate::signals::request_shutdown()," -->) — the same flag SIGTERM sets. The
 rule as written is intact, unqualified, across every tool. It does not need an
 exception because nothing has taken one.
 
@@ -316,12 +316,12 @@ real line, and it is the line write-back crosses.
 **Corrected 2026-08-05: all three repairs have been made.** This paragraph used
 to read *"That repair has not been made yet"* and named two other places that
 had drifted the same way. Every one of them is now fixed.
-[`invariants.md:324-330`](https://github.com/NormB/sipnab/blob/main/docs/internals/invariants.md#L324-L330) states the *Why* as the
+[`invariants.md:324-330`](https://github.com/NormB/sipnab/blob/719c7b884542ff4dea303839c78443494943b23a/docs/internals/invariants.md#L324-L330) states the *Why* as the
 distinction this section argued for — an agent must not be able to change what
 an operator is looking at *and leave it looking like what they were looking at*
 — and adds that the old wording *"was true until a capture swap existed and is
 the wrong test anyway: what protects the operator is the identity on the wire,
-not the absence of the verb."* [`mcp/mod.rs:10-12`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L10-L12) no
+not the absence of the verb."* [`mcp/mod.rs:11-13`](https://github.com/NormB/sipnab/blob/main/src/mcp/mod.rs#L11-L13)<!-- "//! **No tool changes" --> no
 longer says "read-only"; it says *"No tool changes the analysis without changing
 its identity"*, and names that as *"narrower than 'read-only', which this doc
 used to claim"*. And the *"systemd owns the capture lifecycle"* sentence is gone
@@ -335,18 +335,18 @@ caught up.
 guards, each visible in the code:
 
 1. **Off unless armed.** `allow_shutdown: bool`
-   ([`server.rs:57`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L57)) is `false` in `new()`
-   ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)) and only set by `with_shutdown()`
-   ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)), which `servers.rs` calls only
+   ([`server.rs:187`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L187)<!-- "allow_shutdown: bool, /// Where" -->) is `false` in `new()`
+   ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut" -->) and only set by `with_shutdown()`
+   ([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut" -->), which `servers.rs` calls only
    when `cli.mcp_allow_shutdown` is set
-   ([`servers.rs:258-262`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L258-L262)). Refusal is the first
-   statement of the handler ([`server.rs:2224`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2224)).
+   ([`servers.rs:953-957`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L953-L957)<!-- "let s = if cli.mcp_args.mcp_allow_shutdown" -->). Refusal is the first
+   statement of the handler ([`server.rs:9134`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9134)<!-- "if !self.allow_shutdown {" -->).
 2. **Dry run by default.** `params.dry_run.unwrap_or(true)`
-   ([`server.rs:2235`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2235)) — an agent that omits the
+   ([`server.rs:9145`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9145)<!-- "let dry_run = params.dry_run.unwrap_or(true);" -->) — an agent that omits the
    argument gets a report.
 3. **The destructive path must be named.** An unsaved live capture is refused
    unless `save_to` or `discard_unsaved=true`
-   ([`server.rs:2266-2275`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2266-L2275)).
+   ([`server.rs:9175-9183`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9175-L9183)<!-- "if !dry_run && unsaved && saved_to.is_none()" -->).
 4. **The blast radius is bounded and legible.** The process either exists or it
    does not; there is no partially-shut-down state to misread. And a live
    capture is the only thing that can be lost, which is exactly what guard 3
@@ -358,7 +358,7 @@ and the first has already told the agent what to send. And there is no
 observable "it happened" from outside: the process is still running, the counts
 still look plausible, and the operator reading `/v1/dialogs` has no way to tell
 a mutated store from a merely-changed one, because `DialogStore::generation`
-([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) is internal to
+([`dialog_store.rs:242`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/sip/dialog_store.rs#L242)) is internal to
 cache invalidation and appears on no wire format.
 
 ### The prompt-injection chain, grounded
@@ -367,9 +367,9 @@ Every MCP response contains attacker-controlled text. This is not hypothetical
 and it is not incidental — it is the tool working:
 
 - `DialogSummary.from_user` / `to_user`
-  ([`model.rs:53-57`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L53-L57)) are copied straight off the
+  ([`model.rs:54-58`](https://github.com/NormB/sipnab/blob/main/src/output/model.rs#L54-L58)<!-- "/// User portion of the From" -->) are copied straight off the
   From/To URIs.
-- `get_message` ([`server.rs:5901`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5901)) returns the parsed
+- `get_message` ([`server.rs:5901`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L5901)<!-- "pub async fn get_message(" -->) returns the parsed
   message through `message_to_json_value`. Until 0.5.159 the phrasing here was
   *"headers and body included"*, and measured against 0.5.130 that was false:
   the projection had a closed field list and no headers map, so a `Diversion`
@@ -377,7 +377,7 @@ and it is not incidental — it is the tool working:
   gap — `extension_headers` now carries every header outside that closed list,
   in wire form — so the sentence is true today, and it is worth recording that
   a threat-model section leaned on it for a release in which it was not.
-- `search_messages` ([`server.rs:6359`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6359)) returns
+- `search_messages` ([`server.rs:1306`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L1306)) returns
   `snippet`, built as
   `truncate_string(&String::from_utf8_lossy(&msg.raw), MAX_BODY_BYTES)` — the
   raw bytes off the wire.
@@ -404,7 +404,7 @@ agent reads it verbatim through any of the three tools above; and with a
 write-back tool present, the text it reads can reach a verb that changes what
 the operator sees. Today the worst that text can reach is a read, a file write
 confined to `--mcp-file-root` by `resolve_in_root`
-([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177)), or — only if armed, only on a
+([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->), or — only if armed, only on a
 second call, only having named the discard — a process stop. That is a
 qualitative gap, not a matter of degree.
 
@@ -416,17 +416,17 @@ and collectively they are the whole problem, because the operator's screen is
 the tool's output and every one of them edits it.
 
 Concretely: `--api` and `--mcp` share the same `Arc<RwLock<DialogStore>>`, on
-the same server thread — [`batch.rs:943-970`](https://github.com/NormB/sipnab/blob/main/src/app/batch.rs#L943-L970) starts both
+the same server thread — [`batch.rs:924-932`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/app/batch.rs#L924-L932) starts both
 with `Selection { api: true, mcp: true }`, and the comment above it states *"They
 read the SAME stores the packet loop writes to."* Every REST route is a `GET`
-([`api.rs:204-211`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L211)); there is no mutating verb anywhere
+([`api.rs:204-211`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/output/api.rs#L204-L211)); there is no mutating verb anywhere
 on sipnab's network surface today. A write-back MCP tool would be the first, and
 it would be reachable from the one surface whose caller is a language model
 reading attacker-supplied text. A monitoring system polling `/v1/dialogs` would
 observe the change with nothing in the payload explaining it.
 
 Note what this argument does *not* rest on: MCP does **not** run alongside the
-TUI. [`tui_mode.rs:366-374`](https://github.com/NormB/sipnab/blob/main/src/app/tui_mode.rs#L366-L374) passes
+TUI. [`tui_mode.rs:366-374`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/app/tui_mode.rs#L366-L374) passes
 `Selection { api: true, mcp: false }`, commented *"The TUI owns stdio, so MCP
 stdio is never selected here."* An earlier version of this argument claimed an
 agent could rewrite the store under a live TUI. It cannot, and that claim is
@@ -455,7 +455,7 @@ requirement to satisfy rather than a reason to stop.
 1. **A wire-visible store identity** — a generation or etag on REST and MCP
    responses — so a consumer can detect that the thing it is reading changed
    underneath it. `DialogStore::generation` already exists internally
-   ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) and is bumped by every
+   ([`dialog_store.rs:242`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/sip/dialog_store.rs#L242)) and is bumped by every
    mutating method; exposing it is small. Without it, "who changed this" has no
    answer at any layer. [Section 4 (`open_capture`)](#4-the-open_capture-mcp-tool)
    needs the same primitive, so it is built once.
@@ -477,7 +477,7 @@ a stated invariant the code has quietly stopped honoring.
 | Requirement | Built as |
 |---|---|
 | 1. Wire-visible store identity | [`src/provenance.rs`](../../src/provenance.rs): a `CaptureEtag` carrying a capture-instance id plus both store generations, stamped on `capture_status` and every paged whole-store response. [Section 4 (`open_capture`)](#4-the-open_capture-mcp-tool) consumes the same primitive, as planned — it was built once |
-| 2. Write-back state separate from the analysis | [`src/mcp/findings.rs`](../../src/mcp/findings.rs), reached by `save_findings` behind `--mcp-allow-save-findings` (off by default: `allow_save_findings` at [`server.rs:74`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L74), `false` in `new()` at `:161`, set only by `with_save_findings()` at `:233`) |
+| 2. Write-back state separate from the analysis | [`src/mcp/findings.rs`](../../src/mcp/findings.rs), reached by `save_findings` behind `--mcp-allow-save-findings` (off by default: `allow_save_findings` at [`server.rs:240`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L240)<!-- "allow_save_findings: bool, /// Annotations" -->, `false` in `new()` at `:161`, set only by `with_save_findings()` at `:233`) |
 | Invariant "MCP tools never edit the analysis, and every response has a ceiling" amended in the same change | Invariant "MCP tools never edit the analysis, and every response has a ceiling" of [`invariants.md`](../internals/invariants.md#mcp-tools-never-edit-the-analysis-and-every-response-has-a-ceiling) is retitled "MCP tools never edit the analysis, and every response has a ceiling" and now names `save_findings` explicitly, so nobody has to discover the write by reading the tool list |
 
 The annotation store went further than requirement 2 asked, and the reason is
@@ -528,15 +528,15 @@ decisions as *"Fully implemented (P1–P5)"*, and the code matches claim for
 claim: the pure builders `build_ipv4_udp` / `build_ipv6_udp`
 ([`kill_packet.rs:34`, `:98`](../../src/security/kill_packet.rs)), the raw
 socket opened in the privileged window and handed to the worker
-(`RawKillSocket::open`, [`process_isolation.rs:149`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L149)),
+(`RawKillSocket::open`, [`process_isolation.rs:152`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L152)<!-- "/// Open the raw IPv4 and IPv6 send sockets." -->),
 `--kill-spoof {auto|raw|ephemeral}` with a loud failure for `raw`
-([`bootstrap.rs:554-562`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L554-L562)), and the property that
+([`bootstrap.rs:4707-4715`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L4707-L4715)<!-- "Err(e) if cli.security_args.kill_spoof == crate::cli::KillSpoof::Raw => {" -->), and the property that
 matters most — the forged source is never a parameter. It is always the sniffed
 packet's own destination ([`batch.rs:1775-1776`, `:1816-1817`](../../src/app/batch.rs)),
 so `-K` is a targeted transaction reply and not a general spoofer.
 
 **HEP-origin packets cannot drive an active response.** The whole policy is
-three lines ([`scanner_kill.rs:141-143`](https://github.com/NormB/sipnab/blob/main/src/security/scanner_kill.rs#L141-L143)):
+three lines ([`scanner_kill.rs:141-143`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/security/scanner_kill.rs#L141-L143)):
 
 ```rust
 pub fn kill_response_eligible(from_hep: bool, hep_allow_kill: bool) -> bool {
@@ -548,11 +548,11 @@ with the reason stated above it: *"a HEP sender asserts the inner src/dst
 addresses, so absent receiver-side authentication an attacker could steer the
 kill response at a chosen victim (SSRF-style)."* `--hep-allow-kill` is off by
 default and a test pins that it stays off
-([`cli.rs:1830-1835`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1830-L1835), asserting *"HEP-origin scanner-kill must
+([`cli.rs:11753-11758`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L11753-L11758)<!-- "fn hep_allow_kill_defaults_off() -> Result<(), TestError> {" -->, asserting *"HEP-origin scanner-kill must
 be opt-in (SN-01)"*).
 
 **Field injection into the input of a ban decision.** `fail2ban.rs`'s
-`render_absent` ([`fail2ban.rs:51`](https://github.com/NormB/sipnab/blob/main/src/output/fail2ban.rs#L51)) quotes and
+`render_absent` ([`fail2ban.rs:51`](https://github.com/NormB/sipnab/blob/main/src/output/fail2ban.rs#L51)<!-- "/// `-` for absent" -->) quotes and
 escapes every attacker-controlled field, and its doc comment records the exact
 attack it closes: a `User-Agent` of `evil method=REGISTER src=1.2.3.4` produced a
 line with *"two `src=` values, one of them attacker-chosen, in the output that
@@ -561,10 +561,10 @@ what made the hole invisible to the filters that were supposed to catch it.
 
 **Rate limiting on both the receive and the transmit side.** The HEP receiver
 has a per-peer cap checked ahead of the global one
-([`hep.rs:1206-1208`](https://github.com/NormB/sipnab/blob/main/src/capture/hep.rs#L1206-L1208)) that fails closed when its
+([`hep.rs:1206-1208`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/capture/hep.rs#L1206-L1208)) that fails closed when its
 tracking table fills; the kill worker has a global limiter (10/s,
-[`process_isolation.rs:650`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L650)) and a
-per-destination one (3/min, [`process_isolation.rs:411`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L411))
+[`process_isolation.rs:1493`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1493)<!-- "const DEFAULT_RATE_LIMIT:" -->) and a
+per-destination one (3/min, [`process_isolation.rs:1156`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1156)<!-- "const MAX_PER_DST_PER_MINUTE:" -->)
 both applied *before* any send ([`:559`, `:565`](../../src/process_isolation.rs)).
 
 Every arming flag is off by default — `--kill-scanner`, `-K`, `--hep-allow-kill`,
@@ -582,13 +582,13 @@ verified:
 
 **Outcomes are computed and thrown away.** The kill worker produces a
 `KillResponse` for every request — `Sent`, `RateLimited`, `Rejected { reason }`,
-`Error { message }` ([`process_isolation.rs:256-271`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L256-L271))
-— and sends it on `resp_tx` ([`:529`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L529)). Nothing
+`Error { message }` ([`process_isolation.rs:433-448`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L433-L448)<!-- "pub enum KillResponse" -->)
+— and sends it on `resp_tx` ([`:1309`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L1309)<!-- "if self.resp_tx.send(response).is_err() {" -->). Nothing
 in production reads it. `try_recv_response`
-([`:331`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L331)) has exactly three call sites: two in
+([`:908`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L908)<!-- "pub fn try_recv_response(&self)" -->) has exactly three call sites: two in
 `process_isolation.rs` itself, both below the `#[cfg(test)] mod tests` boundary
-at [`:712`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L712), and one in
-[`tests/security_test.rs:1392`](https://github.com/NormB/sipnab/blob/main/tests/security_test.rs#L1392). Both dispatch
+at [`:2163`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L2163)<!-- "#[cfg(test)] mod tests" -->, and one in
+[`tests/security_test.rs:1740`](https://github.com/NormB/sipnab/blob/main/tests/security_test.rs#L1740)<!-- "while let Some(resp)" -->. Both dispatch
 sites discard the send result too — [`batch.rs:1772`, `:1813`](../../src/app/batch.rs)
 are `let _ = handle.send_kill(...)`.
 
@@ -596,29 +596,29 @@ are `let _ = handle.send_kill(...)`.
 at `tracing::debug!` ([`process_isolation.rs:560`, `:566`](../../src/process_isolation.rs)),
 below the default level. An event-exec dropped by *its* rate limiter logs
 nothing at all: `check_rate_limit`
-([`event_exec.rs:222-241`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L222-L241)) returns `false` and
+([`event_exec.rs:222-241`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/output/event_exec.rs#L222-L241)) returns `false` and
 the caller simply returns. Only the queue-depth drop warns
-([`:288-295`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L288-L295)).
+([`:288-295`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/output/event_exec.rs#L288-L295)).
 
 **Hooks that ran are never checked.** `reap_action`
-([`event_exec.rs:68-74`](https://github.com/NormB/sipnab/blob/main/src/output/event_exec.rs#L68-L74)) is
+([`event_exec.rs:68-74`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/output/event_exec.rs#L68-L74)) is
 `Ok(Some(_)) => ReapAction::Remove` — the child's exit status is matched with a
 wildcard and discarded. sipnab fires `sh -c <operator command>` and never learns
 whether the ban it asked for happened.
 
 Nothing persists. `fail2ban.rs`'s own doc says *"the caller is responsible for
 emitting it — nothing is written here"*
-([`fail2ban.rs:99-100`](https://github.com/NormB/sipnab/blob/main/src/output/fail2ban.rs#L99-L100)); the alert engine's
+([`fail2ban.rs:100-101`](https://github.com/NormB/sipnab/blob/main/src/output/fail2ban.rs#L100-L101)<!-- "/// The formatted log line (local-time timestamp); the" -->); the alert engine's
 findings ring buffer is annotated *"In-memory only"*
-([`alerting.rs:393`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L393)) and holds the *alert*, not
+([`alerting.rs:393`](https://github.com/NormB/sipnab/blob/main/src/security/alerting.rs#L393)<!-- "#[derive(Debug, Clone, serde::Serialize)]" -->) and holds the *alert*, not
 the *action* — a `Finding` has no field saying whether a kill went out. The only
 durable-ish signal is two success counters,
 `sipnab_kill_responses_sent_total{mode}`
-([`process_isolation.rs:208-230`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L208-L230),
-[`prometheus.rs:172-187`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L172-L187)), which count sends
+([`process_isolation.rs:386-398`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L386-L398)<!-- "/// The process-global send counters behind" -->,
+[`prometheus.rs:1265-1280`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L1265-L1280)<!-- "let (raw, ephemeral)" -->), which count sends
 and nothing else. `sipnab_security_alerts_total` is declared
-([`prometheus.rs:40`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L40)) and formatted
-([`:161-165`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L161-L165)) but written only in that file's
+([`prometheus.rs:385`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L385)<!-- "pub security_alerts_total:" -->) and formatted
+([`:1254-1258`](https://github.com/NormB/sipnab/blob/main/src/output/prometheus.rs#L1254-L1258)<!-- ""sipnab_security_alerts_total"," -->) but written only in that file's
 own tests, so it renders empty in a live process.
 
 ### Why the ledger is deferred, which is not the same as "not now"
@@ -666,13 +666,13 @@ by an order of magnitude.
 **One finding from this review that is not part of the deferral and should not
 wait for it.** Because nothing drains `resp_rx`, and both the request and
 response channels are `crossbeam_channel::bounded(256)`
-([`process_isolation.rs:674-675`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L674-L675)), and
+([`process_isolation.rs:674-675`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/process_isolation.rs#L674-L675)), and
 `crossbeam_channel::Sender::send` on a bounded channel is documented to *"block
 until the send operation can proceed"* when full, the worker's
 `let _ = self.resp_tx.send(response)` at
-[`:529`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L529) appears able to block once 256
+[`:529`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/process_isolation.rs#L529) appears able to block once 256
 responses accumulate. The request channel would then fill, and `send_kill`'s
-`self.tx.send(request)` ([`:302`](https://github.com/NormB/sipnab/blob/main/src/process_isolation.rs#L302)) would block
+`self.tx.send(request)` ([`:302`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/process_isolation.rs#L302)) would block
 the caller — which is the capture path. That is a code reading, not an observed
 failure; it was not run. It wants a test before it wants a fix, and it wants both
 before anything is built on top of this worker.
@@ -695,17 +695,17 @@ Three things changed since [`mcp-tool-roadmap.md`](mcp-tool-roadmap.md) filed
 state — needs the same opt-in treatment as shutdown."*
 
 **The opt-in treatment now exists and is proven.** `shutdown_server` shipped with
-a flag ([`cli.rs:1019-1032`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1019-L1032)), an off-by-default field
-([`server.rs:70`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L70)), a builder
-([`server.rs:207`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L207)) and a first-statement refusal
-([`server.rs:2732`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L2732)). Copying that shape costs almost
+a flag ([`cli.rs:4251-4264`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L4251-L4264)<!-- "/// Allow the `shutdown_server`" -->), an off-by-default field
+([`server.rs:187`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L187)<!-- "allow_shutdown: bool, /// Where" -->), a builder
+([`server.rs:1017`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1017)<!-- "pub fn with_shutdown(mut self) -> Self {" -->) and a first-statement refusal
+([`server.rs:9134`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9134)<!-- "if !self.allow_shutdown {" -->). Copying that shape costs almost
 nothing.
 
 **The path-confinement problem is solved.** The roadmap's other Tier 3 entry,
 `list_captures`, was filed with *"needs a path allowlist or it is an
-arbitrary-file-read"*. It shipped ([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177))
+arbitrary-file-read"*. It shipped ([`server.rs:2096`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L2096))
 with `--mcp-file-root` and `resolve_in_root`
-([`server.rs:1177`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1177)), which accepts a bare filename and
+([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->), which accepts a bare filename and
 rejects anything with a separator, a `..`, a root prefix or a drive letter before
 touching the filesystem. So an agent can already *see* the corpus, safely, and
 `open_capture` would need no new security machinery.
@@ -728,13 +728,13 @@ design — progress via `async_messages`, never a blocking read on the render si
 — exists to make that safe."* An MCP handler filling the stores would be a second
 such writer, and would need its own equivalent of that design. Note that this is
 survivable in the file case — `source_exhausted`
-([`server.rs:58`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L58)) already tells the tool when the
+([`server.rs:102`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L102)<!-- "source_exhausted: Option<Arc<std::sync::atomic::AtomicBool>>," -->) already tells the tool when the
 original reader is done — but a live capture's writer never finishes, so the tool
 would have to refuse outright when `capture.live`.
 
 **A long read inside a handler stalls every other surface.** The API and MCP
 servers share one thread running one `tokio::runtime::Builder::new_current_thread()`
-([`servers.rs:327`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L327)). Reading a multi-gigabyte pcap
+([`servers.rs:1104`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L1104)<!-- "let rt = match tokio::runtime::Builder::new_current_thread()" -->). Reading a multi-gigabyte pcap
 inside a tool handler blocks that thread for the duration — every other MCP tool
 call and every REST request behind it. This is not a lock-across-await violation
 (invariant "No lock across `.await`" is enforced by `clippy::await_holding_lock = "deny"` and would not
@@ -743,23 +743,23 @@ thread plus a progress-polling tool, which is the TUI's `pcap-load` design porte
 to MCP — the real cost of the feature, and it is not small.
 
 **The server's own idea of what it is holding is per-session and immutable.**
-`SipnabMcp` is cloned per HTTP session — [`transport.rs:124`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L124)
+`SipnabMcp` is cloned per HTTP session — [`transport.rs:579`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L579)<!-- "/// * `server` — the tool" -->
 documents *"the tool server; cloned per HTTP session"* and
-[`:192-193`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L192-L193) does it. `capture: Option<CaptureContext>`
-([`server.rs:82`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L82)) is a plain field, not an `Arc`,
-built once at startup ([`servers.rs:224-249`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L224-L249)) with
+[`:728-729`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L728-L729)<!-- "StreamableHttpService::new(" --> does it. `capture: Option<CaptureContext>`
+([`server.rs:64`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L64)) is a plain field, not an `Arc`,
+built once at startup ([`servers.rs:630-655`](https://github.com/NormB/sipnab/blob/main/src/app/servers.rs#L630-L655)<!-- "let capture_state" -->) with
 `name` taken from `cli.primary_input()` — which returns only the *first* `-I`
-argument ([`cli.rs:1363-1365`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L1363-L1365)). So after an `open_capture`,
-`capture_status` ([`server.rs:6741`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6741)) would keep naming
+argument ([`cli.rs:8506-8508`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L8506-L8508)<!-- "pub fn primary_input(&self)" -->). So after an `open_capture`,
+`capture_status` ([`server.rs:1548`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L1548)) would keep naming
 the old file, in the calling session as well as every other one, unless the
 field moves behind a shared lock. Two agents on one HTTP server would read the
 same store and disagree about which capture it is.
 
 **Nothing on the wire would reveal the swap.** `DialogStore::generation`
-([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) is bumped by every
+([`dialog_store.rs:242`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/sip/dialog_store.rs#L242)) is bumped by every
 mutating method and is exposed nowhere: not in `DialogSummary`
 ([`model.rs`](../../src/output/model.rs)), not in any REST response
-([`api.rs:204-211`](https://github.com/NormB/sipnab/blob/main/src/output/api.rs#L204-L211), all `GET`), not in any MCP payload.
+([`api.rs:204-211`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/output/api.rs#L204-L211), all `GET`), not in any MCP payload.
 A `/v1/dialogs` poller would see the dialog set change completely between two
 requests with nothing indicating that it is now reading a different capture. This
 is the same missing primitive that [section 2 (write-back MCP tools)](#2-write-back-mcp-tools)
@@ -779,7 +779,7 @@ worse version of something already free.
 
 That leaves persistent HTTP, where a restart is genuinely disruptive. But there
 `-I` now takes a whole directory, a glob, or a repeated set
-([`cli.rs:234-247`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L234-L247)), so the corpus can be loaded at start —
+([`cli.rs:771-796`](https://github.com/NormB/sipnab/blob/main/src/cli.rs#L771-L796)<!-- "/// Read packets from a capture file" -->), so the corpus can be loaded at start —
 subject, and this is the honest caveat, to the finding in
 [section 1 (multi-capture comparison)](#1-tui-multi-session--multi-capture-comparison)
 that the load is a union
@@ -826,14 +826,14 @@ each requirement below therefore describes the tree as it stood when the
 decision was taken, not as it stands now:
 
 1. **`CaptureContext` must become shared, not per-session.** It is a plain
-   `Option<CaptureContext>` field ([`server.rs:82`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L82)) on
+   `Option<CaptureContext>` field ([`server.rs:64`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L64)) on
    a `SipnabMcp` cloned per HTTP session
-   ([`transport.rs:192`](https://github.com/NormB/sipnab/blob/main/src/mcp/transport.rs#L192)). Until it moves behind
+   ([`transport.rs:192-193`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/transport.rs#L192-L193)). Until it moves behind
    a shared lock, a swap leaves `capture_status`
-   ([`server.rs:6741`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L6741)) naming the old file in the
+   ([`server.rs:1548`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/mcp/server.rs#L1548)) naming the old file in the
    calling session and in every other one.
 2. **Capture identity must be visible on the wire.** `DialogStore::generation`
-   ([`dialog_store.rs:1292`](https://github.com/NormB/sipnab/blob/main/src/sip/dialog_store.rs#L1292)) is bumped by every
+   ([`dialog_store.rs:242`](https://github.com/NormB/sipnab/blob/11a9d71d93b62b3d3ba665dfbfcd2d11cc7f9f39/src/sip/dialog_store.rs#L242)) is bumped by every
    mutating method and exposed nowhere, so a `/v1/dialogs` poller cannot tell the
    dataset changed underneath it. This is the same primitive
    [section 2 (write-back MCP tools)](#2-write-back-mcp-tools) requires;
@@ -845,8 +845,8 @@ decision was taken, not as it stands now:
 The opt-in machinery and the path confinement are already solved and should be
 reused rather than redesigned: the `shutdown_server` flag, off-by-default field,
 builder and first-statement refusal
-([`server.rs:9131`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9131)), and `--mcp-file-root` with
-`resolve_in_root` ([`server.rs:1221`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1221)).
+([`server.rs:9128-9134`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L9128-L9134)<!-- "pub async fn shutdown_server(" -->), and `--mcp-file-root` with
+`resolve_in_root` ([`server.rs:1233`](https://github.com/NormB/sipnab/blob/main/src/mcp/server.rs#L1233)<!-- "pub(crate) fn resolve_in_root(" -->).
 
 **What shipped**, against those three:
 
@@ -863,9 +863,9 @@ A narrower tool is worth building alongside it, and carries none of the above:
 **`capture_sources` (read-only)** — report the *full* resolved `-I` set
 rather than `primary_input()`'s first element, with each file's first-packet
 timestamp. `input_set::resolve` already computes that timestamp into
-`ResolvedInput.first_packet` ([`input_set.rs:88-97`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L88-L97))
+`ResolvedInput.first_packet` ([`input_set.rs:106-122`](https://github.com/NormB/sipnab/blob/main/src/capture/input_set.rs#L106-L122)<!-- "pub struct ResolvedInput" -->)
 and `bootstrap` then throws it away —
-[`bootstrap.rs:182`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L182) is
+[`bootstrap.rs:1184`](https://github.com/NormB/sipnab/blob/main/src/app/bootstrap.rs#L1184)<!-- "let paths: Vec<std::path::PathBuf> = resolved.into_iter().map(" --> is
 `resolved.into_iter().map(|r| r.path).collect()`. An agent's actual complaint in
 the persistent case is usually *"I do not know what I am holding"*, and that is
 the tool for it. It is Tier 1 by the roadmap's own criterion — *"the agent

@@ -1021,7 +1021,9 @@ fn linked_code_targets_exist() -> Result<(), TestError> {
     // 842 -> 844 (RUNNER-ORPHAN-LISTENER): build-ci-release.md's runner
     // paragraph links scripts/runner-listeners.py and
     // scripts/tests/test_runner_listeners.py (+2).
-    const EXPECTED_CODE_LINKS: usize = 844;
+    // 844 -> 845 (DOC-LINE-LINKS): the cite-a-line walkthrough links
+    // scripts/prepare-commit.sh (+1).
+    const EXPECTED_CODE_LINKS: usize = 845;
     assert_eq!(
         seen, EXPECTED_CODE_LINKS,
         "code-link extraction found {seen} links, expected {EXPECTED_CODE_LINKS}. \
@@ -2796,7 +2798,16 @@ fn line_citations_point_at_the_code_they_name() -> Result<(), TestError> {
     // machine holding the local file counted 212 and passed while CI counted
     // 172 and failed (main, 2026-09-17). check-line-drift.py now reads only
     // what `git ls-files` returns, so this number is the same everywhere.
-    let expected = 172;
+    // 172 -> 148 on 2026-11-08, attributed by running the new script over
+    // HEAD's pages and then over the changed ones. The script accounts for 1:
+    // `resolve_symbol` no longer substitutes the type for an unreadable member,
+    // so `BatchRunner::new` is not checked against `struct BatchRunner` (172 ->
+    // 171 on HEAD's pages). The pages account for 23, every one classified: 18
+    // citations now pin a commit, and a pinned link is not read against
+    // today's file; 5 were re-pointed to a range, which `CITE` does not read.
+    // None of the 23 lost its check: each carries a phrase or a pin, which
+    // `two_part_reference_test` now requires of every line citation.
+    let expected = 148;
     assert_eq!(
         checked, expected,
         "the drift checker examined {checked} citations, not the {expected} \
