@@ -20,6 +20,21 @@ Every command reads a file, so none of them needs root.
   to stderr. The outputs below leave those out.
 - The [Glossary](@/docs/glossary.md) defines any term you do not recognize.
 
+## Before you start
+
+- **sipnab on your `PATH`.** Any release binary or package works: these steps
+  use no optional feature. [Installing sipnab](@/docs/install.md) has every route, and
+  `sipnab --version` prints the version when the install worked.
+- **`curl`** to download the two sample captures, and **`jq`** for the last
+  step, [Hand the answer to another tool](#hand-the-answer-to-another-tool).
+- **No privileges.** Every command reads a file.
+- **No change on any other system.** The steps read two downloaded files and
+  contact no SIP server, relay or collector.
+
+What ran: every command and output on this page ran on 2026-11-10 with sipnab
+0.5.244 on Linux, against the two sample captures as the repository holds
+them.
+
 ## Download a capture
 
 Download the sample call the website uses. It holds:
@@ -231,6 +246,58 @@ sipnab -N -I sample-call.pcap --json-dialogs --no-cli-print | jq --arg id "$CALL
   "trying_delay_ms": 6
 }
 ```
+
+## Check that it worked
+
+Count the dialogs sipnab found in the sample. `jq -s length` counts the JSON
+objects on its input:
+
+```bash
+sipnab -N -I sample-call.pcap --json-dialogs --no-cli-print | jq -s length
+```
+
+```text
+7
+```
+
+Seven is the number of rows in the table of [List the calls](#list-the-calls).
+The last progress line on stderr gives the totals for the same file:
+
+```text
+sipnab: 633 packets captured, 33 SIP messages, 600 RTP packets across 2 streams
+```
+
+Each command on this page exits with status 0 when it read the capture, even
+when the answer is empty.
+
+## When something does not work
+
+Each of these ends with exit status 1.
+
+**`-I/--input: 'sample-call.pcap' does not exist`.** The file is not in the
+current directory. Run the `curl` command of
+[Download a capture](#download-a-capture) again, or give `-I` the path of the
+file.
+
+**`-I/--input: cannot read capture 'sample-call.pcap' named with -I: Failed to open pcap file 'sample-call.pcap': libpcap error: unknown file format`.**
+The file is not a capture. A download that failed can leave an HTML error page
+under the capture's name. Download it again.
+
+**`Call-ID 'nosuch@example.com' not found in tracked dialogs`.**
+`--call-report` got a Call-ID the capture does not hold, here
+`nosuch@example.com`. Copy the Call-ID from the first column of the
+`--report` table, and keep the single quotes around it: without them the shell
+reads characters such as `;` or `&` in a Call-ID as its own.
+
+**`jq` prints `parse error`.** sipnab printed the per-message lines among the
+JSON. Add `--no-cli-print` to the `--json-dialogs` command.
+
+**The `--problems` table has a header and no rows.** That is the answer for a
+capture with no failed or impaired call, as
+[Find the calls that went wrong](#find-the-calls-that-went-wrong) shows.
+
+For a message that is not listed here, look it up in the
+[error reference](@/docs/errors.md).
 
 ## Where to go next
 

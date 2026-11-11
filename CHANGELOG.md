@@ -10,6 +10,11 @@ entry that carries them.
 
 ## [Unreleased]
 
+### Changed
+
+- **Seven task pages state what they need, how to check the result and what to do when a step fails (DOCS-HOWTO-GAP, first batch).** [Installing sipnab](docs/install.md#before-you-start), [Triage a capture from the command line](docs/first-cli-triage.md#before-you-start), [Walk through the terminal UI](docs/tui-walkthrough.md#before-you-start), [Answer questions about a capture](docs/capture-queries.md#check-that-it-worked), [Follow one call across its legs](docs/follow-a-call.md#check-that-it-worked), [Fail a build on what a capture shows](docs/expectations.md#check-that-it-worked) and [Measure call quality](docs/call-quality.md#check-that-it-worked) each gained the sections they lacked: "Before you start", with the changes needed on other systems or the statement that there are none, "Check that it worked", with a command and its output, and "When something does not work", with each message quoted as sipnab prints it. The install page now names the three hosts the installer contacts over HTTPS. Every command and message was run with sipnab 0.5.244, and `tests/howto_claims_test.rs` runs them again on each build.
+- **A test holds every task page in `docs/` to the parts of a how-to (DOCS-HOWTO-GATE).** `tests/howto_sections_test.rs` gives each of the 92 pages a kind. The 53 task pages must carry a purpose, prerequisites that state the changes on other systems, steps, a check and a troubleshooting section. The 42 task pages that lack a part today are listed with the parts they lack, and the list can only shrink: a new task page cannot join it. Each "Added" entry of this changelog after 0.5.244 must link to a heading of a task page.
+
 ### Dependencies
 
 - Browser analyzer: `js-sys` and `web-sys` 0.3.94 → 0.3.107, `wasm-bindgen` 0.2.117 → 0.2.130 (with its `-macro`, `-macro-support` and `-shared` crates) and `wasm-bindgen-futures` 0.4.67 → 0.4.80. The seven crates pin each other with `=`, so they move together, in `Cargo.lock` and in `fuzz/Cargo.lock`. `website/static/wasm/sipnab.js` is rebuilt with the new `wasm-bindgen`, and the 16 exports the site calls are unchanged. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes. The native binaries do not contain these crates.
