@@ -311,6 +311,11 @@ fn an_unaccused_capture_recommends_nothing() -> Result<(), TestError> {
 
 /// The flag prints to stdout, so it carries the same `-N` requirement as the
 /// other output flags.
+///
+/// Only in a build with the `tui` feature: a build without it has no TUI,
+/// every run of it is the run `-N` asks for, and the flag needs no `-N`
+/// (NO-TUI-BUILD-SILENT).
+#[cfg(feature = "tui")]
 #[test]
 fn recommend_block_requires_headless_mode() -> Result<(), TestError> {
     let (stdout, stderr, code) = run_support::run(&["--recommend-block", "nftables"], None)?;

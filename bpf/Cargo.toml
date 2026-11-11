@@ -33,7 +33,7 @@ publish = false
 exclude = ["sipnab-bpf-types"]
 
 [dependencies]
-aya-ebpf = "0.1.1"
+aya-ebpf = "0.3.0"
 sipnab-bpf-types = { path = "sipnab-bpf-types" }
 
 [[bin]]

@@ -15,7 +15,8 @@ the ladder, measure a delay, and inspect RTP.
 ## Before you start
 
 - **sipnab with the `tui` feature**, which every release binary and package
-  has. `sipnab --version` lists the features of your build.
+  has. `sipnab --version` lists the features of your build. A build without
+  `tui` draws no interface and reads the capture as `sipnab -N` does.
   [Installing sipnab](install.md) has every install route.
 - **A terminal.** sipnab draws the interface on the terminal it starts in, and
   exits with an error when it has none.

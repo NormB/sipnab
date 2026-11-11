@@ -113,6 +113,34 @@ const CASES: &[Case] = &[
         stdout: Stdout::Null,
     },
     Case {
+        label: "a HEP listener value that is not an address",
+        args: &["-N", "-L", "x", "--no-cli-print"],
+        code: 2,
+        needle: "is not an address",
+        stdout: Stdout::Null,
+    },
+    Case {
+        label: "a HEP listener value that is not an address, behind an allowlist",
+        args: &[
+            "-N",
+            "-L",
+            "x",
+            "--hep-allow",
+            "192.0.2.0/24",
+            "--no-cli-print",
+        ],
+        code: 2,
+        needle: "is not an address",
+        stdout: Stdout::Null,
+    },
+    Case {
+        label: "a HEP listener's unguarded host name",
+        args: &["-N", "-L", "localhost:9060", "--no-cli-print"],
+        code: 2,
+        needle: "does not resolve a name",
+        stdout: Stdout::Null,
+    },
+    Case {
         label: "a plan refusal (PlanError::exit)",
         args: &["-N", "-I", "{tmp}/missing.pcap", "--no-cli-print"],
         code: 1,
@@ -239,6 +267,125 @@ fn every_startup_refusal_is_on_stderr_exactly_once_at_any_log_level() -> Result<
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+    Ok(())
+}
+
+// ── What `--hep-listen` was given (HEP-LISTEN-NOT-AN-ADDRESS-MESSAGE) ──
+
+/// Run sipnab with `-N -L <value>` and `guard`, logging off, and return its
+/// exit code and stderr.
+fn hep_listen(value: &str, guard: &[&str]) -> Result<(Option<i32>, String), TestError> {
+    let tmp = tempfile::tempdir()?;
+    let out = Command::new(env!("CARGO_BIN_EXE_sipnab"))
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .args(["-N", "--no-cli-print", "-F", "-L", value])
+        .args(guard)
+        .env("SIPNAB_LOG", "off")
+        .env("NO_COLOR", "1")
+        .env("XDG_STATE_HOME", tmp.path())
+        .env_remove("SIPNAB_CONFIG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .output()?;
+    Ok((
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    ))
+}
+
+/// The three guards a listener can run behind: none, an allowlist, a secret.
+const HEP_GUARDS: [&[&str]; 3] = [
+    &[],
+    &["--hep-allow", "192.0.2.0/24"],
+    &["--hep-auth", "example-secret"],
+];
+
+/// The reported values (`x`, the empty string, `0`) and their neighbors are
+/// refused with exit 2 and one line that says the value is not an address
+/// and shows the form, whatever guards the listener. Unguarded, the line
+/// used to call the value non-loopback. Behind an allowlist or a secret the
+/// value used to pass the plan and fail later, in the listener's bind.
+#[test]
+fn a_hep_listen_value_that_is_not_an_address_exits_2_and_says_so() -> Result<(), TestError> {
+    let mut failures = Vec::new();
+    for value in [
+        "x",
+        "",
+        "0",
+        ":9060",
+        "127.0.0.1",
+        "127.0.0.1:",
+        "127.0.0.1:99999",
+        "[::1]",
+        "host:port:extra",
+    ] {
+        for guard in HEP_GUARDS {
+            let (code, stderr) = hep_listen(value, guard)?;
+            let want = format!(
+                "HEP listener refuses to start: --hep-listen {value:?} is not an address. \
+                 Give it as IP:PORT, for example 127.0.0.1:9060."
+            );
+            if code != Some(2) || stderr.trim_end() != want {
+                failures.push(format!(
+                    "-L {value:?} {guard:?}: exit {code:?} (want 2); stderr:\n{stderr}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n---\n"));
+    Ok(())
+}
+
+/// A host name with a port and nothing guarding the listener is refused,
+/// exit 2, in words of its own: sipnab does not resolve the name, and it
+/// did not find the name to be non-loopback.
+#[test]
+fn an_unguarded_hep_listen_host_name_exits_2_in_its_own_words() -> Result<(), TestError> {
+    for value in ["localhost:9060", "collector.example.com:9060"] {
+        let (code, stderr) = hep_listen(value, &[])?;
+        assert_eq!(code, Some(2), "-L {value}: stderr:\n{stderr}");
+        assert_eq!(
+            stderr.trim_end(),
+            format!(
+                "HEP listener refuses to start: --hep-listen {value} names a host, and \
+                 sipnab does not resolve a name to decide whether it is loopback. Neither \
+                 a shared secret (--hep-auth / --hep-auth-file) nor a source allowlist \
+                 (--hep-allow) was configured. Use a literal address such as \
+                 127.0.0.1:9060, add an allowlist, or set a secret."
+            ),
+            "the refusal of the host name {value}"
+        );
+    }
+    Ok(())
+}
+
+/// A literal routable address keeps the refusal it had, and a literal
+/// loopback address with port 0 still starts: the listener binds, reads
+/// nothing for the one second `--duration` allows, and the run exits 0.
+#[test]
+fn a_literal_hep_listen_address_is_judged_as_before() -> Result<(), TestError> {
+    for value in ["192.0.2.1:9060", "0.0.0.0:9060", "0.0.0.0:0"] {
+        let (code, stderr) = hep_listen(value, &[])?;
+        assert_eq!(code, Some(2), "-L {value}: stderr:\n{stderr}");
+        assert_eq!(
+            stderr.trim_end(),
+            format!(
+                "HEP listener refuses to start: --hep-listen {value} is non-loopback but \
+                 neither a shared secret (--hep-auth / --hep-auth-file) nor a source \
+                 allowlist (--hep-allow) was configured. Bind to 127.0.0.1, add an \
+                 allowlist, or set a secret to accept HEP from a routable address."
+            ),
+            "the refusal of the routable address {value}"
+        );
+    }
+    for value in ["127.0.0.1:0", "[::1]:0"] {
+        let (code, stderr) = hep_listen(value, &["--duration", "1"])?;
+        assert_eq!(code, Some(0), "-L {value} must start; stderr:\n{stderr}");
+        assert!(
+            !stderr.contains("refuses to start"),
+            "-L {value} is a literal loopback address; stderr:\n{stderr}"
+        );
+    }
     Ok(())
 }
 

@@ -18,7 +18,7 @@ AssertWithoutMessage	src/annotate/mod.rs	27
 AssertWithoutMessage	src/annotate/pcapng.rs	4
 AssertWithoutMessage	src/annotate/tui.rs	5
 AssertWithoutMessage	src/app/batch.rs	266
-AssertWithoutMessage	src/app/bootstrap.rs	169
+AssertWithoutMessage	src/app/bootstrap.rs	168
 AssertWithoutMessage	src/app/g729_install.rs	16
 AssertWithoutMessage	src/app/mod.rs	8
 AssertWithoutMessage	src/app/queries/mod.rs	11
@@ -52,7 +52,7 @@ AssertWithoutMessage	src/capture/device.rs	14
 AssertWithoutMessage	src/capture/dtls.rs	21
 AssertWithoutMessage	src/capture/fanout.rs	1
 AssertWithoutMessage	src/capture/file.rs	30
-AssertWithoutMessage	src/capture/hep.rs	271
+AssertWithoutMessage	src/capture/hep.rs	265
 AssertWithoutMessage	src/capture/hep_delivery.rs	15
 AssertWithoutMessage	src/capture/hep_export.rs	5
 AssertWithoutMessage	src/capture/hep_roster.rs	59
@@ -93,7 +93,7 @@ AssertWithoutMessage	src/capture/uprobe/record.rs	9
 AssertWithoutMessage	src/capture/vcon_input.rs	37
 AssertWithoutMessage	src/capture/websocket.rs	29
 AssertWithoutMessage	src/capture/writer.rs	43
-AssertWithoutMessage	src/cli.rs	222
+AssertWithoutMessage	src/cli.rs	220
 AssertWithoutMessage	src/cli/aggregate_args.rs	4
 AssertWithoutMessage	src/cli/one_shot.rs	6
 AssertWithoutMessage	src/config.rs	200

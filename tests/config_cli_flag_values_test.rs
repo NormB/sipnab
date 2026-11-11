@@ -2205,6 +2205,9 @@ static SPECS: &[Spec] = &[
         "hep-listen",
         // The bind policy is applied while the run is planned (OPS-13): with
         // no secret and no allowlist, only a literal loopback address passes.
+        // `x`, the empty string, a space and `0` are refused as values that
+        // are not an address, and `0.0.0.0:0` as a routable address
+        // (HEP-LISTEN-NOT-AN-ADDRESS-MESSAGE). Each refusal names the flag.
         Kind::Text {
             accept: &["127.0.0.1:0", "[::1]:0"],
             reject: &[("x", 2), ("", 2), (" ", 2), ("0", 2), ("0.0.0.0:0", 2)],

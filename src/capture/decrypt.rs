@@ -16,7 +16,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use indexmap::IndexMap;
+use indexmap::{IndexMap, IndexSet};
 
 use super::tls::{KeyLogEntry, TlsContentType, TlsRecord, parse_keylog_file};
 use crate::capture::rsa_key::RsaKey;
@@ -609,6 +609,10 @@ use super::REWIND_BUDGET_BYTES;
 /// consumer thread.
 use super::REWIND_MAX_AGE_SECS;
 
+/// ClientHello client randoms remembered for the report. Defined beside the
+/// report type that documents the bound.
+use super::MAX_REMEMBERED_CLIENT_HELLOS;
+
 /// Trial decryptions one sweep may attempt before stopping and resuming at the
 /// next key load. A full hold is 4096 directions x 16 records against every
 /// session; unbounded, one keylog line could stall the packet loop.
@@ -755,6 +759,62 @@ pub struct TlsDecryptor {
     rewind_recovered: u64,
     /// RSA private-key handshake state (`--tls-key`); `None` unless a key is set.
     rsa: Option<RsaHandshakeState>,
+    /// The handshake messages seen, for [`crate::capture::TlsDecryptReport`].
+    handshake_tally: HandshakeTally,
+}
+
+/// The ClientHello and ServerHello messages a decryptor parsed, and the
+/// client randoms of the ClientHellos.
+///
+/// Kept apart from `pending_client_randoms` and `observed_handshakes`, which
+/// exist to pair a ServerHello with its ClientHello and drop a client random
+/// once it is paired or evicted. The report needs every client random seen,
+/// to say whether a keylog line belongs to a handshake in the capture.
+#[derive(Debug, Default)]
+struct HandshakeTally {
+    /// ClientHello messages whose client random parsed.
+    client_hellos: u64,
+    /// ServerHello messages that parsed.
+    server_hellos: u64,
+    /// Client randoms of the ClientHellos seen, oldest first, at most
+    /// [`MAX_REMEMBERED_CLIENT_HELLOS`].
+    client_randoms: IndexSet<[u8; 32]>,
+    /// Whether a client random was dropped to stay within the bound.
+    dropped_a_random: bool,
+}
+
+impl HandshakeTally {
+    /// Count one ClientHello and remember its client random `cr`, dropping
+    /// the oldest remembered random when the set is full.
+    fn note_client_hello(&mut self, cr: [u8; 32]) {
+        self.client_hellos += 1;
+        if self.client_randoms.contains(&cr) {
+            return;
+        }
+        if self.client_randoms.len() >= MAX_REMEMBERED_CLIENT_HELLOS {
+            self.client_randoms.shift_remove_index(0);
+            self.dropped_a_random = true;
+        }
+        self.client_randoms.insert(cr);
+    }
+
+    /// How many of `entries` carry a client random that no remembered
+    /// ClientHello has, or `None` once a client random was dropped: an entry
+    /// that matches nothing remembered may match the one dropped.
+    fn unmatched(&self, entries: &[KeyLogEntry]) -> Option<usize> {
+        if self.dropped_a_random {
+            return None;
+        }
+        Some(
+            entries
+                .iter()
+                .filter(|entry| {
+                    <[u8; 32]>::try_from(entry.client_random.as_slice())
+                        .map_or(true, |cr| !self.client_randoms.contains(&cr))
+                })
+                .count(),
+        )
+    }
 }
 
 impl TlsDecryptor {
@@ -812,6 +872,7 @@ impl TlsDecryptor {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         })
     }
 
@@ -829,6 +890,9 @@ impl TlsDecryptor {
             late_recovered: self.rewind_recovered,
             late_evicted: self.rewind_evicted,
             late_still_held: self.rewind_pending.values().map(|q| q.len() as u64).sum(),
+            client_hellos_seen: self.handshake_tally.client_hellos,
+            server_hellos_seen: self.handshake_tally.server_hellos,
+            keylog_unmatched_entries: self.handshake_tally.unmatched(&self.keylog_entries),
         }
     }
 
@@ -1012,12 +1076,14 @@ impl TlsDecryptor {
             // RSA key exchange.
             Some(1) => {
                 if let Some(cr) = parse_client_hello_random(&record.payload) {
+                    self.handshake_tally.note_client_hello(cr);
                     self.observe_client_hello(conn, cr);
                 }
             }
             // ServerHello — server_random + negotiated cipher.
             Some(2) => {
                 if let Some(info) = parse_server_hello(&record.payload) {
+                    self.handshake_tally.server_hellos += 1;
                     self.observe_server_hello(conn, info);
                 }
             }
@@ -2788,6 +2854,7 @@ mod tests {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         };
 
         d.ensure_sessions_populated();
@@ -2860,6 +2927,7 @@ mod tests {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         };
 
         d.ensure_sessions_populated();
@@ -2909,6 +2977,7 @@ mod tests {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         };
 
         let record = TlsRecord {
@@ -2955,6 +3024,7 @@ mod tests {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         };
 
         let record = TlsRecord {
@@ -3019,6 +3089,7 @@ mod tests {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         };
         let record = TlsRecord {
             content_type: TlsContentType::ApplicationData,
@@ -3080,6 +3151,7 @@ mod tests {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         };
 
         let record = TlsRecord {
@@ -4281,6 +4353,278 @@ mod tests {
         Ok(())
     }
 
+    /// The endpoints of the connection the handshake-count tests use.
+    fn hello_endpoints() -> Result<(SocketAddr, SocketAddr), TestError> {
+        Ok(("192.0.2.1:40111".parse()?, "192.0.2.2:5061".parse()?))
+    }
+
+    /// Show `d` one handshake, a ClientHello carrying `client_random` and its
+    /// ServerHello, and then one ApplicationData record that no key opens.
+    fn offer_handshake_and_one_sealed_record(
+        d: &mut TlsDecryptor,
+        client_random: &[u8; 32],
+    ) -> Result<(), TestError> {
+        let (client, server) = hello_endpoints()?;
+        d.process_record(&client_hello_record(client_random), client, server);
+        d.process_record(&server_hello_record(0x1301), server, client);
+        let sealed = TlsRecord {
+            content_type: TlsContentType::ApplicationData,
+            version: TlsVersion::Tls12,
+            length: 40,
+            payload: vec![0x77; 40],
+        };
+        if d.try_decrypt(&sealed, client.ip(), server.ip()).is_some() {
+            return Err("a record of 40 arbitrary bytes opened".into());
+        }
+        Ok(())
+    }
+
+    /// FAILURE, the reported case: the capture holds a handshake and the key
+    /// log is a complete TLS 1.3 key log of another connection. The report
+    /// counts the handshake and counts both lines as matching no ClientHello,
+    /// although a session was built from the key log alone.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn a_key_log_of_another_connection_matches_no_client_hello_seen() -> Result<(), TestError> {
+        let mut d = decryptor_with(Box::new(crate::crypto::RingCryptoBackend));
+        d.keylog_entries = make_keylog_entries(); // client random 0xAA
+        offer_handshake_and_one_sealed_record(&mut d, &[0x11; 32])?;
+
+        let report = d.report();
+        assert_eq!(report.client_hellos_seen, 1, "one ClientHello was offered");
+        assert_eq!(report.server_hellos_seen, 1, "one ServerHello was offered");
+        assert_eq!(
+            report.keylog_unmatched_entries,
+            Some(2),
+            "neither line carries the client random of the ClientHello"
+        );
+        assert_eq!(
+            report.sessions_with_keys, 1,
+            "a TLS 1.3 session is built from the key log alone"
+        );
+        assert!(report.read_nothing(), "one record seen and none opened");
+        Ok(())
+    }
+
+    /// FAILURE, the neighbor: one traffic secret line of another connection.
+    /// No session is built, and the line is still counted as matching none.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn one_line_of_another_connection_builds_no_session_and_matches_none() -> Result<(), TestError>
+    {
+        let mut d = decryptor_with(Box::new(crate::crypto::RingCryptoBackend));
+        let added = d.add_keylog_text(&format!(
+            "CLIENT_TRAFFIC_SECRET_0 {} {}\n",
+            "11".repeat(32),
+            "22".repeat(32)
+        ));
+        assert_eq!(added, 1, "the line is a valid keylog line");
+        offer_handshake_and_one_sealed_record(&mut d, &[0x5A; 32])?;
+
+        let report = d.report();
+        assert_eq!(report.sessions_with_keys, 0, "one label builds no session");
+        assert_eq!(report.client_hellos_seen, 1, "one ClientHello was offered");
+        assert_eq!(
+            report.keylog_unmatched_entries,
+            Some(1),
+            "the line carries another client random"
+        );
+        Ok(())
+    }
+
+    /// SUCCESS: the key log of the connection in the capture. Both lines
+    /// match the ClientHello and the record opens.
+    #[cfg(feature = "tls")]
+    #[test]
+    fn the_key_log_of_the_connection_matches_its_client_hello() -> Result<(), TestError> {
+        let (mut d, key, iv) = tls13_decryptor_and_client_keys()?;
+        let (client, server) = hello_endpoints()?;
+        d.process_record(&client_hello_record(&[0xAA; 32]), client, server);
+        d.process_record(&server_hello_record(0x1301), server, client);
+        let record = seal_tls13_record(&key, &iv, 0, b"OPTIONS sip:a@example.com SIP/2.0\r\n\r\n")?;
+        assert!(
+            d.try_decrypt(&record, client.ip(), server.ip()).is_some(),
+            "the record opens under the key log of its own connection"
+        );
+
+        let report = d.report();
+        assert_eq!(
+            report.keylog_unmatched_entries,
+            Some(0),
+            "both lines carry the client random of the ClientHello"
+        );
+        assert_eq!(report.client_hellos_seen, 1, "one ClientHello was offered");
+        assert_eq!(report.server_hellos_seen, 1, "one ServerHello was offered");
+        assert!(!report.read_nothing(), "a record opened");
+        Ok(())
+    }
+
+    /// EDGE: no handshake in the capture. Nothing was seen, so every line
+    /// matches none and both handshake counts are zero.
+    #[test]
+    fn with_no_handshake_every_line_matches_none() {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog_entries = make_keylog_entries();
+        let report = d.report();
+        assert_eq!(report.client_hellos_seen, 0, "no ClientHello was offered");
+        assert_eq!(report.server_hellos_seen, 0, "no ServerHello was offered");
+        assert_eq!(
+            report.keylog_unmatched_entries,
+            Some(2),
+            "two lines and no ClientHello to match"
+        );
+    }
+
+    /// EDGE: a key log of two connections, one of them in the capture. Only
+    /// the lines of the other connection are counted as matching none, and a
+    /// line whose client random is not 32 bytes matches none.
+    #[test]
+    fn only_the_lines_of_the_other_connection_match_none() -> Result<(), TestError> {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog_entries = make_keylog_entries(); // client random 0xAA, two lines
+        for label in ["CLIENT_TRAFFIC_SECRET_0", "SERVER_TRAFFIC_SECRET_0"] {
+            d.keylog_entries.push(KeyLogEntry {
+                label: label.to_string(),
+                client_random: vec![0xBB; 32],
+                secret: crate::test_material::bytes_for("decrypt-other-connection-secret", 32),
+            });
+        }
+        d.keylog_entries.push(KeyLogEntry {
+            label: "CLIENT_RANDOM".to_string(),
+            client_random: vec![0xAA; 16],
+            secret: crate::test_material::bytes_for("decrypt-short-random-secret", 48),
+        });
+        let (client, server) = hello_endpoints()?;
+        d.process_record(&client_hello_record(&[0xAA; 32]), client, server);
+
+        assert_eq!(
+            d.report().keylog_unmatched_entries,
+            Some(3),
+            "the two 0xBB lines and the 16-byte line match no ClientHello"
+        );
+        Ok(())
+    }
+
+    /// EDGE: what counts as a ClientHello seen. The same ClientHello twice is
+    /// two messages and one client random, a ClientHello cut short of its
+    /// random is not counted, and a ServerHello cut short is not counted.
+    #[test]
+    fn handshake_counts_follow_the_messages_that_parse() -> Result<(), TestError> {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog_entries = make_keylog_entries();
+        let (client, server) = hello_endpoints()?;
+        let hello = client_hello_record(&[0xAA; 32]);
+        d.process_record(&hello, client, server);
+        d.process_record(&hello, client, server);
+        let mut cut = hello.payload.clone();
+        cut.truncate(37);
+        d.process_record(&handshake_record(cut), client, server);
+        d.process_record(&handshake_record(vec![2, 0, 0, 0, 3, 3]), server, client);
+
+        let report = d.report();
+        assert_eq!(
+            report.client_hellos_seen, 2,
+            "two complete ClientHellos and one cut short"
+        );
+        assert_eq!(
+            report.server_hellos_seen, 0,
+            "the one ServerHello was cut short"
+        );
+        assert_eq!(
+            report.keylog_unmatched_entries,
+            Some(0),
+            "both lines match the client random seen twice"
+        );
+        Ok(())
+    }
+
+    /// EDGE: the key lines load after the ClientHello was seen, as with a
+    /// watched key log. They are matched against the ClientHello remembered.
+    #[test]
+    fn lines_loaded_after_the_client_hello_match_it() -> Result<(), TestError> {
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        let (client, server) = hello_endpoints()?;
+        d.process_record(&client_hello_record(&[0x5A; 32]), client, server);
+        assert_eq!(
+            d.report().keylog_unmatched_entries,
+            Some(0),
+            "no line is loaded yet, so none matches none"
+        );
+        let added = d.add_keylog_text(&format!(
+            "CLIENT_TRAFFIC_SECRET_0 {own} {s}\nCLIENT_TRAFFIC_SECRET_0 {other} {s}\n",
+            own = "5a".repeat(32),
+            other = "11".repeat(32),
+            s = "22".repeat(32)
+        ));
+        assert_eq!(added, 2, "both lines are valid keylog lines");
+        assert_eq!(
+            d.report().keylog_unmatched_entries,
+            Some(1),
+            "the 0x5A line matches the ClientHello seen before it loaded"
+        );
+        Ok(())
+    }
+
+    /// EDGE, the boundary of what is remembered: with exactly
+    /// `MAX_REMEMBERED_CLIENT_HELLOS` distinct client randoms seen the match
+    /// count is known, and with one more it is `None`, because a random was
+    /// dropped and a line can no longer be said to match none.
+    #[test]
+    fn the_match_count_is_unknown_once_a_client_random_was_dropped() -> Result<(), TestError> {
+        use crate::capture::MAX_REMEMBERED_CLIENT_HELLOS;
+
+        let mut d = decryptor_with(Box::new(MockCrypto {
+            decrypt_result: None,
+        }));
+        d.keylog_entries = make_keylog_entries();
+        let (client, server) = hello_endpoints()?;
+        let random = |i: usize| -> [u8; 32] {
+            let mut cr = [0u8; 32];
+            cr[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            cr
+        };
+        for i in 0..MAX_REMEMBERED_CLIENT_HELLOS {
+            d.process_record(&client_hello_record(&random(i)), client, server);
+        }
+        assert_eq!(
+            d.report().keylog_unmatched_entries,
+            Some(2),
+            "every client random seen is still remembered at the bound"
+        );
+        // A repeat of a remembered random drops nothing.
+        d.process_record(&client_hello_record(&random(0)), client, server);
+        assert_eq!(
+            d.report().keylog_unmatched_entries,
+            Some(2),
+            "a client random already remembered takes no new place"
+        );
+
+        d.process_record(
+            &client_hello_record(&random(MAX_REMEMBERED_CLIENT_HELLOS)),
+            client,
+            server,
+        );
+        let report = d.report();
+        assert_eq!(
+            report.keylog_unmatched_entries, None,
+            "one client random was dropped, so the count is not known"
+        );
+        assert_eq!(
+            report.client_hellos_seen,
+            MAX_REMEMBERED_CLIENT_HELLOS as u64 + 2,
+            "every ClientHello is still counted"
+        );
+        Ok(())
+    }
+
     /// A ServerHello carried in a real TLS record (wraps `server_hello`).
     fn server_hello_record(cipher: u16) -> TlsRecord {
         TlsRecord {
@@ -4350,6 +4694,7 @@ mod tests {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         };
 
         // First call: should create sessions
@@ -4408,6 +4753,7 @@ mod tests {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         };
 
         d.ensure_sessions_populated();
@@ -4479,6 +4825,7 @@ mod tests {
             rewind_evicted: 0,
             rewind_recovered: 0,
             rsa: None,
+            handshake_tally: HandshakeTally::default(),
         }
     }
 

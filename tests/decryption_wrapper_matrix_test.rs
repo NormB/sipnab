@@ -200,6 +200,158 @@ fn tls_with_embedded_secrets_decrypts_the_same_in_every_wrapper() -> Result<(), 
     Ok(())
 }
 
+// ── TLS: what a key log that opens nothing is told ───────────────────────
+
+/// Read the TLS call of this file with the key log text `keylog` and return
+/// what the run printed on stderr. The run must print `messages` SIP message
+/// lines on stdout.
+fn tls_call_read_with(keylog: &str, messages: usize) -> Result<String, TestError> {
+    let dir = tempfile::tempdir().map_err(|e| format!("dir: {e}"))?;
+    let tmp = tempfile::tempdir().map_err(|e| format!("tmp: {e}"))?;
+    let capture = dir.path().join("tls.pcap");
+    pcap_build::write_pcap(&capture, &tls_session_frames()?)?;
+    let keys = dir.path().join("keys.log");
+    std::fs::write(&keys, keylog).map_err(|e| format!("keylog: {e}"))?;
+    let (capture, keys) = (capture.display().to_string(), keys.display().to_string());
+    let (stdout, stderr, code) = sipnab(
+        &[
+            "-N",
+            "-I",
+            &capture,
+            "--keylog",
+            &keys,
+            "--portrange",
+            "1-65535",
+        ],
+        "warn",
+        tmp.path(),
+    )?;
+    assert_eq!(code, Some(0), "exit status\n{stderr}");
+    assert_eq!(
+        stdout.lines().count(),
+        messages,
+        "SIP message lines on stdout:\n{stdout}\n{stderr}"
+    );
+    Ok(stderr)
+}
+
+/// FAILURE (TLS-KEYLOG-MISMATCH-DIAGNOSIS), the reported case: the capture
+/// holds the handshake and the key log holds one line of another connection.
+/// The run names the key log as the cause, with the counts, and does not say
+/// that the handshake is missing.
+#[test]
+fn one_key_line_of_another_connection_is_named_as_the_cause() -> Result<(), TestError> {
+    let keylog = format!(
+        "CLIENT_TRAFFIC_SECRET_0 {} {}\n",
+        "11".repeat(32),
+        "22".repeat(32)
+    );
+    let stderr = tls_call_read_with(&keylog, 0)?;
+    for line in [
+        "sipnab loaded 1 keylog line(s) and built no session from any of them, so the 2 TLS \
+         application-data record(s) in this capture went unread.",
+        "No key in the key log belongs to a handshake in this capture: sipnab saw 1 \
+         ClientHello and 1 ServerHello message(s) and loaded 1 keylog line(s), and 1 of those \
+         line(s) carry a client random that no ClientHello in the capture has. The key log is \
+         from other connections: another process, another run, or a log that was rotated or \
+         truncated after these connections began.",
+        "Use the key log that the endpoint of these connections wrote during this capture. \
+         Restarting the connection helps only when the same run of that endpoint writes the \
+         key log sipnab reads.",
+    ] {
+        assert!(
+            stderr.lines().any(|printed| printed == line),
+            "the run does not print the line `{line}`:\n{stderr}"
+        );
+    }
+    assert!(
+        !stderr.contains("The handshake is missing"),
+        "the handshake is in the capture:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// FAILURE, the neighbor: a complete TLS 1.3 key log of another connection.
+/// sipnab builds a session from it, and the run still names the key log as
+/// the cause and not the record sequence.
+#[test]
+fn a_complete_key_log_of_another_connection_is_named_as_the_cause() -> Result<(), TestError> {
+    let other = "11".repeat(32);
+    let keylog = format!(
+        "CLIENT_TRAFFIC_SECRET_0 {other} {c}\nSERVER_TRAFFIC_SECRET_0 {other} {s}\n",
+        c = "22".repeat(32),
+        s = "33".repeat(32)
+    );
+    let stderr = tls_call_read_with(&keylog, 0)?;
+    for part in [
+        "sipnab holds keys for 1 TLS session(s) and could not decrypt any of the 2 \
+         application-data record(s) it saw.",
+        "sipnab saw 1 ClientHello and 1 ServerHello message(s) and loaded 2 keylog line(s), \
+         and 2 of those line(s) carry a client random that no ClientHello in the capture has.",
+        "If a connection these keys belong to was already running when the capture began",
+    ] {
+        assert!(
+            stderr.contains(part),
+            "the run does not print `{part}`:\n{stderr}"
+        );
+    }
+    assert!(
+        !stderr.contains("The usual cause is a capture that began"),
+        "the record sequence is not the cause:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// EDGE: one traffic secret line of the connection in the capture. The line
+/// matches the ClientHello and builds no session, so the run says what a
+/// session needs and does not call the key log one of other connections.
+#[test]
+fn one_key_line_of_the_connection_itself_is_named_as_incomplete() -> Result<(), TestError> {
+    let keylog = format!(
+        "CLIENT_TRAFFIC_SECRET_0 {} {}\n",
+        hex(&CLIENT_RANDOM),
+        hex(&CLIENT_SECRET)
+    );
+    let stderr = tls_call_read_with(&keylog, 0)?;
+    for part in [
+        "sipnab loaded 1 keylog line(s) and built no session from any of them",
+        "The handshake is not missing as a whole: sipnab saw 1 ClientHello and 1 ServerHello \
+         message(s) in this capture.",
+        "1 of the 1 keylog line(s) carry the client random of a ClientHello in this capture.",
+        "both the CLIENT_TRAFFIC_SECRET_0 and the SERVER_TRAFFIC_SECRET_0 line",
+    ] {
+        assert!(
+            stderr.contains(part),
+            "the run does not print `{part}`:\n{stderr}"
+        );
+    }
+    assert!(
+        !stderr.contains("other connections"),
+        "the key log is of this connection:\n{stderr}"
+    );
+    Ok(())
+}
+
+/// SUCCESS: the key log of the connection in the capture. The run decrypts
+/// and prints none of the lines above.
+#[test]
+fn the_key_log_of_the_connection_prints_no_guidance() -> Result<(), TestError> {
+    // Two message lines: the INVITE and its answer were decrypted.
+    let stderr = tls_call_read_with(&tls_keylog(), 2)?;
+    for absent in [
+        "keylog line(s)",
+        "ClientHello",
+        "could not decrypt",
+        "other connections",
+    ] {
+        assert!(
+            !stderr.contains(absent),
+            "a run that decrypted prints no `{absent}`:\n{stderr}"
+        );
+    }
+    Ok(())
+}
+
 // ── SRTP ───────────────────────────────────────────────────────────────
 
 /// The DTMF digits a run decoded, in order, from its cleartext debug lines.
