@@ -8,6 +8,23 @@ sipnab is pre-1.0: the public API and the CLI surface are not stable, and a
 breaking change may land in any release. Breaking changes are called out in the
 entry that carries them.
 
+## [Unreleased]
+
+### Changed
+
+- **Breaking for a downgrade: a fleet center and a fleet member write sealed format 2, which 0.5.244 does not read.** This release reads the format 1 files 0.5.244 wrote and writes them again as format 2 at the first start. A center put back to 0.5.244 refuses to start on a format 2 store (`has sealed format 2, and this build reads format 1`), and a member put back moves its waiting deliveries to `failed/`. To keep a way back, stop the center and copy `<store>` and `<store>.intake` before the first start of this release. [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store) has the commands. The reason is the fix below.
+
+### Fixed
+
+- **A fleet center refuses a store or an intake that had records removed from its end.** A sealed file detected a changed byte, a moved record and a cut inside the records of its last rewrite. It did not detect whole records removed from the end among those appended after that rewrite: the file opened without them, and the center started with a member or a call record fewer than it had acknowledged and said nothing.
+  - The sealed file format is now 2. Its header holds two authenticated counts of the file's entries. An append writes its records and an end mark, waits until they are on disk, and then writes the count that covers them, into the two places in turn. A file that holds fewer entries than its count is refused: `was cut at its end: it holds <n> of the <m> entries it was written with`.
+  - A center stopped while it wrote a count leaves one count that does not authenticate, the append it was to cover whole on disk, and nothing after it. Only that state opens with one count. A changed count on any other file is refused: `has a record count that did not authenticate`.
+  - This applies to the center's store, to its intake, and to a member's sealed deliveries.
+  - Each append now waits for the disk twice, where it waited once. Measured on one host (NVMe, ext4, 300 appends of 1,200 bytes, three rounds): 2,196 to 2,686 appends a second before, 1,803 to 1,832 after.
+  - Not detected, as before: the whole file deleted, and an earlier copy of the whole file put back.
+  - **Upgrade:** this release reads a format 1 file, which releases up to 0.5.244 wrote, and writes it again as format 2 at start. A format 1 file that was cut at its end before the upgrade opens once more without the removed records. A release up to 0.5.244 does not read a format 2 file: a center that goes back to one refuses to start on its store, and a member that goes back moves its waiting deliveries to `failed/` and does not send them.
+  - How-to: [Encrypt the center's store](docs/fleet.md#encrypt-the-centers-store).
+
 ## [0.5.245] - 2026-11-11
 
 ### Added

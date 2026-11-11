@@ -19,7 +19,6 @@
 //! [`MAX_INTAKE_BYTES`]: past that the oldest records go first, counted and
 //! logged. [`first_kept`] is that rule.
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -202,9 +201,7 @@ impl Intake {
             sealed.extend(self.sealer.record(&line).map_err(std::io::Error::other)?);
             held.push((record.received_at, line.len()));
         }
-        let mut file = std::fs::OpenOptions::new().append(true).open(&self.path)?;
-        file.write_all(&sealed)?;
-        file.sync_data()?;
+        super::fleet_seal::append_counted(&self.path, &mut self.sealer, &sealed)?;
         self.held.extend(held);
         Ok(())
     }
@@ -535,15 +532,161 @@ mod tests {
 
     #[test]
     fn edge_a_torn_last_append_is_dropped_and_the_rest_kept() -> TestResult {
-        let (_dir, path) = filled(3)?;
-        let bytes = std::fs::read(&path)?;
-        std::fs::write(&path, &bytes[..bytes.len() - 7])?;
+        // An append the center did not finish: a part of a record after
+        // the records it had acknowledged, and no count for it.
+        let (_dir, path) = filled(2)?;
+        let mut bytes = std::fs::read(&path)?;
+        bytes.extend([0, 0, 1, 0, 7, 7, 7, 7, 7]);
+        std::fs::write(&path, &bytes)?;
         let (_, records) = open(&path)?;
         let seqs: Vec<u64> = records.iter().map(|r| r.seq).collect();
         assert_eq!(
             seqs,
             vec![1, 2],
             "the record whose write did not finish was never acknowledged"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_acknowledged_record_removed_from_the_end_is_refused() -> TestResult {
+        // FLEET-STORE-TAIL-TRUNCATION: this file used to open without the
+        // record, and the center then held one call fewer than it had
+        // acknowledged, with nothing said.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store.intake");
+        let (mut intake, _) = open(&path)?;
+        intake.append(&[rec("edge-a", 1)])?;
+        let kept = usize::try_from(std::fs::metadata(&path)?.len())?;
+        intake.append(&[rec("edge-a", 2)])?;
+        drop(intake);
+        let bytes = std::fs::read(&path)?;
+        std::fs::write(&path, &bytes[..kept])?;
+        let e = open(&path).err().unwrap_or_default();
+        assert_eq!(
+            e,
+            format!(
+                "the intake '{}': sealed layer: the file was cut at its end: it holds 3 of \
+                 the 5 entries it was written with",
+                path.display()
+            ),
+            "failure an acknowledged record removed from the end is refused"
+        );
+        assert_eq!(
+            std::fs::read(&path)?,
+            bytes[..kept],
+            "and the refused file is left as it was found"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_acknowledged_record_cut_in_its_middle_is_refused() -> TestResult {
+        let (_dir, path) = filled(3)?;
+        let bytes = std::fs::read(&path)?;
+        std::fs::write(&path, &bytes[..bytes.len() - 7])?;
+        let e = open(&path).err().unwrap_or_default();
+        assert!(
+            e.ends_with("was cut at its end: it holds 4 of the 5 entries it was written with"),
+            "failure an acknowledged record cut in its middle is refused: {e}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_format_1_intake_is_read_and_written_again_as_format_2() -> TestResult {
+        // The intake a center of release 0.5.244 left: the first start of
+        // this build reads it and writes it again with its counts.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store.intake");
+        let lines: Vec<Vec<u8>> = [rec("edge-a", 1), rec("edge-a", 2)]
+            .iter()
+            .map(serde_json::to_vec)
+            .collect::<Result<_, _>>()?;
+        let old = crate::app::fleet_seal::sealed_format_1(
+            Kind::Intake,
+            keys(1).current(),
+            &[&lines[0]],
+            &[&lines[1]],
+            &crate::app::fleet_seal::system_draw,
+        )?;
+        std::fs::write(&path, &old)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        assert_eq!(old[4], 1, "the file starts as format 1");
+        let (_, held) = open(&path)?;
+        assert_eq!(
+            held.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![1, 2],
+            "success a format 1 intake is read and written again as format 2"
+        );
+        assert_eq!(std::fs::read(&path)?[4], 2, "and is format 2 afterwards");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_intake_whose_counts_were_damaged_is_refused_by_file_and_layer() -> TestResult {
+        use crate::app::fleet_seal::{COUNT_SLOT_BYTES, KEY_HEADER_BYTES};
+        let (_dir, path) = filled(2)?;
+        let mut bytes = std::fs::read(&path)?;
+        bytes[KEY_HEADER_BYTES + 10] ^= 1;
+        bytes[KEY_HEADER_BYTES + COUNT_SLOT_BYTES + 10] ^= 1;
+        std::fs::write(&path, &bytes)?;
+        assert_eq!(
+            open(&path).err().unwrap_or_default(),
+            format!(
+                "the intake '{}': sealed layer: the file has a record count that did not \
+                 authenticate (the file was modified, or the key is wrong)",
+                path.display()
+            ),
+            "failure an intake whose counts were damaged is refused by file and layer"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_after_a_trim_a_record_removed_from_the_end_is_still_refused() -> TestResult {
+        // A trim writes the file again; the appends after it are counted
+        // in the new file as they were in the old.
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store.intake");
+        let (mut intake, _) = open(&path)?;
+        intake.append(&[rec("edge-a", 1), rec("edge-a", 2)])?;
+        // Record 1 was received at `at(1)` and record 2 at `at(2)`: an
+        // hour of retention at `at(3602)` keeps what came at `at(2)` or
+        // later.
+        let gone = intake.trim(at(3602), chrono::Duration::hours(1), MAX_INTAKE_BYTES)?;
+        assert_eq!(gone, 1, "the trim removed the first record");
+        let kept = usize::try_from(std::fs::metadata(&path)?.len())?;
+        intake.append(&[rec("edge-a", 3)])?;
+        drop(intake);
+        let bytes = std::fs::read(&path)?;
+        std::fs::write(&path, &bytes[..kept])?;
+        let e = open(&path).err().unwrap_or_default();
+        assert!(
+            e.ends_with("was cut at its end: it holds 2 of the 4 entries it was written with"),
+            "edge after a trim a record removed from the end is still refused: {e}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_intake_reopened_after_appends_counts_from_its_new_base() -> TestResult {
+        // Every open rewrites the file; the records it held are then in
+        // the base, and a cut there is refused as before.
+        let (_dir, path) = filled(2)?;
+        let (mut intake, held) = open(&path)?;
+        assert_eq!(held.len(), 2, "both records are read back");
+        intake.append(&[rec("edge-a", 3)])?;
+        drop(intake);
+        let (_, held) = open(&path)?;
+        assert_eq!(
+            held.iter().map(|r| r.seq).collect::<Vec<_>>(),
+            vec![1, 2, 3],
+            "edge an intake reopened after appends counts from its new base"
         );
         Ok(())
     }
