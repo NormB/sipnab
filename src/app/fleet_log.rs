@@ -24,7 +24,7 @@ use super::fleet_seal::{Keys, Kind, LogFile, LogSealer};
 pub(super) type OpenFile = Box<dyn Fn(&Path) -> std::io::Result<Box<dyn LogFile>> + Send + Sync>;
 
 /// A sealed log file, written under a new data key and open for appends.
-pub(super) struct AppendLog {
+pub struct AppendLog {
     /// The file.
     path: PathBuf,
     /// The keys: the current one to write under, the old ones to read under.
