@@ -1909,17 +1909,13 @@ const FOREIGN_FLAGS: &[(&str, &[&str])] = &[
             "website/content/docs/contributing.md",
         ],
     ),
-    // cargo-audit's flags, not sipnab's. CONTRIBUTING's Dependencies section
-    // quotes the exact `cargo audit` lines ci.yml runs — `--ignore` for the
-    // accepted rsa advisory, `--file` for the separate fuzz lockfile — so a
-    // contributor reproduces the gate rather than an approximation of it.
-    // dependency_policy_doc_test holds those lines equal to ci.yml's.
+    // cargo-audit's flag, not sipnab's. CONTRIBUTING's Dependencies section
+    // quotes the exact `cargo audit` lines ci.yml runs — `--file` for the
+    // separate fuzz lockfile — so a contributor reproduces the gate rather
+    // than an approximation of it. dependency_policy_doc_test holds those
+    // lines equal to ci.yml's.
     (
         "file",
-        &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
-    ),
-    (
-        "ignore",
         &["CONTRIBUTING.md", "website/content/docs/contributing.md"],
     ),
     // docker run flags (install docs)

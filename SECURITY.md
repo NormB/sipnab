@@ -146,9 +146,11 @@ and how the maintainer checks it.
 OpenVEX form.
 
 - It lists each advisory the dependency scanners report and the project
-  accepts. Most are `not_affected`, with the reason.
-- RUSTSEC-2023-0071 (the `rsa` crate) is `affected` at low risk: its
-  statement says where sipnab uses an RSA private key and what to do.
+  accepts, with the reason: `not_affected`, or `affected` with what to do.
+- RUSTSEC-2023-0071 (the `rsa` crate) affects releases through 0.5.247, at
+  low risk; [the vCon guide](docs/vcon.md) says what to do on those. Later
+  releases use `rsa` 0.10.0, which fixes it, so the document no longer lists
+  it.
 - [`deny.toml`](deny.toml) and [`osv-scanner.toml`](osv-scanner.toml)
   configure the same exceptions with the same reasons.
 - A test holds all three to one list.

@@ -1,12 +1,11 @@
 # OSV-Scanner configuration.
 #
-# This exists so the three dependency scanners agree. `cargo audit` and
-# `cargo deny` were both already told to accept the advisory below, in
-# .github/workflows/ci.yml and deny.toml respectively, with the same reasoning.
-# OSV-Scanner was not, so it kept filing the same finding as a Code Scanning
-# alert -- two tools recording an accepted risk while a third reported it as
-# open. A permanently-open alert that everyone has learned to scroll past is
-# worse than no alert, because it hides the next real one.
+# This exists so the dependency scanners agree: an advisory the project
+# accepts is accepted here, in deny.toml when `cargo deny` reports it too, and
+# in vex/sipnab.openvex.json, each with the same reason
+# (tests/vex_document_test.rs holds the three to one list). A permanently
+# open alert that everyone has learned to scroll past is worse than no alert,
+# because it hides the next real one.
 #
 # Applied to every scanned file via `--config` in .github/workflows/osv-scanner.yml
 # rather than by sitting here on its own: OSV-Scanner reads `osv-scanner.toml`
@@ -15,22 +14,6 @@
 # which is the tree that feeds hostile input to the parsers, i.e. the one least
 # worth leaving unscanned. `--config` applies one file to all of them, so the
 # reasoning below cannot drift between two copies.
-
-[[IgnoredVulns]]
-id = "RUSTSEC-2023-0071"
-# Also filed as CVE-2023-49092 and GHSA-c827-hfw6-qwvm.
-reason = """
-rsa "Marvin Attack" timing side channel; no fixed rsa release exists \
-(0.9.10; 0.10.0-rc.20 is not marked fixed). sipnab uses an rsa private key in \
-src/capture/rsa_key.rs (`--tls-key`: passive decryption of a captured TLS 1.2 \
-pre-master, answering nobody) and src/output/vcon_jose.rs (opening an \
-encrypted vCon with an RSA key). POST /v1/vcon/validate, POST \
-/v1/vcon/analyze and the MCP vCon tools open a container the caller supplies, \
-so a client holding the API key or MCP access could time RSA decryptions, at \
-the rate limit. Low risk, not zero: vex/sipnab.openvex.json states it as \
-affected, with the mitigation (an EC P-256 recipient key, or API, MCP and \
-store access only for trusted parties). Re-checked every release.\
-"""
 
 [[IgnoredVulns]]
 id = "GHSA-hp3w-g68c-fv3c"
@@ -46,31 +29,3 @@ every version through 1.1.3, the latest, is affected, so there is no upgrade \
 to take. Re-evaluate when sprintf-js publishes a fix or @lhci drops js-yaml 3.\
 """
 
-[[IgnoredVulns]]
-id = "GHSA-qwgh-2vcv-g2f7"
-ignoreUntil = 2026-12-26
-reason = """
-block-buffer: a panic caught inside a compression callback corrupts the \
-buffer's inline cursor. block-buffer 0.10.4 is reached only through digest \
-0.10, which only rsa 0.9 needs (rsa's newest stable release; 0.10 is still a \
-release candidate), and through sha1 0.10, which sipnab keeps only as rsa's \
-OAEP hash. Cargo.lock also lists it under sha2 0.10, through ratatui's \
-optional termwiz backend (ratatui-termwiz -> termwiz), which records every \
-optional dependency and which sipnab never enables, so that copy is never \
-compiled (tests/digest_010_confinement_test.rs holds these facts). The \
-advisory's mechanism is absent from 0.10.4: its cursor is a separate `pos` \
-field (block-buffer 0.10.4 src/lib.rs:55-63), never written out of range, and \
-digest_blocks (src/lib.rs:138-180) leaves it unchanged when `compress` panics, \
-so get_pos (src/lib.rs:195-205) cannot reach its unreachable_unchecked; 0.10.4 \
-has no ReadBuffer. Independently, no digest 0.10 hasher of sipnab's can be \
-reused after a caught panic: the only ones are the two inside the OAEP padding \
-built by rsa::Oaep::new at src/output/vcon_jose.rs:563 and :670, held by \
-rsa 0.9.10 src/oaep.rs:40-45 and consumed with it by encrypt/decrypt \
-(src/oaep.rs:134, :150), so they are dropped when that call returns or \
-unwinds and never cross a catch_unwind boundary; their compression is sha1 \
-0.10.7's own (src/lib.rs:110-112) and runs no closure of sipnab's. PKCS#1 v1.5 \
-decryption and key decoding hash nothing. The test fails if another digest \
-0.10 user appears, and scripts/check-dependency-canaries.py (weekly in \
-.github/workflows/osv-scanner.yml) fails once a stable rsa 0.10 exists: then \
-move to it and remove this entry.\
-"""

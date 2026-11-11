@@ -1952,7 +1952,10 @@ fn root_community_file_links_resolve() -> Result<(), TestError> {
     // origin/main db378a415.
     // 147 -> 148 (web console): README.md's paragraph on `--api-console`
     // links docs/rest-api.md#web-console.
-    const EXPECTED_COMMUNITY_LINKS: usize = 148;
+    // 148 -> 149 (rsa 0.10): the count the test gave after that change added a
+    // docs/vcon.md link to SECURITY.md and an osv-scanner.toml link to
+    // CONTRIBUTING.md's line on accepted advisories.
+    const EXPECTED_COMMUNITY_LINKS: usize = 149;
     const ROOT_FILES: &[&str] = &[
         "README.md",
         "SUPPORT.md",

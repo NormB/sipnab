@@ -3,33 +3,10 @@
   "@id": "https://github.com/NormB/sipnab/blob/main/vex/sipnab.openvex.json",
   "author": "sipnab maintainers <n.brandinger@gmail.com>",
   "role": "Project maintainer",
-  "timestamp": "2026-11-05T00:00:00Z",
-  "version": 8,
+  "timestamp": "2026-11-11T00:00:00Z",
+  "version": 9,
   "tooling": "Hand-written; held to deny.toml and osv-scanner.toml by tests/vex_document_test.rs",
   "statements": [
-    {
-      "vulnerability": {
-        "name": "RUSTSEC-2023-0071",
-        "aliases": [
-          "CVE-2023-49092",
-          "GHSA-c827-hfw6-qwvm"
-        ],
-        "description": "rsa crate \"Marvin Attack\": timing side channel in RSA PKCS#1 v1.5 decryption"
-      },
-      "products": [
-        {
-          "@id": "pkg:cargo/sipnab",
-          "subcomponents": [
-            {
-              "@id": "pkg:cargo/rsa@0.9.10"
-            }
-          ]
-        }
-      ],
-      "status": "affected",
-      "status_notes": "The Marvin Attack needs many RSA decryptions of attacker-chosen ciphertexts whose timing the attacker can measure. No fixed rsa release exists (0.9.10; 0.10.0-rc.20 is not marked fixed). sipnab uses an rsa private key in two places. src/capture/rsa_key.rs decrypts, with an operator-supplied key (`--tls-key`, the optional `tls` feature), the pre-master secret of an already-captured TLS 1.2 handshake; capture is passive and nothing is sent back to whoever chose the ciphertext. src/output/vcon_jose.rs unwraps the content key of an encrypted vCon opened with an RSA key (`--vcon-key`, `--vcon-fetch-decrypt-key`, the optional `vcon` feature). Read from a file (`-I`) nobody can time it; a store read by `--vcon-fetch` or `--vcon-audio-fetch` chooses the ciphertext but sees only when the next request comes. POST /v1/vcon/validate, POST /v1/vcon/analyze and the MCP vCon tools open a container the caller supplies and answer that caller, so with an RSA `--vcon-key` a client holding the API key or MCP access can submit chosen ciphertexts and time the answers, limited by the per-peer rate limit (REST default 100 requests per second). RS256 signing uses ring, and encryption to a recipient uses only its public key. The risk is low, not zero; re-evaluated at every release.",
-      "action_statement": "Use an EC P-256 key for `encrypt_to`, `--vcon-key` and `--vcon-fetch-decrypt-key`: it uses ECDH-ES+A256KW and no rsa private-key operation. If you keep an RSA recipient key, give the REST API key and MCP access only to clients you would trust with that key's plaintext, and fetch encrypted vCons (`--vcon-fetch`, `--vcon-audio-fetch`) only from a store you trust."
-    },
     {
       "vulnerability": {
         "name": "GHSA-hp3w-g68c-fv3c",
@@ -46,26 +23,6 @@
       "status": "not_affected",
       "justification": "component_not_present",
       "impact_statement": "sprintf-js is not part of sipnab: no binary, package or crate the project ships contains it. It appears only in e2e/package-lock.json, the dev tooling for the website's Lighthouse CI step (@lhci/cli -> @lhci/utils -> js-yaml 3 -> argparse 1 -> sprintf-js 1.0.3), where argparse formats its own help templates and no attacker-supplied text becomes a format string. osv.dev lists no fixed release (every version through 1.1.3 is affected). Re-evaluate when a fix is published or @lhci drops js-yaml 3."
-    },
-    {
-      "vulnerability": {
-        "name": "GHSA-qwgh-2vcv-g2f7",
-        "aliases": [],
-        "description": "block-buffer: a panic caught inside a compression callback corrupts the buffer's inline cursor"
-      },
-      "products": [
-        {
-          "@id": "pkg:cargo/sipnab",
-          "subcomponents": [
-            {
-              "@id": "pkg:cargo/block-buffer@0.10.4"
-            }
-          ]
-        }
-      ],
-      "status": "not_affected",
-      "justification": "vulnerable_code_not_present",
-      "impact_statement": "The advisory's mechanism is an inline cursor that a panicking callback leaves out of range. block-buffer 0.10.4 has none: it keeps its cursor in a separate field that digest_blocks leaves unchanged and in range when the compression callback panics, and it has no ReadBuffer. It reaches sipnab only through digest 0.10 under rsa 0.9 (the newest stable rsa) and sha1 0.10, which sipnab uses only as rsa's OAEP hash for JWE RSA-OAEP; the two hashers live inside the OAEP padding and are consumed by one encrypt or decrypt call, so none is reused after a caught panic. Cargo.lock also lists it under ratatui's optional termwiz backend, which sipnab never enables. tests/digest_010_confinement_test.rs holds these facts. Re-evaluate when a stable rsa 0.10 exists; move to it then."
     }
   ]
 }

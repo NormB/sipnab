@@ -116,7 +116,7 @@ fn a_uuid_domain_container_follows_the_section_4_1_2_layout() -> Result<(), Test
         "the 48-bit timestamp is the call's start in milliseconds ({start}): {uuid}"
     );
 
-    let digest = <sha1_oaep::Sha1 as sha1_oaep::Digest>::digest(DOMAIN.as_bytes());
+    let digest = <sha1::Sha1 as sha1::Digest>::digest(DOMAIN.as_bytes());
     let mut top = [0u8; 8];
     top.copy_from_slice(&digest[..8]);
     let custom_c = u64::from_be_bytes(top) >> 2;
