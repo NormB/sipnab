@@ -21,7 +21,8 @@
 //!   named capabilities, and Docker's default set lacks `CAP_NET_ADMIN`, so
 //!   even `docker run <image> --version` would fail.
 //! - OPS-2. `:latest` followed `main`. It now moves only on a release tag;
-//!   `:edge` follows `main`.
+//!   `:edge` follows `main`. Each tag has one writing trigger, the push to
+//!   `main` or the tag push, never both: a release is both, of one commit.
 //! - OPS-3. The image was `linux/amd64` only. Each platform is now built on a
 //!   runner of its own architecture, smoke-tested and scanned there, pushed by
 //!   digest, and joined into one manifest list.
@@ -32,7 +33,7 @@
 
 #![cfg(feature = "full")]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 type TestError = Box<dyn std::error::Error>;
@@ -813,6 +814,517 @@ fn every_other_way_latest_could_follow_main_is_refused() -> Result<(), TestError
         "no main-following tag was accepted"
     );
     Ok(())
+}
+
+// ── One writer per tag ───────────────────────────────────────────────────────
+//
+// A release is two pushes of one commit: the merge to `main`, then the `v*`
+// tag. Each starts a run of this workflow, and the builds are not
+// reproducible, so a tag both runs write ends on whichever finished last. On
+// 0.5.245 both runs wrote `latest` and `sha-<commit>`; the main run ended 28 s
+// after the tag run, and `latest` and `0.5.245` named different digests.
+
+/// A push that publishes an image. A pull request publishes nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Writer {
+    /// A push to `main`.
+    Main,
+    /// A push of a `v*` tag that is a release.
+    ReleaseTag,
+    /// A push of a `v*` tag that is a pre-release (`v0.2.0-beta`).
+    PrereleaseTag,
+}
+
+/// The condition that limits a rule to a branch push. A `v*` tag push has
+/// `github.ref_type` `tag`.
+const BRANCH_ONLY: &str = "${{ github.ref_type == 'branch' }}";
+
+/// The pushes an `enable=` value lets a rule run on, or `None` for a value
+/// this reader does not know. An unknown value is a problem, not a guess.
+fn enabled_on(enable: Option<&str>) -> Option<Vec<Writer>> {
+    match enable {
+        None => Some(vec![
+            Writer::Main,
+            Writer::ReleaseTag,
+            Writer::PrereleaseTag,
+        ]),
+        Some(e) if e == RELEASE_ONLY => Some(vec![Writer::ReleaseTag]),
+        Some(e) if e == BRANCH_ONLY || e == "{{is_default_branch}}" => Some(vec![Writer::Main]),
+        Some(_) => None,
+    }
+}
+
+/// Each tag the workflow's rules make, with the pushes that write it.
+///
+/// The rule types are read the way docker/metadata-action applies them:
+/// `semver` only on a tag push, `edge` only on a push to its branch, `sha`
+/// and `raw` on every push. A metadata step whose `flavor` is not
+/// `latest=false` also makes `latest` on a release tag when a `semver` rule
+/// exists.
+fn tag_writers(wf: &str) -> Result<BTreeMap<String, BTreeSet<Writer>>, String> {
+    let rules =
+        block(wf, "IMAGE_TAGS").ok_or("the workflow `env:` has no `IMAGE_TAGS: |` block")?;
+    let mut out: BTreeMap<String, BTreeSet<Writer>> = BTreeMap::new();
+    let mut semver = false;
+    for rule in &rules {
+        let fields: Vec<(&str, &str)> = rule_fields(rule)
+            .into_iter()
+            .filter_map(|f| f.split_once('='))
+            .collect();
+        let get = |k: &str| fields.iter().find(|(a, _)| *a == k).map(|(_, v)| *v);
+        let (name, on_type) = match get("type") {
+            Some("semver") => {
+                semver = true;
+                (
+                    get("pattern").unwrap_or("{{version}}").to_string(),
+                    vec![Writer::ReleaseTag, Writer::PrereleaseTag],
+                )
+            }
+            Some("edge") if get("branch") == Some("main") => (
+                get("value").unwrap_or("edge").to_string(),
+                vec![Writer::Main],
+            ),
+            Some("sha") => (
+                "sha-<commit>".to_string(),
+                vec![Writer::Main, Writer::ReleaseTag, Writer::PrereleaseTag],
+            ),
+            Some("raw") => (
+                get("value")
+                    .ok_or(format!("`{rule}` has no value"))?
+                    .to_string(),
+                vec![Writer::Main, Writer::ReleaseTag, Writer::PrereleaseTag],
+            ),
+            other => {
+                return Err(format!(
+                    "`{rule}`: rule type {other:?} is not one this test reads"
+                ));
+            }
+        };
+        let enabled = enabled_on(get("enable")).ok_or(format!(
+            "`{rule}`: this test cannot tell which pushes its `enable` allows"
+        ))?;
+        out.entry(name)
+            .or_default()
+            .extend(on_type.into_iter().filter(|w| enabled.contains(w)));
+    }
+    let auto_latest = steps(wf)
+        .iter()
+        .filter(|s| s.contains("docker/metadata-action@"))
+        .any(|s| input(s, "flavor").as_deref() != Some("latest=false"));
+    if auto_latest && semver {
+        out.entry("latest".to_string())
+            .or_default()
+            .insert(Writer::ReleaseTag);
+    }
+    Ok(out)
+}
+
+/// The tags more than one kind of push writes, and the tags none writes.
+fn writer_problems(wf: &str) -> Vec<String> {
+    let writers = match tag_writers(wf) {
+        Ok(w) => w,
+        Err(e) => return vec![e],
+    };
+    let mut problems = Vec::new();
+    for (name, on) in &writers {
+        let tag_push = on.iter().any(|w| *w != Writer::Main);
+        if on.contains(&Writer::Main) && tag_push {
+            problems.push(format!(
+                "`{name}` is written by the push to main and by the tag push: a release is \
+                 both, of one commit, and the run that ends last keeps the tag"
+            ));
+        }
+        if on.is_empty() {
+            problems.push(format!("no push writes `{name}`"));
+        }
+    }
+    problems
+}
+
+/// GIVEN docker.yml
+/// WHEN each tag rule's pushes are worked out
+/// THEN no tag is written by both the push to main and the tag push.
+#[test]
+fn each_tag_has_one_writing_trigger() -> Result<(), TestError> {
+    let p = writer_problems(&read(".github/workflows/docker.yml")?);
+    assert!(
+        p.is_empty(),
+        "a tag two runs of one commit write names whichever ended last:\n  {}",
+        p.join("\n  ")
+    );
+    Ok(())
+}
+
+/// GIVEN docker.yml
+/// WHEN each tag rule's pushes are worked out
+/// THEN they are exactly these: versions and `latest` from the tag push,
+/// `edge` and `sha-<commit>` from the push to main.
+#[test]
+fn the_workflows_tags_and_their_writers_are_these() -> Result<(), TestError> {
+    let got = tag_writers(&read(".github/workflows/docker.yml")?)?;
+    let tags = BTreeSet::from([Writer::ReleaseTag, Writer::PrereleaseTag]);
+    let want = BTreeMap::from([
+        ("edge".to_string(), BTreeSet::from([Writer::Main])),
+        ("latest".to_string(), BTreeSet::from([Writer::ReleaseTag])),
+        ("sha-<commit>".to_string(), BTreeSet::from([Writer::Main])),
+        ("{{major}}.{{minor}}".to_string(), tags.clone()),
+        ("{{version}}".to_string(), tags),
+    ]);
+    assert_eq!(
+        got, want,
+        "docker.yml's tags and the pushes that write each"
+    );
+    Ok(())
+}
+
+/// The tag rules and metadata step of the workflow that built 0.5.245.
+const TAGS_0_5_245: &str = "env:\n  IMAGE_TAGS: |\n    type=semver,pattern={{version}}\n    type=semver,pattern={{major}}.{{minor}}\n    type=sha\n    type=raw,value=latest,enable={{is_default_branch}}\njobs:\n  docker:\n    steps:\n      - name: Docker meta\n        uses: docker/metadata-action@0 # v6\n        with:\n          tags: ${{ env.IMAGE_TAGS }}\n";
+
+/// GIVEN the rules that built 0.5.245
+/// WHEN their writers are worked out
+/// THEN `latest` and `sha-<commit>` are each refused as written twice, and
+/// the version tags are not.
+#[test]
+fn the_rules_that_built_0_5_245_are_refused_for_latest_and_sha() {
+    let p = writer_problems(TAGS_0_5_245);
+    assert_eq!(
+        p.len(),
+        2,
+        "exactly latest and sha are written twice: {p:?}"
+    );
+    assert!(
+        p.iter().any(|m| m.starts_with("`latest` is written by")),
+        "latest (the default-branch rule plus the action's own on a release): {p:?}"
+    );
+    assert!(
+        p.iter()
+            .any(|m| m.starts_with("`sha-<commit>` is written by")),
+        "sha-<commit>: {p:?}"
+    );
+}
+
+/// The synthetic workflow the writer refusals vary: GOOD_TAGS plus a `sha`
+/// rule limited to branch pushes.
+fn good_writers() -> String {
+    GOOD_TAGS.replace(
+        "    type=edge,branch=main\n",
+        "    type=edge,branch=main\n    type=sha,enable=${{ github.ref_type == 'branch' }}\n",
+    )
+}
+
+#[test]
+fn the_writer_rule_accepts_the_synthetic_good_workflow() {
+    assert_ne!(good_writers(), GOOD_TAGS, "the sha rule was not added");
+    assert_eq!(
+        writer_problems(&good_writers()),
+        Vec::<String>::new(),
+        "one writer per tag has no problem"
+    );
+    assert_eq!(
+        writer_problems(GOOD_TAGS),
+        Vec::<String>::new(),
+        "a workflow with no sha rule has no problem either"
+    );
+}
+
+/// GIVEN a `sha` rule on every push, an unconditional `latest`, and an
+/// `edge` a tag push also writes
+/// WHEN each is read
+/// THEN each is refused, by its tag's name.
+#[test]
+fn a_tag_two_triggers_write_is_refused() {
+    let sha = good_writers().replace(",enable=${{ github.ref_type == 'branch' }}", "");
+    assert_eq!(
+        writer_problems(&sha).len(),
+        1,
+        "an unlimited sha rule is the one problem: {:?}",
+        writer_problems(&sha)
+    );
+    assert!(
+        writer_problems(&sha)[0].starts_with("`sha-<commit>` is written by"),
+        "it names sha-<commit>: {:?}",
+        writer_problems(&sha)
+    );
+    let latest = good_writers().replace(
+        ",enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}",
+        "",
+    );
+    assert!(
+        writer_problems(&latest)
+            .iter()
+            .any(|m| m.starts_with("`latest` is written by")),
+        "an unconditional latest was accepted: {:?}",
+        writer_problems(&latest)
+    );
+    let edge = good_writers().replace(
+        "    type=edge,branch=main\n",
+        "    type=edge,branch=main\n    type=raw,value=edge\n",
+    );
+    assert!(
+        writer_problems(&edge)
+            .iter()
+            .any(|m| m.starts_with("`edge` is written by")),
+        "an edge that tag pushes also write was accepted: {:?}",
+        writer_problems(&edge)
+    );
+}
+
+/// GIVEN an `enable` this reader does not know, a rule type it does not
+/// read, a `raw` rule with no value, and no rules at all
+/// WHEN each is read
+/// THEN each is a problem: the reader does not guess.
+#[test]
+fn a_rule_the_reader_cannot_classify_is_refused() {
+    let unknown = good_writers().replace(
+        "enable=${{ github.ref_type == 'branch' }}",
+        "enable=${{ github.event_name == 'push' }}",
+    );
+    assert!(
+        writer_problems(&unknown)
+            .iter()
+            .any(|m| m.contains("cannot tell which pushes")),
+        "an unknown enable was classified: {:?}",
+        writer_problems(&unknown)
+    );
+    let kind = good_writers().replace("type=sha,", "type=schedule,");
+    assert!(
+        writer_problems(&kind)
+            .iter()
+            .any(|m| m.contains("is not one this test reads")),
+        "an unread rule type was classified: {:?}",
+        writer_problems(&kind)
+    );
+    let raw = good_writers().replace("type=raw,value=latest,", "type=raw,");
+    assert!(
+        writer_problems(&raw)
+            .iter()
+            .any(|m| m.contains("has no value")),
+        "a raw rule with no value was classified: {:?}",
+        writer_problems(&raw)
+    );
+    assert_eq!(
+        writer_problems("env:\n  OTHER: 1\n"),
+        ["the workflow `env:` has no `IMAGE_TAGS: |` block"],
+        "a workflow with no rules"
+    );
+}
+
+/// GIVEN a rule no push runs, and two rules for one tag on the same push
+/// WHEN each is read
+/// THEN the first is refused and the second is not: one trigger still
+/// writes that tag.
+#[test]
+fn a_tag_nothing_writes_is_refused_and_two_rules_on_one_trigger_are_not() {
+    let dead = good_writers().replace(
+        "type=semver,pattern={{version}}",
+        "type=semver,pattern={{version}},enable=${{ github.ref_type == 'branch' }}",
+    );
+    assert_eq!(
+        writer_problems(&dead),
+        ["no push writes `{{version}}`"],
+        "a semver rule limited to branch pushes never runs"
+    );
+    let twice = good_writers().replace(
+        "    type=edge,branch=main\n",
+        "    type=edge,branch=main\n    type=raw,value=edge,enable=${{ github.ref_type == 'branch' }}\n",
+    );
+    assert_ne!(twice, good_writers(), "the second edge rule was not added");
+    assert_eq!(
+        writer_problems(&twice),
+        Vec::<String>::new(),
+        "two rules for edge, both on the push to main"
+    );
+}
+
+/// GIVEN a metadata step that leaves `flavor` on auto
+/// WHEN the writers are worked out
+/// THEN `latest` gains the release tag push, with a `semver` rule and only
+/// with one.
+#[test]
+fn an_auto_flavor_adds_the_release_tag_as_a_writer_of_latest() -> Result<(), TestError> {
+    let auto = good_writers().replace("          flavor: latest=false\n", "");
+    assert_ne!(auto, good_writers(), "the flavor line was not removed");
+    assert_eq!(
+        tag_writers(&auto)?.get("latest"),
+        Some(&BTreeSet::from([Writer::ReleaseTag])),
+        "latest under an auto flavor and a release-only rule: still one writer"
+    );
+    let no_semver = TAGS_0_5_245
+        .replace("    type=semver,pattern={{version}}\n", "")
+        .replace("    type=semver,pattern={{major}}.{{minor}}\n", "");
+    assert_eq!(
+        tag_writers(&no_semver)?.get("latest"),
+        Some(&BTreeSet::from([Writer::Main])),
+        "with no semver rule the action makes no latest of its own"
+    );
+    Ok(())
+}
+
+/// The jq test that selects this commit's `sha-` tag.
+const READS_SHA: &str = r#"select(test(":sha-"))"#;
+
+/// The jq test that selects the full version tag (`0.5.246`, `0.2.0-beta`),
+/// which `0.5`, `edge` and `latest` do not match.
+const READS_VERSION: &str = r#"select(test(":[0-9]+[.][0-9]+[.][0-9]+"))"#;
+
+/// What is wrong with the tag the `manifest` job reads its list back by.
+///
+/// The job computes the list's digest from the bytes one of its own tags
+/// names, so on every push that publishes, that tag must be one the run
+/// wrote and no run of another commit or another trigger writes: `sha-` on a
+/// push to main, the full version on a tag push.
+fn readback_problems(wf: &str) -> Vec<String> {
+    let writers = match tag_writers(wf) {
+        Ok(w) => w,
+        Err(e) => return vec![e],
+    };
+    let Some(create) = job(wf, "manifest").and_then(|j| step(j, "Create the manifest list")) else {
+        return vec!["no `Create the manifest list` step in a `manifest` job".into()];
+    };
+    let Some(own) = create.lines().find(|l| l.trim_start().starts_with("own=")) else {
+        return vec!["the step sets no `own=`: the tag the list is read back by".into()];
+    };
+    let mut problems = Vec::new();
+    for moving in ["edge", "latest"] {
+        if own.contains(moving) {
+            problems.push(format!(
+                "the read-back names `{moving}`, which a later run moves"
+            ));
+        }
+    }
+    let written = |name: &str, on: Writer| writers.get(name).is_some_and(|w| w.contains(&on));
+    for on in [Writer::Main, Writer::ReleaseTag, Writer::PrereleaseTag] {
+        let sha = own.contains(READS_SHA) && written("sha-<commit>", on);
+        let version = own.contains(READS_VERSION) && written("{{version}}", on);
+        if !sha && !version {
+            problems.push(format!(
+                "on {on:?} the read-back selects no tag that run writes: the step fails \
+                 after it has pushed the list"
+            ));
+        }
+    }
+    problems
+}
+
+/// GIVEN docker.yml
+/// WHEN the manifest job's read-back is checked against the tag rules
+/// THEN every publishing push has a tag of its own to read the list by.
+#[test]
+fn the_list_is_read_back_by_a_tag_each_run_alone_writes() -> Result<(), TestError> {
+    let p = readback_problems(&read(".github/workflows/docker.yml")?);
+    assert!(
+        p.is_empty(),
+        "the manifest job reads its list back by a tag of its own run:\n  {}",
+        p.join("\n  ")
+    );
+    Ok(())
+}
+
+/// A synthetic workflow with the tag rules of [`good_writers`] and a manifest
+/// job whose read-back is `own`.
+fn readback_workflow(own: &str) -> String {
+    format!(
+        "{}  manifest:\n    steps:\n      - name: Create the manifest list\n        run: |\n          {own}\n",
+        good_writers()
+    )
+}
+
+/// The read-back docker.yml uses.
+const GOOD_OWN: &str = r#"own=$(jq -er 'first(.tags[] | select(test(":sha-"))) // first(.tags[] | select(test(":[0-9]+[.][0-9]+[.][0-9]+")))' <<< "$DOCKER_METADATA_OUTPUT_JSON")"#;
+
+#[test]
+fn the_readback_rule_accepts_the_synthetic_good_workflow() {
+    assert_eq!(
+        readback_problems(&readback_workflow(GOOD_OWN)),
+        Vec::<String>::new(),
+        "sha- on main, the version on a tag"
+    );
+}
+
+/// GIVEN a read-back by the `sha-` tag alone, under rules that make `sha-`
+/// only on a push to main
+/// WHEN it is checked
+/// THEN both tag pushes are refused: the release run would fail there.
+#[test]
+fn a_readback_by_sha_alone_is_refused_for_the_tag_pushes() {
+    let wf = readback_workflow(
+        r#"own=$(jq -er '.tags[] | select(test(":sha-"))' <<< "$DOCKER_METADATA_OUTPUT_JSON")"#,
+    );
+    let p = readback_problems(&wf);
+    assert_eq!(
+        p.len(),
+        2,
+        "the release and the pre-release tag push: {p:?}"
+    );
+    assert!(
+        p.iter()
+            .all(|m| m.contains("Tag the read-back selects no tag")),
+        "both are tag pushes: {p:?}"
+    );
+}
+
+/// GIVEN a read-back by the version alone, by `latest`, by `edge`, and a
+/// step with no read-back
+/// WHEN each is checked
+/// THEN each is refused.
+#[test]
+fn every_other_readback_that_misses_a_run_is_refused() {
+    let version = readback_workflow(
+        r#"own=$(jq -er '.tags[] | select(test(":[0-9]+[.][0-9]+[.][0-9]+"))' <<< "$J")"#,
+    );
+    assert_eq!(
+        readback_problems(&version),
+        [
+            "on Main the read-back selects no tag that run writes: the step fails after it has pushed the list"
+        ],
+        "a push to main writes no version tag"
+    );
+    for moving in ["latest", "edge"] {
+        let wf = readback_workflow(&format!(
+            r#"own=$(jq -er '.tags[] | select(test(":{moving}"))' <<< "$J")"#
+        ));
+        assert!(
+            readback_problems(&wf)
+                .iter()
+                .any(|m| m.contains(&format!("names `{moving}`, which a later run moves"))),
+            "a read-back by {moving} was accepted: {:?}",
+            readback_problems(&wf)
+        );
+    }
+    assert_eq!(
+        readback_problems(&readback_workflow("echo none")),
+        ["the step sets no `own=`: the tag the list is read back by"],
+        "a step with no read-back"
+    );
+    assert_eq!(
+        readback_problems(&good_writers()),
+        ["no `Create the manifest list` step in a `manifest` job"],
+        "a workflow with no manifest job"
+    );
+}
+
+/// GIVEN the read-back by `sha-` alone and rules that make `sha-` on every
+/// push (the workflow before this rule)
+/// WHEN it is checked
+/// THEN the read-back has a tag on every push; what is wrong there is the two
+/// writers, which `writer_problems` names.
+#[test]
+fn a_readback_by_sha_alone_is_complete_only_while_every_push_writes_sha() {
+    let wf = readback_workflow(
+        r#"own=$(jq -er '.tags[] | select(test(":sha-"))' <<< "$DOCKER_METADATA_OUTPUT_JSON")"#,
+    )
+    .replace(",enable=${{ github.ref_type == 'branch' }}", "");
+    assert_eq!(
+        readback_problems(&wf),
+        Vec::<String>::new(),
+        "sha- exists on every push there"
+    );
+    assert_eq!(
+        writer_problems(&wf).len(),
+        1,
+        "and sha- is the tag two triggers write: {:?}",
+        writer_problems(&wf)
+    );
 }
 
 // ── OPS-3: linux/arm64 ───────────────────────────────────────────────────────

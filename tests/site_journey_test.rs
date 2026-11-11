@@ -6696,7 +6696,10 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // the image and this workflow's rules are read from (+4 in all).
     // Measurement: the scan read 271 before the trigger was added, 273 with
     // its first five paths, and 275 with Cargo.lock and the two test files.
-    const EXPECTED_REFERENCES: usize = 275;
+    // 275 -> 276: docker.yml's IMAGE_TAGS comment on one writer per tag names
+    // `tests/container_image_test.rs` once more. Measurement: the scan read
+    // 275 on the commit before that comment and 276 with it.
+    const EXPECTED_REFERENCES: usize = 276;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

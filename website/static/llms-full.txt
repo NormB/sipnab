@@ -14356,11 +14356,19 @@ The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
-| `sha-<commit>` | The image built from that commit |
+| `sha-<commit>` | The image the push of that commit to `main` built |
 
 Until the release after 0.5.245, `latest` followed `main`, as `edge` does
 now. The first release built by the changed workflow moves `latest` to a
 release.
+
+Each tag has one writer. A release is two pushes of one commit, the merge to
+`main` and then the `v*` tag, and each push builds an image of its own. The
+tag push writes the version tags and `latest`. The push to `main` writes
+`edge` and `sha-<commit>`. So `latest` and the version tag of the newest
+release name the same digest, and `sha-<commit>` of that commit names the
+other build. Up to 0.5.245 both pushes wrote `latest` and `sha-<commit>`, and
+for 0.5.245 `latest` and `0.5.245` name different digests.
 
 Every tag names a manifest list with a `linux/amd64` image and a
 `linux/arm64` image. `docker pull` takes the one for the host. Check what a
@@ -82418,7 +82426,7 @@ That is exactly why CI has a feature matrix.
 | `codeql.yml` | push to main, PR, weekly cron (Tuesdays 02:34 UTC) | GitHub's static analysis. |
 | `fuzz.yml` | weekly cron (Mondays 05:17 UTC) + manual | Coverage-guided `cargo-fuzz` runs; crash reproducers upload as artifacts. |
 | `clusterfuzzlite.yml` | daily (batch 02:23 UTC, pruning 05:23 UTC), weekly (coverage Sundays 06:23 UTC) + manual | Continuous fuzzing with a corpus that survives between runs, which `fuzz.yml` cannot do: batch fuzzing grows it, pruning keeps it minimal, and the coverage job reports which code it reaches. Builds in the OSS-Fuzz Rust builder image from `.clusterfuzzlite/`, which compiles the targets the way ClusterFuzzLite runs them. No pull-request fuzzing: without continuous builds on every push it would report pre-existing crashes as though the change introduced them. |
-| `docker.yml` | push to main, `v*` tags, pull requests that change the Dockerfile, the workflow or the files its `paths:` list names | Builds the image natively on an amd64 and an arm64 runner, smoke-tests and scans each, pushes each by digest, and joins them into one manifest list on GHCR with sigstore provenance. `latest` moves only on a release tag, and `edge` follows main. On a pull request it logs in nowhere and pushes nothing to GHCR: each leg hands its image to the `manifest` job, which assembles and checks the list in a registry it starts on localhost. |
+| `docker.yml` | push to main, `v*` tags, pull requests that change the Dockerfile, the workflow or the files its `paths:` list names | Builds the image natively on an amd64 and an arm64 runner, smoke-tests and scans each, pushes each by digest, and joins them into one manifest list on GHCR with sigstore provenance. `latest` moves only on a release tag, and `edge` follows main. Each tag has one writing trigger: the tag push writes the version tags and `latest`, the push to main writes `edge` and `sha-<commit>`, and the `manifest` job reads its list back by the run's own tag (`sha-<commit>` on main, the full version on a tag). On a pull request it logs in nowhere and pushes nothing to GHCR: each leg hands its image to the `manifest` job, which assembles and checks the list in a registry it starts on localhost. |
 | `pages.yml` | push to main (path-filtered) | Builds and deploys the Zola website, with the homepage test count taken from CI's run of the same commit. |
 | `scorecard.yml` | push to main, weekly cron (Mondays 07:20 UTC), branch-protection change | OpenSSF Scorecard posture analysis → Security tab. Report-only. |
 | `wiki-sync.yml` | push to main (path-filtered) | Regenerates the wiki from `docs/` via [`scripts/build-wiki.py`](../../scripts/build-wiki.py). |

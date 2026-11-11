@@ -57,10 +57,20 @@ env:
   # could be ahead of every release. It is now made only for a `v*` tag that
   # is not a pre-release (`v0.1.0-alpha` and `v0.2.0-beta` exist), and `edge`
   # follows main instead. tests/container_image_test.rs holds both.
+  #
+  # Each tag has one writing trigger. A release is two pushes of one commit,
+  # the merge to main and then the `v*` tag, and each starts a run; the two
+  # builds differ byte for byte, so a tag both runs write names whichever
+  # ended last. On 0.5.245 both wrote `latest` and `sha-<commit>`, the main
+  # run ended 28 s after the tag run, and `latest` and `0.5.245` named
+  # different digests. Now the tag push writes the versions and `latest`, and
+  # the push to main writes `edge` and `sha-<commit>` (`github.ref_type` is
+  # `tag` on a tag push; on a pull request it is `branch`, and nothing is
+  # published). tests/container_image_test.rs works out each rule's writers.
   IMAGE_TAGS: |
     type=semver,pattern={{version}}
     type=semver,pattern={{major}}.{{minor}}
-    type=sha
+    type=sha,enable=${{ github.ref_type == 'branch' }}
     type=edge,branch=main
     type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-') }}
 
@@ -488,16 +498,20 @@ jobs:
           docker buildx imagetools create "${tags[@]}" "${refs[@]}"
           # The digest of the list this command pushed. buildx reports it
           # only from v0.32 (`--metadata-file`), so the list is read back
-          # once, by this commit's own `sha-` tag, and the digest is the
-          # sha256 of those bytes (`--raw` prints them unchanged). It is kept
-          # only if the list names exactly the legs' manifests: another run
-          # for the same commit (a release tag on a main commit) can move the
-          # tag in between, and attesting that run's list would be wrong.
+          # once, by a tag this run alone writes, and the digest is the
+          # sha256 of those bytes (`--raw` prints them unchanged). That tag
+          # is this commit's `sha-` tag on a push to main and the full
+          # version (`0.5.246`, `0.2.0-beta`) on a tag push, which makes no
+          # `sha-` tag (see IMAGE_TAGS). The digest is kept only if the list
+          # names exactly the legs' manifests: a re-run of an older attempt
+          # can move the tag in between, and attesting that run's list would
+          # be wrong.
           want=$(for r in "${refs[@]}"; do
             docker buildx imagetools inspect --raw "$r" \
               | jq -r --arg d "${r#*@}" 'if has("manifests") then .manifests[].digest else $d end'
           done | sort)
-          own=$(jq -er '.tags[] | select(test(":sha-"))' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          own=$(jq -er 'first(.tags[] | select(test(":sha-"))) // first(.tags[] | select(test(":[0-9]+[.][0-9]+[.][0-9]+")))' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          echo "read back by: $own"
           docker buildx imagetools inspect --raw "$own" > "$RUNNER_TEMP/list.json"
           have=$(jq -r '.manifests[].digest' "$RUNNER_TEMP/list.json" | sort)
           if [ "$have" != "$want" ]; then

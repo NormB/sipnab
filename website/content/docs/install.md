@@ -1086,11 +1086,19 @@ The tags follow the [Docker workflow](https://github.com/NormB/sipnab/blob/main/
 | `0.5` | The newest release in the 0.5 series |
 | `latest` | The newest release. A pre-release tag such as `v0.2.0-beta` does not move it |
 | `edge` | The newest commit on `main`, which can be ahead of every release |
-| `sha-<commit>` | The image built from that commit |
+| `sha-<commit>` | The image the push of that commit to `main` built |
 
 Until the release after 0.5.245, `latest` followed `main`, as `edge` does
 now. The first release built by the changed workflow moves `latest` to a
 release.
+
+Each tag has one writer. A release is two pushes of one commit, the merge to
+`main` and then the `v*` tag, and each push builds an image of its own. The
+tag push writes the version tags and `latest`. The push to `main` writes
+`edge` and `sha-<commit>`. So `latest` and the version tag of the newest
+release name the same digest, and `sha-<commit>` of that commit names the
+other build. Up to 0.5.245 both pushes wrote `latest` and `sha-<commit>`, and
+for 0.5.245 `latest` and `0.5.245` name different digests.
 
 Every tag names a manifest list with a `linux/amd64` image and a
 `linux/arm64` image. `docker pull` takes the one for the host. Check what a
