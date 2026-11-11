@@ -1290,7 +1290,10 @@ fn the_theme_check_is_empty_without_a_config_file() -> Result<(), TestError> {
 }
 
 /// A value that is not a color stops the run with exit status 1 and the
-/// message the troubleshooting table quotes.
+/// message the troubleshooting table quotes. Only a build with the `tui`
+/// feature, which the page's prerequisites name, parses colors
+/// (`ThemeConfig::validate`); a build without it accepts the value.
+#[cfg(feature = "tui")]
 #[test]
 fn a_value_that_is_not_a_color_gives_the_message_the_theme_page_quotes() -> Result<(), TestError> {
     let rows = section(THEME, TROUBLESHOOT)?;
