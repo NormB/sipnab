@@ -1054,6 +1054,181 @@ else
 fi
 rm -rf "$D"
 
+# ── Scenario S: the script tests run whatever the commit stages ────────────
+# The hook ran scripts/tests only when a path under scripts/ was staged, and
+# those tests read files outside scripts/: test_advertise_release.py reads
+# docs/install.md. A commit that staged only docs/install.md passed the hook
+# and failed CI's "Test Python examples and documentation tooling" step on two
+# heads (c1223c892, 21537ddd1). These drive the REAL hook on a sandbox that
+# has a scripts/tests directory with one test, which appends a line to a file
+# outside the tree each time it runs.
+#
+# script_sandbox <test-body>: a sandbox whose base commit holds
+# scripts/tests/test_marker.py with that body; echoes the directory. The
+# marker file is "<dir>.mark".
+script_sandbox() {
+	_sd=$(sandbox 1)
+	mkdir -p "$_sd/scripts/tests"
+	printf 'import os\n\n\ndef test_marker():\n    with open(os.environ["SIPNAB_SCRIPT_MARK"], "a") as f:\n        f.write("ran\\n")\n%s\n' "$1" \
+		>"$_sd/scripts/tests/test_marker.py"
+	( cd "$_sd" && git add scripts/tests/test_marker.py && git commit -qm script-tests )
+	echo "$_sd"
+}
+# Sets HOOK_OUT, HOOK_RC and SCRIPT_RUNS (how many times the test ran).
+run_script_hook() { # run_script_hook <sandbox-dir>
+	rm -f "$1.mark"
+	set +e
+	HOOK_OUT=$(cd "$1" && PATH="$1/bin:$PATH" SIPNAB_HOOK_ANY_TREE=1 SIPNAB_SCRIPT_MARK="$1.mark" bash "$HOOK" 2>&1)
+	HOOK_RC=$?
+	set -e
+	SCRIPT_RUNS=0
+	[ -f "$1.mark" ] && SCRIPT_RUNS=$(grep -c '^ran$' "$1.mark")
+	rm -f "$1.mark"
+	return 0
+}
+if python3 -c "import pytest" 2>/dev/null; then
+	# The commit that reached CI: only a docs page staged.
+	D=$(script_sandbox "")
+	mkdir -p "$D/docs"
+	echo 'an install page' >"$D/docs/install.md"
+	( cd "$D" && git add docs/install.md )
+	run_script_hook "$D"
+	if [ "$HOOK_RC" -eq 0 ] && [ "$SCRIPT_RUNS" -eq 1 ] \
+		&& printf '%s' "$HOOK_OUT" | grep -q 'Script tests\.\.\. .*OK'; then
+		ok "a commit that stages only a docs page runs the script tests"
+	else
+		bad "a docs-only commit did not run the script tests once (rc=$HOOK_RC runs=$SCRIPT_RUNS): $HOOK_OUT"
+	fi
+	rm -rf "$D"
+
+	# A source-only commit runs them as well.
+	D=$(script_sandbox "")
+	echo 'pub fn prod() -> u8 { 3 }' >"$D/src/lib.rs"
+	( cd "$D" && git add src/lib.rs )
+	run_script_hook "$D"
+	if [ "$HOOK_RC" -eq 0 ] && [ "$SCRIPT_RUNS" -eq 1 ]; then
+		ok "a commit that stages only a source file runs the script tests"
+	else
+		bad "a source-only commit did not run the script tests once (rc=$HOOK_RC runs=$SCRIPT_RUNS): $HOOK_OUT"
+	fi
+	rm -rf "$D"
+
+	# A commit under scripts/ still runs them, once.
+	D=$(script_sandbox "")
+	echo '# a comment' >>"$D/scripts/tests/test_marker.py"
+	( cd "$D" && git add scripts/tests/test_marker.py )
+	run_script_hook "$D"
+	if [ "$HOOK_RC" -eq 0 ] && [ "$SCRIPT_RUNS" -eq 1 ]; then
+		ok "a commit that stages a path under scripts/ runs the script tests once"
+	else
+		bad "a scripts/ commit did not run the script tests once (rc=$HOOK_RC runs=$SCRIPT_RUNS): $HOOK_OUT"
+	fi
+	rm -rf "$D"
+
+	# A failing script test blocks a docs-only commit and says how to rerun it.
+	D=$(script_sandbox "$(printf '\n\ndef test_reads_a_docs_page():\n    assert "marker" in open("../docs/install.md").read()\n')")
+	mkdir -p "$D/docs"
+	echo 'an install page' >"$D/docs/install.md"
+	( cd "$D" && git add docs/install.md )
+	run_script_hook "$D"
+	if [ "$HOOK_RC" -ne 0 ] && [ "$SCRIPT_RUNS" -eq 1 ] \
+		&& printf '%s' "$HOOK_OUT" | grep -qF 'test_reads_a_docs_page' \
+		&& printf '%s' "$HOOK_OUT" | grep -qF 'Reproduce: cd scripts && python3 -m pytest tests/'; then
+		ok "a script test that fails on a staged docs page blocks the commit"
+	else
+		bad "a failing script test did not block a docs-only commit (rc=$HOOK_RC runs=$SCRIPT_RUNS): $HOOK_OUT"
+	fi
+	# The same commit passes once the page has what the test reads.
+	echo 'an install page with the marker' >"$D/docs/install.md"
+	( cd "$D" && git add docs/install.md )
+	run_script_hook "$D"
+	if [ "$HOOK_RC" -eq 0 ] && [ "$SCRIPT_RUNS" -eq 1 ]; then
+		ok "the commit passes once the docs page satisfies the script test"
+	else
+		bad "the repaired docs-only commit did not pass (rc=$HOOK_RC runs=$SCRIPT_RUNS): $HOOK_OUT"
+	fi
+	rm -rf "$D"
+
+	# A tree with no scripts/tests says the step did not run, and passes.
+	D=$(sandbox 1)
+	mkdir -p "$D/docs"
+	echo 'an install page' >"$D/docs/install.md"
+	( cd "$D" && git add docs/install.md )
+	run_script_hook "$D"
+	if [ "$HOOK_RC" -eq 0 ] && [ "$SCRIPT_RUNS" -eq 0 ] \
+		&& printf '%s' "$HOOK_OUT" | grep -q 'Script tests\.\.\. .*NOT RUN (this tree has no scripts/tests)'; then
+		ok "a tree without scripts/tests is told the script tests did not run"
+	else
+		bad "a tree without scripts/tests was not told so (rc=$HOOK_RC runs=$SCRIPT_RUNS): $HOOK_OUT"
+	fi
+	rm -rf "$D"
+
+	# A release-only commit does not run them, as before, and says so.
+	D=$(release_sandbox)
+	mkdir -p "$D/scripts/tests"
+	printf 'import os\n\n\ndef test_marker():\n    with open(os.environ["SIPNAB_SCRIPT_MARK"], "a") as f:\n        f.write("ran\\n")\n' \
+		>"$D/scripts/tests/test_marker.py"
+	run_script_hook "$D"
+	if [ "$HOOK_RC" -eq 0 ] && [ "$SCRIPT_RUNS" -eq 0 ] \
+		&& printf '%s' "$HOOK_OUT" | grep -qF 'release-only: 9.9.9 -> 9.9.10' \
+		&& printf '%s' "$HOOK_OUT" | grep -q 'Script tests\.\.\. .*NOT RUN (release-only commit; CI runs them)'; then
+		ok "a release-only commit does not run the script tests and says so"
+	else
+		bad "a release-only commit ran the script tests or did not say (rc=$HOOK_RC runs=$SCRIPT_RUNS): $HOOK_OUT"
+	fi
+	rm -rf "$D"
+else
+	skip "the script-test scenarios need pytest"
+fi
+
+# ── Scenario W: the hook does not sleep past the end of the suite ──────────
+# The loop that watches the suite slept one whole second between looks, so
+# every hook run waited up to a second after the suite had ended. Measured
+# 2026-11-11 on a sandboxed run: 1.00 s of 2.24 s. The harnesses run the hook
+# dozens of times, and two tests that run a whole harness passed nextest's
+# 180 s deadline on a loaded host. A `sleep` on PATH records what the hook
+# asks for; the longest single sleep is the longest the hook can overstay.
+D=$(sandbox 1)
+SLEEP_BIN=$(command -v sleep)
+# The stub also records a sleep asked for when its caller has no other child
+# left: the hook's only other child while it watches is the suite, so that is
+# a sleep begun after the suite ended. One such sleep can be a race (the suite
+# ended between the hook's look and the sleep); more is a hook that overstays.
+printf '#!/bin/sh\n[ "$(pgrep -P "$PPID" | grep -vc "^$$\\$")" -eq 0 ] && echo "$1" >>"%s/sleep-late"\necho "$1" >>"%s/sleep-invocations"\nexec "%s" "$@"\n' \
+	"$D" "$D" "$SLEEP_BIN" >"$D/bin/sleep"
+chmod +x "$D/bin/sleep"
+: >"$D/sleep-invocations"
+: >"$D/sleep-late"
+echo 'pub fn prod() -> u8 { 4 }' >"$D/src/lib.rs"
+( cd "$D" && git add src/lib.rs )
+run_hook "$D"
+LONGEST=$(sort -g "$D/sleep-invocations" | tail -1)
+if [ "$HOOK_RC" -eq 0 ] && grep -q '^nextest run --profile suite' "$D/cargo-invocations" \
+	&& [ -n "$LONGEST" ] && awk -v s="$LONGEST" 'BEGIN { exit !(s + 0 <= 0.1) }'; then
+	ok "the hook looks for the end of the suite at least every 0.1 s (longest sleep $LONGEST s)"
+else
+	bad "the hook slept ${LONGEST:-not at all} s in one step while it watched the suite (rc=$HOOK_RC): $(tr '\n' ' ' <"$D/sleep-invocations")"
+fi
+LATE=$(grep -c . "$D/sleep-late" || true)
+if [ "$LATE" -le 1 ]; then
+	ok "the hook stops looking once the suite has ended ($LATE sleep begun after it)"
+else
+	bad "the hook began $LATE sleeps after the suite had ended: $(tr '\n' ' ' <"$D/sleep-late")"
+fi
+# The watch still polls for a suite that takes a while, and still ends with it.
+: >"$D/sleep-invocations"
+echo 1 >"$D/sleep-nextest"
+echo 'pub fn prod() -> u8 { 5 }' >"$D/src/lib.rs"
+( cd "$D" && git add src/lib.rs )
+run_hook "$D"
+TICKS=$(grep -c . "$D/sleep-invocations" || true)
+if [ "$HOOK_RC" -eq 0 ] && [ "$TICKS" -ge 5 ]; then
+	ok "the hook keeps watching a suite that takes a second ($TICKS looks)"
+else
+	bad "the hook did not keep watching a one-second suite (rc=$HOOK_RC, $TICKS looks): $HOOK_OUT"
+fi
+rm -rf "$D"
+
 printf '\n%d passed, %d failed, %d skipped (host: %s)\n' \
 	"$PASS" "$FAIL" "$SKIP" "$(uname -s)"
 if [ "$SKIP" -ne 0 ]; then

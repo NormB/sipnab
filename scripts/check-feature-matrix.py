@@ -34,6 +34,7 @@ Exit codes follow the convention the other pre-push gates use:
   2  could not run (no cargo, workflow file missing or unparsable)
 """
 import argparse
+import json
 import os
 import re
 import subprocess
@@ -88,6 +89,44 @@ POOLS: dict[str, set[str]] = {
 # The pool each group runs on, by index; ci.yml runs each index once, on
 # that pool. Two groups, because two runners carry `overflow`.
 GROUPS: list[str] = ["overflow", "overflow"]
+
+# The runner labels ci.yml's `features` job asks for. Pull request runs use
+# the two runners labeled `overflow`. A push to main uses any of the host's
+# four aarch64 runners (all carry `jetson`; the overflow pair carries both
+# labels): on 2026-11-11 the run for a push to main (run 42977445618) had its
+# two groups queued for 34 and 68 minutes behind pull request and Dependabot
+# runs that held the overflow pair. The pool a group names stays `overflow`
+# either way: the four runners are one host with one toolchain.
+MAIN_RUNNER: list[str] = ["self-hosted", "jetson"]
+OVERFLOW_RUNNER: list[str] = ["self-hosted", "overflow"]
+MAIN_EVENT = "push"
+MAIN_REF = "refs/heads/main"
+
+
+def runner_labels(event_name: str, ref: str) -> list[str]:
+    """The labels the `features` job runs on for one event and ref.
+
+    Case is ignored, as GitHub's `==` ignores it in a workflow expression.
+    """
+    if not isinstance(event_name, str) or not isinstance(ref, str):
+        raise TypeError("event_name and ref are the text GitHub gives a workflow")
+    main = event_name.casefold() == MAIN_EVENT and ref.casefold() == MAIN_REF
+    return list(MAIN_RUNNER if main else OVERFLOW_RUNNER)
+
+
+def runs_on_expression() -> str:
+    """`runner_labels` as the expression after `runs-on: ` in ci.yml.
+
+    scripts/tests/test_feature_matrix_runner.py holds the workflow to this
+    text and evaluates it against `runner_labels`.
+    """
+    def array(labels: list[str]) -> str:
+        return "fromJSON('" + json.dumps(labels, separators=(",", ":")) + "')"
+
+    return (
+        f"${{{{ github.event_name == '{MAIN_EVENT}' && github.ref == '{MAIN_REF}' "
+        f"&& {array(MAIN_RUNNER)} || {array(OVERFLOW_RUNNER)} }}}}"
+    )
 
 
 @dataclass

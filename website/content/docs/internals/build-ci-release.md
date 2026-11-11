@@ -439,6 +439,7 @@ Their contents are worth spelling out.
   - plus the `--ignored` PTY TUI end-to-end tests
   - On Linux it also compiles the Python clients under `clients/python/`.
     It runs `pytest` over their tests and `scripts/tests`.
+    The pre-commit hook runs `scripts/tests` on every commit except a release-only one, whatever the commit stages: those tests read documentation pages and workflows too.
 - **`features`**: `cargo clippy --no-default-features --features X --tests
   -- -D warnings` across twenty-one feature sets.
   - [`.github/feature-combos.txt`](https://github.com/NormB/sipnab/blob/main/.github/feature-combos.txt) lists the sets, the tests that run beside them, and what each needs from the machine.
@@ -957,9 +958,12 @@ The workflow-shape test holds each job's runner.
 - On the aarch64 runners: `memcheck.yml` (those runners have valgrind), `bench.yml` (its baseline is a property of that hardware),
   `reproducible.yml` (those runners have bpf-linker) and `self-hosted-smoke.yml` (it exists to prove that runner works).
 - On the `overflow` runners: two groups of the feature combinations.
+  On a push to `main` the two groups take any of the four aarch64 runners instead.
+  On 2026-11-11 a push to `main` waited 34 and 68 minutes for the two `overflow` runners behind pull request runs.
+  `test_the_workflow_carries_the_rendered_expression` holds the workflow to that rule.
 - On the x86_64 runner: the RPM packaging job.
   The RPM job builds no Rust, and the runner has every package it names, so it installs nothing there.
-- Only the four jobs above may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
+- Only the four jobs above, and the feature combinations on a push to `main`, may take a `jetson` runner. Every other self-hosted job takes `overflow` or `X64`.
   `a_self_hosted_job_takes_overflow_or_x64_unless_it_needs_the_aarch64_host` holds that, `an_x64_job_refuses_to_start_with_less_than_25_gb_free` the disk floor, and `a_pooled_job_builds_in_its_own_directory_and_removes_it` the build directory.
 - Everything else runs on GitHub's runners. The repository is public, so they cost nothing.
 
