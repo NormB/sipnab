@@ -427,7 +427,7 @@ Next:
 
 sipnab is Rust everywhere except the OS boundary.
 
-- It has 115 `unsafe` blocks, all of them FFI.
+- It has 117 `unsafe` blocks, all of them FFI.
 - The build rejects any block that does not state its own soundness argument.
 
 You need **Rust 1.99+** (edition 2024) and the libpcap headers:

@@ -6689,7 +6689,9 @@ fn packaging_scripts_reference_existing_paths() -> Result<(), TestError> {
     // `packaging/deb/build-deb.sh` and `packaging/rpm/build-rpm.sh` name the
     // harness that runs them, `packaging/deb/test-build-deb.sh` and
     // `packaging/rpm/test-build-rpm.sh` (+1 each).
-    const EXPECTED_REFERENCES: usize = 270;
+    // 270 -> 271: `.github/workflows/docker.yml`'s IMAGE_TAGS comment names
+    // `tests/container_image_test.rs`, which holds the `latest` rule (OPS-2).
+    const EXPECTED_REFERENCES: usize = 271;
     assert_eq!(
         checked, EXPECTED_REFERENCES,
         "packaging path scan saw {checked} references, expected \

@@ -965,7 +965,10 @@ const EXPECTED_UNRESOLVED: usize = 84;
 // src/app/bootstrap.rs's one permission template became five (the header
 // around the causes, the bounding-set and NoNewPrivs paragraphs, the
 // container hint, and the general hint, its placeholder renamed). +4.
-const EXPECTED_TEMPLATES: usize = 611;
+// 611 -> 612 (OPS-4): src/main.rs, the warning when the permitted capture
+// capabilities cannot be raised into the effective set (+1). The container
+// hint in src/app/bootstrap.rs changed its words, not the count.
+const EXPECTED_TEMPLATES: usize = 612;
 
 // ---------------------------------------------------------------------------
 // The page gates

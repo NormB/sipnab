@@ -5696,11 +5696,11 @@ Part of the permission refusal above: `/proc/self/status` said `NoNewPrivs: 1` w
 
 **Exit code:** 1.
 
-### `Permission denied on '{target}'. This process runs in a container ({marker}), where a non-root user gets no capabilities even with --cap-add. Start it as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
+### `Permission denied on '{target}'. This process runs in a container ({marker}) as a user that holds no capture capability. In a container a non-root user gets a capability only through file capabilities on the binary (cap_net_raw,cap_net_admin+p), which the sipnab image's binary carries and this one does not. Run that image, or start this container as root with the capabilities granted. sipnab drops to nobody once the capture is open:\n  docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN <image>`
 
-sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user the container runs as has the capability in its bounding set but not in effect.
+sipnab lacks the permission to open the capture device and runs in a container. `{marker}` is what showed it: `/.dockerenv`, `/run/.containerenv`, or `container=<value>` from the environment. The bounding set holds `CAP_NET_RAW` and `NoNewPrivs` was clear when sipnab started, so the user holds no capability: the binary it runs carries no file capabilities. The binary of the sipnab container image newer than 0.5.244 carries `cap_net_raw,cap_net_admin+p`, and its user `sipnab` captures with `--cap-add`.
 
-**What to do:** Start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens.
+**What to do:** Run a sipnab image newer than 0.5.244 with `docker run --cap-add NET_RAW --cap-add NET_ADMIN`. For any other image, start the container as root with the capabilities granted (`docker run --user root --cap-add=NET_RAW --cap-add=NET_ADMIN`). sipnab drops to `nobody` after the capture opens. See [Capture live traffic in the container](install.md#capture-live-traffic-in-the-container).
 
 **Exit code:** 1.
 
@@ -5711,6 +5711,17 @@ sipnab lacks the permission to open the capture device, and found neither NoNewP
 **What to do:** Run `sipnab --setup-caps` once and re-run without sudo, run the command under sudo, or run `sudo setcap cap_net_raw,cap_net_admin+ep $(which sipnab)`.
 
 **Exit code:** 1.
+
+### `could not raise the permitted capture capabilities: {e}`
+
+At startup sipnab moves `CAP_NET_RAW` and `CAP_NET_ADMIN` from its permitted capability set into its effective set, when it holds them permitted only. The binary in the container image carries them that way (`cap_net_raw,cap_net_admin+p`). The kernel refused the read (`capget`) or the change (`capset`), and `{e}` is its error. A seccomp profile that denies `capset` is one cause.
+
+- The run continues with the capabilities it had.
+- A live capture then fails with `Permission denied`, unless the process is root.
+
+**What to do:** Allow `capget` and `capset` in the seccomp profile the process runs under, or start sipnab as root. See [Capture live traffic in the container](install.md#capture-live-traffic-in-the-container).
+
+**Exit code:** None. This is a warning, and the run continues.
 
 ### `Processing thread panicked: {}`
 
