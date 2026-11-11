@@ -1153,6 +1153,14 @@ What the gate runs:
 
 A machine without either tool reports `NOT CHECKED` and names the fix.
 
+The pre-push hook runs the gate only for a tree that has a module: a `yang/` directory that holds a `.yang` file.
+For any other tree it prints `YANG: NOT CHECKED` with the reason, and goes on.
+
+- The script validates the tree it lives in. It builds and runs `yang_export_test` there, which took 9 s on the host that measured it.
+- The hook's own scenarios in [`scripts/test-pre-push.sh`](../../scripts/test-pre-push.sh) push from a throwaway crate with no module.
+  Each hook run of theirs paid those seconds to validate the repository's own module.
+- That was most of the 818 s the scenario file took on 2026-11-10. With the rule it took 187 s on the same host, with four more scenarios.
+
 - CI's `check` job installs both (`libyang2-tools`, and `pyang` from the hashed
   [`scripts/requirements-yang.txt`](../../scripts/requirements-yang.txt)).
 - It runs the script with `SIPNAB_YANG_REQUIRED=1`.
@@ -2191,6 +2199,13 @@ So it has to be open for about one hook's length before a local step, and it mus
 
 - During the pull request's CI the train keeps the window closed.
 - It opens the window when at most 3 checks are pending, or when 15 minutes remain of CI's expected 37.
+- It keeps the window closed, and closes it again, while a check has waited for a runner for 2 minutes or more.
+  - Such a check has not started, so nothing says when it ends.
+  - A check queued for less than 2 minutes, or one with no start time, does not count.
+    A job waits in the queue for a few seconds on an ordinary day, and closing the window for it would let an ordinary job start just before the landing.
+  - On 0.5.244 the one pending check was a re-run macOS job, queued with no runner from 15:39:23Z until GitHub canceled it at 15:55:06Z.
+    The window was open for those minutes, the main slot was idle, and two ordinary jobs waited behind the window.
+  - [`test_release_train_queued.py`](../../scripts/tests/test_release_train_queued.py) holds the rule.
 - It keeps the window open through the landing and the tag push, closes it once the tag is on GitHub, and leaves it closed for the release workflow and the post checks, which use no main slot.
 - It closes its window on every exit, and leaves another owner's window alone.
 - On 0.5.239 there was no window, and the tag push waited 769 s behind an ordinary job that had started 7 s before it.

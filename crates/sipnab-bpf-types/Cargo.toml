@@ -34,5 +34,26 @@ aya = { version = "0.16", optional = true }
 # kernel build that is its other consumer.
 pod = ["dep:aya"]
 
-[lints]
-workspace = true
+# The workspace's lints, stated here and not inherited.
+#
+# `bpf/` reaches this crate by path, and Dependabot's run for `/bpf` fetches
+# that directory and this manifest, not the repository root. With
+# `[lints] workspace = true` cargo ended every such run with "failed to find a
+# workspace root" (run 42694599982, 2026-11-09). This is the one workspace
+# member that states them; `the_shared_record_crate_states_the_workspace_lints`
+# in tests/dependabot_cargo_layout_test.rs fails when this table and
+# `[workspace.lints]` in the root Cargo.toml differ. The reason for each lint
+# is beside it there.
+[lints.clippy]
+undocumented_unsafe_blocks = "warn"
+borrowed_box = "deny"
+ptr_arg = "deny"
+should_implement_trait = "deny"
+wrong_self_convention = "deny"
+new_without_default = "deny"
+len_without_is_empty = "deny"
+missing_safety_doc = "deny"
+await_holding_lock = "deny"
+wildcard_imports = "warn"
+many_single_char_names = "warn"
+cognitive_complexity = "warn"

@@ -37,6 +37,10 @@ entry that carries them.
 - **A HEP listener's refusal of a routable bind exits 2 (OPS-13).** `-L 0.0.0.0:9060` with neither `--hep-auth` nor `--hep-allow` was refused by the listener thread and reported as `Capture source failed to open`, exit 1, twice at `SIPNAB_LOG=info`. It is now refused while the run is planned, once, exit 2, as the REST, MCP and metrics refusals of a routable bind are.
 - **The one-line installer installs the `-gnu` build only where `libpcap.so.0.8` is installed (OPS-16).** On a glibc host without it, the first run failed with `libpcap.so.0.8: cannot open shared object file`. `install.sh` now reads the `ldconfig` cache (or the library directories when there is no cache) for that exact name on the host's CPU, installs the static musl build when it is absent, and names the packages that provide it: `libpcap0.8t64` (Debian 13, Ubuntu 24.04) or `libpcap0.8` (Debian 12). Its old line, `needs libpcap: apt/dnf install libpcap`, named a package Debian and Ubuntu do not have. It also installs the audio plugin from the tarball beside the binary, where sipnab looks for it first; it installed the binary alone. How-to: [Install in one command](docs/install.md#install-in-one-command).
 
+### Dependencies
+
+- Browser analyzer: `js-sys` and `web-sys` 0.3.94 → 0.3.107, `wasm-bindgen` 0.2.117 → 0.2.130 (with its `-macro`, `-macro-support` and `-shared` crates) and `wasm-bindgen-futures` 0.4.67 → 0.4.80. The seven crates pin each other with `=`, so they move together, in `Cargo.lock` and in `fuzz/Cargo.lock`. `website/static/wasm/sipnab.js` is rebuilt with the new `wasm-bindgen`, and the 16 exports the site calls are unchanged. `THIRD-PARTY-NOTICES.md` is regenerated; no license changes. The native binaries do not contain these crates.
+
 ## [0.5.244] - 2026-11-10
 
 ### Changed
