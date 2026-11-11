@@ -380,6 +380,21 @@ So `quality.yml` has a second job, `coverage-branch`.
 - So `install-sh` and `deb-package` could both fail with the
   one required check on main still green.
 
+`code-scanning-clean` waits for CodeQL's analysis of the commit, and how long it waits follows the CodeQL workflow run of that commit.
+
+- While the run waits for a runner or runs, the job waits, up to 90 minutes.
+- When the run has completed, the job waits 2 more minutes for the upload.
+- When GitHub lists no CodeQL run of the commit, the job waits 10 minutes.
+- The three times are arguments of [`scripts/code-scanning-clean.py`](../../scripts/code-scanning-clean.py), which the job's step in `ci.yml` passes.
+- The job fails with exit 2 when it ends with no verdict, and its last line says which case it was:
+  - `still queued or running`: the CodeQL run had not finished. Run the job again when it has.
+  - `no CodeQL analysis`: the run completed and uploaded none, or GitHub lists no run. Read the CodeQL run.
+  - `could not be read`: the script could not read GitHub's answer.
+- An open alert fails the job with exit 1, whatever the state of the run.
+- The job once waited a fixed 25 minutes. On 2026-11-10 the CodeQL run of a pull request head waited 46 minutes for a hosted runner,
+  and the job failed 147 s before CodeQL uploaded the analysis, with no alert open.
+- [`test_code_scanning_wait.py`](../../scripts/tests/test_code_scanning_wait.py) holds the rule.
+
 `ci-success` leaves out the macOS leg of Check, the job `check-macos`, on purpose.
 
 - On 2026-11-02 GitHub canceled Check (macos-latest) on both runs of pull request #601

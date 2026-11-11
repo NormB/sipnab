@@ -1330,9 +1330,14 @@ jobs:
   # matrix changes without re-listing per-job contexts.
   code-scanning-clean:
     name: Code scanning has no open alerts
-    timeout-minutes: 30
+    # Longer than --max-wait-secs below by 10 minutes, so the script ends the
+    # wait and prints its reason; a job GitHub cancels at its timeout prints
+    # none. test_the_ci_job_outlives_its_own_upper_bound holds it.
+    timeout-minutes: 100
     runs-on: ubuntu-latest
     permissions:
+      # The state of the CodeQL workflow run of this commit.
+      actions: read
       contents: read
       security-events: read
     steps:
@@ -1342,10 +1347,21 @@ jobs:
       # CodeQL runs in its own workflow beside this one, so wait for ITS
       # analysis of this commit before judging; a verdict about the previous
       # commit's analysis is not a verdict about this one.
+      #
+      # The wait follows the CodeQL run, not a fixed time. On 2026-11-10 the
+      # CodeQL run of a pull request head sat queued for a hosted runner for
+      # 46 minutes; this job waited a fixed 25 and failed 147 s before the
+      # analysis was uploaded, with no alert open. While the run is queued
+      # or in progress the script waits up to --max-wait-secs (90 minutes);
+      # --wait-secs is how long it waits when no run of the commit is listed.
+      #
+      # The analysis is of github.sha, which on a pull request is the merge
+      # commit; the CodeQL run is listed under the branch head, HEAD_SHA.
       - name: Refuse open alerts on this commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/code-scanning-clean.py --repo "${{ github.repository }}" --ref "${{ github.ref }}" --sha "${{ github.sha }}" --category /language:rust --wait-secs 1500
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/code-scanning-clean.py --repo "${{ github.repository }}" --ref "${{ github.ref }}" --sha "${{ github.sha }}" --head-sha "$HEAD_SHA" --category /language:rust --wait-secs 600 --max-wait-secs 5400
 
   ci-success:
     # Bounds how long this job can hold the main-branch concurrency
