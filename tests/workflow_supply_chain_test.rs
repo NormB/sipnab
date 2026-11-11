@@ -859,7 +859,10 @@ fn a_job_permissions_block_grants_what_its_steps_need() -> Result<(), TestError>
                     scan.markers.push(PUSH_MARKER);
                 }
             }
-            if trimmed == "push: true" {
+            // `push: true`, or an `outputs:` that pushes (a push by digest).
+            if trimmed == "push: true"
+                || (trimmed.starts_with("outputs:") && trimmed.contains("push=true"))
+            {
                 scan.pushes = true;
             }
         }

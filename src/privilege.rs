@@ -224,11 +224,142 @@ pub fn drop_skip(target_user: Option<&str>, no_priv_drop: bool, root: bool) -> O
     None
 }
 
-/// Linux capabilities a live capture needs: `CAP_NET_RAW` to open the packet
-/// socket and `CAP_NET_ADMIN` to put the interface into promiscuous mode.
-/// Both are placed in the effective+permitted file-capability sets (`+ep`).
+/// The capability names [`CAPTURE_CAP_NAMES`] holds. A macro so the `setcap`
+/// argument below is built from the same text at compile time.
+macro_rules! capture_cap_names {
+    () => {
+        "cap_net_raw,cap_net_admin"
+    };
+}
+
+/// The Linux capabilities a live capture needs, in `setcap` spelling:
+/// `CAP_NET_RAW` to open the packet socket and `CAP_NET_ADMIN` to put the
+/// interface into promiscuous mode.
+///
+/// The container image's `Dockerfile` grants exactly these to the binary,
+/// permitted only (`+p`), and `tests/container_image_test.rs` holds it to
+/// this constant.
+pub const CAPTURE_CAP_NAMES: &str = capture_cap_names!();
+
+/// [`CAPTURE_CAP_NAMES`] in the effective+permitted file-capability sets
+/// (`+ep`), the form `--setup-caps` installs on a host.
 #[cfg(target_os = "linux")]
-const CAPTURE_CAPS: &str = "cap_net_raw,cap_net_admin+ep";
+const CAPTURE_CAPS: &str = concat!(capture_cap_names!(), "+ep");
+
+/// [`CAPTURE_CAP_NAMES`] as a capability bit mask: `CAP_NET_ADMIN` is bit 12
+/// and `CAP_NET_RAW` bit 13 (`linux/capability.h`).
+pub const CAPTURE_CAP_MASK: u64 = (1 << 12) | (1 << 13);
+
+/// The effective set to install so the process can use the capture
+/// capabilities it is permitted, or `None` when nothing changes.
+///
+/// Adds `permitted & CAPTURE_CAP_MASK` to `effective`. Nothing outside the
+/// mask is raised, and nothing that is not permitted: `capset(2)` refuses an
+/// effective bit that is not in the permitted set.
+#[must_use]
+pub fn capture_effective(effective: u64, permitted: u64) -> Option<u64> {
+    let want = effective | (permitted & CAPTURE_CAP_MASK);
+    (want != effective).then_some(want)
+}
+
+/// `struct __user_cap_header_struct` for `capget(2)` and `capset(2)`.
+#[cfg(target_os = "linux")]
+#[repr(C)]
+pub(crate) struct CapHeader {
+    /// [`CAP_VERSION_3`].
+    pub(crate) version: u32,
+    /// 0 for the calling thread.
+    pub(crate) pid: libc::c_int,
+}
+
+/// `struct __user_cap_data_struct`: 32 bits of each set. Version 3 uses two,
+/// low bits first.
+#[cfg(target_os = "linux")]
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CapData {
+    /// The effective set.
+    pub(crate) effective: u32,
+    /// The permitted set.
+    pub(crate) permitted: u32,
+    /// The inheritable set.
+    pub(crate) inheritable: u32,
+}
+
+/// `_LINUX_CAPABILITY_VERSION_3`: two [`CapData`], 64 capability bits.
+#[cfg(target_os = "linux")]
+pub(crate) const CAP_VERSION_3: u32 = 0x2008_0522;
+
+/// Raise the capture capabilities this thread is permitted into its
+/// effective set, and return the new effective set, or `None` when nothing
+/// changed.
+///
+/// A binary with permitted-only file capabilities (`setcap ...+p`, as the
+/// container image's binary has) starts with them permitted and not
+/// effective, and a socket call checks the effective set. The image does not
+/// use `+ep` because an effective bit makes `execve` fail with `EPERM` when
+/// the bounding set lacks any named capability, and Docker's default set
+/// lacks `CAP_NET_ADMIN`. A binary from `--setup-caps` (`+ep`), and root,
+/// already hold them effective, and this changes nothing.
+///
+/// Capability sets belong to a thread. Call this before any thread is
+/// started, so every later thread inherits the raised set.
+///
+/// # Errors
+///
+/// `capget(2)` or `capset(2)` fails. On platforms other than Linux this is a
+/// no-op that returns `Ok(None)`.
+pub fn raise_capture_capabilities() -> Result<Option<u64>> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut header = CapHeader {
+            version: CAP_VERSION_3,
+            pid: 0,
+        };
+        let mut data = [CapData::default(); 2];
+        // SAFETY: capget(2) writes exactly two version-3 data structs, laid
+        // out as the kernel declares them (repr(C), three u32), into `data`,
+        // which lives on this frame for the call.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_capget,
+                std::ptr::addr_of_mut!(header),
+                data.as_mut_ptr(),
+            )
+        };
+        if rc != 0 {
+            bail!("capget failed: {}", std::io::Error::last_os_error());
+        }
+        let join = |lo: u32, hi: u32| u64::from(lo) | (u64::from(hi) << 32);
+        let effective = join(data[0].effective, data[1].effective);
+        let permitted = join(data[0].permitted, data[1].permitted);
+        let Some(want) = capture_effective(effective, permitted) else {
+            return Ok(None);
+        };
+        // The truncating casts are the split into the low and high 32 bits.
+        data[0].effective = want as u32;
+        data[1].effective = (want >> 32) as u32;
+        header.version = CAP_VERSION_3;
+        header.pid = 0;
+        // SAFETY: capset(2) reads one header and two version-3 data structs,
+        // laid out as above and live for the call. The permitted and
+        // inheritable sets are written back as read; only effective bits
+        // that are already permitted are added.
+        let rc = unsafe {
+            libc::syscall(
+                libc::SYS_capset,
+                std::ptr::addr_of_mut!(header),
+                data.as_ptr(),
+            )
+        };
+        if rc != 0 {
+            bail!("capset failed: {}", std::io::Error::last_os_error());
+        }
+        Ok(Some(want))
+    }
+    #[cfg(not(target_os = "linux"))]
+    Ok(None)
+}
 
 /// Build the `setcap` command (program + args) that grants `CAPTURE_CAPS` to
 /// `exe`. When `as_root` is false the call is wrapped in `sudo` so it can
@@ -1463,6 +1594,181 @@ mod tests {
         assert!(CAPTURE_CAPS.contains("cap_net_admin"));
         // Effective + permitted file-capability sets.
         assert!(CAPTURE_CAPS.ends_with("+ep"));
+        Ok(())
+    }
+
+    /// The `setcap` argument and the mask name the same two capabilities, by
+    /// their numbers in `linux/capability.h`.
+    #[test]
+    fn the_capture_mask_is_the_named_capabilities() -> Result<(), TestError> {
+        const NUMBERS: &[(&str, u32)] = &[("cap_net_admin", 12), ("cap_net_raw", 13)];
+        let mut mask = 0u64;
+        for name in CAPTURE_CAP_NAMES.split(',') {
+            let (_, bit) = NUMBERS
+                .iter()
+                .find(|(n, _)| *n == name)
+                .ok_or_else(|| format!("{name} has no number in this table"))?;
+            mask |= 1 << bit;
+        }
+        assert_eq!(
+            mask, CAPTURE_CAP_MASK,
+            "the mask raised at startup is not the set the Dockerfile grants"
+        );
+        #[cfg(target_os = "linux")]
+        assert_eq!(
+            CAPTURE_CAPS,
+            format!("{CAPTURE_CAP_NAMES}+ep"),
+            "--setup-caps grants another set than the image"
+        );
+        Ok(())
+    }
+
+    /// SUCCESS: a container's non-root user with `+p` file capabilities and
+    /// `--cap-add NET_RAW --cap-add NET_ADMIN` starts permitted both and
+    /// effective neither; both are raised.
+    #[test]
+    fn permitted_capture_caps_are_raised_into_effective() {
+        assert_eq!(
+            capture_effective(0, 0x3000),
+            Some(0x3000),
+            "both permitted capture capabilities must become effective"
+        );
+    }
+
+    /// EDGE: Docker's default set holds `CAP_NET_RAW` and not
+    /// `CAP_NET_ADMIN`, so only the one permitted is raised, and an effective
+    /// bit already held outside the mask is kept.
+    #[test]
+    fn only_the_permitted_capture_cap_is_raised() {
+        assert_eq!(
+            capture_effective(0, 0x2000),
+            Some(0x2000),
+            "CAP_NET_RAW alone, as under Docker's default set"
+        );
+        assert_eq!(
+            capture_effective(1 << 21, (1 << 21) | 0x1000),
+            Some((1 << 21) | 0x1000),
+            "an effective bit already held is kept beside CAP_NET_ADMIN"
+        );
+    }
+
+    /// FAILURE: a capability that is not permitted is never raised, and one
+    /// outside the capture mask is never raised even when permitted.
+    #[test]
+    fn nothing_beyond_the_permitted_capture_caps_is_raised() {
+        assert_eq!(capture_effective(0, 0), None, "nothing permitted");
+        assert_eq!(
+            capture_effective(0, 1 << 21),
+            None,
+            "CAP_SYS_ADMIN is outside the mask"
+        );
+        assert_eq!(
+            capture_effective(0, !CAPTURE_CAP_MASK),
+            None,
+            "every capability but the capture ones"
+        );
+    }
+
+    /// EDGE: root, and a host binary with `+ep` from `--setup-caps`, already
+    /// hold both effective, so there is nothing to change.
+    #[test]
+    fn effective_capture_caps_already_held_change_nothing() {
+        assert_eq!(
+            capture_effective(0x3000, 0x3000),
+            None,
+            "a +ep binary already holds both"
+        );
+        assert_eq!(capture_effective(u64::MAX, u64::MAX), None, "root");
+    }
+
+    /// EDGE: raising is idempotent. The set a first raise installs asks for
+    /// no second change, for every combination of the two capabilities.
+    #[test]
+    fn a_second_raise_changes_nothing() {
+        for permitted in [0x1000, 0x2000, 0x3000] {
+            let raised = capture_effective(0, permitted);
+            assert_eq!(raised, Some(permitted), "first raise of {permitted:#x}");
+            assert_eq!(
+                capture_effective(permitted, permitted),
+                None,
+                "second raise of {permitted:#x}"
+            );
+        }
+    }
+
+    /// EDGE: `CAP_NET_ADMIN` permitted without `CAP_NET_RAW` (a bounding set
+    /// that dropped `NET_RAW` alone) raises that one bit and not its neighbor.
+    #[test]
+    fn net_admin_alone_is_raised_without_net_raw() {
+        assert_eq!(
+            capture_effective(0, 0x1000),
+            Some(0x1000),
+            "CAP_NET_ADMIN alone"
+        );
+        assert_eq!(
+            capture_effective(0x1000, 0x3000),
+            Some(0x3000),
+            "CAP_NET_RAW joins an effective CAP_NET_ADMIN"
+        );
+    }
+
+    /// EDGE: capability bits above 31, which live in the second 32-bit word
+    /// of the kernel's structure, pass through unchanged, and the mask's
+    /// neighbors (bits 11 and 14) are never raised.
+    #[test]
+    fn bits_outside_the_mask_pass_through_in_both_words() {
+        let high = 1u64 << 40;
+        assert_eq!(
+            capture_effective(high, high | 0x3000),
+            Some(high | 0x3000),
+            "an effective high bit is kept beside the raise"
+        );
+        assert_eq!(
+            capture_effective(0, high),
+            None,
+            "a permitted high bit is not raised"
+        );
+        assert_eq!(
+            capture_effective(0, (1 << 11) | (1 << 14)),
+            None,
+            "the bits next to the mask are not raised"
+        );
+    }
+
+    /// The live call on this test process: afterwards the effective set is
+    /// what it was plus the permitted capture capabilities, whatever this
+    /// process holds. Unprivileged, that is no change at all.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn raising_changes_only_the_permitted_capture_caps() -> Result<(), TestError> {
+        fn set(status: &str, name: &str) -> Result<u64, TestError> {
+            let hex = status
+                .lines()
+                .find_map(|l| l.strip_prefix(name)?.strip_prefix(':'))
+                .ok_or_else(|| format!("{name} missing"))?;
+            Ok(u64::from_str_radix(hex.trim(), 16)?)
+        }
+        let thread_status = || std::fs::read_to_string("/proc/thread-self/status");
+        let before = thread_status()?;
+        let (eff, prm) = (set(&before, "CapEff")?, set(&before, "CapPrm")?);
+        let raised = raise_capture_capabilities()?;
+        let after = thread_status()?;
+        let want = eff | (prm & CAPTURE_CAP_MASK);
+        assert_eq!(
+            set(&after, "CapEff")?,
+            want,
+            "effective {eff:#x} with permitted {prm:#x} should become {want:#x}"
+        );
+        assert_eq!(
+            set(&after, "CapPrm")?,
+            prm,
+            "the permitted set is untouched"
+        );
+        assert_eq!(
+            raised,
+            (want != eff).then_some(want),
+            "the return value reports the change, or none"
+        );
         Ok(())
     }
 

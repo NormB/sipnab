@@ -737,9 +737,7 @@ impl Store {
     pub fn append(&mut self, record: &MemberRecord) -> std::io::Result<()> {
         let line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
         let sealed = self.sealer.record(&line).map_err(std::io::Error::other)?;
-        let mut file = std::fs::OpenOptions::new().append(true).open(&self.path)?;
-        file.write_all(&sealed)?;
-        file.sync_data()?;
+        crate::app::fleet_seal::append_counted(&self.path, &mut self.sealer, &sealed)?;
         self.appended += 1;
         Ok(())
     }
@@ -1902,6 +1900,191 @@ mod tests {
         Ok(())
     }
 
+    /// FLEET-STORE-TAIL-TRUNCATION: a store whose last acknowledged
+    /// heartbeat was removed from the end of the file is refused, by file
+    /// and layer, and left as it was found.
+    #[test]
+    fn failure_a_store_whose_last_heartbeat_was_removed_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
+        let mut reg = Registry::default();
+        let mut kept = 0;
+        for seq in 1..=2 {
+            kept = usize::try_from(std::fs::metadata(&path)?.len())?;
+            let plan = reg.plan(
+                "edge-a",
+                "192.0.2.11",
+                t("2026-11-07T12:00:00Z")?,
+                &[hb("s-1", seq, "2026-11-07T12:00:00Z")?],
+            );
+            store.append(plan.record.as_ref().ok_or("a record")?)?;
+            reg.commit(plan);
+        }
+        drop(store);
+        let bytes = std::fs::read(&path)?;
+        std::fs::write(&path, &bytes[..kept])?;
+        assert_eq!(
+            Store::open(&path, test_keys(1)).err(),
+            Some(format!(
+                "--store '{}': sealed layer: the file was cut at its end: it holds 3 of the 5 \
+                 entries it was written with",
+                path.display()
+            )),
+            "failure a store whose last heartbeat was removed is refused"
+        );
+        assert_eq!(
+            std::fs::read(&path)?,
+            bytes[..kept],
+            "the refused file is left as it was found"
+        );
+        Ok(())
+    }
+
+    /// The store a center of release 0.5.244 left, a format 1 file that
+    /// release's own writer made (the fixture): this build reads its base
+    /// and its append, and writes it again as format 2.
+    #[test]
+    fn success_a_store_release_0_5_244_wrote_is_read_and_written_again_as_format_2()
+    -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/fleet/center-store-format-1.sealed"
+            ),
+            &path,
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        assert_eq!(
+            std::fs::read(&path)?[4],
+            1,
+            "the fixture is a format 1 file"
+        );
+        let (_, records) = Store::open(&path, test_keys(1))?;
+        assert_eq!(
+            records
+                .iter()
+                .map(|r| r.member.as_str())
+                .collect::<Vec<_>>(),
+            vec!["edge-a", "edge-b"],
+            "success a store release 0.5.244 wrote is read and written again as format 2"
+        );
+        assert_eq!(std::fs::read(&path)?[4], 2, "and is format 2 afterwards");
+        Ok(())
+    }
+
+    /// After a rewrite the store counts its appends again: every member is
+    /// read back, and a heartbeat removed from the end is refused.
+    #[test]
+    fn success_a_rewritten_store_counts_the_appends_after_the_rewrite() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
+        let mut reg = Registry::default();
+        let mut kept = 0;
+        for (n, member) in ["a", "b", "c"].iter().enumerate() {
+            if n == 2 {
+                store.compact(&reg)?;
+            }
+            kept = usize::try_from(std::fs::metadata(&path)?.len())?;
+            let at = "2026-11-07T12:00:00Z";
+            let plan = reg.plan(member, "192.0.2.11", t(at)?, &[hb("s-1", 1, at)?]);
+            store.append(plan.record.as_ref().ok_or("a record")?)?;
+            reg.commit(plan);
+        }
+        drop(store);
+        let whole = std::fs::read(&path)?;
+        let dir2 = tempfile::tempdir()?;
+        let copy = dir2.path().join("center.store");
+        std::fs::write(&copy, &whole)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o600))?;
+        }
+        assert_eq!(
+            Store::open(&copy, test_keys(1))?.1.len(),
+            3,
+            "success a rewritten store counts the appends after the rewrite"
+        );
+        std::fs::write(&path, &whole[..kept])?;
+        assert!(
+            Store::open(&path, test_keys(1)).is_err_and(|e| e
+                .ends_with("was cut at its end: it holds 3 of the 5 entries it was written with")),
+            "and the append after the rewrite is counted"
+        );
+        Ok(())
+    }
+
+    /// A store whose two counts were damaged is refused by file and layer.
+    #[test]
+    fn failure_a_store_whose_counts_were_damaged_is_refused() -> Result<(), TestError> {
+        use crate::app::fleet_seal::{COUNT_SLOT_BYTES, KEY_HEADER_BYTES};
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store_of(dir.path(), &["a", "b"])?;
+        let mut bytes = std::fs::read(&path)?;
+        bytes[KEY_HEADER_BYTES + 10] ^= 1;
+        bytes[KEY_HEADER_BYTES + COUNT_SLOT_BYTES + 10] ^= 1;
+        std::fs::write(&path, &bytes)?;
+        assert_eq!(
+            Store::open(&path, test_keys(1)).err(),
+            Some(format!(
+                "--store '{}': sealed layer: the file has a record count that did not \
+                 authenticate (the file was modified, or the key is wrong)",
+                path.display()
+            )),
+            "failure a store whose counts were damaged is refused"
+        );
+        Ok(())
+    }
+
+    /// A store in `dir` under key 1 with one appended heartbeat from each
+    /// of `members`.
+    fn sealed_store_of(dir: &Path, members: &[&str]) -> Result<PathBuf, TestError> {
+        let path = dir.join("center.store");
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
+        let mut reg = Registry::default();
+        for member in members {
+            let at = "2026-11-07T12:00:00Z";
+            let plan = reg.plan(member, "192.0.2.11", t(at)?, &[hb("s-1", 1, at)?]);
+            store.append(plan.record.as_ref().ok_or("a record")?)?;
+            reg.commit(plan);
+        }
+        Ok(path)
+    }
+
+    /// An append the center did not finish, after heartbeats it had
+    /// acknowledged, is dropped and the acknowledged ones are kept.
+    #[test]
+    fn edge_an_unfinished_append_after_counted_heartbeats_is_dropped() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("center.store");
+        let (mut store, _) = Store::open(&path, test_keys(1))?;
+        let plan = Registry::default().plan(
+            "edge-a",
+            "192.0.2.11",
+            t("2026-11-07T12:00:00Z")?,
+            &[hb("s-1", 1, "2026-11-07T12:00:00Z")?],
+        );
+        store.append(plan.record.as_ref().ok_or("a record")?)?;
+        drop(store);
+        let mut bytes = std::fs::read(&path)?;
+        bytes.extend([0, 0, 2, 0, 1, 2, 3]);
+        std::fs::write(&path, &bytes)?;
+        assert_eq!(
+            Store::open(&path, test_keys(1))?.1.len(),
+            1,
+            "edge an unfinished append after counted heartbeats is dropped"
+        );
+        Ok(())
+    }
+
     /// The minute's upkeep removes a member past retention from the
     /// registry and from the store file, and leaves the others in both.
     #[test]
@@ -2453,13 +2636,34 @@ mod behavior_tests {
     #[test]
     fn edge_a_torn_append_is_dropped_and_the_rest_kept() -> Result<(), TestError> {
         let dir = tempfile::tempdir()?;
-        let path = sealed_store(dir.path(), test_keys(1), &["a", "b", "c"])?;
-        let good = std::fs::read(&path)?;
-        std::fs::write(&path, &good[..good.len() - 7])?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a", "b"])?;
+        // A part of a third record, and no count for it: the center
+        // stopped while it wrote the record.
+        let mut torn = std::fs::read(&path)?;
+        torn.extend([0, 0, 2, 0, 9, 9, 9, 9, 9, 9, 9]);
+        std::fs::write(&path, &torn)?;
         assert_eq!(
             members_of(&path, test_keys(1))?,
             vec!["a".to_string(), "b".to_string()],
             "the two whole appends"
+        );
+        Ok(())
+    }
+
+    /// A part cut from the last counted append is no unfinished write: the
+    /// record was on disk whole before it was counted, so the store is
+    /// refused.
+    #[test]
+    fn failure_a_counted_append_cut_short_is_refused() -> Result<(), TestError> {
+        let dir = tempfile::tempdir()?;
+        let path = sealed_store(dir.path(), test_keys(1), &["a", "b", "c"])?;
+        let good = std::fs::read(&path)?;
+        std::fs::write(&path, &good[..good.len() - 7])?;
+        let e = members_of(&path, test_keys(1)).err().map(|e| e.to_string());
+        assert!(
+            e.as_deref()
+                .is_some_and(|e| e.contains("sealed layer: the file was cut at its end")),
+            "failure a counted append cut short is refused: {e:?}"
         );
         Ok(())
     }

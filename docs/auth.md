@@ -421,9 +421,11 @@ Failed to create HEP sender: Failed to establish a TLS session with '127.0.0.1:1
 ```
 
 The listener logs nothing for that failed handshake at the default level, so
-read the sender's side. The release container image holds no CA bundle: a
-sender in it needs `--hep-tls-ca` even for a collector with a public
-certificate, and stops with `no system CA bundle found; name the collector's
+read the sender's side. The container image carries Debian's CA bundle at
+`/etc/ssl/certs/ca-certificates.crt`, so a sender in it trusts a collector
+whose certificate a public CA signed with no `--hep-tls-ca`. Images up to
+0.5.245 hold no bundle: a sender in one of them needs `--hep-tls-ca` even for
+a public CA, and stops with `no system CA bundle found; name the collector's
 issuer with --hep-tls-ca` without it.
 
 ### Scrape the HTTPS metrics endpoint from Prometheus

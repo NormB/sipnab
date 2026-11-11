@@ -22,16 +22,38 @@
 //!   does not open.
 //! - A data key seals the records of one file only, each under its position
 //!   in the file as the nonce, so no nonce repeats under a key, with the
-//!   file's id as associated data. A file is
+//!   file's id and format as associated data. A file is
 //!   never appended to by a later process: [`open_log`] reads, and the
 //!   caller writes a new file under a new data key.
+//!
+//! # Records removed from the end
+//!
+//! A file that may stop being written at any moment cannot tell a last
+//! record that was removed from one that was never written, unless it
+//! holds a count. From format 2 it does. The header has two count slots,
+//! each the number of entries in the file and a tag under the data key.
+//! An append ([`append_counted`]) writes its records and an end mark,
+//! waits for the disk, and then writes the count that covers them into
+//! the two slots in turn. [`open_log`] refuses a file that holds fewer
+//! entries than its newest count ([`SealError::Cut`]).
+//!
+//! A center stopped while it writes a count leaves one slot that does not
+//! authenticate. In that state the append the count was for is on disk
+//! whole, after the entries the other slot counts, and nothing follows
+//! it. [`open_log`] takes one failed slot in exactly that state and
+//! refuses it in any other ([`SealError::Count`]), so damaging the newest
+//! count does not make a removed append look like a crash.
+//!
+//! Two things no file can show on its own: that it was deleted, and that
+//! an earlier copy of the whole file was put back.
 //!
 //! # What is pure and what is not
 //!
 //! [`MasterKey::parse`], [`wrap`], [`unwrap`], [`LogSealer`] and
 //! [`open_log`] work on bytes and take their randomness as an argument.
-//! [`read_key_file`], [`write_new_key_file`] and [`system_draw`] are the
-//! three functions that touch the file system or the system random source.
+//! [`read_key_file`], [`write_new_key_file`], [`append_counted`] and
+//! [`system_draw`] are the four functions that touch the file system or
+//! the system random source.
 
 use std::path::Path;
 
@@ -48,8 +70,16 @@ pub const KEY_BYTES: usize = 32;
 /// The first bytes of every sealed file.
 pub const MAGIC: [u8; 4] = *b"SNFS";
 
-/// The sealed file format this build writes and reads.
-pub const FORMAT: u8 = 1;
+/// The sealed file format this build writes: a key header, two count
+/// slots, then the records.
+pub const FORMAT: u8 = 2;
+
+/// The sealed file format of the releases before the count slots: a key
+/// header, then the records. Read, and never written.
+const FORMAT_UNCOUNTED: u8 = 1;
+
+/// The format byte a wrapped data key starts with.
+const WRAP_FORMAT: u8 = 1;
 
 /// Bytes in an AES-GCM nonce.
 const NONCE_BYTES: usize = 12;
@@ -63,9 +93,16 @@ pub const FILE_ID_BYTES: usize = 16;
 /// Bytes in a wrapped data key: format byte, nonce, key, tag.
 pub const WRAPPED_BYTES: usize = 1 + NONCE_BYTES + KEY_BYTES + TAG_BYTES;
 
-/// Bytes in a sealed file's header: magic, format, kind, key id, file id,
-/// wrapped data key.
-pub const HEADER_BYTES: usize = MAGIC.len() + 1 + 1 + 8 + FILE_ID_BYTES + WRAPPED_BYTES;
+/// Bytes in the part of a sealed file's header that names its key: magic,
+/// format, kind, key id, file id, wrapped data key.
+pub const KEY_HEADER_BYTES: usize = MAGIC.len() + 1 + 1 + 8 + FILE_ID_BYTES + WRAPPED_BYTES;
+
+/// Bytes in a count slot: a sealed count of the file's entries, and its
+/// tag.
+pub const COUNT_SLOT_BYTES: usize = 8 + TAG_BYTES;
+
+/// Bytes in a sealed file's header: the key header, then two count slots.
+pub const HEADER_BYTES: usize = KEY_HEADER_BYTES + 2 * COUNT_SLOT_BYTES;
 
 /// The largest record a sealed log holds, in bytes.
 ///
@@ -80,6 +117,11 @@ const FRAME_RECORD: u8 = 1;
 /// The first byte of a sealed record's plaintext: the end of the records a
 /// file was written with, followed by their count.
 const FRAME_BASE_END: u8 = 2;
+
+/// The first byte of a sealed record's plaintext: the end of one append.
+/// With it a reader can tell a file that stopped between an append and its
+/// count from one whose last append was removed, whole or in part.
+const FRAME_APPEND_END: u8 = 3;
 
 /// The label hashed before the key to give its id, so the id is no other
 /// SHA-256 of the key.
@@ -382,6 +424,16 @@ pub enum SealError {
     Record(u64),
     /// The file ends before the records it was written with do.
     Truncated,
+    /// Neither count slot authenticated.
+    Count,
+    /// The file holds fewer entries than its count says: entries were
+    /// removed from its end.
+    Cut {
+        /// The entries the file holds.
+        held: u64,
+        /// The entries its newest count covers.
+        counted: u64,
+    },
     /// The cipher itself failed, which no input should cause.
     Cipher,
 }
@@ -414,6 +466,15 @@ impl std::fmt::Display for SealError {
                  records were moved)"
             ),
             Self::Truncated => write!(f, "was truncated: it ends before its records do"),
+            Self::Count => write!(
+                f,
+                "has a record count that did not authenticate (the file was modified, or the key \
+                 is wrong)"
+            ),
+            Self::Cut { held, counted } => write!(
+                f,
+                "was cut at its end: it holds {held} of the {counted} entries it was written with"
+            ),
             Self::Cipher => write!(f, "could not be processed: the cipher failed"),
         }
     }
@@ -438,8 +499,69 @@ fn wrap_aad(layer: Layer, kind: Kind, file_id: &[u8; FILE_ID_BYTES]) -> Vec<u8> 
 /// What a sealed record's associated data binds it to: its file. Its
 /// position in the file is bound by its nonce ([`position_nonce`]), so a
 /// record moved within a file fails as one moved between files does.
-fn record_aad(file_id: &[u8; FILE_ID_BYTES]) -> [u8; FILE_ID_BYTES] {
-    *file_id
+///
+/// From format 2 the format is bound too, so the records of a file of one
+/// format do not open behind the header of another.
+fn record_aad(file_id: &[u8; FILE_ID_BYTES], format: u8) -> Vec<u8> {
+    let mut aad = file_id.to_vec();
+    if format != FORMAT_UNCOUNTED {
+        aad.push(format);
+    }
+    aad
+}
+
+/// The nonce of the count `count` in the count slot `slot`. Its first four
+/// bytes are never zero, and a record's always are ([`position_nonce`]), so
+/// a count and a record never share a nonce; and the two slots never share
+/// one either.
+fn count_nonce(slot: usize, count: u64) -> [u8; NONCE_BYTES] {
+    let mut nonce = [0u8; NONCE_BYTES];
+    nonce[3] = if slot == 0 { 1 } else { 2 };
+    nonce[NONCE_BYTES - 8..].copy_from_slice(&count.to_be_bytes());
+    nonce
+}
+
+/// The count slot `slot` holding `count` for the file `file_id`: the count
+/// itself, which is no secret, and a tag under `key`. The tag is bound to
+/// the file and the format by its associated data, and to the slot and the
+/// count by its nonce ([`count_nonce`]), so a slot with another count in it
+/// does not authenticate.
+fn seal_count(
+    key: &LessSafeKey,
+    file_id: &[u8; FILE_ID_BYTES],
+    slot: usize,
+    count: u64,
+) -> Result<[u8; COUNT_SLOT_BYTES], String> {
+    let mut tag = Vec::with_capacity(TAG_BYTES);
+    key.seal_in_place_append_tag(
+        Nonce::assume_unique_for_key(count_nonce(slot, count)),
+        Aad::from(record_aad(file_id, FORMAT)),
+        &mut tag,
+    )
+    .map_err(|_| SealError::Cipher.to_string())?;
+    let mut out = count.to_be_bytes().to_vec();
+    out.extend(tag);
+    <[u8; COUNT_SLOT_BYTES]>::try_from(out.as_slice()).map_err(|_| SealError::Cipher.to_string())
+}
+
+/// The count the slot `slot` holds in `bytes`, when its tag authenticates
+/// under `key` for the file `file_id`.
+fn open_count(
+    key: &LessSafeKey,
+    file_id: &[u8; FILE_ID_BYTES],
+    slot: usize,
+    bytes: &[u8],
+) -> Option<u64> {
+    let (count, tag) = bytes.split_first_chunk::<8>()?;
+    let count = u64::from_be_bytes(*count);
+    let mut tag = tag.to_vec();
+    key.open_in_place(
+        Nonce::assume_unique_for_key(count_nonce(slot, count)),
+        Aad::from(record_aad(file_id, FORMAT)),
+        &mut tag,
+    )
+    .ok()
+    .map(|_| count)
 }
 
 /// Wrap `data_key` under `master` for a file of `kind` with id `file_id`.
@@ -465,7 +587,7 @@ pub fn wrap(
         )
         .map_err(|_| SealError::Cipher)?;
     let mut out = [0u8; WRAPPED_BYTES];
-    out[0] = FORMAT;
+    out[0] = WRAP_FORMAT;
     out[1..=NONCE_BYTES].copy_from_slice(&nonce);
     out[1 + NONCE_BYTES..].copy_from_slice(&sealed);
     Ok(out)
@@ -484,7 +606,7 @@ pub fn unwrap(
     file_id: &[u8; FILE_ID_BYTES],
     wrapped: &[u8; WRAPPED_BYTES],
 ) -> Result<Zeroizing<[u8; KEY_BYTES]>, SealError> {
-    if wrapped[0] != FORMAT {
+    if wrapped[0] != WRAP_FORMAT {
         return Err(SealError::Header);
     }
     let nonce =
@@ -514,6 +636,10 @@ pub struct LogSealer {
     next: u64,
     /// Records sealed so far.
     records: u64,
+    /// The count slot the next count goes to: 0 or 1.
+    slot: usize,
+    /// The entries the newest count slot covers.
+    counted: u64,
 }
 
 impl std::fmt::Debug for LogSealer {
@@ -544,20 +670,64 @@ impl LogSealer {
         let nonce = *draw::<NONCE_BYTES>(source)?;
         let wrapped = wrap(master, Layer::Sealed, kind, &file_id, &data_key, nonce)
             .map_err(|e| e.to_string())?;
+        let key = cipher(&data_key).map_err(|e| e.to_string())?;
         let mut header = [0u8; HEADER_BYTES];
         header[..4].copy_from_slice(&MAGIC);
         header[4] = FORMAT;
         header[5] = kind.byte();
         header[6..14].copy_from_slice(&master.id().0);
         header[14..14 + FILE_ID_BYTES].copy_from_slice(&file_id);
-        header[14 + FILE_ID_BYTES..].copy_from_slice(&wrapped);
+        header[14 + FILE_ID_BYTES..KEY_HEADER_BYTES].copy_from_slice(&wrapped);
+        // Both slots start at a count of nothing, so a new file always has
+        // a slot that authenticates.
+        for slot in 0..2 {
+            let at = KEY_HEADER_BYTES + slot * COUNT_SLOT_BYTES;
+            header[at..at + COUNT_SLOT_BYTES]
+                .copy_from_slice(&seal_count(&key, &file_id, slot, 0)?);
+        }
         let sealer = Self {
-            key: cipher(&data_key).map_err(|e| e.to_string())?,
+            key,
             file_id,
             next: 0,
             records: 0,
+            slot: 1,
+            counted: 0,
         };
         Ok((sealer, header))
+    }
+
+    /// The bytes that end one append. They go to the file after the
+    /// append's records and before its count.
+    ///
+    /// # Errors
+    ///
+    /// The cipher failed.
+    pub fn append_end(&mut self) -> Result<Vec<u8>, String> {
+        self.frame(FRAME_APPEND_END, &[])
+    }
+
+    /// The count slot that says the file holds every entry sealed so far,
+    /// and the offset in the file it is written at. An append writes it
+    /// once its records are on disk, so the count never runs ahead of the
+    /// file; the two slots take turns, so a slot whose write did not finish
+    /// leaves the count before it in the other.
+    ///
+    /// # Errors
+    ///
+    /// The cipher failed.
+    pub fn count_slot(&mut self) -> Result<(usize, [u8; COUNT_SLOT_BYTES]), String> {
+        let slot = seal_count(&self.key, &self.file_id, self.slot, self.next)?;
+        let at = KEY_HEADER_BYTES + self.slot * COUNT_SLOT_BYTES;
+        self.slot = 1 - self.slot;
+        self.counted = self.next;
+        Ok((at, slot))
+    }
+
+    /// The entries the newest count slot covers: records, and the end of
+    /// the base.
+    #[must_use]
+    pub fn counted(&self) -> u64 {
+        self.counted
     }
 
     /// The bytes that store `payload`, marked `tag`, at the next position:
@@ -569,7 +739,7 @@ impl LogSealer {
         self.key
             .seal_in_place_append_tag(
                 Nonce::assume_unique_for_key(position_nonce(self.next)),
-                Aad::from(record_aad(&self.file_id)),
+                Aad::from(record_aad(&self.file_id, FORMAT)),
                 &mut body,
             )
             .map_err(|_| SealError::Cipher.to_string())?;
@@ -642,14 +812,22 @@ pub fn open_log(bytes: &[u8], keys: &Keys, kind: Kind) -> Result<OpenedLog, Seal
     if bytes.len() < MAGIC.len() || bytes[..MAGIC.len()] != MAGIC {
         return Err(SealError::NotSealed);
     }
-    if let Some(&format) = bytes.get(4)
+    let format = bytes.get(4).copied();
+    if let Some(format) = format
         && format != FORMAT
+        && format != FORMAT_UNCOUNTED
     {
         return Err(SealError::UnknownFormat(format));
     }
-    if bytes.len() < HEADER_BYTES {
+    let header_bytes = if format == Some(FORMAT_UNCOUNTED) {
+        KEY_HEADER_BYTES
+    } else {
+        HEADER_BYTES
+    };
+    if bytes.len() < header_bytes {
         return Err(SealError::Truncated);
     }
+    let format = bytes[4];
     if bytes[5] != kind.byte() {
         return Err(SealError::WrongKind {
             found: bytes[5],
@@ -663,18 +841,34 @@ pub fn open_log(bytes: &[u8], keys: &Keys, kind: Kind) -> Result<OpenedLog, Seal
     let mut file_id = [0u8; FILE_ID_BYTES];
     file_id.copy_from_slice(&bytes[14..14 + FILE_ID_BYTES]);
     let mut wrapped = [0u8; WRAPPED_BYTES];
-    wrapped.copy_from_slice(&bytes[14 + FILE_ID_BYTES..HEADER_BYTES]);
+    wrapped.copy_from_slice(&bytes[14 + FILE_ID_BYTES..KEY_HEADER_BYTES]);
     let data_key = unwrap(master, Layer::Sealed, kind, &file_id, &wrapped)?;
     let key = cipher(&data_key)?;
+    let aad = record_aad(&file_id, format);
+    // The entries the file must hold: the newest count that authenticates.
+    // A format 1 file has no count.
+    let (counted, one_count) = if format == FORMAT_UNCOUNTED {
+        (0, false)
+    } else {
+        let counts: Vec<u64> = (0..2)
+            .filter_map(|slot| {
+                let at = KEY_HEADER_BYTES + slot * COUNT_SLOT_BYTES;
+                open_count(&key, &file_id, slot, &bytes[at..at + COUNT_SLOT_BYTES])
+            })
+            .collect();
+        let newest = counts.iter().copied().max().ok_or(SealError::Count)?;
+        (newest, counts.len() == 1)
+    };
 
     let mut log = OpenedLog {
         records: Vec::new(),
         key_id,
         torn_tail: false,
     };
-    let mut rest = &bytes[HEADER_BYTES..];
+    let mut rest = &bytes[header_bytes..];
     let mut position = 0u64;
     let mut base_ended = false;
+    let mut ends_an_append = false;
     while !rest.is_empty() {
         let failed = SealError::Record(position.saturating_add(1));
         // A record that is only partly there is an append the writer did
@@ -695,7 +889,7 @@ pub fn open_log(bytes: &[u8], keys: &Keys, kind: Kind) -> Result<OpenedLog, Seal
         let plain = key
             .open_in_place(
                 Nonce::assume_unique_for_key(position_nonce(position)),
-                Aad::from(record_aad(&file_id)),
+                Aad::from(aad.as_slice()),
                 &mut body,
             )
             .map_err(|_| failed.clone())?;
@@ -708,15 +902,60 @@ pub fn open_log(bytes: &[u8], keys: &Keys, kind: Kind) -> Result<OpenedLog, Seal
             {
                 base_ended = true;
             }
+            Some((&FRAME_APPEND_END, [])) if format != FORMAT_UNCOUNTED => {}
             _ => return Err(failed),
         }
+        ends_an_append = plain.first() == Some(&FRAME_APPEND_END);
         position = position.checked_add(1).ok_or(failed)?;
         rest = &after[len..];
+    }
+    // A counted entry was on disk whole before it was counted, so a file
+    // that holds fewer was cut, whether or not the cut left a part of one.
+    if position < counted {
+        return Err(SealError::Cut {
+            held: position,
+            counted,
+        });
+    }
+    // One count that does not authenticate is what a crash leaves while a
+    // count is written, and only then: the append it was to cover is on
+    // disk whole, after the entries the other count covers, and nothing
+    // follows it. Any other file with a damaged count was modified.
+    if one_count && !(position > counted && ends_an_append && !log.torn_tail) {
+        return Err(SealError::Count);
     }
     if !base_ended {
         return Err(SealError::Truncated);
     }
     Ok(log)
+}
+
+/// Append `frames`, records `sealer` sealed, to the sealed file at `path`
+/// as one append: the records and the end of the append, synced, and then
+/// the count that covers them, synced too. No `frames`, nothing written.
+///
+/// The order is the rule: the count never says more than the file holds,
+/// so a crash at any point leaves a file that opens, and a file that holds
+/// less than its count was cut by someone ([`SealError::Cut`]).
+///
+/// # Errors
+///
+/// The file cannot be opened, written or synced, or the end or the count
+/// cannot be sealed. The file is not created when it is absent.
+pub fn append_counted(path: &Path, sealer: &mut LogSealer, frames: &[u8]) -> std::io::Result<()> {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+    if frames.is_empty() {
+        return Ok(());
+    }
+    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+    let end = sealer.append_end().map_err(std::io::Error::other)?;
+    file.seek(SeekFrom::End(0))?;
+    file.write_all(&[frames, &end].concat())?;
+    file.sync_data()?;
+    let (at, slot) = sealer.count_slot().map_err(std::io::Error::other)?;
+    file.seek(SeekFrom::Start(at as u64))?;
+    file.write_all(&slot)?;
+    file.sync_data()
 }
 
 /// Read the master key in the file `path`, which the flag `flag` named.
@@ -773,6 +1012,58 @@ pub fn write_new_key_file(path: &Path, source: Draw<'_>) -> Result<KeyId, String
             format!("--out '{shown}': {e}")
         })?;
     Ok(key.id())
+}
+
+/// A format 1 file of `kind` under `master`, for tests: `records`, the end
+/// of the base, then `appended`, written the way the releases before the
+/// count slots wrote it. This build writes no such file, so the tests of
+/// reading one build it here; it was compared byte for byte with the
+/// writer of release 0.5.244 when the format changed, and
+/// `tests/fixtures/fleet/center-store-format-1.sealed` is a file that
+/// writer made.
+///
+/// # Errors
+///
+/// `source` failed, or the cipher did.
+#[cfg(test)]
+pub(crate) fn sealed_format_1(
+    kind: Kind,
+    master: &MasterKey,
+    records: &[&[u8]],
+    appended: &[&[u8]],
+    source: Draw<'_>,
+) -> Result<Vec<u8>, String> {
+    let file_id = *draw::<FILE_ID_BYTES>(source)?;
+    let data_key = draw::<KEY_BYTES>(source)?;
+    let nonce = *draw::<NONCE_BYTES>(source)?;
+    let wrapped =
+        wrap(master, Layer::Sealed, kind, &file_id, &data_key, nonce).map_err(|e| e.to_string())?;
+    let cipher = cipher(&data_key).map_err(|e| e.to_string())?;
+    let mut out = MAGIC.to_vec();
+    out.extend([FORMAT_UNCOUNTED, kind.byte()]);
+    out.extend(master.id().0);
+    out.extend(file_id);
+    out.extend(wrapped);
+    let count = (records.len() as u64).to_be_bytes();
+    let frames = records
+        .iter()
+        .map(|r| (FRAME_RECORD, *r))
+        .chain(std::iter::once((FRAME_BASE_END, count.as_slice())))
+        .chain(appended.iter().map(|r| (FRAME_RECORD, *r)));
+    for (position, (tag, payload)) in frames.enumerate() {
+        let mut body = vec![tag];
+        body.extend_from_slice(payload);
+        cipher
+            .seal_in_place_append_tag(
+                Nonce::assume_unique_for_key(position_nonce(position as u64)),
+                Aad::from(file_id),
+                &mut body,
+            )
+            .map_err(|_| "seal".to_string())?;
+        out.extend((body.len() as u32).to_be_bytes());
+        out.extend(body);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -865,7 +1156,10 @@ mod tests {
         let (m, id, dek) = (key(1), [3; FILE_ID_BYTES], [9; KEY_BYTES]);
         let w = wrap(&m, Layer::Sealed, Kind::Registry, &id, &dek, drawn()?)
             .map_err(|e| e.to_string())?;
-        assert_eq!(w[0], FORMAT, "the envelope starts with its format byte");
+        assert_eq!(
+            w[0], WRAP_FORMAT,
+            "the envelope starts with its format byte"
+        );
         let back = unwrap(&m, Layer::Sealed, Kind::Registry, &id, &w).map_err(|e| e.to_string())?;
         assert_eq!(*back, dek, "the unwrapped key is the one wrapped");
         Ok(())
@@ -1145,7 +1439,7 @@ mod tests {
     #[test]
     fn a_modified_wrapped_key_fails_the_header() -> TestResult {
         let mut bytes = sealed(&key(1), &[b"r"], &[])?;
-        bytes[HEADER_BYTES - 20] ^= 1;
+        bytes[KEY_HEADER_BYTES - 20] ^= 1;
         assert_eq!(
             open_log(&bytes, &only(key(1)), Kind::Registry).err(),
             Some(SealError::Header),
@@ -1658,22 +1952,795 @@ mod tests {
         Ok(())
     }
 
+    // ---- the count slots (format 2): records removed from the end ----
+
+    /// Ends an append in `bytes` and writes `sealer`'s next count slot, as
+    /// an append does once its records are on disk. Returns where the slot
+    /// is.
+    fn count(bytes: &mut Vec<u8>, sealer: &mut LogSealer) -> Result<usize, String> {
+        bytes.extend(sealer.append_end()?);
+        let (at, slot) = sealer.count_slot()?;
+        bytes
+            .get_mut(at..at + COUNT_SLOT_BYTES)
+            .ok_or("the slot is outside the file")?
+            .copy_from_slice(&slot);
+        Ok(at)
+    }
+
+    /// A registry file with one base record and `appended` after it, each
+    /// append counted as the center counts it; and the offset each record
+    /// of `appended` starts at.
+    fn counted(appended: &[&[u8]]) -> Result<(Vec<u8>, Vec<usize>), String> {
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let mut out = header.to_vec();
+        out.extend(sealer.record(b"base")?);
+        out.extend(sealer.base_end()?);
+        let mut starts = Vec::new();
+        for r in appended {
+            starts.push(out.len());
+            out.extend(sealer.record(r)?);
+            count(&mut out, &mut sealer)?;
+        }
+        Ok((out, starts))
+    }
+
+    /// A format 1 registry file, written the way the releases before the
+    /// count slots wrote it: the key header, then the records.
+    fn sealed_v1(records: &[&[u8]], appended: &[&[u8]]) -> Result<Vec<u8>, String> {
+        sealed_format_1(Kind::Registry, &key(1), records, appended, &counting())
+    }
+
     #[test]
-    fn whole_appended_records_removed_from_the_end_are_not_detected() -> TestResult {
-        // The known limit: an append-only file that can stop mid-write
-        // cannot tell a record that was removed from one never written
-        // without a count kept elsewhere. Records before the base end are
-        // counted by it; records appended after it are not.
-        let bytes = sealed(&key(1), &[b"base"], &[b"kept", b"removed"])?;
-        let last = 4 + 1 + b"removed".len() + TAG_BYTES;
-        let cut = &bytes[..bytes.len() - last];
-        let log = open_log(cut, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
+    fn success_a_counted_file_returns_every_record() -> TestResult {
+        let (bytes, _) = counted(&[b"one", b"two"])?;
+        let log = open_log(&bytes, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
+        assert_eq!(
+            log.records,
+            vec![b"base".to_vec(), b"one".to_vec(), b"two".to_vec()],
+            "success a counted file returns every record"
+        );
+        assert!(!log.torn_tail, "and nothing in it is torn");
+        Ok(())
+    }
+
+    #[test]
+    fn success_this_build_writes_format_2_with_two_count_slots() -> TestResult {
+        let (bytes, starts) = counted(&[b"one"])?;
+        assert_eq!(bytes[4], 2, "the format byte");
+        assert_eq!(FORMAT, 2, "the format this build writes");
+        assert_eq!(
+            HEADER_BYTES,
+            KEY_HEADER_BYTES + 2 * COUNT_SLOT_BYTES,
+            "the header ends after two count slots"
+        );
+        assert_eq!(COUNT_SLOT_BYTES, 8 + 16, "a slot is a count and a tag");
+        assert!(
+            starts[0] > HEADER_BYTES,
+            "the appended record is after the base, which is after the header"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_format_1_file_still_opens() -> TestResult {
+        let bytes = sealed_v1(&[b"base"], &[b"kept"])?;
+        assert_eq!(bytes[4], 1, "the fixture is a format 1 file");
+        let log = open_log(&bytes, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
         assert_eq!(
             log.records,
             vec![b"base".to_vec(), b"kept".to_vec()],
-            "the file opens without its last appended record"
+            "success a format 1 file still opens"
         );
-        assert!(!log.torn_tail, "and nothing marks it as cut");
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_count_slot_holds_the_frames_sealed_so_far() -> TestResult {
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let mut out = header.to_vec();
+        out.extend(sealer.record(b"base")?);
+        out.extend(sealer.base_end()?);
+        out.extend(sealer.record(b"one")?);
+        assert_eq!(
+            sealer.counted(),
+            0,
+            "nothing is counted before the first slot"
+        );
+        count(&mut out, &mut sealer)?;
+        assert_eq!(
+            sealer.counted(),
+            4,
+            "success a count slot holds the frames sealed so far"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_whole_appended_record_removed_from_the_end_is_refused() -> TestResult {
+        // The defect FLEET-STORE-TAIL-TRUNCATION: before the count slots
+        // this file opened without its last record and nothing marked it.
+        let (bytes, starts) = counted(&[b"kept", b"removed"])?;
+        let cut = &bytes[..starts[1]];
+        assert_eq!(
+            open_log(cut, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Cut {
+                held: 4,
+                counted: 6
+            }),
+            "failure a whole appended record removed from the end is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_every_appended_record_removed_is_refused() -> TestResult {
+        let (bytes, starts) = counted(&[b"one", b"two", b"three"])?;
+        let cut = &bytes[..starts[0]];
+        assert_eq!(
+            open_log(cut, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Cut {
+                held: 2,
+                counted: 8
+            }),
+            "failure every appended record removed is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_counted_record_cut_in_its_middle_is_refused_not_dropped() -> TestResult {
+        // A record the count covers was synced whole before it was counted,
+        // so a part of it is a cut and never an unfinished write.
+        let (bytes, starts) = counted(&[b"one", b"two"])?;
+        let cut = &bytes[..starts[1] + 7];
+        assert_eq!(
+            open_log(cut, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Cut {
+                held: 4,
+                counted: 6
+            }),
+            "failure a counted record cut in its middle is refused not dropped"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_with_no_count_slot_that_authenticates_is_refused() -> TestResult {
+        let (mut bytes, _) = counted(&[b"one"])?;
+        bytes[KEY_HEADER_BYTES] ^= 1;
+        bytes[KEY_HEADER_BYTES + COUNT_SLOT_BYTES] ^= 1;
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Count),
+            "failure a file with no count slot that authenticates is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_count_slots_zeroed_to_hide_a_cut_are_refused() -> TestResult {
+        let (mut bytes, starts) = counted(&[b"one", b"two"])?;
+        bytes[KEY_HEADER_BYTES..HEADER_BYTES].fill(0);
+        bytes.truncate(starts[1]);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Count),
+            "failure count slots zeroed to hide a cut are refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_count_slots_of_another_file_are_refused() -> TestResult {
+        let (mut bytes, _) = counted(&[b"one"])?;
+        // Another file under the same master key: its own id and data key.
+        let source = counting();
+        let _ = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let (mut other, other_header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let mut other_bytes = other_header.to_vec();
+        other_bytes.extend(other.record(b"x")?);
+        count(&mut other_bytes, &mut other)?;
+        bytes[KEY_HEADER_BYTES..HEADER_BYTES]
+            .copy_from_slice(&other_bytes[KEY_HEADER_BYTES..HEADER_BYTES]);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Count),
+            "failure the count slots of another file are refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_format_2_file_marked_format_1_is_refused() -> TestResult {
+        let (mut bytes, _) = counted(&[b"one"])?;
+        bytes[4] = 1;
+        assert!(
+            matches!(
+                open_log(&bytes, &only(key(1)), Kind::Registry),
+                Err(SealError::Record(_) | SealError::Truncated)
+            ),
+            "failure a format 2 file marked format 1 is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_format_1_file_marked_format_2_is_refused() -> TestResult {
+        let mut bytes = sealed_v1(&[b"base"], &[b"kept"])?;
+        bytes[4] = 2;
+        assert!(
+            open_log(&bytes, &only(key(1)), Kind::Registry).is_err(),
+            "failure a format 1 file marked format 2 is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_format_1_records_behind_a_format_2_header_are_refused() -> TestResult {
+        // The records of a format 1 file are bound to format 1: placed
+        // after valid count slots of the same file id they do not open.
+        let v1 = sealed_v1(&[b"base"], &[])?;
+        let source = counting();
+        let (_, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        assert_eq!(
+            header[..KEY_HEADER_BYTES][5..],
+            v1[..KEY_HEADER_BYTES][5..],
+            "the two files share an id and a data key"
+        );
+        let mut bytes = header.to_vec();
+        bytes.extend(&v1[KEY_HEADER_BYTES..]);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Record(1)),
+            "failure format 1 records behind a format 2 header are refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_records_synced_but_not_yet_counted_open() -> TestResult {
+        // A crash between the sync of an append and the write of its
+        // count: the file holds more than its count says, which is no cut.
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let mut out = header.to_vec();
+        out.extend(sealer.record(b"base")?);
+        out.extend(sealer.base_end()?);
+        out.extend(sealer.record(b"one")?);
+        count(&mut out, &mut sealer)?;
+        out.extend(sealer.record(b"two")?);
+        let log = open_log(&out, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
+        assert_eq!(
+            log.records.len(),
+            3,
+            "edge records synced but not yet counted open"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_torn_count_slot_leaves_the_older_count_in_force() -> TestResult {
+        // A crash while a slot was being written: that slot does not
+        // authenticate, and the other still holds the count before it.
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let mut out = header.to_vec();
+        out.extend(sealer.record(b"base")?);
+        out.extend(sealer.base_end()?);
+        out.extend(sealer.record(b"one")?);
+        count(&mut out, &mut sealer)?;
+        let second = out.len();
+        out.extend(sealer.record(b"two")?);
+        let torn = count(&mut out, &mut sealer)?;
+        out[torn + 3] ^= 0x40;
+        let log = open_log(&out, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
+        assert_eq!(log.records.len(), 3, "the file opens whole");
+        // The older count still refuses a cut below it.
+        assert_eq!(
+            open_log(&out[..second - 1], &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Cut {
+                held: 3,
+                counted: 4
+            }),
+            "edge a torn count slot leaves the older count in force"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_count_slots_alternate_so_one_always_holds_an_older_count() -> TestResult {
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let mut out = header.to_vec();
+        out.extend(sealer.base_end()?);
+        let mut places = Vec::new();
+        for r in [b"a", b"b", b"c", b"d"] {
+            out.extend(sealer.record(r)?);
+            places.push(count(&mut out, &mut sealer)?);
+        }
+        assert_eq!(
+            places,
+            vec![
+                KEY_HEADER_BYTES + COUNT_SLOT_BYTES,
+                KEY_HEADER_BYTES,
+                KEY_HEADER_BYTES + COUNT_SLOT_BYTES,
+                KEY_HEADER_BYTES
+            ],
+            "edge count slots alternate so one always holds an older count"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_new_file_with_no_records_opens_and_counts_nothing() -> TestResult {
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let mut out = header.to_vec();
+        out.extend(sealer.base_end()?);
+        let log = open_log(&out, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
+        assert!(
+            log.records.is_empty(),
+            "edge a new file with no records opens and counts nothing"
+        );
+        assert_eq!(sealer.counted(), 0, "its slots count no frame");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_unfinished_append_after_the_count_is_still_a_torn_tail() -> TestResult {
+        let (mut bytes, _) = counted(&[b"one"])?;
+        bytes.extend([0, 0, 0, 40, 9, 9, 9]);
+        let log = open_log(&bytes, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
+        assert!(
+            log.torn_tail,
+            "edge an unfinished append after the count is still a torn tail"
+        );
+        assert_eq!(
+            log.records.len(),
+            2,
+            "and the counted records are all there"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_format_1_file_cut_at_its_end_still_opens_the_known_limit() -> TestResult {
+        // Format 1 has no count. A file a release before the count slots
+        // wrote opens once more without its last appended record; the
+        // open rewrites it as format 2.
+        let bytes = sealed_v1(&[b"base"], &[b"kept", b"removed"])?;
+        let last = 4 + 1 + b"removed".len() + TAG_BYTES;
+        let log = open_log(&bytes[..bytes.len() - last], &only(key(1)), Kind::Registry)
+            .map_err(|e| e.to_string())?;
+        assert_eq!(
+            log.records.len(),
+            2,
+            "edge a format 1 file cut at its end still opens the known limit"
+        );
+        Ok(())
+    }
+
+    /// A new sealed registry file at `path` with an empty base, and its
+    /// sealer.
+    fn new_file(path: &Path) -> Result<LogSealer, Box<dyn std::error::Error>> {
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let mut out = header.to_vec();
+        out.extend(sealer.base_end()?);
+        std::fs::write(path, out)?;
+        Ok(sealer)
+    }
+
+    #[test]
+    fn success_an_append_puts_its_records_and_then_their_count_on_disk() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("log");
+        let mut sealer = new_file(&path)?;
+        let frames = [sealer.record(b"one")?, sealer.record(b"two")?].concat();
+        append_counted(&path, &mut sealer, &frames)?;
+        let bytes = std::fs::read(&path)?;
+        let log = open_log(&bytes, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
+        assert_eq!(
+            log.records,
+            vec![b"one".to_vec(), b"two".to_vec()],
+            "success an append puts its records and then their count on disk"
+        );
+        assert_eq!(
+            sealer.counted(),
+            4,
+            "the end of the base, two records, the end of the append"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_file_cut_after_an_append_is_refused_when_read_from_disk() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("log");
+        let mut sealer = new_file(&path)?;
+        let first = sealer.record(b"one")?;
+        append_counted(&path, &mut sealer, &first)?;
+        let kept = std::fs::metadata(&path)?.len();
+        let second = sealer.record(b"two")?;
+        append_counted(&path, &mut sealer, &second)?;
+        let bytes = std::fs::read(&path)?;
+        let cut = &bytes[..usize::try_from(kept)?];
+        assert_eq!(
+            open_log(cut, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Cut {
+                held: 3,
+                counted: 5
+            }),
+            "failure a file cut after an append is refused when read from disk"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_append_to_a_file_that_is_gone_fails_and_counts_nothing() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("log");
+        let mut sealer = new_file(&path)?;
+        std::fs::remove_file(&path)?;
+        let frames = sealer.record(b"one")?;
+        let e = append_counted(&path, &mut sealer, &frames).err();
+        assert_eq!(
+            e.map(|e| e.kind()),
+            Some(std::io::ErrorKind::NotFound),
+            "failure an append to a file that is gone fails and counts nothing"
+        );
+        assert_eq!(sealer.counted(), 0, "no count was made");
+        assert!(!path.exists(), "and the append did not create the file");
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_append_writes_after_the_end_and_changes_no_earlier_record() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("log");
+        let mut sealer = new_file(&path)?;
+        let first = sealer.record(b"one")?;
+        append_counted(&path, &mut sealer, &first)?;
+        let before = std::fs::read(&path)?;
+        let second = sealer.record(b"two")?;
+        append_counted(&path, &mut sealer, &second)?;
+        let after = std::fs::read(&path)?;
+        assert_eq!(
+            after[HEADER_BYTES..before.len()],
+            before[HEADER_BYTES..],
+            "edge an append writes after the end and changes no earlier record"
+        );
+        assert_eq!(
+            after.len(),
+            before.len() + second.len() + 4 + 1 + TAG_BYTES,
+            "it grew by the record and the end of the append"
+        );
+        assert_eq!(
+            after[..KEY_HEADER_BYTES],
+            before[..KEY_HEADER_BYTES],
+            "and the key header is as it was"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn the_cut_refusal_says_what_is_missing() {
+        assert_eq!(
+            SealError::Cut {
+                held: 3,
+                counted: 4
+            }
+            .to_string(),
+            "was cut at its end: it holds 3 of the 4 entries it was written with",
+            "the cut refusal says what is missing"
+        );
+        assert_eq!(
+            SealError::Count.to_string(),
+            "has a record count that did not authenticate (the file was modified, or the key \
+             is wrong)",
+            "the count refusal says what failed"
+        );
+    }
+
+    /// One append of `records` to a file with an empty base, as the center
+    /// writes it; then the count before it, and where the append starts.
+    fn one_append(records: &[&[u8]]) -> Result<(Vec<u8>, usize, Vec<usize>), String> {
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Intake, &source)?;
+        let mut out = header.to_vec();
+        out.extend(sealer.base_end()?);
+        out.extend(sealer.record(b"first")?);
+        count(&mut out, &mut sealer)?;
+        let mut starts = Vec::new();
+        for r in records {
+            starts.push(out.len());
+            out.extend(sealer.record(r)?);
+        }
+        let newest = count(&mut out, &mut sealer)?;
+        Ok((out, newest, starts))
+    }
+
+    #[test]
+    fn failure_a_damaged_newest_count_does_not_hide_the_last_append_removed() -> TestResult {
+        // The attack a torn count would allow: damage the newest count so
+        // the older one is in force, and remove the append it covered.
+        let (mut bytes, newest, starts) = one_append(&[b"a", b"b"])?;
+        bytes[newest + 9] ^= 1;
+        bytes.truncate(starts[0]);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Intake).err(),
+            Some(SealError::Count),
+            "failure a damaged newest count does not hide the last append removed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_damaged_newest_count_does_not_hide_a_part_of_the_last_append_removed() -> TestResult
+    {
+        // The same attack on an append of several records, cut between two
+        // of them: the file holds more than the older count, and does not
+        // end where an append ends.
+        let (mut bytes, newest, starts) = one_append(&[b"a", b"b", b"c"])?;
+        bytes[newest + 9] ^= 1;
+        bytes.truncate(starts[2]);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Intake).err(),
+            Some(SealError::Count),
+            "failure a damaged newest count does not hide a part of the last append removed"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_damaged_count_with_a_torn_record_after_it_is_refused() -> TestResult {
+        // A count is written only after its append is on disk whole, so a
+        // count that did not finish never comes with a part of a record.
+        let (mut bytes, newest, starts) = one_append(&[b"a", b"b"])?;
+        bytes[newest + 9] ^= 1;
+        bytes.truncate(starts[1] + 6);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Intake).err(),
+            Some(SealError::Count),
+            "failure a damaged count with a torn record after it is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_damaged_older_count_on_a_whole_file_is_refused() -> TestResult {
+        // No crash leaves this: the older slot is rewritten only after a
+        // newer append is on disk, and here there is none.
+        let (mut bytes, newest, _) = one_append(&[b"a"])?;
+        let older = if newest == KEY_HEADER_BYTES {
+            KEY_HEADER_BYTES + COUNT_SLOT_BYTES
+        } else {
+            KEY_HEADER_BYTES
+        };
+        bytes[older + 9] ^= 1;
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Intake).err(),
+            Some(SealError::Count),
+            "failure a damaged older count on a whole file is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_the_two_count_slots_exchanged_are_refused() -> TestResult {
+        let (mut bytes, _, _) = one_append(&[b"a"])?;
+        let (a, b) = (KEY_HEADER_BYTES, KEY_HEADER_BYTES + COUNT_SLOT_BYTES);
+        let first: Vec<u8> = bytes[a..b].to_vec();
+        bytes.copy_within(b..HEADER_BYTES, a);
+        bytes[b..HEADER_BYTES].copy_from_slice(&first);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Intake).err(),
+            Some(SealError::Count),
+            "failure the two count slots exchanged are refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_a_damaged_count_with_a_part_of_a_record_after_a_whole_append_is_refused()
+    -> TestResult {
+        // The next append starts only after a count is written, so a count
+        // that did not finish never has anything after its append: not
+        // even a part of a record.
+        let (mut bytes, newest, _) = one_append(&[b"a"])?;
+        bytes[newest + 9] ^= 1;
+        bytes.extend([0, 0, 0, 30, 4, 4, 4]);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Intake).err(),
+            Some(SealError::Count),
+            "failure a damaged count with a part of a record after a whole append is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_counts_lowered_to_hide_a_cut_are_refused() -> TestResult {
+        // The count is written in clear beside its tag. A lower number in
+        // its place does not authenticate, in either slot.
+        let (mut bytes, starts) = counted(&[b"one", b"two"])?;
+        for slot in 0..2 {
+            let at = KEY_HEADER_BYTES + slot * COUNT_SLOT_BYTES;
+            bytes[at..at + 8].copy_from_slice(&4u64.to_be_bytes());
+        }
+        bytes.truncate(starts[1]);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Count),
+            "failure counts lowered to hide a cut are refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_one_count_lowered_does_not_hide_a_cut() -> TestResult {
+        // Only the newest count lowered: the other slot still authenticates
+        // with its older count, and the file is not in the state a crash
+        // leaves.
+        let (mut bytes, starts) = counted(&[b"one", b"two"])?;
+        // `counted` writes slot 1, then slot 0: slot 0 is the newest.
+        bytes[KEY_HEADER_BYTES..KEY_HEADER_BYTES + 8].copy_from_slice(&4u64.to_be_bytes());
+        bytes.truncate(starts[1]);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Count),
+            "failure one count lowered does not hide a cut"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_append_end_that_carries_bytes_is_refused() -> TestResult {
+        // No writer makes one; a reader that took it would take bytes no
+        // rule gives a meaning to.
+        let source = counting();
+        let (mut sealer, header) = LogSealer::new(&key(1), Kind::Registry, &source)?;
+        let mut bytes = header.to_vec();
+        bytes.extend(sealer.base_end()?);
+        bytes.extend(sealer.record(b"one")?);
+        bytes.extend(sealer.frame(FRAME_APPEND_END, b"x")?);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Record(3)),
+            "failure an append end that carries bytes is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_a_count_that_did_not_finish_leaves_a_file_that_opens_whole() -> TestResult {
+        // The crash itself: the append is on disk, its count is not.
+        let (mut bytes, newest, _) = one_append(&[b"a", b"b"])?;
+        bytes[newest..newest + COUNT_SLOT_BYTES].fill(0);
+        let log = open_log(&bytes, &only(key(1)), Kind::Intake).map_err(|e| e.to_string())?;
+        assert_eq!(
+            log.records,
+            vec![b"first".to_vec(), b"a".to_vec(), b"b".to_vec()],
+            "edge a count that did not finish leaves a file that opens whole"
+        );
+        assert!(!log.torn_tail, "and nothing in it is torn");
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_file_of_every_kind_carries_its_counts_and_opens() -> TestResult {
+        for kind in [Kind::Registry, Kind::Intake, Kind::Spool] {
+            let source = counting();
+            let (mut sealer, header) = LogSealer::new(&key(1), kind, &source)?;
+            let mut out = header.to_vec();
+            out.extend(sealer.base_end()?);
+            out.extend(sealer.record(b"one")?);
+            count(&mut out, &mut sealer)?;
+            let log = open_log(&out, &only(key(1)), kind).map_err(|e| e.to_string())?;
+            assert_eq!(
+                log.records,
+                vec![b"one".to_vec()],
+                "success a file of every kind carries its counts and opens: {}",
+                kind.name()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn success_a_counted_file_opens_under_an_old_key() -> TestResult {
+        let (bytes, _) = counted(&[b"one"])?;
+        let keys = Keys::new(key(9), vec![key(1)]);
+        let log = open_log(&bytes, &keys, Kind::Registry).map_err(|e| e.to_string())?;
+        assert_eq!(
+            log.records.len(),
+            2,
+            "success a counted file opens under an old key"
+        );
+        assert_eq!(log.key_id, key(1).id(), "and says which key it was");
+        Ok(())
+    }
+
+    #[test]
+    fn success_fifty_appends_on_disk_all_read_back_in_order() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("log");
+        let mut sealer = new_file(&path)?;
+        let wanted: Vec<Vec<u8>> = (0..50u8).map(|n| vec![n; usize::from(n) + 1]).collect();
+        for record in &wanted {
+            let frame = sealer.record(record)?;
+            append_counted(&path, &mut sealer, &frame)?;
+        }
+        let bytes = std::fs::read(&path)?;
+        let log = open_log(&bytes, &only(key(1)), Kind::Registry).map_err(|e| e.to_string())?;
+        assert_eq!(
+            log.records, wanted,
+            "success fifty appends on disk all read back in order"
+        );
+        assert_eq!(
+            sealer.counted(),
+            101,
+            "a base end, and a record and an end each"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_append_of_nothing_writes_nothing_and_counts_nothing() -> TestResult {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("log");
+        let mut sealer = new_file(&path)?;
+        let before = std::fs::read(&path)?;
+        append_counted(&path, &mut sealer, &[])?;
+        assert_eq!(
+            std::fs::read(&path)?,
+            before,
+            "edge an append of nothing writes nothing and counts nothing"
+        );
+        assert_eq!(sealer.counted(), 0, "no count was made");
+        Ok(())
+    }
+
+    #[test]
+    fn failure_an_append_end_in_a_format_1_file_is_refused() -> TestResult {
+        // Format 1 never held one. This one is sealed as a format 1 entry
+        // would be, with the file's own data key, and is refused for what
+        // it is.
+        let mut bytes = sealed_v1(&[b"base"], &[])?;
+        // `sealed_v1` draws the file id and then the data key from
+        // `counting`; the same draws give the same two values.
+        let source = counting();
+        let file_id = *draw::<FILE_ID_BYTES>(&source)?;
+        let data_key = draw::<KEY_BYTES>(&source)?;
+        let mut body = vec![FRAME_APPEND_END];
+        cipher(&data_key)
+            .map_err(|e| e.to_string())?
+            .seal_in_place_append_tag(
+                Nonce::assume_unique_for_key(position_nonce(2)),
+                Aad::from(file_id),
+                &mut body,
+            )
+            .map_err(|_| "seal")?;
+        bytes.extend((body.len() as u32).to_be_bytes());
+        bytes.extend(body);
+        assert_eq!(
+            open_log(&bytes, &only(key(1)), Kind::Registry).err(),
+            Some(SealError::Record(3)),
+            "failure an append end in a format 1 file is refused"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn edge_an_append_end_is_no_record() -> TestResult {
+        let (bytes, _, _) = one_append(&[b"a"])?;
+        let log = open_log(&bytes, &only(key(1)), Kind::Intake).map_err(|e| e.to_string())?;
+        assert_eq!(
+            log.records.len(),
+            2,
+            "edge an append end is no record: two records, two ends, one base end"
+        );
         Ok(())
     }
 
