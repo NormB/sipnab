@@ -1805,7 +1805,11 @@ fn wiki_intra_docs_links_resolve() -> Result<(), TestError> {
     // troubleshooting table four of its sections), theme-guide.md +6 (two
     // links to config-reference.md and four to its own sections),
     // tls-capture.md +1 (to install.md).
-    const EXPECTED_WIKI_LINKS: usize = 2577;
+    // 2577 -> 2587 (DOCS-HOWTO-GAP, fourth batch): rest-api.md +2 and
+    // mcp-deploy.md +1, each "Before you start" linking sections of its page;
+    // auth.md +7 (its "Before you start" links one of its sections and its
+    // troubleshooting table six).
+    const EXPECTED_WIKI_LINKS: usize = 2587;
     // Raised 459 -> 460 when SRC1 stage 1 shipped: docs/cli-reference.md's
     // `--hep-listen` row now points at cookbook recipe "Take signaling from HEP and media off the wire, in one process" in docs/examples.md
     // rather than restating how to pair `-L` with `-d`. Attributed per file

@@ -7089,6 +7089,22 @@ Most routes only read. These change state:
 
 ## Getting started
 
+### Before you start
+
+- **A binary with the `api` feature.** `sipnab --version` lists the features:
+  [Check your binary has the API](#check-your-binary-has-the-api).
+- **A capture file, or capture rights on an interface.** The examples read a
+  file, which needs no rights.
+- **`curl` and `jq`,** for the requests and the checks on this page, and
+  **`openssl`,** to generate the key. Any HTTP client can stand in for `curl`.
+- **A free TCP port.** The examples use `127.0.0.1:8080`.
+- **For a client on another system:** a routable address for `--api`, a key or
+  a signing key, which sipnab requires on such an address, and a firewall rule
+  that lets the client reach the port. The client needs the key. A client that
+  reaches the server by a name needs `--api-allowed-host` with that name.
+  [API TLS](#api-tls) covers encryption on that path. A client on the same
+  machine changes nothing on any other system.
+
 ### Check your binary has the API
 
 The REST API is the `api` feature.
@@ -7172,7 +7188,7 @@ ok
 | `curl` exits `7`, `Failed to connect` | Nothing listens there. sipnab is not running, or it stopped at startup: read its standard error. |
 | `{"status":401,"title":"Unauthorized","type":"https://sipnab.com/problems/unauthorized"}` | The request carries no key, or not the one sipnab holds. Under `sudo`, pass the variable with `--preserve-env=SIPNAB_API_KEY`. |
 | `403` with `Forbidden: Host header is not allowed: <name>. If clients reach this server by that name, start sipnab with --api-allowed-host <name>.` | The client reaches the server by a name sipnab was not given. Add `--api-allowed-host <name>` ([Which `Host` names the API answers](#which-host-names-the-api-answers)). |
-| sipnab prints `server error: failed to bind API to 127.0.0.1:8080: Address already in use (os error 98)` and exits `1` | Another program holds the port. Choose another port for `--api`. |
+| sipnab prints `server error: failed to bind API to 127.0.0.1:8080: Address already in use (os error 98)` and exits `2` | Another program holds the port. Choose another port for `--api`. |
 | sipnab prints `server error: REST API refuses to start: --api 0.0.0.0:8080 is non-loopback but no --api-key / SIPNAB_API_KEY or --api-signing-key / SIPNAB_API_SIGNING_KEY was supplied. Bind 127.0.0.1, or configure authentication.` and exits `2` | A routable bind needs a credential. Set `SIPNAB_API_KEY`, or a signing key ([Set up authentication](auth.md)). |
 | `503` | Over the per-address rate or the in-flight cap, whatever the credential ([Bind address & connection limits](#bind-address--connection-limits)). |
 
@@ -17429,7 +17445,7 @@ reason.
   0.5.233 and earlier did not handle `SIGHUP`: the service went `inactive`
   with `Result=success` and stayed down until started again.
 
-[A service that does not start](run-as-a-service.md#a-service-that-does-not-start)
+[When the service does not start](run-as-a-service.md#when-the-service-does-not-start)
 lists each refusal message with its fix.
 
 ## Live capture says Permission denied
@@ -36747,6 +36763,25 @@ MCP-capable agent.
 - Then do the same scenario and swap the registration step.
 - [Registering other MCP clients](#use-an-agent-other-than-claude-code)
   has the exact config for each.
+
+## Before you start
+
+- **A sipnab binary with the `mcp` feature** on each machine that runs
+  sipnab, and `mcp-http` as well for the HTTP service. `sipnab --version`
+  lists the features, and the release binaries carry both.
+  [Install sipnab](#install-sipnab-every-server-once) has the steps.
+- **An MCP client.** The steps use Claude Code.
+- **A capture file, or capture rights on an interface** of the machine that
+  runs sipnab.
+
+What changes on each other system depends on the setup:
+
+| Setup | Change on the other system |
+|---|---|
+| Agent and sipnab on one machine | None |
+| Agent on a laptop, sipnab on a server, over SSH | The server needs sipnab and an account the laptop can reach over SSH. The laptop needs the registration of the server in its MCP client |
+| Agent on a laptop, sipnab as an HTTP service | The server needs sipnab, a token or a signing key, and a firewall rule for the port of `--mcp-bind`. The laptop needs the address and the token |
+| Captures sent from a SIP proxy | The proxy needs its HEP tracing pointed at sipnab |
 
 ## Find your setup
 
@@ -62866,6 +62901,22 @@ The steps below set up signed tokens from scratch. After the steps, this page co
   including the metrics endpoint and the HEP listener, which use no bearer
   token.
 
+## Before you start
+
+- **A binary with the `api` feature** for the REST API, and `mcp-http` for the
+  HTTP MCP server. `sipnab --version` lists the features, and the release
+  binaries carry both.
+- **`openssl`,** to generate a signing key, and **`curl`,** to send a request.
+- **A place for the signing key that only the server reads.** The examples
+  keep it in the shell variable `KEY`. A service reads it from a file with
+  `--api-signing-key-file`.
+- **On each other system that sends requests:** the token, in the
+  `Authorization` header of its client. The signing key never leaves the
+  server: a client that holds it can mint tokens of its own.
+- **For a client on another machine:** a routable address and
+  [TLS on the listener](#secure-every-listener), so that the token does not
+  cross the network in the clear.
+
 ## Configure a signing key
 
 Give the server one or more HMAC signing keys (use a long, random secret).
@@ -63095,6 +63146,52 @@ It is **re-read when its mtime changes**.
 - (Signed tokens are otherwise valid until `exp`. So a denylist is the revocation mechanism for the
   stateless model.)
 
+## Check that it worked
+
+Start a server with a signing key, mint a token with the same key, and send
+one request with the token and one without. Run the server in one shell:
+
+```bash
+# Run all of these, in order.
+export KEY="$(openssl rand -hex 32)"
+sipnab -N -I capture.pcap --api 127.0.0.1:8080 --api-signing-key "$KEY"
+```
+
+In a second shell that holds the same `KEY`:
+
+```bash
+# Run all of these, in order.
+TOKEN="$(sipnab --mint-token --api-signing-key "$KEY")"
+echo "$TOKEN" | cut -c1-3
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/v1/dialogs
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/v1/dialogs
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8080/health
+```
+
+Expect four lines:
+
+- `s2.`, the start of every signed token,
+- `200`, the request with the token,
+- `401`, the request without one,
+- `200`, because `/health` on the REST API takes no credential.
+
+The test suite runs this check on each build: it mints a token, starts a
+server on a port the kernel picks and compares the three status codes. On
+Ubuntu 24.04 (Linux 6.8, aarch64) it got `200`, `401` and `200`. The suite
+sends its requests from Rust, not with `curl`.
+
+## When something does not work
+
+| Symptom | Cause | What to do |
+|---|---|---|
+| `--mint-token requires at least one --api-signing-key/--api-signing-key-file or --mcp-signing-key/--mcp-signing-key-file`, exit 2 | The command names no signing key. In a second shell, `KEY` is empty unless you exported it there | Give the key the server holds |
+| `401` with a token you minted a moment ago | The token carries the signature of a key the server does not hold: the server started with another key, or with a fresh `$(openssl rand -hex 32)` | Mint with the key the server started with. The first key mints, and every key verifies: [Rotation](#rotation) |
+| `401` on one route, `200` on another | The scope of the token does not cover the route | [Scope: what a token may reach](#scope-what-a-token-may-reach) |
+| `401` after a time with no other change | The token passed its expiry. The default life is one hour | Mint a new token, with `--api-token-ttl` for a longer life: [Expiry](#expiry) |
+| `401` for one token, `200` for another from the same key | The id of the token is in the file of `--api-revoked-file` | Mint a token with another id: [Revocation](#revocation) |
+| `401` for an API token on the MCP server, or the reverse | A token binds to one audience | [Audience binding](#audience-binding) |
+| `403` or `503` | The server did not look at the token | The table in [Use a token](#use-a-token) |
+
 ## Secure every listener
 
 sipnab has four network listeners. Each takes its own credential and its own
@@ -63107,8 +63204,8 @@ certificate, and each refuses a routable bind that has no credential:
 | Metrics (`--metrics`) | HTTP Basic: `--metrics-auth-file` holding `user:password` | `--metrics-tls-cert`, `--metrics-tls-key` | `[metrics] tls_cert`, `tls_key` | refused, exit 2 |
 | HEP (`--hep-listen`) | source allowlist `--hep-allow`, or shared secret `--hep-auth-file` | `--hep-listen-transport tls`, `--hep-tls-cert`, `--hep-tls-key` | `[hep] tls_cert`, `tls_key` | refused, exit 2 |
 
-The exact refusal messages are in [A service that does not
-start](run-as-a-service.md#a-service-that-does-not-start).
+The exact refusal messages are in [When the service does not
+start](run-as-a-service.md#when-the-service-does-not-start).
 
 TLS encrypts the path, and the credential in the second column says who the
 client is. The REST API and MCP over HTTP can also ask each client for a
@@ -63817,9 +63914,9 @@ says otherwise.
 - **sipnab installed.** See [Installing sipnab](install.md). The `.deb` and
   `.rpm` packages install the unit and create the `sipnab` user. The installer
   and the tarballs install the binary only.
-- **Nothing to change on the SIP server** for a capture of the host's own
-  interfaces. A HEP listener needs the SIP server's HEP tracing pointed at it:
-  see [Wire HEP from your SIP stack to a central
+- **Nothing to change on any other system** for a capture of the host's own
+  interfaces. A HEP listener needs one change on the other system, the SIP
+  server: point its HEP tracing at the listener. See [Wire HEP from your SIP stack to a central
   sipnab](examples.md#wire-hep-from-your-sip-stack-to-a-central-sipnab).
 - **A firewall rule** for any port you bind to a routable address. A unit that
   binds only `127.0.0.1` needs none.
@@ -64308,7 +64405,7 @@ record landed in the emptied file as a complete line:
 - sipnab writes the provenance file once per run, at startup, so any rotation
   method works for it.
 
-## A service that does not start
+## When the service does not start
 
 `systemctl status sipnab` names the exit status, and the journal names the
 reason:

@@ -41,6 +41,25 @@ MCP-capable agent.
 - [Registering other MCP clients](#use-an-agent-other-than-claude-code)
   has the exact config for each.
 
+## Before you start
+
+- **A sipnab binary with the `mcp` feature** on each machine that runs
+  sipnab, and `mcp-http` as well for the HTTP service. `sipnab --version`
+  lists the features, and the release binaries carry both.
+  [Install sipnab](#install-sipnab-every-server-once) has the steps.
+- **An MCP client.** The steps use Claude Code.
+- **A capture file, or capture rights on an interface** of the machine that
+  runs sipnab.
+
+What changes on each other system depends on the setup:
+
+| Setup | Change on the other system |
+|---|---|
+| Agent and sipnab on one machine | None |
+| Agent on a laptop, sipnab on a server, over SSH | The server needs sipnab and an account the laptop can reach over SSH. The laptop needs the registration of the server in its MCP client |
+| Agent on a laptop, sipnab as an HTTP service | The server needs sipnab, a token or a signing key, and a firewall rule for the port of `--mcp-bind`. The laptop needs the address and the token |
+| Captures sent from a SIP proxy | The proxy needs its HEP tracing pointed at sipnab |
+
 ## Find your setup
 
 **This page is a set of independent how-tos, not a sequence.**

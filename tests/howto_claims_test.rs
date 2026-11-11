@@ -37,6 +37,13 @@ const TLS: &str = include_str!("../docs/tls-capture.md");
 const TUNING: &str = include_str!("../docs/tuning-capture.md");
 const LIVE: &str = include_str!("../src/capture/live.rs");
 const THEME: &str = include_str!("../docs/theme-guide.md");
+const SERVICE: &str = include_str!("../docs/run-as-a-service.md");
+const REST: &str = include_str!("../docs/rest-api.md");
+const MCP_DEPLOY: &str = include_str!("../docs/mcp-deploy.md");
+const AUTH: &str = include_str!("../docs/auth.md");
+
+/// The troubleshooting heading of run-as-a-service.
+const SERVICE_TROUBLESHOOT: &str = "## When the service does not start";
 
 /// The troubleshooting heading of tls-capture.
 const TLS_TROUBLESHOOT: &str = "## When decryption does not work";
@@ -57,6 +64,12 @@ mod encrypted_captures;
 #[cfg(feature = "tls")]
 #[path = "support/pcap_build.rs"]
 mod pcap_build;
+
+// A REST API server started on a port the kernel picks, for the pages whose
+// check sends a request.
+#[cfg(all(unix, feature = "api"))]
+#[path = "support/server.rs"]
+mod server;
 
 fn repo() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1322,5 +1335,328 @@ fn the_theme_prerequisites_name_the_feature_and_the_other_system() -> Result<(),
         cfg!(feature = "tui"),
         "--version lists `tui` exactly when the build carries it: {features}"
     );
+    Ok(())
+}
+
+// ── run-as-a-service, rest-api, mcp-deploy ───────────────────────────────
+
+/// Whether `--version` lists `feature`, with the list it printed.
+fn version_lists(feature: &str) -> Result<(bool, String), TestError> {
+    let version = sipnab(&["--version"])?;
+    exited(&version, 0);
+    let listed = stdout(&version);
+    let features = listed
+        .lines()
+        .find_map(|line| line.split_once("features: ").map(|(_, list)| list))
+        .ok_or("--version prints no `features:` list")?;
+    Ok((
+        features.split(',').any(|name| name.trim() == feature),
+        features.to_owned(),
+    ))
+}
+
+/// Runs sipnab with `--config` naming a file that holds `[capture]` and
+/// `line`.
+fn sipnab_with_capture_key(line: &str) -> Result<Output, TestError> {
+    let dir = tempfile::tempdir()?;
+    let config = dir.path().join("sipnab.toml");
+    std::fs::write(&config, format!("[capture]\n{line}\n"))?;
+    sipnab(&["-D", "--config", &config.display().to_string()])
+}
+
+/// The troubleshooting section of the service page, up to the section after
+/// it. [`section`] cannot take it: a `#` comment in one of its fenced blocks
+/// reads as a heading there.
+fn service_troubleshooting() -> Result<&'static str, TestError> {
+    let from = SERVICE
+        .find(&format!("\n{SERVICE_TROUBLESHOOT}\n"))
+        .ok_or_else(|| format!("no heading {SERVICE_TROUBLESHOOT:?}"))?;
+    let rest = SERVICE.get(from..).ok_or("section start")?;
+    let end = rest
+        .find("\n## Check that a running service is healthy\n")
+        .ok_or("the section after the troubleshooting section moved")?;
+    rest.get(..end).ok_or_else(|| "section range".into())
+}
+
+/// The service prerequisites say what changes on the other system, the SIP
+/// server, and when nothing does.
+#[test]
+fn the_service_prerequisites_say_what_changes_on_the_other_system() -> Result<(), TestError> {
+    let needs = section(SERVICE, "## Before you start")?;
+    for named in ["other system", "HEP", "firewall", "systemd"] {
+        page_says(needs, named, "run-as-a-service");
+    }
+    Ok(())
+}
+
+/// A key sipnab does not know is a warning, and `-D` goes on to print the
+/// configuration: the check the service page gives after each edit.
+#[test]
+fn a_misspelled_key_gives_the_warning_the_service_page_quotes() -> Result<(), TestError> {
+    let message = "Unknown config key: capture.snaplenn";
+    let rows = service_troubleshooting()?;
+    page_says(rows, message, "run-as-a-service");
+    page_says(
+        rows,
+        "sipnab -D --config /etc/sipnab/sipnab.toml",
+        "run-as-a-service",
+    );
+    let run = sipnab_with_capture_key("snaplenn = 1600")?;
+    exited(&run, 0);
+    printed(&stderr(&run), message);
+    printed(&stdout(&run), "[capture]");
+    Ok(())
+}
+
+/// A value sipnab refuses stops the run with exit status 1 and the message
+/// the table of the service page quotes.
+#[test]
+fn a_refused_value_gives_the_message_and_status_the_service_page_quotes() -> Result<(), TestError> {
+    let message = "invalid config value: [capture] snaplen must be > 0";
+    let rows = service_troubleshooting()?;
+    page_says(rows, &format!("| `{message}` | 1 |"), "run-as-a-service");
+    let run = sipnab_with_capture_key("snaplen = 0")?;
+    exited(&run, 1);
+    printed(&stderr(&run), message);
+    Ok(())
+}
+
+/// A port another process holds: sipnab prints the bind failure and exits 2,
+/// as the service page and the REST page both state.
+#[cfg(feature = "api")]
+#[test]
+fn an_api_port_in_use_gives_the_message_and_status_both_pages_quote() -> Result<(), TestError> {
+    page_says(
+        service_troubleshooting()?,
+        "| `failed to bind API to 127.0.0.1:18081: Address already in use (os error 98)` | 2 |",
+        "run-as-a-service",
+    );
+    page_says(
+        section(REST, "### When it does not answer")?,
+        "`server error: failed to bind API to 127.0.0.1:8080: Address already in use \
+         (os error 98)` and exits `2`",
+        "rest-api",
+    );
+    // Bound until the end of the test, so the port stays taken while sipnab
+    // runs.
+    let held = std::net::TcpListener::bind("127.0.0.1:0")?;
+    let address = held.local_addr()?.to_string();
+    let sample = capture(SAMPLE_CALL)?.display().to_string();
+    let run = sipnab(&["-N", "-I", &sample, "--api", &address])?;
+    exited(&run, 2);
+    printed(
+        &stderr(&run),
+        &format!("server error: failed to bind API to {address}: Address already in use"),
+    );
+    Ok(())
+}
+
+/// The REST prerequisites name the feature as `--version` lists it, the
+/// three tools the page's commands use, and what another system needs.
+#[test]
+fn the_rest_prerequisites_name_the_feature_the_tools_and_the_other_system() -> Result<(), TestError>
+{
+    let needs = section(REST, "### Before you start")?;
+    for named in [
+        "`api`",
+        "sipnab --version",
+        "`curl`",
+        "`jq`",
+        "`openssl`",
+        "other system",
+    ] {
+        page_says(needs, named, "rest-api");
+    }
+    for used in ["curl -s", "| jq ", "openssl rand -hex 32"] {
+        printed(REST, used);
+    }
+    let (listed, features) = version_lists("api")?;
+    assert_eq!(
+        listed,
+        cfg!(feature = "api"),
+        "--version lists `api` exactly when the build carries it: {features}"
+    );
+    Ok(())
+}
+
+/// The MCP deployment prerequisites name the two features as `--version`
+/// lists them, the client, and the systems a remote setup changes.
+#[test]
+fn the_mcp_deploy_prerequisites_name_the_features_and_the_other_systems() -> Result<(), TestError> {
+    let needs = section(MCP_DEPLOY, "## Before you start")?;
+    for named in [
+        "`mcp`",
+        "`mcp-http`",
+        "sipnab --version",
+        "Claude Code",
+        "other system",
+        "SSH",
+    ] {
+        page_says(needs, named, "mcp-deploy");
+    }
+    for (feature, built) in [
+        ("mcp", cfg!(feature = "mcp")),
+        ("mcp-http", cfg!(feature = "mcp-http")),
+    ] {
+        let (listed, features) = version_lists(feature)?;
+        assert_eq!(
+            listed, built,
+            "--version lists `{feature}` exactly when the build carries it: {features}"
+        );
+    }
+    Ok(())
+}
+
+// ── auth ─────────────────────────────────────────────────────────────────
+
+/// A signing key for the tests: any text serves.
+#[cfg(all(unix, feature = "api"))]
+const SIGNING_KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+/// The token `sipnab --mint-token` prints for the REST API with `key` and
+/// `extra` flags.
+#[cfg(all(unix, feature = "api"))]
+fn minted(key: &str, extra: &[&str]) -> Result<String, TestError> {
+    let mut args = vec!["--mint-token", "--api-signing-key", key];
+    args.extend_from_slice(extra);
+    let run = sipnab(&args)?;
+    exited(&run, 0);
+    Ok(stdout(&run).trim().to_owned())
+}
+
+/// The check of the page: a server that holds the signing key answers 200 to
+/// a token minted with it, 401 to a request with no token, and 200 to
+/// `/health` with none.
+#[cfg(all(unix, feature = "api"))]
+#[test]
+fn the_auth_check_gets_200_with_the_token_and_401_without() -> Result<(), TestError> {
+    // Sliced by hand: the fenced blocks of the check hold `#` comments, which
+    // `section` reads as headings.
+    let from = AUTH
+        .find(&format!("\n{CHECK}\n"))
+        .ok_or_else(|| format!("no heading {CHECK:?}"))?;
+    let rest = AUTH.get(from..).ok_or("section start")?;
+    let end = rest
+        .find(&format!("\n{TROUBLESHOOT}\n"))
+        .ok_or_else(|| format!("no heading {TROUBLESHOOT:?} after the check"))?;
+    let check = rest.get(..end).ok_or("section range")?;
+    for quoted in [
+        "sipnab --mint-token --api-signing-key \"$KEY\"",
+        "--api-signing-key \"$KEY\"",
+        "`200`",
+        "`401`",
+        "/health",
+        "s2.",
+    ] {
+        page_says(check, quoted, "auth");
+    }
+    let token = minted(SIGNING_KEY, &[])?;
+    assert!(token.starts_with("s2."), "a signed token: {token}");
+    let api =
+        server::ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]).map_err(|e| e.to_string())?;
+    let with = api
+        .get_bearer("/v1/dialogs", &token)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(with.status, 200, "the minted token: {}", with.body);
+    let without = api.get("/v1/dialogs").map_err(|e| e.to_string())?;
+    assert_eq!(without.status, 401, "no token: {}", without.body);
+    let health = api.get("/health").map_err(|e| e.to_string())?;
+    assert_eq!(
+        health.status, 200,
+        "/health takes no token: {}",
+        health.body
+    );
+    Ok(())
+}
+
+/// A token signed with a key the server does not hold gets 401, the first
+/// row of the troubleshooting table.
+#[cfg(all(unix, feature = "api"))]
+#[test]
+fn a_token_of_another_key_gets_the_401_the_auth_page_states() -> Result<(), TestError> {
+    page_says(
+        section(AUTH, TROUBLESHOOT)?,
+        "a key the server does not hold",
+        "auth",
+    );
+    let token = minted("another-key-another-key-another-key", &[])?;
+    let api =
+        server::ApiServer::spawn(&["--api-signing-key", SIGNING_KEY]).map_err(|e| e.to_string())?;
+    let got = api
+        .get_bearer("/v1/dialogs", &token)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(got.status, 401, "a token of another key: {}", got.body);
+    Ok(())
+}
+
+/// A token whose id is in the file of `--api-revoked-file` gets 401, and a
+/// token with another id from the same key gets 200.
+#[cfg(all(unix, feature = "api"))]
+#[test]
+fn a_revoked_token_gets_the_401_the_auth_page_states() -> Result<(), TestError> {
+    page_says(section(AUTH, TROUBLESHOOT)?, "--api-revoked-file", "auth");
+    let dir = tempfile::tempdir()?;
+    let revoked = dir.path().join("revoked.txt");
+    std::fs::write(&revoked, "ci-runner-1\n")?;
+    let listed = minted(SIGNING_KEY, &["--token-id", "ci-runner-1"])?;
+    let other = minted(SIGNING_KEY, &["--token-id", "ci-runner-2"])?;
+    let api = server::ApiServer::spawn(&[
+        "--api-signing-key",
+        SIGNING_KEY,
+        "--api-revoked-file",
+        &revoked.display().to_string(),
+    ])
+    .map_err(|e| e.to_string())?;
+    let refused = api
+        .get_bearer("/v1/dialogs", &listed)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(refused.status, 401, "the listed id: {}", refused.body);
+    let served = api
+        .get_bearer("/v1/dialogs", &other)
+        .map_err(|e| e.to_string())?;
+    assert_eq!(served.status, 200, "an id the file lacks: {}", served.body);
+    Ok(())
+}
+
+/// `--mint-token` with no signing key stops with exit status 2 and the
+/// message the troubleshooting table quotes.
+#[test]
+fn minting_without_a_key_gives_the_message_the_auth_page_quotes() -> Result<(), TestError> {
+    let message = "--mint-token requires at least one --api-signing-key/--api-signing-key-file \
+                   or --mcp-signing-key/--mcp-signing-key-file";
+    let rows = section(AUTH, TROUBLESHOOT)?;
+    page_says(rows, message, "auth");
+    page_says(rows, "exit 2", "auth");
+    let run = sipnab(&["--mint-token"])?;
+    if cfg!(any(feature = "api", feature = "mcp-http")) {
+        exited(&run, 2);
+        printed(&stderr(&run), message);
+    }
+    Ok(())
+}
+
+/// The prerequisites name the features, the tools of the page's commands and
+/// what reaches the other system: the token, never the signing key.
+#[test]
+fn the_auth_prerequisites_name_the_features_the_tools_and_the_other_system() -> Result<(), TestError>
+{
+    let needs = section(AUTH, "## Before you start")?;
+    for named in [
+        "`api`",
+        "`mcp-http`",
+        "sipnab --version",
+        "`openssl`",
+        "`curl`",
+        "other system",
+        "signing key",
+    ] {
+        page_says(needs, named, "auth");
+    }
+    for used in [
+        "openssl rand -hex 32",
+        "curl -H \"Authorization: Bearer $TOKEN\"",
+    ] {
+        printed(AUTH, used);
+    }
     Ok(())
 }
